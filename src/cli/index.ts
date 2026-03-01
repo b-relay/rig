@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import { z } from "zod"
 
 import { Logger } from "../interfaces/logger.js"
-import { CliArgumentError, type RigError } from "../schema/errors.js"
+import type { RigError } from "../schema/errors.js"
 import { COMMANDS, type CommandName, isCommandName, renderCommandHelp, renderMainHelp } from "./help.js"
 
 const VERSION_ACTIONS = ["show", "patch", "minor", "major", "undo", "list"] as const
@@ -15,7 +15,14 @@ const makeCliError = (
   message: string,
   hint: string,
   details?: Record<string, unknown>,
-): RigError => new CliArgumentError(command, message, hint, details)
+): RigError =>
+  ({
+    _tag: "CliArgumentError",
+    command,
+    message,
+    hint,
+    details,
+  }) as RigError
 
 const parseWithOptions = <T extends Record<string, ParseOption>>(
   command: string,

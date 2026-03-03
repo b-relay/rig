@@ -28,6 +28,16 @@ dev.pantry.b-relay.com {
 \timport backend_errors
 }`
 
+const RIG_BLOCK_WITH_PLACEHOLDER = `# [rig:placeholder:prod:web]
+placeholder.b-relay.com {
+\treverse_proxy http://127.0.0.1:3080
+\tmap {http.request.host} {backend} {
+\t\tdefault web
+\t}
+\timport cloudflare
+\timport backend_errors
+}`
+
 const MIXED_CADDYFILE = [MANUAL_BLOCK, RIG_BLOCK_PANTRY_PROD, "", RIG_BLOCK_PANTRY_DEV, ""].join("\n")
 
 let tmpDir: string
@@ -200,6 +210,30 @@ describe("CaddyProxy", () => {
 
     const result = await Effect.runPromiseExit(caddy.remove("ghost", "prod"))
     expect(result._tag).toBe("Failure")
+  })
+
+  test("read() correctly handles Caddy placeholder braces", async () => {
+    await writeFile(caddyfilePath, `${RIG_BLOCK_WITH_PLACEHOLDER}\n`)
+
+    const entries = await run(caddy.read())
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toEqual({
+      name: "placeholder",
+      env: "prod",
+      domain: "placeholder.b-relay.com",
+      upstream: "web",
+      port: 3080,
+    })
+  })
+
+  test("remove() handles placeholder braces when locating block end", async () => {
+    await writeFile(caddyfilePath, `${RIG_BLOCK_WITH_PLACEHOLDER}\n`)
+
+    const change = await run(caddy.remove("placeholder", "prod"))
+    expect(change.type).toBe("removed")
+
+    const content = await readFile(caddyfilePath, "utf-8")
+    expect(content.trim()).toBe("")
   })
 
   test("backup() creates a timestamped copy", async () => {

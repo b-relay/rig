@@ -80,8 +80,10 @@ const parseBlocks = (text: string): ParsedBlock[] => {
 
     for (let j = domainLine + 1; j < lines.length && braceDepth > 0; j++) {
       const trimmed = lines[j].trim()
-      if (trimmed.includes("{")) braceDepth++
-      if (trimmed.includes("}")) braceDepth--
+      // Only count structural braces in Caddyfile syntax.
+      // Placeholders like {http.request.host} or {$ENV} are not block delimiters.
+      if (trimmed.endsWith("{")) braceDepth++
+      if (trimmed === "}") braceDepth--
 
       const proxyMatch = trimmed.match(/^reverse_proxy\s+https?:\/\/127\.0\.0\.1:(\d+)/)
       if (proxyMatch) {

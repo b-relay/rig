@@ -194,7 +194,7 @@ export class BunGit implements GitService {
   createWorktree(repoPath: string, dest: string, ref: string): Effect.Effect<void, GitError> {
     return this.runGitExpectingSuccess(
       repoPath,
-      ["worktree", "add", dest, ref],
+      ["worktree", "add", "--detach", dest, ref],
       "createWorktree",
       `Ensure '${ref}' is valid and '${dest}' is writable.`,
     ).pipe(Effect.asVoid)

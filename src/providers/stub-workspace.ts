@@ -11,19 +11,19 @@ const workspacePath = (name: string, env: string, version: string): string =>
 export class StubWorkspace implements WorkspaceService {
   private readonly current = new Map<string, string>()
 
-  create(name: string, env: string, version: string, _commitRef: string): Effect.Effect<string, WorkspaceError> {
+  create(name: string, env: "dev" | "prod", version: string, _commitRef: string): Effect.Effect<string, WorkspaceError> {
     const path = workspacePath(name, env, version)
     this.current.set(`${name}:${env}`, path)
     return Effect.succeed(path)
   }
 
-  resolve(name: string, env: string): Effect.Effect<string, WorkspaceError> {
+  resolve(name: string, env: "dev" | "prod"): Effect.Effect<string, WorkspaceError> {
     return Effect.succeed(
       this.current.get(`${name}:${env}`) ?? workspacePath(name, env, "current"),
     )
   }
 
-  sync(_name: string, _env: string): Effect.Effect<void, WorkspaceError> {
+  sync(_name: string, _env: "dev" | "prod"): Effect.Effect<void, WorkspaceError> {
     return Effect.void
   }
 

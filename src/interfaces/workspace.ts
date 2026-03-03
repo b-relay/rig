@@ -12,17 +12,17 @@ export interface WorkspaceInfo {
 export interface Workspace {
   readonly create: (
     name: string,
-    env: string,
+    env: "dev" | "prod",
     version: string,
     commitRef: string
   ) => Effect.Effect<string, WorkspaceError>
   readonly resolve: (
     name: string,
-    env: string
+    env: "dev" | "prod"
   ) => Effect.Effect<string, WorkspaceError>
   readonly sync: (
     name: string,
-    env: string
+    env: "dev" | "prod"
   ) => Effect.Effect<void, WorkspaceError>
   readonly list: (
     name: string

@@ -128,6 +128,10 @@ export class LaunchdManager implements ProcessManagerService {
         const xml = generatePlist(config)
         await Bun.write(path, xml)
 
+        // Unload first in case it's already loaded (DESIGN.md: unload old, load new)
+        // Ignore errors — may not be loaded yet
+        await this.runCommand(["launchctl", "unload", path])
+
         // Load the plist
         const result = await this.runCommand(["launchctl", "load", path])
         if (result.exitCode !== 0) {
@@ -149,8 +153,15 @@ export class LaunchdManager implements ProcessManagerService {
       try: async () => {
         const path = plistPath(label, this.home)
 
-        // Unload first (ignore errors — may already be unloaded)
-        await this.runCommand(["launchctl", "unload", path])
+        // Unload first — ignore "not loaded" errors but surface real failures
+        const unloadResult = await this.runCommand(["launchctl", "unload", path])
+        if (unloadResult.exitCode !== 0) {
+          const stderr = unloadResult.stderr.toLowerCase()
+          const isNotLoaded = stderr.includes("not loaded") || stderr.includes("could not find")
+          if (!isNotLoaded) {
+            throw new Error(`launchctl unload failed (exit ${unloadResult.exitCode}): ${unloadResult.stderr.trim()}`)
+          }
+        }
 
         // Delete the plist file
         await unlink(path)

@@ -128,9 +128,10 @@ describe("LaunchdManager", () => {
     expect(content).toContain("<key>Label</key>")
     expect(content).toContain("<string>pantry-prod</string>")
 
-    // Verify launchctl load was called
-    expect(captured).toHaveLength(1)
-    expect(captured[0].args).toEqual(["launchctl", "load", expectedPath])
+    // Verify launchctl unload (pre-clean) then load was called
+    expect(captured).toHaveLength(2)
+    expect(captured[0].args).toEqual(["launchctl", "unload", expectedPath])
+    expect(captured[1].args).toEqual(["launchctl", "load", expectedPath])
   })
 
   test("install() fails with ProcessError when launchctl load fails", async () => {
@@ -157,9 +158,9 @@ describe("LaunchdManager", () => {
     // Now uninstall
     await run(mgr.uninstall(sampleConfig.label))
 
-    // Should have called: load (install), unload (uninstall)
-    expect(captured).toHaveLength(2)
-    expect(captured[1].args[1]).toBe("unload")
+    // Should have called: unload+load (install), unload (uninstall)
+    expect(captured).toHaveLength(3)
+    expect(captured[2].args[1]).toBe("unload")
 
     // File should be deleted
     const file = Bun.file(plistPath(sampleConfig.label, tmpDir))

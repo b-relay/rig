@@ -32,8 +32,12 @@ const HELP: Record<CommandName, HelpSpec> = {
   },
   start: {
     summary: "Start all configured services for an environment.",
-    usage: ["rig start <name> --dev|--prod", "rig start --help"],
-    examples: ["rig start pantry --dev", "rig start pantry --prod"],
+    usage: ["rig start <name> --dev|--prod [--foreground]", "rig start --help"],
+    examples: [
+      "rig start pantry --dev",
+      "rig start pantry --prod",
+      "rig start pantry --prod --foreground",
+    ],
   },
   stop: {
     summary: "Stop all running services for an environment.",
@@ -121,6 +125,7 @@ export const renderMainHelp = (): string => {
     "Global Patterns:",
     "  --help, -h     Show help for command",
     "  --dev|--prod   Explicit environment flag where required",
+    "  --foreground   Start command only; stay attached for launchd mode",
     "",
     "Examples:",
     "  rig deploy pantry --prod",

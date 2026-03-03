@@ -2,40 +2,47 @@ import { parseArgs } from "node:util"
 import { Effect } from "effect"
 import { z } from "zod"
 
+import { runConfigCommand } from "../core/config-command.js"
+import { runDeployCommand } from "../core/deploy.js"
+import { runListCommand } from "../core/list.js"
+import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"
+import { runStatusCommand } from "../core/status.js"
+import { runVersionCommand } from "../core/version.js"
 import { Logger } from "../interfaces/logger.js"
-import type { RigError } from "../schema/errors.js"
+import {
+  ConfigArgsSchema,
+  DeployArgsSchema,
+  InitArgsSchema,
+  ListArgsSchema,
+  LogsArgsSchema,
+  RestartArgsSchema,
+  StartArgsSchema,
+  StatusArgsSchema,
+  StopArgsSchema,
+  VersionArgsSchema,
+} from "../schema/args.js"
+import { CliArgumentError, type RigError } from "../schema/errors.js"
 import { COMMANDS, type CommandName, isCommandName, renderCommandHelp, renderMainHelp } from "./help.js"
 
-const VERSION_ACTIONS = ["show", "patch", "minor", "major", "undo", "list"] as const
-
 type ParseOption = { type: "boolean" | "string"; short?: string }
+
+type ParsedArgs = {
+  readonly values: Readonly<Record<string, string | boolean | undefined>>
+  readonly positionals: readonly string[]
+}
 
 const makeCliError = (
   command: string,
   message: string,
   hint: string,
   details?: Record<string, unknown>,
-): RigError =>
-  ({
-    _tag: "CliArgumentError",
-    command,
-    message,
-    hint,
-    details,
-  }) as RigError
+): CliArgumentError => new CliArgumentError(command, message, hint, details)
 
-const parseWithOptions = <T extends Record<string, ParseOption>>(
+const parseWithOptions = (
   command: string,
   args: readonly string[],
-  options: T,
-):
-  | {
-      readonly values: {
-        readonly [K in keyof T]?: T[K]["type"] extends "boolean" ? boolean : string
-      }
-      readonly positionals: readonly string[]
-    }
-  | { readonly error: RigError } => {
+  options: Record<string, ParseOption>,
+): ParsedArgs | { readonly error: RigError } => {
   try {
     const parsed = parseArgs({
       args,
@@ -45,9 +52,7 @@ const parseWithOptions = <T extends Record<string, ParseOption>>(
     })
 
     return {
-      values: parsed.values as {
-        readonly [K in keyof T]?: T[K]["type"] extends "boolean" ? boolean : string
-      },
+      values: parsed.values,
       positionals: parsed.positionals,
     }
   } catch (cause) {
@@ -62,13 +67,36 @@ const parseWithOptions = <T extends Record<string, ParseOption>>(
   }
 }
 
+const validate = <T>(
+  command: string,
+  schema: z.ZodType<T>,
+  input: unknown,
+  usage: string,
+): { readonly data: T } | { readonly error: RigError } => {
+  const parsed = schema.safeParse(input)
+
+  if (!parsed.success) {
+    return {
+      error: makeCliError(command, "Invalid arguments.", `Usage: ${usage}`, {
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path,
+          code: issue.code,
+          message: issue.message,
+        })),
+      }),
+    }
+  }
+
+  return { data: parsed.data }
+}
+
 const resolveEnv = (
   command: string,
-  flags: { readonly dev?: boolean; readonly prod?: boolean },
+  values: Readonly<Record<string, string | boolean | undefined>>,
   required: boolean,
 ): { readonly env: "dev" | "prod" | null; readonly error?: RigError } => {
-  const dev = flags.dev === true
-  const prod = flags.prod === true
+  const dev = values.dev === true
+  const prod = values.prod === true
 
   if (dev && prod) {
     return {
@@ -98,7 +126,7 @@ const showCommandHelp = (command: CommandName) =>
     return 0
   })
 
-const runScaffoldHandler = (command: CommandName, details: Record<string, unknown>) =>
+const runScaffoldHandler = (command: "init" | "logs", details: Record<string, unknown>) =>
   Effect.gen(function* () {
     const logger = yield* Logger
     yield* logger.info(`${command} command scaffold ready.`, details)
@@ -121,6 +149,7 @@ const parseLifecycleCommand = (
       help: { type: "boolean", short: "h" },
       dev: { type: "boolean" },
       prod: { type: "boolean" },
+      ...(command === "start" ? { foreground: { type: "boolean" } } : {}),
     })
 
     if ("error" in parsed) {
@@ -131,28 +160,72 @@ const parseLifecycleCommand = (
       return yield* showCommandHelp(command)
     }
 
-    if (parsed.positionals.length !== 1) {
-      return yield* fail(
-        makeCliError(command, "Invalid positional arguments.", `Usage: rig ${command} <name> --dev|--prod`),
-      )
-    }
-
-    const name = z.string().min(1).safeParse(parsed.positionals[0])
-    if (!name.success) {
-      return yield* fail(
-        makeCliError(command, "Missing project name.", `Usage: rig ${command} <name> --dev|--prod`),
-      )
-    }
-
     const env = resolveEnv(command, parsed.values, true)
     if (env.error) {
       return yield* fail(env.error)
     }
 
-    return yield* runScaffoldHandler(command, {
-      name: name.data,
-      env: env.env,
-    })
+    if (command === "deploy") {
+      const validated = validate(
+        command,
+        DeployArgsSchema,
+        { name: parsed.positionals[0], env: env.env },
+        "rig deploy <name> --dev|--prod",
+      )
+
+      if ("error" in validated) {
+        return yield* fail(validated.error)
+      }
+
+      return yield* runDeployCommand(validated.data)
+    }
+
+    if (command === "start") {
+      const validated = validate(
+        command,
+        StartArgsSchema,
+        {
+          name: parsed.positionals[0],
+          env: env.env,
+          foreground: parsed.values.foreground === true,
+        },
+        "rig start <name> --dev|--prod [--foreground]",
+      )
+
+      if ("error" in validated) {
+        return yield* fail(validated.error)
+      }
+
+      return yield* runStartCommand(validated.data)
+    }
+
+    if (command === "stop") {
+      const validated = validate(
+        command,
+        StopArgsSchema,
+        { name: parsed.positionals[0], env: env.env },
+        "rig stop <name> --dev|--prod",
+      )
+
+      if ("error" in validated) {
+        return yield* fail(validated.error)
+      }
+
+      return yield* runStopCommand(validated.data)
+    }
+
+    const validated = validate(
+      command,
+      RestartArgsSchema,
+      { name: parsed.positionals[0], env: env.env },
+      "rig restart <name> --dev|--prod",
+    )
+
+    if ("error" in validated) {
+      return yield* fail(validated.error)
+    }
+
+    return yield* runRestartCommand(validated.data)
   })
 
 const parseInit = (args: readonly string[]) =>
@@ -170,19 +243,21 @@ const parseInit = (args: readonly string[]) =>
       return yield* showCommandHelp("init")
     }
 
-    const payload = z
-      .object({
-        name: z.string().min(1),
-        path: z.string().min(1),
-      })
-      .safeParse({
+    const payload = validate(
+      "init",
+      InitArgsSchema,
+      {
         name: parsed.positionals[0],
         path: parsed.values.path,
-      })
+      },
+      "rig init <name> --path <project-path>",
+    )
 
-    if (!payload.success || parsed.positionals.length > 1) {
+    if ("error" in payload || parsed.positionals.length > 1) {
       return yield* fail(
-        makeCliError("init", "Invalid arguments.", "Usage: rig init <name> --path <project-path>"),
+        "error" in payload
+          ? payload.error
+          : makeCliError("init", "Invalid arguments.", "Usage: rig init <name> --path <project-path>"),
       )
     }
 
@@ -216,10 +291,21 @@ const parseStatus = (args: readonly string[]) =>
       return yield* fail(env.error)
     }
 
-    return yield* runScaffoldHandler("status", {
-      name: parsed.positionals[0] ?? null,
-      env: env.env,
-    })
+    const payload = validate(
+      "status",
+      StatusArgsSchema,
+      {
+        name: parsed.positionals[0],
+        env: env.env ?? undefined,
+      },
+      "rig status [<name>] [--dev|--prod]",
+    )
+
+    if ("error" in payload) {
+      return yield* fail(payload.error)
+    }
+
+    return yield* runStatusCommand(payload.data)
   })
 
 const parseLogs = (args: readonly string[]) =>
@@ -241,39 +327,37 @@ const parseLogs = (args: readonly string[]) =>
       return yield* showCommandHelp("logs")
     }
 
-    const payload = z
-      .object({
-        name: z.string().min(1),
-        follow: z.boolean().default(false),
-        lines: z.coerce.number().int().positive().default(50),
-        service: z.string().min(1).optional(),
-      })
-      .safeParse({
-        name: parsed.positionals[0],
-        follow: parsed.values.follow,
-        lines: parsed.values.lines ?? "50",
-        service: parsed.values.service,
-      })
-
-    if (!payload.success || parsed.positionals.length > 1) {
-      return yield* fail(
-        makeCliError(
-          "logs",
-          "Invalid arguments.",
-          "Usage: rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]",
-        ),
-      )
-    }
-
     const env = resolveEnv("logs", parsed.values, true)
     if (env.error) {
       return yield* fail(env.error)
     }
 
-    return yield* runScaffoldHandler("logs", {
-      ...payload.data,
-      env: env.env,
-    })
+    const payload = validate(
+      "logs",
+      LogsArgsSchema,
+      {
+        name: parsed.positionals[0],
+        env: env.env,
+        follow: parsed.values.follow === true,
+        lines: parsed.values.lines ? Number(parsed.values.lines) : 50,
+        service: typeof parsed.values.service === "string" ? parsed.values.service : undefined,
+      },
+      "rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]",
+    )
+
+    if ("error" in payload || parsed.positionals.length > 1) {
+      return yield* fail(
+        "error" in payload
+          ? payload.error
+          : makeCliError(
+              "logs",
+              "Invalid arguments.",
+              "Usage: rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]",
+            ),
+      )
+    }
+
+    return yield* runScaffoldHandler("logs", payload.data)
   })
 
 const parseVersion = (args: readonly string[]) =>
@@ -290,27 +374,29 @@ const parseVersion = (args: readonly string[]) =>
       return yield* showCommandHelp("version")
     }
 
-    const payload = z
-      .object({
-        name: z.string().min(1),
-        action: z.enum(VERSION_ACTIONS).default("show"),
-      })
-      .safeParse({
+    const payload = validate(
+      "version",
+      VersionArgsSchema,
+      {
         name: parsed.positionals[0],
         action: parsed.positionals[1] ?? "show",
-      })
+      },
+      "rig version <name> [patch|minor|major|undo|list]",
+    )
 
-    if (!payload.success || parsed.positionals.length > 2) {
+    if ("error" in payload || parsed.positionals.length > 2) {
       return yield* fail(
-        makeCliError(
-          "version",
-          "Invalid arguments.",
-          "Usage: rig version <name> [patch|minor|major|undo|list]",
-        ),
+        "error" in payload
+          ? payload.error
+          : makeCliError(
+              "version",
+              "Invalid arguments.",
+              "Usage: rig version <name> [patch|minor|major|undo|list]",
+            ),
       )
     }
 
-    return yield* runScaffoldHandler("version", payload.data)
+    return yield* runVersionCommand(payload.data)
   })
 
 const parseSimpleCommand = (command: "list" | "config", args: readonly string[]) =>
@@ -333,7 +419,14 @@ const parseSimpleCommand = (command: "list" | "config", args: readonly string[])
       )
     }
 
-    return yield* runScaffoldHandler(command, {})
+    const schema = command === "list" ? ListArgsSchema : ConfigArgsSchema
+    const payload = validate(command, schema, {}, `rig ${command}`)
+
+    if ("error" in payload) {
+      return yield* fail(payload.error)
+    }
+
+    return command === "list" ? yield* runListCommand() : yield* runConfigCommand()
   })
 
 const runCommand = (command: CommandName, args: readonly string[]) => {

@@ -127,41 +127,58 @@ export class JSONRegistry implements RegistryService {
   }
 
   private readRegistry(): Effect.Effect<RawRegistry, RegistryError> {
+    const registryPath = this.registryPath
+
     return this.ensureRegistryFile().pipe(
-      Effect.flatMap(() => this.fileSystem.read(this.registryPath)),
+      Effect.flatMap(() => this.fileSystem.read(registryPath)),
       Effect.flatMap((raw) =>
-        Effect.try({
-          try: () => {
-            const parsed = JSON.parse(raw) as unknown
-            if (!isObject(parsed)) {
-              throw new Error("Registry must be a JSON object.")
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => JSON.parse(raw) as unknown,
+            catch: (cause) =>
+              new RegistryError(
+                "list",
+                "*",
+                causeMessage(cause),
+                `Fix invalid JSON in ${registryPath}.`,
+              ),
+          })
+
+          if (!isObject(parsed)) {
+            return yield* Effect.fail(
+              new RegistryError(
+                "list",
+                "*",
+                "Registry must be a JSON object.",
+                `Fix invalid JSON in ${registryPath}.`,
+              ),
+            )
+          }
+
+          for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === "string") {
+              continue
             }
 
-            for (const [key, value] of Object.entries(parsed)) {
-              if (typeof value === "string") {
-                continue
-              }
-
-              if (!isObject(value) || typeof value.repoPath !== "string") {
-                throw new Error(`Registry entry '${key}' must be a string or { repoPath, registeredAt } object.`)
-              }
+            if (!isObject(value) || typeof value.repoPath !== "string") {
+              return yield* Effect.fail(
+                new RegistryError(
+                  "list",
+                  "*",
+                  `Registry entry '${key}' must be a string or { repoPath, registeredAt } object.`,
+                  `Fix invalid JSON in ${registryPath}.`,
+                ),
+              )
             }
+          }
 
-            return parsed as RawRegistry
-          },
-          catch: (cause) =>
-            new RegistryError(
-              "list",
-              "*",
-              causeMessage(cause),
-              `Fix invalid JSON in ${this.registryPath}.`,
-            ),
+          return parsed as RawRegistry
         }),
       ),
       Effect.mapError((cause) =>
         cause instanceof RegistryError
           ? cause
-          : new RegistryError("list", "*", causeMessage(cause), `Unable to read ${this.registryPath}.`),
+          : new RegistryError("list", "*", causeMessage(cause), `Unable to read ${registryPath}.`),
       ),
     )
   }

@@ -5,7 +5,14 @@ import { DotenvLoaderLive } from "./providers/dotenv-loader";
 import { JsonLoggerLive } from "./providers/json-logger";
 import { NodeFileSystemLive } from "./providers/node-fs";
 import { JSONRegistryLive } from "./providers/json-registry";
+import { StubBinInstallerLive } from "./providers/stub-bin-installer";
+import { StubGitLive } from "./providers/stub-git";
+import { StubHealthCheckerLive } from "./providers/stub-health-checker";
+import { StubProcessManagerLive } from "./providers/stub-process-manager";
+import { StubReverseProxyLive } from "./providers/stub-reverse-proxy";
+import { StubServiceRunnerLive } from "./providers/stub-service-runner";
 import { TerminalLoggerLive } from "./providers/terminal-logger";
+import { StubWorkspaceLive } from "./providers/stub-workspace";
 
 const loggerLayer = process.env.RIG_LOG_FORMAT === "json" ? JsonLoggerLive : TerminalLoggerLive;
 
@@ -16,6 +23,13 @@ export const RigLive = Layer.mergeAll(
   NodeFileSystemLive,
   DotenvWithFileSystemLive,
   RegistryWithFileSystemLive,
+  StubGitLive,
+  StubReverseProxyLive,
+  StubProcessManagerLive,
+  StubWorkspaceLive,
+  StubHealthCheckerLive,
+  StubServiceRunnerLive,
+  StubBinInstallerLive,
   loggerLayer,
 );
 

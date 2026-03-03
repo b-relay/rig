@@ -6,6 +6,7 @@ import { Effect, Layer } from "effect"
 
 import { renderCommandHelp } from "./help.js"
 import { runCli } from "./index.js"
+import { EnvLoader } from "../interfaces/env-loader.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import { Registry, type Registry as RegistryService, type RegistryEntry } from "../interfaces/registry.js"
 import { StubBinInstallerLive } from "../providers/stub-bin-installer.js"
@@ -122,6 +123,9 @@ describe("cli start foreground", () => {
       StubHealthCheckerLive,
       StubServiceRunnerLive,
       StubBinInstallerLive,
+      Layer.succeed(EnvLoader, {
+        load: () => Effect.succeed({}),
+      }),
     )
 
     const exitCode = await Effect.runPromise(

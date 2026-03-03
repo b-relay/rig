@@ -33,10 +33,32 @@ export const RigLive = Layer.mergeAll(
   loggerLayer,
 );
 
+const isRigError = (error: unknown): error is { _tag: string; message: string; hint: string } =>
+  typeof error === "object" &&
+  error !== null &&
+  "_tag" in error &&
+  "message" in error &&
+  "hint" in error &&
+  typeof error._tag === "string" &&
+  typeof error.message === "string" &&
+  typeof error.hint === "string";
+
 export const main = (argv: string[]): Promise<number> =>
   Effect.runPromise(
     runCli(argv).pipe(
       Effect.provide(RigLive),
+      Effect.catchAll((error) =>
+        Effect.sync(() => {
+          if (isRigError(error)) {
+            console.error(`✗ [${error._tag}] ${error.message}`);
+            console.error(`  Hint: ${error.hint}`);
+          } else {
+            console.error("✗ unexpected error");
+          }
+
+          return 1;
+        }),
+      ),
     ),
   );
 

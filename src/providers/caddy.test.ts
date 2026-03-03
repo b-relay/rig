@@ -14,14 +14,14 @@ example.com {
 }
 `
 
-const RIG_BLOCK_PANTRY_PROD = `# [rig:pantry:prod]
+const RIG_BLOCK_PANTRY_PROD = `# [rig:pantry:prod:web]
 pantry.b-relay.com {
 \treverse_proxy http://127.0.0.1:3070
 \timport cloudflare
 \timport backend_errors
 }`
 
-const RIG_BLOCK_PANTRY_DEV = `# [rig:pantry:dev]
+const RIG_BLOCK_PANTRY_DEV = `# [rig:pantry:dev:web]
 dev.pantry.b-relay.com {
 \treverse_proxy http://127.0.0.1:5173
 \timport cloudflare
@@ -57,14 +57,14 @@ describe("CaddyProxy", () => {
       name: "pantry",
       env: "prod",
       domain: "pantry.b-relay.com",
-      upstream: "pantry",
+      upstream: "web",
       port: 3070,
     })
     expect(entries[1]).toEqual({
       name: "pantry",
       env: "dev",
       domain: "dev.pantry.b-relay.com",
-      upstream: "pantry",
+      upstream: "web",
       port: 5173,
     })
   })
@@ -99,7 +99,7 @@ describe("CaddyProxy", () => {
     // Verify manual block is untouched
     const content = await readFile(caddyfilePath, "utf-8")
     expect(content).toContain("example.com {")
-    expect(content).toContain("# [rig:api:prod]")
+    expect(content).toContain("# [rig:api:prod:api]")
     expect(content).toContain("api.b-relay.com {")
     expect(content).toContain("reverse_proxy http://127.0.0.1:4000")
   })
@@ -116,7 +116,7 @@ describe("CaddyProxy", () => {
     await run(caddy.add(entry))
 
     const content = await readFile(caddyfilePath, "utf-8")
-    expect(content).toContain("# [rig:web:dev]")
+    expect(content).toContain("# [rig:web:dev:web]")
     expect(content).toContain("dev.web.b-relay.com {")
   })
 
@@ -127,7 +127,7 @@ describe("CaddyProxy", () => {
       name: "pantry",
       env: "prod",
       domain: "pantry.b-relay.com",
-      upstream: "pantry",
+      upstream: "web",
       port: 3070,
     }
 
@@ -142,7 +142,7 @@ describe("CaddyProxy", () => {
       name: "pantry",
       env: "prod",
       domain: "pantry.b-relay.com",
-      upstream: "pantry",
+      upstream: "web",
       port: 8080, // changed port
     }
 
@@ -159,7 +159,7 @@ describe("CaddyProxy", () => {
     expect(content).toContain("example.com {")
 
     // Dev block still there
-    expect(content).toContain("# [rig:pantry:dev]")
+    expect(content).toContain("# [rig:pantry:dev:web]")
     expect(content).toContain("reverse_proxy http://127.0.0.1:5173")
   })
 
@@ -187,12 +187,12 @@ describe("CaddyProxy", () => {
     expect(change.entry.env).toBe("prod")
 
     const content = await readFile(caddyfilePath, "utf-8")
-    expect(content).not.toContain("# [rig:pantry:prod]")
+    expect(content).not.toContain("# [rig:pantry:prod:")
     expect(content).not.toMatch(/^pantry\.b-relay\.com \{/m)
 
     // Manual block and dev block still there
     expect(content).toContain("example.com {")
-    expect(content).toContain("# [rig:pantry:dev]")
+    expect(content).toContain("# [rig:pantry:dev:web]")
   })
 
   test("remove() fails if entry does not exist", async () => {

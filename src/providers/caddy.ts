@@ -16,7 +16,9 @@ import { ProxyError } from "../schema/errors.js"
 // Each rig-managed block starts with a marker comment and ends at the closing }
 // of the Caddy site block that follows it.
 
-const MARKER_RE = /^# \[rig:([^:]+):(dev|prod)\]\s*$/
+// Marker format: # [rig:<name>:<env>] or # [rig:<name>:<env>:<upstream>]
+// The upstream segment is optional for backwards compatibility
+const MARKER_RE = /^# \[rig:([^:]+):(dev|prod)(?::([^\]]+))?\]\s*$/
 
 const causeMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause)
@@ -56,6 +58,7 @@ const parseBlocks = (text: string): ParsedBlock[] => {
 
     const name = match[1]
     const env = match[2] as "dev" | "prod"
+    const upstream = match[3] ?? name
     const startLine = i
 
     // Next non-empty line should be `<domain> {`
@@ -93,7 +96,7 @@ const parseBlocks = (text: string): ParsedBlock[] => {
     if (port === 0) continue // couldn't parse — skip silently
 
     blocks.push({
-      entry: { name, env, domain, upstream: name, port },
+      entry: { name, env, domain, upstream, port },
       startLine,
       endLine,
     })
@@ -109,7 +112,7 @@ const parseBlocks = (text: string): ParsedBlock[] => {
 
 const renderBlock = (entry: ProxyEntry): string =>
   [
-    `# [rig:${entry.name}:${entry.env}]`,
+    `# [rig:${entry.name}:${entry.env}:${entry.upstream}]`,
     `${entry.domain} {`,
     `\treverse_proxy http://127.0.0.1:${entry.port}`,
     `\timport cloudflare`,
@@ -179,7 +182,7 @@ export class CaddyProxy implements ReverseProxyService {
       const block = renderBlock(entry)
 
       const newText = [...before, block, ...after].join("\n")
-      yield* this.writeFile(newText)
+      yield* this.writeFile(newText, "update")
 
       return { type: "updated" as const, entry }
     })
@@ -213,7 +216,7 @@ export class CaddyProxy implements ReverseProxyService {
       const before = lines.slice(0, target.startLine)
       const after = lines.slice(endIdx)
       const newText = [...before, ...after].join("\n")
-      yield* this.writeFile(newText)
+      yield* this.writeFile(newText, "remove")
 
       return { type: "removed" as const, entry: target.entry }
     })
@@ -268,7 +271,7 @@ export class CaddyProxy implements ReverseProxyService {
     })
   }
 
-  private writeFile(content: string): Effect.Effect<void, ProxyError> {
+  private writeFile(content: string, operation: "add" | "update" | "remove" = "add"): Effect.Effect<void, ProxyError> {
     return Effect.tryPromise({
       try: async () => {
         // Ensure parent directory exists
@@ -278,7 +281,7 @@ export class CaddyProxy implements ReverseProxyService {
       },
       catch: (cause) =>
         new ProxyError(
-          "add",
+          operation,
           `Failed to write Caddyfile at ${this.caddyfilePath}: ${causeMessage(cause)}`,
           "Ensure the Caddyfile path is writable.",
         ),

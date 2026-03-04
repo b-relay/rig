@@ -435,6 +435,8 @@ export const runStartCommand = (args: StartArgs) => {
       Effect.gen(function* () {
         const logger = yield* Logger
         const serviceRunner = yield* ServiceRunner
+        const fileSystem = yield* FileSystem
+        const workspace = yield* Workspace
 
         for (const running of [...started].reverse()) {
           yield* serviceRunner.stop(running).pipe(
@@ -445,6 +447,31 @@ export const runStartCommand = (args: StartArgs) => {
               }),
             ),
           )
+        }
+
+        if (started.length > 0) {
+          const workspacePath = yield* workspace.resolve(args.name, args.env).pipe(
+            Effect.catchAll((workspaceError) => {
+              const message = workspaceError instanceof Error ? workspaceError.message : String(workspaceError)
+              return logger.warn("Failed to resolve workspace for PID cleanup.", {
+                name: args.name,
+                env: args.env,
+                error: message,
+              })
+            }),
+          )
+
+          if (typeof workspacePath === "string" && workspacePath.length > 0) {
+            const pidsPath = join(workspacePath, ".rig", "pids.json")
+            yield* fileSystem.remove(pidsPath).pipe(
+              Effect.catchAll((removeError) =>
+                logger.warn("Failed to clean up PID file after start rollback.", {
+                  pidsPath,
+                  error: removeError.message,
+                }),
+              ),
+            )
+          }
         }
 
         return yield* Effect.fail(error)
@@ -503,6 +530,7 @@ export const runStopCommand = (args: StopArgs) =>
     )
 
     const pids = yield* readPidMap(fileSystem, pidsPath)
+    const knownServiceNames = new Set(serverServices.map((service) => service.name))
 
     for (const service of reverseServerServices) {
       const pidEntry = pids[service.name]
@@ -555,6 +583,49 @@ export const runStopCommand = (args: StopArgs) =>
       )
 
       delete pids[service.name]
+    }
+
+    for (const [serviceName, pidEntry] of Object.entries(pids)) {
+      if (knownServiceNames.has(serviceName)) {
+        continue
+      }
+
+      delete pids[serviceName]
+
+      const orphanCleanup = Effect.try({
+        try: () => {
+          process.kill(pidEntry.pid, "SIGTERM")
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catchAll((cause) => {
+          const code =
+            typeof cause === "object" && cause !== null && "code" in cause
+              ? String((cause as { code?: unknown }).code)
+              : ""
+          const message = cause instanceof Error ? cause.message : String(cause)
+
+          if (code !== "ESRCH") {
+            recordFailure(
+              toServiceRunnerError(
+                "stop",
+                serviceName,
+                message,
+                "Unable to stop orphaned process referenced in PID tracking.",
+              ),
+            )
+          }
+
+          return Effect.void
+        }),
+      )
+
+      yield* orphanCleanup
+
+      yield* logger.warn("Cleaned up orphaned PID entry not present in current config.", {
+        service: serviceName,
+        pid: pidEntry.pid,
+      })
     }
 
     yield* writePidMap(fileSystem, pidsPath, pids).pipe(

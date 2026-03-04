@@ -28,7 +28,7 @@ import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { PortChecker, type PortChecker as PortCheckerService } from "../interfaces/port-checker.js"
 import { BunPortCheckerLive } from "../providers/bun-port-checker.js"
 import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
-import { HealthCheckError, PortConflictError, type RigError } from "../schema/errors.js"
+import { BinInstallerError, HealthCheckError, PortConflictError, type RigError } from "../schema/errors.js"
 import type { BinService, ServerService } from "../schema/config.js"
 
 class CaptureLogger implements LoggerService {
@@ -174,8 +174,15 @@ class CaptureHealthChecker implements HealthCheckerService {
 
 class CaptureBinInstaller implements BinInstallerService {
   readonly uninstallCalls: Array<{ readonly name: string; readonly env: string }> = []
+  constructor(private readonly failBuildService?: string) {}
 
-  build(_config: BinService, _workdir: string) {
+  build(config: BinService, _workdir: string) {
+    if (this.failBuildService === config.name) {
+      return Effect.fail(
+        new BinInstallerError("build", config.name, `build failed for ${config.name}`, "test requested failure"),
+      )
+    }
+
     return Effect.succeed("shim:ok")
   }
 
@@ -516,6 +523,78 @@ describe("lifecycle command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
+  test("start rollback removes pid tracking when a bin service fails after server start", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-start-bin-fail-"))
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "db",
+              type: "server",
+              command: "echo db",
+              port: 3610,
+            },
+            {
+              name: "cli",
+              type: "bin",
+              build: "bun build --compile cli.ts --outfile dist/cli",
+              entrypoint: "dist/cli",
+            },
+          ],
+        },
+      },
+    })
+
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller("cli")),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    const result = await Effect.runPromise(
+      runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(
+        Effect.provide(layer),
+        Effect.either,
+      ),
+    )
+
+    expect(result._tag).toBe("Left")
+    expect(serviceRunner.stopOrder).toEqual(["db"])
+
+    const pids = await readFile(pidsPath, "utf8")
+      .then((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .catch((cause) => {
+        const code =
+          typeof cause === "object" && cause !== null && "code" in cause
+            ? String((cause as { code?: unknown }).code)
+            : ""
+        if (code === "ENOENT") {
+          return null
+        }
+
+        throw cause
+      })
+
+    if (pids !== null) {
+      expect(pids).toEqual({})
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
   test("stop uses reverse dependency order, runs stop hooks, and never uninstalls bins", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-"))
     const hookLog = join(repoPath, "hooks-stop.log")
@@ -614,5 +693,86 @@ describe("lifecycle command orchestration", () => {
     expect(pids).toEqual({})
 
     await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("stop cleans orphaned pid entries that are not in current config", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-orphan-"))
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3711,
+            },
+          ],
+        },
+      },
+    })
+
+    await mkdir(join(repoPath, ".rig"), { recursive: true })
+    await writeFile(
+      pidsPath,
+      `${JSON.stringify(
+        {
+          api: { pid: 2235, port: 3711, startedAt: new Date(0).toISOString() },
+          "old-worker": { pid: 8899, port: 3999, startedAt: new Date(0).toISOString() },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const logger = new CaptureLogger()
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    const killCalls: Array<{ readonly pid: number; readonly signal?: string | number }> = []
+    const originalKill = process.kill
+    process.kill = ((pid: number, signal?: string | number) => {
+      killCalls.push({ pid, signal })
+      return true
+    }) as typeof process.kill
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+      )
+
+      expect(exitCode).toBe(0)
+      expect(serviceRunner.stopOrder).toEqual(["api"])
+      expect(killCalls).toEqual([{ pid: 8899, signal: "SIGTERM" }])
+      expect(
+        logger.warnings.some(
+          (warning) =>
+            warning.message === "Cleaned up orphaned PID entry not present in current config." &&
+            warning.details?.service === "old-worker",
+        ),
+      ).toBe(true)
+
+      const pids = JSON.parse(await readFile(pidsPath, "utf8")) as Record<string, unknown>
+      expect(pids).toEqual({})
+    } finally {
+      process.kill = originalKill
+      await rm(repoPath, { recursive: true, force: true })
+    }
   })
 })

@@ -1,4 +1,6 @@
-# CLAUDE.md — Rig Development Guide
+# AGENTS.md — Rig Development Guide
+
+<!-- AGENTS.md is the source of truth. CLAUDE.md is a symlink to this file. DO NOT rename, delete, or revert this setup. -->
 
 ## What is Rig?
 Local Mac deployment manager. See DESIGN.md for full spec.

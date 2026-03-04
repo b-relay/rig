@@ -163,14 +163,25 @@ export class BunServiceRunner implements ServiceRunnerService {
   stop(service: RunningService): Effect.Effect<void, ServiceRunnerError> {
     return Effect.gen(this, function* () {
       if (!isProcessAlive(service.pid)) {
-        return yield* Effect.fail(
-          toError(
-            "stop",
-            service.name,
-            `Service '${service.name}' is not running (pid ${service.pid} not found).`,
-            "Check the running process list before stopping.",
-          ),
-        )
+        // Service already exited — idempotent stop: clean up PID tracking and return success.
+        yield* this.removeFromPidTracking(service.name)
+        return
+      }
+
+      // PID reuse safety guard: verify the process actually owns the expected port
+      // before sending signals. If the original service crashed and the OS reassigned
+      // the PID to an unrelated process, we must NOT kill it.
+      if (typeof service.port === "number" && service.port > 0) {
+        const ownership = yield* this.checkPortOwnership(service.pid, service.port)
+        if (ownership === "pid-reuse") {
+          console.warn(
+            `[rig] Skipping stop for '${service.name}' (pid ${service.pid}): port ${service.port} ` +
+            `is owned by a different process; possible PID reuse. Removing stale PID tracking.`,
+          )
+          yield* this.removeFromPidTracking(service.name)
+          return
+        }
+        // "owns-port", "port-free", "unknown" → proceed with stop
       }
 
       yield* Effect.try({
@@ -303,6 +314,58 @@ export class BunServiceRunner implements ServiceRunnerService {
     }
 
     return join(process.cwd(), ".rig", "logs", `${serviceName}.log`)
+  }
+
+  /**
+   * Check whether a different process has taken over the expected port (PID reuse detection).
+   *
+   * Returns:
+   * - `"owns-port"` → PID is listening on the port. Safe to stop.
+   * - `"port-free"` → No one is listening on the port. Original service may have crashed
+   *    but PID is still alive (zombie, or non-TCP service). Safe to stop.
+   * - `"pid-reuse"` → Port is in use by a DIFFERENT PID. Do NOT kill — PID was reused.
+   * - `"unknown"` → lsof unavailable or errored. Proceed cautiously (assume safe to stop).
+   */
+  private checkPortOwnership(
+    pid: number,
+    port: number,
+  ): Effect.Effect<"owns-port" | "port-free" | "pid-reuse" | "unknown", never> {
+    return Effect.tryPromise({
+      try: async () => {
+        const child = Bun.spawn(["/usr/sbin/lsof", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+          stdout: "pipe",
+          stderr: "pipe",
+        })
+
+        const [stdout, exitCode] = await Promise.all([
+          child.stdout ? new Response(child.stdout).text() : Promise.resolve(""),
+          child.exited,
+        ])
+
+        if (exitCode !== 0) {
+          // No process listening on this port at all
+          return "port-free" as const
+        }
+
+        const listenerPids = stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0)
+          .map((line) => Number.parseInt(line, 10))
+          .filter((candidate) => Number.isFinite(candidate))
+
+        if (listenerPids.includes(pid)) {
+          return "owns-port" as const
+        }
+
+        // Port is in use by a different PID — this is PID reuse
+        return "pid-reuse" as const
+      },
+      catch: (cause) => cause as Error,
+    }).pipe(
+      // lsof unavailable or errored → can't verify, assume safe to proceed
+      Effect.catchAll(() => Effect.succeed("unknown" as const)),
+    )
   }
 
   private removeFromPidTracking(serviceName: string): Effect.Effect<void, ServiceRunnerError> {

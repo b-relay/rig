@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 
-import type { RunOpts, RunningService } from "../interfaces/service-runner.js"
+import type { RunOpts } from "../interfaces/service-runner.js"
 import type { ServerService } from "../schema/config.js"
 import { ServiceRunnerError } from "../schema/errors.js"
 import { BunServiceRunner } from "./bun-service-runner.js"
@@ -76,6 +76,10 @@ afterEach(async () => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("BunServiceRunner", () => {
+  // NOTE: stop() includes a PID-reuse safety guard that verifies expected listen
+  // port ownership via lsof before signaling. Deterministic PID reuse is difficult
+  // to simulate in unit tests, so that path is better covered in integration tests.
+
   test("start spawns a process, writes pid tracking, and returns RunningService", async () => {
     const { runner, opts, pidsPath } = await createContext()
     const service = makeService("web", "echo $RIG_TEST_TOKEN; sleep 30", 3070)
@@ -160,22 +164,22 @@ describe("BunServiceRunner", () => {
     expect(filtered).toBe("three")
   })
 
-  test("stop returns ServiceRunnerError when process is already dead", async () => {
-    const { runner, opts } = await createContext()
+  test("stop succeeds and removes PID tracking when process is already dead", async () => {
+    const { runner, opts, pidsPath } = await createContext()
     const service = makeService("gone", "echo done", 3074)
 
-    const running: RunningService = await run(runner.start(service, opts))
+    const running = await run(runner.start(service, opts))
     trackedPids.add(running.pid)
 
+    // Wait for the short-lived process to exit naturally
     await sleep(250)
 
-    const result = await run(runner.stop(running).pipe(Effect.either))
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(ServiceRunnerError)
-      expect(result.left.operation).toBe("stop")
-      expect(result.left.service).toBe("gone")
-    }
+    // stop() should succeed (idempotent) and clean up PID tracking
+    await run(runner.stop(running))
+
+    const pidsRaw = await readFile(pidsPath, "utf8")
+    const pids = JSON.parse(pidsRaw) as Record<string, unknown>
+    expect("gone" in pids).toBe(false)
 
     trackedPids.delete(running.pid)
   })

@@ -30,6 +30,7 @@ interface PidEntry {
 }
 
 type PidMap = Record<string, PidEntry>
+type InstalledBinMap = Record<string, { readonly installedAt: string; readonly shimPath: string }>
 
 const HEALTH_POLL_INTERVAL_MS = 500
 
@@ -152,6 +153,70 @@ const writePidMap = (fileSystem: FileSystem, pidsPath: string, pids: PidMap) =>
         "runtime",
         error.message,
         `Unable to write PID file at ${pidsPath}.`,
+      ),
+    ),
+  )
+
+const readInstalledBinMap = (fileSystem: FileSystem, binsPath: string) =>
+  Effect.gen(function* () {
+    const exists = yield* fileSystem.exists(binsPath).pipe(
+      Effect.mapError((error) =>
+        toServiceRunnerError(
+          "stop",
+          "runtime",
+          error.message,
+          `Unable to check bin tracking file at ${binsPath}.`,
+        ),
+      ),
+    )
+
+    if (!exists) {
+      return {} as InstalledBinMap
+    }
+
+    const raw = yield* fileSystem.read(binsPath).pipe(
+      Effect.mapError((error) =>
+        toServiceRunnerError(
+          "stop",
+          "runtime",
+          error.message,
+          `Unable to read bin tracking file at ${binsPath}.`,
+        ),
+      ),
+    )
+
+    return yield* Effect.try({
+      try: () => {
+        const parsed = JSON.parse(raw) as unknown
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          throw new Error("Expected a JSON object keyed by bin service name.")
+        }
+
+        return parsed as InstalledBinMap
+      },
+      catch: (cause) =>
+        toServiceRunnerError(
+          "stop",
+          "runtime",
+          `Invalid bin tracking file ${binsPath}: ${cause instanceof Error ? cause.message : String(cause)}`,
+          "Fix or remove the bin tracking file so rig can recreate it.",
+        ),
+    })
+  })
+
+const writeInstalledBinMap = (
+  fileSystem: FileSystem,
+  binsPath: string,
+  bins: InstalledBinMap,
+  operation: "start" | "stop",
+) =>
+  fileSystem.write(binsPath, `${JSON.stringify(bins, null, 2)}\n`).pipe(
+    Effect.mapError((error) =>
+      toServiceRunnerError(
+        operation,
+        "runtime",
+        error.message,
+        `Unable to write bin tracking file at ${binsPath}.`,
       ),
     ),
   )
@@ -286,6 +351,7 @@ const buildOrphanRunningService = (serviceName: string, pidEntry: PidEntry): Run
 
 export const runStartCommand = (args: StartArgs) => {
   const started: RunningService[] = []
+  const installedBins: Array<{ readonly name: string; readonly shimPath: string }> = []
 
   const program = Effect.gen(function* () {
     const logger = yield* Logger
@@ -367,6 +433,7 @@ export const runStartCommand = (args: StartArgs) => {
     }
 
     const pidsPath = join(workspacePath, ".rig", "pids.json")
+    const binsPath = join(workspacePath, ".rig", "bins.json")
     yield* fileSystem.mkdir(join(workspacePath, ".rig")).pipe(
       Effect.mapError((error) =>
         toServiceRunnerError("start", "runtime", error.message, `Unable to create .rig directory.`),
@@ -391,6 +458,7 @@ export const runStartCommand = (args: StartArgs) => {
 
       const builtPath = yield* binInstaller.build(service, workspacePath)
       const shimPath = yield* binInstaller.install(service.name, args.env, builtPath)
+      installedBins.push({ name: service.name, shimPath })
 
       yield* runHook(
         hookCommand(service.hooks, "postStart"),
@@ -405,6 +473,15 @@ export const runStartCommand = (args: StartArgs) => {
         shimPath,
       })
     }
+
+    const bins: InstalledBinMap = {}
+    for (const installed of installedBins) {
+      bins[installed.name] = {
+        installedAt: new Date().toISOString(),
+        shimPath: installed.shimPath,
+      }
+    }
+    yield* writeInstalledBinMap(fileSystem, binsPath, bins, "start")
 
     yield* runHook(
       hookCommand(loaded.config.hooks, "postStart"),
@@ -442,6 +519,7 @@ export const runStartCommand = (args: StartArgs) => {
       Effect.gen(function* () {
         const logger = yield* Logger
         const serviceRunner = yield* ServiceRunner
+        const binInstaller = yield* BinInstaller
         const fileSystem = yield* FileSystem
         const workspace = yield* Workspace
 
@@ -481,6 +559,20 @@ export const runStartCommand = (args: StartArgs) => {
           }
         }
 
+        if (installedBins.length > 0) {
+          for (const installed of [...installedBins].reverse()) {
+            yield* binInstaller.uninstall(installed.name, args.env).pipe(
+              Effect.catchAll((uninstallError) =>
+                logger.warn("Failed to clean up partially installed binary after start rollback.", {
+                  service: installed.name,
+                  error:
+                    uninstallError instanceof Error ? uninstallError.message : String(uninstallError),
+                }),
+              ),
+            )
+          }
+        }
+
         return yield* Effect.fail(error)
       }),
     ),
@@ -494,12 +586,14 @@ export const runStopCommand = (args: StopArgs) =>
     const serviceRunner = yield* ServiceRunner
     const processManager = yield* ProcessManager
     const envLoader = yield* EnvLoader
+    const binInstaller = yield* BinInstaller
     const fileSystem = yield* FileSystem
 
     const loaded = yield* loadProjectConfig(args.name)
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
     const workspacePath = yield* workspace.resolve(args.name, args.env)
     const pidsPath = join(workspacePath, ".rig", "pids.json")
+    const binsPath = join(workspacePath, ".rig", "bins.json")
     const serverServices = environment.services.filter((service) => service.type === "server")
     const orderedServerServices = yield* orderServerServices(loaded.configPath, serverServices)
     const reverseServerServices = [...orderedServerServices].reverse()
@@ -537,6 +631,7 @@ export const runStopCommand = (args: StopArgs) =>
     )
 
     const pids = yield* readPidMap(fileSystem, pidsPath)
+    const installedBins = yield* readInstalledBinMap(fileSystem, binsPath)
     const knownServiceNames = new Set(serverServices.map((service) => service.name))
 
     for (const service of reverseServerServices) {
@@ -618,10 +713,47 @@ export const runStopCommand = (args: StopArgs) =>
       })
     }
 
+    const binServices = environment.services.filter((service) => service.type === "bin")
+    for (const service of binServices) {
+      if (!installedBins[service.name]) {
+        continue
+      }
+
+      yield* binInstaller.uninstall(service.name, args.env).pipe(
+        Effect.catchAll((error) => {
+          recordFailure(error)
+          return logger.warn("Binary uninstall failed.", {
+            service: service.name,
+            error: error.message,
+          })
+        }),
+      )
+      delete installedBins[service.name]
+    }
+
+    for (const serviceName of Object.keys(installedBins)) {
+      yield* binInstaller.uninstall(serviceName, args.env).pipe(
+        Effect.catchAll((error) => {
+          recordFailure(error)
+          return logger.warn("Binary uninstall failed for orphaned bin tracking entry.", {
+            service: serviceName,
+            error: error.message,
+          })
+        }),
+      )
+      delete installedBins[serviceName]
+    }
+
     yield* writePidMap(fileSystem, pidsPath, pids).pipe(
       Effect.catchAll((error) => {
         recordFailure(error)
         return logger.warn("Failed to update PID tracking file.", { pidsPath, error: error.message })
+      }),
+    )
+    yield* writeInstalledBinMap(fileSystem, binsPath, installedBins, "stop").pipe(
+      Effect.catchAll((error) => {
+        recordFailure(error)
+        return logger.warn("Failed to update bin tracking file.", { binsPath, error: error.message })
       }),
     )
 

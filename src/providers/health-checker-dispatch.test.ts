@@ -29,8 +29,8 @@ class SpyHealthChecker implements HealthCheckerService {
   }
 }
 
-describe("DispatchHealthChecker", () => {
-  test("type='command' with HTTP target routes to command checker", async () => {
+describe("GIVEN suite context WHEN DispatchHealthChecker THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN type='command' with HTTP target routes to command checker THEN expected behavior is observed", async () => {
     const httpSpy = new SpyHealthChecker()
     const cmdSpy = new SpyHealthChecker()
     const dispatch = new DispatchHealthChecker(httpSpy, cmdSpy)
@@ -48,7 +48,7 @@ describe("DispatchHealthChecker", () => {
     expect(cmdSpy.calls[0].service).toBe("api")
   })
 
-  test("type='http' routes to http checker", async () => {
+  test("GIVEN test setup WHEN type='http' routes to http checker THEN expected behavior is observed", async () => {
     const httpSpy = new SpyHealthChecker()
     const cmdSpy = new SpyHealthChecker()
     const dispatch = new DispatchHealthChecker(httpSpy, cmdSpy)
@@ -65,7 +65,7 @@ describe("DispatchHealthChecker", () => {
     expect(cmdSpy.calls).toHaveLength(0)
   })
 
-  test("type='command' with non-HTTP target routes to command checker", async () => {
+  test("GIVEN test setup WHEN type='command' with non-HTTP target routes to command checker THEN expected behavior is observed", async () => {
     const httpSpy = new SpyHealthChecker()
     const cmdSpy = new SpyHealthChecker()
     const dispatch = new DispatchHealthChecker(httpSpy, cmdSpy)

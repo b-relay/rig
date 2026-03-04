@@ -31,8 +31,8 @@ class StaticRegistry implements RegistryService {
   }
 }
 
-describe("config loader", () => {
-  test("maps schema failures to ConfigValidationError", async () => {
+describe("GIVEN suite context WHEN config loader THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN maps schema failures to ConfigValidationError THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-config-invalid-"))
 
     await writeFile(
@@ -80,7 +80,7 @@ describe("config loader", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("invalid JSON yields ConfigValidationError with invalid_json code", async () => {
+  test("GIVEN test setup WHEN invalid JSON yields ConfigValidationError with invalid_json code THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-config-badjson-"))
 
     await writeFile(join(repoPath, "rig.json"), "{ broken json !!!", "utf8")
@@ -103,7 +103,7 @@ describe("config loader", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("missing rig.json yields ConfigValidationError about unable to read", async () => {
+  test("GIVEN test setup WHEN missing rig.json yields ConfigValidationError about unable to read THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-config-missing-"))
 
     const layer = Layer.mergeAll(
@@ -124,7 +124,7 @@ describe("config loader", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("missing environment yields ConfigValidationError with missing_environment code", () => {
+  test("GIVEN test setup WHEN missing environment yields ConfigValidationError with missing_environment code THEN expected behavior is observed", () => {
     const config: RigConfig = {
       name: "pantry",
       version: "1.0.0",
@@ -148,7 +148,7 @@ describe("config loader", () => {
     }
   })
 
-  test("unregistered project yields ConfigValidationError about unable to resolve", async () => {
+  test("GIVEN test setup WHEN unregistered project yields ConfigValidationError about unable to resolve THEN expected behavior is observed", async () => {
     class FailingRegistry implements RegistryService {
       register(_name: string, _repoPath: string) {
         return Effect.void
@@ -180,7 +180,7 @@ describe("config loader", () => {
     }
   })
 
-  test("valid config roundtrip returns correct LoadedProjectConfig shape", async () => {
+  test("GIVEN test setup WHEN valid config roundtrip returns correct LoadedProjectConfig shape THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-config-valid-"))
 
     const validConfig = {

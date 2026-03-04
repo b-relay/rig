@@ -100,9 +100,9 @@ const readCanonicalRegistry = (
   return JSON.parse(raw) as Record<string, { readonly repoPath: string; readonly registeredAt: string }>
 }
 
-describe("JSONRegistry", () => {
-  describe("register", () => {
-    test("registers a new project", async () => {
+describe("GIVEN suite context WHEN JSONRegistry THEN behavior is covered", () => {
+  describe("GIVEN suite context WHEN register THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN registers a new project THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
 
       await run(registry.register("pantry", "/repos/pantry"))
@@ -117,7 +117,7 @@ describe("JSONRegistry", () => {
       expect(typeof raw.pantry.registeredAt).toBe("string")
     })
 
-    test("overwrites an existing project and updates registeredAt", async () => {
+    test("GIVEN test setup WHEN overwrites an existing project and updates registeredAt THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
       const oldDate = "2000-01-01T00:00:00.000Z"
       fileSystem.files.set(
@@ -133,7 +133,7 @@ describe("JSONRegistry", () => {
       expect(new Date(raw.pantry.registeredAt).getTime()).toBeGreaterThan(new Date(oldDate).getTime())
     })
 
-    test("rejects project names with special characters", async () => {
+    test("GIVEN test setup WHEN rejects project names with special characters THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       const result = await runEither(registry.register("Pantry/Prod", "/repos/pantry"))
@@ -145,7 +145,7 @@ describe("JSONRegistry", () => {
       }
     })
 
-    test("rejects empty project name", async () => {
+    test("GIVEN test setup WHEN rejects empty project name THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       const result = await runEither(registry.register("", "/repos/pantry"))
@@ -156,7 +156,7 @@ describe("JSONRegistry", () => {
       }
     })
 
-    test("rejects empty repoPath", async () => {
+    test("GIVEN test setup WHEN rejects empty repoPath THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       const result = await runEither(registry.register("pantry", "   "))
@@ -168,8 +168,8 @@ describe("JSONRegistry", () => {
     })
   })
 
-  describe("unregister", () => {
-    test("removes an existing project", async () => {
+  describe("GIVEN suite context WHEN unregister THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN removes an existing project THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       await run(registry.register("pantry", "/repos/pantry"))
@@ -179,7 +179,7 @@ describe("JSONRegistry", () => {
       expect(resolved._tag).toBe("Left")
     })
 
-    test("succeeds for a non-existent project (idempotent)", async () => {
+    test("GIVEN test setup WHEN succeeds for a non-existent project (idempotent) THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
 
       await run(registry.unregister("ghost"))
@@ -190,8 +190,8 @@ describe("JSONRegistry", () => {
     })
   })
 
-  describe("resolve", () => {
-    test("returns repo path for a registered project", async () => {
+  describe("GIVEN suite context WHEN resolve THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN returns repo path for a registered project THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       await run(registry.register("pantry", "/repos/pantry"))
@@ -200,7 +200,7 @@ describe("JSONRegistry", () => {
       expect(path).toBe("/repos/pantry")
     })
 
-    test("fails with RegistryError for unregistered project", async () => {
+    test("GIVEN test setup WHEN fails with RegistryError for unregistered project THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       const result = await runEither(registry.resolve("missing"))
@@ -213,15 +213,15 @@ describe("JSONRegistry", () => {
     })
   })
 
-  describe("list", () => {
-    test("returns empty registry", async () => {
+  describe("GIVEN suite context WHEN list THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN returns empty registry THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       const listed = await run(registry.list())
       expect(listed).toEqual([])
     })
 
-    test("returns entries sorted by name", async () => {
+    test("GIVEN test setup WHEN returns entries sorted by name THEN expected behavior is observed", async () => {
       const { registry } = createSubject()
 
       await run(registry.register("zeta", "/repos/zeta"))
@@ -232,7 +232,7 @@ describe("JSONRegistry", () => {
       expect(listed.map((entry) => entry.name)).toEqual(["alpha", "middle", "zeta"])
     })
 
-    test("normalizes legacy string-format entries", async () => {
+    test("GIVEN test setup WHEN normalizes legacy string-format entries THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
       fileSystem.files.set(REGISTRY_PATH, `${JSON.stringify({ legacy: "/repos/legacy" }, null, 2)}\n`)
 
@@ -245,8 +245,8 @@ describe("JSONRegistry", () => {
     })
   })
 
-  describe("readRegistry edge cases", () => {
-    test("auto-creates missing registry file", async () => {
+  describe("GIVEN suite context WHEN readRegistry edge cases THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN auto-creates missing registry file THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
 
       const listed = await run(registry.list())
@@ -255,7 +255,7 @@ describe("JSONRegistry", () => {
       expect(fileSystem.dirs.has(dirname(REGISTRY_PATH))).toBe(true)
     })
 
-    test("fails with clear error on invalid JSON", async () => {
+    test("GIVEN test setup WHEN fails with clear error on invalid JSON THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
       fileSystem.files.set(REGISTRY_PATH, "{ invalid json\n")
 
@@ -267,7 +267,7 @@ describe("JSONRegistry", () => {
       }
     })
 
-    test("fails when JSON root is not an object", async () => {
+    test("GIVEN test setup WHEN fails when JSON root is not an object THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
       fileSystem.files.set(REGISTRY_PATH, `${JSON.stringify(["bad-root"], null, 2)}\n`)
 
@@ -279,7 +279,7 @@ describe("JSONRegistry", () => {
       }
     })
 
-    test("fails for malformed entry missing repoPath", async () => {
+    test("GIVEN test setup WHEN fails for malformed entry missing repoPath THEN expected behavior is observed", async () => {
       const { fileSystem, registry } = createSubject()
       fileSystem.files.set(
         REGISTRY_PATH,
@@ -295,7 +295,7 @@ describe("JSONRegistry", () => {
     })
   })
 
-  test("concurrent-ish writes: sequential register calls keep both entries", async () => {
+  test("GIVEN test setup WHEN concurrent-ish writes: sequential register calls keep both entries THEN expected behavior is observed", async () => {
     const { registry } = createSubject()
 
     await run(registry.register("web", "/repos/web"))

@@ -7,9 +7,9 @@ import { HealthCheckError } from "../schema/errors.js"
 
 const checker = new CmdHealthChecker()
 
-describe("CmdHealthChecker", () => {
-  describe("check", () => {
-    test("returns healthy when command exits 0", async () => {
+describe("GIVEN suite context WHEN CmdHealthChecker THEN behavior is covered", () => {
+  describe("GIVEN suite context WHEN check THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN returns healthy when command exits 0 THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "command",
         target: "true",
@@ -23,7 +23,7 @@ describe("CmdHealthChecker", () => {
       expect(result.message).toBeNull()
     })
 
-    test("returns unhealthy when command exits non-zero", async () => {
+    test("GIVEN test setup WHEN returns unhealthy when command exits non-zero THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "command",
         target: "false",
@@ -36,7 +36,7 @@ describe("CmdHealthChecker", () => {
       expect(result.message).toBeTruthy()
     })
 
-    test("captures stderr on failure", async () => {
+    test("GIVEN test setup WHEN captures stderr on failure THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "command",
         target: "echo 'something went wrong' >&2 && exit 1",
@@ -48,7 +48,7 @@ describe("CmdHealthChecker", () => {
       expect(result.message).toContain("something went wrong")
     })
 
-    test("handles complex shell commands", async () => {
+    test("GIVEN test setup WHEN handles complex shell commands THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "command",
         target: "test -f /bin/sh",
@@ -59,7 +59,7 @@ describe("CmdHealthChecker", () => {
       expect(result.healthy).toBe(true)
     })
 
-    test("handles nonexistent commands gracefully", async () => {
+    test("GIVEN test setup WHEN handles nonexistent commands gracefully THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "command",
         target: "nonexistent_command_abc123",
@@ -71,8 +71,8 @@ describe("CmdHealthChecker", () => {
     })
   })
 
-  describe("poll", () => {
-    test("returns immediately when command succeeds", async () => {
+  describe("GIVEN suite context WHEN poll THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN returns immediately when command succeeds THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "command",
         target: "true",
@@ -85,7 +85,7 @@ describe("CmdHealthChecker", () => {
       expect(result.healthy).toBe(true)
     })
 
-    test("fails with HealthCheckError when timeout exceeded", async () => {
+    test("GIVEN test setup WHEN fails with HealthCheckError when timeout exceeded THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "command",
         target: "false",

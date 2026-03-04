@@ -176,9 +176,9 @@ const join = (...parts: string[]) => require("node:path").join(...parts)
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("GitWorktreeWorkspace", () => {
-  describe("create", () => {
-    test("dev: returns repo path and creates workspace dir", async () => {
+describe("GIVEN suite context WHEN GitWorktreeWorkspace THEN behavior is covered", () => {
+  describe("GIVEN suite context WHEN create THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN dev: returns repo path and creates workspace dir THEN expected behavior is observed", async () => {
       const { workspace, mockFs } = setup()
 
       const result = await Effect.runPromise(workspace.create("pantry", "dev", "", ""))
@@ -189,7 +189,7 @@ describe("GitWorktreeWorkspace", () => {
       expect(mockFs.dirs.has(devDir)).toBe(true)
     })
 
-    test("prod: creates worktree and symlink", async () => {
+    test("GIVEN test setup WHEN prod: creates worktree and symlink THEN expected behavior is observed", async () => {
       const { workspace, mockGit, mockFs } = setup()
 
       const result = await Effect.runPromise(
@@ -204,7 +204,7 @@ describe("GitWorktreeWorkspace", () => {
       expect(mockFs.symlinks.get(symlinkPath)).toBe(expectedDest)
     })
 
-    test("prod: fails if workspace already exists", async () => {
+    test("GIVEN test setup WHEN prod: fails if workspace already exists THEN expected behavior is observed", async () => {
       const { workspace, mockFs } = setup()
       const dest = join(homedir(), ".rig", "workspaces", "pantry", "prod", "v1.0.0")
       mockFs.dirs.add(dest)
@@ -220,7 +220,7 @@ describe("GitWorktreeWorkspace", () => {
       }
     })
 
-    test("fails if project not registered", async () => {
+    test("GIVEN test setup WHEN fails if project not registered THEN expected behavior is observed", async () => {
       const { workspace } = setup()
 
       const result = await Effect.runPromise(
@@ -235,8 +235,8 @@ describe("GitWorktreeWorkspace", () => {
     })
   })
 
-  describe("resolve", () => {
-    test("dev: returns repo path from registry", async () => {
+  describe("GIVEN suite context WHEN resolve THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN dev: returns repo path from registry THEN expected behavior is observed", async () => {
       const { workspace } = setup()
 
       const result = await Effect.runPromise(workspace.resolve("pantry", "dev"))
@@ -244,7 +244,7 @@ describe("GitWorktreeWorkspace", () => {
       expect(result).toBe("/Users/clay/Projects/pantry")
     })
 
-    test("dev: fails if not registered", async () => {
+    test("GIVEN test setup WHEN dev: fails if not registered THEN expected behavior is observed", async () => {
       const { workspace } = setup()
 
       const result = await Effect.runPromise(
@@ -255,8 +255,8 @@ describe("GitWorktreeWorkspace", () => {
     })
   })
 
-  describe("sync", () => {
-    test("is a no-op for both envs", async () => {
+  describe("GIVEN suite context WHEN sync THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN is a no-op for both envs THEN expected behavior is observed", async () => {
       const { workspace } = setup()
 
       await Effect.runPromise(workspace.sync("pantry", "dev"))
@@ -265,8 +265,8 @@ describe("GitWorktreeWorkspace", () => {
     })
   })
 
-  describe("list", () => {
-    test("returns dev entry when workspace exists", async () => {
+  describe("GIVEN suite context WHEN list THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN returns dev entry when workspace exists THEN expected behavior is observed", async () => {
       const { workspace, mockFs } = setup()
       const devDir = join(homedir(), ".rig", "workspaces", "pantry", "dev")
       mockFs.dirs.add(devDir)
@@ -280,7 +280,7 @@ describe("GitWorktreeWorkspace", () => {
       expect(devEntry!.active).toBe(true)
     })
 
-    test("returns prod entries with version info", async () => {
+    test("GIVEN test setup WHEN returns prod entries with version info THEN expected behavior is observed", async () => {
       const { workspace, mockFs } = setup()
       const prodBase = join(homedir(), ".rig", "workspaces", "pantry", "prod")
       const v1Dir = join(prodBase, "v1.0.0")
@@ -298,7 +298,7 @@ describe("GitWorktreeWorkspace", () => {
       expect(versions).toEqual(["v1.0.0", "v2.0.0"])
     })
 
-    test("returns empty when no workspaces exist", async () => {
+    test("GIVEN test setup WHEN returns empty when no workspaces exist THEN expected behavior is observed", async () => {
       const { workspace } = setup()
 
       const result = await Effect.runPromise(workspace.list("pantry"))
@@ -307,8 +307,8 @@ describe("GitWorktreeWorkspace", () => {
     })
   })
 
-  describe("Layer", () => {
-    test("GitWorktreeWorkspaceLive wires correctly", async () => {
+  describe("GIVEN suite context WHEN Layer THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN GitWorktreeWorkspaceLive wires correctly THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const mockGit = new MockGit()
       const mockRegistry = new MockRegistry()

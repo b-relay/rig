@@ -214,8 +214,8 @@ const runWithLogger = async (argv: readonly string[]) => {
   return { exitCode, logger }
 }
 
-describe("cli global help parsing", () => {
-  test("no args shows main help and returns 0", async () => {
+describe("GIVEN suite context WHEN cli global help parsing THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN no args shows main help and returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger([])
 
     expect(exitCode).toBe(0)
@@ -224,7 +224,7 @@ describe("cli global help parsing", () => {
   })
 
   for (const flag of ["--help", "-h"] as const) {
-    test(`${flag} shows main help and returns 0`, async () => {
+    test(`GIVEN test setup WHEN ${flag} shows main help and returns 0 THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger([flag])
 
       expect(exitCode).toBe(0)
@@ -233,7 +233,7 @@ describe("cli global help parsing", () => {
     })
   }
 
-  test("help shows main help and returns 0", async () => {
+  test("GIVEN test setup WHEN help shows main help and returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["help"])
 
     expect(exitCode).toBe(0)
@@ -241,7 +241,7 @@ describe("cli global help parsing", () => {
     expect(logger.infos.some((entry) => entry.message === renderMainHelp())).toBe(true)
   })
 
-  test("help deploy shows command help and returns 0", async () => {
+  test("GIVEN test setup WHEN help deploy shows command help and returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["help", "deploy"])
 
     expect(exitCode).toBe(0)
@@ -249,7 +249,7 @@ describe("cli global help parsing", () => {
     expect(logger.infos.some((entry) => entry.message === renderCommandHelp("deploy"))).toBe(true)
   })
 
-  test("unknown command logs error and returns 1", async () => {
+  test("GIVEN test setup WHEN unknown command logs error and returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["not-a-command"])
 
     expect(exitCode).toBe(1)
@@ -266,9 +266,9 @@ describe("cli global help parsing", () => {
   })
 })
 
-describe("cli lifecycle command parsing", () => {
+describe("GIVEN suite context WHEN cli lifecycle command parsing THEN behavior is covered", () => {
   for (const command of ["deploy", "start", "stop", "restart"] as const) {
-    test(`${command}: missing project name returns 1`, async () => {
+    test(`GIVEN test setup WHEN ${command}: missing project name returns 1 THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger([command, "--dev"])
 
       expect(exitCode).toBe(1)
@@ -276,7 +276,7 @@ describe("cli lifecycle command parsing", () => {
       expect(logger.errors[0]?._tag).toBe("CliArgumentError")
     })
 
-    test(`${command}: missing env flag returns 1 with hint`, async () => {
+    test(`GIVEN test setup WHEN ${command}: missing env flag returns 1 with hint THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger([command, "pantry"])
 
       expect(exitCode).toBe(1)
@@ -291,7 +291,7 @@ describe("cli lifecycle command parsing", () => {
       }
     })
 
-    test(`${command}: conflicting --dev --prod returns 1 with hint`, async () => {
+    test(`GIVEN test setup WHEN ${command}: conflicting --dev --prod returns 1 with hint THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger([command, "pantry", "--dev", "--prod"])
 
       expect(exitCode).toBe(1)
@@ -306,21 +306,21 @@ describe("cli lifecycle command parsing", () => {
       }
     })
 
-    test(`${command}: happy path with --dev returns 0`, async () => {
+    test(`GIVEN test setup WHEN ${command}: happy path with --dev returns 0 THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger([command, "pantry", "--dev"])
 
       expect(exitCode).toBe(0)
       expect(logger.errors).toHaveLength(0)
     })
 
-    test(`${command}: happy path with --prod returns 0`, async () => {
+    test(`GIVEN test setup WHEN ${command}: happy path with --prod returns 0 THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger([command, "pantry", "--prod"])
 
       expect(exitCode).toBe(0)
       expect(logger.errors).toHaveLength(0)
     })
 
-    test(`${command}: --help shows command help and returns 0`, async () => {
+    test(`GIVEN test setup WHEN ${command}: --help shows command help and returns 0 THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger([command, "--help"])
 
       expect(exitCode).toBe(0)
@@ -330,22 +330,22 @@ describe("cli lifecycle command parsing", () => {
   }
 })
 
-describe("cli init parsing", () => {
-  test("missing name returns 1", async () => {
+describe("GIVEN suite context WHEN cli init parsing THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN missing name returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["init", "--path", repoPath])
 
     expect(exitCode).toBe(1)
     expect(logger.errors.length).toBeGreaterThan(0)
   })
 
-  test("missing --path returns 1", async () => {
+  test("GIVEN test setup WHEN missing --path returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["init", "pantry"])
 
     expect(exitCode).toBe(1)
     expect(logger.errors.length).toBeGreaterThan(0)
   })
 
-  test("happy path returns 0", async () => {
+  test("GIVEN test setup WHEN happy path returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["init", "pantry", "--path", repoPath])
 
     expect(exitCode).toBe(0)
@@ -356,8 +356,8 @@ describe("cli init parsing", () => {
   })
 })
 
-describe("cli status parsing", () => {
-  test("no name and no env returns 0", async () => {
+describe("GIVEN suite context WHEN cli status parsing THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN no name and no env returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["status"])
 
     expect(exitCode).toBe(0)
@@ -365,7 +365,7 @@ describe("cli status parsing", () => {
     expect(logger.tables.length).toBeGreaterThan(0)
   })
 
-  test("with name returns 0", async () => {
+  test("GIVEN test setup WHEN with name returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["status", "pantry"])
 
     expect(exitCode).toBe(0)
@@ -373,7 +373,7 @@ describe("cli status parsing", () => {
     expect(logger.tables.at(-1)?.length).toBe(2)
   })
 
-  test("with name and --dev returns 0", async () => {
+  test("GIVEN test setup WHEN with name and --dev returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["status", "pantry", "--dev"])
 
     expect(exitCode).toBe(0)
@@ -381,7 +381,7 @@ describe("cli status parsing", () => {
     expect(logger.tables.at(-1)?.length).toBe(1)
   })
 
-  test("too many positionals returns 1", async () => {
+  test("GIVEN test setup WHEN too many positionals returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["status", "pantry", "extra"])
 
     expect(exitCode).toBe(1)
@@ -396,8 +396,8 @@ describe("cli status parsing", () => {
   })
 })
 
-describe("cli logs parsing", () => {
-  test("happy path with required args returns 0", async () => {
+describe("GIVEN suite context WHEN cli logs parsing THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN happy path with required args returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["logs", "pantry", "--dev"])
 
     expect(exitCode).toBe(0)
@@ -407,7 +407,7 @@ describe("cli logs parsing", () => {
     expect(ready).toBeDefined()
   })
 
-  test("missing env returns 1", async () => {
+  test("GIVEN test setup WHEN missing env returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["logs", "pantry"])
 
     expect(exitCode).toBe(1)
@@ -421,7 +421,7 @@ describe("cli logs parsing", () => {
     }
   })
 
-  test("with --follow, --lines, --service returns 0", async () => {
+  test("GIVEN test setup WHEN with --follow, --lines, --service returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger([
       "logs",
       "pantry",
@@ -444,8 +444,8 @@ describe("cli logs parsing", () => {
   })
 })
 
-describe("cli version parsing", () => {
-  test("with name only defaults to show and returns 0", async () => {
+describe("GIVEN suite context WHEN cli version parsing THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN with name only defaults to show and returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["version", "pantry"])
 
     expect(exitCode).toBe(0)
@@ -456,7 +456,7 @@ describe("cli version parsing", () => {
   })
 
   for (const action of ["patch", "minor", "major", "undo", "list"] as const) {
-    test(`with name and ${action} returns 0`, async () => {
+    test(`GIVEN test setup WHEN with name and ${action} returns 0 THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger(["version", "pantry", action])
 
       expect(exitCode).toBe(0)
@@ -467,7 +467,7 @@ describe("cli version parsing", () => {
     })
   }
 
-  test("too many positionals returns 1", async () => {
+  test("GIVEN test setup WHEN too many positionals returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["version", "pantry", "patch", "extra"])
 
     expect(exitCode).toBe(1)
@@ -482,8 +482,8 @@ describe("cli version parsing", () => {
   })
 })
 
-describe("cli list/config parsing", () => {
-  test("list with no args returns 0", async () => {
+describe("GIVEN suite context WHEN cli list/config parsing THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN list with no args returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["list"])
 
     expect(exitCode).toBe(0)
@@ -491,7 +491,7 @@ describe("cli list/config parsing", () => {
     expect(logger.tables.length).toBeGreaterThan(0)
   })
 
-  test("list with unexpected positionals returns 1", async () => {
+  test("GIVEN test setup WHEN list with unexpected positionals returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["list", "extra"])
 
     expect(exitCode).toBe(1)
@@ -505,7 +505,7 @@ describe("cli list/config parsing", () => {
     }
   })
 
-  test("config with no args returns 0", async () => {
+  test("GIVEN test setup WHEN config with no args returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["config"])
 
     expect(exitCode).toBe(0)
@@ -513,7 +513,7 @@ describe("cli list/config parsing", () => {
     expect(logger.infos.some((entry) => entry.message === "rig.json schema reference")).toBe(true)
   })
 
-  test("config with unexpected positionals returns 1", async () => {
+  test("GIVEN test setup WHEN config with unexpected positionals returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["config", "extra"])
 
     expect(exitCode).toBe(1)
@@ -528,8 +528,8 @@ describe("cli list/config parsing", () => {
   })
 })
 
-describe("cli start foreground", () => {
-  test("accepts --foreground and forwards it to runtime handler", async () => {
+describe("GIVEN suite context WHEN cli start foreground THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN accepts --foreground and forwards it to runtime handler THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["start", "pantry", "--dev", "--foreground"])
 
     expect(exitCode).toBe(0)
@@ -539,7 +539,7 @@ describe("cli start foreground", () => {
     expect(started?.details?.foreground).toBe(true)
   })
 
-  test("start help text documents --foreground", () => {
+  test("GIVEN test setup WHEN start help text documents --foreground THEN expected behavior is observed", () => {
     const help = renderCommandHelp("start")
     expect(help).toContain("--foreground")
   })

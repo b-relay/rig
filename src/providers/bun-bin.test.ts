@@ -107,9 +107,9 @@ const runWithMockFail = <A, E>(
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("BunBinInstaller", () => {
-  describe("build()", () => {
-    test("with build command — produces binary → returns path", async () => {
+describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", () => {
+  describe("GIVEN suite context WHEN build() THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN with build command — produces binary → returns path THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs, successRunner)
       const config = shimConfig({
@@ -125,7 +125,7 @@ describe("BunBinInstaller", () => {
       expect(result).toBe(`${workdir}/dist/pantry`)
     })
 
-    test("with build command — produces non-binary → errors", async () => {
+    test("GIVEN test setup WHEN with build command — produces non-binary → errors THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs, successRunner)
       const config = shimConfig({
@@ -142,7 +142,7 @@ describe("BunBinInstaller", () => {
       expect((err as BinInstallerError).message).toContain("build produced a non-binary file")
     })
 
-    test("with build command — entrypoint missing after build → errors", async () => {
+    test("GIVEN test setup WHEN with build command — entrypoint missing after build → errors THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs, successRunner)
       const config = shimConfig({
@@ -157,7 +157,7 @@ describe("BunBinInstaller", () => {
       expect((err as BinInstallerError).message).toContain("not found")
     })
 
-    test("with build command — build fails → errors", async () => {
+    test("GIVEN test setup WHEN with build command — build fails → errors THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs, failRunner)
       const config = shimConfig({
@@ -171,7 +171,7 @@ describe("BunBinInstaller", () => {
       expect((err as BinInstallerError).operation).toBe("build")
     })
 
-    test("no build — command string (has spaces) → returns cmd marker", async () => {
+    test("GIVEN test setup WHEN no build — command string (has spaces) → returns cmd marker THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const config = shimConfig({ entrypoint: "bun cli/index.ts" })
@@ -183,7 +183,7 @@ describe("BunBinInstaller", () => {
       expect(result).toContain("bun cli/index.ts")
     })
 
-    test("no build — file exists and is binary → returns path", async () => {
+    test("GIVEN test setup WHEN no build — file exists and is binary → returns path THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const config = shimConfig({ entrypoint: "dist/pantry" })
@@ -195,7 +195,7 @@ describe("BunBinInstaller", () => {
       expect(result).toBe(`${workdir}/dist/pantry`)
     })
 
-    test("no build — file exists and is script → returns shim marker", async () => {
+    test("GIVEN test setup WHEN no build — file exists and is script → returns shim marker THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const config = shimConfig({ entrypoint: "cli/index.ts" })
@@ -209,7 +209,7 @@ describe("BunBinInstaller", () => {
       expect(result).toContain("cli/index.ts")
     })
 
-    test("no build — file does not exist → errors", async () => {
+    test("GIVEN test setup WHEN no build — file does not exist → errors THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const config = shimConfig({ entrypoint: "missing/binary" })
@@ -221,8 +221,8 @@ describe("BunBinInstaller", () => {
     })
   })
 
-  describe("install()", () => {
-    test("binary file → copies to ~/.rig/bin/<name>", async () => {
+  describe("GIVEN suite context WHEN install() THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN binary file → copies to ~/.rig/bin/<name> THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const binContent = binaryContent()
@@ -238,7 +238,7 @@ describe("BunBinInstaller", () => {
       expect(mockFs.modes.get(result)).toBe(0o755)
     })
 
-    test("dev env → installs with -dev suffix", async () => {
+    test("GIVEN test setup WHEN dev env → installs with -dev suffix THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const srcPath = "/tmp/test-project/dist/pantry"
@@ -248,7 +248,7 @@ describe("BunBinInstaller", () => {
       expect(result).toContain("pantry-dev")
     })
 
-    test("cmd marker → creates command shim", async () => {
+    test("GIVEN test setup WHEN cmd marker → creates command shim THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const marker = "cmd:/tmp/test-project:bun cli/index.ts"
@@ -266,7 +266,7 @@ describe("BunBinInstaller", () => {
       expect(mockFs.modes.get(result)).toBe(0o755)
     })
 
-    test("shim marker → creates script shim", async () => {
+    test("GIVEN test setup WHEN shim marker → creates script shim THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const marker = "shim:/tmp/test-project:cli/index.ts"
@@ -281,7 +281,7 @@ describe("BunBinInstaller", () => {
       expect(mockFs.modes.get(result)).toBe(0o755)
     })
 
-    test("creates bin directory if missing", async () => {
+    test("GIVEN test setup WHEN creates bin directory if missing THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const srcPath = "/tmp/test-project/dist/pantry"
@@ -294,8 +294,8 @@ describe("BunBinInstaller", () => {
     })
   })
 
-  describe("uninstall()", () => {
-    test("removes bin from ~/.rig/bin/<name>", async () => {
+  describe("GIVEN suite context WHEN uninstall() THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN removes bin from ~/.rig/bin/<name> THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const binPath = [...mockFs.files.keys()].find((k) => k.includes(".rig/bin")) ?? ""
@@ -311,7 +311,7 @@ describe("BunBinInstaller", () => {
       expect(mockFs.files.has(installed)).toBe(false)
     })
 
-    test("dev env → removes <name>-dev", async () => {
+    test("GIVEN test setup WHEN dev env → removes <name>-dev THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const srcPath = "/tmp/test-project/dist/pantry"
@@ -326,8 +326,8 @@ describe("BunBinInstaller", () => {
     })
   })
 
-  describe("BunBinInstallerLive layer", () => {
-    test("provides BinInstaller from FileSystem", async () => {
+  describe("GIVEN suite context WHEN BunBinInstallerLive layer THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN provides BinInstaller from FileSystem THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const fsLayer = Layer.succeed(FileSystem, mockFs)
       const layer = Layer.provide(BunBinInstallerLive, fsLayer)

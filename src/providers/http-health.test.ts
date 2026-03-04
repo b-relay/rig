@@ -31,9 +31,9 @@ afterAll(async () => {
 
 const checker = new HttpHealthChecker()
 
-describe("HttpHealthChecker", () => {
-  describe("check", () => {
-    test("returns healthy for 2xx responses", async () => {
+describe("GIVEN suite context WHEN HttpHealthChecker THEN behavior is covered", () => {
+  describe("GIVEN suite context WHEN check THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN returns healthy for 2xx responses THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "http",
         target: `${baseUrl}/healthy`,
@@ -47,7 +47,7 @@ describe("HttpHealthChecker", () => {
       expect(result.message).toBeNull()
     })
 
-    test("returns unhealthy for 5xx responses", async () => {
+    test("GIVEN test setup WHEN returns unhealthy for 5xx responses THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "http",
         target: `${baseUrl}/error`,
@@ -60,7 +60,7 @@ describe("HttpHealthChecker", () => {
       expect(result.message).toContain("500")
     })
 
-    test("returns unhealthy for 4xx responses", async () => {
+    test("GIVEN test setup WHEN returns unhealthy for 4xx responses THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "http",
         target: `${baseUrl}/missing`,
@@ -72,7 +72,7 @@ describe("HttpHealthChecker", () => {
       expect(result.statusCode).toBe(404)
     })
 
-    test("returns unhealthy on connection refused", async () => {
+    test("GIVEN test setup WHEN returns unhealthy on connection refused THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "http",
         target: "http://127.0.0.1:1",
@@ -86,8 +86,8 @@ describe("HttpHealthChecker", () => {
     })
   })
 
-  describe("poll", () => {
-    test("returns immediately when healthy on first check", async () => {
+  describe("GIVEN suite context WHEN poll THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN returns immediately when healthy on first check THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "http",
         target: `${baseUrl}/healthy`,
@@ -100,7 +100,7 @@ describe("HttpHealthChecker", () => {
       expect(result.healthy).toBe(true)
     })
 
-    test("fails with HealthCheckError when timeout exceeded", async () => {
+    test("GIVEN test setup WHEN fails with HealthCheckError when timeout exceeded THEN expected behavior is observed", async () => {
       const config: HealthCheckConfig = {
         type: "http",
         target: "http://127.0.0.1:1",

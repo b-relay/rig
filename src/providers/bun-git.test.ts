@@ -55,8 +55,8 @@ const createRepo = async (initialBranch: string): Promise<string> => {
   return repoPath
 }
 
-describe("BunGit", () => {
-  test("detectMainBranch resolves main and master via convention fallback", async () => {
+describe("GIVEN suite context WHEN BunGit THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN detectMainBranch resolves main and master via convention fallback THEN expected behavior is observed", async () => {
     const git = new BunGit()
     const mainRepo = await createRepo("main")
     const masterRepo = await createRepo("master")
@@ -71,7 +71,7 @@ describe("BunGit", () => {
     await rm(masterRepo, { recursive: true, force: true })
   })
 
-  test("detectMainBranch fails with MainBranchDetectionError when no main/master branch exists", async () => {
+  test("GIVEN test setup WHEN detectMainBranch fails with MainBranchDetectionError when no main/master branch exists THEN expected behavior is observed", async () => {
     const git = new BunGit()
     const repoPath = await createRepo("trunk")
 
@@ -88,7 +88,7 @@ describe("BunGit", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("supports state queries, tags, and worktree lifecycle", async () => {
+  test("GIVEN test setup WHEN supports state queries, tags, and worktree lifecycle THEN expected behavior is observed", async () => {
     const git = new BunGit()
     const repoPath = await createRepo("main")
 

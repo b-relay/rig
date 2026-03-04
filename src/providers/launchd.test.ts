@@ -56,8 +56,8 @@ const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("generatePlist", () => {
-  test("generates valid plist XML with all config fields", () => {
+describe("GIVEN suite context WHEN generatePlist THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN generates valid plist XML with all config fields THEN expected behavior is observed", () => {
     const xml = generatePlist(sampleConfig)
 
     expect(xml).toContain('<?xml version="1.0"')
@@ -81,20 +81,20 @@ describe("generatePlist", () => {
     expect(xml).toContain("<key>StandardErrorPath</key>")
   })
 
-  test("generates KeepAlive false when disabled", () => {
+  test("GIVEN test setup WHEN generates KeepAlive false when disabled THEN expected behavior is observed", () => {
     const config = { ...sampleConfig, keepAlive: false }
     const xml = generatePlist(config)
     expect(xml).toContain("<false/>")
     expect(xml).not.toContain("<true/>")
   })
 
-  test("omits EnvironmentVariables dict when empty", () => {
+  test("GIVEN test setup WHEN omits EnvironmentVariables dict when empty THEN expected behavior is observed", () => {
     const config = { ...sampleConfig, envVars: {} }
     const xml = generatePlist(config)
     expect(xml).not.toContain("<key>EnvironmentVariables</key>")
   })
 
-  test("escapes XML special characters", () => {
+  test("GIVEN test setup WHEN escapes XML special characters THEN expected behavior is observed", () => {
     const config = {
       ...sampleConfig,
       command: "/path/to/app&more",
@@ -106,20 +106,20 @@ describe("generatePlist", () => {
   })
 })
 
-describe("plistPath", () => {
-  test("derives correct path from label", () => {
+describe("GIVEN suite context WHEN plistPath THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN derives correct path from label THEN expected behavior is observed", () => {
     const path = plistPath("pantry-prod", "/Users/clay")
     expect(path).toBe("/Users/clay/Library/LaunchAgents/com.b-relay.rig.pantry-prod.plist")
   })
 
-  test("uses custom home directory", () => {
+  test("GIVEN test setup WHEN uses custom home directory THEN expected behavior is observed", () => {
     const path = plistPath("myapp-dev", "/tmp/fakehome")
     expect(path).toBe("/tmp/fakehome/Library/LaunchAgents/com.b-relay.rig.myapp-dev.plist")
   })
 })
 
-describe("LaunchdManager", () => {
-  test("install() writes plist and calls launchctl bootstrap", async () => {
+describe("GIVEN suite context WHEN LaunchdManager THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN install() writes plist and calls launchctl bootstrap THEN expected behavior is observed", async () => {
     const { runner, captured } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -137,7 +137,7 @@ describe("LaunchdManager", () => {
     expect(captured[1].args).toEqual(["launchctl", "bootstrap", GUI_DOMAIN, expectedPath])
   })
 
-  test("install() fails with ProcessError when launchctl bootstrap fails", async () => {
+  test("GIVEN test setup WHEN install() fails with ProcessError when launchctl bootstrap fails THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner({
       [`launchctl bootstrap ${GUI_DOMAIN} ${plistPath(sampleConfig.label, tmpDir)}`]: {
         stdout: "",
@@ -151,7 +151,7 @@ describe("LaunchdManager", () => {
     expect(result._tag).toBe("Failure")
   })
 
-  test("uninstall() calls launchctl bootout and deletes plist", async () => {
+  test("GIVEN test setup WHEN uninstall() calls launchctl bootout and deletes plist THEN expected behavior is observed", async () => {
     const { runner, captured } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -174,7 +174,7 @@ describe("LaunchdManager", () => {
     expect(await file.exists()).toBe(false)
   })
 
-  test("uninstall() succeeds even if plist file is already gone", async () => {
+  test("GIVEN test setup WHEN uninstall() succeeds even if plist file is already gone THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -192,7 +192,7 @@ describe("LaunchdManager", () => {
     await run(mgr2.uninstall(sampleConfig.label))
   })
 
-  test("install() rejects invalid label characters", async () => {
+  test("GIVEN test setup WHEN install() rejects invalid label characters THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -201,7 +201,7 @@ describe("LaunchdManager", () => {
     expect(result._tag).toBe("Failure")
   })
 
-  test("start() calls launchctl start with label", async () => {
+  test("GIVEN test setup WHEN start() calls launchctl start with label THEN expected behavior is observed", async () => {
     const { runner, captured } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -211,7 +211,7 @@ describe("LaunchdManager", () => {
     expect(captured[0].args).toEqual(["launchctl", "start", "pantry-prod"])
   })
 
-  test("stop() calls launchctl stop with label", async () => {
+  test("GIVEN test setup WHEN stop() calls launchctl stop with label THEN expected behavior is observed", async () => {
     const { runner, captured } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -221,7 +221,7 @@ describe("LaunchdManager", () => {
     expect(captured[0].args).toEqual(["launchctl", "stop", "pantry-prod"])
   })
 
-  test("status() returns loaded+running with PID when service is running", async () => {
+  test("GIVEN test setup WHEN status() returns loaded+running with PID when service is running THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner({
       "launchctl list pantry-prod": {
         stdout: `"PID" = 42381;\n"Label" = "pantry-prod";`,
@@ -238,7 +238,7 @@ describe("LaunchdManager", () => {
     expect(status.pid).toBe(42381)
   })
 
-  test("status() returns loaded+not-running when no PID", async () => {
+  test("GIVEN test setup WHEN status() returns loaded+not-running when no PID THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner({
       "launchctl list pantry-prod": {
         stdout: `"Label" = "pantry-prod";`,
@@ -254,7 +254,7 @@ describe("LaunchdManager", () => {
     expect(status.pid).toBeNull()
   })
 
-  test("status() returns not-loaded when launchctl exits non-zero", async () => {
+  test("GIVEN test setup WHEN status() returns not-loaded when launchctl exits non-zero THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner({
       "launchctl list pantry-prod": {
         stdout: "",
@@ -270,7 +270,7 @@ describe("LaunchdManager", () => {
     expect(status.pid).toBeNull()
   })
 
-  test("status() parses tabular format PID", async () => {
+  test("GIVEN test setup WHEN status() parses tabular format PID THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner({
       "launchctl list pantry-prod": {
         stdout: "12345\t0\tpantry-prod\n",
@@ -285,7 +285,7 @@ describe("LaunchdManager", () => {
     expect(status.running).toBe(true)
   })
 
-  test("backup() copies plist to ~/.rig/launchd/ with timestamp", async () => {
+  test("GIVEN test setup WHEN backup() copies plist to ~/.rig/launchd/ with timestamp THEN expected behavior is observed", async () => {
     const { runner } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 

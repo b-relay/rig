@@ -171,8 +171,8 @@ const writeRigConfig = async (repoPath: string, config: unknown) => {
   await writeFile(join(repoPath, "rig.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8")
 }
 
-describe("deploy command orchestration", () => {
-  test("dev deploy creates/syncs workspace, adds proxy entry, and installs daemon", async () => {
+describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN dev deploy creates/syncs workspace, adds proxy entry, and installs daemon THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-dev-"))
     const workspacePath = join(repoPath, ".workspaces", "dev")
 
@@ -248,7 +248,7 @@ describe("deploy command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("prod deploy uses version tag workspace ref, updates proxy, and uninstalls daemon when disabled", async () => {
+  test("GIVEN test setup WHEN prod deploy uses version tag workspace ref, updates proxy, and uninstalls daemon when disabled THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-prod-"))
     const workspacePath = join(repoPath, ".workspaces", "prod")
 
@@ -324,7 +324,7 @@ describe("deploy command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("no domain config means reverseProxy.add/update are never called", async () => {
+  test("GIVEN test setup WHEN no domain config means reverseProxy.add/update are never called THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-nodomain-"))
     const workspacePath = join(repoPath, ".workspaces", "dev")
 
@@ -364,7 +364,7 @@ describe("deploy command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("proxy upstream referencing non-existent service fails with ConfigValidationError", async () => {
+  test("GIVEN test setup WHEN proxy upstream referencing non-existent service fails with ConfigValidationError THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-badupstream-"))
     const workspacePath = join(repoPath, ".workspaces", "dev")
 
@@ -407,7 +407,7 @@ describe("deploy command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("proxy upstream referencing a task-type service fails with ConfigValidationError", async () => {
+  test("GIVEN test setup WHEN proxy upstream referencing a task-type service fails with ConfigValidationError THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-taskupstream-"))
     const workspacePath = join(repoPath, ".workspaces", "dev")
 
@@ -452,7 +452,7 @@ describe("deploy command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("existing proxy entry unchanged means no add or update calls", async () => {
+  test("GIVEN test setup WHEN existing proxy entry unchanged means no add or update calls THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-proxynochange-"))
     const workspacePath = join(repoPath, ".workspaces", "dev")
 
@@ -502,7 +502,7 @@ describe("deploy command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("prod workspace already exists is recovered and deploy continues", async () => {
+  test("GIVEN test setup WHEN prod workspace already exists is recovered and deploy continues THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-wsexists-"))
     const workspacePath = join(repoPath, ".workspaces", "prod")
 
@@ -564,7 +564,7 @@ describe("deploy command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("daemon disabled with no existing plist (ENOENT) is recovered and deploy continues", async () => {
+  test("GIVEN test setup WHEN daemon disabled with no existing plist (ENOENT) is recovered and deploy continues THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-noplist-"))
     const workspacePath = join(repoPath, ".workspaces", "dev")
 

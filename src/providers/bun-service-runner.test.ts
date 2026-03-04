@@ -75,12 +75,12 @@ afterEach(async () => {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("BunServiceRunner", () => {
+describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", () => {
   // NOTE: stop() includes a PID-reuse safety guard that verifies expected listen
   // port ownership via lsof before signaling. Deterministic PID reuse is difficult
   // to simulate in unit tests, so that path is better covered in integration tests.
 
-  test("start spawns a process, writes pid tracking, and returns RunningService", async () => {
+  test("GIVEN test setup WHEN start spawns a process, writes pid tracking, and returns RunningService THEN expected behavior is observed", async () => {
     const { runner, opts, pidsPath } = await createContext()
     const service = makeService("web", "echo $RIG_TEST_TOKEN; sleep 30", 3070)
 
@@ -104,7 +104,7 @@ describe("BunServiceRunner", () => {
     expect(new Date(pids.web.startedAt).toString()).not.toBe("Invalid Date")
   })
 
-  test("stop terminates process and removes it from pid tracking", async () => {
+  test("GIVEN test setup WHEN stop terminates process and removes it from pid tracking THEN expected behavior is observed", async () => {
     const { runner, opts, pidsPath } = await createContext()
     const service = makeService("api", "sleep 30", 3071)
 
@@ -122,7 +122,7 @@ describe("BunServiceRunner", () => {
     expect("api" in pids).toBe(false)
   })
 
-  test("health reports healthy for live process and unhealthy after exit", async () => {
+  test("GIVEN test setup WHEN health reports healthy for live process and unhealthy after exit THEN expected behavior is observed", async () => {
     const { runner, opts } = await createContext()
     const service = makeService("healthcheck", "sleep 1", 3072)
 
@@ -137,7 +137,7 @@ describe("BunServiceRunner", () => {
     trackedPids.delete(running.pid)
   })
 
-  test("logs returns tailed lines and supports opts.service filtering", async () => {
+  test("GIVEN test setup WHEN logs returns tailed lines and supports opts.service filtering THEN expected behavior is observed", async () => {
     const { runner, opts } = await createContext()
     const service = makeService("worker", "printf 'one\\ntwo\\nthree\\n'; sleep 30", 3073)
 
@@ -164,7 +164,7 @@ describe("BunServiceRunner", () => {
     expect(filtered).toBe("three")
   })
 
-  test("stop succeeds and removes PID tracking when process is already dead", async () => {
+  test("GIVEN test setup WHEN stop succeeds and removes PID tracking when process is already dead THEN expected behavior is observed", async () => {
     const { runner, opts, pidsPath } = await createContext()
     const service = makeService("gone", "echo done", 3074)
 
@@ -184,7 +184,7 @@ describe("BunServiceRunner", () => {
     trackedPids.delete(running.pid)
   })
 
-  test("logs returns ServiceRunnerError for unknown service", async () => {
+  test("GIVEN test setup WHEN logs returns ServiceRunnerError for unknown service THEN expected behavior is observed", async () => {
     const { runner } = await createContext()
 
     const result = await run(

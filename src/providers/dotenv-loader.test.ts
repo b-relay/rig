@@ -31,8 +31,8 @@ const writeEnvFile = async (name: string, content: string): Promise<string> => {
 const loadEither = (envFile: string, workdir: string = tmpDir) =>
   run(loader.load(envFile, workdir).pipe(Effect.either))
 
-describe("DotenvLoader", () => {
-  test("parses basic KEY=VALUE entries including single-character key/value", async () => {
+describe("GIVEN suite context WHEN DotenvLoader THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN parses basic KEY=VALUE entries including single-character key/value THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", "FOO=bar\nK=V\n")
 
     const parsed = await run(loader.load(".env", tmpDir))
@@ -42,7 +42,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("skips comments, blank lines, and whitespace-only lines", async () => {
+  test("GIVEN test setup WHEN skips comments, blank lines, and whitespace-only lines THEN expected behavior is observed", async () => {
     await writeEnvFile(
       ".env",
       "# top comment\n\nFOO=bar\n   \n\t\n# middle comment\nBAR=baz\n",
@@ -55,7 +55,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("supports export prefix including extra spaces", async () => {
+  test("GIVEN test setup WHEN supports export prefix including extra spaces THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", "export FOO=bar\nexport  BAR = baz\nexport\tBAZ=qux\n")
 
     const parsed = await run(loader.load(".env", tmpDir))
@@ -66,7 +66,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("parses double-quoted values and decodes supported escape sequences", async () => {
+  test("GIVEN test setup WHEN parses double-quoted values and decodes supported escape sequences THEN expected behavior is observed", async () => {
     await writeEnvFile(
       ".env",
       'MULTILINE="line1\\nline2"\nRETURN="a\\rb"\nTAB="x\\ty"\nQUOTE="say \\"hi\\""\n',
@@ -81,7 +81,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("parses single-quoted values without escape processing", async () => {
+  test("GIVEN test setup WHEN parses single-quoted values without escape processing THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", "RAW='line1\\nline2'\nTABS='x\\ty'\n")
 
     const parsed = await run(loader.load(".env", tmpDir))
@@ -91,7 +91,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("supports inline comments on unquoted values", async () => {
+  test("GIVEN test setup WHEN supports inline comments on unquoted values THEN expected behavior is observed", async () => {
     await writeEnvFile(
       ".env",
       "A=value # comment\nB=value#not-a-comment\nC=value   # another\nD=plain\t# tab comment\n",
@@ -106,7 +106,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("does not strip # inside quoted values", async () => {
+  test("GIVEN test setup WHEN does not strip # inside quoted values THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", 'A="hello # world"\nB=\'hello # world\'\n')
 
     const parsed = await run(loader.load(".env", tmpDir))
@@ -116,7 +116,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("trims spaces around keys and = separator", async () => {
+  test("GIVEN test setup WHEN trims spaces around keys and = separator THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", "  FOO   =   bar\n")
 
     const parsed = await run(loader.load(".env", tmpDir))
@@ -125,7 +125,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("supports values that are only quotes", async () => {
+  test("GIVEN test setup WHEN supports values that are only quotes THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", 'EMPTY_DOUBLE=""\nEMPTY_SINGLE=\'\'\n')
 
     const parsed = await run(loader.load(".env", tmpDir))
@@ -135,7 +135,7 @@ describe("DotenvLoader", () => {
     })
   })
 
-  test("returns EnvLoaderError for invalid key names", async () => {
+  test("GIVEN test setup WHEN returns EnvLoaderError for invalid key names THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", "1INVALID=value\n")
 
     const result = await loadEither(".env")
@@ -146,7 +146,7 @@ describe("DotenvLoader", () => {
     }
   })
 
-  test("returns EnvLoaderError when '=' separator is missing", async () => {
+  test("GIVEN test setup WHEN returns EnvLoaderError when '=' separator is missing THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", "MALFORMED_LINE\n")
 
     const result = await loadEither(".env")
@@ -157,7 +157,7 @@ describe("DotenvLoader", () => {
     }
   })
 
-  test("returns EnvLoaderError for unterminated quoted values", async () => {
+  test("GIVEN test setup WHEN returns EnvLoaderError for unterminated quoted values THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", 'BAD_DOUBLE="\n')
     const doubleResult = await loadEither(".env")
     expect(doubleResult._tag).toBe("Left")
@@ -175,7 +175,7 @@ describe("DotenvLoader", () => {
     }
   })
 
-  test("resolves relative env paths against workdir and accepts absolute env paths", async () => {
+  test("GIVEN test setup WHEN resolves relative env paths against workdir and accepts absolute env paths THEN expected behavior is observed", async () => {
     const absoluteEnvPath = await writeEnvFile("absolute.env", "ABS=absolute\n")
     await writeEnvFile(".env", "REL=relative\n")
 
@@ -186,7 +186,7 @@ describe("DotenvLoader", () => {
     expect(absoluteParsed).toEqual({ ABS: "absolute" })
   })
 
-  test("maps missing file errors to EnvLoaderError", async () => {
+  test("GIVEN test setup WHEN maps missing file errors to EnvLoaderError THEN expected behavior is observed", async () => {
     const missing = "does-not-exist.env"
     const result = await loadEither(missing)
 
@@ -197,14 +197,14 @@ describe("DotenvLoader", () => {
     }
   })
 
-  test("returns an empty object for an empty file", async () => {
+  test("GIVEN test setup WHEN returns an empty object for an empty file THEN expected behavior is observed", async () => {
     await writeEnvFile(".env", "")
 
     const parsed = await run(loader.load(".env", tmpDir))
     expect(parsed).toEqual({})
   })
 
-  test("parses mixed valid entries correctly", async () => {
+  test("GIVEN test setup WHEN parses mixed valid entries correctly THEN expected behavior is observed", async () => {
     await writeEnvFile(
       ".env",
       [

@@ -19,10 +19,26 @@ const nextPid = (() => {
   }
 })()
 
+interface StubServiceRunnerOptions {
+  readonly startFailures?: Readonly<Record<string, ServiceRunnerError>>
+  readonly stopFailures?: Readonly<Record<string, ServiceRunnerError>>
+  readonly logFailures?: Readonly<Record<string, ServiceRunnerError>>
+}
+
 export class StubServiceRunner implements ServiceRunnerService {
   private readonly running = new Map<string, RunningService>()
+  private sequence = 0
+  readonly startCalls: Array<{ readonly sequence: number; readonly service: string; readonly opts: RunOpts }> = []
+  readonly stopCalls: Array<{ readonly sequence: number; readonly service: string; readonly pid: number }> = []
 
-  start(service: ServerService, _opts: RunOpts): Effect.Effect<RunningService, ServiceRunnerError> {
+  constructor(private readonly options: StubServiceRunnerOptions = {}) {}
+
+  start(service: ServerService, opts: RunOpts): Effect.Effect<RunningService, ServiceRunnerError> {
+    const startFailure = this.options.startFailures?.[service.name]
+    if (startFailure) {
+      return Effect.fail(startFailure)
+    }
+
     const active: RunningService = {
       name: service.name,
       pid: nextPid(),
@@ -30,11 +46,28 @@ export class StubServiceRunner implements ServiceRunnerService {
       startedAt: new Date(),
     }
 
+    this.sequence += 1
+    this.startCalls.push({
+      sequence: this.sequence,
+      service: service.name,
+      opts,
+    })
     this.running.set(service.name, active)
     return Effect.succeed(active)
   }
 
   stop(service: RunningService): Effect.Effect<void, ServiceRunnerError> {
+    const stopFailure = this.options.stopFailures?.[service.name]
+    if (stopFailure) {
+      return Effect.fail(stopFailure)
+    }
+
+    this.sequence += 1
+    this.stopCalls.push({
+      sequence: this.sequence,
+      service: service.name,
+      pid: service.pid,
+    })
     this.running.delete(service.name)
     return Effect.void
   }
@@ -44,6 +77,11 @@ export class StubServiceRunner implements ServiceRunnerService {
   }
 
   logs(service: string, opts: LogOpts): Effect.Effect<string, ServiceRunnerError> {
+    const logFailure = this.options.logFailures?.[service]
+    if (logFailure) {
+      return Effect.fail(logFailure)
+    }
+
     if (!this.running.has(service)) {
       return Effect.fail(
         new ServiceRunnerError(
@@ -58,6 +96,10 @@ export class StubServiceRunner implements ServiceRunnerService {
     return Effect.succeed(
       `${service}: stub logs (lines=${opts.lines}, follow=${opts.follow}, serviceFilter=${opts.service ?? "all"})`,
     )
+  }
+
+  runningSnapshot(): readonly RunningService[] {
+    return Array.from(this.running.values())
   }
 }
 

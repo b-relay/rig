@@ -56,8 +56,8 @@ afterEach(async () => {
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect)
 
-describe("CaddyProxy", () => {
-  test("read() parses rig-managed entries from a mixed Caddyfile", async () => {
+describe("GIVEN suite context WHEN CaddyProxy THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN read() parses rig-managed entries from a mixed Caddyfile THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MIXED_CADDYFILE)
 
     const entries = await run(caddy.read())
@@ -79,19 +79,19 @@ describe("CaddyProxy", () => {
     })
   })
 
-  test("read() returns empty array when Caddyfile does not exist", async () => {
+  test("GIVEN test setup WHEN read() returns empty array when Caddyfile does not exist THEN expected behavior is observed", async () => {
     const entries = await run(caddy.read())
     expect(entries).toEqual([])
   })
 
-  test("read() ignores manual blocks", async () => {
+  test("GIVEN test setup WHEN read() ignores manual blocks THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MANUAL_BLOCK)
 
     const entries = await run(caddy.read())
     expect(entries).toEqual([])
   })
 
-  test("add() appends a new rig block without disturbing manual blocks", async () => {
+  test("GIVEN test setup WHEN add() appends a new rig block without disturbing manual blocks THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MANUAL_BLOCK)
 
     const entry: ProxyEntry = {
@@ -114,7 +114,7 @@ describe("CaddyProxy", () => {
     expect(content).toContain("reverse_proxy http://127.0.0.1:4000")
   })
 
-  test("add() creates Caddyfile if it does not exist", async () => {
+  test("GIVEN test setup WHEN add() creates Caddyfile if it does not exist THEN expected behavior is observed", async () => {
     const entry: ProxyEntry = {
       name: "web",
       env: "dev",
@@ -130,7 +130,7 @@ describe("CaddyProxy", () => {
     expect(content).toContain("dev.web.b-relay.com {")
   })
 
-  test("add() fails if entry already exists", async () => {
+  test("GIVEN test setup WHEN add() fails if entry already exists THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MIXED_CADDYFILE)
 
     const entry: ProxyEntry = {
@@ -145,7 +145,7 @@ describe("CaddyProxy", () => {
     expect(result._tag).toBe("Failure")
   })
 
-  test("update() modifies an existing rig block", async () => {
+  test("GIVEN test setup WHEN update() modifies an existing rig block THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MIXED_CADDYFILE)
 
     const entry: ProxyEntry = {
@@ -173,7 +173,7 @@ describe("CaddyProxy", () => {
     expect(content).toContain("reverse_proxy http://127.0.0.1:5173")
   })
 
-  test("update() fails if entry does not exist", async () => {
+  test("GIVEN test setup WHEN update() fails if entry does not exist THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MANUAL_BLOCK)
 
     const entry: ProxyEntry = {
@@ -188,7 +188,7 @@ describe("CaddyProxy", () => {
     expect(result._tag).toBe("Failure")
   })
 
-  test("remove() removes a rig block without disturbing other content", async () => {
+  test("GIVEN test setup WHEN remove() removes a rig block without disturbing other content THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MIXED_CADDYFILE)
 
     const change = await run(caddy.remove("pantry", "prod"))
@@ -205,7 +205,7 @@ describe("CaddyProxy", () => {
     expect(content).toContain("# [rig:pantry:dev:web]")
   })
 
-  test("remove() succeeds if entry does not exist", async () => {
+  test("GIVEN test setup WHEN remove() succeeds if entry does not exist THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MANUAL_BLOCK)
 
     const change = await run(caddy.remove("ghost", "prod"))
@@ -221,7 +221,7 @@ describe("CaddyProxy", () => {
     })
   })
 
-  test("read() correctly handles Caddy placeholder braces", async () => {
+  test("GIVEN test setup WHEN read() correctly handles Caddy placeholder braces THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, `${RIG_BLOCK_WITH_PLACEHOLDER}\n`)
 
     const entries = await run(caddy.read())
@@ -235,7 +235,7 @@ describe("CaddyProxy", () => {
     })
   })
 
-  test("remove() handles placeholder braces when locating block end", async () => {
+  test("GIVEN test setup WHEN remove() handles placeholder braces when locating block end THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, `${RIG_BLOCK_WITH_PLACEHOLDER}\n`)
 
     const change = await run(caddy.remove("placeholder", "prod"))
@@ -245,7 +245,7 @@ describe("CaddyProxy", () => {
     expect(content.trim()).toBe("")
   })
 
-  test("backup() creates a timestamped copy", async () => {
+  test("GIVEN test setup WHEN backup() creates a timestamped copy THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MIXED_CADDYFILE)
 
     const backupPath = await run(caddy.backup())
@@ -255,7 +255,7 @@ describe("CaddyProxy", () => {
     expect(backupContent).toBe(MIXED_CADDYFILE)
   })
 
-  test("add() backs up Caddyfile before writing", async () => {
+  test("GIVEN test setup WHEN add() backs up Caddyfile before writing THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MANUAL_BLOCK)
 
     const entry: ProxyEntry = {
@@ -275,7 +275,7 @@ describe("CaddyProxy", () => {
     expect(backupContent).toBe(MANUAL_BLOCK)
   })
 
-  test("update() backs up Caddyfile before writing", async () => {
+  test("GIVEN test setup WHEN update() backs up Caddyfile before writing THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MIXED_CADDYFILE)
 
     const entry: ProxyEntry = {
@@ -296,7 +296,7 @@ describe("CaddyProxy", () => {
     expect(backupContent).not.toContain("reverse_proxy http://127.0.0.1:8080")
   })
 
-  test("remove() backs up Caddyfile before writing", async () => {
+  test("GIVEN test setup WHEN remove() backs up Caddyfile before writing THEN expected behavior is observed", async () => {
     await writeFile(caddyfilePath, MIXED_CADDYFILE)
 
     await run(caddy.remove("pantry", "prod"))
@@ -308,7 +308,7 @@ describe("CaddyProxy", () => {
     expect(backupContent).toContain("# [rig:pantry:prod:web]")
   })
 
-  test("round-trip: add then read returns the entry", async () => {
+  test("GIVEN test setup WHEN round-trip: add then read returns the entry THEN expected behavior is observed", async () => {
     const entry: ProxyEntry = {
       name: "myapp",
       env: "prod",

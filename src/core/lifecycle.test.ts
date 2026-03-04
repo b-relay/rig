@@ -239,8 +239,8 @@ const writeRigConfig = async (repoPath: string, config: unknown) => {
   await writeFile(join(repoPath, "rig.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8")
 }
 
-describe("lifecycle command orchestration", () => {
-  test("start uses dependency order, runs hooks, and applies env precedence", async () => {
+describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN start uses dependency order, runs hooks, and applies env precedence THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-start-"))
     const hookLog = join(repoPath, "hooks.log")
 
@@ -326,7 +326,7 @@ describe("lifecycle command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("start fails fast with PortConflictError when declared port is already in use", async () => {
+  test("GIVEN test setup WHEN start fails fast with PortConflictError when declared port is already in use THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-port-conflict-"))
     const hookLog = join(repoPath, "hooks-conflict.log")
 
@@ -405,7 +405,7 @@ describe("lifecycle command orchestration", () => {
     }
   })
 
-  test("start persists PIDs to pids.json after server services start", async () => {
+  test("GIVEN test setup WHEN start persists PIDs to pids.json after server services start THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-pids-"))
 
     await writeRigConfig(repoPath, {
@@ -467,7 +467,7 @@ describe("lifecycle command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("start failure stops already-started services best effort", async () => {
+  test("GIVEN test setup WHEN start failure stops already-started services best effort THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-cleanup-"))
 
     await writeRigConfig(repoPath, {
@@ -523,7 +523,7 @@ describe("lifecycle command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("start rollback removes pid tracking when a bin service fails after server start", async () => {
+  test("GIVEN test setup WHEN start rollback removes pid tracking when a bin service fails after server start THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-start-bin-fail-"))
     const pidsPath = join(repoPath, ".rig", "pids.json")
 
@@ -595,7 +595,7 @@ describe("lifecycle command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("stop uses reverse dependency order, runs stop hooks, and never uninstalls bins", async () => {
+  test("GIVEN test setup WHEN stop uses reverse dependency order, runs stop hooks, and never uninstalls bins THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-"))
     const hookLog = join(repoPath, "hooks-stop.log")
     const pidsPath = join(repoPath, ".rig", "pids.json")
@@ -695,7 +695,7 @@ describe("lifecycle command orchestration", () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("stop cleans orphaned pid entries that are not in current config", async () => {
+  test("GIVEN test setup WHEN stop cleans orphaned pid entries that are not in current config THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-orphan-"))
     const pidsPath = join(repoPath, ".rig", "pids.json")
 

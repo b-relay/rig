@@ -5,8 +5,7 @@ import { ProcessManager } from "../interfaces/process-manager.js"
 import { Registry } from "../interfaces/registry.js"
 import type { StatusArgs } from "../schema/args.js"
 import { loadProjectConfig, resolveEnvironment } from "./config.js"
-
-const daemonLabel = (name: string, env: "dev" | "prod") => `rig.${name}.${env}`
+import { daemonLabel } from "./shared.js"
 
 export const runStatusCommand = (args: StatusArgs) =>
   Effect.gen(function* () {

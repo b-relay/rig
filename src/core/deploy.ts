@@ -9,18 +9,9 @@ import type { DeployArgs } from "../schema/args.js"
 import type { Environment, RigConfig, ServerService } from "../schema/config.js"
 import { ConfigValidationError } from "../schema/errors.js"
 import { loadProjectConfig, resolveEnvironment } from "./config.js"
-
-const daemonLabel = (name: string, env: "dev" | "prod") => `rig.${name}.${env}`
+import { configError, daemonLabel } from "./shared.js"
 
 const envFlag = (env: "dev" | "prod") => (env === "dev" ? "--dev" : "--prod")
-
-const configError = (
-  configPath: string,
-  message: string,
-  hint: string,
-  path: readonly (string | number)[] = [],
-) =>
-  new ConfigValidationError(configPath, [{ path, message, code: "deploy" }], message, hint)
 
 const hasChanged = (current: ProxyEntry, next: ProxyEntry): boolean =>
   current.domain !== next.domain ||
@@ -50,7 +41,7 @@ const computeProxyEntry = (
         configPath,
         `Proxy upstream '${upstreamName}' must reference a server service.`,
         "Set environments.<env>.proxy.upstream to a server service name.",
-        ["environments", env, "proxy", "upstream"],
+        { code: "deploy", path: ["environments", env, "proxy", "upstream"] },
       ),
     )
   }

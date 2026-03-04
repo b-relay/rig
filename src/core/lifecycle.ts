@@ -21,6 +21,7 @@ import type {
 import type { RestartArgs, StartArgs, StopArgs } from "../schema/args.js"
 import { ConfigValidationError, ServiceRunnerError } from "../schema/errors.js"
 import { loadProjectConfig, resolveEnvironment } from "./config.js"
+import { configError, daemonLabel } from "./shared.js"
 
 type HookPhase = "preStart" | "postStart" | "preStop" | "postStop"
 
@@ -37,16 +38,6 @@ const HEALTH_POLL_INTERVAL_MS = 500
 
 const resolveCheckType = (target: string): "http" | "command" =>
   target.startsWith("http://") || target.startsWith("https://") ? "http" : "command"
-
-const daemonLabel = (name: string, env: "dev" | "prod") => `rig.${name}.${env}`
-
-const configError = (
-  configPath: string,
-  message: string,
-  hint: string,
-  path: readonly (string | number)[] = [],
-) =>
-  new ConfigValidationError(configPath, [{ path, message, code: "lifecycle" }], message, hint)
 
 const toServiceRunnerError = (
   operation: "start" | "stop",
@@ -271,7 +262,7 @@ const orderServerServices = (
               configPath,
               `Circular dependency detected: ${[...chain, service.name].join(" -> ")}.`,
               "Remove the cycle in services[].dependsOn.",
-              ["environments", "services", service.name, "dependsOn"],
+              { code: "lifecycle", path: ["environments", "services", service.name, "dependsOn"] },
             ),
           )
         }
@@ -286,7 +277,7 @@ const orderServerServices = (
                 configPath,
                 `Service '${service.name}' depends on '${dependencyName}', but it is not a server service.`,
                 "Ensure dependsOn only references server services in this environment.",
-                ["environments", "services", service.name, "dependsOn"],
+                { code: "lifecycle", path: ["environments", "services", service.name, "dependsOn"] },
               ),
             )
           }

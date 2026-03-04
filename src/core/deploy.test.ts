@@ -25,7 +25,7 @@ import {
 } from "../interfaces/reverse-proxy.js"
 import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
-import { ProxyError, type RigError } from "../schema/errors.js"
+import { ConfigValidationError, ProcessError, ProxyError, WorkspaceError, type RigError } from "../schema/errors.js"
 
 class CaptureLogger implements LoggerService {
   info(_message: string, _details?: Record<string, unknown>) {
@@ -320,6 +320,322 @@ describe("deploy command orchestration", () => {
     ])
     expect(processManager.installCalls).toEqual([])
     expect(processManager.uninstallCalls).toEqual(["rig.pantry.prod"])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("no domain config means reverseProxy.add/update are never called", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-nodomain-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(reverseProxy.addCalls).toEqual([])
+    expect(reverseProxy.updateCalls).toEqual([])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("proxy upstream referencing non-existent service fails with ConfigValidationError", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-badupstream-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      domain: "pantry.example.com",
+      environments: {
+        dev: {
+          proxy: { upstream: "ghost" },
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const result = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("proxy upstream referencing a task-type service fails with ConfigValidationError", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-taskupstream-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      domain: "pantry.example.com",
+      environments: {
+        dev: {
+          proxy: { upstream: "cli" },
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+            { name: "cli", type: "bin", entrypoint: "cli/index.ts" },
+          ],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const result = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(result.left.message).toContain("must reference a server service")
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("existing proxy entry unchanged means no add or update calls", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-proxynochange-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      domain: "pantry.example.com",
+      environments: {
+        dev: {
+          proxy: { upstream: "web" },
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([
+      {
+        name: "pantry",
+        env: "dev",
+        domain: "dev.pantry.example.com",
+        upstream: "web",
+        port: 5173,
+      },
+    ])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(reverseProxy.addCalls).toEqual([])
+    expect(reverseProxy.updateCalls).toEqual([])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("prod workspace already exists is recovered and deploy continues", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-wsexists-"))
+    const workspacePath = join(repoPath, ".workspaces", "prod")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        prod: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 3070 },
+          ],
+        },
+      },
+    })
+
+    class AlreadyExistsWorkspace implements WorkspaceService {
+      readonly resolveCalls: Array<{ name: string; env: "dev" | "prod" }> = []
+
+      create(_name: string, _env: "dev" | "prod", _version: string, _commitRef: string) {
+        return Effect.fail(
+          new WorkspaceError("create", _name, _env, `Workspace already exists at ${workspacePath}`, "Use rig deploy --force to replace."),
+        )
+      }
+
+      resolve(name: string, env: "dev" | "prod") {
+        this.resolveCalls.push({ name, env })
+        return Effect.succeed(workspacePath)
+      }
+
+      sync(_name: string, _env: "dev" | "prod") {
+        return Effect.void
+      }
+
+      list(_name: string) {
+        return Effect.succeed([])
+      }
+    }
+
+    const workspace = new AlreadyExistsWorkspace()
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(workspace.resolveCalls).toEqual([{ name: "pantry", env: "prod" }])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("daemon disabled with no existing plist (ENOENT) is recovered and deploy continues", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-noplist-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      daemon: { enabled: false },
+      environments: {
+        dev: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    class EnoentProcessManager implements ProcessManagerService {
+      readonly installCalls: DaemonConfig[] = []
+
+      install(config: DaemonConfig) {
+        this.installCalls.push(config)
+        return Effect.void
+      }
+
+      uninstall(label: string) {
+        return Effect.fail(
+          new ProcessError("uninstall", label, `ENOENT: no such file or directory, open '/Users/test/Library/LaunchAgents/${label}.plist'`, "No plist to remove."),
+        )
+      }
+
+      start(_label: string) {
+        return Effect.void
+      }
+
+      stop(_label: string) {
+        return Effect.void
+      }
+
+      status(label: string) {
+        return Effect.succeed({
+          label,
+          loaded: false,
+          running: false,
+          pid: null,
+        } satisfies DaemonStatus)
+      }
+
+      backup(_label: string) {
+        return Effect.succeed("/tmp/backup.plist")
+      }
+    }
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new EnoentProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(processManager.installCalls).toEqual([])
 
     await rm(repoPath, { recursive: true, force: true })
   })

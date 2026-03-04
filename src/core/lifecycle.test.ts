@@ -25,7 +25,10 @@ import {
 } from "../interfaces/service-runner.js"
 import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
-import { HealthCheckError, type RigError } from "../schema/errors.js"
+import { PortChecker, type PortChecker as PortCheckerService } from "../interfaces/port-checker.js"
+import { BunPortCheckerLive } from "../providers/bun-port-checker.js"
+import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
+import { HealthCheckError, PortConflictError, type RigError } from "../schema/errors.js"
 import type { BinService, ServerService } from "../schema/config.js"
 
 class CaptureLogger implements LoggerService {
@@ -286,6 +289,7 @@ describe("lifecycle command orchestration", () => {
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      StubPortCheckerLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -313,6 +317,85 @@ describe("lifecycle command orchestration", () => {
     expect(lines).toEqual(["top-pre", "db-pre", "db-post", "api-pre", "api-post", "top-post"])
 
     await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("start fails fast with PortConflictError when declared port is already in use", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-port-conflict-"))
+    const hookLog = join(repoPath, "hooks-conflict.log")
+
+    // Occupy a port using Bun.listen
+    const blocker = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data() {} },
+    })
+    const blockedPort = blocker.port
+
+    try {
+      await writeRigConfig(repoPath, {
+        name: "pantry",
+        version: "1.2.3",
+        hooks: {
+          preStart: "printf 'top-pre\\n' >> hooks-conflict.log",
+        },
+        environments: {
+          dev: {
+            services: [
+              {
+                name: "api",
+                type: "server",
+                command: "echo api",
+                port: blockedPort,
+              },
+            ],
+          },
+        },
+      })
+
+      const serviceRunner = new CaptureServiceRunner()
+      const layer = Layer.mergeAll(
+        NodeFileSystemLive,
+      BunPortCheckerLive,
+        Layer.succeed(Logger, new CaptureLogger()),
+        Layer.succeed(Registry, new StaticRegistry(repoPath)),
+        Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+        Layer.succeed(ServiceRunner, serviceRunner),
+        Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+        Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+        Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+        Layer.succeed(ProcessManager, new StaticProcessManager()),
+      )
+
+      const result = await Effect.runPromise(
+        runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(
+          Effect.provide(layer),
+          Effect.either,
+        ),
+      )
+
+      expect(result._tag).toBe("Left")
+
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(PortConflictError)
+
+        if (result.left instanceof PortConflictError) {
+          expect(result.left.port).toBe(blockedPort)
+          expect(result.left.service).toBe("api")
+        }
+      }
+
+      // No services should have been started
+      expect(serviceRunner.startOrder).toEqual([])
+
+      // preStart hook should NOT have run (port check is before hooks)
+      const preStartRan = await readFile(hookLog, "utf8")
+        .then(() => true)
+        .catch(() => false)
+      expect(preStartRan).toBe(false)
+    } finally {
+      blocker.stop(true)
+      await rm(repoPath, { recursive: true, force: true })
+    }
   })
 
   test("start failure stops already-started services best effort", async () => {
@@ -347,6 +430,7 @@ describe("lifecycle command orchestration", () => {
     const serviceRunner = new CaptureServiceRunner()
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      StubPortCheckerLive,
       Layer.succeed(Logger, new CaptureLogger()),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -435,6 +519,7 @@ describe("lifecycle command orchestration", () => {
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      StubPortCheckerLive,
       Layer.succeed(Logger, new CaptureLogger()),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),

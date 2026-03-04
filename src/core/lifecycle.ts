@@ -6,6 +6,7 @@ import { EnvLoader } from "../interfaces/env-loader.js"
 import { FileSystem } from "../interfaces/file-system.js"
 import { HealthChecker } from "../interfaces/health-checker.js"
 import { Logger } from "../interfaces/logger.js"
+import { PortChecker } from "../interfaces/port-checker.js"
 import { ProcessManager } from "../interfaces/process-manager.js"
 import { ServiceRunner, type RunningService } from "../interfaces/service-runner.js"
 import { Workspace } from "../interfaces/workspace.js"
@@ -287,6 +288,7 @@ export const runStartCommand = (args: StartArgs) => {
     const processManager = yield* ProcessManager
     const envLoader = yield* EnvLoader
     const binInstaller = yield* BinInstaller
+    const portChecker = yield* PortChecker
 
     const loaded = yield* loadProjectConfig(args.name)
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
@@ -294,6 +296,11 @@ export const runStartCommand = (args: StartArgs) => {
     const logDir = join(workspacePath, ".rig", "logs")
 
     const serverServices = environment.services.filter((service) => service.type === "server")
+
+    for (const service of serverServices) {
+      yield* portChecker.check(service.port, service.name)
+    }
+
     const orderedServerServices = yield* orderServerServices(loaded.configPath, serverServices)
     const binServices = environment.services.filter((service) => service.type === "bin")
     const hookEnv = yield* loadHookEnv(environment, workspacePath, envLoader)

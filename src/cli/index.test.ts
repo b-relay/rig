@@ -12,6 +12,7 @@ import { Registry, type Registry as RegistryService, type RegistryEntry } from "
 import { StubBinInstallerLive } from "../providers/stub-bin-installer.js"
 import { StubGitLive } from "../providers/stub-git.js"
 import { StubHealthCheckerLive } from "../providers/stub-health-checker.js"
+import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { StubProcessManagerLive } from "../providers/stub-process-manager.js"
 import { StubReverseProxyLive } from "../providers/stub-reverse-proxy.js"
@@ -121,6 +122,7 @@ describe("cli start foreground", () => {
       StubProcessManagerLive,
       StubWorkspaceLive,
       StubHealthCheckerLive,
+      StubPortCheckerLive,
       StubServiceRunnerLive,
       StubBinInstallerLive,
       Layer.succeed(EnvLoader, {

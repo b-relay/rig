@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { renderCommandHelp, renderMainHelp } from "./help.js"
@@ -544,5 +544,23 @@ describe("GIVEN suite context WHEN cli start foreground THEN behavior is covered
   test("GIVEN test setup WHEN start help text documents --foreground THEN expected behavior is observed", () => {
     const help = renderCommandHelp("start")
     expect(help).toContain("--foreground")
+  })
+})
+
+describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN runCli fails with non-Rig error THEN main returns 1 THEN expected behavior is observed", async () => {
+    const originalRunCli = runCli
+
+    mock.module("./index.js", () => ({
+      runCli: () => Effect.fail(new Error("Unexpected CLI failure while parsing command arguments.")),
+    }))
+
+    try {
+      const { main } = await import(`../index.js?unexpected-error-${randomUUID()}`)
+      const exitCode = await main(["status"])
+      expect(exitCode).toBe(1)
+    } finally {
+      mock.module("./index.js", () => ({ runCli: originalRunCli }))
+    }
   })
 })

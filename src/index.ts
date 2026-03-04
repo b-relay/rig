@@ -53,6 +53,23 @@ const isRigError = (error: unknown): error is { _tag: string; message: string; h
   typeof error.message === "string" &&
   typeof error.hint === "string";
 
+const isTaggedMessageError = (error: unknown): error is { _tag: string; message: string } =>
+  typeof error === "object" &&
+  error !== null &&
+  "_tag" in error &&
+  "message" in error &&
+  typeof error._tag === "string" &&
+  typeof error.message === "string";
+
+const stringifyUnknown = (value: unknown): string => {
+  try {
+    const serialized = JSON.stringify(value, null, 2);
+    return serialized ?? String(value);
+  } catch {
+    return String(value);
+  }
+};
+
 export const main = (argv: string[]): Promise<number> =>
   Effect.runPromise(
     runCli(argv).pipe(
@@ -64,6 +81,18 @@ export const main = (argv: string[]): Promise<number> =>
             console.error(`  Hint: ${error.hint}`);
           } else {
             console.error("✗ unexpected error");
+
+            if (error instanceof Error) {
+              console.error(`  Message: ${error.message}`);
+              if (error.stack) {
+                console.error(`  Stack:\n${error.stack}`);
+              }
+            } else if (isTaggedMessageError(error)) {
+              console.error(`  Tag: ${error._tag}`);
+              console.error(`  Message: ${error.message}`);
+            } else {
+              console.error(`  Value: ${stringifyUnknown(error)}`);
+            }
           }
 
           return 1;

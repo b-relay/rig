@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
@@ -205,11 +205,20 @@ describe("CaddyProxy", () => {
     expect(content).toContain("# [rig:pantry:dev:web]")
   })
 
-  test("remove() fails if entry does not exist", async () => {
+  test("remove() succeeds if entry does not exist", async () => {
     await writeFile(caddyfilePath, MANUAL_BLOCK)
 
-    const result = await Effect.runPromiseExit(caddy.remove("ghost", "prod"))
-    expect(result._tag).toBe("Failure")
+    const change = await run(caddy.remove("ghost", "prod"))
+    expect(change).toEqual({
+      type: "removed",
+      entry: {
+        name: "ghost",
+        env: "prod",
+        domain: "",
+        upstream: "",
+        port: 0,
+      },
+    })
   })
 
   test("read() correctly handles Caddy placeholder braces", async () => {
@@ -244,6 +253,59 @@ describe("CaddyProxy", () => {
     expect(backupPath).toContain("Caddyfile.backup-")
     const backupContent = await readFile(backupPath, "utf-8")
     expect(backupContent).toBe(MIXED_CADDYFILE)
+  })
+
+  test("add() backs up Caddyfile before writing", async () => {
+    await writeFile(caddyfilePath, MANUAL_BLOCK)
+
+    const entry: ProxyEntry = {
+      name: "web",
+      env: "prod",
+      domain: "web.b-relay.com",
+      upstream: "web",
+      port: 3000,
+    }
+
+    await run(caddy.add(entry))
+
+    const backupFiles = (await readdir(tmpDir)).filter((file) => file.startsWith("Caddyfile.backup-"))
+    expect(backupFiles).toHaveLength(1)
+
+    const backupContent = await readFile(join(tmpDir, backupFiles[0]), "utf-8")
+    expect(backupContent).toBe(MANUAL_BLOCK)
+  })
+
+  test("update() backs up Caddyfile before writing", async () => {
+    await writeFile(caddyfilePath, MIXED_CADDYFILE)
+
+    const entry: ProxyEntry = {
+      name: "pantry",
+      env: "prod",
+      domain: "pantry.b-relay.com",
+      upstream: "web",
+      port: 8080,
+    }
+
+    await run(caddy.update(entry))
+
+    const backupFiles = (await readdir(tmpDir)).filter((file) => file.startsWith("Caddyfile.backup-"))
+    expect(backupFiles).toHaveLength(1)
+
+    const backupContent = await readFile(join(tmpDir, backupFiles[0]), "utf-8")
+    expect(backupContent).toContain("reverse_proxy http://127.0.0.1:3070")
+    expect(backupContent).not.toContain("reverse_proxy http://127.0.0.1:8080")
+  })
+
+  test("remove() backs up Caddyfile before writing", async () => {
+    await writeFile(caddyfilePath, MIXED_CADDYFILE)
+
+    await run(caddy.remove("pantry", "prod"))
+
+    const backupFiles = (await readdir(tmpDir)).filter((file) => file.startsWith("Caddyfile.backup-"))
+    expect(backupFiles).toHaveLength(1)
+
+    const backupContent = await readFile(join(tmpDir, backupFiles[0]), "utf-8")
+    expect(backupContent).toContain("# [rig:pantry:prod:web]")
   })
 
   test("round-trip: add then read returns the entry", async () => {

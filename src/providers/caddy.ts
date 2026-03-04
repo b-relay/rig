@@ -155,6 +155,10 @@ export class CaddyProxy implements ReverseProxyService {
 
       const block = renderBlock(entry)
       const newText = text.trimEnd() === "" ? block + "\n" : text.trimEnd() + "\n\n" + block + "\n"
+      const caddyfileExists = yield* this.fileExists()
+      if (caddyfileExists) {
+        yield* this.backup()
+      }
       yield* this.writeFile(newText)
 
       return { type: "added" as const, entry }
@@ -184,6 +188,7 @@ export class CaddyProxy implements ReverseProxyService {
       const block = renderBlock(entry)
 
       const newText = [...before, block, ...after].join("\n")
+      yield* this.backup()
       yield* this.writeFile(newText, "update")
 
       return { type: "updated" as const, entry }
@@ -199,13 +204,16 @@ export class CaddyProxy implements ReverseProxyService {
       const target = existing.find((b) => `${b.entry.name}:${b.entry.env}` === key)
 
       if (!target) {
-        return yield* Effect.fail(
-          new ProxyError(
-            "remove",
-            `Proxy entry '${name}' (${env}) not found in Caddyfile.`,
-            "Nothing to remove.",
-          ),
-        )
+        return {
+          type: "removed" as const,
+          entry: {
+            name,
+            env: env as ProxyEntry["env"],
+            domain: "",
+            upstream: "",
+            port: 0,
+          },
+        }
       }
 
       // Remove block lines, and any trailing blank line
@@ -218,6 +226,7 @@ export class CaddyProxy implements ReverseProxyService {
       const before = lines.slice(0, target.startLine)
       const after = lines.slice(endIdx)
       const newText = [...before, ...after].join("\n")
+      yield* this.backup()
       yield* this.writeFile(newText, "remove")
 
       return { type: "removed" as const, entry: target.entry }
@@ -286,6 +295,21 @@ export class CaddyProxy implements ReverseProxyService {
           operation,
           `Failed to write Caddyfile at ${this.caddyfilePath}: ${causeMessage(cause)}`,
           "Ensure the Caddyfile path is writable.",
+        ),
+    })
+  }
+
+  private fileExists(): Effect.Effect<boolean, ProxyError> {
+    return Effect.tryPromise({
+      try: async () => {
+        const file = Bun.file(this.caddyfilePath)
+        return await file.exists()
+      },
+      catch: (cause) =>
+        new ProxyError(
+          "read",
+          `Failed to check Caddyfile at ${this.caddyfilePath}: ${causeMessage(cause)}`,
+          "Ensure the Caddyfile path is valid and readable.",
         ),
     })
   }

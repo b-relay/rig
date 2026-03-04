@@ -1,5 +1,6 @@
 import { join } from "node:path"
 import { homedir } from "node:os"
+import { getuid } from "node:process"
 import { copyFile, mkdir, unlink } from "node:fs/promises"
 import { Effect, Layer } from "effect"
 
@@ -10,6 +11,26 @@ import {
   type ProcessManager as ProcessManagerService,
 } from "../interfaces/process-manager.js"
 import { ProcessError } from "../schema/errors.js"
+
+// ── launchd domain helpers ──────────────────────────────────────────────────
+
+/**
+ * Returns the GUI domain target for the current user (e.g. "gui/502").
+ * Used by modern launchctl bootstrap/bootout commands.
+ */
+const guiDomain = (): string => `gui/${getuid!()}`
+
+/**
+ * Validates a label contains only safe characters for filesystem paths
+ * and launchd identifiers.
+ */
+const validateLabel = (label: string): void => {
+  if (!/^[a-zA-Z0-9._-]+$/.test(label)) {
+    throw new Error(
+      `Invalid launchd label "${label}": must contain only alphanumeric, dot, hyphen, or underscore characters.`,
+    )
+  }
+}
 
 // ── Plist XML generation ────────────────────────────────────────────────────
 
@@ -121,6 +142,7 @@ export class LaunchdManager implements ProcessManagerService {
   install(config: DaemonConfig): Effect.Effect<void, ProcessError> {
     return Effect.tryPromise({
       try: async () => {
+        validateLabel(config.label)
         const path = plistPath(config.label, this.home)
         const dir = join(this.home, "Library", "LaunchAgents")
         await mkdir(dir, { recursive: true })
@@ -128,14 +150,15 @@ export class LaunchdManager implements ProcessManagerService {
         const xml = generatePlist(config)
         await Bun.write(path, xml)
 
-        // Unload first in case it's already loaded (DESIGN.md: unload old, load new)
+        // Bootout first in case it's already loaded (DESIGN.md: unload old, load new)
         // Ignore errors — may not be loaded yet
-        await this.runCommand(["launchctl", "unload", path])
+        const domain = guiDomain()
+        await this.runCommand(["launchctl", "bootout", `${domain}/${config.label}`])
 
-        // Load the plist
-        const result = await this.runCommand(["launchctl", "load", path])
+        // Bootstrap the plist into the GUI domain
+        const result = await this.runCommand(["launchctl", "bootstrap", domain, path])
         if (result.exitCode !== 0) {
-          throw new Error(`launchctl load failed (exit ${result.exitCode}): ${result.stderr.trim()}`)
+          throw new Error(`launchctl bootstrap failed (exit ${result.exitCode}): ${result.stderr.trim()}`)
         }
       },
       catch: (cause) =>
@@ -151,20 +174,33 @@ export class LaunchdManager implements ProcessManagerService {
   uninstall(label: string): Effect.Effect<void, ProcessError> {
     return Effect.tryPromise({
       try: async () => {
-        const path = plistPath(label, this.home)
+        validateLabel(label)
 
-        // Unload first — ignore "not loaded" errors but surface real failures
-        const unloadResult = await this.runCommand(["launchctl", "unload", path])
-        if (unloadResult.exitCode !== 0) {
-          const stderr = unloadResult.stderr.toLowerCase()
-          const isNotLoaded = stderr.includes("not loaded") || stderr.includes("could not find")
+        // Bootout the service from the GUI domain
+        const bootoutResult = await this.runCommand([
+          "launchctl",
+          "bootout",
+          `${guiDomain()}/${label}`,
+        ])
+        if (bootoutResult.exitCode !== 0) {
+          const stderr = bootoutResult.stderr.toLowerCase()
+          const isNotLoaded =
+            stderr.includes("no such process") ||
+            stderr.includes("could not find service") ||
+            stderr.includes("not loaded") ||
+            bootoutResult.exitCode === 3
           if (!isNotLoaded) {
-            throw new Error(`launchctl unload failed (exit ${unloadResult.exitCode}): ${unloadResult.stderr.trim()}`)
+            throw new Error(
+              `launchctl bootout failed (exit ${bootoutResult.exitCode}): ${bootoutResult.stderr.trim()}`,
+            )
           }
         }
 
-        // Delete the plist file
-        await unlink(path)
+        // Delete the plist file (idempotent — ignore if already gone)
+        const path = plistPath(label, this.home)
+        await unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error
+        })
       },
       catch: (cause) =>
         new ProcessError(

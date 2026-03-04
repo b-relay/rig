@@ -1,11 +1,14 @@
-import { mkdtemp, readFile, rm, mkdir } from "node:fs/promises"
+import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { getuid } from "node:process"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 
 import { LaunchdManager, generatePlist, plistPath } from "./launchd.js"
 import type { DaemonConfig } from "../interfaces/process-manager.js"
+
+const GUI_DOMAIN = `gui/${getuid!()}`
 
 // ── Test helpers ────────────────────────────────────────────────────────────
 
@@ -116,7 +119,7 @@ describe("plistPath", () => {
 })
 
 describe("LaunchdManager", () => {
-  test("install() writes plist and calls launchctl load", async () => {
+  test("install() writes plist and calls launchctl bootstrap", async () => {
     const { runner, captured } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -128,17 +131,17 @@ describe("LaunchdManager", () => {
     expect(content).toContain("<key>Label</key>")
     expect(content).toContain("<string>pantry-prod</string>")
 
-    // Verify launchctl unload (pre-clean) then load was called
+    // Verify launchctl bootout (pre-clean) then bootstrap was called
     expect(captured).toHaveLength(2)
-    expect(captured[0].args).toEqual(["launchctl", "unload", expectedPath])
-    expect(captured[1].args).toEqual(["launchctl", "load", expectedPath])
+    expect(captured[0].args).toEqual(["launchctl", "bootout", `${GUI_DOMAIN}/${sampleConfig.label}`])
+    expect(captured[1].args).toEqual(["launchctl", "bootstrap", GUI_DOMAIN, expectedPath])
   })
 
-  test("install() fails with ProcessError when launchctl load fails", async () => {
+  test("install() fails with ProcessError when launchctl bootstrap fails", async () => {
     const { runner } = createMockRunner({
-      [`launchctl load ${plistPath(sampleConfig.label, tmpDir)}`]: {
+      [`launchctl bootstrap ${GUI_DOMAIN} ${plistPath(sampleConfig.label, tmpDir)}`]: {
         stdout: "",
-        stderr: "Could not load plist",
+        stderr: "Could not bootstrap service",
         exitCode: 1,
       },
     })
@@ -148,7 +151,7 @@ describe("LaunchdManager", () => {
     expect(result._tag).toBe("Failure")
   })
 
-  test("uninstall() calls launchctl unload and deletes plist", async () => {
+  test("uninstall() calls launchctl bootout and deletes plist", async () => {
     const { runner, captured } = createMockRunner()
     const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
 
@@ -158,13 +161,44 @@ describe("LaunchdManager", () => {
     // Now uninstall
     await run(mgr.uninstall(sampleConfig.label))
 
-    // Should have called: unload+load (install), unload (uninstall)
+    // Should have called: bootout+bootstrap (install), bootout (uninstall)
     expect(captured).toHaveLength(3)
-    expect(captured[2].args[1]).toBe("unload")
+    expect(captured[2].args).toEqual([
+      "launchctl",
+      "bootout",
+      `${GUI_DOMAIN}/${sampleConfig.label}`,
+    ])
 
     // File should be deleted
     const file = Bun.file(plistPath(sampleConfig.label, tmpDir))
     expect(await file.exists()).toBe(false)
+  })
+
+  test("uninstall() succeeds even if plist file is already gone", async () => {
+    const { runner } = createMockRunner()
+    const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
+
+    // Don't install — no plist file exists. Bootout returns "not loaded" style error.
+    const responses: Record<string, { stdout: string; stderr: string; exitCode: number }> = {}
+    responses[`launchctl bootout ${GUI_DOMAIN}/${sampleConfig.label}`] = {
+      stdout: "",
+      stderr: "No such process",
+      exitCode: 3,
+    }
+    const { runner: runner2 } = createMockRunner(responses)
+    const mgr2 = new LaunchdManager({ runCommand: runner2, home: tmpDir })
+
+    // Should not throw — idempotent uninstall
+    await run(mgr2.uninstall(sampleConfig.label))
+  })
+
+  test("install() rejects invalid label characters", async () => {
+    const { runner } = createMockRunner()
+    const mgr = new LaunchdManager({ runCommand: runner, home: tmpDir })
+
+    const badConfig = { ...sampleConfig, label: "../escape" }
+    const result = await Effect.runPromiseExit(mgr.install(badConfig))
+    expect(result._tag).toBe("Failure")
   })
 
   test("start() calls launchctl start with label", async () => {

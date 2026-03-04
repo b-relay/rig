@@ -16,12 +16,16 @@ type RawRegistryValue =
 type RawRegistry = Record<string, RawRegistryValue>
 
 const DEFAULT_REGISTRY_PATH = join(homedir(), ".rig", "registry.json")
+const PROJECT_NAME_RE = /^[a-z0-9-]+$/
 
 const causeMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause)
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0
 
 const normalizeEntry = (name: string, value: RawRegistryValue): RegistryEntry => {
   if (typeof value === "string") {
@@ -51,6 +55,28 @@ export class JSONRegistry implements RegistryService {
   ) {}
 
   register(name: string, repoPath: string): Effect.Effect<void, RegistryError> {
+    if (!PROJECT_NAME_RE.test(name)) {
+      return Effect.fail(
+        new RegistryError(
+          "register",
+          name,
+          "Project name must be lowercase alphanumeric with hyphens only.",
+          "Use names like `my-project`.",
+        ),
+      )
+    }
+
+    if (!isNonEmptyString(repoPath)) {
+      return Effect.fail(
+        new RegistryError(
+          "register",
+          name,
+          "Repository path must be a non-empty string.",
+          "Provide a valid repository path.",
+        ),
+      )
+    }
+
     return this.readRegistry().pipe(
       Effect.flatMap((registry) => {
         const next: RawRegistry = {
@@ -157,15 +183,25 @@ export class JSONRegistry implements RegistryService {
 
           for (const [key, value] of Object.entries(parsed)) {
             if (typeof value === "string") {
+              if (!isNonEmptyString(value)) {
+                return yield* Effect.fail(
+                  new RegistryError(
+                    "list",
+                    "*",
+                    `Registry entry '${key}' must have a non-empty repoPath.`,
+                    `Fix invalid JSON in ${registryPath}.`,
+                  ),
+                )
+              }
               continue
             }
 
-            if (!isObject(value) || typeof value.repoPath !== "string") {
+            if (!isObject(value) || !isNonEmptyString(value.repoPath)) {
               return yield* Effect.fail(
                 new RegistryError(
                   "list",
                   "*",
-                  `Registry entry '${key}' must be a string or { repoPath, registeredAt } object.`,
+                  `Registry entry '${key}' must be a string or { repoPath, registeredAt } object with non-empty repoPath.`,
                   `Fix invalid JSON in ${registryPath}.`,
                 ),
               )

@@ -8,9 +8,6 @@ import {
 import { CmdHealthChecker } from "./cmd-health.js"
 import { HttpHealthChecker } from "./http-health.js"
 
-const isHttpTarget = (target: string): boolean =>
-  target.startsWith("http://") || target.startsWith("https://")
-
 export class DispatchHealthChecker implements HealthCheckerService {
   constructor(
     private readonly http: HealthCheckerService,
@@ -26,11 +23,12 @@ export class DispatchHealthChecker implements HealthCheckerService {
   }
 
   private pick(config: HealthCheckConfig): HealthCheckerService {
-    if (config.type === "http" || isHttpTarget(config.target)) {
-      return this.http
+    switch (config.type) {
+      case "http":
+        return this.http
+      case "command":
+        return this.command
     }
-
-    return this.command
   }
 }
 

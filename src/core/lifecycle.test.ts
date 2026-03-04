@@ -398,6 +398,68 @@ describe("lifecycle command orchestration", () => {
     }
   })
 
+  test("start persists PIDs to pids.json after server services start", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-pids-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "db",
+              type: "server",
+              command: "echo db",
+              port: 3510,
+            },
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3511,
+              dependsOn: ["db"],
+            },
+          ],
+        },
+      },
+    })
+
+    const serviceRunner = new CaptureServiceRunner()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+    const pids = JSON.parse(await readFile(pidsPath, "utf8")) as Record<string, { pid: number; port: number; startedAt: string }>
+
+    expect(Object.keys(pids).sort()).toEqual(["api", "db"])
+    expect(pids.db.port).toBe(3510)
+    expect(pids.api.port).toBe(3511)
+    expect(typeof pids.db.pid).toBe("number")
+    expect(typeof pids.api.pid).toBe("number")
+    expect(typeof pids.db.startedAt).toBe("string")
+    expect(typeof pids.api.startedAt).toBe("string")
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
   test("start failure stops already-started services best effort", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-cleanup-"))
 

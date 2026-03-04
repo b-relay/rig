@@ -289,6 +289,7 @@ export const runStartCommand = (args: StartArgs) => {
     const envLoader = yield* EnvLoader
     const binInstaller = yield* BinInstaller
     const portChecker = yield* PortChecker
+    const fileSystem = yield* FileSystem
 
     const loaded = yield* loadProjectConfig(args.name)
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
@@ -357,6 +358,18 @@ export const runStartCommand = (args: StartArgs) => {
         port: running.port,
       })
     }
+
+    const pidsPath = join(workspacePath, ".rig", "pids.json")
+    yield* fileSystem.mkdir(join(workspacePath, ".rig")).pipe(
+      Effect.mapError((error) =>
+        toServiceRunnerError("start", "runtime", error.message, `Unable to create .rig directory.`),
+      ),
+    )
+    const pids: PidMap = {}
+    for (const entry of started) {
+      pids[entry.name] = { pid: entry.pid, port: entry.port, startedAt: entry.startedAt.toISOString() }
+    }
+    yield* writePidMap(fileSystem, pidsPath, pids)
 
     for (const service of binServices) {
       const envVars = yield* loadServiceEnv(service, environment, workspacePath, envLoader)

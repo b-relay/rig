@@ -25,6 +25,10 @@ Local Mac deployment manager. See DESIGN.md for full spec.
 7. All subcommands must support --help, -h
 8. Enforce 127.0.0.1 only (never 0.0.0.0) in schema validation
 
+## Git Workflow
+- Push directly to main — no PRs, no feature branches
+- Commit messages: conventional commits (feat:, fix:, test:, refactor:, etc.)
+
 ## Code Style
 - Use tagged error classes (readonly _tag = "ErrorName")
 - Prefer pipe/Effect.gen over raw promises

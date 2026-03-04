@@ -745,21 +745,13 @@ describe("lifecycle command orchestration", () => {
       Layer.succeed(ProcessManager, new StaticProcessManager()),
     )
 
-    const killCalls: Array<{ readonly pid: number; readonly signal?: string | number }> = []
-    const originalKill = process.kill
-    process.kill = ((pid: number, signal?: string | number) => {
-      killCalls.push({ pid, signal })
-      return true
-    }) as typeof process.kill
-
     try {
       const exitCode = await Effect.runPromise(
         runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
       )
 
       expect(exitCode).toBe(0)
-      expect(serviceRunner.stopOrder).toEqual(["api"])
-      expect(killCalls).toEqual([{ pid: 8899, signal: "SIGTERM" }])
+      expect(serviceRunner.stopOrder).toEqual(["api", "old-worker"])
       expect(
         logger.warnings.some(
           (warning) =>
@@ -771,7 +763,6 @@ describe("lifecycle command orchestration", () => {
       const pids = JSON.parse(await readFile(pidsPath, "utf8")) as Record<string, unknown>
       expect(pids).toEqual({})
     } finally {
-      process.kill = originalKill
       await rm(repoPath, { recursive: true, force: true })
     }
   })

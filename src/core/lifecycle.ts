@@ -265,17 +265,24 @@ const orderServerServices = (
     return ordered as readonly ServerService[]
   })
 
-const buildRunningService = (service: ServerService, pidEntry: PidEntry): RunningService => {
-  const parsed = new Date(pidEntry.startedAt)
-  const startedAt = Number.isNaN(parsed.getTime()) ? new Date(0) : parsed
-
-  return {
-    name: service.name,
-    pid: pidEntry.pid,
-    port: pidEntry.port,
-    startedAt,
-  }
+const parseStartedAt = (value: string): Date => {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed
 }
+
+const buildRunningService = (service: ServerService, pidEntry: PidEntry): RunningService => ({
+  name: service.name,
+  pid: pidEntry.pid,
+  port: pidEntry.port,
+  startedAt: parseStartedAt(pidEntry.startedAt),
+})
+
+const buildOrphanRunningService = (serviceName: string, pidEntry: PidEntry): RunningService => ({
+  name: serviceName,
+  pid: pidEntry.pid,
+  port: pidEntry.port,
+  startedAt: parseStartedAt(pidEntry.startedAt),
+})
 
 export const runStartCommand = (args: StartArgs) => {
   const started: RunningService[] = []
@@ -592,31 +599,14 @@ export const runStopCommand = (args: StopArgs) =>
 
       delete pids[serviceName]
 
-      const orphanCleanup = Effect.try({
-        try: () => {
-          process.kill(pidEntry.pid, "SIGTERM")
-        },
-        catch: (cause) => cause,
-      }).pipe(
-        Effect.catchAll((cause) => {
-          const code =
-            typeof cause === "object" && cause !== null && "code" in cause
-              ? String((cause as { code?: unknown }).code)
-              : ""
-          const message = cause instanceof Error ? cause.message : String(cause)
-
-          if (code !== "ESRCH") {
-            recordFailure(
-              toServiceRunnerError(
-                "stop",
-                serviceName,
-                message,
-                "Unable to stop orphaned process referenced in PID tracking.",
-              ),
-            )
-          }
-
-          return Effect.void
+      const orphanCleanup = serviceRunner.stop(buildOrphanRunningService(serviceName, pidEntry)).pipe(
+        Effect.catchAll((error) => {
+          recordFailure(error)
+          return logger.warn("Failed to stop orphaned process referenced in PID tracking.", {
+            service: serviceName,
+            pid: pidEntry.pid,
+            error: error.message,
+          })
         }),
       )
 

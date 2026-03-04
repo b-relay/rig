@@ -355,7 +355,7 @@ describe("lifecycle command orchestration", () => {
       const serviceRunner = new CaptureServiceRunner()
       const layer = Layer.mergeAll(
         NodeFileSystemLive,
-      BunPortCheckerLive,
+        BunPortCheckerLive,
         Layer.succeed(Logger, new CaptureLogger()),
         Layer.succeed(Registry, new StaticRegistry(repoPath)),
         Layer.succeed(Workspace, new StaticWorkspace(repoPath)),

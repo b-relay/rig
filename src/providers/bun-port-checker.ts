@@ -14,7 +14,7 @@ const causeMessage = (cause: unknown): string =>
 const lookupPortPid = (port: number) =>
   Effect.tryPromise({
     try: async () => {
-      const child = Bun.spawn(["lsof", "-ti", `:${port}`], {
+      const child = Bun.spawn(["lsof", "-ti", `:${port}`, "-sTCP:LISTEN"], {
         stdout: "pipe",
         stderr: "pipe",
       })

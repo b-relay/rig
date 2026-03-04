@@ -15,7 +15,7 @@ const parseDotenv = (content: string, envFile: string): Readonly<Record<string, 
       continue
     }
 
-    const value = line.startsWith("export ") ? line.slice(7).trim() : line
+    const value = line.replace(/^export\s+/, "")
     const separator = value.indexOf("=")
 
     if (separator < 0) {
@@ -37,20 +37,33 @@ const parseDotenv = (content: string, envFile: string): Readonly<Record<string, 
       )
     }
 
-    if (entry.startsWith('"') && entry.endsWith('"')) {
+    if (entry.startsWith('"')) {
+      if (entry.length < 2 || !entry.endsWith('"')) {
+        throw new EnvLoaderError(
+          envFile,
+          `Unterminated double-quoted value on line ${index + 1}.`,
+          "Close the value with a matching double quote.",
+        )
+      }
+
       entry = entry
         .slice(1, -1)
         .replace(/\\n/g, "\n")
         .replace(/\\r/g, "\r")
         .replace(/\\t/g, "\t")
         .replace(/\\"/g, '"')
-    } else if (entry.startsWith("'") && entry.endsWith("'")) {
+    } else if (entry.startsWith("'")) {
+      if (entry.length < 2 || !entry.endsWith("'")) {
+        throw new EnvLoaderError(
+          envFile,
+          `Unterminated single-quoted value on line ${index + 1}.`,
+          "Close the value with a matching single quote.",
+        )
+      }
+
       entry = entry.slice(1, -1)
     } else {
-      const comment = entry.indexOf(" #")
-      if (comment >= 0) {
-        entry = entry.slice(0, comment).trimEnd()
-      }
+      entry = entry.replace(/\s+#.*$/, "").trimEnd()
     }
 
     parsed[key] = entry

@@ -25,6 +25,7 @@ import {
 } from "../interfaces/service-runner.js"
 import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
+import { StubHookRunnerLive } from "../providers/stub-hook-runner.js"
 import { PortChecker, type PortChecker as PortCheckerService } from "../interfaces/port-checker.js"
 import { BunPortCheckerLive } from "../providers/bun-port-checker.js"
 import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
@@ -297,6 +298,7 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
       StubPortCheckerLive,
+      StubHookRunnerLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -363,6 +365,7 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
       const layer = Layer.mergeAll(
         NodeFileSystemLive,
         BunPortCheckerLive,
+        StubHookRunnerLive,
         Layer.succeed(Logger, new CaptureLogger()),
         Layer.succeed(Registry, new StaticRegistry(repoPath)),
         Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -437,6 +440,7 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
       StubPortCheckerLive,
+      StubHookRunnerLive,
       Layer.succeed(Logger, new CaptureLogger()),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -500,6 +504,7 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
       StubPortCheckerLive,
+      StubHookRunnerLive,
       Layer.succeed(Logger, new CaptureLogger()),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -554,6 +559,7 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
       StubPortCheckerLive,
+      StubHookRunnerLive,
       Layer.succeed(Logger, new CaptureLogger()),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -661,6 +667,7 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
       StubPortCheckerLive,
+      StubHookRunnerLive,
       Layer.succeed(Logger, new CaptureLogger()),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
@@ -735,6 +742,7 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
       StubPortCheckerLive,
+      StubHookRunnerLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry(repoPath)),
       Layer.succeed(Workspace, new StaticWorkspace(repoPath)),

@@ -18,6 +18,7 @@ import { ServiceRunner } from "../interfaces/service-runner.js"
 import { Workspace } from "../interfaces/workspace.js"
 import { StubBinInstaller } from "../providers/stub-bin-installer.js"
 import { StubHealthChecker } from "../providers/stub-health-checker.js"
+import { StubHookRunnerLive } from "../providers/stub-hook-runner.js"
 import { StubPortChecker } from "../providers/stub-port-checker.js"
 import { StubProcessManager } from "../providers/stub-process-manager.js"
 import { StubReverseProxy } from "../providers/stub-reverse-proxy.js"
@@ -292,6 +293,7 @@ const createHarness = (options: HarnessOptions): Harness => {
   const envLoader = new StaticEnvLoader(options.envFiles ?? {})
 
   const layer = Layer.mergeAll(
+    StubHookRunnerLive,
     Layer.succeed(Logger, logger),
     Layer.succeed(Registry, registry),
     Layer.succeed(FileSystem, fileSystem),

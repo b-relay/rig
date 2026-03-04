@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect";
 
 import { runCli } from "./cli/index";
 import { BunBinInstallerLive } from "./providers/bun-bin";
+import { BunHookRunnerLive } from "./providers/bun-hook-runner";
 import { BunPortCheckerLive } from "./providers/bun-port-checker";
 import { DotenvLoaderLive } from "./providers/dotenv-loader";
 import { BunGitLive } from "./providers/bun-git";
@@ -31,6 +32,7 @@ export const RigLive = Layer.mergeAll(
   DotenvWithFileSystemLive,
   RegistryWithFileSystemLive,
   BunGitLive,
+  BunHookRunnerLive,
   BunPortCheckerLive,
   CaddyProxyLive,
   LaunchdManagerLive,

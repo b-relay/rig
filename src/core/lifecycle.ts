@@ -5,6 +5,7 @@ import { BinInstaller } from "../interfaces/bin-installer.js"
 import { EnvLoader } from "../interfaces/env-loader.js"
 import { FileSystem } from "../interfaces/file-system.js"
 import { HealthChecker } from "../interfaces/health-checker.js"
+import { HookRunner } from "../interfaces/hook-runner.js"
 import { Logger } from "../interfaces/logger.js"
 import { PortChecker } from "../interfaces/port-checker.js"
 import { ProcessManager } from "../interfaces/process-manager.js"
@@ -53,24 +54,6 @@ const toServiceRunnerError = (
   message: string,
   hint: string,
 ) => new ServiceRunnerError(operation, service, message, hint)
-
-const mergeRuntimeEnv = (
-  envVars: Readonly<Record<string, string>>,
-): Record<string, string> => {
-  const merged: Record<string, string> = {}
-
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string") {
-      merged[key] = value
-    }
-  }
-
-  for (const [key, value] of Object.entries(envVars)) {
-    merged[key] = value
-  }
-
-  return merged
-}
 
 const loadHookEnv = (
   environment: Environment,
@@ -232,42 +215,34 @@ const runHook = (
   scope: string,
   workdir: string,
   envVars: Readonly<Record<string, string>>,
-) => {
+): Effect.Effect<void, ServiceRunnerError, HookRunner> => {
   if (!command || command.trim().length === 0) {
     return Effect.void
   }
 
   const operation = phase === "preStop" || phase === "postStop" ? "stop" : "start"
 
-  return Effect.tryPromise({
-    try: async () => {
-      const child = Bun.spawn(["sh", "-c", command], {
-        cwd: workdir,
-        env: mergeRuntimeEnv(envVars),
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-
-      const [stdout, stderr, exitCode] = await Promise.all([
-        child.stdout ? new Response(child.stdout).text() : Promise.resolve(""),
-        child.stderr ? new Response(child.stderr).text() : Promise.resolve(""),
-        child.exited,
-      ])
-
-      if (exitCode !== 0) {
-        const output = [stderr.trim(), stdout.trim()].filter((chunk) => chunk.length > 0).join(" | ")
-        throw new Error(
-          `Hook '${phase}' for ${scope} exited ${exitCode}${output.length > 0 ? `: ${output}` : ""}`,
-        )
-      }
-    },
-    catch: (cause) =>
-      toServiceRunnerError(
-        operation,
-        scope,
-        cause instanceof Error ? cause.message : String(cause),
-        `Fix hook '${phase}' for ${scope} and retry.`,
+  return Effect.gen(function* () {
+    const hookRunner = yield* HookRunner
+    const result = yield* hookRunner.runHook(command, { workdir, env: envVars }).pipe(
+      Effect.mapError((error) =>
+        toServiceRunnerError(operation, scope, error.message, `Fix hook '${phase}' for ${scope} and retry.`),
       ),
+    )
+
+    if (result.exitCode !== 0) {
+      const output = [result.stderr.trim(), result.stdout.trim()]
+        .filter((chunk) => chunk.length > 0)
+        .join(" | ")
+      yield* Effect.fail(
+        toServiceRunnerError(
+          operation,
+          scope,
+          `Hook '${phase}' for ${scope} exited ${result.exitCode}${output.length > 0 ? `: ${output}` : ""}`,
+          `Fix hook '${phase}' for ${scope} and retry.`,
+        ),
+      )
+    }
   })
 }
 

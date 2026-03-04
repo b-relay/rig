@@ -24,6 +24,7 @@ import {
 import { StubBinInstaller } from "../providers/stub-bin-installer.js"
 import { StubGit } from "../providers/stub-git.js"
 import { StubHealthChecker } from "../providers/stub-health-checker.js"
+import { StubHookRunnerLive } from "../providers/stub-hook-runner.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
 import { StubProcessManager } from "../providers/stub-process-manager.js"
@@ -196,6 +197,7 @@ const makeLayer = (logger: CaptureLogger) =>
     Layer.succeed(Registry, new StaticRegistry(repoPath)),
     Layer.succeed(Workspace, new TestWorkspace(join(workspaceRoot, randomUUID()))),
     NodeFileSystemLive,
+    StubHookRunnerLive,
     Layer.succeed(Git, new StubGit()),
     Layer.succeed(ReverseProxy, new StubReverseProxy()),
     Layer.succeed(ProcessManager, new StubProcessManager()),

@@ -7,7 +7,7 @@ import { ReverseProxy, type ProxyEntry } from "../interfaces/reverse-proxy.js"
 import { Workspace } from "../interfaces/workspace.js"
 import type { DeployArgs } from "../schema/args.js"
 import type { Environment, RigConfig, ServerService } from "../schema/config.js"
-import { ConfigValidationError } from "../schema/errors.js"
+import { ConfigValidationError, ProcessError, WorkspaceError } from "../schema/errors.js"
 import { loadProjectConfig, resolveEnvironment } from "./config.js"
 import { configError, daemonLabel } from "./shared.js"
 
@@ -58,27 +58,14 @@ const computeProxyEntry = (
 }
 
 const isWorkspaceAlreadyCreated = (error: unknown): boolean =>
-  typeof error === "object" &&
-  error !== null &&
-  "_tag" in error &&
-  "operation" in error &&
-  "message" in error &&
-  (error as { _tag: unknown })._tag === "WorkspaceError" &&
-  (error as { operation: unknown }).operation === "create" &&
-  typeof (error as { message: unknown }).message === "string" &&
-  (error as { message: string }).message.includes("already exists")
+  error instanceof WorkspaceError &&
+  error.operation === "create" &&
+  error.message.includes("already exists")
 
 const isMissingDaemonInstall = (error: unknown): boolean =>
-  typeof error === "object" &&
-  error !== null &&
-  "_tag" in error &&
-  "operation" in error &&
-  "message" in error &&
-  (error as { _tag: unknown })._tag === "ProcessError" &&
-  (error as { operation: unknown }).operation === "uninstall" &&
-  typeof (error as { message: unknown }).message === "string" &&
-  ((error as { message: string }).message.includes("ENOENT") ||
-    (error as { message: string }).message.toLowerCase().includes("no such file"))
+  error instanceof ProcessError &&
+  error.operation === "uninstall" &&
+  (error.message.includes("ENOENT") || error.message.toLowerCase().includes("no such file"))
 
 export const runDeployCommand = (args: DeployArgs) =>
   Effect.gen(function* () {

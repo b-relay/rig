@@ -17,8 +17,26 @@ export const runStatusCommand = (args: StatusArgs) =>
       const entries = yield* registry.list()
       const rows = yield* Effect.forEach(entries, (entry) =>
         Effect.gen(function* () {
-          const dev = yield* processManager.status(daemonLabel(entry.name, "dev"))
-          const prod = yield* processManager.status(daemonLabel(entry.name, "prod"))
+          const dev = yield* processManager.status(daemonLabel(entry.name, "dev")).pipe(
+            Effect.catchAll(() =>
+              Effect.succeed({
+                label: daemonLabel(entry.name, "dev"),
+                running: false,
+                pid: null,
+                loaded: false,
+              }),
+            ),
+          )
+          const prod = yield* processManager.status(daemonLabel(entry.name, "prod")).pipe(
+            Effect.catchAll(() =>
+              Effect.succeed({
+                label: daemonLabel(entry.name, "prod"),
+                running: false,
+                pid: null,
+                loaded: false,
+              }),
+            ),
+          )
 
           return {
             name: entry.name,

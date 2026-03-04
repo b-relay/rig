@@ -271,8 +271,8 @@ export class BunGit implements GitService {
         })
 
         const [stdout, stderr, exitCode] = await Promise.all([
-          child.stdout ? new Response(child.stdout).text() : Promise.resolve(""),
-          child.stderr ? new Response(child.stderr).text() : Promise.resolve(""),
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
           child.exited,
         ])
 

@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import { runConfigCommand } from "../core/config-command.js"
 import { runDeployCommand } from "../core/deploy.js"
+import { runInitCommand } from "../core/init.js"
 import { runListCommand } from "../core/list.js"
 import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"
 import { runStatusCommand } from "../core/status.js"
@@ -261,7 +262,7 @@ const parseInit = (args: readonly string[]) =>
       )
     }
 
-    return yield* runScaffoldHandler("init", payload.data)
+    return yield* runInitCommand(payload.data)
   })
 
 const parseStatus = (args: readonly string[]) =>

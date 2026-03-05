@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
@@ -66,9 +66,22 @@ class CaptureLogger implements LoggerService {
 }
 
 class StaticRegistry implements RegistryService {
-  constructor(private readonly repoPath: string) {}
+  private readonly entries = new Map<string, RegistryEntry>()
 
-  register(_name: string, _repoPath: string) {
+  constructor(private readonly fallbackRepoPath: string) {
+    this.entries.set("pantry", {
+      name: "pantry",
+      repoPath: fallbackRepoPath,
+      registeredAt: new Date(0),
+    })
+  }
+
+  register(name: string, repoPath: string) {
+    this.entries.set(name, {
+      name,
+      repoPath,
+      registeredAt: new Date(),
+    })
     return Effect.void
   }
 
@@ -76,18 +89,14 @@ class StaticRegistry implements RegistryService {
     return Effect.void
   }
 
-  resolve(_name: string) {
-    return Effect.succeed(this.repoPath)
+  resolve(name: string) {
+    return Effect.succeed(this.entries.get(name)?.repoPath ?? this.fallbackRepoPath)
   }
 
   list() {
-    const entry: RegistryEntry = {
-      name: "pantry",
-      repoPath: this.repoPath,
-      registeredAt: new Date(0),
-    }
-
-    return Effect.succeed([entry])
+    return Effect.succeed(
+      [...this.entries.values()].sort((left, right) => left.name.localeCompare(right.name)),
+    )
   }
 }
 
@@ -191,10 +200,10 @@ afterAll(async () => {
   }
 })
 
-const makeLayer = (logger: CaptureLogger) =>
+const makeLayer = (logger: CaptureLogger, registry: StaticRegistry) =>
   Layer.mergeAll(
     Layer.succeed(Logger, logger),
-    Layer.succeed(Registry, new StaticRegistry(repoPath)),
+    Layer.succeed(Registry, registry),
     Layer.succeed(Workspace, new TestWorkspace(join(workspaceRoot, randomUUID()))),
     NodeFileSystemLive,
     StubHookRunnerLive,
@@ -212,8 +221,9 @@ const makeLayer = (logger: CaptureLogger) =>
 
 const runWithLogger = async (argv: readonly string[]) => {
   const logger = new CaptureLogger()
-  const exitCode = await Effect.runPromise(runCli(argv).pipe(Effect.provide(makeLayer(logger))))
-  return { exitCode, logger }
+  const registry = new StaticRegistry(repoPath)
+  const exitCode = await Effect.runPromise(runCli(argv).pipe(Effect.provide(makeLayer(logger, registry))))
+  return { exitCode, logger, registry }
 }
 
 describe("GIVEN suite context WHEN cli global help parsing THEN behavior is covered", () => {
@@ -348,13 +358,17 @@ describe("GIVEN suite context WHEN cli init parsing THEN behavior is covered", (
   })
 
   test("GIVEN test setup WHEN happy path returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["init", "pantry", "--path", repoPath])
+    const relativePath = "./tmp/rig-cli-init-relative"
+    const { exitCode, logger, registry } = await runWithLogger([
+      "init",
+      "pantry",
+      "--path",
+      relativePath,
+    ])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
-
-    const ready = logger.infos.find((entry) => entry.message === "init command scaffold ready.")
-    expect(ready).toBeDefined()
+    expect(await Effect.runPromise(registry.resolve("pantry"))).toBe(resolve(relativePath))
   })
 })
 

@@ -332,6 +332,11 @@ export const runStartCommand = (args: StartArgs) => {
 
     const loaded = yield* loadProjectConfig(args.name)
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
+    yield* logger.info("Loaded configuration.", {
+      name: args.name,
+      env: args.env,
+      services: environment.services.length,
+    })
     const workspacePath = yield* workspace.resolve(args.name, args.env)
     const logDir = join(workspacePath, ".rig", "logs")
 
@@ -344,9 +349,14 @@ export const runStartCommand = (args: StartArgs) => {
     const orderedServerServices = yield* orderServerServices(loaded.configPath, serverServices)
     const binServices = environment.services.filter((service) => service.type === "bin")
     const hookEnv = yield* loadHookEnv(environment, workspacePath, envLoader)
+    const projectPreStart = hookCommand(loaded.config.hooks, "preStart")
+
+    if (projectPreStart && projectPreStart.trim().length > 0) {
+      yield* logger.info("Running preStart hook...", { scope: "project" })
+    }
 
     yield* runHook(
-      hookCommand(loaded.config.hooks, "preStart"),
+      projectPreStart,
       "preStart",
       `project:${args.name}`,
       workspacePath,
@@ -355,15 +365,20 @@ export const runStartCommand = (args: StartArgs) => {
 
     for (const service of orderedServerServices) {
       const envVars = yield* loadServiceEnv(service, environment, workspacePath, envLoader)
+      const servicePreStart = hookCommand(service.hooks, "preStart")
 
       yield* runHook(
-        hookCommand(service.hooks, "preStart"),
+        servicePreStart,
         "preStart",
         `service:${service.name}`,
         workspacePath,
         envVars,
       )
 
+      yield* logger.info("Starting service...", {
+        service: service.name,
+        port: service.port,
+      })
       const running = yield* serviceRunner.start(service, {
         workdir: workspacePath,
         envVars,
@@ -372,6 +387,10 @@ export const runStartCommand = (args: StartArgs) => {
       started.push(running)
 
       if (service.healthCheck) {
+        yield* logger.info("Waiting for health check...", {
+          service: service.name,
+          target: service.healthCheck,
+        })
         yield* healthChecker.poll(
           {
             type: resolveCheckType(service.healthCheck),
@@ -413,15 +432,17 @@ export const runStartCommand = (args: StartArgs) => {
 
     for (const service of binServices) {
       const envVars = yield* loadServiceEnv(service, environment, workspacePath, envLoader)
+      const servicePreStart = hookCommand(service.hooks, "preStart")
 
       yield* runHook(
-        hookCommand(service.hooks, "preStart"),
+        servicePreStart,
         "preStart",
         `service:${service.name}`,
         workspacePath,
         envVars,
       )
 
+      yield* logger.info("Installing binary...", { service: service.name })
       const builtPath = yield* binInstaller.build(service, workspacePath)
       const shimPath = yield* binInstaller.install(service.name, args.env, builtPath)
       installedBins.push({ name: service.name, shimPath })
@@ -564,6 +585,7 @@ export const runStopCommand = (args: StopArgs) =>
     const orderedServerServices = yield* orderServerServices(loaded.configPath, serverServices)
     const reverseServerServices = [...orderedServerServices].reverse()
     const hookEnv = yield* loadHookEnv(environment, workspacePath, envLoader)
+    const projectPreStop = hookCommand(loaded.config.hooks, "preStop")
 
     let firstFailure: unknown | null = null
     const recordFailure = (error: unknown) => {
@@ -588,13 +610,11 @@ export const runStopCommand = (args: StopArgs) =>
       )
     }
 
-    yield* runHook(
-      hookCommand(loaded.config.hooks, "preStop"),
-      "preStop",
-      `project:${args.name}`,
-      workspacePath,
-      hookEnv,
-    )
+    if (projectPreStop && projectPreStop.trim().length > 0) {
+      yield* logger.info("Running preStop hook...", { scope: "project" })
+    }
+
+    yield* runHook(projectPreStop, "preStop", `project:${args.name}`, workspacePath, hookEnv)
 
     const pids = yield* readPidMap(fileSystem, pidsPath)
     const installedBins = yield* readInstalledBinMap(fileSystem, binsPath)
@@ -607,9 +627,14 @@ export const runStopCommand = (args: StopArgs) =>
       }
 
       const envVars = yield* loadServiceEnv(service, environment, workspacePath, envLoader)
+      const servicePreStop = hookCommand(service.hooks, "preStop")
+
+      if (servicePreStop && servicePreStop.trim().length > 0) {
+        yield* logger.info("Running preStop hook...", { scope: `service:${service.name}` })
+      }
 
       yield* runHook(
-        hookCommand(service.hooks, "preStop"),
+        servicePreStop,
         "preStop",
         `service:${service.name}`,
         workspacePath,
@@ -624,6 +649,7 @@ export const runStopCommand = (args: StopArgs) =>
         }),
       )
 
+      yield* logger.info("Stopping service...", { service: service.name })
       yield* serviceRunner.stop(buildRunningService(service, pidEntry)).pipe(
         Effect.catchAll((error) => {
           recordFailure(error)
@@ -659,6 +685,7 @@ export const runStopCommand = (args: StopArgs) =>
       }
 
       delete pids[serviceName]
+      yield* logger.info("Stopping service...", { service: serviceName })
 
       const orphanCleanup = serviceRunner.stop(buildOrphanRunningService(serviceName, pidEntry)).pipe(
         Effect.catchAll((error) => {

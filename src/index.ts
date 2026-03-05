@@ -131,6 +131,15 @@ export const main = (argv: string[]): Promise<number> =>
     ),
   );
 
+const handleSignal = (signal: string) => {
+  // Outside Effect runtime — console.error is the only output available.
+  console.error(`\n✗ Received ${signal}. Shutting down.`);
+  process.exit(130);
+};
+
+process.on("SIGTERM", () => handleSignal("SIGTERM"));
+process.on("SIGINT", () => handleSignal("SIGINT"));
+
 if (import.meta.main) {
   const exitCode = await main(process.argv.slice(2));
   process.exitCode = exitCode;

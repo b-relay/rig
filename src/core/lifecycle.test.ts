@@ -41,9 +41,11 @@ import {
 import type { BinService, ServerService } from "../schema/config.js"
 
 class CaptureLogger implements LoggerService {
+  readonly infoCalls: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> = []
   readonly warnings: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> = []
 
-  info(_message: string, _details?: Record<string, unknown>) {
+  info(message: string, details?: Record<string, unknown>) {
+    this.infoCalls.push({ message, details })
     return Effect.void
   }
 
@@ -475,6 +477,52 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     expect(typeof pids.api.pid).toBe("number")
     expect(typeof pids.db.startedAt).toBe("string")
     expect(typeof pids.api.startedAt).toBe("string")
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN valid dev config with one server service WHEN runStartCommand succeeds THEN progress info logs include configuration load and service start", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-start-progress-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3521,
+            },
+          ],
+        },
+      },
+    })
+
+    const logger = new CaptureLogger()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, new CaptureServiceRunner()),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.infoCalls.some((entry) => entry.message.includes("Loaded configuration"))).toBe(true)
+    expect(logger.infoCalls.some((entry) => entry.message.includes("Starting service"))).toBe(true)
 
     await rm(repoPath, { recursive: true, force: true })
   })

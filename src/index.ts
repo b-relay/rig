@@ -14,11 +14,27 @@ import { JsonLoggerLive } from "./providers/json-logger";
 import { LaunchdManagerLive } from "./providers/launchd";
 import { NodeFileSystemLive } from "./providers/node-fs";
 import { JSONRegistryLive } from "./providers/json-registry";
+import { CompositeLoggerLive } from "./providers/composite-logger";
+import { FileLoggerLive } from "./providers/file-logger";
 import { TerminalLoggerLive } from "./providers/terminal-logger";
 import { GitWorktreeWorkspaceLive } from "./providers/worktree";
 import type { RigError } from "./schema/errors.js";
 
-const loggerLayer = process.env.RIG_LOG_FORMAT === "json" ? JsonLoggerLive : TerminalLoggerLive;
+export const buildLoggerLayer = (): Layer.Layer<Logger> => {
+  const primaryLayer = process.env.RIG_LOG_FORMAT === "json" ? JsonLoggerLive : TerminalLoggerLive
+  const logFilePath = process.env.RIG_LOG_FILE
+
+  if (!logFilePath) {
+    return primaryLayer
+  }
+
+  return CompositeLoggerLive(
+    primaryLayer,
+    Layer.provide(FileLoggerLive(logFilePath), NodeFileSystemLive),
+  )
+}
+
+const loggerLayer = buildLoggerLayer()
 
 const DotenvWithFileSystemLive = Layer.provide(DotenvLoaderLive, NodeFileSystemLive);
 const RegistryWithFileSystemLive = Layer.provide(JSONRegistryLive, NodeFileSystemLive);

@@ -552,6 +552,7 @@ describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behav
     const originalRunCli = runCli
     const originalTerminalLoggerModule = await import("../providers/terminal-logger.js")
     const originalLogFormat = process.env.RIG_LOG_FORMAT
+    const originalLogFile = process.env.RIG_LOG_FILE
     const captureLogger = new CaptureLogger()
 
     mock.module("./index.js", () => ({
@@ -569,6 +570,7 @@ describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behav
       TerminalLoggerLive: Layer.succeed(Logger, captureLogger),
     }))
     delete process.env.RIG_LOG_FORMAT
+    delete process.env.RIG_LOG_FILE
 
     try {
       const { main } = await import(`../index.js?rig-error-${randomUUID()}`)
@@ -593,6 +595,12 @@ describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behav
         delete process.env.RIG_LOG_FORMAT
       } else {
         process.env.RIG_LOG_FORMAT = originalLogFormat
+      }
+
+      if (originalLogFile === undefined) {
+        delete process.env.RIG_LOG_FILE
+      } else {
+        process.env.RIG_LOG_FILE = originalLogFile
       }
     }
   })

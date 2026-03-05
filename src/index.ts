@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 
 import { runCli } from "./cli/index";
+import { Logger } from "./interfaces/logger.js";
 import { BunBinInstallerLive } from "./providers/bun-bin";
 import { BunHookRunnerLive } from "./providers/bun-hook-runner";
 import { BunPortCheckerLive } from "./providers/bun-port-checker";
@@ -15,12 +16,16 @@ import { NodeFileSystemLive } from "./providers/node-fs";
 import { JSONRegistryLive } from "./providers/json-registry";
 import { TerminalLoggerLive } from "./providers/terminal-logger";
 import { GitWorktreeWorkspaceLive } from "./providers/worktree";
+import type { RigError } from "./schema/errors.js";
 
 const loggerLayer = process.env.RIG_LOG_FORMAT === "json" ? JsonLoggerLive : TerminalLoggerLive;
 
 const DotenvWithFileSystemLive = Layer.provide(DotenvLoaderLive, NodeFileSystemLive);
 const RegistryWithFileSystemLive = Layer.provide(JSONRegistryLive, NodeFileSystemLive);
-const ServiceRunnerWithFileSystemLive = Layer.provide(BunServiceRunnerLive, NodeFileSystemLive);
+const ServiceRunnerWithFileSystemLive = Layer.provide(
+  BunServiceRunnerLive,
+  Layer.mergeAll(NodeFileSystemLive, loggerLayer),
+);
 const BinInstallerWithFileSystemLive = Layer.provide(BunBinInstallerLive, NodeFileSystemLive);
 const WorkspaceWithDependenciesLive = Layer.provide(
   GitWorktreeWorkspaceLive,
@@ -43,7 +48,7 @@ export const RigLive = Layer.mergeAll(
   loggerLayer,
 );
 
-const isRigError = (error: unknown): error is { _tag: string; message: string; hint: string } =>
+const isRigError = (error: unknown): error is RigError =>
   typeof error === "object" &&
   error !== null &&
   "_tag" in error &&
@@ -70,34 +75,43 @@ const stringifyUnknown = (value: unknown): string => {
   }
 };
 
+const renderUnexpectedErrorDetails = (error: unknown): Record<string, unknown> => {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      ...(error.stack ? { stack: error.stack } : {}),
+    };
+  }
+
+  if (isTaggedMessageError(error)) {
+    return {
+      tag: error._tag,
+      message: error.message,
+    };
+  }
+
+  return {
+    value: stringifyUnknown(error),
+  };
+};
+
 export const main = (argv: string[]): Promise<number> =>
   Effect.runPromise(
     runCli(argv).pipe(
-      Effect.provide(RigLive),
       Effect.catchAll((error) =>
-        Effect.sync(() => {
-          if (isRigError(error)) {
-            console.error(`✗ [${error._tag}] ${error.message}`);
-            console.error(`  Hint: ${error.hint}`);
-          } else {
-            console.error("✗ unexpected error");
+        Effect.gen(function* () {
+          const logger = yield* Logger;
 
-            if (error instanceof Error) {
-              console.error(`  Message: ${error.message}`);
-              if (error.stack) {
-                console.error(`  Stack:\n${error.stack}`);
-              }
-            } else if (isTaggedMessageError(error)) {
-              console.error(`  Tag: ${error._tag}`);
-              console.error(`  Message: ${error.message}`);
-            } else {
-              console.error(`  Value: ${stringifyUnknown(error)}`);
-            }
+          if (isRigError(error)) {
+            yield* logger.error(error);
+          } else {
+            yield* logger.warn("Unexpected error while running command.", renderUnexpectedErrorDetails(error));
           }
 
           return 1;
         }),
       ),
+      Effect.provide(RigLive),
     ),
   );
 

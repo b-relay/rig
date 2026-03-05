@@ -2,6 +2,7 @@ import { join } from "node:path"
 import { Effect, Layer } from "effect"
 
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
+import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import {
   ServiceRunner,
   type HealthStatus,
@@ -103,7 +104,10 @@ export class BunServiceRunner implements ServiceRunnerService {
   private readonly logDirByService = new Map<string, string>()
   private readonly pidFileByService = new Map<string, string>()
 
-  constructor(private readonly fs: FileSystemService) {}
+  constructor(
+    private readonly fs: FileSystemService,
+    private readonly logger: LoggerService,
+  ) {}
 
   start(service: ServerService, opts: RunOpts): Effect.Effect<RunningService, ServiceRunnerError> {
     const logPath = join(opts.logDir, `${service.name}.log`)
@@ -174,10 +178,12 @@ export class BunServiceRunner implements ServiceRunnerService {
       if (typeof service.port === "number" && service.port > 0) {
         const ownership = yield* this.checkPortOwnership(service.pid, service.port)
         if (ownership === "pid-reuse") {
-          console.warn(
-            `[rig] Skipping stop for '${service.name}' (pid ${service.pid}): port ${service.port} ` +
-            `is owned by a different process; possible PID reuse. Removing stale PID tracking.`,
-          )
+          yield* this.logger.warn("Skipping stop for service due to possible PID reuse.", {
+            service: service.name,
+            pid: service.pid,
+            port: service.port,
+            reason: "Port is owned by a different process. Removing stale PID tracking.",
+          })
           yield* this.removeFromPidTracking(service.name)
           return
         }
@@ -487,6 +493,7 @@ export const BunServiceRunnerLive = Layer.effect(
   ServiceRunner,
   Effect.gen(function* () {
     const fs = yield* FileSystem
-    return new BunServiceRunner(fs)
+    const logger = yield* Logger
+    return new BunServiceRunner(fs, logger)
   }),
 )

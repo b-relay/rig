@@ -4,7 +4,9 @@ import { join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 
+import type { Logger as LoggerService } from "../interfaces/logger.js"
 import type { RunOpts } from "../interfaces/service-runner.js"
+import type { RigError } from "../schema/errors.js"
 import type { ServerService } from "../schema/config.js"
 import { ServiceRunnerError } from "../schema/errors.js"
 import { BunServiceRunner } from "./bun-service-runner.js"
@@ -20,6 +22,13 @@ const sleep = (ms: number): Promise<void> =>
 
 const trackedPids = new Set<number>()
 const trackedRoots: string[] = []
+const NoopLogger: LoggerService = {
+  info: () => Effect.void,
+  warn: () => Effect.void,
+  error: (_structured: RigError) => Effect.void,
+  success: () => Effect.void,
+  table: () => Effect.void,
+}
 
 const makeService = (
   name: string,
@@ -46,7 +55,7 @@ const createContext = async (): Promise<{
   await mkdir(workdir, { recursive: true })
 
   return {
-    runner: new BunServiceRunner(new NodeFileSystem()),
+    runner: new BunServiceRunner(new NodeFileSystem(), NoopLogger),
     opts: {
       workdir,
       envVars: {},

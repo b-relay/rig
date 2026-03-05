@@ -30,7 +30,7 @@ import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
 import { StubProcessManager } from "../providers/stub-process-manager.js"
 import { StubReverseProxy } from "../providers/stub-reverse-proxy.js"
 import { StubServiceRunner } from "../providers/stub-service-runner.js"
-import type { RigError } from "../schema/errors.js"
+import { CliArgumentError, type RigError } from "../schema/errors.js"
 
 class CaptureLogger implements LoggerService {
   readonly infos: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> = []
@@ -548,6 +548,55 @@ describe("GIVEN suite context WHEN cli start foreground THEN behavior is covered
 })
 
 describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behavior is covered", () => {
+  test("GIVEN test setup WHEN runCli fails with RigError THEN main logs structured error through Logger and returns 1 THEN expected behavior is observed", async () => {
+    const originalRunCli = runCli
+    const originalTerminalLoggerModule = await import("../providers/terminal-logger.js")
+    const originalLogFormat = process.env.RIG_LOG_FORMAT
+    const captureLogger = new CaptureLogger()
+
+    mock.module("./index.js", () => ({
+      runCli: () =>
+        Effect.fail(
+          new CliArgumentError(
+            "status",
+            "Test RigError for main catchAll path.",
+            "Use `rig status --help` to inspect command usage.",
+          ),
+        ),
+    }))
+    mock.module("../providers/terminal-logger.js", () => ({
+      ...originalTerminalLoggerModule,
+      TerminalLoggerLive: Layer.succeed(Logger, captureLogger),
+    }))
+    delete process.env.RIG_LOG_FORMAT
+
+    try {
+      const { main } = await import(`../index.js?rig-error-${randomUUID()}`)
+      const exitCode = await main(["status"])
+
+      expect(exitCode).toBe(1)
+      expect(captureLogger.errors).toHaveLength(1)
+      expect(captureLogger.warnings).toHaveLength(0)
+
+      const first = captureLogger.errors[0]
+      expect(first?._tag).toBe("CliArgumentError")
+      if (first?._tag === "CliArgumentError") {
+        expect(first.command).toBe("status")
+        expect(first.message).toBe("Test RigError for main catchAll path.")
+        expect(first.hint).toContain("rig status --help")
+      }
+    } finally {
+      mock.module("./index.js", () => ({ runCli: originalRunCli }))
+      mock.module("../providers/terminal-logger.js", () => originalTerminalLoggerModule)
+
+      if (originalLogFormat === undefined) {
+        delete process.env.RIG_LOG_FORMAT
+      } else {
+        process.env.RIG_LOG_FORMAT = originalLogFormat
+      }
+    }
+  })
+
   test("GIVEN test setup WHEN runCli fails with non-Rig error THEN main returns 1 THEN expected behavior is observed", async () => {
     const originalRunCli = runCli
 

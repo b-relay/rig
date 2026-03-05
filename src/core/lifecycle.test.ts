@@ -4,10 +4,11 @@ import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
-import { runStartCommand, runStopCommand } from "./lifecycle.js"
+import { runRestartCommand, runStartCommand, runStopCommand } from "./lifecycle.js"
 import { BinInstaller, type BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"
 import { EnvLoader, type EnvLoader as EnvLoaderService } from "../interfaces/env-loader.js"
 import { HealthChecker, type HealthChecker as HealthCheckerService } from "../interfaces/health-checker.js"
+import { HookRunner } from "../interfaces/hook-runner.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import {
   ProcessManager,
@@ -25,11 +26,18 @@ import {
 } from "../interfaces/service-runner.js"
 import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
-import { StubHookRunnerLive } from "../providers/stub-hook-runner.js"
+import { StubHookRunner, StubHookRunnerLive } from "../providers/stub-hook-runner.js"
 import { PortChecker, type PortChecker as PortCheckerService } from "../interfaces/port-checker.js"
 import { BunPortCheckerLive } from "../providers/bun-port-checker.js"
 import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
-import { BinInstallerError, HealthCheckError, PortConflictError, type RigError } from "../schema/errors.js"
+import {
+  BinInstallerError,
+  ConfigValidationError,
+  HealthCheckError,
+  PortConflictError,
+  ServiceRunnerError,
+  type RigError,
+} from "../schema/errors.js"
 import type { BinService, ServerService } from "../schema/config.js"
 
 class CaptureLogger implements LoggerService {
@@ -770,6 +778,641 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
 
       const pids = JSON.parse(await readFile(pidsPath, "utf8")) as Record<string, unknown>
       expect(pids).toEqual({})
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN circular server dependencies WHEN start is requested THEN ConfigValidationError mentions circular dependency", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-circular-dep-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3811,
+              dependsOn: ["worker"],
+            },
+            {
+              name: "worker",
+              type: "server",
+              command: "echo worker",
+              port: 3812,
+              dependsOn: ["api"],
+            },
+          ],
+        },
+      },
+    })
+
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const result = await Effect.runPromise(
+        runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(
+          Effect.provide(layer),
+          Effect.either,
+        ),
+      )
+
+      expect(result._tag).toBe("Left")
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(ConfigValidationError)
+        if (result.left instanceof ConfigValidationError) {
+          expect(result.left.message).toContain("Circular dependency")
+        }
+      }
+
+      expect(serviceRunner.startOrder).toEqual([])
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN server dependsOn references a bin service WHEN start is requested THEN ConfigValidationError is returned", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-bin-dep-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3821,
+              dependsOn: ["cli"],
+            },
+            {
+              name: "cli",
+              type: "bin",
+              entrypoint: "bun cli.ts",
+            },
+          ],
+        },
+      },
+    })
+
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const result = await Effect.runPromise(
+        runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(
+          Effect.provide(layer),
+          Effect.either,
+        ),
+      )
+
+      expect(result._tag).toBe("Left")
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(ConfigValidationError)
+        if (result.left instanceof ConfigValidationError) {
+          expect(result.left.message).toContain("not a server service")
+        }
+      }
+
+      expect(serviceRunner.startOrder).toEqual([])
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN second service fails health check WHEN start is requested THEN rollback stops the first started service", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-second-health-fail-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "db",
+              type: "server",
+              command: "echo db",
+              port: 3831,
+            },
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3832,
+              dependsOn: ["db"],
+              healthCheck: "http://127.0.0.1:3832/health",
+            },
+          ],
+        },
+      },
+    })
+
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker("api")),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const result = await Effect.runPromise(
+        runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(
+          Effect.provide(layer),
+          Effect.either,
+        ),
+      )
+
+      expect(result._tag).toBe("Left")
+      expect(serviceRunner.startOrder).toEqual(["db", "api"])
+      expect(serviceRunner.stopOrder).toEqual(["api", "db"])
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN whitespace-only hooks WHEN start is requested THEN hook execution is skipped as no-op", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-whitespace-hooks-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      hooks: {
+        preStart: "   ",
+        postStart: "   ",
+      },
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3841,
+              hooks: {
+                preStart: "   ",
+                postStart: "   ",
+              },
+            },
+          ],
+        },
+      },
+    })
+
+    const hookRunner = new StubHookRunner()
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      Layer.succeed(HookRunner, hookRunner),
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(layer)),
+      )
+
+      expect(exitCode).toBe(0)
+      expect(serviceRunner.startOrder).toEqual(["api"])
+      expect(hookRunner.calls).toEqual([])
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN pid tracking file is missing WHEN stop is requested THEN command succeeds with no services stopped", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-missing-pids-"))
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3851,
+            },
+          ],
+        },
+      },
+    })
+
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+      )
+
+      expect(exitCode).toBe(0)
+      expect(serviceRunner.stopOrder).toEqual([])
+      expect(JSON.parse(await readFile(pidsPath, "utf8"))).toEqual({})
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN pid tracking file contains a JSON array WHEN stop is requested THEN ServiceRunnerError reports invalid pid file", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-invalid-pids-array-"))
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3861,
+            },
+          ],
+        },
+      },
+    })
+
+    await mkdir(join(repoPath, ".rig"), { recursive: true })
+    await writeFile(pidsPath, "[]\n", "utf8")
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, new CaptureServiceRunner()),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const result = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+      )
+
+      expect(result._tag).toBe("Left")
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(ServiceRunnerError)
+        if (result.left instanceof ServiceRunnerError) {
+          expect(result.left.service).toBe("runtime")
+          expect(result.left.message).toContain("Invalid PID file")
+        }
+      }
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN pid tracking file is corrupt JSON WHEN stop is requested THEN ServiceRunnerError is returned", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-corrupt-pids-"))
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3871,
+            },
+          ],
+        },
+      },
+    })
+
+    await mkdir(join(repoPath, ".rig"), { recursive: true })
+    await writeFile(pidsPath, "{not-json", "utf8")
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, new CaptureServiceRunner()),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const result = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+      )
+
+      expect(result._tag).toBe("Left")
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(ServiceRunnerError)
+        if (result.left instanceof ServiceRunnerError) {
+          expect(result.left.service).toBe("runtime")
+          expect(result.left.message).toContain("Invalid PID file")
+        }
+      }
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN one service preStop hook fails WHEN stop is requested THEN other services still stop and first failure is returned", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-best-effort-"))
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "db",
+              type: "server",
+              command: "echo db",
+              port: 3881,
+            },
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3882,
+              hooks: {
+                preStop: "exit 7",
+              },
+            },
+          ],
+        },
+      },
+    })
+
+    await mkdir(join(repoPath, ".rig"), { recursive: true })
+    await writeFile(
+      pidsPath,
+      `${JSON.stringify(
+        {
+          db: { pid: 18881, port: 3881, startedAt: new Date(0).toISOString() },
+          api: { pid: 18882, port: 3882, startedAt: new Date(0).toISOString() },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const logger = new CaptureLogger()
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const result = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+      )
+
+      expect(result._tag).toBe("Left")
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(ServiceRunnerError)
+      }
+
+      expect(serviceRunner.stopOrder).toEqual(["api", "db"])
+      expect(
+        logger.warnings.some(
+          (warning) => warning.message === "Service preStop hook failed." && warning.details?.service === "api",
+        ),
+      ).toBe(true)
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN bins tracking contains services not in config WHEN stop is requested THEN orphaned bins are uninstalled", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-orphan-bins-"))
+    const binsPath = join(repoPath, ".rig", "bins.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3891,
+            },
+          ],
+        },
+      },
+    })
+
+    await mkdir(join(repoPath, ".rig"), { recursive: true })
+    await writeFile(
+      binsPath,
+      `${JSON.stringify(
+        {
+          "legacy-cli": { installedAt: new Date(0).toISOString(), shimPath: "/tmp/legacy-cli" },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const binInstaller = new CaptureBinInstaller()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, new CaptureServiceRunner()),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, binInstaller),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+      )
+
+      expect(exitCode).toBe(0)
+      expect(binInstaller.uninstallCalls).toEqual([{ name: "legacy-cli", env: "dev" }])
+      expect(JSON.parse(await readFile(binsPath, "utf8"))).toEqual({})
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN tracked running services WHEN restart is requested THEN stop executes before start", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-restart-sequence-"))
+    const hookLog = join(repoPath, "hooks-restart.log")
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      hooks: {
+        preStop: "printf 'top-pre-stop\\n' >> hooks-restart.log",
+        postStop: "printf 'top-post-stop\\n' >> hooks-restart.log",
+        preStart: "printf 'top-pre-start\\n' >> hooks-restart.log",
+        postStart: "printf 'top-post-start\\n' >> hooks-restart.log",
+      },
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3901,
+              hooks: {
+                preStop: "printf 'api-pre-stop\\n' >> hooks-restart.log",
+                postStop: "printf 'api-post-stop\\n' >> hooks-restart.log",
+                preStart: "printf 'api-pre-start\\n' >> hooks-restart.log",
+                postStart: "printf 'api-post-start\\n' >> hooks-restart.log",
+              },
+            },
+          ],
+        },
+      },
+    })
+
+    await mkdir(join(repoPath, ".rig"), { recursive: true })
+    await writeFile(
+      pidsPath,
+      `${JSON.stringify(
+        {
+          api: { pid: 19001, port: 3901, startedAt: new Date(0).toISOString() },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const serviceRunner = new CaptureServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runRestartCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+      )
+
+      expect(exitCode).toBe(0)
+      expect(serviceRunner.stopOrder).toEqual(["api"])
+      expect(serviceRunner.startOrder).toEqual(["api"])
+
+      const lines = (await readFile(hookLog, "utf8")).trim().split("\n")
+      expect(lines).toEqual([
+        "top-pre-stop",
+        "api-pre-stop",
+        "api-post-stop",
+        "top-post-stop",
+        "top-pre-start",
+        "api-pre-start",
+        "api-post-start",
+        "top-post-start",
+      ])
     } finally {
       await rm(repoPath, { recursive: true, force: true })
     }

@@ -427,44 +427,64 @@ The smart command. Reads rig.json, diffs against current state, and applies only
 
 ```
 src/
-├── cli/                    # CLI entry point + arg parsing
-│   ├── index.ts            # Main entry, routes to subcommands
-│   ├── args.ts             # Zod-based arg parsing + validation
-│   └── help.ts             # Help text generation for all commands
+├── cli/                    # CLI entry point + help rendering
+│   ├── help.ts             # Help text generation for all commands
+│   └── index.ts            # Main entry, arg parsing, command routing
 ├── core/                   # Business logic (no I/O, uses only interfaces)
+│   ├── config-command.ts   # `rig config` command output
+│   ├── config.ts           # Config loading + environment resolution
 │   ├── deploy.ts           # Deploy orchestration (diff, apply)
 │   ├── lifecycle.ts        # Start, stop, restart logic
-│   ├── version.ts          # Version bumping, tagging, undo
-│   └── status.ts           # Status + health aggregation
+│   ├── list.ts             # `rig list` command output
+│   ├── shared.ts           # Shared core helpers (labels, config errors)
+│   ├── status.ts           # Status + health aggregation
+│   └── version.ts          # Version bumping, tagging, undo
 ├── interfaces/             # Contracts (no implementations)
 │   ├── bin-installer.ts    # BinInstaller interface
 │   ├── env-loader.ts       # EnvLoader interface
 │   ├── file-system.ts      # FileSystem interface
 │   ├── git.ts              # Git interface
 │   ├── health-checker.ts   # HealthChecker interface
+│   ├── hook-runner.ts      # HookRunner interface
 │   ├── logger.ts           # Logger interface
+│   ├── port-checker.ts     # PortChecker interface
 │   ├── process-manager.ts  # ProcessManager interface
 │   ├── registry.ts         # Registry interface
 │   ├── reverse-proxy.ts    # ReverseProxy interface
 │   ├── service-runner.ts   # ServiceRunner interface
 │   └── workspace.ts        # Workspace interface
 ├── providers/              # Swappable implementations
-│   ├── caddy.ts            # CaddyProxy implements ReverseProxy
-│   ├── launchd.ts          # LaunchdManager implements ProcessManager
-│   ├── worktree.ts         # GitWorktreeWorkspace implements Workspace
-│   ├── copy.ts             # CopyWorkspace implements Workspace (fallback)
-│   ├── bun-git.ts          # BunGit implements Git (shells out to git)
-│   ├── dotenv-loader.ts    # DotenvLoader implements EnvLoader
 │   ├── bun-bin.ts          # BunBinInstaller implements BinInstaller
-│   ├── http-health.ts      # HttpHealthChecker implements HealthChecker
+│   ├── bun-git.ts          # BunGit implements Git (shells out to git)
+│   ├── bun-hook-runner.ts  # BunHookRunner implements HookRunner
+│   ├── bun-port-checker.ts # BunPortChecker implements PortChecker
+│   ├── bun-service-runner.ts  # BunServiceRunner implements ServiceRunner
+│   ├── caddy.ts            # CaddyProxy implements ReverseProxy
 │   ├── cmd-health.ts       # CmdHealthChecker implements HealthChecker
-│   ├── terminal-logger.ts  # TerminalLogger implements Logger
+│   ├── composite-logger.ts # CompositeLogger fan-outs to multiple loggers
+│   ├── dotenv-loader.ts    # DotenvLoader implements EnvLoader
+│   ├── file-logger.ts      # FileLogger appends structured log lines to file
+│   ├── health-checker-dispatch.ts # DispatchHealthChecker routes by check type
+│   ├── health-poll.ts      # Shared polling helper for health check providers
+│   ├── http-health.ts      # HttpHealthChecker implements HealthChecker
 │   ├── json-logger.ts      # JsonLogger implements Logger
+│   ├── json-registry.ts    # JSONRegistry implements Registry
+│   ├── launchd.ts          # LaunchdManager implements ProcessManager
 │   ├── node-fs.ts          # NodeFileSystem implements FileSystem
-│   └── json-registry.ts    # JSONRegistry implements Registry
+│   ├── stub-bin-installer.ts   # StubBinInstaller for tests
+│   ├── stub-git.ts             # StubGit for tests
+│   ├── stub-health-checker.ts  # StubHealthChecker for tests
+│   ├── stub-hook-runner.ts     # StubHookRunner for tests
+│   ├── stub-port-checker.ts    # StubPortChecker for tests
+│   ├── stub-process-manager.ts # StubProcessManager for tests
+│   ├── stub-reverse-proxy.ts   # StubReverseProxy for tests
+│   ├── stub-service-runner.ts  # StubServiceRunner for tests
+│   ├── stub-workspace.ts       # StubWorkspace for tests
+│   ├── terminal-logger.ts      # TerminalLogger implements Logger
+│   └── worktree.ts             # GitWorktreeWorkspace implements Workspace
 ├── schema/                 # Zod schemas + validation
-│   ├── config.ts           # rig.json schema
 │   ├── args.ts             # CLI argument schemas per subcommand
+│   ├── config.ts           # rig.json schema
 │   └── errors.ts           # Structured error types
 └── index.ts                # Wires layers together, runs CLI
 ```
@@ -478,6 +498,7 @@ src/
 interface FileSystem {
   read(path: string): Effect<string>
   write(path: string, content: string): Effect<void>
+  append(path: string, content: string): Effect<void>
   copy(src: string, dest: string): Effect<void>
   symlink(target: string, link: string): Effect<void>
   exists(path: string): Effect<boolean>
@@ -488,7 +509,9 @@ interface FileSystem {
 }
 
 // ── Logger ───────────────────────────────────────────────────────────────────
-// Current implementations: terminal (human-readable), json (for AI agents)
+// Current implementations: terminal, json, file, and composite fan-out
+// `RIG_LOG_FORMAT=json` switches primary output to JsonLogger.
+// `RIG_LOG_FILE=/path/to/rig.log` enables FileLogger and wraps with CompositeLogger.
 // All output goes through this — never raw console.log.
 
 interface Logger {
@@ -566,6 +589,30 @@ interface Workspace {
 interface HealthChecker {
   check(config: HealthCheckConfig): Effect<HealthResult>
   poll(config: HealthCheckConfig, interval: number, timeout: number): Effect<HealthResult>
+}
+
+// ── Hook Runner ──────────────────────────────────────────────────────────────
+// Runs lifecycle hook shell commands in the resolved workspace with merged env.
+
+interface HookRunner {
+  runHook(
+    command: string,
+    opts: {
+      workdir: string
+      env: Readonly<Record<string, string>>
+    }
+  ): Effect<{
+    exitCode: number
+    stdout: string
+    stderr: string
+  }>
+}
+
+// ── Port Checker ─────────────────────────────────────────────────────────────
+// Verifies `127.0.0.1` port availability before starting services.
+
+interface PortChecker {
+  check(port: number, service: string): Effect<void>
 }
 
 // ── Service Runner ───────────────────────────────────────────────────────────

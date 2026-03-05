@@ -55,8 +55,8 @@ export const runStatusCommand = (args: StatusArgs) =>
     const loaded = yield* loadProjectConfig(name)
     const envs = args.env ? [args.env] : (["dev", "prod"] as const)
 
-    const rows = yield* Effect.forEach(envs, (env) =>
-      Effect.gen(function* () {
+    const rows = yield* Effect.forEach(envs, (env) => {
+      const row = Effect.gen(function* () {
         const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, env)
         const daemon = yield* processManager.status(daemonLabel(name, env))
 
@@ -68,7 +68,17 @@ export const runStatusCommand = (args: StatusArgs) =>
           daemonRunning: daemon.running,
           pid: daemon.pid,
         }
-      }),
+      })
+
+      if (args.env) {
+        return row
+      }
+
+      return row.pipe(
+        Effect.catchTag("ConfigValidationError", () => Effect.succeed(null)),
+      )
+    }).pipe(
+      Effect.map((items) => items.filter((item): item is NonNullable<typeof item> => item !== null)),
     )
 
     yield* logger.table(rows)

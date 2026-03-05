@@ -6,16 +6,12 @@ import {
   type HealthChecker as HealthCheckerService,
   type HealthResult,
 } from "../interfaces/health-checker.js"
+import { pollUntilHealthy } from "./health-poll.js"
 import { HealthCheckError } from "../schema/errors.js"
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const SINGLE_CHECK_TIMEOUT_MS = 5_000
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
 
 // ── HttpHealthChecker ───────────────────────────────────────────────────────
 
@@ -72,26 +68,7 @@ export class HttpHealthChecker implements HealthCheckerService {
     interval: number,
     timeout: number,
   ): Effect.Effect<HealthResult, HealthCheckError> {
-    return Effect.gen(this, function* () {
-      const deadline = Date.now() + timeout
-      let lastResult: HealthResult | null = null
-
-      while (Date.now() < deadline) {
-        const result = yield* this.check(config)
-
-        if (result.healthy) {
-          return result
-        }
-
-        lastResult = result
-
-        const remaining = deadline - Date.now()
-        if (remaining > 0) {
-          yield* Effect.promise(() => sleep(Math.min(interval, remaining)))
-        }
-      }
-
-      return yield* Effect.fail(
+    return pollUntilHealthy(this, config, interval, timeout, (lastResult) =>
         new HealthCheckError(
           config.service,
           config.target,
@@ -100,8 +77,7 @@ export class HttpHealthChecker implements HealthCheckerService {
           `Health check for ${config.service} did not become healthy within ${timeout}ms.`,
           `Check ${config.target} manually. Review service logs for startup errors.`,
         ),
-      )
-    })
+    )
   }
 }
 

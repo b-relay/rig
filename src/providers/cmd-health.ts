@@ -6,16 +6,12 @@ import {
   type HealthChecker as HealthCheckerService,
   type HealthResult,
 } from "../interfaces/health-checker.js"
+import { pollUntilHealthy } from "./health-poll.js"
 import { HealthCheckError } from "../schema/errors.js"
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const SINGLE_CHECK_TIMEOUT_MS = 10_000
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
 
 // ── CmdHealthChecker ────────────────────────────────────────────────────────
 
@@ -34,7 +30,7 @@ export class CmdHealthChecker implements HealthCheckerService {
         }, SINGLE_CHECK_TIMEOUT_MS)
 
         const [stderr, exitCode] = await Promise.all([
-          child.stderr ? new Response(child.stderr).text() : Promise.resolve(""),
+          new Response(child.stderr).text(),
           child.exited,
         ])
 
@@ -67,26 +63,7 @@ export class CmdHealthChecker implements HealthCheckerService {
     interval: number,
     timeout: number,
   ): Effect.Effect<HealthResult, HealthCheckError> {
-    return Effect.gen(this, function* () {
-      const deadline = Date.now() + timeout
-      let lastResult: HealthResult | null = null
-
-      while (Date.now() < deadline) {
-        const result = yield* this.check(config)
-
-        if (result.healthy) {
-          return result
-        }
-
-        lastResult = result
-
-        const remaining = deadline - Date.now()
-        if (remaining > 0) {
-          yield* Effect.promise(() => sleep(Math.min(interval, remaining)))
-        }
-      }
-
-      return yield* Effect.fail(
+    return pollUntilHealthy(this, config, interval, timeout, (lastResult) =>
         new HealthCheckError(
           config.service,
           config.target,
@@ -95,8 +72,7 @@ export class CmdHealthChecker implements HealthCheckerService {
           `Command health check for ${config.service} did not succeed within ${timeout}ms.`,
           `Run "${config.target}" manually to diagnose. Check service logs for errors.`,
         ),
-      )
-    })
+    )
   }
 }
 

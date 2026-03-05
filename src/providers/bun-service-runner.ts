@@ -344,7 +344,7 @@ export class BunServiceRunner implements ServiceRunnerService {
         })
 
         const [stdout, exitCode] = await Promise.all([
-          child.stdout ? new Response(child.stdout).text() : Promise.resolve(""),
+          new Response(child.stdout).text(),
           child.exited,
         ])
 

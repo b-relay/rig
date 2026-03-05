@@ -29,6 +29,11 @@ class InMemoryFileSystem implements FileSystemService {
     return Effect.void
   }
 
+  append(path: string, content: string) {
+    this.files.set(path, `${this.files.get(path) ?? ""}${content}`)
+    return Effect.void
+  }
+
   copy(src: string, dest: string) {
     const content = this.files.get(src)
     if (content === undefined) {

@@ -1,4 +1,4 @@
-import { access, chmod, cp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { access, appendFile, chmod, cp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { Effect, Layer } from "effect"
 
@@ -31,6 +31,16 @@ export class NodeFileSystem implements FileSystemService {
         await writeFile(path, content, "utf8")
       },
       catch: toError("write", path, `Ensure ${dirname(path)} is writable.`),
+    })
+  }
+
+  append(path: string, content: string): Effect.Effect<void, FileSystemError> {
+    return Effect.tryPromise({
+      try: async () => {
+        await mkdir(dirname(path), { recursive: true })
+        await appendFile(path, content, "utf8")
+      },
+      catch: toError("append", path, `Ensure ${dirname(path)} is writable.`),
     })
   }
 

@@ -98,6 +98,7 @@ export class FileSystemError {
     readonly operation:
       | "read"
       | "write"
+      | "append"
       | "copy"
       | "symlink"
       | "exists"

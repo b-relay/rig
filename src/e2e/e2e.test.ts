@@ -83,6 +83,16 @@ class InMemoryFileSystem implements FileSystemService {
     })
   }
 
+  append(path: string, content: string) {
+    return Effect.sync(() => {
+      this.ensureParentDirs(path)
+      const existing = this.files.get(path) ?? ""
+      const next = `${existing}${content}`
+      this.files.set(path, next)
+      this.writes.push({ path, content: next })
+    })
+  }
+
   copy(src: string, dest: string) {
     return Effect.sync(() => {
       const content = this.files.get(src)

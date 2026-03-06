@@ -80,6 +80,57 @@ describe("GIVEN suite context WHEN config loader THEN behavior is covered", () =
     await rm(repoPath, { recursive: true, force: true })
   })
 
+  test("GIVEN test setup WHEN service name includes path traversal characters THEN schema validation rejects it THEN expected behavior is observed", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-invalid-service-name-"))
+
+    await writeFile(
+      join(repoPath, "rig.json"),
+      `${JSON.stringify(
+        {
+          name: "pantry",
+          version: "1.0.0",
+          environments: {
+            dev: {
+              services: [
+                {
+                  name: "../escape",
+                  type: "bin",
+                  entrypoint: "cli/index.ts",
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+    )
+
+    const result = await Effect.runPromise(
+      loadProjectConfig("pantry").pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.dev.services.0.name" &&
+            issue.message.includes("Service name must be lowercase alphanumeric with hyphens only."),
+        ),
+      ).toBe(true)
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
   test("GIVEN test setup WHEN invalid JSON yields ConfigValidationError with invalid_json code THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-config-badjson-"))
 

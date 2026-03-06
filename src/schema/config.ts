@@ -3,11 +3,23 @@ import { z } from "zod"
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 const SEMVER_RE = /^\d+\.\d+\.\d+$/
+const SERVICE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/
 
 const noBindAll = (fieldName: string) =>
   z.string().refine((s) => !s.includes("0.0.0.0"), {
     message: `${fieldName} must use 127.0.0.1, not 0.0.0.0. Rig enforces localhost-only binding.`,
   })
+
+const ServiceNameSchema = z
+  .string()
+  .min(1)
+  .regex(
+    SERVICE_NAME_RE,
+    "Service name must be lowercase alphanumeric with hyphens only."
+  )
+  .describe(
+    "Unique service name within this environment. Safe for file paths and process labels."
+  )
 
 // ── Hooks ───────────────────────────────────────────────────────────────────
 
@@ -65,7 +77,7 @@ export const TopLevelHooksSchema = z
 
 export const ServerServiceSchema = z
   .object({
-    name: z.string().min(1).describe("Unique service name within this environment."),
+    name: ServiceNameSchema,
     type: z.literal("server").describe("server = long-running daemon."),
     command: noBindAll("command").describe(
       "Shell command to start this service. Must bind to 127.0.0.1."
@@ -88,7 +100,7 @@ export const ServerServiceSchema = z
       .default(30)
       .describe("Seconds to wait for health check to pass before failing. Default: 30."),
     dependsOn: z
-      .array(z.string())
+      .array(ServiceNameSchema)
       .optional()
       .describe("Service names that must be healthy before this one starts."),
     hooks: ServiceHooksSchema.optional(),
@@ -103,7 +115,7 @@ export const ServerServiceSchema = z
 
 export const BinServiceSchema = z
   .object({
-    name: z.string().min(1).describe("Unique service name within this environment."),
+    name: ServiceNameSchema,
     type: z.literal("bin").describe("bin = CLI tool installed to ~/.rig/bin/."),
     entrypoint: z
       .string()

@@ -231,6 +231,370 @@ describe("GIVEN suite context WHEN config loader THEN behavior is covered", () =
     }
   })
 
+  test("GIVEN duplicate service names WHEN parsing rig config THEN schema validation rejects with duplicate name issue", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            { name: "api", type: "server", command: "node api.js --host 127.0.0.1", port: 3000 },
+            { name: "api", type: "server", command: "node api-worker.js --host 127.0.0.1", port: 3001 },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(result.left.issues.some((issue) => issue.message.includes('Duplicate service name "api"'))).toBe(true)
+    }
+  })
+
+  test("GIVEN dependsOn references missing service WHEN parsing rig config THEN schema validation rejects with dependency issue", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "server",
+              type: "server",
+              command: "node server.js --host 127.0.0.1",
+              port: 3000,
+              dependsOn: ["ghost"],
+            },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(result.left.issues.some((issue) => issue.message.includes('depends on "ghost"'))).toBe(true)
+    }
+  })
+
+  test("GIVEN server command binding 0.0.0.0 WHEN parsing rig config THEN schema validation rejects with localhost-only message", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "server",
+              type: "server",
+              command: "node server.js --host 0.0.0.0",
+              port: 3000,
+            },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.dev.services.0.command" &&
+            issue.message.includes("127.0.0.1"),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test("GIVEN healthCheck URL binding 0.0.0.0 WHEN parsing rig config THEN schema validation rejects it", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "server",
+              type: "server",
+              command: "node server.js --host 127.0.0.1",
+              port: 3000,
+              healthCheck: "http://0.0.0.0:3000/health",
+            },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.dev.services.0.healthCheck" &&
+            issue.message.includes("127.0.0.1"),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test("GIVEN bin service with build and spaced entrypoint WHEN parsing rig config THEN schema validation rejects build plus command string", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "cli",
+              type: "bin",
+              entrypoint: "bun cli/index.ts",
+              build: "bun build",
+            },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.dev.services.0.build" &&
+            issue.message.includes("Cannot use 'build' when entrypoint is a command string"),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test("GIVEN server port above 65535 WHEN parsing rig config THEN schema validation rejects out-of-range port", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "server",
+              type: "server",
+              command: "node server.js --host 127.0.0.1",
+              port: 70000,
+            },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.dev.services.0.port" &&
+            issue.code === "too_big" &&
+            issue.message.includes("<=65535"),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test("GIVEN server port zero WHEN parsing rig config THEN schema validation rejects non-positive port", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "server",
+              type: "server",
+              command: "node server.js --host 127.0.0.1",
+              port: 0,
+            },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.dev.services.0.port" &&
+            issue.code === "too_small" &&
+            issue.message.includes(">=1"),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test("GIVEN no environments WHEN parsing rig config THEN schema validation rejects with at-least-one-environment message", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {},
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(result.left.issues.some((issue) => issue.message.includes("At least one environment"))).toBe(true)
+    }
+  })
+
+  test("GIVEN proxy upstream references missing service WHEN parsing rig config THEN schema validation rejects upstream", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          proxy: { upstream: "ghost" },
+          services: [
+            { name: "api", type: "server", command: "node api.js --host 127.0.0.1", port: 3000 },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(result.left.issues.some((issue) => issue.message.includes('Proxy upstream "ghost"'))).toBe(true)
+    }
+  })
+
+  test("GIVEN invalid semver version WHEN parsing rig config THEN schema validation rejects version field", () => {
+    const config = {
+      name: "pantry",
+      version: "not-a-version",
+      environments: {
+        dev: {
+          services: [
+            { name: "api", type: "server", command: "node api.js --host 127.0.0.1", port: 3000 },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "version" && issue.message.includes("Version must be valid semver"),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test("GIVEN empty services array WHEN parsing rig config THEN schema validation rejects minimum service count", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.dev.services" &&
+            issue.code === "too_small" &&
+            issue.message.includes(">=1"),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  test("GIVEN self-referencing dependsOn WHEN parsing rig config THEN current schema behavior accepts it", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "node api.js --host 127.0.0.1",
+              port: 3000,
+              dependsOn: ["api"],
+            },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Right")
+    if (result._tag === "Right") {
+      expect(result.right.environments.dev?.services[0].name).toBe("api")
+      expect(result.right.environments.dev?.services[0]).toMatchObject({ dependsOn: ["api"] })
+    }
+  })
+
   test("GIVEN test setup WHEN valid config roundtrip returns correct LoadedProjectConfig shape THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-config-valid-"))
 

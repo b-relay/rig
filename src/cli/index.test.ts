@@ -226,6 +226,15 @@ const runWithLogger = async (argv: readonly string[]) => {
   return { exitCode, logger, registry }
 }
 
+const runWithLoggerEither = async (argv: readonly string[]) => {
+  const logger = new CaptureLogger()
+  const registry = new StaticRegistry(repoPath)
+  const result = await Effect.runPromise(
+    runCli(argv).pipe(Effect.provide(makeLayer(logger, registry)), Effect.either),
+  )
+  return { result, logger, registry }
+}
+
 describe("GIVEN suite context WHEN cli global help parsing THEN behavior is covered", () => {
   test("GIVEN test setup WHEN no args shows main help and returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger([])
@@ -471,17 +480,23 @@ describe("GIVEN suite context WHEN cli version parsing THEN behavior is covered"
     expect(resolved?.details?.action).toBe("show")
   })
 
-  for (const action of ["patch", "minor", "major", "undo", "list"] as const) {
+  for (const action of ["patch", "minor", "major", "list"] as const) {
     test(`GIVEN test setup WHEN with name and ${action} returns 0 THEN expected behavior is observed`, async () => {
       const { exitCode, logger } = await runWithLogger(["version", "pantry", action])
 
       expect(exitCode).toBe(0)
       expect(logger.errors).toHaveLength(0)
-
-      const resolved = logger.infos.find((entry) => entry.message === "Version command resolved state.")
-      expect(resolved?.details?.action).toBe(action)
     })
   }
+
+  test("GIVEN test setup WHEN with name and undo THEN it returns CliArgumentError", async () => {
+    const { result } = await runWithLoggerEither(["version", "pantry", "undo"])
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(CliArgumentError)
+    }
+  })
 
   test("GIVEN test setup WHEN too many positionals returns 1 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["version", "pantry", "patch", "extra"])

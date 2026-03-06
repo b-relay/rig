@@ -38,16 +38,6 @@ bun run build
 ./rig init pantry --path ~/Projects/pantry
 ```
 
-Current codebase note: `init` is currently scaffolded (it validates args and returns success, but does not yet persist registry changes). Until fully wired, register manually in `~/.rig/registry.json`.
-
-```bash
-mkdir -p ~/.rig
-printf '{\n  "pantry": {\n    "repoPath": "%s",\n    "registeredAt": "%s"\n  }\n}\n' \
-  "$HOME/Projects/pantry" \
-  "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-  > ~/.rig/registry.json
-```
-
 ### 3. Create `rig.json`
 
 Example minimal config:
@@ -111,9 +101,9 @@ Example minimal config:
 | Command | Status in current code |
 |---|---|
 | `deploy`, `start`, `stop`, `restart`, `status`, `list`, `config` | Implemented |
-| `init` | Scaffolded (argument parsing + success message) |
+| `init` | Implemented |
 | `logs` | Scaffolded (argument parsing + success message) |
-| `version patch|minor|major|undo|list` | Parses action, currently reports resolved state (mutation flow not wired yet) |
+| `version patch|minor|major|undo|list` | Implemented |
 
 ### `deploy`
 

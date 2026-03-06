@@ -639,4 +639,325 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
 
     await rm(repoPath, { recursive: true, force: true })
   })
+
+  test("GIVEN dev deploy WHEN workspace create fails with non already-exists error THEN WorkspaceError propagates", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-workspace-create-fail-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    class PermissionDeniedWorkspace implements WorkspaceService {
+      create(name: string, env: "dev" | "prod", _version: string, _commitRef: string) {
+        return Effect.fail(
+          new WorkspaceError(
+            "create",
+            name,
+            env,
+            "Permission denied while creating workspace.",
+            "Grant write permissions and retry.",
+          ),
+        )
+      }
+
+      resolve(_name: string, _env: "dev" | "prod") {
+        return Effect.succeed(workspacePath)
+      }
+
+      sync(_name: string, _env: "dev" | "prod") {
+        return Effect.void
+      }
+
+      list(_name: string) {
+        return Effect.succeed([])
+      }
+    }
+
+    const workspace = new PermissionDeniedWorkspace()
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const result = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(WorkspaceError)
+      const error = result.left as WorkspaceError
+      expect(error.operation).toBe("create")
+      expect(error.message).toContain("Permission denied")
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN dev deploy WHEN reverse proxy add fails THEN ProxyError propagates", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-proxy-add-fail-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      domain: "pantry.example.com",
+      environments: {
+        dev: {
+          proxy: { upstream: "web" },
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    class FailingAddReverseProxy implements ReverseProxyService {
+      readonly addCalls: ProxyEntry[] = []
+      readonly updateCalls: ProxyEntry[] = []
+
+      read() {
+        return Effect.succeed([] as const)
+      }
+
+      add(entry: ProxyEntry) {
+        this.addCalls.push(entry)
+        return Effect.fail(
+          new ProxyError("add", "Failed to write reverse proxy entry.", "Fix proxy configuration access."),
+        )
+      }
+
+      update(entry: ProxyEntry) {
+        this.updateCalls.push(entry)
+        return Effect.succeed({ type: "updated", entry } satisfies ProxyChange)
+      }
+
+      remove(_name: string, _env: string) {
+        return Effect.fail(
+          new ProxyError("remove", "remove not implemented in test double", "unused"),
+        )
+      }
+
+      diff() {
+        return Effect.succeed({ changes: [], unchanged: [] } satisfies ProxyDiff)
+      }
+
+      backup() {
+        return Effect.succeed("/tmp/Caddyfile.backup")
+      }
+    }
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new FailingAddReverseProxy()
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const result = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ProxyError)
+      const error = result.left as ProxyError
+      expect(error.operation).toBe("add")
+      expect(error.message).toContain("Failed to write reverse proxy entry")
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN prod deploy WHEN process manager install fails THEN ProcessError propagates", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-daemon-install-fail-"))
+    const workspacePath = join(repoPath, ".workspaces", "prod")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      daemon: {
+        enabled: true,
+        keepAlive: false,
+      },
+      environments: {
+        prod: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 3070 },
+          ],
+        },
+      },
+    })
+
+    class FailingInstallProcessManager implements ProcessManagerService {
+      readonly installCalls: DaemonConfig[] = []
+
+      install(config: DaemonConfig) {
+        this.installCalls.push(config)
+        return Effect.fail(
+          new ProcessError(
+            "install",
+            config.label,
+            "launchctl returned a failure while loading plist.",
+            "Inspect launchctl output and retry.",
+          ),
+        )
+      }
+
+      uninstall(_label: string) {
+        return Effect.void
+      }
+
+      start(_label: string) {
+        return Effect.void
+      }
+
+      stop(_label: string) {
+        return Effect.void
+      }
+
+      status(label: string) {
+        return Effect.succeed({
+          label,
+          loaded: false,
+          running: false,
+          pid: null,
+        } satisfies DaemonStatus)
+      }
+
+      backup(_label: string) {
+        return Effect.succeed("/tmp/backup.plist")
+      }
+    }
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new FailingInstallProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const result = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ProcessError)
+      const error = result.left as ProcessError
+      expect(error.operation).toBe("install")
+      expect(error.label).toBe("rig.pantry.prod")
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN dev deploy WHEN domain exists but environment proxy config is missing THEN reverse proxy add and update are not called", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-domain-no-proxy-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      domain: "pantry.example.com",
+      environments: {
+        dev: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(reverseProxy.addCalls).toEqual([])
+    expect(reverseProxy.updateCalls).toEqual([])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN prod deploy WHEN daemon config is missing entirely THEN uninstall is called as disabled behavior", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-daemon-missing-"))
+    const workspacePath = join(repoPath, ".workspaces", "prod")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        prod: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 3070 },
+          ],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(processManager.installCalls).toEqual([])
+    expect(processManager.uninstallCalls).toEqual(["rig.pantry.prod"])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
 })

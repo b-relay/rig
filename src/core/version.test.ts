@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, test } from "bun:test"
+import { describe, expect, mock, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { runVersionCommand } from "./version.js"
@@ -295,6 +295,181 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
       const err = result.left as CliArgumentError
       expect(err.command).toBe("version")
     }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN project with invalid semver WHEN patch bump is requested THEN CliArgumentError includes MAJOR.MINOR.PATCH hint", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-invalid-semver-"))
+    await writeRigConfig(repoPath, "1.2.3")
+
+    const logger = new CaptureLogger()
+    const layer = createLayer(repoPath, logger)
+
+    const originalConfigModule = await import("./config.js")
+    const actualLoadProjectConfig = originalConfigModule.loadProjectConfig
+    let result: { _tag: "Left"; left: unknown } | { _tag: "Right"; right: number } = {
+      _tag: "Right",
+      right: 0,
+    }
+    try {
+      mock.module("./config.js", () => ({
+        ...originalConfigModule,
+        loadProjectConfig: (name: string) =>
+          Effect.succeed({
+            name,
+            repoPath,
+            configPath: join(repoPath, "rig.json"),
+            config: {
+              name,
+              version: "not-a-version",
+              environments: {
+                dev: {
+                  services: [
+                    { name: "web", type: "server", command: "echo web", port: 5173 },
+                  ],
+                },
+              },
+            },
+          }),
+      }))
+
+      const { runVersionCommand: runVersionCommandWithInvalidVersion } = await import(
+        `./version.js?invalid-semver-${Date.now()}`
+      )
+      result = await Effect.runPromise(
+        runVersionCommandWithInvalidVersion({ name: "pantry", action: "patch" }).pipe(
+          Effect.provide(layer),
+          Effect.either,
+        ),
+      )
+    } finally {
+      mock.module("./config.js", () => ({
+        ...originalConfigModule,
+        loadProjectConfig: actualLoadProjectConfig,
+      }))
+      mock.restore()
+    }
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(CliArgumentError)
+      const error = result.left as CliArgumentError
+      expect(error.message).toContain("Cannot bump invalid version")
+      expect(error.hint).toContain("MAJOR.MINOR.PATCH")
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN project semver 0.0.0 WHEN patch bump runs THEN version becomes 0.0.1", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-zero-patch-"))
+    await writeRigConfig(repoPath, "0.0.0")
+
+    const logger = new CaptureLogger()
+    const layer = createLayer(repoPath, logger)
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(await readVersion(repoPath)).toBe("0.0.1")
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN project semver 99.99.99 WHEN major bump runs THEN version becomes 100.0.0", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-large-major-"))
+    await writeRigConfig(repoPath, "99.99.99")
+
+    const logger = new CaptureLogger()
+    const layer = createLayer(repoPath, logger)
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "major" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(await readVersion(repoPath)).toBe("100.0.0")
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN project version 1.2.3 WHEN show action runs THEN it returns 0 and queries branch commit and dirty git state", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-show-git-calls-"))
+    await writeRigConfig(repoPath, "1.2.3")
+
+    class TrackingGit extends StaticGit {
+      branchCalls = 0
+      commitCalls = 0
+      dirtyCalls = 0
+
+      override currentBranch(repoPath: string): Effect.Effect<string, GitError> {
+        this.branchCalls += 1
+        return super.currentBranch(repoPath)
+      }
+
+      override commitHash(repoPath: string, ref?: string): Effect.Effect<string, GitError> {
+        this.commitCalls += 1
+        return super.commitHash(repoPath, ref)
+      }
+
+      override isDirty(repoPath: string): Effect.Effect<boolean, GitError> {
+        this.dirtyCalls += 1
+        return super.isDirty(repoPath)
+      }
+    }
+
+    const logger = new CaptureLogger()
+    const git = new TrackingGit("release", "feedface", true)
+    const layer = createLayer(repoPath, logger, git)
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "show" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(git.branchCalls).toBe(1)
+    expect(git.commitCalls).toBe(1)
+    expect(git.dirtyCalls).toBe(1)
+    expect(logger.infos).toContainEqual({
+      message: "Version command resolved state.",
+      details: {
+        name: "pantry",
+        action: "show",
+        version: "1.2.3",
+        branch: "release",
+        commit: "feedface",
+        dirty: true,
+      },
+    })
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN project version 1.2.3 WHEN list action runs THEN it returns 0 and logs version details with git metadata", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-list-logging-"))
+    await writeRigConfig(repoPath, "1.2.3")
+
+    const logger = new CaptureLogger()
+    const layer = createLayer(repoPath, logger, new StaticGit("hotfix", "bead1234", true))
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "list" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.infos).toContainEqual({
+      message: "Version list.",
+      details: {
+        name: "pantry",
+        version: "1.2.3",
+        branch: "hotfix",
+        commit: "bead1234",
+        dirty: true,
+      },
+    })
 
     await rm(repoPath, { recursive: true, force: true })
   })

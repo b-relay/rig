@@ -599,10 +599,10 @@ export const runStopCommand = (args: StopArgs) =>
       Effect.catchAll(() => Effect.succeed(null)),
     )
 
-    if (daemon?.running) {
-      yield* processManager.stop(label).pipe(
+    if (daemon?.loaded) {
+      yield* processManager.uninstall(label).pipe(
         Effect.catchAll((error) =>
-          logger.warn("Unable to stop daemon before shutdown.", {
+          logger.warn("Unable to uninstall daemon before shutdown.", {
             label,
             error: error.message,
           }),

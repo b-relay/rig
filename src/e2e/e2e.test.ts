@@ -445,6 +445,8 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
       },
     ])
     expect(harness.processManager.installCalls.map((call) => call.label)).toEqual(["rig.pantry.prod"])
+    expect(harness.processManager.uninstallCalls).toEqual(["rig.pantry.prod"])
+    expect(harness.processManager.stopCalls).toEqual([])
     expect(harness.serviceRunner.startCalls.map((call) => call.service)).toEqual(["db", "api"])
     expect(harness.serviceRunner.stopCalls.map((call) => call.service)).toEqual(["api", "db"])
   })

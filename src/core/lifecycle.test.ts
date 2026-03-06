@@ -27,6 +27,7 @@ import {
 import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { StubHookRunner, StubHookRunnerLive } from "../providers/stub-hook-runner.js"
+import { StubProcessManager } from "../providers/stub-process-manager.js"
 import { PortChecker, type PortChecker as PortCheckerService } from "../interfaces/port-checker.js"
 import { BunPortCheckerLive } from "../providers/bun-port-checker.js"
 import { StubPortCheckerLive } from "../providers/stub-port-checker.js"
@@ -756,6 +757,64 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     expect(pids).toEqual({})
 
     await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a daemon is loaded but not running WHEN stop is requested THEN stop uninstalls daemon instead of stopping it", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-daemon-loaded-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3710,
+            },
+          ],
+        },
+      },
+    })
+
+    const processManager = new StubProcessManager({
+      initialStates: [
+        {
+          label: "rig.pantry.dev",
+          loaded: true,
+          running: false,
+          pid: null,
+        },
+      ],
+    })
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, new CaptureServiceRunner()),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+      )
+
+      expect(exitCode).toBe(0)
+      expect(processManager.uninstallCalls).toEqual(["rig.pantry.dev"])
+      expect(processManager.stopCalls).toEqual([])
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
   })
 
   test("GIVEN test setup WHEN stop cleans orphaned pid entries that are not in current config THEN expected behavior is observed", async () => {

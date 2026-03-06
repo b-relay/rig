@@ -14,16 +14,10 @@ import { ProcessError } from "../schema/errors.js"
 
 // ── launchd domain helpers ──────────────────────────────────────────────────
 
-/**
- * Returns the GUI domain target for the current user (e.g. "gui/502").
- * Used by modern launchctl bootstrap/bootout commands.
- */
+// Returns the launchctl GUI domain target for the current user (e.g. "gui/502").
 const guiDomain = (): string => `gui/${getuid!()}`
 
-/**
- * Validates a label contains only safe characters for filesystem paths
- * and launchd identifiers.
- */
+// Validates a launchd label only contains safe filesystem and identifier characters.
 const validateLabel = (label: string): void => {
   if (!/^[a-zA-Z0-9._-]+$/.test(label)) {
     throw new Error(
@@ -37,10 +31,7 @@ const validateLabel = (label: string): void => {
 const escapeXml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 
-/**
- * Generate a launchd plist XML string from a DaemonConfig.
- * Exported for testing.
- */
+// Generates launchd plist XML from a DaemonConfig.
 export const generatePlist = (config: DaemonConfig): string => {
   const lines: string[] = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -121,10 +112,7 @@ const defaultRunner: CommandRunner = async (args) => {
 
 // ── Plist path derivation ───────────────────────────────────────────────────
 
-/**
- * Derive the plist file path for a given label.
- * Exported for testing.
- */
+// Derives the launchd plist file path for a service label.
 export const plistPath = (label: string, home?: string): string =>
   join(home ?? homedir(), "Library", "LaunchAgents", `com.b-relay.rig.${label}.plist`)
 

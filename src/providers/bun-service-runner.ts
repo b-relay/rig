@@ -322,16 +322,7 @@ export class BunServiceRunner implements ServiceRunnerService {
     return join(process.cwd(), ".rig", "logs", `${serviceName}.log`)
   }
 
-  /**
-   * Check whether a different process has taken over the expected port (PID reuse detection).
-   *
-   * Returns:
-   * - `"owns-port"` → PID is listening on the port. Safe to stop.
-   * - `"port-free"` → No one is listening on the port. Original service may have crashed
-   *    but PID is still alive (zombie, or non-TCP service). Safe to stop.
-   * - `"pid-reuse"` → Port is in use by a DIFFERENT PID. Do NOT kill — PID was reused.
-   * - `"unknown"` → lsof unavailable or errored. Proceed cautiously (assume safe to stop).
-   */
+  // Checks whether the expected PID still owns the service port to guard against PID reuse.
   private checkPortOwnership(
     pid: number,
     port: number,

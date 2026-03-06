@@ -18,10 +18,7 @@ interface StubPortCheckerOptions {
   readonly conflicts?: readonly StubPortConflict[]
 }
 
-/**
- * Stub that always reports ports as available.
- * Used in tests where real port binding is not desired.
- */
+// Stub PortChecker for tests, with optional configured port conflicts.
 export class StubPortChecker implements PortCheckerService {
   readonly checks: Array<{ readonly port: number; readonly service: string }> = []
   private readonly conflicts: readonly StubPortConflict[]

@@ -33,21 +33,7 @@ interface ParsedBlock {
   readonly endLine: number
 }
 
-/**
- * Parse all rig-managed blocks from Caddyfile text.
- *
- * A rig block is:
- *   # [rig:<name>:<env>]
- *   <domain> {
- *     reverse_proxy http://127.0.0.1:<port>
- *     ...
- *   }
- *
- * We extract name, env from the marker and domain, port from the block body.
- * The `upstream` field is set to the service name from the marker (we don't
- * have the service name in the Caddyfile itself, so we use a convention:
- * upstream = name, since deploy is the one that knows the actual service).
- */
+// Parses all rig-managed Caddyfile blocks and extracts marker/domain/upstream/port metadata.
 const parseBlocks = (text: string): ParsedBlock[] => {
   const lines = text.split("\n")
   const blocks: ParsedBlock[] = []

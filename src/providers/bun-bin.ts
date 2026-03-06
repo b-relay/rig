@@ -23,15 +23,7 @@ const binName = (name: string, env: string): string =>
 const binPath = (name: string, env: string): string =>
   join(BIN_DIR(), binName(name, env))
 
-/**
- * Detect whether file content represents a native binary.
- * Uses the same heuristic as git: check for null bytes in the first 8KB.
- * Binary executables (Mach-O, ELF, etc.) always contain null bytes early;
- * text files and scripts almost never do.
- * 
- * Note: FileSystem.read returns a UTF-8 string, so raw magic-byte checks
- * don't round-trip reliably. Null-byte detection is robust through UTF-8.
- */
+// Detects whether file content should be treated as a native binary.
 const isBinaryContent = (content: string): boolean => {
   const sample = content.slice(0, 8192)
   return sample.includes("\0")

@@ -1,10 +1,7 @@
 import { Context, Effect } from "effect"
 import type { PortConflictError, ServiceRunnerError } from "../schema/errors.js"
 
-/**
- * Checks whether a TCP port is available for binding on 127.0.0.1.
- * Used by lifecycle start to fail fast before spawning services.
- */
+// Checks whether a TCP port is available for binding on 127.0.0.1.
 export interface PortChecker {
   readonly check: (
     port: number,

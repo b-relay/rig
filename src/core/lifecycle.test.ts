@@ -127,7 +127,7 @@ class CaptureServiceRunner implements ServiceRunnerService {
     } satisfies RunningService)
   }
 
-  stop(service: RunningService) {
+  stop(service: RunningService): Effect.Effect<void, ServiceRunnerError> {
     this.stopOrder.push(service.name)
     return Effect.void
   }
@@ -138,6 +138,29 @@ class CaptureServiceRunner implements ServiceRunnerService {
 
   logs(_service: string, _opts: LogOpts) {
     return Effect.succeed("")
+  }
+}
+
+class FailingStopServiceRunner extends CaptureServiceRunner {
+  constructor(private readonly failService: string) {
+    super()
+  }
+
+  override stop(service: RunningService): Effect.Effect<void, ServiceRunnerError> {
+    this.stopOrder.push(service.name)
+
+    if (service.name === this.failService) {
+      return Effect.fail(
+        new ServiceRunnerError(
+          "stop",
+          service.name,
+          `failed to stop ${service.name}`,
+          "test failure",
+        ),
+      )
+    }
+
+    return Effect.void
   }
 }
 
@@ -757,6 +780,70 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     expect(pids).toEqual({})
 
     await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN stop failure WHEN runStopCommand completes THEN failed service PID remains tracked for retry", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-stop-failure-pids-"))
+    const pidsPath = join(repoPath, ".rig", "pids.json")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3720,
+            },
+          ],
+        },
+      },
+    })
+
+    await mkdir(join(repoPath, ".rig"), { recursive: true })
+    await writeFile(
+      pidsPath,
+      `${JSON.stringify(
+        {
+          api: { pid: 4321, port: 3720, startedAt: new Date(0).toISOString() },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const serviceRunner = new FailingStopServiceRunner("api")
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const result = await Effect.runPromise(
+        runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
+      )
+
+      expect(result._tag).toBe("Left")
+      expect(serviceRunner.stopOrder).toEqual(["api"])
+
+      const pids = JSON.parse(await readFile(pidsPath, "utf8")) as Record<string, unknown>
+      expect("api" in pids).toBe(true)
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
   })
 
   test("GIVEN a daemon is loaded but not running WHEN stop is requested THEN stop uninstalls daemon instead of stopping it", async () => {

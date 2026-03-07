@@ -650,8 +650,10 @@ export const runStopCommand = (args: StopArgs) =>
       )
 
       yield* logger.info("Stopping service...", { service: service.name })
+      let stopped = true
       yield* serviceRunner.stop(buildRunningService(service, pidEntry)).pipe(
         Effect.catchAll((error) => {
+          stopped = false
           recordFailure(error)
           return logger.warn("Service stop failed.", {
             service: service.name,
@@ -676,7 +678,9 @@ export const runStopCommand = (args: StopArgs) =>
         }),
       )
 
-      delete pids[service.name]
+      if (stopped) {
+        delete pids[service.name]
+      }
     }
 
     for (const [serviceName, pidEntry] of Object.entries(pids)) {
@@ -684,11 +688,12 @@ export const runStopCommand = (args: StopArgs) =>
         continue
       }
 
-      delete pids[serviceName]
       yield* logger.info("Stopping service...", { service: serviceName })
+      let stopped = true
 
       const orphanCleanup = serviceRunner.stop(buildOrphanRunningService(serviceName, pidEntry)).pipe(
         Effect.catchAll((error) => {
+          stopped = false
           recordFailure(error)
           return logger.warn("Failed to stop orphaned process referenced in PID tracking.", {
             service: serviceName,
@@ -700,10 +705,13 @@ export const runStopCommand = (args: StopArgs) =>
 
       yield* orphanCleanup
 
-      yield* logger.warn("Cleaned up orphaned PID entry not present in current config.", {
-        service: serviceName,
-        pid: pidEntry.pid,
-      })
+      if (stopped) {
+        delete pids[serviceName]
+        yield* logger.warn("Cleaned up orphaned PID entry not present in current config.", {
+          service: serviceName,
+          pid: pidEntry.pid,
+        })
+      }
     }
 
     const binServices = environment.services.filter((service) => service.type === "bin")

@@ -1,0 +1,16 @@
+{
+  "name": "rig",
+  "version": "0.1.0",
+  "environments": {
+    "prod": {
+      "services": [
+        {
+          "name": "rig",
+          "type": "bin",
+          "entrypoint": "rig",
+          "build": "bun build --compile src/index.ts --outfile rig"
+        }
+      ]
+    }
+  }
+}

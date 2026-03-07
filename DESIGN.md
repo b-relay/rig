@@ -243,11 +243,10 @@ INHERITANCE:
 ## Deployment Workspaces
 
 **Key idea:** `~/Projects/` is for development. Prod deployments run from isolated copies.
+CLI binaries are installed to `~/.local/bin/`.
 
 ```
 ~/.rig/
-├── bin/                           # CLI shims (in PATH)
-│   └── pantry -> wrapper script
 ├── caddy/
 │   └── Caddyfile                  # Git-tracked copy (symlinked from /usr/local/etc/Caddyfile or synced)
 ├── registry.json                  # Maps project names → repo paths
@@ -434,8 +433,10 @@ src/
 │   ├── config-command.ts   # `rig config` command output
 │   ├── config.ts           # Config loading + environment resolution
 │   ├── deploy.ts           # Deploy orchestration (diff, apply)
+│   ├── init.ts             # `rig init` command handler
 │   ├── lifecycle.ts        # Start, stop, restart logic
 │   ├── list.ts             # `rig list` command output
+│   ├── logs.ts             # `rig logs` command handler
 │   ├── shared.ts           # Shared core helpers (labels, config errors)
 │   ├── status.ts           # Status + health aggregation
 │   └── version.ts          # Version bumping, tagging, undo

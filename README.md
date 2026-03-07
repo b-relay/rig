@@ -122,15 +122,6 @@ Example minimal config:
 | `list` | List registered projects |
 | `config` | Show `rig.json` schema reference |
 
-### Current implementation status
-
-| Command | Status in current code |
-|---|---|
-| `deploy`, `start`, `stop`, `restart`, `status`, `list`, `config` | Implemented |
-| `init` | Implemented |
-| `logs` | Scaffolded (argument parsing + success message) |
-| `version patch|minor|major|undo|list` | Implemented |
-
 ### `deploy`
 
 ```bash

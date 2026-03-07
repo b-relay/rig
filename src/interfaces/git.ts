@@ -10,6 +10,11 @@ export interface Git {
   readonly currentBranch: (repoPath: string) => Effect.Effect<string, GitError>
   readonly commitHash: (repoPath: string, ref?: string) => Effect.Effect<string, GitError>
   readonly changedFiles: (repoPath: string) => Effect.Effect<readonly string[], GitError>
+  readonly commit: (
+    repoPath: string,
+    message: string,
+    paths?: readonly string[]
+  ) => Effect.Effect<void, GitError>
 
   readonly createTag: (repoPath: string, tag: string) => Effect.Effect<void, GitError>
   readonly deleteTag: (repoPath: string, tag: string) => Effect.Effect<void, GitError>

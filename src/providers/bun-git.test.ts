@@ -100,6 +100,12 @@ describe("GIVEN suite context WHEN BunGit THEN behavior is covered", () => {
     expect(headHash).toBe(expectedHash.stdout)
     expect(await Effect.runPromise(git.isDirty(repoPath))).toBe(false)
 
+    await writeFile(join(repoPath, "tracked.txt"), "tracked v2\n", "utf8")
+    await Effect.runPromise(git.commit(repoPath, "chore: update tracked", ["tracked.txt"]))
+    const committedHash = await Effect.runPromise(git.commitHash(repoPath))
+    expect(committedHash).not.toBe(headHash)
+    expect(await Effect.runPromise(git.isDirty(repoPath))).toBe(false)
+
     await writeFile(join(repoPath, "scratch.txt"), "dirty\n", "utf8")
     expect(await Effect.runPromise(git.isDirty(repoPath))).toBe(true)
 
@@ -108,11 +114,11 @@ describe("GIVEN suite context WHEN BunGit THEN behavior is covered", () => {
 
     await Effect.runPromise(git.createTag(repoPath, "v0.1.0"))
     expect(await Effect.runPromise(git.tagExists(repoPath, "v0.1.0"))).toBe(true)
-    expect(await Effect.runPromise(git.commitHasTag(repoPath, headHash))).toBe("v0.1.0")
+    expect(await Effect.runPromise(git.commitHasTag(repoPath, committedHash))).toBe("v0.1.0")
 
     await Effect.runPromise(git.deleteTag(repoPath, "v0.1.0"))
     expect(await Effect.runPromise(git.tagExists(repoPath, "v0.1.0"))).toBe(false)
-    expect(await Effect.runPromise(git.commitHasTag(repoPath, headHash))).toBe(null)
+    expect(await Effect.runPromise(git.commitHasTag(repoPath, committedHash))).toBe(null)
 
     const worktreePath = join(tmpdir(), `rig-worktree-${Date.now()}-${Math.random().toString(16).slice(2)}`)
     await Effect.runPromise(git.createWorktree(repoPath, worktreePath, "HEAD"))

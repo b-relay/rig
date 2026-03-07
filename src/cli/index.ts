@@ -7,6 +7,7 @@ import { runDeployCommand } from "../core/deploy.js"
 import { runInitCommand } from "../core/init.js"
 import { runListCommand } from "../core/list.js"
 import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"
+import { runLogsCommand } from "../core/logs.js"
 import { runStatusCommand } from "../core/status.js"
 import { runVersionCommand } from "../core/version.js"
 import { Logger } from "../interfaces/logger.js"
@@ -124,13 +125,6 @@ const showCommandHelp = (command: CommandName) =>
   Effect.gen(function* () {
     const logger = yield* Logger
     yield* logger.info(renderCommandHelp(command))
-    return 0
-  })
-
-const runScaffoldHandler = (command: "init" | "logs", details: Record<string, unknown>) =>
-  Effect.gen(function* () {
-    const logger = yield* Logger
-    yield* logger.info(`${command} command scaffold ready.`, details)
     return 0
   })
 
@@ -358,7 +352,7 @@ const parseLogs = (args: readonly string[]) =>
       )
     }
 
-    return yield* runScaffoldHandler("logs", payload.data)
+    return yield* runLogsCommand(payload.data)
   })
 
 const parseVersion = (args: readonly string[]) =>

@@ -131,6 +131,24 @@ export class BunGit implements GitService {
     )
   }
 
+  commit(
+    repoPath: string,
+    message: string,
+    paths: readonly string[] = [],
+  ): Effect.Effect<void, GitError> {
+    const args =
+      paths.length > 0
+        ? ["commit", "-m", message, "--", ...paths]
+        : ["commit", "-m", message]
+
+    return this.runGitExpectingSuccess(
+      repoPath,
+      args,
+      "commit",
+      "Ensure there are changes to commit and git user.name/user.email are configured.",
+    ).pipe(Effect.asVoid)
+  }
+
   createTag(repoPath: string, tag: string): Effect.Effect<void, GitError> {
     return this.runGitExpectingSuccess(
       repoPath,

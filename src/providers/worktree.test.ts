@@ -102,6 +102,10 @@ class MockGit implements GitService {
     return Effect.succeed([] as readonly string[])
   }
 
+  commit(_repoPath: string, _message: string, _paths?: readonly string[]) {
+    return Effect.void
+  }
+
   createTag(_repoPath: string, _tag: string) {
     return Effect.void
   }

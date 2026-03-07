@@ -23,6 +23,10 @@ export class StubGit implements GitService {
     return Effect.succeed([])
   }
 
+  commit(_repoPath: string, _message: string, _paths?: readonly string[]): Effect.Effect<void> {
+    return Effect.void
+  }
+
   createTag(_repoPath: string, _tag: string): Effect.Effect<void> {
     return Effect.void
   }

@@ -15,7 +15,7 @@ import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import { ProcessManager } from "../interfaces/process-manager.js"
 import { Registry, type Registry as RegistryService, type RegistryEntry } from "../interfaces/registry.js"
 import { ReverseProxy } from "../interfaces/reverse-proxy.js"
-import { ServiceRunner } from "../interfaces/service-runner.js"
+import { ServiceRunner, type LogOpts } from "../interfaces/service-runner.js"
 import {
   Workspace,
   type Workspace as WorkspaceService,
@@ -141,6 +141,14 @@ class TestWorkspace implements WorkspaceService {
   }
 }
 
+class CliServiceRunner extends StubServiceRunner {
+  override logs(service: string, opts: LogOpts) {
+    return Effect.succeed(
+      `${service}: cli logs (lines=${opts.lines}, follow=${opts.follow}, service=${opts.service ?? "all"})`,
+    )
+  }
+}
+
 const writeValidRigConfig = async (repoPath: string) => {
   await writeFile(
     join(repoPath, "rig.json"),
@@ -210,7 +218,7 @@ const makeLayer = (logger: CaptureLogger, registry: StaticRegistry) =>
     Layer.succeed(Git, new StubGit()),
     Layer.succeed(ReverseProxy, new StubReverseProxy()),
     Layer.succeed(ProcessManager, new StubProcessManager()),
-    Layer.succeed(ServiceRunner, new StubServiceRunner()),
+    Layer.succeed(ServiceRunner, new CliServiceRunner()),
     Layer.succeed(HealthChecker, new StubHealthChecker()),
     StubPortCheckerLive,
     Layer.succeed(BinInstaller, new StubBinInstaller()),
@@ -224,15 +232,6 @@ const runWithLogger = async (argv: readonly string[]) => {
   const registry = new StaticRegistry(repoPath)
   const exitCode = await Effect.runPromise(runCli(argv).pipe(Effect.provide(makeLayer(logger, registry))))
   return { exitCode, logger, registry }
-}
-
-const runWithLoggerEither = async (argv: readonly string[]) => {
-  const logger = new CaptureLogger()
-  const registry = new StaticRegistry(repoPath)
-  const result = await Effect.runPromise(
-    runCli(argv).pipe(Effect.provide(makeLayer(logger, registry)), Effect.either),
-  )
-  return { result, logger, registry }
 }
 
 describe("GIVEN suite context WHEN cli global help parsing THEN behavior is covered", () => {
@@ -428,8 +427,8 @@ describe("GIVEN suite context WHEN cli logs parsing THEN behavior is covered", (
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
 
-    const ready = logger.infos.find((entry) => entry.message === "logs command scaffold ready.")
-    expect(ready).toBeDefined()
+    const webLogs = logger.infos.find((entry) => entry.message.includes("web: cli logs"))
+    expect(webLogs).toBeDefined()
   })
 
   test("GIVEN test setup WHEN missing env returns 1 THEN expected behavior is observed", async () => {
@@ -461,11 +460,11 @@ describe("GIVEN suite context WHEN cli logs parsing THEN behavior is covered", (
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
 
-    const ready = logger.infos.find((entry) => entry.message === "logs command scaffold ready.")
-    expect(ready).toBeDefined()
-    expect(ready?.details?.follow).toBe(true)
-    expect(ready?.details?.lines).toBe(25)
-    expect(ready?.details?.service).toBe("web")
+    const webLogs = logger.infos.find((entry) => entry.message.includes("web: cli logs"))
+    expect(webLogs).toBeDefined()
+    expect(webLogs?.message).toContain("follow=true")
+    expect(webLogs?.message).toContain("lines=25")
+    expect(webLogs?.message).toContain("service=web")
   })
 })
 
@@ -489,13 +488,12 @@ describe("GIVEN suite context WHEN cli version parsing THEN behavior is covered"
     })
   }
 
-  test("GIVEN test setup WHEN with name and undo THEN it returns CliArgumentError", async () => {
-    const { result } = await runWithLoggerEither(["version", "pantry", "undo"])
+  test("GIVEN test setup WHEN with name and undo THEN it returns 0 and logs success", async () => {
+    const { exitCode, logger } = await runWithLogger(["version", "pantry", "undo"])
 
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(CliArgumentError)
-    }
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+    expect(logger.successes.some((entry) => entry.message === "Version bump undone.")).toBe(true)
   })
 
   test("GIVEN test setup WHEN too many positionals returns 1 THEN expected behavior is observed", async () => {

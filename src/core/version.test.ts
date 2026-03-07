@@ -61,9 +61,11 @@ class StaticRegistry implements RegistryService {
 }
 
 class StaticGit implements GitService {
+  readonly commits: Array<{ readonly repoPath: string; readonly message: string; readonly paths: readonly string[] }> = []
+
   constructor(
     private readonly branch = "main",
-    private readonly commit = "abc1234",
+    private readonly commitValue = "abc1234",
     private readonly dirty = false,
   ) {}
 
@@ -80,11 +82,16 @@ class StaticGit implements GitService {
   }
 
   commitHash(_repoPath: string, _ref?: string): Effect.Effect<string, GitError> {
-    return Effect.succeed(this.commit)
+    return Effect.succeed(this.commitValue)
   }
 
   changedFiles(_repoPath: string): Effect.Effect<readonly string[], GitError> {
     return Effect.succeed([])
+  }
+
+  commit(repoPath: string, message: string, paths: readonly string[] = []): Effect.Effect<void, GitError> {
+    this.commits.push({ repoPath, message, paths })
+    return Effect.void
   }
 
   createTag(_repoPath: string, _tag: string): Effect.Effect<void, GitError> {
@@ -277,24 +284,32 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("GIVEN a valid project WHEN undo action runs THEN it fails with CliArgumentError not implemented", async () => {
+  test("GIVEN a bumped version WHEN undo action runs THEN it restores previous version and commits rig.json", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-version-undo-"))
     await writeRigConfig(repoPath, "1.2.3")
 
     const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
+    const git = new StaticGit()
+    const layer = createLayer(repoPath, logger, git)
 
-    const result = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "undo" }).pipe(Effect.provide(layer), Effect.either),
+    const bumpExitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
+    )
+    expect(bumpExitCode).toBe(0)
+    expect(await readVersion(repoPath)).toBe("1.2.4")
+
+    const undoExitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "undo" }).pipe(Effect.provide(layer)),
     )
 
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(CliArgumentError)
-      expect(result.left.message).toContain("not implemented")
-      const err = result.left as CliArgumentError
-      expect(err.command).toBe("version")
-    }
+    expect(undoExitCode).toBe(0)
+    expect(await readVersion(repoPath)).toBe("1.2.3")
+    expect(logger.successes.some((entry) => entry.message === "Version bump undone.")).toBe(true)
+    expect(git.commits.at(-1)).toEqual({
+      repoPath,
+      message: "chore: undo version bump for pantry (1.2.4 -> 1.2.3)",
+      paths: ["rig.json"],
+    })
 
     await rm(repoPath, { recursive: true, force: true })
   })

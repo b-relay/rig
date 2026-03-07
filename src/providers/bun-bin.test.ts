@@ -227,7 +227,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
   })
 
   describe("GIVEN suite context WHEN install() THEN behavior is covered", () => {
-    test("GIVEN test setup WHEN binary file → copies to ~/.rig/bin/<name> THEN expected behavior is observed", async () => {
+    test("GIVEN test setup WHEN binary file → copies to ~/.local/bin/<name> THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const binContent = binaryContent()
@@ -235,7 +235,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       mockFs.files.set(srcPath, binContent)
 
       const result = await runWithMock(mockFs, installer.install("pantry", "prod", srcPath))
-      expect(result).toContain(".rig/bin/pantry")
+      expect(result).toContain(".local/bin/pantry")
       expect(result).not.toContain("-dev")
       // File was copied
       expect(mockFs.files.has(result)).toBe(true)
@@ -259,7 +259,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       const marker = "cmd:/tmp/test-project:bun cli/index.ts"
 
       const result = await runWithMock(mockFs, installer.install("pantry", "prod", marker))
-      expect(result).toContain(".rig/bin/pantry")
+      expect(result).toContain(".local/bin/pantry")
 
       const shimContent = mockFs.files.get(result)
       expect(shimContent).toBeDefined()
@@ -277,7 +277,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       const marker = "shim:/tmp/test-project:cli/index.ts"
 
       const result = await runWithMock(mockFs, installer.install("pantry", "prod", marker))
-      expect(result).toContain(".rig/bin/pantry")
+      expect(result).toContain(".local/bin/pantry")
 
       const shimContent = mockFs.files.get(result)
       expect(shimContent).toBeDefined()
@@ -294,16 +294,16 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
 
       await runWithMock(mockFs, installer.install("pantry", "prod", srcPath))
       // bin dir was created
-      const hasBinDir = [...mockFs.dirs].some((d) => d.includes(".rig/bin"))
+      const hasBinDir = [...mockFs.dirs].some((d) => d.includes(".local/bin"))
       expect(hasBinDir).toBe(true)
     })
   })
 
   describe("GIVEN suite context WHEN uninstall() THEN behavior is covered", () => {
-    test("GIVEN test setup WHEN removes bin from ~/.rig/bin/<name> THEN expected behavior is observed", async () => {
+    test("GIVEN test setup WHEN removes bin from ~/.local/bin/<name> THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
-      const binPath = [...mockFs.files.keys()].find((k) => k.includes(".rig/bin")) ?? ""
+      const binPath = [...mockFs.files.keys()].find((k) => k.includes(".local/bin")) ?? ""
 
       // Pre-install a bin
       const srcPath = "/tmp/test-project/dist/pantry"

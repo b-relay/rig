@@ -9,7 +9,7 @@ import { BinInstallerError } from "../schema/errors.js"
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const BIN_DIR = () => join(homedir(), ".rig", "bin")
+const BIN_DIR = () => join(homedir(), ".local", "bin")
 
 /** Marker prefixes for non-binary install strategies */
 const CMD_PREFIX = "cmd:"

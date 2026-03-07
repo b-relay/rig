@@ -40,13 +40,7 @@ bun run src/index.ts deploy rig --prod
 bun run src/index.ts start rig --prod
 ```
 
-Add rig to your shell profile PATH (for example `~/.zshrc`):
-
-```bash
-export PATH="$HOME/.rig/bin:$PATH"
-```
-
-After this, `~/.rig/bin/rig` should be on your PATH and rig is self-deployed.
+After this, `~/.local/bin/rig` should be on your PATH and rig is self-deployed.
 
 ## Quick Start
 
@@ -394,7 +388,7 @@ Environment-level validation:
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | `string` | yes | none | Unique service name within the environment. |
-| `type` | `"bin"` | yes | none | CLI tool service installed to `~/.rig/bin/`. |
+| `type` | `"bin"` | yes | none | CLI tool service installed to `~/.local/bin/`. |
 | `entrypoint` | `string` | yes | none | File path or command string (for example `bun cli/index.ts`). |
 | `build` | `string` | no | none | Build command to produce binary. |
 | `hooks` | `ServiceHooks` | no | none | Service lifecycle hooks. |
@@ -495,8 +489,8 @@ Stop flow (`rig stop`):
 ### `bin` services
 
 Install target:
-- `~/.rig/bin/<service-name>` for prod
-- `~/.rig/bin/<service-name>-dev` for dev
+- `~/.local/bin/<service-name>` for prod
+- `~/.local/bin/<service-name>-dev` for dev
 
 Resolution behavior:
 - `build` set: run build command, require binary at `entrypoint`.

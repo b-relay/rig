@@ -161,19 +161,19 @@ Lives in the project repo root. Validated with Zod at every read.
 When deploying a `bin` service, rig resolves the entrypoint as follows:
 
 1. **`build` is set** → run the build command → check `entrypoint` path:
-   - If the file is a binary → copy to `~/.rig/bin/`. ✓
+   - If the file is a binary → copy to `~/.local/bin/`. ✓
    - If the file is NOT binary → error: `"build produced a non-binary file at <entrypoint>. Remove the build key and use hooks if you need a pre-step."`
 2. **`build` is NOT set** → check `entrypoint`:
-   - **File path exists and is a binary** → copy to `~/.rig/bin/`. ✓
+   - **File path exists and is a binary** → copy to `~/.local/bin/`. ✓
    - **File path exists but is a script** (shebang, not binary) → create a shim (not copied — would break relative imports). ✓
-   - **Command string** (contains spaces, e.g. `bun cli/index.ts`) → create a shim script in `~/.rig/bin/` that `cd`s to the workspace and runs the command. ✓
+   - **Command string** (contains spaces, e.g. `bun cli/index.ts`) → create a shim script in `~/.local/bin/` that `cd`s to the workspace and runs the command. ✓
    - **File path does not exist** → error: `"Entrypoint <path> not found. Need to compile first? Add a build key."`
 
 Dev bins get a `-dev` suffix automatically (e.g. `pantry-dev`).
 
 **Examples:**
 
-| Scenario | `build` | `entrypoint` | Result in `~/.rig/bin/` |
+| Scenario | `build` | `entrypoint` | Result in `~/.local/bin/` |
 |----------|---------|-------------|------------------------|
 | Bun compiled (prod) | `bun build --compile ...` | `dist/pantry` | Binary copied |
 | Rust (dev or prod) | `cargo build --release` | `target/release/pantry` | Binary copied |
@@ -625,7 +625,7 @@ interface ServiceRunner {
 }
 
 // ── Bin Installer ────────────────────────────────────────────────────────────
-// Handles building and installing CLI tools to ~/.rig/bin/
+// Handles building and installing CLI tools to ~/.local/bin/
 // Current: bun build --compile, plain copy
 // Future: other bundlers, cross-compilation
 

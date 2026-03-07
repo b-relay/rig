@@ -14,7 +14,7 @@ const GUI_DOMAIN = `gui/${getuid!()}`
 
 const sampleConfig: DaemonConfig = {
   label: "pantry-prod",
-  command: "/Users/clay/.rig/bin/rig",
+  command: "/Users/clay/.local/bin/rig",
   args: ["start", "pantry", "--prod", "--foreground"],
   keepAlive: true,
   envVars: { NODE_ENV: "production", PORT: "3070" },
@@ -64,7 +64,7 @@ describe("GIVEN suite context WHEN generatePlist THEN behavior is covered", () =
     expect(xml).toContain("<key>Label</key>")
     expect(xml).toContain("<string>pantry-prod</string>")
     expect(xml).toContain("<key>ProgramArguments</key>")
-    expect(xml).toContain("<string>/Users/clay/.rig/bin/rig</string>")
+    expect(xml).toContain("<string>/Users/clay/.local/bin/rig</string>")
     expect(xml).toContain("<string>start</string>")
     expect(xml).toContain("<string>pantry</string>")
     expect(xml).toContain("<string>--prod</string>")

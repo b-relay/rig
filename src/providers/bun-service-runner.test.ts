@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
@@ -8,7 +8,7 @@ import type { Logger as LoggerService } from "../interfaces/logger.js"
 import type { RunOpts } from "../interfaces/service-runner.js"
 import type { RigError } from "../schema/errors.js"
 import type { ServerService } from "../schema/config.js"
-import { ServiceRunnerError } from "../schema/errors.js"
+import { FileSystemError, ServiceRunnerError } from "../schema/errors.js"
 import { BunServiceRunner } from "./bun-service-runner.js"
 import { NodeFileSystem } from "./node-fs.js"
 
@@ -19,6 +19,30 @@ const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms))
+
+const isProcessAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const waitForFile = async (path: string, timeoutMs = 2_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    try {
+      await access(path)
+      return
+    } catch {
+      await sleep(25)
+    }
+  }
+
+  throw new Error(`Timed out waiting for file: ${path}`)
+}
 
 const trackedPids = new Set<number>()
 const trackedRoots: string[] = []
@@ -62,6 +86,30 @@ const createContext = async (): Promise<{
       logDir,
     },
     pidsPath: join(logDir, "..", "pids.json"),
+  }
+}
+
+class FailingPidWriteFileSystem extends NodeFileSystem {
+  override write(path: string, content: string) {
+    if (path.endsWith("/pids.json")) {
+      return Effect.tryPromise({
+        try: async () => {
+          await sleep(150)
+          throw new FileSystemError(
+            "write",
+            path,
+            "Simulated failure while writing pid tracking.",
+            "Injected by test.",
+          )
+        },
+        catch: (cause) =>
+          cause instanceof FileSystemError
+            ? cause
+            : new FileSystemError("write", path, String(cause), "Injected by test."),
+      })
+    }
+
+    return super.write(path, content)
   }
 }
 
@@ -209,5 +257,41 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
       expect(result.left.operation).toBe("logs")
       expect(result.left.service).toBe("missing")
     }
+  })
+
+  test("GIVEN pid tracking write failure WHEN start already spawned a process THEN runner cleans up the spawned process", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-bun-service-runner-cleanup-"))
+    trackedRoots.push(root)
+
+    const workdir = join(root, "workspace")
+    const logDir = join(workdir, ".rig", "logs")
+    await mkdir(workdir, { recursive: true })
+
+    const spawnedPidPath = join(workdir, ".spawned.pid")
+    const runner = new BunServiceRunner(new FailingPidWriteFileSystem(), NoopLogger)
+    const service = makeService(
+      "cleanup",
+      `echo $$ > ${JSON.stringify(spawnedPidPath)}; sleep 30`,
+      3075,
+    )
+
+    const result = await run(
+      runner.start(service, { workdir, envVars: {}, logDir }).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ServiceRunnerError)
+      expect(result.left.operation).toBe("start")
+    }
+
+    await waitForFile(spawnedPidPath)
+    const pid = Number.parseInt((await readFile(spawnedPidPath, "utf8")).trim(), 10)
+    expect(Number.isFinite(pid)).toBe(true)
+    trackedPids.add(pid)
+
+    await sleep(300)
+    expect(isProcessAlive(pid)).toBe(false)
+    trackedPids.delete(pid)
   })
 })

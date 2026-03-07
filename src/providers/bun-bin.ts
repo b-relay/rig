@@ -1,5 +1,5 @@
 import { homedir } from "node:os"
-import { join, resolve, isAbsolute } from "node:path"
+import { join, resolve, isAbsolute, relative } from "node:path"
 import { Effect, Layer } from "effect"
 
 import { BinInstaller, type BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"
@@ -34,6 +34,13 @@ const isBinaryContent = (content: string): boolean => {
  */
 const resolveEntrypoint = (entrypoint: string, workdir: string): string =>
   isAbsolute(entrypoint) ? entrypoint : resolve(workdir, entrypoint)
+
+const isWithinWorkspace = (entryPath: string, workdir: string): boolean => {
+  const resolvedWorkdir = resolve(workdir)
+  const resolvedEntrypoint = resolve(entryPath)
+  const rel = relative(resolvedWorkdir, resolvedEntrypoint)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+}
 
 // ── Command Runner ───────────────────────────────────────────────────────────
 
@@ -113,6 +120,17 @@ export class BunBinInstaller implements BinInstallerService {
       const runCmd = this.runCommand
 
       return Effect.gen(function* () {
+        if (!isWithinWorkspace(entryPath, workdir)) {
+          return yield* Effect.fail(
+            new BinInstallerError(
+              "build",
+              name,
+              `Entrypoint "${config.entrypoint}" resolves outside workspace "${workdir}".`,
+              "Use an entrypoint path inside the workspace directory.",
+            ),
+          )
+        }
+
         // Run the build command
         yield* Effect.tryPromise({
           try: async () => {
@@ -182,6 +200,17 @@ export class BunBinInstaller implements BinInstallerService {
     // File path — check existence and type
     const entryPath = resolveEntrypoint(entrypoint, workdir)
     return Effect.gen(function* () {
+      if (!isWithinWorkspace(entryPath, workdir)) {
+        return yield* Effect.fail(
+          new BinInstallerError(
+            "build",
+            name,
+            `Entrypoint "${config.entrypoint}" resolves outside workspace "${workdir}".`,
+            "Use an entrypoint path inside the workspace directory.",
+          ),
+        )
+      }
+
       const exists = yield* fs.exists(entryPath).pipe(
         Effect.mapError(
           (e) => new BinInstallerError("build", name, e.message, `Could not check entrypoint at ${entryPath}.`),

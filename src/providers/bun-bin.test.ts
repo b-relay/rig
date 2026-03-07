@@ -162,6 +162,20 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       expect((err as BinInstallerError).message).toContain("not found")
     })
 
+    test("GIVEN test setup WHEN with build command — entrypoint resolves outside workspace THEN build fails with security error", async () => {
+      const mockFs = new MockFileSystem()
+      const installer = new BunBinInstaller(mockFs, successRunner)
+      const config = shimConfig({
+        build: "bun build --compile cli/index.ts --outfile ../outside/pantry",
+        entrypoint: "../outside/pantry",
+      })
+      const workdir = "/tmp/test-project"
+
+      const err = await runWithMockFail(mockFs, installer.build(config, workdir))
+      expect(err).toBeInstanceOf(BinInstallerError)
+      expect((err as BinInstallerError).message).toContain("outside workspace")
+    })
+
     test("GIVEN test setup WHEN with build command — build fails → errors THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs, failRunner)
@@ -223,6 +237,18 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       const err = await runWithMockFail(mockFs, installer.build(config, workdir))
       expect(err).toBeInstanceOf(BinInstallerError)
       expect((err as BinInstallerError).message).toContain("not found")
+    })
+
+    test("GIVEN test setup WHEN no build — entrypoint resolves outside workspace THEN build fails with security error", async () => {
+      const mockFs = new MockFileSystem()
+      const installer = new BunBinInstaller(mockFs)
+      const config = shimConfig({ entrypoint: "../outside/script.sh" })
+      const workdir = "/tmp/test-project"
+      mockFs.files.set("/tmp/outside/script.sh", "#!/bin/sh\necho test")
+
+      const err = await runWithMockFail(mockFs, installer.build(config, workdir))
+      expect(err).toBeInstanceOf(BinInstallerError)
+      expect((err as BinInstallerError).message).toContain("outside workspace")
     })
   })
 

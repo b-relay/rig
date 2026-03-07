@@ -99,6 +99,7 @@ class CaptureWorkspace implements WorkspaceService {
 class CaptureReverseProxy implements ReverseProxyService {
   readonly addCalls: ProxyEntry[] = []
   readonly updateCalls: ProxyEntry[] = []
+  readonly removeCalls: Array<{ readonly name: string; readonly env: string }> = []
 
   constructor(private readonly entries: readonly ProxyEntry[]) {}
 
@@ -116,10 +117,18 @@ class CaptureReverseProxy implements ReverseProxyService {
     return Effect.succeed({ type: "updated", entry } satisfies ProxyChange)
   }
 
-  remove(_name: string, _env: string) {
-    return Effect.fail(
-      new ProxyError("remove", "remove not implemented in test double", "unused"),
-    )
+  remove(name: string, env: string) {
+    this.removeCalls.push({ name, env })
+    return Effect.succeed({
+      type: "removed",
+      entry: {
+        name,
+        env: env as ProxyEntry["env"],
+        domain: "",
+        upstream: "",
+        port: 0,
+      },
+    } satisfies ProxyChange)
   }
 
   diff() {
@@ -917,6 +926,56 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     expect(exitCode).toBe(0)
     expect(reverseProxy.addCalls).toEqual([])
     expect(reverseProxy.updateCalls).toEqual([])
+    expect(reverseProxy.removeCalls).toEqual([])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN stale proxy entry WHEN deploy has no proxy configuration THEN reverse proxy entry is removed", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-remove-stale-proxy-"))
+    const workspacePath = join(repoPath, ".workspaces", "dev")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(workspacePath)
+    const reverseProxy = new CaptureReverseProxy([
+      {
+        name: "pantry",
+        env: "dev",
+        domain: "dev.pantry.example.com",
+        upstream: "web",
+        port: 5173,
+      },
+    ])
+    const processManager = new CaptureProcessManager()
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, reverseProxy),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(reverseProxy.addCalls).toEqual([])
+    expect(reverseProxy.updateCalls).toEqual([])
+    expect(reverseProxy.removeCalls).toEqual([{ name: "pantry", env: "dev" }])
 
     await rm(repoPath, { recursive: true, force: true })
   })

@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { FileSystem } from "../interfaces/file-system.js"
 import { Git } from "../interfaces/git.js"
 import { Logger } from "../interfaces/logger.js"
+import { Workspace } from "../interfaces/workspace.js"
 import type { VersionArgs } from "../schema/args.js"
 import { CliArgumentError } from "../schema/errors.js"
 import { loadProjectConfig } from "./config.js"
@@ -25,6 +26,8 @@ interface VersionHistory {
 
 const versionHistoryPath = (repoPath: string, name: string) =>
   join(repoPath, ".rig", "versions", `${name}.json`)
+
+const versionTag = (version: string): string => `v${version}`
 
 const isBumpAction = (value: unknown): value is BumpAction =>
   value === "patch" || value === "minor" || value === "major"
@@ -188,6 +191,7 @@ export const runVersionCommand = (args: VersionArgs) =>
     const logger = yield* Logger
     const loaded = yield* loadProjectConfig(args.name)
     const fileSystem = yield* FileSystem
+    const git = yield* Git
     const version = loaded.config.version
     const configPath = join(loaded.repoPath, "rig.json")
     const historyPath = versionHistoryPath(loaded.repoPath, args.name)
@@ -223,6 +227,26 @@ export const runVersionCommand = (args: VersionArgs) =>
         )
       }
 
+      const workspace = yield* Workspace
+      const workspaces = yield* workspace.list(args.name)
+      const alreadyDeployed = workspaces.some(
+        (entry) => entry.env === "prod" && entry.version === lastEntry.newVersion,
+      )
+      if (alreadyDeployed) {
+        return yield* Effect.fail(
+          new CliArgumentError(
+            "version",
+            `Cannot undo version '${lastEntry.newVersion}' because it is already deployed.`,
+            "Deploy a newer version instead of undoing an already deployed tag.",
+            {
+              name: args.name,
+              version: lastEntry.newVersion,
+              historyPath,
+            },
+          ),
+        )
+      }
+
       const parsed = yield* readRigJson(configPath)
       const updated = {
         ...parsed,
@@ -236,7 +260,7 @@ export const runVersionCommand = (args: VersionArgs) =>
         entries: history.entries.slice(0, -1),
       })
 
-      const git = yield* Git
+      yield* git.deleteTag(loaded.repoPath, versionTag(lastEntry.newVersion))
       yield* git.commit(
         loaded.repoPath,
         `chore: undo version bump for ${args.name} (${version} -> ${lastEntry.oldVersion})`,
@@ -279,11 +303,27 @@ export const runVersionCommand = (args: VersionArgs) =>
         ],
       })
 
+      const tag = versionTag(nextVersion)
+      yield* git.createTag(loaded.repoPath, tag).pipe(
+        Effect.catchAll((error) =>
+          Effect.gen(function* () {
+            const rollback = {
+              ...parsed,
+              version,
+            }
+            yield* fileSystem.write(configPath, `${JSON.stringify(rollback, null, 2)}\n`)
+            yield* writeVersionHistory(historyPath, history)
+            return yield* Effect.fail(error)
+          }),
+        ),
+      )
+
       yield* logger.success("Version bumped.", {
         name: args.name,
         action: args.action,
         oldVersion: version,
         newVersion: nextVersion,
+        tag,
         configPath,
       })
       yield* logger.info("rig.json was updated. Commit this version bump to git.", {
@@ -295,7 +335,6 @@ export const runVersionCommand = (args: VersionArgs) =>
       return 0
     }
 
-    const git = yield* Git
     const branch = yield* git.currentBranch(loaded.repoPath)
     const commit = yield* git.commitHash(loaded.repoPath)
     const dirty = yield* git.isDirty(loaded.repoPath)

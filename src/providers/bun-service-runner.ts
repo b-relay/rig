@@ -149,13 +149,21 @@ export class BunServiceRunner implements ServiceRunnerService {
         startedAt: new Date(),
       }
 
-      const pids = yield* this.readPidMap(pidsPath, "start", service.name)
-      pids[service.name] = {
-        pid: running.pid,
-        port: running.port,
-        startedAt: running.startedAt.toISOString(),
-      }
-      yield* this.writePidMap(pidsPath, pids, "start", service.name)
+      yield* Effect.gen(this, function* () {
+        const pids = yield* this.readPidMap(pidsPath, "start", service.name)
+        pids[service.name] = {
+          pid: running.pid,
+          port: running.port,
+          startedAt: running.startedAt.toISOString(),
+        }
+        yield* this.writePidMap(pidsPath, pids, "start", service.name)
+      }).pipe(
+        Effect.catchAll((error) =>
+          this.cleanupSpawnedProcess(running.pid).pipe(
+            Effect.zipRight(Effect.fail(error)),
+          ),
+        ),
+      )
 
       this.logDirByService.set(service.name, opts.logDir)
       this.pidFileByService.set(service.name, pidsPath)
@@ -405,6 +413,37 @@ export class BunServiceRunner implements ServiceRunnerService {
       this.pidFileByService.delete(serviceName)
       this.logDirByService.delete(serviceName)
     })
+  }
+
+  private cleanupSpawnedProcess(pid: number): Effect.Effect<void, never> {
+    return Effect.gen(function* () {
+      if (!isProcessAlive(pid)) {
+        return
+      }
+
+      yield* Effect.try({
+        try: () => {
+          process.kill(pid, "SIGTERM")
+        },
+        catch: () => undefined,
+      }).pipe(Effect.ignore)
+
+      const exited = yield* Effect.tryPromise({
+        try: () => waitForExit(pid, 1_000),
+        catch: () => false,
+      }).pipe(Effect.orElseSucceed(() => false))
+
+      if (exited || !isProcessAlive(pid)) {
+        return
+      }
+
+      yield* Effect.try({
+        try: () => {
+          process.kill(pid, "SIGKILL")
+        },
+        catch: () => undefined,
+      }).pipe(Effect.ignore)
+    }).pipe(Effect.orElseSucceed(() => undefined))
   }
 
   private readPidMap(

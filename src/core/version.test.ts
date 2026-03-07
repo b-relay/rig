@@ -8,6 +8,7 @@ import { runVersionCommand } from "./version.js"
 import { Git, type Git as GitService } from "../interfaces/git.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import { Registry, type Registry as RegistryService } from "../interfaces/registry.js"
+import { Workspace, type Workspace as WorkspaceService, type WorkspaceInfo } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { CliArgumentError, GitError, MainBranchDetectionError, type RigError } from "../schema/errors.js"
 
@@ -62,6 +63,8 @@ class StaticRegistry implements RegistryService {
 
 class StaticGit implements GitService {
   readonly commits: Array<{ readonly repoPath: string; readonly message: string; readonly paths: readonly string[] }> = []
+  readonly createdTags: Array<{ readonly repoPath: string; readonly tag: string }> = []
+  readonly deletedTags: Array<{ readonly repoPath: string; readonly tag: string }> = []
 
   constructor(
     private readonly branch = "main",
@@ -95,10 +98,12 @@ class StaticGit implements GitService {
   }
 
   createTag(_repoPath: string, _tag: string): Effect.Effect<void, GitError> {
+    this.createdTags.push({ repoPath: _repoPath, tag: _tag })
     return Effect.void
   }
 
   deleteTag(_repoPath: string, _tag: string): Effect.Effect<void, GitError> {
+    this.deletedTags.push({ repoPath: _repoPath, tag: _tag })
     return Effect.void
   }
 
@@ -116,6 +121,26 @@ class StaticGit implements GitService {
 
   removeWorktree(_repoPath: string, _dest: string): Effect.Effect<void, GitError> {
     return Effect.void
+  }
+}
+
+class StaticWorkspace implements WorkspaceService {
+  constructor(private readonly rows: readonly WorkspaceInfo[] = []) {}
+
+  create(_name: string, _env: "dev" | "prod", _version: string, _commitRef: string) {
+    return Effect.succeed("/tmp/unused-workspace")
+  }
+
+  resolve(_name: string, _env: "dev" | "prod") {
+    return Effect.succeed("/tmp/unused-workspace")
+  }
+
+  sync(_name: string, _env: "dev" | "prod") {
+    return Effect.void
+  }
+
+  list(_name: string) {
+    return Effect.succeed(this.rows)
   }
 }
 
@@ -147,12 +172,18 @@ const readVersion = async (repoPath: string): Promise<string> => {
   return parsed.version
 }
 
-const createLayer = (repoPath: string, logger: CaptureLogger, git = new StaticGit()) =>
+const createLayer = (
+  repoPath: string,
+  logger: CaptureLogger,
+  git = new StaticGit(),
+  workspace: WorkspaceService = new StaticWorkspace(),
+) =>
   Layer.mergeAll(
     NodeFileSystemLive,
     Layer.succeed(Logger, logger),
     Layer.succeed(Registry, new StaticRegistry(repoPath)),
     Layer.succeed(Git, git),
+    Layer.succeed(Workspace, workspace),
   )
 
 describe("GIVEN suite context WHEN version command executes THEN behavior is covered", () => {
@@ -188,7 +219,8 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     await writeRigConfig(repoPath, "1.2.3")
 
     const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
+    const git = new StaticGit()
+    const layer = createLayer(repoPath, logger, git)
 
     const exitCode = await Effect.runPromise(
       runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
@@ -196,12 +228,14 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
 
     expect(exitCode).toBe(0)
     expect(await readVersion(repoPath)).toBe("1.2.4")
+    expect(git.createdTags).toEqual([{ repoPath, tag: "v1.2.4" }])
     expect(logger.successes.at(-1)).toMatchObject({
       message: "Version bumped.",
       details: {
         action: "patch",
         oldVersion: "1.2.3",
         newVersion: "1.2.4",
+        tag: "v1.2.4",
       },
     })
 
@@ -305,6 +339,7 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     expect(undoExitCode).toBe(0)
     expect(await readVersion(repoPath)).toBe("1.2.3")
     expect(logger.successes.some((entry) => entry.message === "Version bump undone.")).toBe(true)
+    expect(git.deletedTags).toEqual([{ repoPath, tag: "v1.2.4" }])
     expect(git.commits.at(-1)).toEqual({
       repoPath,
       message: "chore: undo version bump for pantry (1.2.4 -> 1.2.3)",
@@ -485,6 +520,44 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
         dirty: true,
       },
     })
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN undo request WHEN latest version is already deployed to prod THEN command fails with CliArgumentError", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-undo-deployed-"))
+    await writeRigConfig(repoPath, "1.2.3")
+
+    const logger = new CaptureLogger()
+    const git = new StaticGit()
+    const workspace = new StaticWorkspace([
+      {
+        name: "pantry",
+        env: "prod",
+        version: "1.2.4",
+        path: "/tmp/rig/workspaces/pantry/prod/1.2.4",
+        active: true,
+      },
+    ])
+    const layer = createLayer(repoPath, logger, git, workspace)
+
+    const bumpExitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
+    )
+    expect(bumpExitCode).toBe(0)
+    expect(await readVersion(repoPath)).toBe("1.2.4")
+
+    const undoResult = await Effect.runPromise(
+      runVersionCommand({ name: "pantry", action: "undo" }).pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(undoResult._tag).toBe("Left")
+    if (undoResult._tag === "Left") {
+      expect(undoResult.left).toBeInstanceOf(CliArgumentError)
+      expect((undoResult.left as CliArgumentError).message).toContain("already deployed")
+    }
+    expect(await readVersion(repoPath)).toBe("1.2.4")
+    expect(git.deletedTags).toEqual([])
 
     await rm(repoPath, { recursive: true, force: true })
   })

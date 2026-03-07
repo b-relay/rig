@@ -100,17 +100,19 @@ export const runDeployCommand = (args: DeployArgs) =>
       args.name,
     )
 
-    if (desiredProxyEntry) {
-      const existingEntries = yield* reverseProxy.read()
-      const existing = existingEntries.find(
-        (entry) => entry.name === args.name && entry.env === args.env,
-      )
+    const existingEntries = yield* reverseProxy.read()
+    const existingProxyEntry = existingEntries.find(
+      (entry) => entry.name === args.name && entry.env === args.env,
+    )
 
-      if (!existing) {
+    if (desiredProxyEntry) {
+      if (!existingProxyEntry) {
         yield* reverseProxy.add(desiredProxyEntry)
-      } else if (hasChanged(existing, desiredProxyEntry)) {
+      } else if (hasChanged(existingProxyEntry, desiredProxyEntry)) {
         yield* reverseProxy.update(desiredProxyEntry)
       }
+    } else if (existingProxyEntry) {
+      yield* reverseProxy.remove(args.name, args.env)
     }
 
     const label = daemonLabel(args.name, args.env)

@@ -1,6 +1,9 @@
 {
   "name": "rig",
   "version": "0.1.0",
+  "hooks": {
+    "preStart": "bun install"
+  },
   "environments": {
     "prod": {
       "services": [

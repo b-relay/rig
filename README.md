@@ -22,11 +22,31 @@ Every project eventually reinvents the same deployment boilerplate:
 git clone https://github.com/b-relay/rig.git
 cd rig
 bun install
+```
+
+### Bootstrap (Rig Deploys Rig)
+
+Production deploys use version tags, so create a tag first:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+```
+
+Register, deploy, and start rig:
+
+```bash
 bun run src/index.ts init rig --path .
 bun run src/index.ts deploy rig --prod
-export PATH="$HOME/.rig/bin:$PATH"
-rig --help
+bun run src/index.ts start rig --prod
 ```
+
+Add rig to your shell profile PATH (for example `~/.zshrc`):
+
+```bash
+export PATH="$HOME/.rig/bin:$PATH"
+```
+
+After this, `~/.rig/bin/rig` should be on your PATH and rig is self-deployed.
 
 ## Quick Start
 

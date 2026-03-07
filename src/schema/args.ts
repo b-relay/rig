@@ -124,12 +124,6 @@ export const ListArgsSchema = z
   .object({})
   .describe("Arguments for 'rig list'. No arguments — lists all managed projects.")
 
-// ── rig setup ───────────────────────────────────────────────────────────────
-
-export const SetupArgsSchema = z
-  .object({})
-  .describe("Arguments for 'rig setup'. No arguments — builds and installs rig itself.")
-
 // ── Inferred Types ──────────────────────────────────────────────────────────
 
 export type InitArgs = z.infer<typeof InitArgsSchema>
@@ -142,4 +136,3 @@ export type LogsArgs = z.infer<typeof LogsArgsSchema>
 export type VersionArgs = z.infer<typeof VersionArgsSchema>
 export type ConfigArgs = z.infer<typeof ConfigArgsSchema>
 export type ListArgs = z.infer<typeof ListArgsSchema>
-export type SetupArgs = z.infer<typeof SetupArgsSchema>

@@ -557,31 +557,6 @@ describe("GIVEN suite context WHEN cli list/config parsing THEN behavior is cove
   })
 })
 
-describe("GIVEN suite context WHEN cli setup parsing THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN setup --help returns command help and 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["setup", "--help"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(logger.infos.some((entry) => entry.message === renderCommandHelp("setup"))).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN setup has unexpected positional argument THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["setup", "extra"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-
-    if (first?._tag === "CliArgumentError") {
-      expect(first.message).toBe("Unexpected positional arguments.")
-      expect(first.hint).toBe("Usage: rig setup")
-    }
-  })
-})
-
 describe("GIVEN suite context WHEN cli start foreground THEN behavior is covered", () => {
   test("GIVEN test setup WHEN accepts --foreground and forwards it to runtime handler THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["start", "pantry", "--dev", "--foreground"])

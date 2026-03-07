@@ -8,7 +8,6 @@ import { runInitCommand } from "../core/init.js"
 import { runListCommand } from "../core/list.js"
 import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"
 import { runLogsCommand } from "../core/logs.js"
-import { runSetupCommand } from "../core/setup.js"
 import { runStatusCommand } from "../core/status.js"
 import { runVersionCommand } from "../core/version.js"
 import { Logger } from "../interfaces/logger.js"
@@ -19,7 +18,6 @@ import {
   ListArgsSchema,
   LogsArgsSchema,
   RestartArgsSchema,
-  SetupArgsSchema,
   StartArgsSchema,
   StatusArgsSchema,
   StopArgsSchema,
@@ -426,34 +424,6 @@ const parseSimpleCommand = (command: "list" | "config", args: readonly string[])
     return command === "list" ? yield* runListCommand() : yield* runConfigCommand()
   })
 
-const parseSetup = (args: readonly string[]) =>
-  Effect.gen(function* () {
-    const parsed = parseWithOptions("setup", args, {
-      help: { type: "boolean", short: "h" },
-    })
-
-    if ("error" in parsed) {
-      return yield* fail(parsed.error)
-    }
-
-    if (parsed.values.help || parsed.positionals[0] === "help") {
-      return yield* showCommandHelp("setup")
-    }
-
-    if (parsed.positionals.length > 0) {
-      return yield* fail(
-        makeCliError("setup", "Unexpected positional arguments.", "Usage: rig setup"),
-      )
-    }
-
-    const payload = validate("setup", SetupArgsSchema, {}, "rig setup")
-    if ("error" in payload) {
-      return yield* fail(payload.error)
-    }
-
-    return yield* runSetupCommand()
-  })
-
 const runCommand = (command: CommandName, args: readonly string[]) => {
   switch (command) {
     case "deploy":
@@ -467,8 +437,6 @@ const runCommand = (command: CommandName, args: readonly string[]) => {
       return parseStatus(args)
     case "logs":
       return parseLogs(args)
-    case "setup":
-      return parseSetup(args)
     case "version":
       return parseVersion(args)
     case "list":

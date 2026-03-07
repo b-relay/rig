@@ -22,7 +22,8 @@ Every project eventually reinvents the same deployment boilerplate:
 git clone https://github.com/b-relay/rig.git
 cd rig
 bun install
-bun run src/index.ts setup
+bun run src/index.ts init rig --path .
+bun run src/index.ts deploy rig --prod
 export PATH="$HOME/.rig/bin:$PATH"
 rig --help
 ```
@@ -98,7 +99,6 @@ Example minimal config:
 |---|---|
 | `deploy` | Apply `rig.json` changes and reconcile deployment state |
 | `init` | Initialize/register a project |
-| `setup` | Build/install rig and register this repo |
 | `start` | Start all configured services for an environment |
 | `stop` | Stop all services for an environment |
 | `restart` | Stop then start services (hooks included) |
@@ -112,7 +112,7 @@ Example minimal config:
 
 | Command | Status in current code |
 |---|---|
-| `deploy`, `start`, `stop`, `restart`, `status`, `list`, `config`, `setup` | Implemented |
+| `deploy`, `start`, `stop`, `restart`, `status`, `list`, `config` | Implemented |
 | `init` | Implemented |
 | `logs` | Scaffolded (argument parsing + success message) |
 | `version patch|minor|major|undo|list` | Implemented |
@@ -150,22 +150,6 @@ Example:
 
 ```bash
 rig init pantry --path ~/Projects/pantry
-```
-
-### `setup`
-
-```bash
-rig setup
-rig setup --help
-```
-
-Flags:
-- `--help`, `-h`
-
-Example:
-
-```bash
-rig setup
 ```
 
 ### `start`

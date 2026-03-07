@@ -1,7 +1,6 @@
 export const COMMANDS = [
   "deploy",
   "init",
-  "setup",
   "start",
   "stop",
   "restart",
@@ -30,11 +29,6 @@ const HELP: Record<CommandName, HelpSpec> = {
     summary: "Initialize a project and register its path.",
     usage: ["rig init <name> --path <project-path>", "rig init --help"],
     examples: ["rig init pantry --path ~/Projects/pantry"],
-  },
-  setup: {
-    summary: "Build, install, and register rig itself from the current repo.",
-    usage: ["rig setup", "rig setup --help"],
-    examples: ["rig setup"],
   },
   start: {
     summary: "Start all configured services for an environment.",

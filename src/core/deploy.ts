@@ -67,6 +67,8 @@ const isMissingDaemonInstall = (error: unknown): boolean =>
   error.operation === "uninstall" &&
   (error.message.includes("ENOENT") || error.message.toLowerCase().includes("no such file"))
 
+// Applies deploy state for an environment by reconciling workspace, proxy,
+// and daemon configuration with the current project config.
 export const runDeployCommand = (args: DeployArgs) =>
   Effect.gen(function* () {
     const logger = yield* Logger
@@ -81,6 +83,7 @@ export const runDeployCommand = (args: DeployArgs) =>
       yield* workspace.create(args.name, "dev", loaded.config.version, loaded.repoPath)
       yield* workspace.sync(args.name, "dev")
     } else {
+      // Production deploys are idempotent when the target workspace already exists.
       yield* workspace
         .create(args.name, "prod", loaded.config.version, `v${loaded.config.version}`)
         .pipe(
@@ -105,6 +108,7 @@ export const runDeployCommand = (args: DeployArgs) =>
       (entry) => entry.name === args.name && entry.env === args.env,
     )
 
+    // Keep reverse-proxy state synchronized with the desired config for this env.
     if (desiredProxyEntry) {
       if (!existingProxyEntry) {
         yield* reverseProxy.add(desiredProxyEntry)

@@ -315,6 +315,8 @@ const buildOrphanRunningService = (serviceName: string, pidEntry: PidEntry): Run
   startedAt: parseStartedAt(pidEntry.startedAt),
 })
 
+// Starts all services for an environment, including hooks and health checks,
+// then persists runtime state for later stop/restart operations.
 export const runStartCommand = (args: StartArgs) => {
   const started: RunningService[] = []
   const installedBins: Array<{ readonly name: string; readonly shimPath: string }> = []
@@ -346,6 +348,7 @@ export const runStartCommand = (args: StartArgs) => {
       yield* portChecker.check(service.port, service.name)
     }
 
+    // Start servers in dependency order so dependents only start after prerequisites.
     const orderedServerServices = yield* orderServerServices(loaded.configPath, serverServices)
     const binServices = environment.services.filter((service) => service.type === "bin")
     const hookEnv = yield* loadHookEnv(environment, workspacePath, envLoader)
@@ -510,6 +513,7 @@ export const runStartCommand = (args: StartArgs) => {
         const fileSystem = yield* FileSystem
         const workspace = yield* Workspace
 
+        // Roll back in reverse start order to unwind dependency chains safely.
         for (const running of [...started].reverse()) {
           yield* serviceRunner.stop(running).pipe(
             Effect.catchAll((stopError) =>
@@ -566,6 +570,8 @@ export const runStartCommand = (args: StartArgs) => {
   )
 }
 
+// Stops services for an environment, runs stop hooks, and cleans persisted
+// runtime tracking while preserving the first failure after best-effort cleanup.
 export const runStopCommand = (args: StopArgs) =>
   Effect.gen(function* () {
     const logger = yield* Logger
@@ -583,10 +589,12 @@ export const runStopCommand = (args: StopArgs) =>
     const binsPath = join(workspacePath, ".rig", "bins.json")
     const serverServices = environment.services.filter((service) => service.type === "server")
     const orderedServerServices = yield* orderServerServices(loaded.configPath, serverServices)
+    // Stop in reverse dependency order so dependents exit before dependencies.
     const reverseServerServices = [...orderedServerServices].reverse()
     const hookEnv = yield* loadHookEnv(environment, workspacePath, envLoader)
     const projectPreStop = hookCommand(loaded.config.hooks, "preStop")
 
+    // Keep the first failure but continue cleanup to leave the system consistent.
     let firstFailure: unknown | null = null
     const recordFailure = (error: unknown) => {
       if (!firstFailure) {
@@ -599,6 +607,7 @@ export const runStopCommand = (args: StopArgs) =>
       Effect.catchAll(() => Effect.succeed(null)),
     )
 
+    // Uninstall daemon first so it does not immediately respawn processes being stopped.
     if (daemon?.loaded) {
       yield* processManager.uninstall(label).pipe(
         Effect.catchAll((error) =>
@@ -683,6 +692,7 @@ export const runStopCommand = (args: StopArgs) =>
       }
     }
 
+    // Also stop stale PID entries that are no longer present in the current config.
     for (const [serviceName, pidEntry] of Object.entries(pids)) {
       if (knownServiceNames.has(serviceName)) {
         continue
@@ -771,6 +781,7 @@ export const runStopCommand = (args: StopArgs) =>
       }),
     )
 
+    // Report one failure after all cleanup attempts have completed.
     if (firstFailure) {
       return yield* Effect.fail(firstFailure)
     }
@@ -784,6 +795,7 @@ export const runStopCommand = (args: StopArgs) =>
     return 0
   })
 
+// Restarts an environment by running stop followed by start in foreground mode off.
 export const runRestartCommand = (args: RestartArgs) =>
   Effect.gen(function* () {
     yield* runStopCommand(args)

@@ -186,6 +186,8 @@ const bumpVersion = (
     return `${major + 1}.0.0`
   })
 
+// Resolves version workflows for a project: bump, undo, or inspect current
+// version state while keeping rig.json, history, and git tags aligned.
 export const runVersionCommand = (args: VersionArgs) =>
   Effect.gen(function* () {
     const logger = yield* Logger
@@ -229,6 +231,7 @@ export const runVersionCommand = (args: VersionArgs) =>
 
       const workspace = yield* Workspace
       const workspaces = yield* workspace.list(args.name)
+      // Prevent undoing a tag that has already been deployed to production.
       const alreadyDeployed = workspaces.some(
         (entry) => entry.env === "prod" && entry.version === lastEntry.newVersion,
       )
@@ -307,6 +310,7 @@ export const runVersionCommand = (args: VersionArgs) =>
       yield* git.createTag(loaded.repoPath, tag).pipe(
         Effect.catchAll((error) =>
           Effect.gen(function* () {
+            // Roll back file changes if tagging fails so state stays atomic.
             const rollback = {
               ...parsed,
               version,

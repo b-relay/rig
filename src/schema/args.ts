@@ -111,12 +111,11 @@ export const VersionArgsSchema = z
 
 export const ConfigArgsSchema = z
   .object({
-    help: z
-      .boolean()
-      .default(true)
-      .describe("Show full config reference with field descriptions and defaults."),
+    name: ProjectName.describe(
+      "Project name to inspect. Parsed from [name] positional or auto-detected from cwd rig.json.",
+    ),
   })
-  .describe("Arguments for 'rig config --help'.")
+  .describe("Arguments for 'rig config [name]'.")
 
 // ── rig list ────────────────────────────────────────────────────────────────
 

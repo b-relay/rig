@@ -449,6 +449,20 @@ describe("GIVEN suite context WHEN project name is omitted THEN cwd rig.json nam
     const success = logger.successes.find((entry) => entry.message === "Services stopped.")
     expect(success?.details?.name).toBe("testapp")
   })
+
+  test('GIVEN cwd has no rig.json WHEN user runs "config" without project name THEN shows "No rig.json found" error', async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-no-rig-json-config-"))
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["config"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+
+    const first = logger.errors[0]
+    expect(first?._tag).toBe("CliArgumentError")
+    if (first?._tag === "CliArgumentError") {
+      expect(first.message).toContain("No rig.json found in current directory.")
+    }
+  })
 })
 
 describe("GIVEN suite context WHEN cli init parsing THEN behavior is covered", () => {
@@ -689,11 +703,19 @@ describe("GIVEN suite context WHEN cli list/config parsing THEN behavior is cove
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
-    expect(logger.infos.some((entry) => entry.message === "rig.json schema reference")).toBe(true)
+    expect(logger.infos.some((entry) => entry.message.includes("Project: pantry"))).toBe(true)
   })
 
-  test("GIVEN test setup WHEN config with unexpected positionals returns 1 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["config", "extra"])
+  test("GIVEN test setup WHEN config with explicit name returns 0 THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["config", "pantry"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+    expect(logger.infos.some((entry) => entry.message.includes("Project: pantry"))).toBe(true)
+  })
+
+  test("GIVEN test setup WHEN config with too many positionals returns 1 THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["config", "pantry", "extra"])
 
     expect(exitCode).toBe(1)
     expect(logger.errors.length).toBeGreaterThan(0)
@@ -702,7 +724,7 @@ describe("GIVEN suite context WHEN cli list/config parsing THEN behavior is cove
     expect(first?._tag).toBe("CliArgumentError")
 
     if (first?._tag === "CliArgumentError") {
-      expect(first.message).toBe("Unexpected positional arguments.")
+      expect(first.message).toBe("Too many positional arguments.")
     }
   })
 })

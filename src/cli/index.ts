@@ -77,7 +77,7 @@ const resolveProjectName = (positional: string | undefined): ResolvedProjectName
 }
 
 const projectNameError = (
-  command: "deploy" | "start" | "stop" | "restart" | "status" | "logs" | "version",
+  command: "deploy" | "start" | "stop" | "restart" | "status" | "logs" | "version" | "config",
   error: "no-rig-json" | "no-name-field",
   usage: string,
 ): CliArgumentError => {
@@ -491,7 +491,7 @@ const parseVersion = (args: readonly string[]) =>
     return yield* runVersionCommand(payload.data)
   })
 
-const parseSimpleCommand = (command: "list" | "config", args: readonly string[]) =>
+const parseSimpleCommand = (command: "list", args: readonly string[]) =>
   Effect.gen(function* () {
     const parsed = parseWithOptions(command, args, {
       help: { type: "boolean", short: "h" },
@@ -511,14 +511,48 @@ const parseSimpleCommand = (command: "list" | "config", args: readonly string[])
       )
     }
 
-    const schema = command === "list" ? ListArgsSchema : ConfigArgsSchema
-    const payload = validate(command, schema, {}, `rig ${command}`)
+    const payload = validate(command, ListArgsSchema, {}, `rig ${command}`)
 
     if ("error" in payload) {
       return yield* fail(payload.error)
     }
 
-    return command === "list" ? yield* runListCommand() : yield* runConfigCommand()
+    return yield* runListCommand()
+  })
+
+const parseConfig = (args: readonly string[]) =>
+  Effect.gen(function* () {
+    const parsed = parseWithOptions("config", args, {
+      help: { type: "boolean", short: "h" },
+    })
+
+    if ("error" in parsed) {
+      return yield* fail(parsed.error)
+    }
+
+    if (parsed.values.help || parsed.positionals[0] === "help") {
+      return yield* showCommandHelp("config")
+    }
+
+    if (parsed.positionals.length > 1) {
+      return yield* fail(
+        makeCliError("config", "Too many positional arguments.", "Usage: rig config [name]"),
+      )
+    }
+
+    const usage = "rig config [name]"
+    const project = resolveProjectName(parsed.positionals[0])
+    if ("error" in project) {
+      return yield* fail(projectNameError("config", project.error, usage))
+    }
+
+    const payload = validate("config", ConfigArgsSchema, { name: project.name }, usage)
+
+    if ("error" in payload) {
+      return yield* fail(payload.error)
+    }
+
+    return yield* runConfigCommand(payload.data.name)
   })
 
 const runCommand = (command: CommandName, args: readonly string[]) => {
@@ -537,8 +571,9 @@ const runCommand = (command: CommandName, args: readonly string[]) => {
     case "version":
       return parseVersion(args)
     case "list":
-    case "config":
       return parseSimpleCommand(command, args)
+    case "config":
+      return parseConfig(args)
   }
 }
 

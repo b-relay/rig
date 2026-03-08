@@ -51,7 +51,7 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
     const logPath = join(tempRoot, "rig.log")
 
     try {
-      const { stdout, stderr, exitCode } = await runRigCommand(["config"], {
+      const { stdout, stderr, exitCode } = await runRigCommand(["config", "--help"], {
         RIG_LOG_FILE: logPath,
         RIG_LOG_FORMAT: undefined,
       })
@@ -59,11 +59,11 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
       expect(exitCode).toBe(0)
       expect(stderr).toBe("")
       expect(stdout).toContain("\u001b[34mi\u001b[0m")
-      expect(stdout).toContain("rig.json schema reference")
+      expect(stdout).toContain("Show project configuration overview.")
 
       const fileOutput = await readFile(logPath, "utf8")
-      expect(fileOutput).toContain("[INFO] rig.json schema reference")
-      expect(fileOutput).toContain("description:")
+      expect(fileOutput).toContain("[INFO] CONFIG")
+      expect(fileOutput).toContain("Show project configuration overview.")
     } finally {
       await rm(tempRoot, { recursive: true, force: true })
     }
@@ -74,7 +74,7 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
     const logPath = join(tempRoot, "rig.log")
 
     try {
-      const { stdout, stderr, exitCode } = await runRigCommand(["config"], {
+      const { stdout, stderr, exitCode } = await runRigCommand(["config", "--help"], {
         RIG_LOG_FILE: logPath,
         RIG_LOG_FORMAT: "json",
       })
@@ -89,10 +89,10 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
       }
 
       expect(parsed.level).toBe("info")
-      expect(parsed.message).toBe("rig.json schema reference")
+      expect(parsed.message).toContain("CONFIG")
 
       const fileOutput = await readFile(logPath, "utf8")
-      expect(fileOutput).toContain("[INFO] rig.json schema reference")
+      expect(fileOutput).toContain("[INFO] CONFIG")
       expect(fileOutput.includes('"level":"info"')).toBe(false)
     } finally {
       await rm(tempRoot, { recursive: true, force: true })
@@ -100,7 +100,7 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
   })
 
   test("GIVEN neither env var is set WHEN running THEN TerminalLoggerLive is used", async () => {
-    const { stdout, stderr, exitCode } = await runRigCommand(["config"], {
+    const { stdout, stderr, exitCode } = await runRigCommand(["config", "--help"], {
       RIG_LOG_FILE: undefined,
       RIG_LOG_FORMAT: undefined,
     })
@@ -108,7 +108,7 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
     expect(exitCode).toBe(0)
     expect(stderr).toBe("")
     expect(stdout).toContain("\u001b[34mi\u001b[0m")
-    expect(stdout).toContain("rig.json schema reference")
+    expect(stdout).toContain("Show project configuration overview.")
 
     const firstLine = stdout.trim().split("\n")[0] ?? ""
     expect(firstLine.startsWith("{")).toBe(false)

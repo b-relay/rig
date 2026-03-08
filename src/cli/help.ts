@@ -80,9 +80,9 @@ const HELP: Record<CommandName, HelpSpec> = {
     examples: ["rig list"],
   },
   config: {
-    summary: "Show rig.json reference docs and defaults.",
-    usage: ["rig config", "rig config --help"],
-    examples: ["rig config --help"],
+    summary: "Show project configuration overview.",
+    usage: ["rig config [name]", "rig config --help"],
+    examples: ["rig config myapp", "rig config  (auto-detects from cwd)"],
   },
 };
 

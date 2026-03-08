@@ -234,6 +234,16 @@ const runWithLogger = async (argv: readonly string[]) => {
   return { exitCode, logger, registry }
 }
 
+const runWithLoggerInCwd = async (cwd: string, argv: readonly string[]) => {
+  const previous = process.cwd()
+  process.chdir(cwd)
+  try {
+    return await runWithLogger(argv)
+  } finally {
+    process.chdir(previous)
+  }
+}
+
 describe("GIVEN suite context WHEN cli global help parsing THEN behavior is covered", () => {
   test("GIVEN test setup WHEN no args shows main help and returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger([])
@@ -302,12 +312,18 @@ describe("GIVEN suite context WHEN cli global help parsing THEN behavior is cove
 
 describe("GIVEN suite context WHEN cli lifecycle command parsing THEN behavior is covered", () => {
   for (const command of ["deploy", "start", "stop", "restart"] as const) {
-    test(`GIVEN test setup WHEN ${command}: missing project name returns 1 THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger([command, "--dev"])
+    test(`GIVEN test setup WHEN ${command}: missing project name and no rig.json returns 1 THEN expected behavior is observed`, async () => {
+      const cwd = await mkdtemp(join(tempRoot, `rig-cli-no-rig-json-${command}-`))
+      const { exitCode, logger } = await runWithLoggerInCwd(cwd, [command, "--dev"])
 
       expect(exitCode).toBe(1)
       expect(logger.errors.length).toBeGreaterThan(0)
       expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+
+      const first = logger.errors[0]
+      if (first?._tag === "CliArgumentError") {
+        expect(first.message).toContain("No rig.json found in current directory.")
+      }
     })
 
     test(`GIVEN test setup WHEN ${command}: missing env flag returns 1 with hint THEN expected behavior is observed`, async () => {
@@ -362,6 +378,77 @@ describe("GIVEN suite context WHEN cli lifecycle command parsing THEN behavior i
       expect(logger.infos.some((entry) => entry.message === renderCommandHelp(command))).toBe(true)
     })
   }
+})
+
+describe("GIVEN suite context WHEN project name is omitted THEN cwd rig.json name is auto-detected", () => {
+  test('GIVEN cwd has rig.json with name "testapp" WHEN user runs "deploy --dev" without project name THEN uses "testapp"', async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-detect-deploy-"))
+    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ name: "testapp" }, null, 2)}\n`, "utf8")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "--dev"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+
+    const success = logger.successes.find((entry) => entry.message === "Deploy applied.")
+    expect(success?.details?.name).toBe("testapp")
+  })
+
+  test('GIVEN cwd has no rig.json WHEN user runs "deploy --dev" without project name THEN shows "No rig.json found" error', async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-no-rig-json-"))
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "--dev"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+
+    const first = logger.errors[0]
+    expect(first?._tag).toBe("CliArgumentError")
+    if (first?._tag === "CliArgumentError") {
+      expect(first.message).toContain("No rig.json found in current directory.")
+    }
+  })
+
+  test('GIVEN cwd has rig.json without name field WHEN user runs "deploy --dev" without project name THEN shows "missing name" error', async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-missing-name-"))
+    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ version: "1.0.0" }, null, 2)}\n`, "utf8")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "--dev"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+
+    const first = logger.errors[0]
+    expect(first?._tag).toBe("CliArgumentError")
+    if (first?._tag === "CliArgumentError") {
+      expect(first.message).toBe('rig.json found but missing a valid "name" field.')
+    }
+  })
+
+  test('GIVEN explicit name is provided WHEN user runs "deploy myapp --dev" THEN uses "myapp" (ignores rig.json)', async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-explicit-wins-"))
+    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ name: "ignored-app" }, null, 2)}\n`, "utf8")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "myapp", "--dev"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+
+    const success = logger.successes.find((entry) => entry.message === "Deploy applied.")
+    expect(success?.details?.name).toBe("myapp")
+  })
+
+  test('GIVEN cwd has rig.json with name "testapp" WHEN user runs "stop --prod" without project name THEN uses "testapp"', async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-detect-stop-"))
+    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ name: "testapp" }, null, 2)}\n`, "utf8")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["stop", "--prod"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+
+    const success = logger.successes.find((entry) => entry.message === "Services stopped.")
+    expect(success?.details?.name).toBe("testapp")
+  })
 })
 
 describe("GIVEN suite context WHEN cli init parsing THEN behavior is covered", () => {

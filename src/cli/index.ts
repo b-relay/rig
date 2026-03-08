@@ -1,3 +1,5 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
 import { parseArgs } from "node:util"
 import { Effect } from "effect"
 import { z } from "zod"
@@ -33,12 +35,66 @@ type ParsedArgs = {
   readonly positionals: readonly string[]
 }
 
+type ResolvedProjectName =
+  | { readonly name: string }
+  | { readonly error: "no-rig-json" }
+  | { readonly error: "no-name-field" }
+
 const makeCliError = (
   command: string,
   message: string,
   hint: string,
   details?: Record<string, unknown>,
 ): CliArgumentError => new CliArgumentError(command, message, hint, details)
+
+const resolveProjectName = (positional: string | undefined): ResolvedProjectName => {
+  const explicit = positional?.trim()
+  if (explicit && explicit.length > 0) {
+    return { name: explicit }
+  }
+
+  const rigJsonPath = path.join(process.cwd(), "rig.json")
+  if (!fs.existsSync(rigJsonPath)) {
+    return { error: "no-rig-json" }
+  }
+
+  try {
+    const raw = fs.readFileSync(rigJsonPath, "utf8")
+    const parsed = JSON.parse(raw) as unknown
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { error: "no-name-field" }
+    }
+
+    const name = (parsed as Record<string, unknown>).name
+    if (typeof name !== "string" || name.trim().length === 0) {
+      return { error: "no-name-field" }
+    }
+
+    return { name: name.trim() }
+  } catch {
+    return { error: "no-name-field" }
+  }
+}
+
+const projectNameError = (
+  command: "deploy" | "start" | "stop" | "restart" | "status" | "logs" | "version",
+  error: "no-rig-json" | "no-name-field",
+  usage: string,
+): CliArgumentError => {
+  if (error === "no-rig-json") {
+    return makeCliError(
+      command,
+      `No rig.json found in current directory. Specify a project name: ${usage}`,
+      `Usage: ${usage}`,
+    )
+  }
+
+  return makeCliError(
+    command,
+    'rig.json found but missing a valid "name" field.',
+    `Specify a project name: ${usage}`,
+  )
+}
 
 const parseWithOptions = (
   command: string,
@@ -169,12 +225,26 @@ const parseLifecycleCommand = (
       return yield* fail(env.error)
     }
 
+    const usage =
+      command === "deploy"
+        ? "rig deploy <name> --dev|--prod"
+        : command === "start"
+          ? "rig start <name> --dev|--prod [--foreground]"
+          : command === "stop"
+            ? "rig stop <name> --dev|--prod"
+            : "rig restart <name> --dev|--prod"
+
+    const project = resolveProjectName(parsed.positionals[0])
+    if ("error" in project) {
+      return yield* fail(projectNameError(command, project.error, usage))
+    }
+
     if (command === "deploy") {
       const validated = validate(
         command,
         DeployArgsSchema,
-        { name: parsed.positionals[0], env: env.env },
-        "rig deploy <name> --dev|--prod",
+        { name: project.name, env: env.env },
+        usage,
       )
 
       if ("error" in validated) {
@@ -189,11 +259,11 @@ const parseLifecycleCommand = (
         command,
         StartArgsSchema,
         {
-          name: parsed.positionals[0],
+          name: project.name,
           env: env.env,
           foreground: parsed.values.foreground === true,
         },
-        "rig start <name> --dev|--prod [--foreground]",
+        usage,
       )
 
       if ("error" in validated) {
@@ -207,8 +277,8 @@ const parseLifecycleCommand = (
       const validated = validate(
         command,
         StopArgsSchema,
-        { name: parsed.positionals[0], env: env.env },
-        "rig stop <name> --dev|--prod",
+        { name: project.name, env: env.env },
+        usage,
       )
 
       if ("error" in validated) {
@@ -221,8 +291,8 @@ const parseLifecycleCommand = (
     const validated = validate(
       command,
       RestartArgsSchema,
-      { name: parsed.positionals[0], env: env.env },
-      "rig restart <name> --dev|--prod",
+      { name: project.name, env: env.env },
+      usage,
     )
 
     if ("error" in validated) {
@@ -286,7 +356,7 @@ const parseStatus = (args: readonly string[]) =>
 
     if (parsed.positionals.length > 1) {
       return yield* fail(
-        makeCliError("status", "Too many positional arguments.", "Usage: rig status [<name>] [--dev|--prod]"),
+        makeCliError("status", "Too many positional arguments.", "Usage: rig status <name> [--dev|--prod]"),
       )
     }
 
@@ -295,14 +365,20 @@ const parseStatus = (args: readonly string[]) =>
       return yield* fail(env.error)
     }
 
+    const usage = "rig status <name> [--dev|--prod]"
+    const project = resolveProjectName(parsed.positionals[0])
+    if ("error" in project) {
+      return yield* fail(projectNameError("status", project.error, usage))
+    }
+
     const payload = validate(
       "status",
       StatusArgsSchema,
       {
-        name: parsed.positionals[0],
+        name: project.name,
         env: env.env ?? undefined,
       },
-      "rig status [<name>] [--dev|--prod]",
+      usage,
     )
 
     if ("error" in payload) {
@@ -336,17 +412,23 @@ const parseLogs = (args: readonly string[]) =>
       return yield* fail(env.error)
     }
 
+    const usage = "rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]"
+    const project = resolveProjectName(parsed.positionals[0])
+    if ("error" in project) {
+      return yield* fail(projectNameError("logs", project.error, usage))
+    }
+
     const payload = validate(
       "logs",
       LogsArgsSchema,
       {
-        name: parsed.positionals[0],
+        name: project.name,
         env: env.env,
         follow: parsed.values.follow === true,
         lines: parsed.values.lines ? Number(parsed.values.lines) : 50,
         service: typeof parsed.values.service === "string" ? parsed.values.service : undefined,
       },
-      "rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]",
+      usage,
     )
 
     if ("error" in payload || parsed.positionals.length > 1) {
@@ -356,7 +438,7 @@ const parseLogs = (args: readonly string[]) =>
           : makeCliError(
               "logs",
               "Invalid arguments.",
-              "Usage: rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]",
+              `Usage: ${usage}`,
             ),
       )
     }
@@ -378,14 +460,20 @@ const parseVersion = (args: readonly string[]) =>
       return yield* showCommandHelp("version")
     }
 
+    const usage = "rig version <name> [patch|minor|major|undo|list]"
+    const project = resolveProjectName(parsed.positionals[0])
+    if ("error" in project) {
+      return yield* fail(projectNameError("version", project.error, usage))
+    }
+
     const payload = validate(
       "version",
       VersionArgsSchema,
       {
-        name: parsed.positionals[0],
+        name: project.name,
         action: parsed.positionals[1] ?? "show",
       },
-      "rig version <name> [patch|minor|major|undo|list]",
+      usage,
     )
 
     if ("error" in payload || parsed.positionals.length > 2) {
@@ -395,7 +483,7 @@ const parseVersion = (args: readonly string[]) =>
           : makeCliError(
               "version",
               "Invalid arguments.",
-              "Usage: rig version <name> [patch|minor|major|undo|list]",
+              `Usage: ${usage}`,
             ),
       )
     }

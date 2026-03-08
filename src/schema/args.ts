@@ -117,6 +117,21 @@ export const ConfigArgsSchema = z
   })
   .describe("Arguments for 'rig config [name]'.")
 
+export const ConfigSetArgsSchema = z
+  .object({
+    name: ProjectName.describe(
+      "Project name whose rig.json should be updated. Parsed from [name] positional or auto-detected from cwd.",
+    ),
+    key: z
+      .string()
+      .min(1)
+      .describe("Dot-notation config key path to update (for example 'version' or 'daemon.enabled')."),
+    value: z
+      .string()
+      .describe("Raw value from CLI. Parsed with JSON.parse fallback to plain string before schema validation."),
+  })
+  .describe("Arguments for 'rig config set [name] <key> <value>'.")
+
 // ── rig list ────────────────────────────────────────────────────────────────
 
 export const ListArgsSchema = z
@@ -134,4 +149,5 @@ export type StatusArgs = z.infer<typeof StatusArgsSchema>
 export type LogsArgs = z.infer<typeof LogsArgsSchema>
 export type VersionArgs = z.infer<typeof VersionArgsSchema>
 export type ConfigArgs = z.infer<typeof ConfigArgsSchema>
+export type ConfigSetArgs = z.infer<typeof ConfigSetArgsSchema>
 export type ListArgs = z.infer<typeof ListArgsSchema>

@@ -81,8 +81,17 @@ const HELP: Record<CommandName, HelpSpec> = {
   },
   config: {
     summary: "Show project configuration overview.",
-    usage: ["rig config [name]", "rig config --help"],
-    examples: ["rig config myapp", "rig config  (auto-detects from cwd)"],
+    usage: [
+      "rig config [name]",
+      "rig config set [name] <key> <value>",
+      "rig config --help",
+    ],
+    examples: [
+      "rig config myapp",
+      "rig config  (auto-detects from cwd)",
+      "rig config set myapp version 0.2.0",
+      "rig config set domain example.com",
+    ],
   },
 };
 

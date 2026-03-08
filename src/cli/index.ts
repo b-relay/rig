@@ -5,6 +5,7 @@ import { Effect } from "effect"
 import { z } from "zod"
 
 import { runConfigCommand } from "../core/config-command.js"
+import { runConfigSetCommand } from "../core/config-set-command.js"
 import { runDeployCommand } from "../core/deploy.js"
 import { runInitCommand } from "../core/init.js"
 import { runListCommand } from "../core/list.js"
@@ -15,6 +16,7 @@ import { runVersionCommand } from "../core/version.js"
 import { Logger } from "../interfaces/logger.js"
 import {
   ConfigArgsSchema,
+  ConfigSetArgsSchema,
   DeployArgsSchema,
   InitArgsSchema,
   ListArgsSchema,
@@ -532,6 +534,48 @@ const parseConfig = (args: readonly string[]) =>
 
     if (parsed.values.help || parsed.positionals[0] === "help") {
       return yield* showCommandHelp("config")
+    }
+
+    if (parsed.positionals[0] === "set") {
+      const setPositionals = parsed.positionals.slice(1)
+      const usage = "rig config set [name] <key> <value>"
+
+      if (setPositionals.length !== 2 && setPositionals.length !== 3) {
+        return yield* fail(
+          makeCliError(
+            "config",
+            "Invalid arguments.",
+            `Usage: ${usage}`,
+          ),
+        )
+      }
+
+      const key = setPositionals[setPositionals.length - 2]
+      const value = setPositionals[setPositionals.length - 1]
+
+      const project = setPositionals.length === 3
+        ? resolveProjectName(setPositionals[0])
+        : resolveProjectName(undefined)
+      if ("error" in project) {
+        return yield* fail(projectNameError("config", project.error, usage))
+      }
+
+      const payload = validate(
+        "config",
+        ConfigSetArgsSchema,
+        {
+          name: project.name,
+          key,
+          value,
+        },
+        usage,
+      )
+
+      if ("error" in payload) {
+        return yield* fail(payload.error)
+      }
+
+      return yield* runConfigSetCommand(payload.data.name, payload.data.key, payload.data.value)
     }
 
     if (parsed.positionals.length > 1) {

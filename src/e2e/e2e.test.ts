@@ -83,6 +83,18 @@ class InMemoryFileSystem implements FileSystemService {
     })
   }
 
+  rename(src: string, dest: string) {
+    return Effect.sync(() => {
+      const content = this.files.get(src)
+      if (content === undefined) {
+        throw fileSystemError("rename", src, "ENOENT")
+      }
+      this.ensureParentDirs(dest)
+      this.files.set(dest, content)
+      this.files.delete(src)
+    })
+  }
+
   append(path: string, content: string) {
     return Effect.sync(() => {
       this.ensureParentDirs(path)

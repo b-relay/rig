@@ -31,6 +31,16 @@ class MockFileSystem implements FileSystemService {
     return Effect.void
   }
 
+  rename(src: string, dest: string) {
+    const content = this.files.get(src)
+    if (content === undefined) {
+      return Effect.fail(new FileSystemError("rename", src, "Not found", "Check path."))
+    }
+    this.files.set(dest, content)
+    this.files.delete(src)
+    return Effect.void
+  }
+
   append(path: string, content: string) {
     this.files.set(path, `${this.files.get(path) ?? ""}${content}`)
     return Effect.void

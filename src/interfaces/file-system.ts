@@ -4,6 +4,7 @@ import type { FileSystemError } from "../schema/errors.js"
 export interface FileSystem {
   readonly read: (path: string) => Effect.Effect<string, FileSystemError>
   readonly write: (path: string, content: string) => Effect.Effect<void, FileSystemError>
+  readonly rename: (src: string, dest: string) => Effect.Effect<void, FileSystemError>
   readonly append: (path: string, content: string) => Effect.Effect<void, FileSystemError>
   readonly copy: (src: string, dest: string) => Effect.Effect<void, FileSystemError>
   readonly symlink: (target: string, link: string) => Effect.Effect<void, FileSystemError>

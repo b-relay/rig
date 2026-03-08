@@ -1,11 +1,84 @@
+import { join } from "node:path"
 import { Effect } from "effect"
 
+import { FileSystem } from "../interfaces/file-system.js"
 import { Logger } from "../interfaces/logger.js"
 import { ProcessManager } from "../interfaces/process-manager.js"
 import { Registry } from "../interfaces/registry.js"
+import { Workspace } from "../interfaces/workspace.js"
 import type { StatusArgs } from "../schema/args.js"
 import { loadProjectConfig, resolveEnvironment } from "./config.js"
 import { daemonLabel } from "./shared.js"
+
+interface PidEntry {
+  readonly pid: number
+  readonly port: number
+  readonly startedAt: string
+}
+
+type PidMap = Record<string, PidEntry>
+
+const parsePidMap = (raw: string): PidMap => {
+  const parsed = JSON.parse(raw) as unknown
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {}
+  }
+
+  const pids: PidMap = {}
+  for (const [serviceName, value] of Object.entries(parsed)) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      continue
+    }
+
+    const entry = value as Record<string, unknown>
+    if (
+      typeof entry.pid !== "number" ||
+      !Number.isInteger(entry.pid) ||
+      entry.pid <= 0 ||
+      typeof entry.port !== "number" ||
+      !Number.isInteger(entry.port) ||
+      entry.port <= 0 ||
+      typeof entry.startedAt !== "string"
+    ) {
+      continue
+    }
+
+    pids[serviceName] = {
+      pid: entry.pid,
+      port: entry.port,
+      startedAt: entry.startedAt,
+    }
+  }
+
+  return pids
+}
+
+const causeMessage = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause)
+
+const isProcessAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (cause) {
+    const code =
+      typeof cause === "object" && cause !== null && "code" in cause
+        ? String((cause as { code?: unknown }).code)
+        : ""
+
+    return code !== "ESRCH"
+  }
+}
+
+const toUptimeSeconds = (startedAt: string): number | null => {
+  const date = new Date(startedAt)
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+
+  const diff = Math.floor((Date.now() - date.getTime()) / 1000)
+  return diff >= 0 ? diff : 0
+}
 
 export const runStatusCommand = (args: StatusArgs) =>
   Effect.gen(function* () {
@@ -52,22 +125,108 @@ export const runStatusCommand = (args: StatusArgs) =>
     }
 
     const name = args.name
+    const fileSystem = yield* FileSystem
+    const workspace = yield* Workspace
     const loaded = yield* loadProjectConfig(name)
     const envs = args.env ? [args.env] : (["dev", "prod"] as const)
 
-    const rows = yield* Effect.forEach(envs, (env) => {
+    const rowSets = yield* Effect.forEach(envs, (env) => {
       const row = Effect.gen(function* () {
         const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, env)
-        const daemon = yield* processManager.status(daemonLabel(name, env))
+        const label = daemonLabel(name, env)
+        const daemon = yield* processManager.status(label).pipe(
+          Effect.catchAll(() =>
+            Effect.succeed({
+              label,
+              loaded: false,
+              running: false,
+              pid: null,
+            }),
+          ),
+        )
 
-        return {
+        const workspacePath = yield* workspace.resolve(name, env).pipe(
+          Effect.catchTag("WorkspaceError", (error) =>
+            logger.warn("Unable to resolve workspace for status.", {
+              name,
+              env,
+              error: error.message,
+            }).pipe(Effect.as(null)),
+          ),
+        )
+        const pidsPath = workspacePath ? join(workspacePath, ".rig", "pids.json") : null
+        let pids: PidMap = {}
+
+        if (pidsPath) {
+          const exists = yield* fileSystem.exists(pidsPath).pipe(
+            Effect.catchAll((error) =>
+              logger.warn("Unable to check PID tracking file.", {
+                path: pidsPath,
+                error: error.message,
+              }).pipe(Effect.as(false)),
+            ),
+          )
+
+          if (exists) {
+            const raw = yield* fileSystem.read(pidsPath).pipe(
+              Effect.catchAll((error) =>
+                logger.warn("Unable to read PID tracking file.", {
+                  path: pidsPath,
+                  error: error.message,
+                }).pipe(Effect.as(null)),
+              ),
+            )
+
+            if (raw !== null) {
+              pids = yield* Effect.try({
+                try: () => parsePidMap(raw),
+                catch: (cause) => cause,
+              }).pipe(
+                Effect.catchAll((cause) =>
+                  logger.warn("Invalid PID tracking file; ignoring service status.", {
+                    path: pidsPath,
+                    error: causeMessage(cause),
+                  }).pipe(Effect.as({} as PidMap)),
+                ),
+              )
+            }
+          }
+        }
+
+        const base = {
           name,
           env,
           services: environment.services.length,
           daemonLoaded: daemon.loaded,
           daemonRunning: daemon.running,
-          pid: daemon.pid,
+          daemonPid: daemon.pid,
         }
+
+        const serviceRows = Object.entries(pids).map(([service, entry]) => ({
+          ...base,
+          service,
+          pid: entry.pid,
+          port: entry.port,
+          alive: isProcessAlive(entry.pid),
+          startedAt: entry.startedAt,
+          uptimeSeconds: toUptimeSeconds(entry.startedAt),
+        }))
+
+        if (serviceRows.length > 0) {
+          return serviceRows
+        }
+
+        return [
+          {
+            ...base,
+            service: null,
+            pid: null,
+            port: null,
+            alive: null,
+            startedAt: null,
+            uptimeSeconds: null,
+          },
+        ]
       })
 
       if (args.env) {
@@ -75,11 +234,11 @@ export const runStatusCommand = (args: StatusArgs) =>
       }
 
       return row.pipe(
-        Effect.catchTag("ConfigValidationError", () => Effect.succeed(null)),
+        Effect.catchTag("ConfigValidationError", () => Effect.succeed([] as readonly Record<string, unknown>[])),
       )
-    }).pipe(
-      Effect.map((items) => items.filter((item): item is NonNullable<typeof item> => item !== null)),
-    )
+    })
+
+    const rows = rowSets.flatMap((set) => set)
 
     yield* logger.table(rows)
     return 0

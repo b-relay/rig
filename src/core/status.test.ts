@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
@@ -17,6 +17,11 @@ import {
   type Registry as RegistryService,
   type RegistryEntry,
 } from "../interfaces/registry.js"
+import {
+  Workspace,
+  type Workspace as WorkspaceService,
+  type WorkspaceInfo,
+} from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { ConfigValidationError, ProcessError, RegistryError, type RigError } from "../schema/errors.js"
 
@@ -119,8 +124,52 @@ class StaticProcessManager implements ProcessManagerService {
   }
 }
 
+class StaticWorkspace implements WorkspaceService {
+  constructor(private readonly pathsByKey: Readonly<Record<string, string>>) {}
+
+  create(name: string, env: "dev" | "prod", _version: string, _commitRef: string) {
+    return Effect.succeed(this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
+  }
+
+  resolve(name: string, env: "dev" | "prod") {
+    return Effect.succeed(this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
+  }
+
+  sync(_name: string, _env: "dev" | "prod") {
+    return Effect.void
+  }
+
+  list(_name: string) {
+    return Effect.succeed([] as readonly WorkspaceInfo[])
+  }
+}
+
 const writeRigConfig = async (repoPath: string, config: unknown) => {
   await writeFile(join(repoPath, "rig.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8")
+}
+
+const writePidFile = async (workspacePath: string, pids: unknown) => {
+  const pidsPath = join(workspacePath, ".rig", "pids.json")
+  await mkdir(join(workspacePath, ".rig"), { recursive: true })
+  await writeFile(pidsPath, `${JSON.stringify(pids, null, 2)}\n`, "utf8")
+}
+
+const findDefinitelyDeadPid = (): number => {
+  for (const candidate of [999_999, 888_888, 777_777]) {
+    try {
+      process.kill(candidate, 0)
+    } catch (cause) {
+      const code =
+        typeof cause === "object" && cause !== null && "code" in cause
+          ? String((cause as { code?: unknown }).code)
+          : ""
+      if (code === "ESRCH") {
+        return candidate
+      }
+    }
+  }
+
+  return 999_999
 }
 
 describe("GIVEN suite context WHEN status command executes THEN behavior is covered", () => {
@@ -163,6 +212,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       NodeFileSystemLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -179,7 +229,13 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         services: 1,
         daemonLoaded: true,
         daemonRunning: true,
-        pid: 40101,
+        daemonPid: 40101,
+        service: null,
+        pid: null,
+        port: null,
+        alive: null,
+        startedAt: null,
+        uptimeSeconds: null,
       },
       {
         name: "pantry",
@@ -187,7 +243,13 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         services: 1,
         daemonLoaded: true,
         daemonRunning: false,
+        daemonPid: null,
+        service: null,
         pid: null,
+        port: null,
+        alive: null,
+        startedAt: null,
+        uptimeSeconds: null,
       },
     ])
 
@@ -222,6 +284,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       NodeFileSystemLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -238,7 +301,13 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         services: 1,
         daemonLoaded: true,
         daemonRunning: false,
+        daemonPid: null,
+        service: null,
         pid: null,
+        port: null,
+        alive: null,
+        startedAt: null,
+        uptimeSeconds: null,
       },
     ])
     expect(processManager.statusCalls).toEqual(["rig.pantry.dev"])
@@ -274,6 +343,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       NodeFileSystemLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -290,7 +360,13 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         services: 1,
         daemonLoaded: false,
         daemonRunning: false,
+        daemonPid: null,
+        service: null,
         pid: null,
+        port: null,
+        alive: null,
+        startedAt: null,
+        uptimeSeconds: null,
       },
     ])
     expect(processManager.statusCalls).toEqual(["rig.pantry.dev"])
@@ -318,6 +394,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       NodeFileSystemLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -329,6 +406,181 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
     if (result._tag === "Left") {
       expect(result.left).toBeInstanceOf(ConfigValidationError)
     }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN pids.json has a live service pid WHEN status is called for that env THEN the row reports alive true with service details", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-status-live-pid-"))
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+    const startedAt = new Date("2026-03-08T10:00:00.000Z").toISOString()
+    await writePidFile(repoPath, {
+      web: { pid: process.pid, port: 3101, startedAt },
+    })
+
+    const logger = new CaptureLogger()
+    const processManager = new StaticProcessManager({
+      "rig.pantry.dev": {
+        label: "rig.pantry.dev",
+        loaded: false,
+        running: false,
+        pid: null,
+      },
+    })
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runStatusCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toHaveLength(1)
+    expect(logger.tables[0]).toHaveLength(1)
+    const row = logger.tables[0][0]
+    expect(row).toMatchObject({
+      name: "pantry",
+      env: "dev",
+      services: 1,
+      daemonLoaded: false,
+      daemonRunning: false,
+      daemonPid: null,
+      service: "web",
+      pid: process.pid,
+      port: 3101,
+      alive: true,
+      startedAt,
+    })
+    expect(typeof row.uptimeSeconds).toBe("number")
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN pids.json is missing WHEN status is called for a project THEN output includes daemon status and no service rows without crashing", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-status-missing-pids-"))
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 5173 },
+          ],
+        },
+      },
+    })
+
+    const logger = new CaptureLogger()
+    const processManager = new StaticProcessManager({
+      "rig.pantry.dev": {
+        label: "rig.pantry.dev",
+        loaded: true,
+        running: false,
+        pid: null,
+      },
+    })
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runStatusCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toHaveLength(1)
+    expect(logger.tables[0]).toEqual([
+      {
+        name: "pantry",
+        env: "dev",
+        services: 1,
+        daemonLoaded: true,
+        daemonRunning: false,
+        daemonPid: null,
+        service: null,
+        pid: null,
+        port: null,
+        alive: null,
+        startedAt: null,
+        uptimeSeconds: null,
+      },
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN pids.json has a stale pid WHEN status is called for that env THEN the row reports alive false", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-status-stale-pid-"))
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            { name: "api", type: "server", command: "echo api", port: 5174 },
+          ],
+        },
+      },
+    })
+
+    const stalePid = findDefinitelyDeadPid()
+    await writePidFile(repoPath, {
+      api: { pid: stalePid, port: 3201, startedAt: new Date("2026-03-08T11:00:00.000Z").toISOString() },
+    })
+
+    const logger = new CaptureLogger()
+    const processManager = new StaticProcessManager({
+      "rig.pantry.dev": {
+        label: "rig.pantry.dev",
+        loaded: false,
+        running: false,
+        pid: null,
+      },
+    })
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runStatusCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toHaveLength(1)
+    expect(logger.tables[0]).toHaveLength(1)
+    const row = logger.tables[0][0]
+    expect(row).toMatchObject({
+      service: "api",
+      pid: stalePid,
+      port: 3201,
+      alive: false,
+    })
 
     await rm(repoPath, { recursive: true, force: true })
   })
@@ -378,6 +630,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       NodeFileSystemLive,
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({}, entries)),
+      Layer.succeed(Workspace, new StaticWorkspace({})),
       Layer.succeed(ProcessManager, processManager),
     )
 

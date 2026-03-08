@@ -243,6 +243,37 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     expect(new Date(pids.web.startedAt).toString()).not.toBe("Invalid Date")
   })
 
+  test("GIVEN a service start WHEN foreground is false THEN child processes are unrefed", async () => {
+    const { runner, opts } = await createContext()
+    const service = makeService("unref-check", "sleep 30", 3081)
+    const originalSpawn = Bun.spawn
+    let unrefCalled = false
+    const fakePid = 654_321
+
+    Bun.spawn = ((...spawnArgs: Parameters<typeof Bun.spawn>) => {
+      const [command] = spawnArgs
+
+      if (Array.isArray(command) && command[0] === "sh") {
+        return {
+          pid: fakePid,
+          unref: () => {
+            unrefCalled = true
+          },
+        } as unknown as ReturnType<typeof Bun.spawn>
+      }
+
+      return originalSpawn(...spawnArgs)
+    }) as typeof Bun.spawn
+
+    try {
+      const running = await run(runner.start(service, opts))
+      expect(running.pid).toBe(fakePid)
+      expect(unrefCalled).toBe(true)
+    } finally {
+      Bun.spawn = originalSpawn
+    }
+  })
+
   test("GIVEN test setup WHEN stop terminates process and removes it from pid tracking THEN expected behavior is observed", async () => {
     const { runner, opts, pidsPath } = await createContext()
     const service = makeService("api", "sleep 30", 3071)

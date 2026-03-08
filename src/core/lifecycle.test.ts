@@ -142,6 +142,28 @@ class CaptureServiceRunner implements ServiceRunnerService {
   }
 }
 
+class ForegroundExitServiceRunner extends CaptureServiceRunner {
+  override start(service: ServerService, opts: RunOpts) {
+    this.startOrder.push(service.name)
+    this.runOptsByService.set(service.name, opts)
+
+    const child = Bun.spawn(["sh", "-c", "sleep 1"], {
+      cwd: opts.workdir,
+      stdout: "ignore",
+      stderr: "ignore",
+      detached: true,
+    })
+    child.unref()
+
+    return Effect.succeed({
+      name: service.name,
+      pid: child.pid,
+      port: service.port,
+      startedAt: new Date(),
+    } satisfies RunningService)
+  }
+}
+
 class FailingStopServiceRunner extends CaptureServiceRunner {
   constructor(private readonly failService: string) {
     super()
@@ -605,6 +627,54 @@ describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior
     expect(exitCode).toBe(0)
     expect(logger.infoCalls.some((entry) => entry.message.includes("Loaded configuration"))).toBe(true)
     expect(logger.infoCalls.some((entry) => entry.message.includes("Starting service"))).toBe(true)
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a start with foreground true WHEN a child exits THEN start command completes", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-foreground-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        dev: {
+          services: [
+            {
+              name: "api",
+              type: "server",
+              command: "echo api",
+              port: 3522,
+            },
+          ],
+        },
+      },
+    })
+
+    const serviceRunner = new ForegroundExitServiceRunner()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, serviceRunner),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new CaptureBinInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    const startedAt = Date.now()
+    const exitCode = await Effect.runPromise(
+      runStartCommand({ name: "pantry", env: "dev", foreground: true }).pipe(Effect.provide(layer)),
+    )
+    const elapsedMs = Date.now() - startedAt
+
+    expect(exitCode).toBe(0)
+    expect(serviceRunner.startOrder).toEqual(["api"])
+    expect(elapsedMs).toBeGreaterThanOrEqual(500)
 
     await rm(repoPath, { recursive: true, force: true })
   })

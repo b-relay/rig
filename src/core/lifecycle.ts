@@ -35,6 +35,7 @@ type PidMap = Record<string, PidEntry>
 type InstalledBinMap = Record<string, { readonly installedAt: string; readonly shimPath: string }>
 
 const HEALTH_POLL_INTERVAL_MS = 500
+const FOREGROUND_MONITOR_INTERVAL_MS = 500
 
 const resolveCheckType = (target: string): "http" | "command" =>
   target.startsWith("http://") || target.startsWith("https://") ? "http" : "command"
@@ -45,6 +46,48 @@ const toServiceRunnerError = (
   message: string,
   hint: string,
 ) => new ServiceRunnerError(operation, service, message, hint)
+
+const isPidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const anyStartedServiceExited = (started: readonly RunningService[]): boolean => {
+  if (started.length === 0) {
+    return true
+  }
+
+  return started.some((service) => !isPidAlive(service.pid))
+}
+
+const monitorForegroundServices = (started: readonly RunningService[]) =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise<void>((resolve) => {
+        if (anyStartedServiceExited(started)) {
+          resolve()
+          return
+        }
+
+        const interval = setInterval(() => {
+          if (anyStartedServiceExited(started)) {
+            clearInterval(interval)
+            resolve()
+          }
+        }, FOREGROUND_MONITOR_INTERVAL_MS)
+      }),
+    catch: (cause) =>
+      toServiceRunnerError(
+        "start",
+        "runtime",
+        cause instanceof Error ? cause.message : String(cause),
+        "Foreground monitor failed while waiting for service exit.",
+      ),
+  })
 
 const loadHookEnv = (
   environment: Environment,
@@ -500,6 +543,10 @@ export const runStartCommand = (args: StartArgs) => {
       binServices: binServices.length,
       daemonLoaded: daemonStatus.loaded,
     })
+
+    if (args.foreground) {
+      yield* monitorForegroundServices(started)
+    }
 
     return 0
   })

@@ -280,6 +280,7 @@ export class BunServiceRunner implements ServiceRunnerService {
             `Ensure command '${service.command}' is valid and '${opts.workdir}' exists.`,
           ),
       })
+      child.unref()
 
       const running: RunningService = {
         name: service.name,

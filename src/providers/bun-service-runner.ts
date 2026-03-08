@@ -37,6 +37,12 @@ const sleep = (ms: number): Promise<void> =>
 const causeMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause)
 
+const isErrnoCode = (cause: unknown, code: string): boolean =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "code" in cause &&
+  (cause as { readonly code?: unknown }).code === code
+
 const toError = (
   operation: ServiceRunnerError["operation"],
   service: string,
@@ -53,18 +59,150 @@ const isProcessAlive = (pid: number): boolean => {
   }
 }
 
-const waitForExit = async (pid: number, timeoutMs: number): Promise<boolean> => {
+const isProcessGroupAlive = (pid: number): boolean => {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const parsePidLines = (raw: string): readonly number[] => {
+  const result = new Set<number>()
+
+  for (const line of raw.split(/\r?\n/)) {
+    const pid = Number.parseInt(line.trim(), 10)
+    if (Number.isFinite(pid) && pid > 0) {
+      result.add(pid)
+    }
+  }
+
+  return [...result]
+}
+
+const listDirectChildPids = async (pid: number): Promise<readonly number[]> => {
+  try {
+    const child = Bun.spawn(["/usr/bin/pgrep", "-P", String(pid)], {
+      stdout: "pipe",
+      stderr: "ignore",
+    })
+
+    const [stdout, exitCode] = await Promise.all([
+      child.stdout ? new Response(child.stdout).text() : Promise.resolve(""),
+      child.exited,
+    ])
+
+    if (exitCode !== 0) {
+      return []
+    }
+
+    return parsePidLines(stdout)
+  } catch {
+    return []
+  }
+}
+
+const listDescendantPids = async (rootPid: number): Promise<readonly number[]> => {
+  const descendants = new Set<number>()
+  const queue: number[] = [rootPid]
+
+  while (queue.length > 0) {
+    const parent = queue.shift()
+    if (parent === undefined) {
+      continue
+    }
+
+    const children = await listDirectChildPids(parent)
+    for (const childPid of children) {
+      if (descendants.has(childPid)) {
+        continue
+      }
+      descendants.add(childPid)
+      queue.push(childPid)
+    }
+  }
+
+  return [...descendants]
+}
+
+const signalProcessGroupOrTree = (
+  pid: number,
+  descendants: ReadonlySet<number>,
+  signal: NodeJS.Signals,
+): void => {
+  try {
+    process.kill(-pid, signal)
+    return
+  } catch (groupError) {
+    let signaledAny = false
+    const candidates = new Set<number>([pid, ...descendants])
+
+    for (const candidate of candidates) {
+      try {
+        process.kill(candidate, signal)
+        signaledAny = true
+      } catch (candidateError) {
+        if (isErrnoCode(candidateError, "ESRCH")) {
+          continue
+        }
+        throw candidateError
+      }
+    }
+
+    if (!signaledAny && !isErrnoCode(groupError, "ESRCH")) {
+      throw groupError
+    }
+  }
+}
+
+const isAnyTrackedDescendantAlive = (descendants: ReadonlySet<number>): boolean => {
+  for (const descendant of descendants) {
+    if (isProcessAlive(descendant)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+const isProcessTreeAlive = async (
+  pid: number,
+  descendants: ReadonlySet<number>,
+): Promise<boolean> => {
+  if (isProcessAlive(pid)) {
+    return true
+  }
+
+  if (isProcessGroupAlive(pid)) {
+    return true
+  }
+
+  if (isAnyTrackedDescendantAlive(descendants)) {
+    return true
+  }
+
+  const discoveredDescendants = await listDescendantPids(pid)
+  return discoveredDescendants.length > 0
+}
+
+const waitForExit = async (
+  pid: number,
+  timeoutMs: number,
+  trackedDescendants: readonly number[] = [],
+): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs
+  const descendants = new Set<number>(trackedDescendants)
 
   while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) {
+    if (!(await isProcessTreeAlive(pid, descendants))) {
       return true
     }
 
     await sleep(STOP_POLL_INTERVAL_MS)
   }
 
-  return !isProcessAlive(pid)
+  return !(await isProcessTreeAlive(pid, descendants))
 }
 
 const mergeEnv = (envVars: Readonly<Record<string, string>>): Record<string, string> => {
@@ -132,6 +270,7 @@ export class BunServiceRunner implements ServiceRunnerService {
             env: mergeEnv(opts.envVars),
             stdout: Bun.file(logPath),
             stderr: Bun.file(logPath),
+            detached: true,
           }),
         catch: (cause) =>
           toError(
@@ -174,7 +313,17 @@ export class BunServiceRunner implements ServiceRunnerService {
 
   stop(service: RunningService): Effect.Effect<void, ServiceRunnerError> {
     return Effect.gen(this, function* () {
-      if (!isProcessAlive(service.pid)) {
+      const trackedDescendants = yield* Effect.tryPromise({
+        try: () => listDescendantPids(service.pid),
+        catch: () => new Error("Failed to inspect child processes."),
+      }).pipe(Effect.orElseSucceed(() => [] as readonly number[]))
+      const trackedDescendantSet = new Set<number>(trackedDescendants)
+
+      if (
+        !isProcessAlive(service.pid) &&
+        !isProcessGroupAlive(service.pid) &&
+        trackedDescendants.length === 0
+      ) {
         // Service already exited — idempotent stop: clean up PID tracking and return success.
         yield* this.removeFromPidTracking(service.name)
         return
@@ -183,8 +332,16 @@ export class BunServiceRunner implements ServiceRunnerService {
       // PID reuse safety guard: verify the process actually owns the expected port
       // before sending signals. If the original service crashed and the OS reassigned
       // the PID to an unrelated process, we must NOT kill it.
-      if (typeof service.port === "number" && service.port > 0) {
-        const ownership = yield* this.checkPortOwnership(service.pid, service.port)
+      if (
+        isProcessAlive(service.pid) &&
+        typeof service.port === "number" &&
+        service.port > 0
+      ) {
+        const ownership = yield* this.checkPortOwnership(
+          service.pid,
+          service.port,
+          trackedDescendants,
+        )
         if (ownership === "pid-reuse") {
           yield* this.logger.warn("Skipping stop for service due to possible PID reuse.", {
             service: service.name,
@@ -200,19 +357,19 @@ export class BunServiceRunner implements ServiceRunnerService {
 
       yield* Effect.try({
         try: () => {
-          process.kill(service.pid, "SIGTERM")
+          signalProcessGroupOrTree(service.pid, trackedDescendantSet, "SIGTERM")
         },
         catch: (cause) =>
           toError(
             "stop",
             service.name,
             causeMessage(cause),
-            `Could not send SIGTERM to pid ${service.pid}. Verify process permissions.`,
+            `Could not send SIGTERM to pid/process-group ${service.pid}. Verify process permissions.`,
           ),
       })
 
       const exitedAfterTerm = yield* Effect.tryPromise({
-        try: () => waitForExit(service.pid, STOP_TIMEOUT_MS),
+        try: () => waitForExit(service.pid, STOP_TIMEOUT_MS, trackedDescendants),
         catch: (cause) =>
           toError(
             "stop",
@@ -225,19 +382,19 @@ export class BunServiceRunner implements ServiceRunnerService {
       if (!exitedAfterTerm) {
         yield* Effect.try({
           try: () => {
-            process.kill(service.pid, "SIGKILL")
+            signalProcessGroupOrTree(service.pid, trackedDescendantSet, "SIGKILL")
           },
           catch: (cause) =>
             toError(
               "stop",
               service.name,
               causeMessage(cause),
-              `Could not send SIGKILL to pid ${service.pid}. Verify process permissions.`,
+              `Could not send SIGKILL to pid/process-group ${service.pid}. Verify process permissions.`,
             ),
         })
 
         const exitedAfterKill = yield* Effect.tryPromise({
-          try: () => waitForExit(service.pid, 1_000),
+          try: () => waitForExit(service.pid, 1_000, trackedDescendants),
           catch: (cause) =>
             toError(
               "stop",
@@ -334,6 +491,7 @@ export class BunServiceRunner implements ServiceRunnerService {
   private checkPortOwnership(
     pid: number,
     port: number,
+    knownDescendants: readonly number[] = [],
   ): Effect.Effect<"owns-port" | "port-free" | "pid-reuse" | "unknown", never> {
     return Effect.tryPromise({
       try: async () => {
@@ -359,7 +517,8 @@ export class BunServiceRunner implements ServiceRunnerService {
           .map((line) => Number.parseInt(line, 10))
           .filter((candidate) => Number.isFinite(candidate))
 
-        if (listenerPids.includes(pid)) {
+        const ownershipCandidates = new Set<number>([pid, ...knownDescendants])
+        if (listenerPids.some((listenerPid) => ownershipCandidates.has(listenerPid))) {
           return "owns-port" as const
         }
 
@@ -417,29 +576,39 @@ export class BunServiceRunner implements ServiceRunnerService {
 
   private cleanupSpawnedProcess(pid: number): Effect.Effect<void, never> {
     return Effect.gen(function* () {
-      if (!isProcessAlive(pid)) {
+      const trackedDescendants = yield* Effect.tryPromise({
+        try: () => listDescendantPids(pid),
+        catch: () => new Error("Failed to inspect child processes."),
+      }).pipe(Effect.orElseSucceed(() => [] as readonly number[]))
+      const trackedDescendantSet = new Set<number>(trackedDescendants)
+
+      if (
+        !isProcessAlive(pid) &&
+        !isProcessGroupAlive(pid) &&
+        trackedDescendants.length === 0
+      ) {
         return
       }
 
       yield* Effect.try({
         try: () => {
-          process.kill(pid, "SIGTERM")
+          signalProcessGroupOrTree(pid, trackedDescendantSet, "SIGTERM")
         },
         catch: () => undefined,
       }).pipe(Effect.ignore)
 
       const exited = yield* Effect.tryPromise({
-        try: () => waitForExit(pid, 1_000),
+        try: () => waitForExit(pid, 1_000, trackedDescendants),
         catch: () => false,
       }).pipe(Effect.orElseSucceed(() => false))
 
-      if (exited || !isProcessAlive(pid)) {
+      if (exited) {
         return
       }
 
       yield* Effect.try({
         try: () => {
-          process.kill(pid, "SIGKILL")
+          signalProcessGroupOrTree(pid, trackedDescendantSet, "SIGKILL")
         },
         catch: () => undefined,
       }).pipe(Effect.ignore)

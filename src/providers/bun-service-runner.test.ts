@@ -29,6 +29,92 @@ const isProcessAlive = (pid: number): boolean => {
   }
 }
 
+const isProcessGroupAlive = (pid: number): boolean => {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const parsePidLines = (raw: string): readonly number[] => {
+  const pids = new Set<number>()
+
+  for (const line of raw.split(/\r?\n/)) {
+    const pid = Number.parseInt(line.trim(), 10)
+    if (Number.isFinite(pid) && pid > 0) {
+      pids.add(pid)
+    }
+  }
+
+  return [...pids]
+}
+
+const listDirectChildPids = async (pid: number): Promise<readonly number[]> => {
+  try {
+    const child = Bun.spawn(["/usr/bin/pgrep", "-P", String(pid)], {
+      stdout: "pipe",
+      stderr: "ignore",
+    })
+
+    const [stdout, exitCode] = await Promise.all([
+      child.stdout ? new Response(child.stdout).text() : Promise.resolve(""),
+      child.exited,
+    ])
+
+    if (exitCode !== 0) {
+      return []
+    }
+
+    return parsePidLines(stdout)
+  } catch {
+    return []
+  }
+}
+
+const listDescendantPids = async (rootPid: number): Promise<readonly number[]> => {
+  const descendants = new Set<number>()
+  const queue: number[] = [rootPid]
+
+  while (queue.length > 0) {
+    const parent = queue.shift()
+    if (parent === undefined) {
+      continue
+    }
+
+    const children = await listDirectChildPids(parent)
+    for (const childPid of children) {
+      if (descendants.has(childPid)) {
+        continue
+      }
+
+      descendants.add(childPid)
+      queue.push(childPid)
+    }
+  }
+
+  return [...descendants]
+}
+
+const killProcessTree = async (pid: number): Promise<void> => {
+  const descendants = await listDescendantPids(pid)
+
+  for (const childPid of [...descendants].reverse()) {
+    try {
+      process.kill(childPid, "SIGKILL")
+    } catch {
+      // Best-effort cleanup for already-exited processes.
+    }
+  }
+
+  try {
+    process.kill(pid, "SIGKILL")
+  } catch {
+    // Best-effort cleanup for already-exited processes.
+  }
+}
+
 const waitForFile = async (path: string, timeoutMs = 2_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs
 
@@ -117,11 +203,7 @@ class FailingPidWriteFileSystem extends NodeFileSystem {
 
 afterEach(async () => {
   for (const pid of trackedPids) {
-    try {
-      process.kill(pid, "SIGKILL")
-    } catch {
-      // Best-effort cleanup for already-exited processes.
-    }
+    await killProcessTree(pid)
   }
   trackedPids.clear()
 
@@ -177,6 +259,41 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     const pidsRaw = await readFile(pidsPath, "utf8")
     const pids = JSON.parse(pidsRaw) as Record<string, unknown>
     expect("api" in pids).toBe(false)
+  })
+
+  test("GIVEN a service command spawns child processes WHEN stop is called THEN parent, child, and process group all terminate", async () => {
+    const { runner, opts, pidsPath } = await createContext()
+    const childPidPath = join(opts.workdir, ".child.pid")
+    const service = makeService(
+      "with-child",
+      `sleep 30 & echo $! > ${JSON.stringify(childPidPath)}; wait`,
+      3079,
+    )
+
+    const running = await run(runner.start(service, opts))
+    trackedPids.add(running.pid)
+    await waitForFile(childPidPath)
+
+    const childPid = Number.parseInt((await readFile(childPidPath, "utf8")).trim(), 10)
+    expect(Number.isFinite(childPid)).toBe(true)
+    trackedPids.add(childPid)
+
+    expect(isProcessAlive(running.pid)).toBe(true)
+    expect(isProcessAlive(childPid)).toBe(true)
+    expect(isProcessGroupAlive(running.pid)).toBe(true)
+
+    await run(runner.stop(running))
+    trackedPids.delete(running.pid)
+    trackedPids.delete(childPid)
+
+    await sleep(250)
+    expect(isProcessAlive(running.pid)).toBe(false)
+    expect(isProcessAlive(childPid)).toBe(false)
+    expect(isProcessGroupAlive(running.pid)).toBe(false)
+
+    const pidsRaw = await readFile(pidsPath, "utf8")
+    const pids = JSON.parse(pidsRaw) as Record<string, unknown>
+    expect("with-child" in pids).toBe(false)
   })
 
   test("GIVEN test setup WHEN health reports healthy for live process and unhealthy after exit THEN expected behavior is observed", async () => {
@@ -267,11 +384,12 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     const logDir = join(workdir, ".rig", "logs")
     await mkdir(workdir, { recursive: true })
 
-    const spawnedPidPath = join(workdir, ".spawned.pid")
+    const parentPidPath = join(workdir, ".spawned-parent.pid")
+    const childPidPath = join(workdir, ".spawned-child.pid")
     const runner = new BunServiceRunner(new FailingPidWriteFileSystem(), NoopLogger)
     const service = makeService(
       "cleanup",
-      `echo $$ > ${JSON.stringify(spawnedPidPath)}; sleep 30`,
+      `echo $$ > ${JSON.stringify(parentPidPath)}; sleep 30 & echo $! > ${JSON.stringify(childPidPath)}; wait`,
       3075,
     )
 
@@ -285,14 +403,21 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
       expect(result.left.operation).toBe("start")
     }
 
-    await waitForFile(spawnedPidPath)
-    const pid = Number.parseInt((await readFile(spawnedPidPath, "utf8")).trim(), 10)
-    expect(Number.isFinite(pid)).toBe(true)
-    trackedPids.add(pid)
+    await waitForFile(parentPidPath)
+    await waitForFile(childPidPath)
+    const parentPid = Number.parseInt((await readFile(parentPidPath, "utf8")).trim(), 10)
+    const childPid = Number.parseInt((await readFile(childPidPath, "utf8")).trim(), 10)
+    expect(Number.isFinite(parentPid)).toBe(true)
+    expect(Number.isFinite(childPid)).toBe(true)
+    trackedPids.add(parentPid)
+    trackedPids.add(childPid)
 
     await sleep(300)
-    expect(isProcessAlive(pid)).toBe(false)
-    trackedPids.delete(pid)
+    expect(isProcessAlive(parentPid)).toBe(false)
+    expect(isProcessAlive(childPid)).toBe(false)
+    expect(isProcessGroupAlive(parentPid)).toBe(false)
+    trackedPids.delete(parentPid)
+    trackedPids.delete(childPid)
   })
 
   test("GIVEN two services are started WHEN pid tracking is updated across stop calls THEN pids.json reflects both and then each removal", async () => {

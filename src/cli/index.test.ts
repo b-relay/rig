@@ -284,6 +284,20 @@ describe("GIVEN suite context WHEN cli global help parsing THEN behavior is cove
       expect(first.hint).toContain("rig --help")
     }
   })
+
+  test("GIVEN test setup WHEN --verbose is passed globally THEN it is ignored by parser and help still renders THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["--verbose", "help"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+    expect(logger.infos.some((entry) => entry.message === renderMainHelp())).toBe(true)
+  })
+
+  test("GIVEN test setup WHEN main help is rendered THEN --verbose is documented in global patterns THEN expected behavior is observed", () => {
+    const help = renderMainHelp()
+    expect(help).toContain("--verbose")
+    expect(help).toContain("Show detailed error information")
+  })
 })
 
 describe("GIVEN suite context WHEN cli lifecycle command parsing THEN behavior is covered", () => {
@@ -465,6 +479,13 @@ describe("GIVEN suite context WHEN cli logs parsing THEN behavior is covered", (
     expect(webLogs?.message).toContain("follow=true")
     expect(webLogs?.message).toContain("lines=25")
     expect(webLogs?.message).toContain("service=web")
+  })
+
+  test("GIVEN test setup WHEN --verbose is included in logs args THEN command parser ignores it and executes successfully THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["logs", "pantry", "--dev", "--verbose"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
   })
 })
 

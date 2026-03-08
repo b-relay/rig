@@ -124,6 +124,7 @@ export const renderMainHelp = (): string => {
     "",
     "Global Patterns:",
     "  --help, -h     Show help for command",
+    "  --verbose      Show detailed error information",
     "  --dev|--prod   Explicit environment flag where required",
     "  --foreground   Start command only; stay attached for launchd mode",
     "",

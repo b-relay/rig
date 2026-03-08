@@ -16,12 +16,30 @@ import { NodeFileSystemLive } from "./providers/node-fs";
 import { JSONRegistryLive } from "./providers/json-registry";
 import { CompositeLoggerLive } from "./providers/composite-logger";
 import { FileLoggerLive } from "./providers/file-logger";
-import { TerminalLoggerLive } from "./providers/terminal-logger";
+import { TerminalLogger, TerminalLoggerLive } from "./providers/terminal-logger";
 import { GitWorktreeWorkspaceLive } from "./providers/worktree";
 import type { RigError } from "./schema/errors.js";
 
-export const buildLoggerLayer = (): Layer.Layer<Logger> => {
-  const primaryLayer = process.env.RIG_LOG_FORMAT === "json" ? JsonLoggerLive : TerminalLoggerLive
+const normalizeArgv = (
+  argv: readonly string[],
+): {
+  readonly argv: readonly string[];
+  readonly verbose: boolean;
+} => {
+  const filtered = argv.filter((arg) => arg !== "--verbose");
+  return {
+    argv: filtered,
+    verbose: filtered.length !== argv.length,
+  };
+};
+
+export const buildLoggerLayer = (verbose = false): Layer.Layer<Logger> => {
+  const primaryLayer =
+    process.env.RIG_LOG_FORMAT === "json"
+      ? JsonLoggerLive
+      : verbose
+        ? Layer.succeed(Logger, new TerminalLogger(true))
+        : TerminalLoggerLive;
   const logFilePath = process.env.RIG_LOG_FILE
 
   if (!logFilePath) {
@@ -34,35 +52,39 @@ export const buildLoggerLayer = (): Layer.Layer<Logger> => {
   )
 }
 
-const loggerLayer = buildLoggerLayer()
-
 const DotenvWithFileSystemLive = Layer.provide(DotenvLoaderLive, NodeFileSystemLive);
 const RegistryWithFileSystemLive = Layer.provide(JSONRegistryLive, NodeFileSystemLive);
-const ServiceRunnerWithFileSystemLive = Layer.provide(
-  BunServiceRunnerLive,
-  Layer.mergeAll(NodeFileSystemLive, loggerLayer),
-);
 const BinInstallerWithFileSystemLive = Layer.provide(BunBinInstallerLive, NodeFileSystemLive);
 const WorkspaceWithDependenciesLive = Layer.provide(
   GitWorktreeWorkspaceLive,
   Layer.mergeAll(BunGitLive, NodeFileSystemLive, RegistryWithFileSystemLive),
 );
 
-export const RigLive = Layer.mergeAll(
-  NodeFileSystemLive,
-  DotenvWithFileSystemLive,
-  RegistryWithFileSystemLive,
-  BunGitLive,
-  BunHookRunnerLive,
-  BunPortCheckerLive,
-  CaddyProxyLive,
-  LaunchdManagerLive,
-  WorkspaceWithDependenciesLive,
-  DispatchHealthCheckerLive,
-  ServiceRunnerWithFileSystemLive,
-  BinInstallerWithFileSystemLive,
-  loggerLayer,
-);
+export const buildRigLayer = (verbose = false) => {
+  const loggerLayer = buildLoggerLayer(verbose);
+  const serviceRunnerWithFileSystemLive = Layer.provide(
+    BunServiceRunnerLive,
+    Layer.mergeAll(NodeFileSystemLive, loggerLayer),
+  );
+
+  return Layer.mergeAll(
+    NodeFileSystemLive,
+    DotenvWithFileSystemLive,
+    RegistryWithFileSystemLive,
+    BunGitLive,
+    BunHookRunnerLive,
+    BunPortCheckerLive,
+    CaddyProxyLive,
+    LaunchdManagerLive,
+    WorkspaceWithDependenciesLive,
+    DispatchHealthCheckerLive,
+    serviceRunnerWithFileSystemLive,
+    BinInstallerWithFileSystemLive,
+    loggerLayer,
+  );
+};
+
+export const RigLive = buildRigLayer();
 
 const isRigError = (error: unknown): error is RigError =>
   typeof error === "object" &&
@@ -112,8 +134,10 @@ const renderUnexpectedErrorDetails = (error: unknown): Record<string, unknown> =
 };
 
 export const main = (argv: string[]): Promise<number> =>
-  Effect.runPromise(
-    runCli(argv).pipe(
+  Effect.runPromise(Effect.gen(function* () {
+    const normalized = normalizeArgv(argv)
+
+    return yield* runCli(normalized.argv).pipe(
       Effect.catchAll((error) =>
         Effect.gen(function* () {
           const logger = yield* Logger;
@@ -127,9 +151,9 @@ export const main = (argv: string[]): Promise<number> =>
           return 1;
         }),
       ),
-      Effect.provide(RigLive),
-    ),
-  );
+      Effect.provide(buildRigLayer(normalized.verbose)),
+    )
+  }));
 
 const handleSignal = (signal: string) => {
   // Outside Effect runtime — console.error is the only output available.

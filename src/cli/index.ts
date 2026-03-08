@@ -447,14 +447,15 @@ const runCommand = (command: CommandName, args: readonly string[]) => {
 
 export const runCli = (argv: readonly string[]) =>
   Effect.gen(function* () {
+    const normalizedArgv = argv.filter((arg) => arg !== "--verbose")
     const logger = yield* Logger
 
-    if (argv.length === 0) {
+    if (normalizedArgv.length === 0) {
       yield* logger.info(renderMainHelp())
       return 0
     }
 
-    const [head, ...rest] = argv
+    const [head, ...rest] = normalizedArgv
 
     if (head === "-h" || head === "--help") {
       yield* logger.info(renderMainHelp())

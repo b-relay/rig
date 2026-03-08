@@ -78,6 +78,8 @@ const errorDetails = (error: RigError): Record<string, unknown> => {
 }
 
 export class TerminalLogger implements LoggerService {
+  constructor(private readonly verbose = false) {}
+
   info(message: string, details?: Record<string, unknown>): Effect.Effect<void> {
     return Effect.all([
       writeLine(`${color(ANSI.blue, "i")} ${message}`, "stdout"),
@@ -102,8 +104,15 @@ export class TerminalLogger implements LoggerService {
   error(structured: RigError): Effect.Effect<void> {
     const record = asRecord(structured)
     const tag = String(record._tag ?? "RigError")
-    const hint = typeof record.hint === "string" ? record.hint : undefined
+    const hint = typeof record.hint === "string" ? record.hint : "No remediation hint provided."
     const details = errorDetails(structured)
+
+    if (!this.verbose) {
+      return Effect.all([
+        writeLine(`${color(ANSI.red, "✗")} ${color(ANSI.bold, errorSummary(structured))}`, "stderr"),
+        writeLine(`  ${color(ANSI.bold, "Hint:")} ${hint}`, "stderr"),
+      ]).pipe(Effect.asVoid)
+    }
 
     return Effect.all([
       writeLine(`${color(ANSI.red, "✗")} ${color(ANSI.bold, errorSummary(structured))}`, "stderr"),

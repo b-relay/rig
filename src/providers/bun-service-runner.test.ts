@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
@@ -293,5 +293,187 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     await sleep(300)
     expect(isProcessAlive(pid)).toBe(false)
     trackedPids.delete(pid)
+  })
+
+  test("GIVEN two services are started WHEN pid tracking is updated across stop calls THEN pids.json reflects both and then each removal", async () => {
+    const { runner, opts, pidsPath } = await createContext()
+    const api = makeService("api-multi", "sleep 30", 4071)
+    const web = makeService("web-multi", "sleep 30", 4072)
+
+    const apiRunning = await run(runner.start(api, opts))
+    const webRunning = await run(runner.start(web, opts))
+    trackedPids.add(apiRunning.pid)
+    trackedPids.add(webRunning.pid)
+
+    const bothRaw = await readFile(pidsPath, "utf8")
+    const both = JSON.parse(bothRaw) as Record<string, { pid: number }>
+    expect(both["api-multi"]?.pid).toBe(apiRunning.pid)
+    expect(both["web-multi"]?.pid).toBe(webRunning.pid)
+
+    await run(runner.stop(apiRunning))
+    trackedPids.delete(apiRunning.pid)
+
+    const afterFirstStopRaw = await readFile(pidsPath, "utf8")
+    const afterFirstStop = JSON.parse(afterFirstStopRaw) as Record<string, { pid: number }>
+    expect(afterFirstStop["api-multi"]).toBeUndefined()
+    expect(afterFirstStop["web-multi"]?.pid).toBe(webRunning.pid)
+
+    await run(runner.stop(webRunning))
+    trackedPids.delete(webRunning.pid)
+
+    const afterSecondStopRaw = await readFile(pidsPath, "utf8")
+    const afterSecondStop = JSON.parse(afterSecondStopRaw) as Record<string, unknown>
+    expect(Object.keys(afterSecondStop)).toHaveLength(0)
+  })
+
+  test("GIVEN malformed pids.json WHEN start reads pid tracking THEN start fails with a parse ServiceRunnerError", async () => {
+    const { runner, opts, pidsPath } = await createContext()
+    const service = makeService("corrupt-pids", "echo started", 4073)
+
+    await mkdir(join(opts.logDir, ".."), { recursive: true })
+    await writeFile(pidsPath, "{not-json", "utf8")
+
+    const result = await run(runner.start(service, opts).pipe(Effect.either))
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ServiceRunnerError)
+      expect(result.left.operation).toBe("start")
+      expect(result.left.service).toBe("corrupt-pids")
+      expect(result.left.message).toContain("Failed to parse PID tracking file")
+    }
+  })
+
+  test("GIVEN pids.json contains an array WHEN start reads pid tracking THEN start fails with invalid shape ServiceRunnerError", async () => {
+    const { runner, opts, pidsPath } = await createContext()
+    const service = makeService("array-pids", "echo started", 4074)
+
+    await mkdir(join(opts.logDir, ".."), { recursive: true })
+    await writeFile(pidsPath, "[1,2,3]\n", "utf8")
+
+    const result = await run(runner.start(service, opts).pipe(Effect.either))
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ServiceRunnerError)
+      expect(result.left.operation).toBe("start")
+      expect(result.left.service).toBe("array-pids")
+      expect(result.left.message).toContain("Expected a JSON object keyed by service name.")
+    }
+  })
+
+  test("GIVEN a service has already been stopped WHEN stop is called a second time THEN the operation is idempotent and succeeds", async () => {
+    const { runner, opts, pidsPath } = await createContext()
+    const service = makeService("double-stop", "sleep 30", 4075)
+
+    const running = await run(runner.start(service, opts))
+    trackedPids.add(running.pid)
+
+    await run(runner.stop(running))
+    trackedPids.delete(running.pid)
+
+    await run(runner.stop(running))
+    expect(await run(runner.health(running))).toBe("unhealthy")
+
+    const pidsRaw = await readFile(pidsPath, "utf8")
+    const pids = JSON.parse(pidsRaw) as Record<string, unknown>
+    expect("double-stop" in pids).toBe(false)
+  })
+
+  test("GIVEN tailLines edge inputs WHEN logs is requested THEN empty output, zero lines, and oversized requests are handled safely", async () => {
+    const { runner, opts } = await createContext()
+    const quiet = makeService("quiet-tail", "sleep 30", 4076)
+    const small = makeService("small-tail", "printf 'alpha\\nbeta\\n'; sleep 30", 4077)
+
+    const quietRunning = await run(runner.start(quiet, opts))
+    const smallRunning = await run(runner.start(small, opts))
+    trackedPids.add(quietRunning.pid)
+    trackedPids.add(smallRunning.pid)
+
+    await waitForFile(join(opts.logDir, "quiet-tail.log"))
+    await sleep(200)
+
+    const quietLogs = await run(
+      runner.logs("quiet-tail", {
+        follow: false,
+        lines: 20,
+      }),
+    )
+    expect(quietLogs).toBe("")
+
+    const zeroLineLogs = await run(
+      runner.logs("small-tail", {
+        follow: false,
+        lines: 0,
+      }),
+    )
+    expect(zeroLineLogs).toBe("")
+
+    const oversizedLogs = await run(
+      runner.logs("small-tail", {
+        follow: false,
+        lines: 10,
+      }),
+    )
+    expect(oversizedLogs).toBe("alpha\nbeta")
+  })
+
+  test("GIVEN process env already defines HOME WHEN start passes HOME override in envVars THEN command output uses the override value", async () => {
+    const { runner, opts } = await createContext()
+    const service = makeService("env-override", "echo $HOME; sleep 30", 4078)
+    const overrideHome = `${opts.workdir}/custom-home`
+
+    const running = await run(
+      runner.start(service, {
+        ...opts,
+        envVars: { HOME: overrideHome },
+      }),
+    )
+    trackedPids.add(running.pid)
+
+    await sleep(250)
+
+    const logs = await run(
+      runner.logs("env-override", {
+        follow: false,
+        lines: 1,
+      }),
+    )
+    expect(logs).toBe(overrideHome)
+  })
+
+  test("GIVEN a service writes to stderr WHEN logs are read THEN stderr content is captured in the service log file", async () => {
+    const { runner, opts } = await createContext()
+    const service = makeService("stderr-log", "echo err-output >&2; sleep 30", 4079)
+
+    const running = await run(runner.start(service, opts))
+    trackedPids.add(running.pid)
+
+    await sleep(250)
+
+    const logs = await run(
+      runner.logs("stderr-log", {
+        follow: false,
+        lines: 10,
+      }),
+    )
+    expect(logs).toContain("err-output")
+  })
+
+  test("GIVEN start launches a command that exits immediately WHEN health is checked shortly after THEN the service reports unhealthy", async () => {
+    const { runner, opts } = await createContext()
+    const service = makeService("bad-command", "nonexistent-binary-xyz", 4080)
+
+    const running = await run(runner.start(service, opts))
+    trackedPids.add(running.pid)
+
+    let health = await run(runner.health(running))
+    for (let index = 0; index < 20 && health !== "unhealthy"; index += 1) {
+      await sleep(50)
+      health = await run(runner.health(running))
+    }
+
+    expect(health).toBe("unhealthy")
+    trackedPids.delete(running.pid)
   })
 })

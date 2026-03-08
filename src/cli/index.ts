@@ -132,6 +132,15 @@ const fail = (error: RigError) =>
   Effect.gen(function* () {
     const logger = yield* Logger
     yield* logger.error(error)
+
+    if (error._tag === "CliArgumentError") {
+      if (error.command === "global") {
+        yield* logger.info(`\n${renderMainHelp()}`)
+      } else if (isCommandName(error.command)) {
+        yield* logger.info(`\n${renderCommandHelp(error.command)}`)
+      }
+    }
+
     return 1
   })
 
@@ -473,7 +482,7 @@ export const runCli = (argv: readonly string[]) =>
     }
 
     if (!isCommandName(head)) {
-      yield* logger.error(
+      return yield* fail(
         makeCliError(
           "global",
           `Unknown command: ${head}`,
@@ -481,7 +490,6 @@ export const runCli = (argv: readonly string[]) =>
           { commands: COMMANDS },
         ),
       )
-      return 1
     }
 
     return yield* runCommand(head, rest)

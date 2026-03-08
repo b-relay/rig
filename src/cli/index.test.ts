@@ -394,6 +394,48 @@ describe("GIVEN suite context WHEN cli init parsing THEN behavior is covered", (
   })
 })
 
+describe("GIVEN suite context WHEN cli encounters argument errors THEN command help is printed", () => {
+  test("GIVEN test setup WHEN deploy is run with no args THEN error and deploy help are both logged THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("deploy")))).toBe(true)
+  })
+
+  test("GIVEN test setup WHEN start is run with no args THEN error and start help are both logged THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["start"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("start")))).toBe(true)
+  })
+
+  test("GIVEN test setup WHEN deploy is run with conflicting env flags THEN error and deploy help are both logged THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy", "--dev", "--prod"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("deploy")))).toBe(true)
+  })
+
+  test("GIVEN test setup WHEN an unknown command is run THEN error and main help are both logged THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["notacommand"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+    expect(logger.infos.some((entry) => entry.message.includes(renderMainHelp()))).toBe(true)
+  })
+
+  test("GIVEN test setup WHEN init is run with missing args THEN error and init help are both logged THEN expected behavior is observed", async () => {
+    const { exitCode, logger } = await runWithLogger(["init"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors.length).toBeGreaterThan(0)
+    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("init")))).toBe(true)
+  })
+})
+
 describe("GIVEN suite context WHEN cli status parsing THEN behavior is covered", () => {
   test("GIVEN test setup WHEN no name and no env returns 0 THEN expected behavior is observed", async () => {
     const { exitCode, logger } = await runWithLogger(["status"])

@@ -17,12 +17,26 @@ export interface Git {
   ) => Effect.Effect<void, GitError>
 
   readonly createTag: (repoPath: string, tag: string) => Effect.Effect<void, GitError>
+  readonly createTagAtRef: (
+    repoPath: string,
+    tag: string,
+    ref: string
+  ) => Effect.Effect<void, GitError>
   readonly deleteTag: (repoPath: string, tag: string) => Effect.Effect<void, GitError>
   readonly tagExists: (repoPath: string, tag: string) => Effect.Effect<boolean, GitError>
   readonly commitHasTag: (
     repoPath: string,
     commit: string
   ) => Effect.Effect<string | null, GitError>
+  readonly commitTags: (
+    repoPath: string,
+    commit: string
+  ) => Effect.Effect<readonly string[], GitError>
+  readonly isAncestor: (
+    repoPath: string,
+    ancestorRef: string,
+    descendantRef: string
+  ) => Effect.Effect<boolean, GitError>
 
   readonly createWorktree: (
     repoPath: string,
@@ -31,6 +45,11 @@ export interface Git {
   ) => Effect.Effect<void, GitError>
   readonly removeWorktree: (
     repoPath: string,
+    dest: string
+  ) => Effect.Effect<void, GitError>
+  readonly moveWorktree: (
+    repoPath: string,
+    src: string,
     dest: string
   ) => Effect.Effect<void, GitError>
 }

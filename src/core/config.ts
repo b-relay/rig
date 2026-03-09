@@ -14,6 +14,21 @@ export interface LoadedProjectConfig {
   readonly config: RigConfig
 }
 
+export const loadProjectConfigAtPath = (
+  name: string,
+  rootPath: string,
+): Effect.Effect<LoadedProjectConfig, ConfigValidationError, FileSystem> =>
+  Effect.gen(function* () {
+    const config = yield* loadRigConfig(rootPath)
+
+    return {
+      name,
+      repoPath: rootPath,
+      configPath: join(rootPath, "rig.json"),
+      config,
+    }
+  })
+
 const configError = (
   path: string,
   message: string,
@@ -110,14 +125,7 @@ export const loadProjectConfig = (
       ),
     )
 
-    const config = yield* loadRigConfig(repoPath)
-
-    return {
-      name,
-      repoPath,
-      configPath: join(repoPath, "rig.json"),
-      config,
-    }
+    return yield* loadProjectConfigAtPath(name, repoPath)
   })
 
 export const resolveEnvironment = (

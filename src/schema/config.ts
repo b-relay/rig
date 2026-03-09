@@ -172,6 +172,10 @@ export const ProxySchema = z
 
 export const EnvironmentSchema = z
   .object({
+    gitBranch: z
+      .string()
+      .optional()
+      .describe("Branch allowed to deploy this environment from for release-changing deploys."),
     envFile: z
       .string()
       .optional()
@@ -259,7 +263,7 @@ export const RigConfigSchema = z
     version: z
       .string()
       .regex(SEMVER_RE, "Version must be valid semver (e.g. 0.1.0).")
-      .describe("Semver string. Starts at 0.0.0. Bump with: rig version <name> patch|minor|major."),
+      .describe("Current release version. Prod release bumps happen through rig deploy."),
     domain: z
       .string()
       .optional()

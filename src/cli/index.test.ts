@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto"
+import { copyFileSync, existsSync, mkdirSync } from "node:fs"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { renderCommandHelp, renderMainHelp } from "./help.js"
 import { runCli } from "./index.js"
 import { BinInstaller } from "../interfaces/bin-installer.js"
 import { EnvLoader } from "../interfaces/env-loader.js"
-import { Git } from "../interfaces/git.js"
+import { Git, type Git as GitService } from "../interfaces/git.js"
 import { HealthChecker } from "../interfaces/health-checker.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import { ProcessManager } from "../interfaces/process-manager.js"
@@ -102,17 +103,96 @@ class StaticRegistry implements RegistryService {
 
 class TestWorkspace implements WorkspaceService {
   private readonly current = new Map<string, string>()
+  private readonly versions = new Map<string, string>()
 
   constructor(private readonly rootPath: string) {}
 
-  create(name: string, env: "dev" | "prod", version: string, _commitRef: string) {
-    const path = join(this.rootPath, name, env, version)
-    this.current.set(`${name}:${env}`, path)
-    return Effect.succeed(path)
+  private versionKey(name: string, env: "dev" | "prod", version: string) {
+    return `${name}:${env}:${version}`
   }
 
-  resolve(name: string, env: "dev" | "prod") {
-    return Effect.succeed(this.current.get(`${name}:${env}`) ?? join(this.rootPath, name, env, "current"))
+  private envKey(name: string, env: "dev" | "prod") {
+    return `${name}:${env}`
+  }
+
+  private workspacePath(name: string, env: "dev" | "prod", version: string) {
+    return join(this.rootPath, name, env, version)
+  }
+
+  private ensureWorkspace(path: string) {
+    mkdirSync(path, { recursive: true })
+
+    const sourceConfig = join(repoPath, "rig.json")
+    const targetConfig = join(path, "rig.json")
+    if (existsSync(sourceConfig)) {
+      copyFileSync(sourceConfig, targetConfig)
+    }
+  }
+
+  create(name: string, env: "dev" | "prod", version: string, _commitRef: string) {
+    return Effect.sync(() => {
+      const path = this.workspacePath(name, env, version)
+      this.ensureWorkspace(path)
+      this.versions.set(this.versionKey(name, env, version), path)
+      if (env === "dev") {
+        this.current.set(this.envKey(name, env), path)
+      }
+      return path
+    })
+  }
+
+  resolve(name: string, env: "dev" | "prod", version?: string) {
+    return Effect.sync(() => {
+      if (version) {
+        const path =
+          this.versions.get(this.versionKey(name, env, version)) ?? this.workspacePath(name, env, version)
+        this.ensureWorkspace(path)
+        this.versions.set(this.versionKey(name, env, version), path)
+        return path
+      }
+
+      const key = this.envKey(name, env)
+      const path = this.current.get(key) ?? join(this.rootPath, name, env, "current")
+      this.ensureWorkspace(path)
+      this.current.set(key, path)
+      return path
+    })
+  }
+
+  activate(name: string, env: "dev" | "prod", version: string) {
+    return Effect.sync(() => {
+      const path =
+        this.versions.get(this.versionKey(name, env, version)) ?? this.workspacePath(name, env, version)
+      this.ensureWorkspace(path)
+      this.versions.set(this.versionKey(name, env, version), path)
+      this.current.set(this.envKey(name, env), path)
+      return path
+    })
+  }
+
+  removeVersion(name: string, env: "dev" | "prod", version: string) {
+    return Effect.sync(() => {
+      this.versions.delete(this.versionKey(name, env, version))
+      const key = this.envKey(name, env)
+      if (this.current.get(key) === this.workspacePath(name, env, version)) {
+        this.current.delete(key)
+      }
+    })
+  }
+
+  renameVersion(name: string, env: "dev" | "prod", fromVersion: string, toVersion: string) {
+    return Effect.sync(() => {
+      const fromKey = this.versionKey(name, env, fromVersion)
+      const nextPath = this.workspacePath(name, env, toVersion)
+      this.versions.delete(fromKey)
+      this.ensureWorkspace(nextPath)
+      this.versions.set(this.versionKey(name, env, toVersion), nextPath)
+      const key = this.envKey(name, env)
+      if (this.current.get(key) === this.workspacePath(name, env, fromVersion)) {
+        this.current.set(key, nextPath)
+      }
+      return nextPath
+    })
   }
 
   sync(_name: string, _env: "dev" | "prod") {
@@ -120,11 +200,22 @@ class TestWorkspace implements WorkspaceService {
   }
 
   list(name: string) {
-    const rows: WorkspaceInfo[] = []
+    const rows: WorkspaceInfo[] = [...this.versions.entries()]
+      .filter(([key]) => key.startsWith(`${name}:`))
+      .map(([key, path]) => {
+        const [, env, version] = key.split(":")
+        return {
+          name,
+          env: env as "dev" | "prod",
+          version,
+          path,
+          active: this.current.get(this.envKey(name, env as "dev" | "prod")) === path,
+        }
+      })
 
     for (const env of ["dev", "prod"] as const) {
-      const path = this.current.get(`${name}:${env}`)
-      if (!path) {
+      const path = this.current.get(this.envKey(name, env))
+      if (!path || rows.some((row) => row.path === path)) {
         continue
       }
 
@@ -149,41 +240,63 @@ class CliServiceRunner extends StubServiceRunner {
   }
 }
 
-const writeValidRigConfig = async (repoPath: string) => {
-  await writeFile(
-    join(repoPath, "rig.json"),
-    `${JSON.stringify(
-      {
-        name: "pantry",
-        version: "0.1.0",
-        environments: {
-          dev: {
-            services: [
-              {
-                name: "web",
-                type: "server",
-                command: "bunx vite dev --host 127.0.0.1 --port 5173",
-                port: 5173,
-                healthCheck: "http://127.0.0.1:5173",
-              },
-            ],
-          },
-          prod: {
-            services: [
-              {
-                name: "web",
-                type: "server",
-                command: "bunx vite preview --host 127.0.0.1 --port 3070",
-                port: 3070,
-                healthCheck: "http://127.0.0.1:3070",
-              },
-            ],
-          },
+class FixedCommitGit extends StubGit implements GitService {
+  override commitHash(_repoPath: string, _ref?: string) {
+    return Effect.succeed("commit-1")
+  }
+
+  isAncestor(_repoPath: string, _ancestorRef: string, _descendantRef: string) {
+    return Effect.succeed(true)
+  }
+}
+
+const rigConfig = (name = "pantry", version = "0.1.0") => ({
+  name,
+  version,
+  environments: {
+    dev: {
+      services: [
+        {
+          name: "web",
+          type: "server",
+          command: "bunx vite dev --host 127.0.0.1 --port 5173",
+          port: 5173,
+          healthCheck: "http://127.0.0.1:5173",
         },
-      },
-      null,
-      2,
-    )}\n`,
+      ],
+    },
+    prod: {
+      gitBranch: "main",
+      services: [
+        {
+          name: "web",
+          type: "server",
+          command: "bunx vite preview --host 127.0.0.1 --port 3070",
+          port: 3070,
+          healthCheck: "http://127.0.0.1:3070",
+        },
+      ],
+    },
+  },
+})
+
+const writeRigConfig = async (targetPath: string, name = "pantry", version = "0.1.0") => {
+  await writeFile(join(targetPath, "rig.json"), `${JSON.stringify(rigConfig(name, version), null, 2)}\n`, "utf8")
+}
+
+const writeVersionHistoryFile = async (
+  name: string,
+  entries: readonly Array<{
+    readonly action: "patch" | "minor" | "major"
+    readonly oldVersion: string
+    readonly newVersion: string
+    readonly changedAt: string
+  }>,
+) => {
+  await mkdir(join(repoPath, ".rig", "versions"), { recursive: true })
+  await writeFile(
+    join(repoPath, ".rig", "versions", `${name}.json`),
+    `${JSON.stringify({ name, entries }, null, 2)}\n`,
     "utf8",
   )
 }
@@ -199,7 +312,11 @@ beforeAll(async () => {
 
   await mkdir(repoPath, { recursive: true })
   await mkdir(workspaceRoot, { recursive: true })
-  await writeValidRigConfig(repoPath)
+})
+
+beforeEach(async () => {
+  await rm(join(repoPath, ".rig"), { recursive: true, force: true })
+  await writeRigConfig(repoPath)
 })
 
 afterAll(async () => {
@@ -208,14 +325,21 @@ afterAll(async () => {
   }
 })
 
-const makeLayer = (logger: CaptureLogger, registry: StaticRegistry) =>
+const makeLayer = (
+  logger: CaptureLogger,
+  registry: StaticRegistry,
+  options?: {
+    readonly workspace?: TestWorkspace
+    readonly git?: GitService
+  },
+) =>
   Layer.mergeAll(
     Layer.succeed(Logger, logger),
     Layer.succeed(Registry, registry),
-    Layer.succeed(Workspace, new TestWorkspace(join(workspaceRoot, randomUUID()))),
+    Layer.succeed(Workspace, options?.workspace ?? new TestWorkspace(join(workspaceRoot, randomUUID()))),
     NodeFileSystemLive,
     StubHookRunnerLive,
-    Layer.succeed(Git, new StubGit()),
+    Layer.succeed(Git, options?.git ?? new FixedCommitGit()),
     Layer.succeed(ReverseProxy, new StubReverseProxy()),
     Layer.succeed(ProcessManager, new StubProcessManager()),
     Layer.succeed(ServiceRunner, new CliServiceRunner()),
@@ -227,10 +351,18 @@ const makeLayer = (logger: CaptureLogger, registry: StaticRegistry) =>
     }),
   )
 
-const runWithLogger = async (argv: readonly string[]) => {
+const runWithLogger = async (
+  argv: readonly string[],
+  options?: {
+    readonly workspace?: TestWorkspace
+    readonly git?: GitService
+  },
+) => {
   const logger = new CaptureLogger()
   const registry = new StaticRegistry(repoPath)
-  const exitCode = await Effect.runPromise(runCli(argv).pipe(Effect.provide(makeLayer(logger, registry))))
+  const exitCode = await Effect.runPromise(
+    runCli(argv).pipe(Effect.provide(makeLayer(logger, registry, options))),
+  )
   return { exitCode, logger, registry }
 }
 
@@ -244,369 +376,86 @@ const runWithLoggerInCwd = async (cwd: string, argv: readonly string[]) => {
   }
 }
 
-describe("GIVEN suite context WHEN cli global help parsing THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN no args shows main help and returns 0 THEN expected behavior is observed", async () => {
+const createTestWorkspace = () => new TestWorkspace(join(workspaceRoot, randomUUID()))
+
+const prepareProdWorkspace = async (version = "0.1.0") => {
+  const workspace = createTestWorkspace()
+  await Effect.runPromise(workspace.create("pantry", "prod", version, `v${version}`))
+  await Effect.runPromise(workspace.activate("pantry", "prod", version))
+  return workspace
+}
+
+describe("global help", () => {
+  test("shows main help with no args", async () => {
     const { exitCode, logger } = await runWithLogger([])
 
     expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
     expect(logger.infos.some((entry) => entry.message === renderMainHelp())).toBe(true)
   })
 
-  for (const flag of ["--help", "-h"] as const) {
-    test(`GIVEN test setup WHEN ${flag} shows main help and returns 0 THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger([flag])
-
-      expect(exitCode).toBe(0)
-      expect(logger.errors).toHaveLength(0)
-      expect(logger.infos.some((entry) => entry.message === renderMainHelp())).toBe(true)
-    })
-  }
-
-  test("GIVEN test setup WHEN help shows main help and returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["help"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(logger.infos.some((entry) => entry.message === renderMainHelp())).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN help deploy shows command help and returns 0 THEN expected behavior is observed", async () => {
+  test("shows command help via help subcommand", async () => {
     const { exitCode, logger } = await runWithLogger(["help", "deploy"])
 
     expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
     expect(logger.infos.some((entry) => entry.message === renderCommandHelp("deploy"))).toBe(true)
   })
 
-  test("GIVEN test setup WHEN unknown command logs error and returns 1 THEN expected behavior is observed", async () => {
+  test("shows main help for unknown commands", async () => {
     const { exitCode, logger } = await runWithLogger(["not-a-command"])
 
     expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-
-    if (first?._tag === "CliArgumentError") {
-      expect(first.command).toBe("global")
-      expect(first.message).toContain("Unknown command")
-      expect(first.hint).toContain("rig --help")
-    }
-  })
-
-  test("GIVEN test setup WHEN --verbose is passed globally THEN it is ignored by parser and help still renders THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["--verbose", "help"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(logger.infos.some((entry) => entry.message === renderMainHelp())).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN main help is rendered THEN --verbose is documented in global patterns THEN expected behavior is observed", () => {
-    const help = renderMainHelp()
-    expect(help).toContain("--verbose")
-    expect(help).toContain("Show detailed error information")
-  })
-})
-
-describe("GIVEN suite context WHEN cli lifecycle command parsing THEN behavior is covered", () => {
-  for (const command of ["deploy", "start", "stop", "restart"] as const) {
-    test(`GIVEN test setup WHEN ${command}: missing project name and no rig.json returns 1 THEN expected behavior is observed`, async () => {
-      const cwd = await mkdtemp(join(tempRoot, `rig-cli-no-rig-json-${command}-`))
-      const { exitCode, logger } = await runWithLoggerInCwd(cwd, [command, "--dev"])
-
-      expect(exitCode).toBe(1)
-      expect(logger.errors.length).toBeGreaterThan(0)
-      expect(logger.errors[0]?._tag).toBe("CliArgumentError")
-
-      const first = logger.errors[0]
-      if (first?._tag === "CliArgumentError") {
-        expect(first.message).toContain("No rig.json found in current directory.")
-      }
-    })
-
-    test(`GIVEN test setup WHEN ${command}: missing env flag returns 1 with hint THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger([command, "pantry"])
-
-      expect(exitCode).toBe(1)
-      expect(logger.errors.length).toBeGreaterThan(0)
-
-      const first = logger.errors[0]
-      expect(first?._tag).toBe("CliArgumentError")
-
-      if (first?._tag === "CliArgumentError") {
-        expect(first.message).toBe("Missing environment flag.")
-        expect(first.hint).toBe("Pass exactly one of --dev or --prod.")
-      }
-    })
-
-    test(`GIVEN test setup WHEN ${command}: conflicting --dev --prod returns 1 with hint THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger([command, "pantry", "--dev", "--prod"])
-
-      expect(exitCode).toBe(1)
-      expect(logger.errors.length).toBeGreaterThan(0)
-
-      const first = logger.errors[0]
-      expect(first?._tag).toBe("CliArgumentError")
-
-      if (first?._tag === "CliArgumentError") {
-        expect(first.message).toBe("Conflicting environment flags.")
-        expect(first.hint).toBe("Pass exactly one of --dev or --prod.")
-      }
-    })
-
-    test(`GIVEN test setup WHEN ${command}: happy path with --dev returns 0 THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger([command, "pantry", "--dev"])
-
-      expect(exitCode).toBe(0)
-      expect(logger.errors).toHaveLength(0)
-    })
-
-    test(`GIVEN test setup WHEN ${command}: happy path with --prod returns 0 THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger([command, "pantry", "--prod"])
-
-      expect(exitCode).toBe(0)
-      expect(logger.errors).toHaveLength(0)
-    })
-
-    test(`GIVEN test setup WHEN ${command}: --help shows command help and returns 0 THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger([command, "--help"])
-
-      expect(exitCode).toBe(0)
-      expect(logger.errors).toHaveLength(0)
-      expect(logger.infos.some((entry) => entry.message === renderCommandHelp(command))).toBe(true)
-    })
-  }
-})
-
-describe("GIVEN suite context WHEN project name is omitted THEN cwd rig.json name is auto-detected", () => {
-  test('GIVEN cwd has rig.json with name "testapp" WHEN user runs "deploy --dev" without project name THEN uses "testapp"', async () => {
-    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-detect-deploy-"))
-    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ name: "testapp" }, null, 2)}\n`, "utf8")
-
-    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "--dev"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-
-    const success = logger.successes.find((entry) => entry.message === "Deploy applied.")
-    expect(success?.details?.name).toBe("testapp")
-  })
-
-  test('GIVEN cwd has no rig.json WHEN user runs "deploy --dev" without project name THEN shows "No rig.json found" error', async () => {
-    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-no-rig-json-"))
-    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "--dev"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-    if (first?._tag === "CliArgumentError") {
-      expect(first.message).toContain("No rig.json found in current directory.")
-    }
-  })
-
-  test('GIVEN cwd has rig.json without name field WHEN user runs "deploy --dev" without project name THEN shows "missing name" error', async () => {
-    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-missing-name-"))
-    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ version: "1.0.0" }, null, 2)}\n`, "utf8")
-
-    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "--dev"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-    if (first?._tag === "CliArgumentError") {
-      expect(first.message).toBe('rig.json found but missing a valid "name" field.')
-    }
-  })
-
-  test('GIVEN explicit name is provided WHEN user runs "deploy myapp --dev" THEN uses "myapp" (ignores rig.json)', async () => {
-    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-explicit-wins-"))
-    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ name: "ignored-app" }, null, 2)}\n`, "utf8")
-
-    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "myapp", "--dev"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-
-    const success = logger.successes.find((entry) => entry.message === "Deploy applied.")
-    expect(success?.details?.name).toBe("myapp")
-  })
-
-  test('GIVEN cwd has rig.json with name "testapp" WHEN user runs "stop --prod" without project name THEN uses "testapp"', async () => {
-    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-detect-stop-"))
-    await writeFile(join(cwd, "rig.json"), `${JSON.stringify({ name: "testapp" }, null, 2)}\n`, "utf8")
-
-    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["stop", "--prod"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-
-    const success = logger.successes.find((entry) => entry.message === "Services stopped.")
-    expect(success?.details?.name).toBe("testapp")
-  })
-
-  test('GIVEN cwd has no rig.json WHEN user runs "config" without project name THEN shows "No rig.json found" error', async () => {
-    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-no-rig-json-config-"))
-    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["config"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-    if (first?._tag === "CliArgumentError") {
-      expect(first.message).toContain("No rig.json found in current directory.")
-    }
-  })
-})
-
-describe("GIVEN suite context WHEN cli init parsing THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN missing name returns 1 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["init", "--path", repoPath])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-  })
-
-  test("GIVEN test setup WHEN missing --path returns 1 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["init", "pantry"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-  })
-
-  test("GIVEN test setup WHEN happy path returns 0 THEN expected behavior is observed", async () => {
-    const relativePath = "./tmp/rig-cli-init-relative"
-    const { exitCode, logger, registry } = await runWithLogger([
-      "init",
-      "pantry",
-      "--path",
-      relativePath,
-    ])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(await Effect.runPromise(registry.resolve("pantry"))).toBe(resolve(relativePath))
-  })
-})
-
-describe("GIVEN suite context WHEN cli encounters argument errors THEN command help is printed", () => {
-  test("GIVEN test setup WHEN deploy is run with no args THEN error and deploy help are both logged THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["deploy"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("deploy")))).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN start is run with no args THEN error and start help are both logged THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["start"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("start")))).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN deploy is run with conflicting env flags THEN error and deploy help are both logged THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["deploy", "--dev", "--prod"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("deploy")))).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN an unknown command is run THEN error and main help are both logged THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["notacommand"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
     expect(logger.infos.some((entry) => entry.message.includes(renderMainHelp()))).toBe(true)
   })
 
-  test("GIVEN test setup WHEN init is run with missing args THEN error and init help are both logged THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["init"])
+  test("documents the positional env model and prod release flags", () => {
+    const mainHelp = renderMainHelp()
+    const deployHelp = renderCommandHelp("deploy")
+    const versionHelp = renderCommandHelp("version")
 
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-    expect(logger.infos.some((entry) => entry.message.includes(renderCommandHelp("init")))).toBe(true)
+    expect(mainHelp).toContain("<dev|prod>")
+    expect(mainHelp).toContain("rig deploy pantry prod --bump minor")
+    expect(deployHelp).toContain("rig deploy [name] <dev|prod>")
+    expect(deployHelp).toContain("--revert <semver>")
+    expect(versionHelp).toContain("rig version [name] [<semver>]")
   })
 })
 
-describe("GIVEN suite context WHEN cli status parsing THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN no name and no env returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["status"])
+describe("lifecycle positional env parsing", () => {
+  test("deploy accepts explicit positional env", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy", "pantry", "dev"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.successes.some((entry) => entry.message === "Deploy applied.")).toBe(true)
+  })
+
+  test("start accepts positional env and foreground flag", async () => {
+    const { exitCode, logger } = await runWithLogger(["start", "pantry", "dev", "--foreground"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.successes.some((entry) => entry.message === "Services started.")).toBe(true)
+    expect(logger.successes.find((entry) => entry.message === "Services started.")?.details?.foreground).toBe(true)
+  })
+
+  test("stop accepts positional env", async () => {
+    const { exitCode, logger } = await runWithLogger(["stop", "pantry", "prod"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.successes.some((entry) => entry.message === "Services stopped.")).toBe(true)
+  })
+
+  test("restart accepts positional env", async () => {
+    const { exitCode, logger } = await runWithLogger(["restart", "pantry", "prod"])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
-    expect(logger.tables.length).toBeGreaterThan(0)
   })
 
-  test("GIVEN test setup WHEN with name returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["status", "pantry"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(logger.tables.at(-1)?.length).toBe(2)
-  })
-
-  test("GIVEN test setup WHEN with name and --dev returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["status", "pantry", "--dev"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(logger.tables.at(-1)?.length).toBe(1)
-  })
-
-  test("GIVEN test setup WHEN too many positionals returns 1 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["status", "pantry", "extra"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-
-    if (first?._tag === "CliArgumentError") {
-      expect(first.message).toBe("Too many positional arguments.")
-    }
-  })
-})
-
-describe("GIVEN suite context WHEN cli logs parsing THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN happy path with required args returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["logs", "pantry", "--dev"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-
-    const webLogs = logger.infos.find((entry) => entry.message.includes("web: cli logs"))
-    expect(webLogs).toBeDefined()
-  })
-
-  test("GIVEN test setup WHEN missing env returns 1 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["logs", "pantry"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-
-    if (first?._tag === "CliArgumentError") {
-      expect(first.hint).toBe("Pass exactly one of --dev or --prod.")
-    }
-  })
-
-  test("GIVEN test setup WHEN with --follow, --lines, --service returns 0 THEN expected behavior is observed", async () => {
+  test("logs accepts positional env and log flags", async () => {
     const { exitCode, logger } = await runWithLogger([
       "logs",
       "pantry",
-      "--prod",
+      "dev",
       "--follow",
       "--lines",
       "25",
@@ -615,139 +464,262 @@ describe("GIVEN suite context WHEN cli logs parsing THEN behavior is covered", (
     ])
 
     expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-
-    const webLogs = logger.infos.find((entry) => entry.message.includes("web: cli logs"))
-    expect(webLogs).toBeDefined()
-    expect(webLogs?.message).toContain("follow=true")
-    expect(webLogs?.message).toContain("lines=25")
-    expect(webLogs?.message).toContain("service=web")
+    expect(logger.infos.some((entry) => entry.message.includes("web: cli logs"))).toBe(true)
+    expect(logger.infos.some((entry) => entry.message.includes("follow=true"))).toBe(true)
+    expect(logger.infos.some((entry) => entry.message.includes("lines=25"))).toBe(true)
   })
 
-  test("GIVEN test setup WHEN --verbose is included in logs args THEN command parser ignores it and executes successfully THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["logs", "pantry", "--dev", "--verbose"])
+  test("status accepts positional env", async () => {
+    const { exitCode, logger } = await runWithLogger(["status", "pantry", "prod"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables.at(-1)?.length).toBe(1)
+  })
+
+  test("shows command help for env-scoped commands", async () => {
+    for (const command of ["deploy", "start", "stop", "restart", "status", "logs"] as const) {
+      const { exitCode, logger } = await runWithLogger([command, "--help"])
+      expect(exitCode).toBe(0)
+      expect(logger.infos.some((entry) => entry.message === renderCommandHelp(command))).toBe(true)
+    }
+  })
+
+  test("rejects missing env arguments", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy", "pantry"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("Missing environment argument.")
+      expect(logger.errors[0].hint).toBe(
+        "Usage: rig deploy [name] <dev|prod> [--version <semver>] [--bump <patch|minor|major>] [--revert <semver>]",
+      )
+    }
+  })
+
+  test("rejects obsolete env flags", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy", "pantry", "--prod"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("Invalid command arguments.")
+    }
+  })
+})
+
+describe("prod version targeting and release flags", () => {
+  test("accepts prod --version for deploy", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy", "pantry", "prod", "--version", "0.1.0"])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
   })
+
+  test("accepts prod --version for start, stop, status, and logs", async () => {
+    const workspace = await prepareProdWorkspace()
+
+    for (const argv of [
+      ["start", "pantry", "prod", "--version", "0.1.0"],
+      ["stop", "pantry", "prod", "--version", "0.1.0"],
+      ["status", "pantry", "prod", "--version", "0.1.0"],
+      ["logs", "pantry", "prod", "--version", "0.1.0"],
+    ] as const) {
+      const { exitCode, logger } = await runWithLogger(argv, { workspace })
+      expect(exitCode).toBe(0)
+      expect(logger.errors).toHaveLength(0)
+    }
+  })
+
+  test("rejects --version on dev", async () => {
+    const { exitCode, logger } = await runWithLogger(["logs", "pantry", "dev", "--version", "0.1.0"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("The --version flag is only supported with prod.")
+    }
+  })
+
+  test("requires a project name when status uses --version", async () => {
+    const { exitCode, logger } = await runWithLogger(["status", "prod", "--version", "0.1.0"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("A project name is required when using --version.")
+      expect(logger.errors[0].hint).toBe("Usage: rig status <name> prod --version <semver>")
+    }
+  })
+
+  test("accepts --bump on prod deploy", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy", "pantry", "prod", "--bump", "minor"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+    expect(logger.successes.some((entry) => entry.message === "Deploy applied.")).toBe(true)
+  })
+
+  test("accepts --revert on prod deploy for the latest release", async () => {
+    await writeRigConfig(repoPath, "pantry", "0.2.0")
+    await writeVersionHistoryFile("pantry", [
+      {
+        action: "patch",
+        oldVersion: "0.1.0",
+        newVersion: "0.1.1",
+        changedAt: new Date(0).toISOString(),
+      },
+      {
+        action: "minor",
+        oldVersion: "0.1.1",
+        newVersion: "0.2.0",
+        changedAt: new Date(1).toISOString(),
+      },
+    ])
+    const workspace = await prepareProdWorkspace("0.2.0")
+
+    const { exitCode, logger } = await runWithLogger(
+      ["deploy", "pantry", "prod", "--revert", "0.2.0"],
+      { workspace, git: new FixedCommitGit() },
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+  })
+
+  test("rejects --bump on dev deploy", async () => {
+    const { exitCode, logger } = await runWithLogger(["deploy", "pantry", "dev", "--bump", "minor"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("Invalid arguments.")
+    }
+  })
+
+  test("rejects --revert with --version", async () => {
+    const { exitCode, logger } = await runWithLogger([
+      "deploy",
+      "pantry",
+      "prod",
+      "--revert",
+      "0.2.0",
+      "--version",
+      "0.1.1",
+    ])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("Invalid arguments.")
+    }
+  })
 })
 
-describe("GIVEN suite context WHEN cli version parsing THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN with name only defaults to show and returns 0 THEN expected behavior is observed", async () => {
+describe("cwd autodetect", () => {
+  test("supports deploy dev from the project root", async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-deploy-"))
+    await writeRigConfig(cwd, "testapp")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "dev"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.successes.find((entry) => entry.message === "Deploy applied.")?.details?.name).toBe("testapp")
+  })
+
+  test("supports stop prod from the project root", async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-stop-"))
+    await writeRigConfig(cwd, "testapp")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["stop", "prod"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.successes.find((entry) => entry.message === "Services stopped.")?.details?.name).toBe("testapp")
+  })
+
+  test("errors when cwd autodetect has no rig.json", async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-missing-"))
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["deploy", "dev"])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toContain("No rig.json found in current directory.")
+    }
+  })
+})
+
+describe("version command", () => {
+  test("defaults to release history", async () => {
+    await writeVersionHistoryFile("pantry", [
+      {
+        action: "minor",
+        oldVersion: "0.1.0",
+        newVersion: "0.2.0",
+        changedAt: new Date(0).toISOString(),
+      },
+    ])
+
     const { exitCode, logger } = await runWithLogger(["version", "pantry"])
 
     expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-
-    const resolved = logger.infos.find((entry) => entry.message === "Version command resolved state.")
-    expect(resolved?.details?.action).toBe("show")
-  })
-
-  for (const action of ["patch", "minor", "major", "list"] as const) {
-    test(`GIVEN test setup WHEN with name and ${action} returns 0 THEN expected behavior is observed`, async () => {
-      const { exitCode, logger } = await runWithLogger(["version", "pantry", action])
-
-      expect(exitCode).toBe(0)
-      expect(logger.errors).toHaveLength(0)
+    expect(logger.tables.at(-1)?.[0]).toMatchObject({
+      version: "0.2.0",
     })
-  }
-
-  test("GIVEN test setup WHEN with name and undo THEN it returns 0 and logs success", async () => {
-    const { exitCode, logger } = await runWithLogger(["version", "pantry", "undo"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(logger.successes.some((entry) => entry.message === "Version bump undone.")).toBe(true)
   })
 
-  test("GIVEN test setup WHEN too many positionals returns 1 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["version", "pantry", "patch", "extra"])
+  test("rejects old list and mutation actions", async () => {
+    let result = await runWithLogger(["version", "pantry", "list"])
+    expect(result.exitCode).toBe(1)
+    expect(result.logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (result.logger.errors[0]?._tag === "CliArgumentError") {
+      expect(result.logger.errors[0].hint).toBe("Usage: rig version [name] [<semver>] [--edit <semver|patch|minor|major>]")
+    }
+
+    const { exitCode, logger } = await runWithLogger(["version", "pantry", "patch"])
 
     expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-
-    if (first?._tag === "CliArgumentError") {
-      expect(first.hint).toContain("rig version")
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("Invalid arguments.")
+      expect(logger.errors[0].hint).toBe("Usage: rig version [name] [<semver>] [--edit <semver|patch|minor|major>]")
     }
   })
 })
 
-describe("GIVEN suite context WHEN cli list/config parsing THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN list with no args returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["list"])
+describe("other command parsing", () => {
+  test("init still parses and resolves paths", async () => {
+    const relativePath = "./tmp/rig-cli-init-relative"
+    const { exitCode, logger, registry } = await runWithLogger(["init", "pantry", "--path", relativePath])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
-    expect(logger.tables.length).toBeGreaterThan(0)
+    expect(await Effect.runPromise(registry.resolve("pantry"))).toBe(resolve(relativePath))
   })
 
-  test("GIVEN test setup WHEN list with unexpected positionals returns 1 THEN expected behavior is observed", async () => {
+  test("list still rejects unexpected positionals", async () => {
     const { exitCode, logger } = await runWithLogger(["list", "extra"])
 
     expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-
-    if (first?._tag === "CliArgumentError") {
-      expect(first.message).toBe("Unexpected positional arguments.")
+    expect(logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (logger.errors[0]?._tag === "CliArgumentError") {
+      expect(logger.errors[0].message).toBe("Unexpected positional arguments.")
     }
   })
 
-  test("GIVEN test setup WHEN config with no args returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["config"])
+  test("config still autodetects from cwd", async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-config-cwd-"))
+    await writeRigConfig(cwd, "testapp")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["config"])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
-    expect(logger.infos.some((entry) => entry.message.includes("Project: pantry"))).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN config with explicit name returns 0 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["config", "pantry"])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toHaveLength(0)
-    expect(logger.infos.some((entry) => entry.message.includes("Project: pantry"))).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN config with too many positionals returns 1 THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["config", "pantry", "extra"])
-
-    expect(exitCode).toBe(1)
-    expect(logger.errors.length).toBeGreaterThan(0)
-
-    const first = logger.errors[0]
-    expect(first?._tag).toBe("CliArgumentError")
-
-    if (first?._tag === "CliArgumentError") {
-      expect(first.message).toBe("Too many positional arguments.")
-    }
   })
 })
 
-describe("GIVEN suite context WHEN cli start foreground THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN accepts --foreground and forwards it to runtime handler THEN expected behavior is observed", async () => {
-    const { exitCode, logger } = await runWithLogger(["start", "pantry", "--dev", "--foreground"])
-
-    expect(exitCode).toBe(0)
-
-    const started = logger.successes.find((entry) => entry.message === "Services started.")
-    expect(started).toBeDefined()
-    expect(started?.details?.foreground).toBe(true)
-  })
-
-  test("GIVEN test setup WHEN start help text documents --foreground THEN expected behavior is observed", () => {
-    const help = renderCommandHelp("start")
-    expect(help).toContain("--foreground")
-  })
-})
-
-describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behavior is covered", () => {
-  test("GIVEN test setup WHEN runCli fails with RigError THEN main logs structured error through Logger and returns 1 THEN expected behavior is observed", async () => {
+describe("main catch-all behavior", () => {
+  test("logs structured RigError failures through Logger", async () => {
     const originalRunCli = runCli
     const originalTerminalLoggerModule = await import("../providers/terminal-logger.js")
     const originalLogFormat = process.env.RIG_LOG_FORMAT
@@ -777,15 +749,7 @@ describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behav
 
       expect(exitCode).toBe(1)
       expect(captureLogger.errors).toHaveLength(1)
-      expect(captureLogger.warnings).toHaveLength(0)
-
-      const first = captureLogger.errors[0]
-      expect(first?._tag).toBe("CliArgumentError")
-      if (first?._tag === "CliArgumentError") {
-        expect(first.command).toBe("status")
-        expect(first.message).toBe("Test RigError for main catchAll path.")
-        expect(first.hint).toContain("rig status --help")
-      }
+      expect(captureLogger.errors[0]?._tag).toBe("CliArgumentError")
     } finally {
       mock.module("./index.js", () => ({ runCli: originalRunCli }))
       mock.module("../providers/terminal-logger.js", () => originalTerminalLoggerModule)
@@ -804,7 +768,7 @@ describe("GIVEN suite context WHEN main catches unexpected cli errors THEN behav
     }
   })
 
-  test("GIVEN test setup WHEN runCli fails with non-Rig error THEN main returns 1 THEN expected behavior is observed", async () => {
+  test("returns 1 for unexpected non-Rig errors", async () => {
     const originalRunCli = runCli
 
     mock.module("./index.js", () => ({

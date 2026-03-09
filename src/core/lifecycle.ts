@@ -12,6 +12,7 @@ import { ProcessManager } from "../interfaces/process-manager.js"
 import { ServiceRunner, type RunningService } from "../interfaces/service-runner.js"
 import { Workspace } from "../interfaces/workspace.js"
 import type {
+  RigConfig,
   Environment,
   ServerService,
   Service,
@@ -19,8 +20,8 @@ import type {
   TopLevelHooks,
 } from "../schema/config.js"
 import type { RestartArgs, StartArgs, StopArgs } from "../schema/args.js"
-import { ConfigValidationError, ServiceRunnerError } from "../schema/errors.js"
-import { loadProjectConfig, resolveEnvironment } from "./config.js"
+import { CliArgumentError, ConfigValidationError, ServiceRunnerError } from "../schema/errors.js"
+import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment } from "./config.js"
 import { configError, daemonLabel } from "./shared.js"
 
 type HookPhase = "preStart" | "postStart" | "preStop" | "postStop"
@@ -33,6 +34,23 @@ interface PidEntry {
 
 type PidMap = Record<string, PidEntry>
 type InstalledBinMap = Record<string, { readonly installedAt: string; readonly shimPath: string }>
+type VersionedProdArgs = { readonly name: string; readonly env: "prod"; readonly version?: string }
+type RuntimeTargetArgs = {
+  readonly name: string
+  readonly env: "dev" | "prod"
+  readonly version?: string
+}
+type LoadedRuntimeTarget = {
+  readonly loaded: {
+    readonly name: string
+    readonly repoPath: string
+    readonly configPath: string
+    readonly config: RigConfig
+  }
+  readonly environment: Environment
+  readonly workspacePath: string
+  readonly activeVersion: string | null
+}
 
 const HEALTH_POLL_INTERVAL_MS = 500
 const FOREGROUND_MONITOR_INTERVAL_MS = 500
@@ -87,6 +105,71 @@ const monitorForegroundServices = (started: readonly RunningService[]) =>
         cause instanceof Error ? cause.message : String(cause),
         "Foreground monitor failed while waiting for service exit.",
       ),
+  })
+
+const missingProdVersionError = (
+  command: "deploy" | "start" | "stop" | "status" | "logs",
+  name: string,
+  version: string,
+) =>
+  new CliArgumentError(
+    command,
+    `Prod version '${version}' is not deployed for project '${name}'.`,
+    `Run 'rig deploy ${name} --prod --version ${version}' first or choose an existing prod version.`,
+    { name, env: "prod", version },
+  )
+
+const inactiveProdVersionError = (
+  name: string,
+  version: string,
+  activeVersion: string | null,
+) =>
+  new CliArgumentError(
+    "stop",
+    `Prod version '${version}' is not the active deployment for project '${name}'.`,
+    activeVersion
+      ? `Only the active prod version can be stopped. Current active version is '${activeVersion}'.`
+      : `There is no active prod deployment. Run 'rig deploy ${name} --prod --version ${version}' first.`,
+    { name, env: "prod", version, activeVersion },
+  )
+
+const resolveRuntimeTarget = (args: RuntimeTargetArgs) =>
+  Effect.gen(function* () {
+    const workspace = yield* Workspace
+
+    if (args.env === "dev") {
+      const loaded = yield* loadProjectConfig(args.name)
+      const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, "dev")
+      const workspacePath = yield* workspace.resolve(args.name, "dev")
+
+      return {
+        loaded,
+        environment,
+        workspacePath,
+        activeVersion: null,
+      } satisfies LoadedRuntimeTarget
+    }
+
+    const workspaces = yield* workspace.list(args.name)
+    const activeVersion = workspaces.find((entry) => entry.env === "prod" && entry.active)?.version ?? null
+
+    if (args.version) {
+      const deployed = workspaces.some((entry) => entry.env === "prod" && entry.version === args.version)
+      if (!deployed) {
+        return yield* Effect.fail(missingProdVersionError("start", args.name, args.version))
+      }
+    }
+
+    const workspacePath = yield* workspace.resolve(args.name, "prod", args.version)
+    const loaded = yield* loadProjectConfigAtPath(args.name, workspacePath)
+    const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, "prod")
+
+    return {
+      loaded,
+      environment,
+      workspacePath,
+      activeVersion,
+    } satisfies LoadedRuntimeTarget
   })
 
 const loadHookEnv = (
@@ -238,6 +321,118 @@ const writeInstalledBinMap = (
     ),
   )
 
+const deployedVersionError = (command: "start" | "stop", name: string, version: string) =>
+  new CliArgumentError(
+    command,
+    `Version '${version}' is not deployed for project '${name}'.`,
+    `Deploy it first with \`rig deploy ${name} --prod --version ${version}\`.`,
+    { name, env: "prod", version },
+  )
+
+const inactiveVersionError = (name: string, version: string, activeVersion: string | null) =>
+  new CliArgumentError(
+    "stop",
+    `Version '${version}' is not the active prod version for project '${name}'.`,
+    activeVersion
+      ? `The active prod version is '${activeVersion}'. Deploy or start version '${version}' first to make it current.`
+      : `No active prod version is set. Deploy or start version '${version}' first.`,
+    { name, env: "prod", version, activeVersion },
+  )
+
+const readBinsMap = (fileSystem: FileSystem, binsPath: string) =>
+  Effect.gen(function* () {
+    const exists = yield* fileSystem.exists(binsPath).pipe(
+      Effect.catchAll(() => Effect.succeed(false)),
+    )
+
+    if (!exists) {
+      return {} as InstalledBinMap
+    }
+
+    const raw = yield* fileSystem.read(binsPath).pipe(
+      Effect.catchAll(() => Effect.succeed("{}")),
+    )
+
+    return yield* Effect.try({
+      try: () => {
+        const parsed = JSON.parse(raw) as unknown
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          return {} as InstalledBinMap
+        }
+
+        return parsed as InstalledBinMap
+      },
+      catch: () => ({} as InstalledBinMap),
+    })
+  })
+
+const hasRuntimeTracking = (workspacePath: string) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem
+    const pids = yield* readPidMap(fileSystem, join(workspacePath, ".rig", "pids.json")).pipe(
+      Effect.catchAll(() => Effect.succeed({} as PidMap)),
+    )
+    const bins = yield* readBinsMap(fileSystem, join(workspacePath, ".rig", "bins.json"))
+    return Object.keys(pids).length > 0 || Object.keys(bins).length > 0
+  })
+
+const resolveRuntimeConfig = (
+  args: { readonly name: string; readonly env: "dev" | "prod"; readonly version?: string },
+) =>
+  Effect.gen(function* () {
+    const workspace = yield* Workspace
+
+    if (args.env === "prod") {
+      if (args.version) {
+        yield* workspace.activate(args.name, "prod", args.version).pipe(
+          Effect.catchTag("WorkspaceError", () => Effect.void),
+        )
+      }
+
+      const workspacePath = yield* workspace.resolve(args.name, "prod", args.version)
+      const loaded = yield* loadProjectConfigAtPath(args.name, workspacePath)
+      return { loaded, workspacePath }
+    }
+
+    const loaded = yield* loadProjectConfig(args.name)
+    const workspacePath = yield* workspace.resolve(args.name, args.env)
+    return { loaded, workspacePath }
+  })
+
+const resolveStopTarget = (args: StopArgs & { readonly version?: string }) =>
+  Effect.gen(function* () {
+    const workspace = yield* Workspace
+
+    if (args.env === "prod") {
+      const workspaces = yield* workspace.list(args.name)
+      const activeProd = workspaces.find((entry) => entry.env === "prod" && entry.active) ?? null
+
+      if (args.version) {
+        const target = workspaces.find((entry) => entry.env === "prod" && entry.version === args.version) ?? null
+
+        if (!target) {
+          return yield* Effect.fail(deployedVersionError("stop", args.name, args.version))
+        }
+
+        if (!target.active) {
+          return yield* Effect.fail(inactiveVersionError(args.name, args.version, activeProd?.version ?? null))
+        }
+
+        const workspacePath = yield* workspace.resolve(args.name, "prod", args.version)
+        const loaded = yield* loadProjectConfigAtPath(args.name, workspacePath)
+        return { loaded, workspacePath }
+      }
+
+      const workspacePath = yield* workspace.resolve(args.name, "prod")
+      const loaded = yield* loadProjectConfigAtPath(args.name, workspacePath)
+      return { loaded, workspacePath }
+    }
+
+    const loaded = yield* loadProjectConfig(args.name)
+    const workspacePath = yield* workspace.resolve(args.name, args.env)
+    return { loaded, workspacePath }
+  })
+
 const hookCommand = (
   hooks: TopLevelHooks | ServiceHooks | undefined,
   phase: HookPhase,
@@ -375,14 +570,13 @@ export const runStartCommand = (args: StartArgs) => {
     const portChecker = yield* PortChecker
     const fileSystem = yield* FileSystem
 
-    const loaded = yield* loadProjectConfig(args.name)
+    const { loaded, workspacePath } = yield* resolveRuntimeConfig(args)
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
     yield* logger.info("Loaded configuration.", {
       name: args.name,
       env: args.env,
       services: environment.services.length,
     })
-    const workspacePath = yield* workspace.resolve(args.name, args.env)
     const logDir = join(workspacePath, ".rig", "logs")
 
     const serverServices = environment.services.filter((service) => service.type === "server")
@@ -629,9 +823,8 @@ export const runStopCommand = (args: StopArgs) =>
     const binInstaller = yield* BinInstaller
     const fileSystem = yield* FileSystem
 
-    const loaded = yield* loadProjectConfig(args.name)
+    const { loaded, workspacePath } = yield* resolveStopTarget(args)
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
-    const workspacePath = yield* workspace.resolve(args.name, args.env)
     const pidsPath = join(workspacePath, ".rig", "pids.json")
     const binsPath = join(workspacePath, ".rig", "bins.json")
     const serverServices = environment.services.filter((service) => service.type === "server")

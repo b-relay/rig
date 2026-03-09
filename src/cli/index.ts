@@ -9,8 +9,8 @@ import { runConfigSetCommand } from "../core/config-set-command.js"
 import { runDeployCommand } from "../core/deploy.js"
 import { runInitCommand } from "../core/init.js"
 import { runListCommand } from "../core/list.js"
-import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"
 import { runLogsCommand } from "../core/logs.js"
+import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"
 import { runStatusCommand } from "../core/status.js"
 import { runVersionCommand } from "../core/version.js"
 import { Logger } from "../interfaces/logger.js"
@@ -42,12 +42,24 @@ type ResolvedProjectName =
   | { readonly error: "no-rig-json" }
   | { readonly error: "no-name-field" }
 
+type EnvName = "dev" | "prod"
+
+const ENV_NAMES = new Set<EnvName>(["dev", "prod"])
+const SEMVER_RE = /^\d+\.\d+\.\d+$/
+const BUMP_NAMES = new Set(["patch", "minor", "major"])
+
 const makeCliError = (
   command: string,
   message: string,
   hint: string,
   details?: Record<string, unknown>,
 ): CliArgumentError => new CliArgumentError(command, message, hint, details)
+
+const isEnvName = (value: string | undefined): value is EnvName =>
+  value === "dev" || value === "prod"
+
+const isSemver = (value: string | undefined): value is string =>
+  typeof value === "string" && SEMVER_RE.test(value)
 
 const resolveProjectName = (positional: string | undefined): ResolvedProjectName => {
   const explicit = positional?.trim()
@@ -150,33 +162,25 @@ const validate = <T>(
   return { data: parsed.data }
 }
 
-const resolveEnv = (
-  command: string,
+const readVersionFlag = (
   values: Readonly<Record<string, string | boolean | undefined>>,
-  required: boolean,
-): { readonly env: "dev" | "prod" | null; readonly error?: RigError } => {
-  const dev = values.dev === true
-  const prod = values.prod === true
+): string | undefined => (typeof values.version === "string" ? values.version : undefined)
 
-  if (dev && prod) {
-    return {
-      env: null,
-      error: makeCliError(command, "Conflicting environment flags.", "Pass exactly one of --dev or --prod."),
-    }
+const validateProdOnlyVersionFlag = (
+  command: "deploy" | "start" | "stop" | "status" | "logs",
+  env: EnvName | null,
+  version: string | undefined,
+): RigError | undefined => {
+  if (!version || env === "prod") {
+    return undefined
   }
 
-  if (!dev && !prod) {
-    if (required) {
-      return {
-        env: null,
-        error: makeCliError(command, "Missing environment flag.", "Pass exactly one of --dev or --prod."),
-      }
-    }
-
-    return { env: null }
-  }
-
-  return { env: dev ? "dev" : "prod" }
+  return makeCliError(
+    command,
+    "The --version flag is only supported with prod.",
+    "Use the prod environment when selecting a deployed version.",
+    { env, version },
+  )
 }
 
 const showCommandHelp = (command: CommandName) =>
@@ -202,6 +206,69 @@ const fail = (error: RigError) =>
     return 1
   })
 
+const resolveNameAndRequiredEnv = (
+  command: "deploy" | "start" | "stop" | "restart" | "logs",
+  positionals: readonly string[],
+  usage: string,
+): { readonly namePositional?: string; readonly env: EnvName } | { readonly error: RigError } => {
+  if (positionals.length === 0) {
+    return {
+      error: makeCliError(command, "Missing environment argument.", `Usage: ${usage}`),
+    }
+  }
+
+  if (isEnvName(positionals[0])) {
+    if (positionals.length > 1) {
+      return {
+        error: makeCliError(command, "Too many positional arguments.", `Usage: ${usage}`),
+      }
+    }
+
+    return { env: positionals[0] }
+  }
+
+  if (positionals.length < 2 || !isEnvName(positionals[1])) {
+    return {
+      error: makeCliError(command, "Missing environment argument.", `Usage: ${usage}`),
+    }
+  }
+
+  if (positionals.length > 2) {
+    return {
+      error: makeCliError(command, "Too many positional arguments.", `Usage: ${usage}`),
+    }
+  }
+
+  return {
+    namePositional: positionals[0],
+    env: positionals[1],
+  }
+}
+
+const resolveOptionalNameAndEnv = (
+  positionals: readonly string[],
+): { readonly name?: string; readonly env?: EnvName; readonly error?: RigError } => {
+  if (positionals.length === 0) {
+    return {}
+  }
+
+  if (positionals.length === 1) {
+    if (isEnvName(positionals[0])) {
+      return { env: positionals[0] }
+    }
+
+    return { name: positionals[0] }
+  }
+
+  if (positionals.length === 2 && isEnvName(positionals[1])) {
+    return { name: positionals[0], env: positionals[1] }
+  }
+
+  return {
+    error: makeCliError("status", "Too many positional arguments.", "Usage: rig status [name] [dev|prod] [--version <semver>]"),
+  }
+}
+
 const parseLifecycleCommand = (
   command: "deploy" | "start" | "stop" | "restart",
   args: readonly string[],
@@ -209,9 +276,14 @@ const parseLifecycleCommand = (
   Effect.gen(function* () {
     const parsed = parseWithOptions(command, args, {
       help: { type: "boolean", short: "h" },
-      dev: { type: "boolean" },
-      prod: { type: "boolean" },
+      ...(command !== "restart" ? { version: { type: "string" } } : {}),
       ...(command === "start" ? { foreground: { type: "boolean" } } : {}),
+      ...(command === "deploy"
+        ? {
+            bump: { type: "string" },
+            revert: { type: "string" },
+          }
+        : {}),
     })
 
     if ("error" in parsed) {
@@ -222,21 +294,29 @@ const parseLifecycleCommand = (
       return yield* showCommandHelp(command)
     }
 
-    const env = resolveEnv(command, parsed.values, true)
-    if (env.error) {
-      return yield* fail(env.error)
-    }
-
     const usage =
       command === "deploy"
-        ? "rig deploy <name> --dev|--prod"
+        ? "rig deploy [name] <dev|prod> [--version <semver>] [--bump <patch|minor|major>] [--revert <semver>]"
         : command === "start"
-          ? "rig start <name> --dev|--prod [--foreground]"
+          ? "rig start [name] <dev|prod> [--version <semver>] [--foreground]"
           : command === "stop"
-            ? "rig stop <name> --dev|--prod"
-            : "rig restart <name> --dev|--prod"
+            ? "rig stop [name] <dev|prod> [--version <semver>]"
+            : "rig restart [name] <dev|prod>"
 
-    const project = resolveProjectName(parsed.positionals[0])
+    const resolved = resolveNameAndRequiredEnv(command, parsed.positionals, usage)
+    if ("error" in resolved) {
+      return yield* fail(resolved.error)
+    }
+
+    const version = command !== "restart" ? readVersionFlag(parsed.values) : undefined
+    if (command !== "restart") {
+      const versionError = validateProdOnlyVersionFlag(command, resolved.env, version)
+      if (versionError) {
+        return yield* fail(versionError)
+      }
+    }
+
+    const project = resolveProjectName(resolved.namePositional)
     if ("error" in project) {
       return yield* fail(projectNameError(command, project.error, usage))
     }
@@ -245,7 +325,13 @@ const parseLifecycleCommand = (
       const validated = validate(
         command,
         DeployArgsSchema,
-        { name: project.name, env: env.env },
+        {
+          name: project.name,
+          env: resolved.env,
+          version,
+          bump: typeof parsed.values.bump === "string" ? parsed.values.bump : undefined,
+          revert: typeof parsed.values.revert === "string" ? parsed.values.revert : undefined,
+        },
         usage,
       )
 
@@ -262,7 +348,8 @@ const parseLifecycleCommand = (
         StartArgsSchema,
         {
           name: project.name,
-          env: env.env,
+          env: resolved.env,
+          version,
           foreground: parsed.values.foreground === true,
         },
         usage,
@@ -279,7 +366,11 @@ const parseLifecycleCommand = (
       const validated = validate(
         command,
         StopArgsSchema,
-        { name: project.name, env: env.env },
+        {
+          name: project.name,
+          env: resolved.env,
+          version,
+        },
         usage,
       )
 
@@ -293,7 +384,10 @@ const parseLifecycleCommand = (
     const validated = validate(
       command,
       RestartArgsSchema,
-      { name: project.name, env: env.env },
+      {
+        name: project.name,
+        env: resolved.env,
+      },
       usage,
     )
 
@@ -344,8 +438,7 @@ const parseStatus = (args: readonly string[]) =>
   Effect.gen(function* () {
     const parsed = parseWithOptions("status", args, {
       help: { type: "boolean", short: "h" },
-      dev: { type: "boolean" },
-      prod: { type: "boolean" },
+      version: { type: "string" },
     })
 
     if ("error" in parsed) {
@@ -356,31 +449,37 @@ const parseStatus = (args: readonly string[]) =>
       return yield* showCommandHelp("status")
     }
 
-    if (parsed.positionals.length > 1) {
+    const resolved = resolveOptionalNameAndEnv(parsed.positionals)
+    if (resolved.error) {
+      return yield* fail(resolved.error)
+    }
+
+    const version = readVersionFlag(parsed.values)
+    const versionError = validateProdOnlyVersionFlag("status", resolved.env ?? null, version)
+    if (versionError) {
+      return yield* fail(versionError)
+    }
+
+    if (version && !resolved.name) {
       return yield* fail(
-        makeCliError("status", "Too many positional arguments.", "Usage: rig status <name> [--dev|--prod]"),
+        makeCliError(
+          "status",
+          "A project name is required when using --version.",
+          "Usage: rig status <name> prod --version <semver>",
+          { version },
+        ),
       )
-    }
-
-    const env = resolveEnv("status", parsed.values, false)
-    if (env.error) {
-      return yield* fail(env.error)
-    }
-
-    const usage = "rig status <name> [--dev|--prod]"
-    const project = resolveProjectName(parsed.positionals[0])
-    if ("error" in project) {
-      return yield* fail(projectNameError("status", project.error, usage))
     }
 
     const payload = validate(
       "status",
       StatusArgsSchema,
       {
-        name: project.name,
-        env: env.env ?? undefined,
+        name: resolved.name,
+        env: resolved.env,
+        version,
       },
-      usage,
+      "rig status [name] [dev|prod] [--version <semver>]",
     )
 
     if ("error" in payload) {
@@ -394,8 +493,7 @@ const parseLogs = (args: readonly string[]) =>
   Effect.gen(function* () {
     const parsed = parseWithOptions("logs", args, {
       help: { type: "boolean", short: "h" },
-      dev: { type: "boolean" },
-      prod: { type: "boolean" },
+      version: { type: "string" },
       follow: { type: "boolean" },
       lines: { type: "string" },
       service: { type: "string" },
@@ -409,13 +507,19 @@ const parseLogs = (args: readonly string[]) =>
       return yield* showCommandHelp("logs")
     }
 
-    const env = resolveEnv("logs", parsed.values, true)
-    if (env.error) {
-      return yield* fail(env.error)
+    const usage = "rig logs [name] <dev|prod> [--version <semver>] [--follow] [--lines <n>] [--service <name>]"
+    const resolved = resolveNameAndRequiredEnv("logs", parsed.positionals, usage)
+    if ("error" in resolved) {
+      return yield* fail(resolved.error)
     }
 
-    const usage = "rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]"
-    const project = resolveProjectName(parsed.positionals[0])
+    const version = readVersionFlag(parsed.values)
+    const versionError = validateProdOnlyVersionFlag("logs", resolved.env, version)
+    if (versionError) {
+      return yield* fail(versionError)
+    }
+
+    const project = resolveProjectName(resolved.namePositional)
     if ("error" in project) {
       return yield* fail(projectNameError("logs", project.error, usage))
     }
@@ -425,7 +529,8 @@ const parseLogs = (args: readonly string[]) =>
       LogsArgsSchema,
       {
         name: project.name,
-        env: env.env,
+        env: resolved.env,
+        version,
         follow: parsed.values.follow === true,
         lines: parsed.values.lines ? Number(parsed.values.lines) : 50,
         service: typeof parsed.values.service === "string" ? parsed.values.service : undefined,
@@ -433,16 +538,8 @@ const parseLogs = (args: readonly string[]) =>
       usage,
     )
 
-    if ("error" in payload || parsed.positionals.length > 1) {
-      return yield* fail(
-        "error" in payload
-          ? payload.error
-          : makeCliError(
-              "logs",
-              "Invalid arguments.",
-              `Usage: ${usage}`,
-            ),
-      )
+    if ("error" in payload) {
+      return yield* fail(payload.error)
     }
 
     return yield* runLogsCommand(payload.data)
@@ -452,6 +549,7 @@ const parseVersion = (args: readonly string[]) =>
   Effect.gen(function* () {
     const parsed = parseWithOptions("version", args, {
       help: { type: "boolean", short: "h" },
+      edit: { type: "string" },
     })
 
     if ("error" in parsed) {
@@ -462,8 +560,33 @@ const parseVersion = (args: readonly string[]) =>
       return yield* showCommandHelp("version")
     }
 
-    const usage = "rig version <name> [patch|minor|major|undo|list]"
-    const project = resolveProjectName(parsed.positionals[0])
+    const usage = "rig version [name] [<semver>] [--edit <semver|patch|minor|major>]"
+    let namePositional: string | undefined
+    let targetVersion: string | undefined
+
+    if (parsed.positionals.length === 1) {
+      if (isSemver(parsed.positionals[0])) {
+        targetVersion = parsed.positionals[0]
+      } else {
+        namePositional = parsed.positionals[0]
+      }
+    } else if (parsed.positionals.length === 2) {
+      if (isSemver(parsed.positionals[1])) {
+        namePositional = parsed.positionals[0]
+        targetVersion = parsed.positionals[1]
+      } else {
+        return yield* fail(makeCliError("version", "Invalid arguments.", `Usage: ${usage}`))
+      }
+    } else if (parsed.positionals.length > 2) {
+      return yield* fail(makeCliError("version", "Invalid arguments.", `Usage: ${usage}`))
+    }
+
+    const edit = typeof parsed.values.edit === "string" ? parsed.values.edit : undefined
+    if (edit && !isSemver(edit) && !BUMP_NAMES.has(edit)) {
+      return yield* fail(makeCliError("version", "Invalid arguments.", `Usage: ${usage}`))
+    }
+
+    const project = resolveProjectName(namePositional)
     if ("error" in project) {
       return yield* fail(projectNameError("version", project.error, usage))
     }
@@ -473,21 +596,14 @@ const parseVersion = (args: readonly string[]) =>
       VersionArgsSchema,
       {
         name: project.name,
-        action: parsed.positionals[1] ?? "show",
+        targetVersion,
+        edit,
       },
       usage,
     )
 
-    if ("error" in payload || parsed.positionals.length > 2) {
-      return yield* fail(
-        "error" in payload
-          ? payload.error
-          : makeCliError(
-              "version",
-              "Invalid arguments.",
-              `Usage: ${usage}`,
-            ),
-      )
+    if ("error" in payload) {
+      return yield* fail(payload.error)
     }
 
     return yield* runVersionCommand(payload.data)
@@ -553,9 +669,10 @@ const parseConfig = (args: readonly string[]) =>
       const key = setPositionals[setPositionals.length - 2]
       const value = setPositionals[setPositionals.length - 1]
 
-      const project = setPositionals.length === 3
-        ? resolveProjectName(setPositionals[0])
-        : resolveProjectName(undefined)
+      const project =
+        setPositionals.length === 3
+          ? resolveProjectName(setPositionals[0])
+          : resolveProjectName(undefined)
       if ("error" in project) {
         return yield* fail(projectNameError("config", project.error, usage))
       }

@@ -125,14 +125,33 @@ class StaticProcessManager implements ProcessManagerService {
 }
 
 class StaticWorkspace implements WorkspaceService {
-  constructor(private readonly pathsByKey: Readonly<Record<string, string>>) {}
+  constructor(
+    private readonly pathsByKey: Readonly<Record<string, string>>,
+    private readonly rows: readonly WorkspaceInfo[] = [],
+  ) {}
 
   create(name: string, env: "dev" | "prod", _version: string, _commitRef: string) {
     return Effect.succeed(this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
   }
 
-  resolve(name: string, env: "dev" | "prod") {
+  resolve(name: string, env: "dev" | "prod", version?: string) {
+    if (env === "prod" && version) {
+      return Effect.succeed(this.pathsByKey[`${name}:${env}:${version}`] ?? this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
+    }
+
     return Effect.succeed(this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
+  }
+
+  activate(name: string, env: "dev" | "prod", version: string) {
+    return Effect.succeed(this.pathsByKey[`${name}:${env}:${version}`] ?? this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
+  }
+
+  removeVersion(_name: string, _env: "dev" | "prod", _version: string) {
+    return Effect.void
+  }
+
+  renameVersion(name: string, env: "dev" | "prod", _fromVersion: string, toVersion: string) {
+    return Effect.succeed(this.pathsByKey[`${name}:${env}:${toVersion}`] ?? this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
   }
 
   sync(_name: string, _env: "dev" | "prod") {
@@ -140,7 +159,7 @@ class StaticWorkspace implements WorkspaceService {
   }
 
   list(_name: string) {
-    return Effect.succeed([] as readonly WorkspaceInfo[])
+    return Effect.succeed(this.rows)
   }
 }
 
@@ -226,6 +245,8 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       {
         name: "pantry",
         env: "dev",
+        latestProdVersion: "N/A",
+        currentProdVersion: "N/A",
         services: 1,
         daemonLoaded: true,
         daemonRunning: true,
@@ -240,6 +261,9 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       {
         name: "pantry",
         env: "prod",
+        latestProdVersion: "N/A",
+        currentProdVersion: "N/A",
+        version: "1.0.0",
         services: 1,
         daemonLoaded: true,
         daemonRunning: false,
@@ -298,6 +322,8 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       {
         name: "pantry",
         env: "dev",
+        latestProdVersion: "N/A",
+        currentProdVersion: "N/A",
         services: 1,
         daemonLoaded: true,
         daemonRunning: false,
@@ -357,6 +383,8 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       {
         name: "pantry",
         env: "dev",
+        latestProdVersion: "N/A",
+        currentProdVersion: "N/A",
         services: 1,
         daemonLoaded: false,
         daemonRunning: false,
@@ -457,6 +485,8 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
     expect(row).toMatchObject({
       name: "pantry",
       env: "dev",
+      latestProdVersion: "N/A",
+      currentProdVersion: "N/A",
       services: 1,
       daemonLoaded: false,
       daemonRunning: false,
@@ -514,6 +544,8 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       {
         name: "pantry",
         env: "dev",
+        latestProdVersion: "N/A",
+        currentProdVersion: "N/A",
         services: 1,
         daemonLoaded: true,
         daemonRunning: false,
@@ -576,6 +608,8 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
     expect(logger.tables[0]).toHaveLength(1)
     const row = logger.tables[0][0]
     expect(row).toMatchObject({
+      latestProdVersion: "N/A",
+      currentProdVersion: "N/A",
       service: "api",
       pid: stalePid,
       port: 3201,
@@ -643,16 +677,120 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
     expect(logger.tables[0]).toEqual([
       {
         name: "pantry",
+        latestProdVersion: "N/A",
+        currentProdVersion: "N/A",
         devRunning: true,
         prodRunning: false,
         repoPath: "/repos/pantry",
       },
       {
         name: "docs",
+        latestProdVersion: "N/A",
+        currentProdVersion: "N/A",
         devRunning: false,
         prodRunning: true,
         repoPath: "/repos/docs",
       },
     ])
+  })
+
+  test("GIVEN prod is pinned older WHEN project status is called THEN it shows distinct latest and current prod versions", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-status-prod-release-state-"))
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "0.3.0",
+      environments: {
+        prod: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 3070 },
+          ],
+        },
+      },
+    })
+    await mkdir(join(repoPath, ".rig", "versions"), { recursive: true })
+    await writeFile(
+      join(repoPath, ".rig", "versions", "pantry.json"),
+      `${JSON.stringify(
+        {
+          name: "pantry",
+          entries: [
+            {
+              action: "minor",
+              oldVersion: "0.1.0",
+              newVersion: "0.2.0",
+              changedAt: "2026-03-08T00:00:00.000Z",
+            },
+            {
+              action: "minor",
+              oldVersion: "0.2.0",
+              newVersion: "0.3.0",
+              changedAt: "2026-03-09T00:00:00.000Z",
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const logger = new CaptureLogger()
+    const processManager = new StaticProcessManager({
+      "rig.pantry.prod": {
+        label: "rig.pantry.prod",
+        loaded: true,
+        running: true,
+        pid: 1234,
+      },
+    })
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(
+        Workspace,
+        new StaticWorkspace(
+          { "pantry:prod": repoPath, "pantry:prod:0.2.0": repoPath },
+          [
+            {
+              name: "pantry",
+              env: "prod",
+              version: "0.2.0",
+              path: repoPath,
+              active: true,
+            },
+          ],
+        ),
+      ),
+      Layer.succeed(ProcessManager, processManager),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runStatusCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables[0]).toEqual([
+      {
+        name: "pantry",
+        env: "prod",
+        latestProdVersion: "0.3.0",
+        currentProdVersion: "0.2.0",
+        version: "0.3.0",
+        services: 1,
+        daemonLoaded: true,
+        daemonRunning: true,
+        daemonPid: 1234,
+        service: null,
+        pid: null,
+        port: null,
+        alive: null,
+        startedAt: null,
+        uptimeSeconds: null,
+      },
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
   })
 })

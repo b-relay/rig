@@ -7,7 +7,8 @@ import { ProcessManager } from "../interfaces/process-manager.js"
 import { Registry } from "../interfaces/registry.js"
 import { Workspace } from "../interfaces/workspace.js"
 import type { StatusArgs } from "../schema/args.js"
-import { loadProjectConfig, resolveEnvironment } from "./config.js"
+import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment } from "./config.js"
+import { resolveProdReleaseState } from "./release-state.js"
 import { daemonLabel } from "./shared.js"
 
 interface PidEntry {
@@ -90,6 +91,7 @@ export const runStatusCommand = (args: StatusArgs) =>
       const entries = yield* registry.list()
       const rows = yield* Effect.forEach(entries, (entry) =>
         Effect.gen(function* () {
+          const releaseState = yield* resolveProdReleaseState(entry.name, entry.repoPath)
           const dev = yield* processManager.status(daemonLabel(entry.name, "dev")).pipe(
             Effect.catchAll(() =>
               Effect.succeed({
@@ -113,6 +115,8 @@ export const runStatusCommand = (args: StatusArgs) =>
 
           return {
             name: entry.name,
+            latestProdVersion: releaseState.latestProdVersion ?? "N/A",
+            currentProdVersion: releaseState.currentProdVersion ?? "N/A",
             devRunning: dev.running,
             prodRunning: prod.running,
             repoPath: entry.repoPath,
@@ -127,11 +131,26 @@ export const runStatusCommand = (args: StatusArgs) =>
     const name = args.name
     const fileSystem = yield* FileSystem
     const workspace = yield* Workspace
-    const loaded = yield* loadProjectConfig(name)
+    const project = yield* loadProjectConfig(name)
+    const releaseState = yield* resolveProdReleaseState(name, project.repoPath)
     const envs = args.env ? [args.env] : (["dev", "prod"] as const)
 
     const rowSets = yield* Effect.forEach(envs, (env) => {
       const row = Effect.gen(function* () {
+        const workspacePath = yield* workspace.resolve(name, env, env === "prod" ? args.version : undefined).pipe(
+          Effect.catchTag("WorkspaceError", (error) =>
+            logger.warn("Unable to resolve workspace for status.", {
+              name,
+              env,
+              version: env === "prod" ? args.version : undefined,
+              error: error.message,
+            }).pipe(Effect.as(null)),
+          ),
+        )
+        const loaded =
+          env === "prod" && workspacePath
+            ? yield* loadProjectConfigAtPath(name, workspacePath)
+            : project
         const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, env)
         const label = daemonLabel(name, env)
         const daemon = yield* processManager.status(label).pipe(
@@ -142,16 +161,6 @@ export const runStatusCommand = (args: StatusArgs) =>
               running: false,
               pid: null,
             }),
-          ),
-        )
-
-        const workspacePath = yield* workspace.resolve(name, env).pipe(
-          Effect.catchTag("WorkspaceError", (error) =>
-            logger.warn("Unable to resolve workspace for status.", {
-              name,
-              env,
-              error: error.message,
-            }).pipe(Effect.as(null)),
           ),
         )
         const pidsPath = workspacePath ? join(workspacePath, ".rig", "pids.json") : null
@@ -196,6 +205,9 @@ export const runStatusCommand = (args: StatusArgs) =>
         const base = {
           name,
           env,
+          latestProdVersion: releaseState.latestProdVersion ?? "N/A",
+          currentProdVersion: releaseState.currentProdVersion ?? "N/A",
+          ...(env === "prod" ? { version: loaded.config.version } : {}),
           services: environment.services.length,
           daemonLoaded: daemon.loaded,
           daemonRunning: daemon.running,

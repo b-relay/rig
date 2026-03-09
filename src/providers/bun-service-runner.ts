@@ -437,7 +437,7 @@ export class BunServiceRunner implements ServiceRunnerService {
   logs(service: string, opts: LogOpts): Effect.Effect<string, ServiceRunnerError> {
     return Effect.gen(this, function* () {
       const targetService = opts.service ?? service
-      const logPath = this.resolveLogPath(targetService)
+      const logPath = this.resolveLogPath(targetService, opts.workspacePath)
 
       const exists = yield* this.fs.exists(logPath).pipe(
         Effect.mapError((cause) =>
@@ -479,10 +479,14 @@ export class BunServiceRunner implements ServiceRunnerService {
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
-  private resolveLogPath(serviceName: string): string {
+  private resolveLogPath(serviceName: string, workspacePath?: string): string {
     const knownLogDir = this.logDirByService.get(serviceName)
     if (knownLogDir) {
       return join(knownLogDir, `${serviceName}.log`)
+    }
+
+    if (workspacePath) {
+      return join(workspacePath, ".rig", "logs", `${serviceName}.log`)
     }
 
     return join(process.cwd(), ".rig", "logs", `${serviceName}.log`)

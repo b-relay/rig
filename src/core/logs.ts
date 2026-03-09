@@ -2,9 +2,10 @@ import { Effect } from "effect"
 
 import { Logger } from "../interfaces/logger.js"
 import { ServiceRunner } from "../interfaces/service-runner.js"
+import { Workspace } from "../interfaces/workspace.js"
 import type { LogsArgs } from "../schema/args.js"
 import { CliArgumentError } from "../schema/errors.js"
-import { loadProjectConfig, resolveEnvironment } from "./config.js"
+import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment } from "./config.js"
 
 const missingServiceError = (
   name: string,
@@ -23,8 +24,16 @@ export const runLogsCommand = (args: LogsArgs) =>
   Effect.gen(function* () {
     const logger = yield* Logger
     const serviceRunner = yield* ServiceRunner
+    const workspace = yield* Workspace
 
-    const loaded = yield* loadProjectConfig(args.name)
+    const workspacePath =
+      args.env === "prod"
+        ? yield* workspace.resolve(args.name, "prod", args.version)
+        : yield* workspace.resolve(args.name, args.env)
+    const loaded =
+      args.env === "prod"
+        ? yield* loadProjectConfigAtPath(args.name, workspacePath)
+        : yield* loadProjectConfig(args.name)
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
     const availableServices = environment.services.map((service) => service.name)
 
@@ -41,6 +50,7 @@ export const runLogsCommand = (args: LogsArgs) =>
         lines: args.lines,
         follow: args.follow,
         service: args.service,
+        workspacePath,
       })
 
       yield* logger.info(output.length > 0 ? output : `(no logs for ${serviceName})`)

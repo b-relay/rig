@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
@@ -298,10 +299,41 @@ const createHarness = (options: HarnessOptions): Harness => {
   const projectName = options.projectName ?? inferredName
   const repoPath = options.repoPath ?? join("/tmp", `rig-e2e-${projectName}-${randomUUID()}`)
   const configPath = join(repoPath, "rig.json")
+  const configJson = `${JSON.stringify(options.config, null, 2)}\n`
+  const inferredVersion =
+    typeof options.config === "object" &&
+    options.config !== null &&
+    "version" in options.config &&
+    typeof (options.config as { version?: unknown }).version === "string"
+      ? (options.config as { version: string }).version
+      : null
 
   const fileSystem = new InMemoryFileSystem()
   fileSystem.seedDir(repoPath)
-  fileSystem.seedFile(configPath, `${JSON.stringify(options.config, null, 2)}\n`)
+  fileSystem.seedFile(configPath, configJson)
+
+  if (inferredVersion) {
+    const prodVersionPath = join(
+      homedir(),
+      ".rig",
+      "workspaces",
+      projectName,
+      "prod",
+      inferredVersion,
+      "rig.json",
+    )
+    const prodCurrentPath = join(
+      homedir(),
+      ".rig",
+      "workspaces",
+      projectName,
+      "prod",
+      "current",
+      "rig.json",
+    )
+    fileSystem.seedFile(prodVersionPath, configJson)
+    fileSystem.seedFile(prodCurrentPath, configJson)
+  }
 
   const logger = new CaptureLogger()
   const registry = new StaticRegistry({ [projectName]: repoPath })
@@ -371,7 +403,7 @@ const withMockedSpawn = async (
 }
 
 describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covered", () => {
-  test("GIVEN a dev project with one server WHEN deploy then start then stop are executed THEN workspace, runtime state, and shutdown are completed", async () => {
+  test("GIVEN a dev project with one server WHEN deploy then stop are executed THEN deploy reconciles runtime and shutdown completes", async () => {
     const harness = createHarness({
       config: {
         name: "pantry",
@@ -393,11 +425,9 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
     })
 
     const deploy = await run(runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
-    const start = await run(runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(harness.layer)))
     const stop = await run(runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
 
     expect(deploy).toBe(0)
-    expect(start).toBe(0)
     expect(stop).toBe(0)
     expect(harness.workspace.createCalls).toHaveLength(1)
     expect(harness.workspace.syncCalls).toHaveLength(1)
@@ -463,7 +493,7 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
     expect(harness.serviceRunner.stopCalls.map((call) => call.service)).toEqual(["api", "db"])
   })
 
-  test("GIVEN a deployed dev project WHEN start then restart are executed THEN stop happens before the second start sequence", async () => {
+  test("GIVEN a deployed dev project WHEN restart is executed THEN stop happens before the replacement start sequence", async () => {
     const harness = createHarness({
       config: {
         name: "pantry",
@@ -480,7 +510,6 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
     })
 
     await run(runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
-    await run(runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(harness.layer)))
     const restart = await run(runRestartCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
 
     expect(restart).toBe(0)
@@ -519,7 +548,7 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
   })
 
   test("GIVEN an existing prod workspace WHEN deploy runs THEN it recovers and continues successfully", async () => {
-    const workspacePath = "/tmp/rig-existing-workspace/pantry/prod/v1.0.0"
+    const workspacePath = "/tmp/rig-existing-workspace/pantry/prod/1.0.0"
     const harness = createHarness({
       config: {
         name: "pantry",
@@ -545,11 +574,21 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
         },
       },
     })
+    harness.fileSystem.seedFile(join(workspacePath, "rig.json"), `${JSON.stringify({
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        prod: {
+          services: [{ name: "web", type: "server", command: "bun web.ts", port: 3070 }],
+        },
+      },
+    }, null, 2)}\n`)
 
     const result = await run(runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(harness.layer)))
 
     expect(result).toBe(0)
-    expect(harness.workspace.resolveCalls).toEqual([{ name: "pantry", env: "prod" }])
+    expect(harness.workspace.activateCalls).toEqual([{ name: "pantry", env: "prod", version: "1.0.0" }])
+    expect(harness.logger.warnings.some((entry) => entry.message === "Redeploying existing tagged prod version.")).toBe(true)
   })
 
   test("GIVEN a conflicting port WHEN start runs THEN it fails with PortConflictError before services start", async () => {
@@ -682,7 +721,6 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
       },
     })
 
-    await run(runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
     const start = await run(runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(harness.layer)))
     const stop = await run(runStopCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
 
@@ -729,8 +767,7 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
       },
     })
 
-    await run(runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
-    const workspacePath = workspaceRuntimePath(harness.workspace, "pantry", "dev")
+    const workspacePath = join(homedir(), ".rig", "workspaces", "pantry", "dev", "current")
     const pidsPath = join(workspacePath, ".rig", "pids.json")
 
     const result = await runEither(
@@ -897,7 +934,6 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
       },
     })
 
-    await run(runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(harness.layer)))
     const result = await run(runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(harness.layer)))
 
     expect(result).toBe(0)

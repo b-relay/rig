@@ -141,7 +141,7 @@ export class ProxyError {
 export class WorkspaceError {
   readonly _tag = "WorkspaceError" as const
   constructor(
-    readonly operation: "create" | "resolve" | "sync" | "list",
+    readonly operation: "create" | "resolve" | "sync" | "list" | "remove" | "rename",
     readonly name: string,
     readonly env: string,
     readonly message: string,

@@ -57,12 +57,65 @@ export class GitWorktreeWorkspace implements WorkspaceService {
     return this.createProd(name, version, commitRef)
   }
 
-  resolve(name: string, env: "dev" | "prod"): Effect.Effect<string, WorkspaceError> {
+  resolve(name: string, env: "dev" | "prod", version?: string): Effect.Effect<string, WorkspaceError> {
     if (env === "dev") {
       return this.resolveDev(name)
     }
 
-    return this.resolveProd(name)
+    return this.resolveProd(name, version)
+  }
+
+  activate(name: string, env: "dev" | "prod", version: string): Effect.Effect<string, WorkspaceError> {
+    if (env === "dev") {
+      return Effect.fail(
+        new WorkspaceError(
+          "resolve",
+          name,
+          env,
+          "Dev workspaces are not versioned.",
+          "Use dev without a version selector.",
+        ),
+      )
+    }
+
+    return this.activateProd(name, version)
+  }
+
+  removeVersion(name: string, env: "dev" | "prod", version: string): Effect.Effect<void, WorkspaceError> {
+    if (env === "dev") {
+      return Effect.fail(
+        new WorkspaceError(
+          "resolve",
+          name,
+          env,
+          "Dev workspaces are not versioned.",
+          "Use dev without version removal.",
+        ),
+      )
+    }
+
+    return this.removeProdVersion(name, version)
+  }
+
+  renameVersion(
+    name: string,
+    env: "dev" | "prod",
+    fromVersion: string,
+    toVersion: string,
+  ): Effect.Effect<string, WorkspaceError> {
+    if (env === "dev") {
+      return Effect.fail(
+        new WorkspaceError(
+          "resolve",
+          name,
+          env,
+          "Dev workspaces are not versioned.",
+          "Use dev without version renames.",
+        ),
+      )
+    }
+
+    return this.renameProdVersion(name, fromVersion, toVersion)
   }
 
   sync(_name: string, _env: "dev" | "prod"): Effect.Effect<void, WorkspaceError> {
@@ -241,7 +294,29 @@ export class GitWorktreeWorkspace implements WorkspaceService {
     )
   }
 
-  private resolveProd(name: string): Effect.Effect<string, WorkspaceError> {
+  private resolveProd(name: string, version?: string): Effect.Effect<string, WorkspaceError> {
+    if (version) {
+      const path = workspacePath(name, "prod", version)
+      return this.fs.exists(path).pipe(
+        Effect.mapError(
+          toWorkspaceError("resolve", name, "prod", `Unable to check prod workspace ${path}.`),
+        ),
+        Effect.flatMap((exists) =>
+          exists
+            ? Effect.succeed(path)
+            : Effect.fail(
+                new WorkspaceError(
+                  "resolve",
+                  name,
+                  "prod",
+                  `No deployed prod workspace found for version '${version}'.`,
+                  `Deploy version ${version} first or choose an existing prod version.`,
+                ),
+              ),
+        ),
+      )
+    }
+
     const symlink = currentSymlink(name)
 
     return Effect.tryPromise({
@@ -252,6 +327,135 @@ export class GitWorktreeWorkspace implements WorkspaceService {
         "prod",
         `No active prod deployment. Run \`rig deploy ${name} --prod\` first.`,
       ),
+    })
+  }
+
+  private activateProd(name: string, version: string): Effect.Effect<string, WorkspaceError> {
+    return Effect.gen(this, function* () {
+      const path = yield* this.resolveProd(name, version)
+      yield* this.fs.symlink(path, currentSymlink(name)).pipe(
+        Effect.mapError(
+          toWorkspaceError("create", name, "prod", "Unable to update current symlink."),
+        ),
+      )
+      return path
+    })
+  }
+
+  private removeProdVersion(name: string, version: string): Effect.Effect<void, WorkspaceError> {
+    return Effect.gen(this, function* () {
+      const repoPath = yield* this.registry.resolve(name).pipe(
+        Effect.mapError((cause) =>
+          new WorkspaceError(
+            "remove",
+            name,
+            "prod",
+            causeMessage(cause),
+            "Register the project first with `rig init`.",
+          ),
+        ),
+      )
+
+      const path = workspacePath(name, "prod", version)
+      const exists = yield* this.fs.exists(path).pipe(
+        Effect.mapError(toWorkspaceError("remove", name, "prod", `Unable to check ${path}.`)),
+      )
+
+      if (!exists) {
+        return
+      }
+
+      yield* this.git.removeWorktree(repoPath, path).pipe(
+        Effect.mapError((gitErr) =>
+          new WorkspaceError(
+            "remove",
+            name,
+            "prod",
+            `Git worktree removal failed: ${gitErr.message}`,
+            gitErr.hint,
+          ),
+        ),
+      )
+    })
+  }
+
+  private renameProdVersion(
+    name: string,
+    fromVersion: string,
+    toVersion: string,
+  ): Effect.Effect<string, WorkspaceError> {
+    return Effect.gen(this, function* () {
+      const repoPath = yield* this.registry.resolve(name).pipe(
+        Effect.mapError((cause) =>
+          new WorkspaceError(
+            "create",
+            name,
+            "prod",
+            causeMessage(cause),
+            "Register the project first with `rig init`.",
+          ),
+        ),
+      )
+
+      const currentPath = workspacePath(name, "prod", fromVersion)
+      const nextPath = workspacePath(name, "prod", toVersion)
+
+      const currentExists = yield* this.fs.exists(currentPath).pipe(
+        Effect.mapError(toWorkspaceError("resolve", name, "prod", `Unable to check ${currentPath}.`)),
+      )
+      if (!currentExists) {
+        return yield* Effect.fail(
+          new WorkspaceError(
+            "resolve",
+            name,
+            "prod",
+            `No deployed prod workspace found for version '${fromVersion}'.`,
+            `Deploy version ${fromVersion} first or choose an existing prod version.`,
+          ),
+        )
+      }
+
+      const nextExists = yield* this.fs.exists(nextPath).pipe(
+        Effect.mapError(toWorkspaceError("resolve", name, "prod", `Unable to check ${nextPath}.`)),
+      )
+      if (nextExists) {
+        return yield* Effect.fail(
+          new WorkspaceError(
+            "create",
+            name,
+            "prod",
+            `Workspace already exists at ${nextPath}.`,
+            `Version ${toVersion} is already deployed. Choose a different version.`,
+          ),
+        )
+      }
+
+      const activePath = yield* Effect.tryPromise({
+        try: () => readlink(currentSymlink(name)),
+        catch: () => null as unknown,
+      }).pipe(Effect.catchAll(() => Effect.succeed(null as string | null)))
+
+      yield* this.git.moveWorktree(repoPath, currentPath, nextPath).pipe(
+        Effect.mapError((gitErr) =>
+          new WorkspaceError(
+            "create",
+            name,
+            "prod",
+            `Git worktree move failed: ${gitErr.message}`,
+            gitErr.hint,
+          ),
+        ),
+      )
+
+      if (activePath === currentPath) {
+        yield* this.fs.symlink(nextPath, currentSymlink(name)).pipe(
+          Effect.mapError(
+            toWorkspaceError("create", name, "prod", "Unable to update current symlink."),
+          ),
+        )
+      }
+
+      return nextPath
     })
   }
 }

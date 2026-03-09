@@ -100,6 +100,18 @@ class StaticWorkspace implements WorkspaceService {
     return Effect.succeed(this.path)
   }
 
+  activate(_name: string, _env: "dev" | "prod", _version: string) {
+    return Effect.succeed(this.path)
+  }
+
+  removeVersion(_name: string, _env: "dev" | "prod", _version: string) {
+    return Effect.void
+  }
+
+  renameVersion(_name: string, _env: "dev" | "prod", _fromVersion: string, _toVersion: string) {
+    return Effect.succeed(this.path)
+  }
+
   sync(_name: string, _env: "dev" | "prod") {
     return Effect.void
   }

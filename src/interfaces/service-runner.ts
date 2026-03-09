@@ -21,6 +21,7 @@ export interface LogOpts {
   readonly follow: boolean
   readonly lines: number
   readonly service?: string
+  readonly workspacePath?: string
 }
 
 export interface ServiceRunner {

@@ -16,7 +16,10 @@ export class StubGit implements GitService {
   }
 
   commitHash(_repoPath: string, ref?: string): Effect.Effect<string> {
-    return Effect.succeed(ref ?? "HEAD")
+    if (!ref || ref === "HEAD" || ref.startsWith("v") || ref.startsWith("refs/tags/")) {
+      return Effect.succeed("HEAD")
+    }
+    return Effect.succeed(ref)
   }
 
   changedFiles(_repoPath: string): Effect.Effect<readonly string[]> {
@@ -28,6 +31,10 @@ export class StubGit implements GitService {
   }
 
   createTag(_repoPath: string, _tag: string): Effect.Effect<void> {
+    return Effect.void
+  }
+
+  createTagAtRef(_repoPath: string, _tag: string, _ref: string): Effect.Effect<void> {
     return Effect.void
   }
 
@@ -43,11 +50,23 @@ export class StubGit implements GitService {
     return Effect.succeed(null)
   }
 
+  commitTags(_repoPath: string, _commit: string): Effect.Effect<readonly string[]> {
+    return Effect.succeed([])
+  }
+
+  isAncestor(_repoPath: string, _ancestorRef: string, _descendantRef: string): Effect.Effect<boolean> {
+    return Effect.succeed(true)
+  }
+
   createWorktree(_repoPath: string, _dest: string, _ref: string): Effect.Effect<void> {
     return Effect.void
   }
 
   removeWorktree(_repoPath: string, _dest: string): Effect.Effect<void> {
+    return Effect.void
+  }
+
+  moveWorktree(_repoPath: string, _src: string, _dest: string): Effect.Effect<void> {
     return Effect.void
   }
 }

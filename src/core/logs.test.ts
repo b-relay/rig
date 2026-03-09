@@ -11,6 +11,11 @@ import {
   type Registry as RegistryService,
 } from "../interfaces/registry.js"
 import {
+  Workspace,
+  type Workspace as WorkspaceService,
+  type WorkspaceInfo,
+} from "../interfaces/workspace.js"
+import {
   ServiceRunner,
   type HealthStatus,
   type LogOpts,
@@ -103,6 +108,38 @@ class TrackingServiceRunner implements ServiceRunnerService {
   }
 }
 
+class StaticWorkspace implements WorkspaceService {
+  constructor(private readonly workspacePath: string) {}
+
+  create(_name: string, _env: "dev" | "prod", _version: string, _commitRef: string) {
+    return Effect.succeed(this.workspacePath)
+  }
+
+  resolve(_name: string, _env: "dev" | "prod", _version?: string) {
+    return Effect.succeed(this.workspacePath)
+  }
+
+  activate(_name: string, _env: "dev" | "prod", _version: string) {
+    return Effect.succeed(this.workspacePath)
+  }
+
+  removeVersion(_name: string, _env: "dev" | "prod", _version: string) {
+    return Effect.void
+  }
+
+  renameVersion(_name: string, _env: "dev" | "prod", _fromVersion: string, _toVersion: string) {
+    return Effect.succeed(this.workspacePath)
+  }
+
+  sync(_name: string, _env: "dev" | "prod") {
+    return Effect.void
+  }
+
+  list(_name: string) {
+    return Effect.succeed([] as readonly WorkspaceInfo[])
+  }
+}
+
 const writeRigConfig = async (repoPath: string) => {
   await writeFile(
     join(repoPath, "rig.json"),
@@ -131,6 +168,7 @@ const createLayer = (repoPath: string, logger: CaptureLogger, serviceRunner: Tra
     NodeFileSystemLive,
     Layer.succeed(Logger, logger),
     Layer.succeed(Registry, new StaticRegistry(repoPath)),
+    Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
     Layer.succeed(ServiceRunner, serviceRunner),
   )
 
@@ -189,6 +227,7 @@ describe("GIVEN suite context WHEN logs command executes THEN behavior is covere
           follow: true,
           lines: 25,
           service: "web",
+          workspacePath: repoPath,
         },
       },
     ])

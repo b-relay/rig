@@ -158,6 +158,15 @@ export class BunGit implements GitService {
     ).pipe(Effect.asVoid)
   }
 
+  createTagAtRef(repoPath: string, tag: string, ref: string): Effect.Effect<void, GitError> {
+    return this.runGitExpectingSuccess(
+      repoPath,
+      ["tag", "-a", tag, "-m", `rig ${tag}`, ref],
+      "createTag",
+      `Ensure tag '${tag}' is valid, does not already exist, and '${ref}' resolves to a commit.`,
+    ).pipe(Effect.asVoid)
+  }
+
   deleteTag(repoPath: string, tag: string): Effect.Effect<void, GitError> {
     return this.runGitExpectingSuccess(
       repoPath,
@@ -192,19 +201,50 @@ export class BunGit implements GitService {
   }
 
   commitHasTag(repoPath: string, commit: string): Effect.Effect<string | null, GitError> {
+    return this.commitTags(repoPath, commit).pipe(
+      Effect.map((tags) => tags[0] ?? null),
+    )
+  }
+
+  commitTags(repoPath: string, commit: string): Effect.Effect<readonly string[], GitError> {
     return this.runGitExpectingSuccess(
       repoPath,
       ["tag", "--points-at", commit],
       "commitHasTag",
       `Ensure commit '${commit}' resolves to an existing commit.`,
     ).pipe(
-      Effect.map((result) => {
-        const tags = result.stdout
+      Effect.map((result) =>
+        result.stdout
           .split("\n")
           .map((line) => line.trim())
-          .filter((line) => line.length > 0)
+          .filter((line) => line.length > 0),
+      ),
+    )
+  }
 
-        return tags[0] ?? null
+  isAncestor(repoPath: string, ancestorRef: string, descendantRef: string): Effect.Effect<boolean, GitError> {
+    return this.runGit(
+      repoPath,
+      ["merge-base", "--is-ancestor", ancestorRef, descendantRef],
+    ).pipe(
+      Effect.flatMap((result) => {
+        if (result.exitCode === 0) {
+          return Effect.succeed(true)
+        }
+
+        if (result.exitCode === 1) {
+          return Effect.succeed(false)
+        }
+
+        return Effect.fail(
+          createGitError(
+            "isAncestor",
+            repoPath,
+            result.exitCode,
+            result.stderr.trim(),
+            `Ensure '${ancestorRef}' and '${descendantRef}' resolve to valid commits.`,
+          ),
+        )
       }),
     )
   }
@@ -224,6 +264,15 @@ export class BunGit implements GitService {
       ["worktree", "remove", "--force", dest],
       "removeWorktree",
       `Ensure '${dest}' is an existing git worktree path.`,
+    ).pipe(Effect.asVoid)
+  }
+
+  moveWorktree(repoPath: string, src: string, dest: string): Effect.Effect<void, GitError> {
+    return this.runGitExpectingSuccess(
+      repoPath,
+      ["worktree", "move", src, dest],
+      "moveWorktree",
+      `Ensure '${src}' is an existing git worktree path and '${dest}' is writable.`,
     ).pipe(Effect.asVoid)
   }
 

@@ -8,358 +8,269 @@ import { Workspace } from "../interfaces/workspace.js"
 import type { VersionArgs } from "../schema/args.js"
 import { CliArgumentError } from "../schema/errors.js"
 import { loadProjectConfig } from "./config.js"
+import { resolveProdReleaseState } from "./release-state.js"
+import {
+  bumpVersion,
+  compareVersions,
+  isBumpAction,
+  readVersionHistory,
+  versionHistoryPath,
+  versionTag,
+  writeRigJsonVersion,
+  writeVersionHistory,
+} from "./release.js"
 
-const SEMVER_RE = /^\d+\.\d+\.\d+$/
-type BumpAction = "patch" | "minor" | "major"
+const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+$/
 
-interface VersionHistoryEntry {
-  readonly action: BumpAction
-  readonly oldVersion: string
-  readonly newVersion: string
-  readonly changedAt: string
-}
+const releaseNotFoundError = (name: string, version: string) =>
+  new CliArgumentError(
+    "version",
+    `Release '${version}' was not found for '${name}'.`,
+    "Choose a version shown by `rig version <name>`.",
+    { name, version },
+  )
 
-interface VersionHistory {
-  readonly name: string
-  readonly entries: readonly VersionHistoryEntry[]
-}
+const duplicateVersionError = (name: string, version: string) =>
+  new CliArgumentError(
+    "version",
+    `Release '${version}' already exists for '${name}'.`,
+    "Choose a different replacement version.",
+    { name, version },
+  )
 
-const versionHistoryPath = (repoPath: string, name: string) =>
-  join(repoPath, ".rig", "versions", `${name}.json`)
+const orderingError = (name: string, version: string, previous: string, next: string | null) =>
+  new CliArgumentError(
+    "version",
+    `Release '${version}' would break version ordering for '${name}'.`,
+    next
+      ? `Choose a version strictly between '${previous}' and '${next}'.`
+      : `Choose a version strictly greater than '${previous}'.`,
+    { name, version, previous, next },
+  )
 
-const versionTag = (version: string): string => `v${version}`
+const editNoTargetError = (name: string) =>
+  new CliArgumentError(
+    "version",
+    `Cannot edit release history for '${name}' without a target version.`,
+    "Pass a release version before --edit.",
+    { name },
+  )
 
-const isBumpAction = (value: unknown): value is BumpAction =>
-  value === "patch" || value === "minor" || value === "major"
+const duplicateCommitReleaseError = (name: string, tag: string, targetVersion: string) =>
+  new CliArgumentError(
+    "version",
+    `Cannot edit release '${targetVersion}' for '${name}' because commit already has release tag '${tag}'.`,
+    "Remove the other release tag first so each commit has only one prod release version.",
+    { name, targetVersion, tag },
+  )
 
-const readRigJson = (configPath: string) =>
+const highestReleaseTag = (tags: readonly string[]) =>
   Effect.gen(function* () {
-    const fileSystem = yield* FileSystem
-    const raw = yield* fileSystem.read(configPath)
-    return yield* Effect.try({
-      try: () => JSON.parse(raw) as Record<string, unknown>,
-      catch: (cause) =>
-        new CliArgumentError(
-          "version",
-          "Unable to parse rig.json while updating version.",
-          "Fix JSON syntax in rig.json and retry.",
-          {
-            path: configPath,
-            cause: cause instanceof Error ? cause.message : String(cause),
-          },
-        ),
-    })
-  })
+    let highest: string | null = null
 
-const readVersionHistory = (historyPath: string, name: string) =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem
-    const exists = yield* fileSystem.exists(historyPath)
-    if (!exists) {
-      return { name, entries: [] } as VersionHistory
-    }
-
-    const raw = yield* fileSystem.read(historyPath)
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(raw) as unknown,
-      catch: (cause) =>
-        new CliArgumentError(
-          "version",
-          "Unable to parse version history backup.",
-          "Fix the version history JSON or run a new version bump.",
-          {
-            path: historyPath,
-            cause: cause instanceof Error ? cause.message : String(cause),
-          },
-        ),
-    })
-
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return yield* Effect.fail(
-        new CliArgumentError(
-          "version",
-          "Version history backup is invalid.",
-          "Fix the history file shape or run a new version bump.",
-          { path: historyPath },
-        ),
-      )
-    }
-
-    const parsedRecord = parsed as Record<string, unknown>
-    const parsedName = parsedRecord["name"]
-    const parsedEntries = parsedRecord["entries"]
-    if (typeof parsedName !== "string" || !Array.isArray(parsedEntries)) {
-      return yield* Effect.fail(
-        new CliArgumentError(
-          "version",
-          "Version history backup is missing required fields.",
-          "Ensure history includes 'name' and 'entries'.",
-          { path: historyPath },
-        ),
-      )
-    }
-
-    const entries = parsedEntries.map((entry) => {
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-        return null
+    for (const tag of tags) {
+      if (!RELEASE_TAG_RE.test(tag)) {
+        continue
       }
 
-      const action = entry["action"]
-      const oldVersion = entry["oldVersion"]
-      const newVersion = entry["newVersion"]
-      const changedAt = entry["changedAt"]
-
-      if (
-        !isBumpAction(action) ||
-        typeof oldVersion !== "string" ||
-        typeof newVersion !== "string" ||
-        typeof changedAt !== "string"
-      ) {
-        return null
+      if (!highest) {
+        highest = tag
+        continue
       }
 
-      return {
-        action,
-        oldVersion,
-        newVersion,
-        changedAt,
-      } as VersionHistoryEntry
-    })
-
-    if (entries.some((entry) => entry === null)) {
-      return yield* Effect.fail(
-        new CliArgumentError(
-          "version",
-          "Version history backup contains invalid entries.",
-          "Fix or remove the backup file, then run the command again.",
-          { path: historyPath },
-        ),
-      )
+      const comparison = yield* compareVersions(tag.slice(1), highest.slice(1))
+      if (comparison > 0) {
+        highest = tag
+      }
     }
 
-    return {
-      name: parsedName,
-      entries: entries as readonly VersionHistoryEntry[],
-    } as VersionHistory
+    return highest
   })
 
-const writeVersionHistory = (historyPath: string, history: VersionHistory) =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem
-    yield* fileSystem.write(historyPath, `${JSON.stringify(history, null, 2)}\n`)
-  })
-
-const parseVersion = (
-  version: string,
-): Effect.Effect<readonly [number, number, number], CliArgumentError> =>
-  Effect.gen(function* () {
-    if (!SEMVER_RE.test(version)) {
-      return yield* Effect.fail(
-        new CliArgumentError(
-          "version",
-          `Cannot bump invalid version '${version}'.`,
-          "Use semantic versions in the form MAJOR.MINOR.PATCH (for example 1.2.3).",
-          { version },
-        ),
-      )
-    }
-
-    const [major, minor, patch] = version.split(".").map((segment) => Number(segment))
-    return [major, minor, patch] as const
-  })
-
-const bumpVersion = (
-  current: string,
-  action: BumpAction,
-): Effect.Effect<string, CliArgumentError> =>
-  Effect.gen(function* () {
-    const [major, minor, patch] = yield* parseVersion(current)
-
-    if (action === "patch") {
-      return `${major}.${minor}.${patch + 1}`
-    }
-
-    if (action === "minor") {
-      return `${major}.${minor + 1}.0`
-    }
-
-    return `${major + 1}.0.0`
-  })
-
-// Resolves version workflows for a project: bump, undo, or inspect current
-// version state while keeping rig.json, history, and git tags aligned.
 export const runVersionCommand = (args: VersionArgs) =>
   Effect.gen(function* () {
     const logger = yield* Logger
-    const loaded = yield* loadProjectConfig(args.name)
-    const fileSystem = yield* FileSystem
     const git = yield* Git
-    const version = loaded.config.version
-    const configPath = join(loaded.repoPath, "rig.json")
+    const workspace = yield* Workspace
+    const fileSystem = yield* FileSystem
+    const loaded = yield* loadProjectConfig(args.name)
     const historyPath = versionHistoryPath(loaded.repoPath, args.name)
+    const history = yield* readVersionHistory(historyPath, args.name)
+    const releaseState = yield* resolveProdReleaseState(args.name, loaded.repoPath)
 
-    if (args.action === "undo") {
-      const history = yield* readVersionHistory(historyPath, args.name)
-      const lastEntry = history.entries.at(-1)
+    if (!args.targetVersion) {
+      const rows = yield* Effect.forEach(history.entries, (entry) =>
+        Effect.gen(function* () {
+          const markers = [
+            releaseState.latestProdVersion === entry.newVersion ? "latest" : null,
+            releaseState.currentProdVersion === entry.newVersion ? "current" : null,
+          ].filter((marker): marker is string => marker !== null)
 
-      if (!lastEntry) {
-        return yield* Effect.fail(
-          new CliArgumentError(
-            "version",
-            "No version history backup was found to undo.",
-            "Run `rig version <name> patch|minor|major` before undo.",
-            { name: args.name, historyPath },
-          ),
-        )
-      }
-
-      if (lastEntry.newVersion !== version) {
-        return yield* Effect.fail(
-          new CliArgumentError(
-            "version",
-            "Current rig.json version does not match the latest history entry.",
-            "Sync rig.json with history or run a new bump before undo.",
-            {
-              name: args.name,
-              currentVersion: version,
-              historyLatestVersion: lastEntry.newVersion,
-              historyPath,
-            },
-          ),
-        )
-      }
-
-      const workspace = yield* Workspace
-      const workspaces = yield* workspace.list(args.name)
-      // Prevent undoing a tag that has already been deployed to production.
-      const alreadyDeployed = workspaces.some(
-        (entry) => entry.env === "prod" && entry.version === lastEntry.newVersion,
-      )
-      if (alreadyDeployed) {
-        return yield* Effect.fail(
-          new CliArgumentError(
-            "version",
-            `Cannot undo version '${lastEntry.newVersion}' because it is already deployed.`,
-            "Deploy a newer version instead of undoing an already deployed tag.",
-            {
-              name: args.name,
-              version: lastEntry.newVersion,
-              historyPath,
-            },
-          ),
-        )
-      }
-
-      const parsed = yield* readRigJson(configPath)
-      const updated = {
-        ...parsed,
-        version: lastEntry.oldVersion,
-      }
-
-      yield* fileSystem.write(configPath, `${JSON.stringify(updated, null, 2)}\n`)
-
-      yield* writeVersionHistory(historyPath, {
-        name: history.name,
-        entries: history.entries.slice(0, -1),
-      })
-
-      yield* git.deleteTag(loaded.repoPath, versionTag(lastEntry.newVersion))
-      yield* git.commit(
-        loaded.repoPath,
-        `chore: undo version bump for ${args.name} (${version} -> ${lastEntry.oldVersion})`,
-        ["rig.json"],
+          return {
+            version: entry.newVersion,
+            commit: yield* git.commitHash(loaded.repoPath, versionTag(entry.newVersion)).pipe(
+              Effect.catchAll(() => Effect.succeed("N/A")),
+            ),
+            changedAt: entry.changedAt,
+            markers: markers.length > 0 ? markers.join(", ") : null,
+          }
+        }),
       )
 
-      yield* logger.success("Version bump undone.", {
-        name: args.name,
-        oldVersion: version,
-        newVersion: lastEntry.oldVersion,
-        action: args.action,
-        configPath,
-      })
+      yield* logger.table(rows)
 
       return 0
     }
 
-    if (args.action === "patch" || args.action === "minor" || args.action === "major") {
-      const nextVersion = yield* bumpVersion(version, args.action)
-      const parsed = yield* readRigJson(configPath)
-
-      const updated = {
-        ...parsed,
-        version: nextVersion,
-      }
-
-      yield* fileSystem.write(configPath, `${JSON.stringify(updated, null, 2)}\n`)
-
-      const history = yield* readVersionHistory(historyPath, args.name)
-      yield* writeVersionHistory(historyPath, {
-        name: history.name,
-        entries: [
-          ...history.entries,
-          {
-            action: args.action,
-            oldVersion: version,
-            newVersion: nextVersion,
-            changedAt: new Date().toISOString(),
-          },
-        ],
-      })
-
-      const tag = versionTag(nextVersion)
-      yield* git.createTag(loaded.repoPath, tag).pipe(
-        Effect.catchAll((error) =>
-          Effect.gen(function* () {
-            // Roll back file changes if tagging fails so state stays atomic.
-            const rollback = {
-              ...parsed,
-              version,
-            }
-            yield* fileSystem.write(configPath, `${JSON.stringify(rollback, null, 2)}\n`)
-            yield* writeVersionHistory(historyPath, history)
-            return yield* Effect.fail(error)
-          }),
-        ),
-      )
-
-      yield* logger.success("Version bumped.", {
-        name: args.name,
-        action: args.action,
-        oldVersion: version,
-        newVersion: nextVersion,
-        tag,
-        configPath,
-      })
-      yield* logger.info("rig.json was updated. Commit this version bump to git.", {
-        name: args.name,
-        oldVersion: version,
-        newVersion: nextVersion,
-        historyPath,
-      })
-      return 0
+    const entryIndex = history.entries.findIndex((entry) => entry.newVersion === args.targetVersion)
+    if (entryIndex === -1) {
+      return yield* Effect.fail(releaseNotFoundError(args.name, args.targetVersion))
     }
 
-    const branch = yield* git.currentBranch(loaded.repoPath)
-    const commit = yield* git.commitHash(loaded.repoPath)
-    const dirty = yield* git.isDirty(loaded.repoPath)
-    if (args.action === "list") {
-      yield* logger.info("Version list.", {
+    const entry = history.entries[entryIndex]
+
+    if (!args.edit) {
+      const rows = yield* workspace.list(args.name)
+      const prodWorkspace = rows.find(
+        (row) => row.env === "prod" && row.version === args.targetVersion,
+      )
+      const tag = versionTag(args.targetVersion)
+      const tagged = yield* git.tagExists(loaded.repoPath, tag)
+      const commit = tagged
+        ? yield* git.commitHash(loaded.repoPath, tag)
+        : null
+
+      yield* logger.info("Version command resolved release.", {
         name: args.name,
-        version,
-        branch,
+        version: args.targetVersion,
+        action: entry.action,
+        oldVersion: entry.oldVersion,
+        changedAt: entry.changedAt,
+        tagged,
         commit,
-        dirty,
+        deployed: prodWorkspace !== undefined,
+        active: prodWorkspace?.active ?? false,
+        latest: releaseState.latestProdVersion === args.targetVersion,
+        workspacePath: prodWorkspace?.path ?? null,
       })
       return 0
     }
 
-    yield* logger.info("Version command resolved state.", {
+    if (!args.targetVersion) {
+      return yield* Effect.fail(editNoTargetError(args.name))
+    }
+
+    const replacementVersion = isBumpAction(args.edit)
+      ? yield* bumpVersion(entry.oldVersion, args.edit)
+      : args.edit
+
+    if (replacementVersion === args.targetVersion) {
+      yield* logger.info("Release version unchanged.", {
+        name: args.name,
+        version: args.targetVersion,
+      })
+      return 0
+    }
+
+    const duplicateEntry = history.entries.find(
+      (candidate, index) => candidate.newVersion === replacementVersion && index !== entryIndex,
+    )
+    if (duplicateEntry) {
+      return yield* Effect.fail(duplicateVersionError(args.name, replacementVersion))
+    }
+
+    const nextVersion = history.entries[entryIndex + 1]?.newVersion ?? null
+    const comparedPrevious = yield* compareVersions(replacementVersion, entry.oldVersion)
+    const comparedNext = nextVersion ? yield* compareVersions(replacementVersion, nextVersion) : null
+    if (comparedPrevious <= 0 || (comparedNext !== null && comparedNext >= 0)) {
+      return yield* Effect.fail(orderingError(args.name, replacementVersion, entry.oldVersion, nextVersion))
+    }
+
+    const oldTag = versionTag(args.targetVersion)
+    const newTag = versionTag(replacementVersion)
+    const newTagExists = yield* git.tagExists(loaded.repoPath, newTag)
+    if (newTagExists) {
+      return yield* Effect.fail(duplicateVersionError(args.name, replacementVersion))
+    }
+
+    const targetCommit = yield* git.commitHash(loaded.repoPath, oldTag)
+    const otherReleaseTag = yield* highestReleaseTag(
+      (yield* git.commitTags(loaded.repoPath, targetCommit)).filter((tag) => tag !== oldTag),
+    )
+    if (otherReleaseTag) {
+      return yield* Effect.fail(duplicateCommitReleaseError(args.name, otherReleaseTag, args.targetVersion))
+    }
+
+    const originalConfig = yield* fileSystem.read(join(loaded.repoPath, "rig.json"))
+    const originalHistory = history
+    const updatedHistory = {
+      name: history.name,
+      entries: history.entries.map((candidate, index) =>
+        index === entryIndex
+          ? {
+              ...candidate,
+              action: "edit" as const,
+              newVersion: replacementVersion,
+              changedAt: new Date().toISOString(),
+            }
+          : candidate,
+      ),
+    }
+
+    const rows = yield* workspace.list(args.name)
+    const prodWorkspace = rows.find(
+      (row) => row.env === "prod" && row.version === args.targetVersion,
+    )
+
+    let renamedWorkspacePath: string | null = null
+
+    const rollback = Effect.gen(function* () {
+      yield* writeVersionHistory(historyPath, originalHistory).pipe(Effect.catchAll(() => Effect.void))
+      yield* fileSystem.write(join(loaded.repoPath, "rig.json"), originalConfig).pipe(
+        Effect.catchAll(() => Effect.void),
+      )
+      yield* git.deleteTag(loaded.repoPath, newTag).pipe(Effect.catchAll(() => Effect.void))
+      yield* git.createTagAtRef(loaded.repoPath, oldTag, targetCommit).pipe(
+        Effect.catchAll(() => Effect.void),
+      )
+      if (renamedWorkspacePath) {
+        yield* workspace.renameVersion(args.name, "prod", replacementVersion, args.targetVersion).pipe(
+          Effect.catchAll(() => Effect.void),
+        )
+        yield* writeRigJsonVersion(join(renamedWorkspacePath.replace(replacementVersion, args.targetVersion), "rig.json"), args.targetVersion).pipe(
+          Effect.catchAll(() => Effect.void),
+        )
+      }
+    })
+
+    try {
+      yield* writeVersionHistory(historyPath, updatedHistory)
+      if (loaded.config.version === args.targetVersion) {
+        yield* writeRigJsonVersion(join(loaded.repoPath, "rig.json"), replacementVersion)
+      }
+      yield* git.deleteTag(loaded.repoPath, oldTag)
+      yield* git.createTagAtRef(loaded.repoPath, newTag, targetCommit)
+
+      if (prodWorkspace) {
+        renamedWorkspacePath = yield* workspace.renameVersion(
+          args.name,
+          "prod",
+          args.targetVersion,
+          replacementVersion,
+        )
+        yield* writeRigJsonVersion(join(renamedWorkspacePath, "rig.json"), replacementVersion)
+      }
+    } catch (error) {
+      yield* rollback
+      return yield* Effect.fail(error)
+    }
+
+    yield* logger.success("Release version updated.", {
       name: args.name,
-      action: args.action,
-      version,
-      branch,
-      commit,
-      dirty,
+      oldVersion: args.targetVersion,
+      newVersion: replacementVersion,
+      active: prodWorkspace?.active ?? false,
+      deployed: prodWorkspace !== undefined,
     })
 
     return 0

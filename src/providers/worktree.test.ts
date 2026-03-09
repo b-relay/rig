@@ -120,6 +120,10 @@ class MockGit implements GitService {
     return Effect.void
   }
 
+  createTagAtRef(_repoPath: string, _tag: string, _ref: string) {
+    return Effect.void
+  }
+
   deleteTag(_repoPath: string, _tag: string) {
     return Effect.void
   }
@@ -132,6 +136,10 @@ class MockGit implements GitService {
     return Effect.succeed(null as string | null)
   }
 
+  commitTags(_repoPath: string, _commit: string) {
+    return Effect.succeed([] as readonly string[])
+  }
+
   createWorktree(_repoPath: string, dest: string, ref: string) {
     this.worktrees.set(dest, ref)
     return Effect.void
@@ -139,6 +147,15 @@ class MockGit implements GitService {
 
   removeWorktree(_repoPath: string, dest: string) {
     this.worktrees.delete(dest)
+    return Effect.void
+  }
+
+  moveWorktree(_repoPath: string, src: string, dest: string) {
+    const ref = this.worktrees.get(src)
+    this.worktrees.delete(src)
+    if (ref) {
+      this.worktrees.set(dest, ref)
+    }
     return Effect.void
   }
 }
@@ -281,6 +298,21 @@ describe("GIVEN suite context WHEN GitWorktreeWorkspace THEN behavior is covered
       await Effect.runPromise(workspace.sync("pantry", "dev"))
       await Effect.runPromise(workspace.sync("pantry", "prod"))
       // No errors = success
+    })
+  })
+
+  describe("GIVEN suite context WHEN activate THEN behavior is covered", () => {
+    test("GIVEN test setup WHEN prod version exists THEN current symlink switches to that version THEN expected behavior is observed", async () => {
+      const { workspace, mockFs } = setup()
+      const prodBase = join(homedir(), ".rig", "workspaces", "pantry", "prod")
+      const v1Dir = join(prodBase, "1.0.0")
+      mockFs.dirs.add(prodBase)
+      mockFs.dirs.add(v1Dir)
+
+      const result = await Effect.runPromise(workspace.activate("pantry", "prod", "1.0.0"))
+
+      expect(result).toBe(v1Dir)
+      expect(mockFs.symlinks.get(join(prodBase, "current"))).toBe(v1Dir)
     })
   })
 

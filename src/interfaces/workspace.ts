@@ -18,7 +18,24 @@ export interface Workspace {
   ) => Effect.Effect<string, WorkspaceError>
   readonly resolve: (
     name: string,
-    env: "dev" | "prod"
+    env: "dev" | "prod",
+    version?: string
+  ) => Effect.Effect<string, WorkspaceError>
+  readonly activate: (
+    name: string,
+    env: "dev" | "prod",
+    version: string
+  ) => Effect.Effect<string, WorkspaceError>
+  readonly removeVersion: (
+    name: string,
+    env: "dev" | "prod",
+    version: string
+  ) => Effect.Effect<void, WorkspaceError>
+  readonly renameVersion: (
+    name: string,
+    env: "dev" | "prod",
+    fromVersion: string,
+    toVersion: string
   ) => Effect.Effect<string, WorkspaceError>
   readonly sync: (
     name: string,

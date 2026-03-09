@@ -1,21 +1,22 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, mock, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { runVersionCommand } from "./version.js"
 import { Git, type Git as GitService } from "../interfaces/git.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import { Registry, type Registry as RegistryService } from "../interfaces/registry.js"
-import { Workspace, type Workspace as WorkspaceService, type WorkspaceInfo } from "../interfaces/workspace.js"
+import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
-import { CliArgumentError, GitError, MainBranchDetectionError, type RigError } from "../schema/errors.js"
+import { GitError, MainBranchDetectionError, type RigError } from "../schema/errors.js"
 
 class CaptureLogger implements LoggerService {
   readonly infos: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> = []
   readonly successes: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> = []
   readonly errors: RigError[] = []
+  readonly tables: Array<readonly Record<string, unknown>[]> = []
 
   info(message: string, details?: Record<string, unknown>) {
     this.infos.push({ message, details })
@@ -36,7 +37,8 @@ class CaptureLogger implements LoggerService {
     return Effect.void
   }
 
-  table(_rows: readonly Record<string, unknown>[]) {
+  table(rows: readonly Record<string, unknown>[]) {
+    this.tables.push(rows)
     return Effect.void
   }
 }
@@ -62,14 +64,13 @@ class StaticRegistry implements RegistryService {
 }
 
 class StaticGit implements GitService {
-  readonly commits: Array<{ readonly repoPath: string; readonly message: string; readonly paths: readonly string[] }> = []
-  readonly createdTags: Array<{ readonly repoPath: string; readonly tag: string }> = []
-  readonly deletedTags: Array<{ readonly repoPath: string; readonly tag: string }> = []
-
+  readonly createdTags: string[] = []
+  readonly deletedTags: string[] = []
   constructor(
     private readonly branch = "main",
     private readonly commitValue = "abc1234",
     private readonly dirty = false,
+    private readonly tagsAtCommit: readonly string[] = [],
   ) {}
 
   detectMainBranch(_repoPath: string): Effect.Effect<string, MainBranchDetectionError | GitError> {
@@ -92,18 +93,21 @@ class StaticGit implements GitService {
     return Effect.succeed([])
   }
 
-  commit(repoPath: string, message: string, paths: readonly string[] = []): Effect.Effect<void, GitError> {
-    this.commits.push({ repoPath, message, paths })
+  commit(_repoPath: string, _message: string, _paths?: readonly string[]): Effect.Effect<void, GitError> {
     return Effect.void
   }
 
   createTag(_repoPath: string, _tag: string): Effect.Effect<void, GitError> {
-    this.createdTags.push({ repoPath: _repoPath, tag: _tag })
     return Effect.void
   }
 
-  deleteTag(_repoPath: string, _tag: string): Effect.Effect<void, GitError> {
-    this.deletedTags.push({ repoPath: _repoPath, tag: _tag })
+  createTagAtRef(_repoPath: string, tag: string, _ref: string): Effect.Effect<void, GitError> {
+    this.createdTags.push(tag)
+    return Effect.void
+  }
+
+  deleteTag(_repoPath: string, tag: string): Effect.Effect<void, GitError> {
+    this.deletedTags.push(tag)
     return Effect.void
   }
 
@@ -112,7 +116,15 @@ class StaticGit implements GitService {
   }
 
   commitHasTag(_repoPath: string, _commit: string): Effect.Effect<string | null, GitError> {
-    return Effect.succeed(null)
+    return Effect.succeed(this.tagsAtCommit[0] ?? null)
+  }
+
+  commitTags(_repoPath: string, _commit: string): Effect.Effect<readonly string[], GitError> {
+    return Effect.succeed(this.tagsAtCommit)
+  }
+
+  isAncestor(_repoPath: string, _ancestorRef: string, _descendantRef: string): Effect.Effect<boolean, GitError> {
+    return Effect.succeed(true)
   }
 
   createWorktree(_repoPath: string, _dest: string, _ref: string): Effect.Effect<void, GitError> {
@@ -122,16 +134,41 @@ class StaticGit implements GitService {
   removeWorktree(_repoPath: string, _dest: string): Effect.Effect<void, GitError> {
     return Effect.void
   }
+
+  moveWorktree(_repoPath: string, _src: string, _dest: string): Effect.Effect<void, GitError> {
+    return Effect.void
+  }
 }
 
 class StaticWorkspace implements WorkspaceService {
-  constructor(private readonly rows: readonly WorkspaceInfo[] = []) {}
+  readonly renamed: Array<{ readonly fromVersion: string; readonly toVersion: string }> = []
+
+  constructor(private readonly rows: readonly {
+    readonly name: string
+    readonly env: "dev" | "prod"
+    readonly version: string | null
+    readonly path: string
+    readonly active: boolean
+  }[] = []) {}
 
   create(_name: string, _env: "dev" | "prod", _version: string, _commitRef: string) {
     return Effect.succeed("/tmp/unused-workspace")
   }
 
-  resolve(_name: string, _env: "dev" | "prod") {
+  resolve(_name: string, _env: "dev" | "prod", _version?: string) {
+    return Effect.succeed("/tmp/unused-workspace")
+  }
+
+  activate(_name: string, _env: "dev" | "prod", _version: string) {
+    return Effect.succeed("/tmp/unused-workspace")
+  }
+
+  removeVersion(_name: string, _env: "dev" | "prod", _version: string) {
+    return Effect.void
+  }
+
+  renameVersion(_name: string, _env: "dev" | "prod", _fromVersion: string, _toVersion: string) {
+    this.renamed.push({ fromVersion: _fromVersion, toVersion: _toVersion })
     return Effect.succeed("/tmp/unused-workspace")
   }
 
@@ -166,10 +203,13 @@ const writeRigConfig = async (repoPath: string, version: string) => {
   )
 }
 
-const readVersion = async (repoPath: string): Promise<string> => {
-  const raw = await readFile(join(repoPath, "rig.json"), "utf8")
-  const parsed = JSON.parse(raw) as { version: string }
-  return parsed.version
+const writeVersionHistory = async (repoPath: string, entries: readonly Record<string, string>[]) => {
+  await mkdir(join(repoPath, ".rig", "versions"), { recursive: true })
+  await writeFile(
+    join(repoPath, ".rig", "versions", "pantry.json"),
+    `${JSON.stringify({ name: "pantry", entries }, null, 2)}\n`,
+    "utf8",
+  )
 }
 
 const createLayer = (
@@ -187,377 +227,235 @@ const createLayer = (
   )
 
 describe("GIVEN suite context WHEN version command executes THEN behavior is covered", () => {
-  test("GIVEN a valid project WHEN show action runs THEN it displays current version and git state", async () => {
+  test("GIVEN release history WHEN version runs without a target THEN it shows release rows with latest/current markers", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-version-show-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger, new StaticGit("main", "cafebabe", true))
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "show" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(logger.infos).toContainEqual({
-      message: "Version command resolved state.",
-      details: {
-        name: "pantry",
-        action: "show",
-        version: "1.2.3",
-        branch: "main",
-        commit: "cafebabe",
-        dirty: true,
-      },
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN version 1.2.3 WHEN patch action runs THEN it bumps to 1.2.4", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-patch-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const git = new StaticGit()
-    const layer = createLayer(repoPath, logger, git)
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("1.2.4")
-    expect(git.createdTags).toEqual([{ repoPath, tag: "v1.2.4" }])
-    expect(logger.successes.at(-1)).toMatchObject({
-      message: "Version bumped.",
-      details: {
+    await writeRigConfig(repoPath, "1.3.0")
+    await writeVersionHistory(repoPath, [
+      {
         action: "patch",
-        oldVersion: "1.2.3",
-        newVersion: "1.2.4",
-        tag: "v1.2.4",
+        oldVersion: "1.2.2",
+        newVersion: "1.2.3",
+        changedAt: "2026-03-09T00:00:00.000Z",
       },
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN version 1.2.3 WHEN minor action runs THEN it bumps to 1.3.0", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-minor-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "minor" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("1.3.0")
-    expect(logger.successes.at(-1)).toMatchObject({
-      message: "Version bumped.",
-      details: {
+      {
         action: "minor",
         oldVersion: "1.2.3",
         newVersion: "1.3.0",
-      },
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN version 1.2.3 WHEN major action runs THEN it bumps to 2.0.0", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-major-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "major" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("2.0.0")
-    expect(logger.successes.at(-1)).toMatchObject({
-      message: "Version bumped.",
-      details: {
-        action: "major",
-        oldVersion: "1.2.3",
-        newVersion: "2.0.0",
-      },
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN a valid project WHEN list action runs THEN it shows version and git commit info", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-list-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger, new StaticGit("release", "deadbeef", false))
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "list" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(logger.infos).toContainEqual({
-      message: "Version list.",
-      details: {
-        name: "pantry",
-        version: "1.2.3",
-        branch: "release",
-        commit: "deadbeef",
-        dirty: false,
-      },
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN a bumped version WHEN undo action runs THEN it restores previous version and commits rig.json", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-undo-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const git = new StaticGit()
-    const layer = createLayer(repoPath, logger, git)
-
-    const bumpExitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
-    )
-    expect(bumpExitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("1.2.4")
-
-    const undoExitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "undo" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(undoExitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("1.2.3")
-    expect(logger.successes.some((entry) => entry.message === "Version bump undone.")).toBe(true)
-    expect(git.deletedTags).toEqual([{ repoPath, tag: "v1.2.4" }])
-    expect(git.commits.at(-1)).toEqual({
-      repoPath,
-      message: "chore: undo version bump for pantry (1.2.4 -> 1.2.3)",
-      paths: ["rig.json"],
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN project with invalid semver WHEN patch bump is requested THEN CliArgumentError includes MAJOR.MINOR.PATCH hint", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-invalid-semver-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
-
-    const originalConfigModule = await import("./config.js")
-    const actualLoadProjectConfig = originalConfigModule.loadProjectConfig
-    let result: { _tag: "Left"; left: unknown } | { _tag: "Right"; right: number } = {
-      _tag: "Right",
-      right: 0,
-    }
-    try {
-      mock.module("./config.js", () => ({
-        ...originalConfigModule,
-        loadProjectConfig: (name: string) =>
-          Effect.succeed({
-            name,
-            repoPath,
-            configPath: join(repoPath, "rig.json"),
-            config: {
-              name,
-              version: "not-a-version",
-              environments: {
-                dev: {
-                  services: [
-                    { name: "web", type: "server", command: "echo web", port: 5173 },
-                  ],
-                },
-              },
-            },
-          }),
-      }))
-
-      const { runVersionCommand: runVersionCommandWithInvalidVersion } = await import(
-        `./version.js?invalid-semver-${Date.now()}`
-      )
-      result = await Effect.runPromise(
-        runVersionCommandWithInvalidVersion({ name: "pantry", action: "patch" }).pipe(
-          Effect.provide(layer),
-          Effect.either,
-        ),
-      )
-    } finally {
-      mock.module("./config.js", () => ({
-        ...originalConfigModule,
-        loadProjectConfig: actualLoadProjectConfig,
-      }))
-      mock.restore()
-    }
-
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(CliArgumentError)
-      const error = result.left as CliArgumentError
-      expect(error.message).toContain("Cannot bump invalid version")
-      expect(error.hint).toContain("MAJOR.MINOR.PATCH")
-    }
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN project semver 0.0.0 WHEN patch bump runs THEN version becomes 0.0.1", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-zero-patch-"))
-    await writeRigConfig(repoPath, "0.0.0")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("0.0.1")
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN project semver 99.99.99 WHEN major bump runs THEN version becomes 100.0.0", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-large-major-"))
-    await writeRigConfig(repoPath, "99.99.99")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "major" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("100.0.0")
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN project version 1.2.3 WHEN show action runs THEN it returns 0 and queries branch commit and dirty git state", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-show-git-calls-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    class TrackingGit extends StaticGit {
-      branchCalls = 0
-      commitCalls = 0
-      dirtyCalls = 0
-
-      override currentBranch(repoPath: string): Effect.Effect<string, GitError> {
-        this.branchCalls += 1
-        return super.currentBranch(repoPath)
-      }
-
-      override commitHash(repoPath: string, ref?: string): Effect.Effect<string, GitError> {
-        this.commitCalls += 1
-        return super.commitHash(repoPath, ref)
-      }
-
-      override isDirty(repoPath: string): Effect.Effect<boolean, GitError> {
-        this.dirtyCalls += 1
-        return super.isDirty(repoPath)
-      }
-    }
-
-    const logger = new CaptureLogger()
-    const git = new TrackingGit("release", "feedface", true)
-    const layer = createLayer(repoPath, logger, git)
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "show" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(git.branchCalls).toBe(1)
-    expect(git.commitCalls).toBe(1)
-    expect(git.dirtyCalls).toBe(1)
-    expect(logger.infos).toContainEqual({
-      message: "Version command resolved state.",
-      details: {
-        name: "pantry",
-        action: "show",
-        version: "1.2.3",
-        branch: "release",
-        commit: "feedface",
-        dirty: true,
-      },
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN project version 1.2.3 WHEN list action runs THEN it returns 0 and logs version details with git metadata", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-list-logging-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger, new StaticGit("hotfix", "bead1234", true))
-
-    const exitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "list" }).pipe(Effect.provide(layer)),
-    )
-
-    expect(exitCode).toBe(0)
-    expect(logger.infos).toContainEqual({
-      message: "Version list.",
-      details: {
-        name: "pantry",
-        version: "1.2.3",
-        branch: "hotfix",
-        commit: "bead1234",
-        dirty: true,
-      },
-    })
-
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  test("GIVEN undo request WHEN latest version is already deployed to prod THEN command fails with CliArgumentError", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-undo-deployed-"))
-    await writeRigConfig(repoPath, "1.2.3")
-
-    const logger = new CaptureLogger()
-    const git = new StaticGit()
-    const workspace = new StaticWorkspace([
-      {
-        name: "pantry",
-        env: "prod",
-        version: "1.2.4",
-        path: "/tmp/rig/workspaces/pantry/prod/1.2.4",
-        active: true,
+        changedAt: "2026-03-09T01:00:00.000Z",
       },
     ])
-    const layer = createLayer(repoPath, logger, git, workspace)
 
-    const bumpExitCode = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "patch" }).pipe(Effect.provide(layer)),
+    const logger = new CaptureLogger()
+    const layer = createLayer(
+      repoPath,
+      logger,
+      new StaticGit("main", "cafebabe", true),
+      new StaticWorkspace([
+        {
+          name: "pantry",
+          env: "prod",
+          version: "1.2.3",
+          path: "/tmp/pantry/prod/1.2.3",
+          active: true,
+        },
+      ]),
     )
-    expect(bumpExitCode).toBe(0)
-    expect(await readVersion(repoPath)).toBe("1.2.4")
 
-    const undoResult = await Effect.runPromise(
-      runVersionCommand({ name: "pantry", action: "undo" }).pipe(Effect.provide(layer), Effect.either),
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry" }).pipe(Effect.provide(layer)),
     )
 
-    expect(undoResult._tag).toBe("Left")
-    if (undoResult._tag === "Left") {
-      expect(undoResult.left).toBeInstanceOf(CliArgumentError)
-      expect((undoResult.left as CliArgumentError).message).toContain("already deployed")
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toEqual([
+      [
+        {
+          version: "1.2.3",
+          commit: "cafebabe",
+          changedAt: "2026-03-09T00:00:00.000Z",
+          markers: "current",
+        },
+        {
+          version: "1.3.0",
+          commit: "cafebabe",
+          changedAt: "2026-03-09T01:00:00.000Z",
+          markers: "latest",
+        },
+      ],
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN release history with no active prod deployment WHEN version runs THEN no row is marked current", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-history-no-current-"))
+    await writeRigConfig(repoPath, "1.2.3")
+    await writeVersionHistory(repoPath, [
+      {
+        action: "patch",
+        oldVersion: "1.2.2",
+        newVersion: "1.2.3",
+        changedAt: "2026-03-09T00:00:00.000Z",
+      },
+      {
+        action: "minor",
+        oldVersion: "1.2.3",
+        newVersion: "1.3.0",
+        changedAt: "2026-03-09T01:00:00.000Z",
+      },
+    ])
+
+    const logger = new CaptureLogger()
+    const layer = createLayer(repoPath, logger)
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toEqual([
+      [
+        {
+          version: "1.2.3",
+          commit: "abc1234",
+          changedAt: "2026-03-09T00:00:00.000Z",
+          markers: null,
+        },
+        {
+          version: "1.3.0",
+          commit: "abc1234",
+          changedAt: "2026-03-09T01:00:00.000Z",
+          markers: "latest",
+        },
+      ],
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a targeted release edit WHEN edit uses a bump keyword THEN tag history and workspace version are rewritten", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-edit-"))
+    await writeRigConfig(repoPath, "1.4.0")
+    const workspacePath = join(repoPath, ".workspaces", "prod", "1.2.3")
+    await mkdir(workspacePath, { recursive: true })
+    await writeRigConfig(workspacePath, "1.2.3")
+    await writeVersionHistory(repoPath, [
+      {
+        action: "patch",
+        oldVersion: "1.2.2",
+        newVersion: "1.2.3",
+        changedAt: "2026-03-09T00:00:00.000Z",
+      },
+      {
+        action: "minor",
+        oldVersion: "1.2.3",
+        newVersion: "1.4.0",
+        changedAt: "2026-03-09T01:00:00.000Z",
+      },
+    ])
+
+    const logger = new CaptureLogger()
+    const git = new StaticGit()
+    class EditingWorkspace extends StaticWorkspace {
+      override list(_name: string) {
+        return Effect.succeed([
+          {
+            name: "pantry",
+            env: "prod" as const,
+            version: "1.2.3",
+            path: workspacePath,
+            active: false,
+          },
+        ])
+      }
+
+      override renameVersion(_name: string, _env: "dev" | "prod", fromVersion: string, toVersion: string) {
+        const nextPath = join(repoPath, ".workspaces", "prod", toVersion)
+        this.renamed.push({ fromVersion, toVersion })
+        return Effect.tryPromise({
+          try: async () => {
+            await mkdir(nextPath, { recursive: true })
+            await writeRigConfig(nextPath, toVersion)
+            return nextPath
+          },
+          catch: (cause) => cause as never,
+        })
+      }
     }
-    expect(await readVersion(repoPath)).toBe("1.2.4")
+    const workspace = new EditingWorkspace()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Git, git),
+      Layer.succeed(Workspace, workspace),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({
+        name: "pantry",
+        targetVersion: "1.2.3",
+        edit: "minor",
+      }).pipe(Effect.provide(layer)),
+    )
+
+    const updatedHistory = JSON.parse(
+      await Bun.file(join(repoPath, ".rig", "versions", "pantry.json")).text(),
+    ) as { entries: Array<{ action: string; newVersion: string }> }
+
+    expect(exitCode).toBe(0)
+    expect(git.deletedTags).toEqual(["v1.2.3"])
+    expect(git.createdTags).toEqual(["v1.3.0"])
+    expect(workspace.renamed).toEqual([{ fromVersion: "1.2.3", toVersion: "1.3.0" }])
+    expect(updatedHistory.entries[0]).toMatchObject({
+      action: "edit",
+      newVersion: "1.3.0",
+    })
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a targeted release commit already has another release tag WHEN edit runs THEN it fails", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-edit-duplicate-tag-"))
+    await writeRigConfig(repoPath, "1.4.0")
+    await writeVersionHistory(repoPath, [
+      {
+        action: "patch",
+        oldVersion: "1.2.2",
+        newVersion: "1.2.3",
+        changedAt: "2026-03-09T00:00:00.000Z",
+      },
+      {
+        action: "minor",
+        oldVersion: "1.2.3",
+        newVersion: "1.4.0",
+        changedAt: "2026-03-09T01:00:00.000Z",
+      },
+    ])
+
+    const logger = new CaptureLogger()
+    const git = new StaticGit("main", "abc1234", false, ["v1.2.3", "v1.3.0"])
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Git, git),
+      Layer.succeed(Workspace, new StaticWorkspace()),
+    )
+
+    const result = await Effect.runPromise(
+      runVersionCommand({
+        name: "pantry",
+        targetVersion: "1.2.3",
+        edit: "1.2.4",
+      }).pipe(
+        Effect.provide(layer),
+        Effect.either,
+      ),
+    )
+
+    expect(result._tag).toBe("Left")
     expect(git.deletedTags).toEqual([])
+    expect(git.createdTags).toEqual([])
 
     await rm(repoPath, { recursive: true, force: true })
   })

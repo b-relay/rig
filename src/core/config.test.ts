@@ -256,6 +256,39 @@ describe("GIVEN suite context WHEN config loader THEN behavior is covered", () =
     }
   })
 
+  test("GIVEN environments.prod.hooks is present WHEN parsing rig config THEN schema validation rejects the unknown key", () => {
+    const config = {
+      name: "pantry",
+      version: "1.0.0",
+      environments: {
+        prod: {
+          hooks: {
+            preStart: "bun install",
+          },
+          services: [
+            { name: "web", type: "server", command: "node api.js --host 127.0.0.1", port: 3000 },
+          ],
+        },
+      },
+    }
+
+    const result = Effect.runSync(
+      parseRigConfig("/test/rig.json", JSON.stringify(config)).pipe(Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(
+        result.left.issues.some(
+          (issue) =>
+            issue.path.join(".") === "environments.prod" &&
+            issue.message.toLowerCase().includes("unrecognized key"),
+        ),
+      ).toBe(true)
+    }
+  })
+
   test("GIVEN dependsOn references missing service WHEN parsing rig config THEN schema validation rejects with dependency issue", () => {
     const config = {
       name: "pantry",

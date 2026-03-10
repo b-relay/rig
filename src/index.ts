@@ -25,17 +25,19 @@ const normalizeArgv = (
 ): {
   readonly argv: readonly string[];
   readonly verbose: boolean;
+  readonly json: boolean;
 } => {
-  const filtered = argv.filter((arg) => arg !== "--verbose");
+  const filtered = argv.filter((arg) => arg !== "--verbose" && arg !== "--json");
   return {
     argv: filtered,
-    verbose: filtered.length !== argv.length,
+    verbose: argv.includes("--verbose"),
+    json: argv.includes("--json"),
   };
 };
 
-export const buildLoggerLayer = (verbose = false): Layer.Layer<Logger> => {
+export const buildLoggerLayer = (verbose = false, json = false): Layer.Layer<Logger> => {
   const primaryLayer =
-    process.env.RIG_LOG_FORMAT === "json"
+    json || process.env.RIG_LOG_FORMAT === "json"
       ? JsonLoggerLive
       : verbose
         ? Layer.succeed(Logger, new TerminalLogger(true))
@@ -60,8 +62,8 @@ const WorkspaceWithDependenciesLive = Layer.provide(
   Layer.mergeAll(BunGitLive, NodeFileSystemLive, RegistryWithFileSystemLive),
 );
 
-export const buildRigLayer = (verbose = false) => {
-  const loggerLayer = buildLoggerLayer(verbose);
+export const buildRigLayer = (verbose = false, json = false) => {
+  const loggerLayer = buildLoggerLayer(verbose, json);
   const serviceRunnerWithFileSystemLive = Layer.provide(
     BunServiceRunnerLive,
     Layer.mergeAll(NodeFileSystemLive, loggerLayer),
@@ -152,7 +154,7 @@ export const main = (argv: string[]): Promise<number> =>
           return 1;
         }),
       ),
-      Effect.provide(buildRigLayer(normalized.verbose) as never),
+      Effect.provide(buildRigLayer(normalized.verbose, normalized.json) as never),
     )
     })
   ) as Effect.Effect<number, never, never>);

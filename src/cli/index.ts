@@ -51,6 +51,7 @@ type EnvName = "dev" | "prod"
 const ENV_NAMES = new Set<EnvName>(["dev", "prod"])
 const SEMVER_RE = /^\d+\.\d+\.\d+$/
 const BUMP_NAMES = new Set(["patch", "minor", "major"])
+const GLOBAL_FLAG_NAMES = new Set(["--verbose", "--json"])
 
 const makeCliError = (
   command: string,
@@ -808,7 +809,7 @@ const runCommand = (command: CommandName, args: readonly string[]) => {
 
 export const runCli = (argv: readonly string[]) =>
   Effect.gen(function* () {
-    const normalizedArgv = argv.filter((arg) => arg !== "--verbose")
+    const normalizedArgv = argv.filter((arg) => !GLOBAL_FLAG_NAMES.has(arg))
     const logger = yield* Logger
 
     if (normalizedArgv.length === 0) {

@@ -183,6 +183,7 @@ export const renderMainHelp = (): string => {
     "Global Patterns:",
     "  --help, -h     Show help for command",
     "  --verbose      Show detailed error information",
+    "  --json         Emit newline-delimited JSON log events",
     "  <dev|prod>     Positional environment selector for environment-scoped commands",
     "  --version      Prod-only deployed version selector for deploy/start/stop/status/logs",
     "  --bump         Prod-only release bump selector for deploy",

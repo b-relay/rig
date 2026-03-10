@@ -114,6 +114,45 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
     expect(firstLine.startsWith("{")).toBe(false)
   })
 
+  test("GIVEN --json is passed WHEN running THEN JSON logger is used without env vars", async () => {
+    const { stdout, stderr, exitCode } = await runRigCommand(["config", "--help", "--json"], {
+      RIG_LOG_FILE: undefined,
+      RIG_LOG_FORMAT: undefined,
+    })
+
+    expect(exitCode).toBe(0)
+    expect(stderr).toBe("")
+
+    const firstLine = stdout.trim().split("\n")[0] ?? ""
+    const parsed = JSON.parse(firstLine) as {
+      readonly level?: string
+      readonly message?: string
+    }
+
+    expect(parsed.level).toBe("info")
+    expect(parsed.message).toContain("CONFIG")
+  })
+
+  test("GIVEN --json is passed on a failing command WHEN running THEN structured JSON is written to stderr", async () => {
+    const { stdout, stderr, exitCode } = await runRigCommand(["--json", "not-a-command"], {
+      RIG_LOG_FILE: undefined,
+      RIG_LOG_FORMAT: undefined,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.trim().length).toBeGreaterThan(0)
+
+    const firstLine = stderr.trim().split("\n")[0] ?? ""
+    const parsed = JSON.parse(firstLine) as {
+      readonly level?: string
+      readonly error?: { readonly _tag?: string; readonly message?: string }
+    }
+
+    expect(parsed.level).toBe("error")
+    expect(parsed.error?._tag).toBe("CliArgumentError")
+    expect(parsed.error?.message).toContain("Unknown command")
+  })
+
   test("GIVEN terminal logger default mode WHEN command fails THEN stderr only includes message and hint", async () => {
     const { stderr, exitCode } = await runRigCommand(["not-a-command"], {
       RIG_LOG_FILE: undefined,

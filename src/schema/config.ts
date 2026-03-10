@@ -46,6 +46,7 @@ export const ServiceHooksSchema = z
       .optional()
       .describe("Command to run after this service is confirmed stopped."),
   })
+  .strict()
   .describe("Lifecycle hooks for this service.")
 
 export const TopLevelHooksSchema = z
@@ -71,6 +72,7 @@ export const TopLevelHooksSchema = z
       .optional()
       .describe("Command to run after all services are confirmed stopped for this project in both dev and prod."),
   })
+  .strict()
   .describe("Top-level project lifecycle hooks. They are environment-agnostic and run before/after service-level hooks in both dev and prod.")
 
 // ── Service Schemas ─────────────────────────────────────────────────────────
@@ -111,6 +113,7 @@ export const ServerServiceSchema = z
         "Env file for this service. Overrides the environment-level envFile if set."
       ),
   })
+  .strict()
   .describe("Long-running daemon service. Managed as a process with health checks.")
 
 export const BinServiceSchema = z
@@ -139,6 +142,7 @@ export const BinServiceSchema = z
         "Env file for this service. Overrides the environment-level envFile if set."
       ),
   })
+  .strict()
   .refine(
     (s) => {
       if (s.build && s.entrypoint.includes(" ")) return false
@@ -166,6 +170,7 @@ export const ProxySchema = z
       .min(1)
       .describe("Name of the service to route traffic to. Must match a service name in this environment."),
   })
+  .strict()
   .describe("Reverse proxy config. Routes the domain to the named upstream service.")
 
 // ── Environment ─────────────────────────────────────────────────────────────
@@ -217,6 +222,7 @@ export const EnvironmentSchema = z
         }
       }),
   })
+  .strict()
   .superRefine((env, ctx) => {
     // Validate proxy upstream references a service
     if (env.proxy) {
@@ -245,6 +251,7 @@ export const DaemonSchema = z
       .default(false)
       .describe("Whether launchd should restart the service if it exits."),
   })
+  .strict()
   .describe("launchd daemon configuration.")
 
 // ── Top-level Config ────────────────────────────────────────────────────────
@@ -274,12 +281,14 @@ export const RigConfigSchema = z
         prod: EnvironmentSchema.optional().describe("Production environment configuration."),
         dev: EnvironmentSchema.optional().describe("Development environment configuration."),
       })
+      .strict()
       .describe("Environment definitions. At least one of prod or dev must be defined.")
       .refine((envs) => envs.prod || envs.dev, {
         message: "At least one environment (prod or dev) must be defined.",
       }),
     daemon: DaemonSchema.optional(),
   })
+  .strict()
   .describe("Root rig.json configuration file.")
 
 // ── Inferred Types ──────────────────────────────────────────────────────────

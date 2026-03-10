@@ -269,16 +269,16 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     expect(logger.tables).toEqual([
       [
         {
-          version: "1.2.3",
-          commit: "cafebabe",
-          changedAt: "2026-03-09T00:00:00.000Z",
-          markers: "current",
-        },
-        {
           version: "1.3.0",
-          commit: "cafebabe",
+          commit: "cafebab",
           changedAt: "2026-03-09T01:00:00.000Z",
           markers: "latest",
+        },
+        {
+          version: "1.2.3",
+          commit: "cafebab",
+          changedAt: "2026-03-09T00:00:00.000Z",
+          markers: "current",
         },
       ],
     ])
@@ -315,16 +315,16 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     expect(logger.tables).toEqual([
       [
         {
-          version: "1.2.3",
-          commit: "abc1234",
-          changedAt: "2026-03-09T00:00:00.000Z",
-          markers: null,
-        },
-        {
           version: "1.3.0",
           commit: "abc1234",
           changedAt: "2026-03-09T01:00:00.000Z",
           markers: "latest",
+        },
+        {
+          version: "1.2.3",
+          commit: "abc1234",
+          changedAt: "2026-03-09T00:00:00.000Z",
+          markers: null,
         },
       ],
     ])

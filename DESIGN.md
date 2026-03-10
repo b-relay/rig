@@ -364,6 +364,8 @@ All four hooks run at the appropriate lifecycle points:
 
 **During `restart`:** All hooks run in order: `preStop` → stop → `postStop` → `preStart` → start → `postStart`.
 
+Top-level `hooks.*` are project-level, not environment-specific. If they are defined in `rig.json`, they run for both `dev` and `prod`. If you need different behavior by environment, put the logic in service hooks or branch inside the hook command itself.
+
 Hooks run in the workspace directory — for prod that's the versioned workspace under `~/.rig/`, for dev that's the project repo directly. Service-level hooks receive that service's resolved env vars (from envFile).
 
 ## Service Lifecycle
@@ -660,22 +662,20 @@ Strategies are tried in order. First success wins.
 
 | Order | Strategy | How it works |
 |-------|----------|-------------|
-| 1 | **Explicit config** | Check `mainBranch` in `rig.json`. If set, use it. |
-| 2 | **Git remote HEAD** | Run `git symbolic-ref refs/remotes/origin/HEAD`. Parse branch name. |
-| 3 | **Convention check** | Check if `main` branch exists locally → use it. Else check `master`. |
-| 4 | **Fail with hint** | Error: "Could not detect main branch. Set `mainBranch` in rig.json." |
+| 1 | **Git remote HEAD** | Run `git symbolic-ref refs/remotes/origin/HEAD`. Parse branch name. |
+| 2 | **Convention check** | Check if `main` branch exists locally → use it. Else check `master`. |
+| 3 | **Fail with hint** | Error: "Could not detect main branch. Create a main/master branch." |
 
 Each strategy is its own function. The chain is explicit and easy to extend:
 
 ```typescript
 const detectMainBranch = (repoPath: string, config?: RigConfig) =>
-  tryExplicitConfig(config).pipe(
-    Effect.orElse(() => tryRemoteHead(repoPath)),
+  tryRemoteHead(repoPath).pipe(
     Effect.orElse(() => tryConvention(repoPath)),
     Effect.orElse(() => Effect.fail(new MainBranchDetectionError({
       repoPath,
-      strategiesTried: ["explicit-config", "remote-head", "convention"],
-      hint: 'Could not detect main branch. Set "mainBranch" in rig.json.'
+      strategiesTried: ["remote-head", "convention"],
+      hint: "Could not detect main branch. Create a main/master branch."
     })))
   )
 ```

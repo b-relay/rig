@@ -56,6 +56,9 @@ const formatService = (service: Service): string[] => {
 
 const formatEnvironment = (name: "dev" | "prod", env: Environment): string => {
   const lines: string[] = [`Environment: ${name}`]
+  if (env.deployBranch) {
+    lines.push(`  Deploy Branch: ${env.deployBranch}`)
+  }
   if (env.envFile) {
     lines.push(`  Env File: ${env.envFile}`)
   }
@@ -83,7 +86,6 @@ export const runConfigCommand = (name: string) =>
         `Version: ${loaded.config.version}`,
         `Description: ${loaded.config.description ?? "(not set)"}`,
         `Domain: ${loaded.config.domain ?? "(not set)"}`,
-        ...(loaded.config.mainBranch ? [`Main Branch: ${loaded.config.mainBranch}`] : []),
       ].join("\n"),
     )
 

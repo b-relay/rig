@@ -5,7 +5,9 @@ import { Effect } from "effect"
 import { z } from "zod"
 
 import { runConfigCommand } from "../core/config-command.js"
+import { runDocsCommand } from "../core/docs-command.js"
 import { runConfigSetCommand } from "../core/config-set-command.js"
+import { runConfigUnsetCommand } from "../core/config-unset-command.js"
 import { runDeployCommand } from "../core/deploy.js"
 import { runInitCommand } from "../core/init.js"
 import { runListCommand } from "../core/list.js"
@@ -17,7 +19,9 @@ import { Logger } from "../interfaces/logger.js"
 import {
   ConfigArgsSchema,
   ConfigSetArgsSchema,
+  ConfigUnsetArgsSchema,
   DeployArgsSchema,
+  DocsArgsSchema,
   InitArgsSchema,
   ListArgsSchema,
   LogsArgsSchema,
@@ -638,6 +642,43 @@ const parseSimpleCommand = (command: "list", args: readonly string[]) =>
     return yield* runListCommand()
   })
 
+const parseDocs = (args: readonly string[]) =>
+  Effect.gen(function* () {
+    const parsed = parseWithOptions("docs", args, {
+      help: { type: "boolean", short: "h" },
+    })
+
+    if ("error" in parsed) {
+      return yield* fail(parsed.error)
+    }
+
+    if (parsed.values.help || parsed.positionals[0] === "help") {
+      return yield* showCommandHelp("docs")
+    }
+
+    if (parsed.positionals.length > 2) {
+      return yield* fail(
+        makeCliError("docs", "Too many positional arguments.", "Usage: rig docs [config [<key>]]"),
+      )
+    }
+
+    const payload = validate(
+      "docs",
+      DocsArgsSchema,
+      {
+        topic: parsed.positionals[0],
+        key: parsed.positionals[1],
+      },
+      "rig docs [config [<key>]]",
+    )
+
+    if ("error" in payload) {
+      return yield* fail(payload.error)
+    }
+
+    return yield* runDocsCommand(payload.data.topic, payload.data.key)
+  })
+
 const parseConfig = (args: readonly string[]) =>
   Effect.gen(function* () {
     const parsed = parseWithOptions("config", args, {
@@ -652,11 +693,16 @@ const parseConfig = (args: readonly string[]) =>
       return yield* showCommandHelp("config")
     }
 
-    if (parsed.positionals[0] === "set") {
+    if (parsed.positionals[0] === "set" || parsed.positionals[0] === "unset") {
+      const isUnset = parsed.positionals[0] === "unset"
       const setPositionals = parsed.positionals.slice(1)
-      const usage = "rig config set [name] <key> <value>"
+      const usage = isUnset ? "rig config unset [name] <key>" : "rig config set [name] <key> <value>"
 
-      if (setPositionals.length !== 2 && setPositionals.length !== 3) {
+      const validArity = isUnset
+        ? setPositionals.length === 1 || setPositionals.length === 2
+        : setPositionals.length === 2 || setPositionals.length === 3
+
+      if (!validArity) {
         return yield* fail(
           makeCliError(
             "config",
@@ -666,15 +712,35 @@ const parseConfig = (args: readonly string[]) =>
         )
       }
 
-      const key = setPositionals[setPositionals.length - 2]
-      const value = setPositionals[setPositionals.length - 1]
+      const key = isUnset
+        ? setPositionals[setPositionals.length - 1]
+        : setPositionals[setPositionals.length - 2]
+      const value = isUnset ? undefined : setPositionals[setPositionals.length - 1]
 
       const project =
-        setPositionals.length === 3
+        setPositionals.length === (isUnset ? 2 : 3)
           ? resolveProjectName(setPositionals[0])
           : resolveProjectName(undefined)
       if ("error" in project) {
         return yield* fail(projectNameError("config", project.error, usage))
+      }
+
+      if (isUnset) {
+        const payload = validate(
+          "config",
+          ConfigUnsetArgsSchema,
+          {
+            name: project.name,
+            key,
+          },
+          usage,
+        )
+
+        if ("error" in payload) {
+          return yield* fail(payload.error)
+        }
+
+        return yield* runConfigUnsetCommand(payload.data.name, payload.data.key)
       }
 
       const payload = validate(
@@ -713,7 +779,7 @@ const parseConfig = (args: readonly string[]) =>
       return yield* fail(payload.error)
     }
 
-    return yield* runConfigCommand(payload.data.name)
+    return yield* runConfigCommand(project.name)
   })
 
 const runCommand = (command: CommandName, args: readonly string[]) => {
@@ -731,6 +797,8 @@ const runCommand = (command: CommandName, args: readonly string[]) => {
       return parseLogs(args)
     case "version":
       return parseVersion(args)
+    case "docs":
+      return parseDocs(args)
     case "list":
       return parseSimpleCommand(command, args)
     case "config":

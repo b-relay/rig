@@ -16,6 +16,7 @@ import { ConfigValidationError, RegistryError, type RigError } from "../schema/e
 
 class CaptureLogger implements LoggerService {
   readonly infos: string[] = []
+  readonly tables: Array<readonly Record<string, unknown>[]> = []
 
   info(message: string, _details?: Record<string, unknown>) {
     this.infos.push(message)
@@ -35,6 +36,7 @@ class CaptureLogger implements LoggerService {
   }
 
   table(_rows: readonly Record<string, unknown>[]) {
+    this.tables.push(_rows)
     return Effect.void
   }
 }
@@ -76,12 +78,12 @@ describe("GIVEN suite context WHEN config command executes THEN behavior is cove
       version: "1.0.0",
       description: "Core relay service",
       domain: "core.example.com",
-      mainBranch: "main",
       hooks: {
         preStart: "bun install && bun run build",
       },
       environments: {
         dev: {
+          deployBranch: "dev-main",
           envFile: ".env.dev",
           proxy: {
             upstream: "web",
@@ -134,10 +136,10 @@ describe("GIVEN suite context WHEN config command executes THEN behavior is cove
     expect(output).toContain("Version: 1.0.0")
     expect(output).toContain("Description: Core relay service")
     expect(output).toContain("Domain: core.example.com")
-    expect(output).toContain("Main Branch: main")
     expect(output).toContain("Hooks:")
     expect(output).toContain("preStart: bun install && bun run build")
     expect(output).toContain("Environment: dev")
+    expect(output).toContain("Deploy Branch: dev-main")
     expect(output).toContain("Env File: .env.dev")
     expect(output).toContain("Proxy: -> web")
     expect(output).toContain("web (server)")
@@ -263,4 +265,5 @@ describe("GIVEN suite context WHEN config command executes THEN behavior is cove
       expect(result.left.message).toContain("Unable to resolve project 'missing-app' in registry.")
     }
   })
+
 })

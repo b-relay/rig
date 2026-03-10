@@ -140,6 +140,10 @@ class MockGit implements GitService {
     return Effect.succeed([] as readonly string[])
   }
 
+  isAncestor(_repoPath: string, _ancestorRef: string, _descendantRef: string) {
+    return Effect.succeed(true)
+  }
+
   createWorktree(_repoPath: string, dest: string, ref: string) {
     this.worktrees.set(dest, ref)
     return Effect.void

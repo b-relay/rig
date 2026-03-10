@@ -21,6 +21,7 @@ import {
 } from "./release.js"
 
 const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+$/
+const SHORT_COMMIT_LENGTH = 7
 
 const releaseNotFoundError = (name: string, version: string) =>
   new CliArgumentError(
@@ -87,6 +88,9 @@ const highestReleaseTag = (tags: readonly string[]) =>
     return highest
   })
 
+const shortCommit = (commit: string): string =>
+  commit === "N/A" ? commit : commit.slice(0, SHORT_COMMIT_LENGTH)
+
 export const runVersionCommand = (args: VersionArgs) =>
   Effect.gen(function* () {
     const logger = yield* Logger
@@ -99,7 +103,7 @@ export const runVersionCommand = (args: VersionArgs) =>
     const releaseState = yield* resolveProdReleaseState(args.name, loaded.repoPath)
 
     if (!args.targetVersion) {
-      const rows = yield* Effect.forEach(history.entries, (entry) =>
+      const rows = yield* Effect.forEach([...history.entries].reverse(), (entry) =>
         Effect.gen(function* () {
           const markers = [
             releaseState.latestProdVersion === entry.newVersion ? "latest" : null,
@@ -108,8 +112,10 @@ export const runVersionCommand = (args: VersionArgs) =>
 
           return {
             version: entry.newVersion,
-            commit: yield* git.commitHash(loaded.repoPath, versionTag(entry.newVersion)).pipe(
-              Effect.catchAll(() => Effect.succeed("N/A")),
+            commit: shortCommit(
+              yield* git.commitHash(loaded.repoPath, versionTag(entry.newVersion)).pipe(
+                Effect.catchAll(() => Effect.succeed("N/A")),
+              ),
             ),
             changedAt: entry.changedAt,
             markers: markers.length > 0 ? markers.join(", ") : null,
@@ -128,6 +134,7 @@ export const runVersionCommand = (args: VersionArgs) =>
     }
 
     const entry = history.entries[entryIndex]
+    const targetVersion = args.targetVersion
 
     if (!args.edit) {
       const rows = yield* workspace.list(args.name)
@@ -156,18 +163,14 @@ export const runVersionCommand = (args: VersionArgs) =>
       return 0
     }
 
-    if (!args.targetVersion) {
-      return yield* Effect.fail(editNoTargetError(args.name))
-    }
-
     const replacementVersion = isBumpAction(args.edit)
       ? yield* bumpVersion(entry.oldVersion, args.edit)
       : args.edit
 
-    if (replacementVersion === args.targetVersion) {
+    if (replacementVersion === targetVersion) {
       yield* logger.info("Release version unchanged.", {
         name: args.name,
-        version: args.targetVersion,
+        version: targetVersion,
       })
       return 0
     }
@@ -186,7 +189,7 @@ export const runVersionCommand = (args: VersionArgs) =>
       return yield* Effect.fail(orderingError(args.name, replacementVersion, entry.oldVersion, nextVersion))
     }
 
-    const oldTag = versionTag(args.targetVersion)
+    const oldTag = versionTag(targetVersion)
     const newTag = versionTag(replacementVersion)
     const newTagExists = yield* git.tagExists(loaded.repoPath, newTag)
     if (newTagExists) {
@@ -198,7 +201,7 @@ export const runVersionCommand = (args: VersionArgs) =>
       (yield* git.commitTags(loaded.repoPath, targetCommit)).filter((tag) => tag !== oldTag),
     )
     if (otherReleaseTag) {
-      return yield* Effect.fail(duplicateCommitReleaseError(args.name, otherReleaseTag, args.targetVersion))
+      return yield* Effect.fail(duplicateCommitReleaseError(args.name, otherReleaseTag, targetVersion))
     }
 
     const originalConfig = yield* fileSystem.read(join(loaded.repoPath, "rig.json"))
@@ -223,6 +226,7 @@ export const runVersionCommand = (args: VersionArgs) =>
     )
 
     let renamedWorkspacePath: string | null = null
+    let originalWorkspacePath: string | null = null
 
     const rollback = Effect.gen(function* () {
       yield* writeVersionHistory(historyPath, originalHistory).pipe(Effect.catchAll(() => Effect.void))
@@ -233,11 +237,11 @@ export const runVersionCommand = (args: VersionArgs) =>
       yield* git.createTagAtRef(loaded.repoPath, oldTag, targetCommit).pipe(
         Effect.catchAll(() => Effect.void),
       )
-      if (renamedWorkspacePath) {
-        yield* workspace.renameVersion(args.name, "prod", replacementVersion, args.targetVersion).pipe(
+      if (renamedWorkspacePath && originalWorkspacePath) {
+        yield* workspace.renameVersion(args.name, "prod", replacementVersion, targetVersion).pipe(
           Effect.catchAll(() => Effect.void),
         )
-        yield* writeRigJsonVersion(join(renamedWorkspacePath.replace(replacementVersion, args.targetVersion), "rig.json"), args.targetVersion).pipe(
+        yield* writeRigJsonVersion(join(originalWorkspacePath, "rig.json"), targetVersion).pipe(
           Effect.catchAll(() => Effect.void),
         )
       }
@@ -245,17 +249,18 @@ export const runVersionCommand = (args: VersionArgs) =>
 
     try {
       yield* writeVersionHistory(historyPath, updatedHistory)
-      if (loaded.config.version === args.targetVersion) {
+      if (loaded.config.version === targetVersion) {
         yield* writeRigJsonVersion(join(loaded.repoPath, "rig.json"), replacementVersion)
       }
       yield* git.deleteTag(loaded.repoPath, oldTag)
       yield* git.createTagAtRef(loaded.repoPath, newTag, targetCommit)
 
       if (prodWorkspace) {
+        originalWorkspacePath = prodWorkspace.path
         renamedWorkspacePath = yield* workspace.renameVersion(
           args.name,
           "prod",
-          args.targetVersion,
+          targetVersion,
           replacementVersion,
         )
         yield* writeRigJsonVersion(join(renamedWorkspacePath, "rig.json"), replacementVersion)
@@ -267,7 +272,7 @@ export const runVersionCommand = (args: VersionArgs) =>
 
     yield* logger.success("Release version updated.", {
       name: args.name,
-      oldVersion: args.targetVersion,
+      oldVersion: targetVersion,
       newVersion: replacementVersion,
       active: prodWorkspace?.active ?? false,
       deployed: prodWorkspace !== undefined,

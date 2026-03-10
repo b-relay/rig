@@ -1,15 +1,22 @@
 import { join } from "node:path"
 import { Effect } from "effect"
 
-import { FileSystem } from "../interfaces/file-system.js"
-import { Git } from "../interfaces/git.js"
-import { Logger } from "../interfaces/logger.js"
-import { ProcessManager } from "../interfaces/process-manager.js"
-import { ReverseProxy, type ProxyEntry } from "../interfaces/reverse-proxy.js"
-import { Workspace } from "../interfaces/workspace.js"
+import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
+import { Git, type Git as GitService } from "../interfaces/git.js"
+import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
+import { ProcessManager, type ProcessManager as ProcessManagerService } from "../interfaces/process-manager.js"
+import { ReverseProxy, type ProxyEntry, type ReverseProxy as ReverseProxyService } from "../interfaces/reverse-proxy.js"
+import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
+import type { BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"
+import type { EnvLoader as EnvLoaderService } from "../interfaces/env-loader.js"
+import type { HealthChecker as HealthCheckerService } from "../interfaces/health-checker.js"
+import type { HookRunner as HookRunnerService } from "../interfaces/hook-runner.js"
+import type { PortChecker as PortCheckerService } from "../interfaces/port-checker.js"
+import type { Registry as RegistryService } from "../interfaces/registry.js"
+import type { ServiceRunner as ServiceRunnerService } from "../interfaces/service-runner.js"
 import type { DeployArgs } from "../schema/args.js"
 import type { Environment, RigConfig, ServerService } from "../schema/config.js"
-import { CliArgumentError, ConfigValidationError, ProcessError, WorkspaceError } from "../schema/errors.js"
+import { CliArgumentError, ConfigValidationError, ProcessError, WorkspaceError, type RigError } from "../schema/errors.js"
 import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment, type LoadedProjectConfig } from "./config.js"
 import {
   bumpVersion,
@@ -27,8 +34,23 @@ import { runStartCommand, runStopCommand } from "./lifecycle.js"
 
 type ReleaseMutationResult = {
   readonly targetVersion: string
-  readonly rollback: Effect.Effect<void>
+  readonly rollback: Effect.Effect<void, never, FileSystemService | GitService>
 }
+
+type DeployCommandEnv =
+  | BinInstallerService
+  | EnvLoaderService
+  | FileSystemService
+  | GitService
+  | HealthCheckerService
+  | HookRunnerService
+  | LoggerService
+  | PortCheckerService
+  | ProcessManagerService
+  | RegistryService
+  | ReverseProxyService
+  | ServiceRunnerService
+  | WorkspaceService
 
 const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+$/
 
@@ -153,8 +175,8 @@ const releaseActionFromArgs = (args: DeployArgs): BumpAction | null => args.bump
 const missingReleaseBranchError = (name: string, configPath: string) =>
   new CliArgumentError(
     "deploy",
-    `Prod release deploys for '${name}' require environments.prod.gitBranch.`,
-    "Set environments.prod.gitBranch in rig.json before creating or correcting prod releases.",
+    `Prod release deploys for '${name}' require environments.prod.deployBranch.`,
+    "Set environments.prod.deployBranch in rig.json before creating or correcting prod releases.",
     { name, configPath, env: "prod" },
   )
 
@@ -238,7 +260,7 @@ const ensureReleaseBranchAndHistory = (
   Effect.gen(function* () {
     const git = yield* Git
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, "prod")
-    const expectedBranch = environment.gitBranch
+    const expectedBranch = environment.deployBranch
 
     if (!expectedBranch) {
       return yield* Effect.fail(missingReleaseBranchError(name, loaded.configPath))
@@ -256,7 +278,7 @@ const createReleaseMutation = (
   args: DeployArgs,
   loaded: LoadedProjectConfig,
   action: BumpAction,
-): Effect.Effect<ReleaseMutationResult, CliArgumentError> =>
+): Effect.Effect<ReleaseMutationResult, RigError, FileSystemService | GitService> =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem
     const git = yield* Git
@@ -313,7 +335,7 @@ const createReleaseMutation = (
     }
   })
 
-const runRevertDeployCommand = (args: DeployArgs) =>
+const runRevertDeployCommand = (args: DeployArgs): Effect.Effect<number, RigError, DeployCommandEnv> =>
   Effect.gen(function* () {
     const logger = yield* Logger
     const workspace = yield* Workspace
@@ -354,7 +376,7 @@ const runRevertDeployCommand = (args: DeployArgs) =>
     yield* writeRigJsonVersion(configPath, previousEntry.newVersion)
 
     if (revertedWasActive) {
-      const exitCode = yield* runDeployCommand({
+      const exitCode: number = yield* runDeployCommand({
         name: args.name,
         env: "prod",
         version: previousEntry.newVersion,
@@ -382,10 +404,10 @@ const runRevertDeployCommand = (args: DeployArgs) =>
     })
 
     return 0
-  })
+  }) as Effect.Effect<number, RigError, DeployCommandEnv>
 
-export const runDeployCommand = (args: DeployArgs) => {
-  let rollbackReleaseMutation: Effect.Effect<void> | null = null
+export const runDeployCommand = (args: DeployArgs): Effect.Effect<number, RigError, DeployCommandEnv> => {
+  let rollbackReleaseMutation: Effect.Effect<void, never, FileSystemService | GitService> | null = null
 
   if (args.env === "prod" && args.revert) {
     return runRevertDeployCommand(args)
@@ -543,5 +565,5 @@ export const runDeployCommand = (args: DeployArgs) => {
         return yield* Effect.fail(error)
       }),
     ),
-  )
+  ) as Effect.Effect<number, RigError, DeployCommandEnv>
 }

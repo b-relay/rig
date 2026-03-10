@@ -75,7 +75,7 @@ export class BunGit implements GitService {
           repoPath,
           ["remote-head", "convention"],
           "Could not detect main branch.",
-          'Set "mainBranch" in rig.json or create a main/master branch.',
+          "Create a main/master branch or configure your deploy environment with an explicit deployBranch.",
         ),
       )
     })

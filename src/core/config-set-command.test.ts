@@ -13,6 +13,7 @@ import {
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { ConfigValidationError, RegistryError, type RigError } from "../schema/errors.js"
 import { runConfigSetCommand } from "./config-set-command.js"
+import { runConfigUnsetCommand } from "./config-unset-command.js"
 
 class CaptureLogger implements LoggerService {
   readonly infos: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> = []
@@ -101,24 +102,46 @@ const makeLayer = (logger: CaptureLogger, repoPath: string) =>
 
 describe("GIVEN suite context WHEN config set command executes THEN behavior is covered", () => {
   test("GIVEN a registered project WHEN setting a top-level string field THEN rig.json is updated and old/new values are logged", async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-set-version-"))
-    await writeRigConfig(repoPath, makeRigConfig())
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-set-description-"))
+    await writeRigConfig(repoPath, {
+      ...makeRigConfig(),
+      description: "Old description",
+    })
 
     const logger = new CaptureLogger()
     const layer = makeLayer(logger, repoPath)
 
     const exitCode = await Effect.runPromise(
-      runConfigSetCommand("core", "version", "0.2.0").pipe(Effect.provide(layer)),
+      runConfigSetCommand("core", "description", "New description").pipe(Effect.provide(layer)),
     )
 
     const updated = await readRigConfig(repoPath)
     const infoLines = logger.infos.map((entry) => entry.message).join("\n")
 
     expect(exitCode).toBe(0)
-    expect(updated["version"]).toBe("0.2.0")
-    expect(logger.successes.some((entry) => entry.message === "Updated version.")).toBe(true)
-    expect(infoLines).toContain('Old value: "0.1.0"')
-    expect(infoLines).toContain('New value: "0.2.0"')
+    expect(updated["description"]).toBe("New description")
+    expect(logger.successes.some((entry) => entry.message === "Updated description.")).toBe(true)
+    expect(infoLines).toContain('Old value: "Old description"')
+    expect(infoLines).toContain('New value: "New description"')
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a non-settable but documented key WHEN setting version THEN a clear error is returned", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-set-version-blocked-"))
+    await writeRigConfig(repoPath, makeRigConfig())
+
+    const layer = makeLayer(new CaptureLogger(), repoPath)
+
+    const result = await Effect.runPromise(
+      runConfigSetCommand("core", "version", "0.2.0").pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(result.left.hint).toContain("Production release versions are tied to git tags")
+    }
 
     await rm(repoPath, { recursive: true, force: true })
   })
@@ -158,7 +181,7 @@ describe("GIVEN suite context WHEN config set command executes THEN behavior is 
     const layer = makeLayer(new CaptureLogger(), repoPath)
 
     const result = await Effect.runPromise(
-      runConfigSetCommand("core", "version", "not-semver").pipe(Effect.provide(layer), Effect.either),
+      runConfigSetCommand("core", "domain", "123").pipe(Effect.provide(layer), Effect.either),
     )
 
     const afterRaw = await readFile(join(repoPath, "rig.json"), "utf8")
@@ -167,7 +190,7 @@ describe("GIVEN suite context WHEN config set command executes THEN behavior is 
     if (result._tag === "Left") {
       expect(result.left).toBeInstanceOf(ConfigValidationError)
       if (result.left instanceof ConfigValidationError) {
-        expect(result.left.issues.some((issue) => issue.path.join(".") === "version")).toBe(true)
+        expect(result.left.issues.some((issue) => issue.path.join(".") === "domain")).toBe(true)
       }
     }
     expect(afterRaw).toBe(beforeRaw)
@@ -209,8 +232,94 @@ describe("GIVEN suite context WHEN config set command executes THEN behavior is 
     if (result._tag === "Left") {
       expect(result.left).toBeInstanceOf(ConfigValidationError)
       expect(result.left.message).toContain("Unsupported config key path")
-      expect(result.left.hint).toContain("Supported keys")
+      expect(result.left.hint).toContain("rig docs config")
     }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a registered project WHEN setting an environment-level field THEN the shared config field catalog allows it", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-set-env-field-"))
+    await writeRigConfig(repoPath, makeRigConfig())
+
+    const layer = makeLayer(new CaptureLogger(), repoPath)
+
+    const exitCode = await Effect.runPromise(
+      runConfigSetCommand("core", "environments.dev.envFile", ".env.dev").pipe(Effect.provide(layer)),
+    )
+
+    const updated = await readRigConfig(repoPath)
+    const environments = updated["environments"] as Record<string, unknown>
+    const dev = environments["dev"] as Record<string, unknown>
+
+    expect(exitCode).toBe(0)
+    expect(dev["envFile"]).toBe(".env.dev")
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a non-primitive JSON value WHEN setting THEN config set rejects it clearly", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-set-non-primitive-"))
+    await writeRigConfig(repoPath, makeRigConfig())
+
+    const layer = makeLayer(new CaptureLogger(), repoPath)
+
+    const result = await Effect.runPromise(
+      runConfigSetCommand("core", "description", "{\"bad\":true}").pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ConfigValidationError)
+      expect(result.left.message).toContain("non-primitive value")
+      expect(result.left.hint).toContain("string, number, boolean, or null")
+    }
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN an optional primitive key WHEN unsetting THEN the key is removed from rig.json", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-unset-description-"))
+    await writeRigConfig(repoPath, {
+      ...makeRigConfig(),
+      description: "To be removed",
+    })
+
+    const logger = new CaptureLogger()
+    const layer = makeLayer(logger, repoPath)
+
+    const exitCode = await Effect.runPromise(
+      runConfigUnsetCommand("core", "description").pipe(Effect.provide(layer)),
+    )
+
+    const updated = await readRigConfig(repoPath)
+
+    expect(exitCode).toBe(0)
+    expect("description" in updated).toBe(false)
+    expect(logger.successes.some((entry) => entry.message === "Unset description.")).toBe(true)
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN an optional nullable key WHEN unsetting THEN the key is removed and empty parent objects are pruned", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-config-unset-hook-"))
+    await writeRigConfig(repoPath, {
+      ...makeRigConfig(),
+      hooks: {
+        preStart: "bun install",
+      },
+    })
+
+    const layer = makeLayer(new CaptureLogger(), repoPath)
+
+    const exitCode = await Effect.runPromise(
+      runConfigUnsetCommand("core", "hooks.preStart").pipe(Effect.provide(layer)),
+    )
+
+    const updated = await readRigConfig(repoPath)
+
+    expect(exitCode).toBe(0)
+    expect("hooks" in updated).toBe(false)
 
     await rm(repoPath, { recursive: true, force: true })
   })

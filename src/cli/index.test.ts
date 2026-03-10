@@ -266,7 +266,7 @@ const rigConfig = (name = "pantry", version = "0.1.0") => ({
       ],
     },
     prod: {
-      gitBranch: "main",
+      deployBranch: "main",
       services: [
         {
           name: "web",
@@ -286,7 +286,7 @@ const writeRigConfig = async (targetPath: string, name = "pantry", version = "0.
 
 const writeVersionHistoryFile = async (
   name: string,
-  entries: readonly Array<{
+  entries: ReadonlyArray<{
     readonly action: "patch" | "minor" | "major"
     readonly oldVersion: string
     readonly newVersion: string
@@ -361,7 +361,11 @@ const runWithLogger = async (
   const logger = new CaptureLogger()
   const registry = new StaticRegistry(repoPath)
   const exitCode = await Effect.runPromise(
-    runCli(argv).pipe(Effect.provide(makeLayer(logger, registry, options))),
+    (runCli(argv).pipe(Effect.provide(makeLayer(logger, registry, options) as never)) as Effect.Effect<
+      number,
+      unknown,
+      never
+    >),
   )
   return { exitCode, logger, registry }
 }
@@ -712,6 +716,32 @@ describe("other command parsing", () => {
     await writeRigConfig(cwd, "testapp")
 
     const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["config"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+  })
+
+  test("docs shows the table of contents without a project", async () => {
+    const { exitCode, logger } = await runWithLogger(["docs"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.infos.at(-1)?.message).toContain("Docs")
+    expect(logger.infos.at(-1)?.message).toContain("config")
+  })
+
+  test("docs config accepts a specific key", async () => {
+    const { exitCode, logger } = await runWithLogger(["docs", "config", "version"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.infos.at(-1)?.message).toContain("version")
+    expect(logger.infos.at(-1)?.message).toContain("Type: semver string")
+  })
+
+  test("config unset accepts cwd autodetect", async () => {
+    const cwd = await mkdtemp(join(tempRoot, "rig-cli-config-unset-cwd-"))
+    await writeRigConfig(cwd, "testapp")
+
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["config", "unset", "environments.prod.deployBranch"])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)

@@ -134,7 +134,8 @@ const renderUnexpectedErrorDetails = (error: unknown): Record<string, unknown> =
 };
 
 export const main = (argv: string[]): Promise<number> =>
-  Effect.runPromise(Effect.gen(function* () {
+  Effect.runPromise((
+    Effect.gen(function* () {
     const normalized = normalizeArgv(argv)
 
     return yield* runCli(normalized.argv).pipe(
@@ -151,9 +152,10 @@ export const main = (argv: string[]): Promise<number> =>
           return 1;
         }),
       ),
-      Effect.provide(buildRigLayer(normalized.verbose)),
+      Effect.provide(buildRigLayer(normalized.verbose) as never),
     )
-  }));
+    })
+  ) as Effect.Effect<number, never, never>);
 
 const handleSignal = (signal: string) => {
   // Outside Effect runtime — console.error is the only output available.

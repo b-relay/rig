@@ -24,6 +24,10 @@ const EditSelector = z
   .union([VersionSelector, BumpSelector])
   .describe("Replacement semantic version or bump level for editing an existing release.")
 
+const DocsTopic = z
+  .enum(["config"])
+  .describe("Docs topic name.")
+
 // ── rig init ────────────────────────────────────────────────────────────────
 
 export const InitArgsSchema = z
@@ -218,11 +222,29 @@ export const VersionArgsSchema = z
     }
   })
 
+// ── rig docs ────────────────────────────────────────────────────────────────
+
+export const DocsArgsSchema = z
+  .object({
+    topic: DocsTopic.optional(),
+    key: z.string().min(1).optional(),
+  })
+  .describe("Arguments for 'rig docs' and 'rig docs config [<key>]'.")
+  .superRefine((value, ctx) => {
+    if (value.key && value.topic !== "config") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["key"],
+        message: "A docs key can only be used with the config topic.",
+      })
+    }
+  })
+
 // ── rig config ──────────────────────────────────────────────────────────────
 
 export const ConfigArgsSchema = z
   .object({
-    name: ProjectName.describe(
+    name: ProjectName.optional().describe(
       "Project name to inspect. Parsed from [name] positional or auto-detected from cwd rig.json.",
     ),
   })
@@ -236,12 +258,24 @@ export const ConfigSetArgsSchema = z
     key: z
       .string()
       .min(1)
-      .describe("Dot-notation config key path to update (for example 'version' or 'daemon.enabled')."),
+      .describe("Dot-notation config key path to update (for example 'description' or 'environments.prod.deployBranch')."),
     value: z
       .string()
       .describe("Raw value from CLI. Parsed with JSON.parse fallback to plain string before schema validation."),
   })
   .describe("Arguments for 'rig config set [name] <key> <value>'.")
+
+export const ConfigUnsetArgsSchema = z
+  .object({
+    name: ProjectName.describe(
+      "Project name whose rig.json should be updated. Parsed from [name] positional or auto-detected from cwd.",
+    ),
+    key: z
+      .string()
+      .min(1)
+      .describe("Dot-notation config key path to remove or null out (for example 'description' or 'hooks.preStart')."),
+  })
+  .describe("Arguments for 'rig config unset [name] <key>'.")
 
 // ── rig list ────────────────────────────────────────────────────────────────
 
@@ -259,6 +293,8 @@ export type RestartArgs = z.infer<typeof RestartArgsSchema>
 export type StatusArgs = z.infer<typeof StatusArgsSchema>
 export type LogsArgs = z.infer<typeof LogsArgsSchema>
 export type VersionArgs = z.infer<typeof VersionArgsSchema>
+export type DocsArgs = z.infer<typeof DocsArgsSchema>
 export type ConfigArgs = z.infer<typeof ConfigArgsSchema>
 export type ConfigSetArgs = z.infer<typeof ConfigSetArgsSchema>
+export type ConfigUnsetArgs = z.infer<typeof ConfigUnsetArgsSchema>
 export type ListArgs = z.infer<typeof ListArgsSchema>

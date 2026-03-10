@@ -36,7 +36,7 @@ import {
   type RunningService,
   type ServiceRunner as ServiceRunnerService,
 } from "../interfaces/service-runner.js"
-import { Workspace, type Workspace as WorkspaceService } from "../interfaces/workspace.js"
+import { Workspace, type Workspace as WorkspaceService, type WorkspaceInfo } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import type { ServerService } from "../schema/config.js"
 import { ConfigValidationError, GitError, MainBranchDetectionError, ProcessError, ProxyError, WorkspaceError, type RigError } from "../schema/errors.js"
@@ -127,7 +127,7 @@ class CaptureWorkspace implements WorkspaceService {
   }
 
   list(_name: string) {
-    return Effect.succeed([])
+    return Effect.succeed([] as readonly WorkspaceInfo[])
   }
 }
 
@@ -381,6 +381,9 @@ const runtimeLayer = () =>
     Layer.succeed(BinInstaller, new StaticBinInstaller()),
   )
 
+const runTestEffect = <A, E>(effect: Effect.Effect<A, E, any>) =>
+  Effect.runPromise(effect as Effect.Effect<A, E, never>)
+
 describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is covered", () => {
   test("GIVEN test setup WHEN dev deploy creates/syncs workspace, adds proxy entry, and installs daemon THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-dev-"))
@@ -465,7 +468,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
     )
 
@@ -574,7 +577,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
     )
 
@@ -660,7 +663,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
     )
 
@@ -733,7 +736,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const result = await Effect.runPromise(
+    const result = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
     )
 
@@ -800,7 +803,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const result = await Effect.runPromise(
+    const result = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
     )
 
@@ -853,7 +856,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
     )
 
@@ -951,7 +954,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
     )
 
@@ -1043,7 +1046,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
     )
 
@@ -1121,7 +1124,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const result = await Effect.runPromise(
+    const result = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
     )
 
@@ -1203,7 +1206,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const result = await Effect.runPromise(
+    const result = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer), Effect.either),
     )
 
@@ -1308,7 +1311,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const result = await Effect.runPromise(
+    const result = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer), Effect.either),
     )
 
@@ -1354,7 +1357,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
     )
 
@@ -1404,7 +1407,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "dev" }).pipe(Effect.provide(layer)),
     )
 
@@ -1457,7 +1460,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
     )
 
@@ -1468,7 +1471,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("GIVEN prod minor release deploy WHEN branch matches gitBranch THEN version tag is created and prod deploy succeeds", async () => {
+  test("GIVEN prod minor release deploy WHEN branch matches deployBranch THEN version tag is created and prod deploy succeeds", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-release-minor-"))
     const workspacePath = join(repoPath, ".workspaces", "prod-release")
 
@@ -1477,7 +1480,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       version: "1.2.3",
       environments: {
         prod: {
-          gitBranch: "main",
+          deployBranch: "main",
           services: [
             {
               name: "web",
@@ -1494,7 +1497,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       version: "1.3.0",
       environments: {
         prod: {
-          gitBranch: "main",
+          deployBranch: "main",
           services: [
             {
               name: "web",
@@ -1521,7 +1524,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod", bump: "minor" }).pipe(
         Effect.provide(layer),
       ),
@@ -1542,7 +1545,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       version: "1.2.3",
       environments: {
         prod: {
-          gitBranch: "main",
+          deployBranch: "main",
           services: [
             {
               name: "web",
@@ -1567,7 +1570,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const result = await Effect.runPromise(
+    const result = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod", bump: "minor" }).pipe(
         Effect.provide(layer),
         Effect.either,
@@ -1587,7 +1590,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       version: "1.1.0",
       environments: {
         prod: {
-          gitBranch: "main",
+          deployBranch: "main",
           services: [
             {
               name: "web",
@@ -1661,7 +1664,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const exitCode = await Effect.runPromise(
+    const exitCode = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod", revert: "1.1.0" }).pipe(
         Effect.provide(layer),
       ),
@@ -1683,7 +1686,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  test("GIVEN prod release deploy WHEN current branch does not match gitBranch THEN deploy fails before tagging", async () => {
+  test("GIVEN prod release deploy WHEN current branch does not match deployBranch THEN deploy fails before tagging", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-release-branch-"))
 
     await writeRigConfig(repoPath, {
@@ -1691,7 +1694,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       version: "1.2.3",
       environments: {
         prod: {
-          gitBranch: "main",
+          deployBranch: "main",
           services: [
             {
               name: "web",
@@ -1716,7 +1719,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       runtimeLayer(),
     )
 
-    const result = await Effect.runPromise(
+    const result = await runTestEffect(
       runDeployCommand({ name: "pantry", env: "prod", bump: "patch" }).pipe(
         Effect.provide(layer),
         Effect.either,

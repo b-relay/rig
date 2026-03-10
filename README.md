@@ -321,7 +321,6 @@ Schema source: `src/schema/config.ts` (`RigConfigSchema`).
 | `description` | `string` | no | none | Human-readable project description. |
 | `version` | `string` | yes | none | Semver string (`X.Y.Z`). |
 | `domain` | `string` | no | none | Base domain. Prod uses `domain`, dev uses `dev.<domain>`. |
-| `mainBranch` | `string` | no | none | Explicit main branch override. |
 | `hooks` | `TopLevelHooks` | no | none | Top-level lifecycle hooks. |
 | `environments` | `{ prod?: Environment, dev?: Environment }` | yes | none | Environment definitions. At least one of `prod`/`dev` must exist. |
 | `daemon` | `DaemonConfig` | no | `{ enabled: false, keepAlive: false }` | launchd daemon settings. |
@@ -330,10 +329,10 @@ Schema source: `src/schema/config.ts` (`RigConfigSchema`).
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `preStart` | `string \| null` | no | none | Run before any service starts. |
-| `postStart` | `string \| null` | no | none | Run after all services are healthy. |
-| `preStop` | `string \| null` | no | none | Run before stopping services. |
-| `postStop` | `string \| null` | no | none | Run after all services are stopped. |
+| `preStart` | `string \| null` | no | none | Run before any service starts for this project in both `dev` and `prod`. |
+| `postStart` | `string \| null` | no | none | Run after all services are healthy for this project in both `dev` and `prod`. |
+| `preStop` | `string \| null` | no | none | Run before stopping this project's services in both `dev` and `prod`. |
+| `postStop` | `string \| null` | no | none | Run after all services are stopped for this project in both `dev` and `prod`. |
 
 ### `Environment`
 
@@ -407,7 +406,7 @@ Additional `BinService` validation:
 ### Inheritance and precedence rules
 
 - `envFile`: environment-level `envFile` is default; service `envFile` overrides it.
-- Hooks: top-level hooks wrap service hooks (`preStart` top-level first, `postStart` top-level last; analogous for stop).
+- Hooks: top-level project hooks are environment-agnostic and run for both `dev` and `prod`, wrapping service hooks (`preStart` top-level first, `postStart` top-level last; analogous for stop).
 - Proxy: defined per environment, upstream references a service by name.
 
 ### Localhost-only enforcement
@@ -498,6 +497,8 @@ Available hook phases at top-level and service-level:
 - `preStop`
 - `postStop`
 
+Project-level `hooks.*` are not environment-specific. If they are set in `rig.json`, they run for both `rig start ... dev` and `rig start ... prod` (and likewise for stop/restart). Use service hooks or shell conditionals inside the command if behavior needs to differ by environment.
+
 `restart` is `stop` then `start`, so stop hooks then start hooks execute in sequence.
 
 ## Architecture Overview
@@ -551,7 +552,6 @@ Typical extension workflow:
   "description": "Grocery and meal tracker",
   "version": "1.4.2",
   "domain": "pantry.example.com",
-  "mainBranch": "main",
   "hooks": {
     "preStart": "bun install",
     "postStart": "echo 'all services healthy'",

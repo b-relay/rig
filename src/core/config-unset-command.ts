@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto"
 import { Effect } from "effect"
-import { type ZodIssue } from "zod"
 
 import { FileSystem } from "../interfaces/file-system.js"
 import { Logger } from "../interfaces/logger.js"
 import { RigConfigSchema } from "../schema/config.js"
 import { ConfigValidationError, type ConfigIssue } from "../schema/errors.js"
 import { loadProjectConfig } from "./config.js"
-import { CONFIG_FIELD_MAP, SETTABLE_CONFIG_FIELD_MAP } from "./config-fields.js"
+import { CONFIG_FIELD_MAP, UNSETTABLE_CONFIG_FIELD_MAP } from "./config-fields.js"
 
 const configError = (
   path: string,
@@ -15,23 +14,6 @@ const configError = (
   hint: string,
   issues: readonly ConfigIssue[] = [],
 ): ConfigValidationError => new ConfigValidationError(path, issues, message, hint)
-
-const mapZodIssue = (issue: ZodIssue): ConfigIssue => ({
-  path: issue.path.filter((value): value is string | number => typeof value === "string" || typeof value === "number"),
-  message: issue.message,
-  code: issue.code,
-})
-
-const parseInputValue = (raw: string): unknown => {
-  try {
-    return JSON.parse(raw) as unknown
-  } catch {
-    return raw
-  }
-}
-
-const isPrimitiveValue = (value: unknown): value is string | number | boolean | null =>
-  value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean"
 
 const formatValue = (value: unknown): string =>
   value === undefined ? "(unset)" : JSON.stringify(value)
@@ -50,19 +32,38 @@ const readPathValue = (source: Record<string, unknown>, key: string): unknown =>
   return cursor
 }
 
+const removePathValue = (target: Record<string, unknown>, key: string): void => {
+  const segments = key.split(".")
+  const prune = (cursor: Record<string, unknown>, index: number): boolean => {
+    const segment = segments[index]
+    const value = cursor[segment]
+
+    if (index === segments.length - 1) {
+      delete cursor[segment]
+      return Object.keys(cursor).length === 0
+    }
+
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return false
+    }
+
+    const shouldDeleteChild = prune(value as Record<string, unknown>, index + 1)
+    if (shouldDeleteChild) {
+      delete cursor[segment]
+    }
+
+    return Object.keys(cursor).length === 0
+  }
+
+  prune(target, 0)
+}
+
 const assignPathValue = (target: Record<string, unknown>, key: string, value: unknown): void => {
   const segments = key.split(".")
   let cursor = target
 
   for (const segment of segments.slice(0, -1)) {
     const existing = cursor[segment]
-
-    if (existing === undefined) {
-      const created: Record<string, unknown> = {}
-      cursor[segment] = created
-      cursor = created
-      continue
-    }
 
     if (typeof existing !== "object" || existing === null || Array.isArray(existing)) {
       const created: Record<string, unknown> = {}
@@ -77,49 +78,37 @@ const assignPathValue = (target: Record<string, unknown>, key: string, value: un
   cursor[segments[segments.length - 1]] = value
 }
 
-export const runConfigSetCommand = (name: string, key: string, value: string) =>
+const unsupportedUnsetHint = (key: string): string => {
+  const field = CONFIG_FIELD_MAP.get(key)
+  if (!field) {
+    return "Run `rig docs config` to see supported keys, value types, and descriptions."
+  }
+
+  if (field.manualEditWarning) {
+    return `${field.manualEditWarning} Run \`rig docs config ${key}\` for details.`
+  }
+
+  return `Key '${key}' cannot be unset through the CLI. Run \`rig docs config ${key}\` to see its rules.`
+}
+
+export const runConfigUnsetCommand = (name: string, key: string) =>
   Effect.gen(function* () {
     const logger = yield* Logger
     const fileSystem = yield* FileSystem
     const loaded = yield* loadProjectConfig(name)
-    const field = SETTABLE_CONFIG_FIELD_MAP.get(key)
+    const field = UNSETTABLE_CONFIG_FIELD_MAP.get(key)
 
     if (!field) {
-      const documentedField = CONFIG_FIELD_MAP.get(key)
-      const hint = documentedField
-        ? documentedField.manualEditWarning
-          ? `${documentedField.manualEditWarning} Run \`rig docs config ${key}\` for details.`
-          : `Key '${key}' is documented but not directly settable. Edit rig.json manually if appropriate, and run \`rig docs config ${key}\` first.`
-        : "Run `rig docs config` to see supported keys, value types, and descriptions."
-
       return yield* Effect.fail(
         configError(
           loaded.configPath,
-          `Unsupported config key path '${key}'.`,
-          hint,
+          `Unsupported config key path '${key}' for unset.`,
+          unsupportedUnsetHint(key),
           [
             {
               path: ["key"],
-              message: `Key path '${key}' is not supported by 'rig config set'.`,
+              message: `Key path '${key}' is not supported by 'rig config unset'.`,
               code: "invalid_key_path",
-            },
-          ],
-        ),
-      )
-    }
-
-    const parsedValue = parseInputValue(value)
-    if (!isPrimitiveValue(parsedValue)) {
-      return yield* Effect.fail(
-        configError(
-          loaded.configPath,
-          `Cannot set '${key}' with a non-primitive value.`,
-          "Pass a string, number, boolean, or null. Arrays and objects are not supported by `rig config set`.",
-          [
-            {
-              path: ["value"],
-              message: "Only primitive values are supported by 'rig config set'.",
-              code: "invalid_value_type",
             },
           ],
         ),
@@ -129,16 +118,26 @@ export const runConfigSetCommand = (name: string, key: string, value: string) =>
     const nextConfig = structuredClone(loaded.config) as Record<string, unknown>
     const oldValue = readPathValue(nextConfig, key)
 
-    assignPathValue(nextConfig, key, parsedValue)
+    if (field.optional) {
+      removePathValue(nextConfig, key)
+    } else {
+      assignPathValue(nextConfig, key, null)
+    }
 
     const validated = RigConfigSchema.safeParse(nextConfig)
     if (!validated.success) {
       return yield* Effect.fail(
         configError(
           loaded.configPath,
-          `Cannot set '${key}' because the updated config is invalid.`,
-          `Use a value compatible with '${field.valueType}' and retry. Run \`rig docs config\` for field docs.`,
-          validated.error.issues.map(mapZodIssue),
+          `Cannot unset '${key}' because the updated config is invalid.`,
+          `Run \`rig docs config ${key}\` to review this key before retrying.`,
+          validated.error.issues.map((issue) => ({
+            path: issue.path.filter(
+              (value): value is string | number => typeof value === "string" || typeof value === "number",
+            ),
+            message: issue.message,
+            code: issue.code,
+          })),
         ),
       )
     }
@@ -157,7 +156,7 @@ export const runConfigSetCommand = (name: string, key: string, value: string) =>
       ),
     )
 
-    yield* logger.success(`Updated ${key}.`, {
+    yield* logger.success(`Unset ${key}.`, {
       project: loaded.name,
       configPath: loaded.configPath,
       valueType: field.valueType,

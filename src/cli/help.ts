@@ -7,6 +7,7 @@ export const COMMANDS = [
   "status",
   "logs",
   "version",
+  "docs",
   "list",
   "config",
 ] as const
@@ -98,6 +99,21 @@ const HELP: Record<CommandName, HelpSpec> = {
       "rig version 1.2.3 --edit minor",
     ],
   },
+  docs: {
+    summary: "Browse built-in documentation topics and config schema keys.",
+    usage: [
+      "rig docs",
+      "rig docs config",
+      "rig docs config <key>",
+      "rig docs --help",
+    ],
+    examples: [
+      "rig docs",
+      "rig docs config",
+      "rig docs config environments.prod",
+      "rig docs config environments.dev.services[]",
+    ],
+  },
   list: {
     summary: "List registered projects and current prod deployment.",
     usage: ["rig list", "rig list --help"],
@@ -108,13 +124,20 @@ const HELP: Record<CommandName, HelpSpec> = {
     usage: [
       "rig config [name]",
       "rig config set [name] <key> <value>",
+      "rig config unset [name] <key>",
       "rig config --help",
     ],
     examples: [
       "rig config myapp",
       "rig config  (auto-detects from cwd)",
-      "rig config set myapp version 0.2.0",
+      "rig config set myapp description 'Core API service'",
       "rig config set domain example.com",
+      "rig config unset myapp description",
+    ],
+    notes: [
+      "Run `rig docs config` to browse the full rig.json key catalog and descriptions.",
+      "`rig config set` only supports primitive values and non-array schema paths.",
+      "`rig config unset` removes optional primitive keys or sets nullable primitive keys to null.",
     ],
   },
 }

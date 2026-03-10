@@ -54,24 +54,24 @@ export const TopLevelHooksSchema = z
       .string()
       .nullable()
       .optional()
-      .describe("Command to run before any service starts (e.g. install deps)."),
+      .describe("Command to run before any service starts for this project in both dev and prod (e.g. install deps)."),
     postStart: z
       .string()
       .nullable()
       .optional()
-      .describe("Command to run after all services are healthy."),
+      .describe("Command to run after all services are healthy for this project in both dev and prod."),
     preStop: z
       .string()
       .nullable()
       .optional()
-      .describe("Command to run before stopping services."),
+      .describe("Command to run before stopping this project's services in both dev and prod."),
     postStop: z
       .string()
       .nullable()
       .optional()
-      .describe("Command to run after all services are confirmed stopped."),
+      .describe("Command to run after all services are confirmed stopped for this project in both dev and prod."),
   })
-  .describe("Top-level lifecycle hooks. Run before/after service-level hooks.")
+  .describe("Top-level project lifecycle hooks. They are environment-agnostic and run before/after service-level hooks in both dev and prod.")
 
 // ── Service Schemas ─────────────────────────────────────────────────────────
 
@@ -172,10 +172,10 @@ export const ProxySchema = z
 
 export const EnvironmentSchema = z
   .object({
-    gitBranch: z
+    deployBranch: z
       .string()
       .optional()
-      .describe("Branch allowed to deploy this environment from for release-changing deploys."),
+      .describe("Branch allowed to create release-changing deploys for this environment from."),
     envFile: z
       .string()
       .optional()
@@ -263,17 +263,11 @@ export const RigConfigSchema = z
     version: z
       .string()
       .regex(SEMVER_RE, "Version must be valid semver (e.g. 0.1.0).")
-      .describe("Current release version. Prod release bumps happen through rig deploy."),
+      .describe("Current release version. Prod release bumps, reverts, and release edits should go through rig commands instead of editing this field directly."),
     domain: z
       .string()
       .optional()
       .describe("Base domain. Prod uses domain directly, dev uses dev.<domain>."),
-    mainBranch: z
-      .string()
-      .optional()
-      .describe(
-        "Explicit main branch name. If not set, rig auto-detects via remote HEAD or convention (main/master)."
-      ),
     hooks: TopLevelHooksSchema.optional(),
     environments: z
       .object({

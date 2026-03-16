@@ -1,4 +1,5 @@
-import { join } from "node:path"
+import { basename, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Effect, Layer } from "effect"
 
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
@@ -11,6 +12,12 @@ import {
   type RunningService,
   type ServiceRunner as ServiceRunnerService,
 } from "../interfaces/service-runner.js"
+import {
+  logDirForWorkspace,
+  rawServiceLogPath,
+  structuredServiceLogPath,
+  parseStructuredServiceLogEntries,
+} from "../schema/service-log.js"
 import type { ServerService } from "../schema/config.js"
 import { ServiceRunnerError } from "../schema/errors.js"
 
@@ -28,6 +35,7 @@ type PidMap = Record<string, PidEntry>
 
 const STOP_TIMEOUT_MS = 5_000
 const STOP_POLL_INTERVAL_MS = 100
+const CURRENT_RIG_ENTRY = fileURLToPath(new URL("../index.ts", import.meta.url))
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -236,6 +244,44 @@ const tailLines = (content: string, lines: number): string => {
   return allLines.slice(-count).join("\n")
 }
 
+const tailStructuredMessages = (
+  content: string,
+  lines: number,
+): string => {
+  const count = Math.max(0, lines)
+  if (count === 0) {
+    return ""
+  }
+
+  return parseStructuredServiceLogEntries(content)
+    .slice(-count)
+    .map((entry) => entry.message)
+    .join("\n")
+}
+
+const captureCommand = (
+  serviceName: string,
+  rawLogPath: string,
+  structuredLogPath: string,
+  command: string,
+): readonly string[] => {
+  const internalArgs = [
+    "_capture-logs",
+    "--service",
+    serviceName,
+    "--raw-log-path",
+    rawLogPath,
+    "--structured-log-path",
+    structuredLogPath,
+    "--command",
+    command,
+  ] as const
+
+  return basename(process.execPath) === "bun"
+    ? [process.execPath, "run", CURRENT_RIG_ENTRY, ...internalArgs]
+    : [process.execPath, ...internalArgs]
+}
+
 // ── BunServiceRunner ────────────────────────────────────────────────────────
 
 export class BunServiceRunner implements ServiceRunnerService {
@@ -248,7 +294,8 @@ export class BunServiceRunner implements ServiceRunnerService {
   ) {}
 
   start(service: ServerService, opts: RunOpts): Effect.Effect<RunningService, ServiceRunnerError> {
-    const logPath = join(opts.logDir, `${service.name}.log`)
+    const logPath = rawServiceLogPath(opts.logDir, service.name)
+    const structuredLogPath = structuredServiceLogPath(opts.logDir, service.name)
     const pidsPath = join(opts.logDir, "..", "pids.json")
 
     return Effect.gen(this, function* () {
@@ -265,11 +312,11 @@ export class BunServiceRunner implements ServiceRunnerService {
 
       const child = yield* Effect.tryPromise({
         try: async () =>
-          Bun.spawn(["sh", "-c", service.command], {
+          Bun.spawn([...captureCommand(service.name, logPath, structuredLogPath, service.command)], {
             cwd: opts.workdir,
             env: mergeEnv(opts.envVars),
-            stdout: Bun.file(logPath),
-            stderr: Bun.file(logPath),
+            stdout: "ignore",
+            stderr: "ignore",
             detached: true,
           }),
         catch: (cause) =>
@@ -438,6 +485,33 @@ export class BunServiceRunner implements ServiceRunnerService {
     return Effect.gen(this, function* () {
       const targetService = opts.service ?? service
       const logPath = this.resolveLogPath(targetService, opts.workspacePath)
+      const structuredPath = this.resolveStructuredLogPath(targetService, opts.workspacePath)
+
+      const structuredExists = yield* this.fs.exists(structuredPath).pipe(
+        Effect.mapError((cause) =>
+          toError(
+            "logs",
+            targetService,
+            cause.message,
+            `Could not check structured log file '${structuredPath}'. Verify permissions.`,
+          ),
+        ),
+      )
+
+      if (structuredExists) {
+        const content = yield* this.fs.read(structuredPath).pipe(
+          Effect.mapError((cause) =>
+            toError(
+              "logs",
+              targetService,
+              cause.message,
+              `Could not read structured log file '${structuredPath}'. Ensure it is readable.`,
+            ),
+          ),
+        )
+
+        return tailStructuredMessages(content, opts.lines)
+      }
 
       const exists = yield* this.fs.exists(logPath).pipe(
         Effect.mapError((cause) =>
@@ -482,14 +556,27 @@ export class BunServiceRunner implements ServiceRunnerService {
   private resolveLogPath(serviceName: string, workspacePath?: string): string {
     const knownLogDir = this.logDirByService.get(serviceName)
     if (knownLogDir) {
-      return join(knownLogDir, `${serviceName}.log`)
+      return rawServiceLogPath(knownLogDir, serviceName)
     }
 
     if (workspacePath) {
-      return join(workspacePath, ".rig", "logs", `${serviceName}.log`)
+      return rawServiceLogPath(logDirForWorkspace(workspacePath), serviceName)
     }
 
-    return join(process.cwd(), ".rig", "logs", `${serviceName}.log`)
+    return rawServiceLogPath(logDirForWorkspace(process.cwd()), serviceName)
+  }
+
+  private resolveStructuredLogPath(serviceName: string, workspacePath?: string): string {
+    const knownLogDir = this.logDirByService.get(serviceName)
+    if (knownLogDir) {
+      return structuredServiceLogPath(knownLogDir, serviceName)
+    }
+
+    if (workspacePath) {
+      return structuredServiceLogPath(logDirForWorkspace(workspacePath), serviceName)
+    }
+
+    return structuredServiceLogPath(logDirForWorkspace(process.cwd()), serviceName)
   }
 
   // Checks whether the expected PID still owns the service port to guard against PID reuse.

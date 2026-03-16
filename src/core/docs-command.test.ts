@@ -41,6 +41,7 @@ describe("GIVEN docs command WHEN rendering config docs THEN behavior is covered
     expect(logger.infos).toHaveLength(1)
     expect(logger.infos[0]).toContain("Docs")
     expect(logger.infos[0]).toContain("config")
+    expect(logger.infos[0]).toContain("onboard")
   })
 
   test("GIVEN the config docs topic WHEN listing keys THEN it shows short descriptions and array members", async () => {
@@ -89,5 +90,41 @@ describe("GIVEN docs command WHEN rendering config docs THEN behavior is covered
     expect(logger.infos[0]).toContain("Settable: no")
     expect(logger.infos[0]).toContain("Manual Edit Warning:")
     expect(logger.infos[0]).not.toContain("rig config set <name> version <value>")
+  })
+
+  test("GIVEN the onboarding docs topic WHEN listing topics THEN it shows rig-first guides without internal validation language", async () => {
+    const logger = new CaptureLogger()
+    const layer = Layer.succeed(Logger, logger)
+
+    const exitCode = await Effect.runPromise(runDocsCommand("onboard").pipe(Effect.provide(layer)))
+
+    expect(exitCode).toBe(0)
+    expect(logger.infos).toHaveLength(1)
+    expect(logger.infos[0]).toContain("Onboarding Docs")
+    expect(logger.infos[0]).toContain("nextjs")
+    expect(logger.infos[0]).toContain("convex")
+    expect(logger.infos[0]).toContain("rig-first")
+    expect(logger.infos[0]).toContain("example package manager")
+    expect(logger.infos[0]).not.toContain("rig-smoke")
+  })
+
+  test("GIVEN a specific onboarding topic WHEN showing docs THEN it prints variants, examples-only notes, and agent guidance", async () => {
+    const logger = new CaptureLogger()
+    const layer = Layer.succeed(Logger, logger)
+
+    const exitCode = await Effect.runPromise(runDocsCommand("onboard", "vite").pipe(Effect.provide(layer)))
+
+    expect(exitCode).toBe(0)
+    expect(logger.infos).toHaveLength(1)
+    expect(logger.infos[0]).toContain("Vite")
+    expect(logger.infos[0]).toContain("Variant: Standalone Vite web app")
+    expect(logger.infos[0]).toContain("Variant: Vite app with a shared backend")
+    expect(logger.infos[0]).toContain("Important Notes:")
+    expect(logger.infos[0]).toContain("ports shown below are example")
+    expect(logger.infos[0]).toContain("Bun in commands and hooks because this repo is Bun-first")
+    expect(logger.infos[0]).toContain("Agent Guidance:")
+    expect(logger.infos[0]).toContain("Do not tell AI agents to run bun run dev")
+    expect(logger.infos[0]).not.toContain("Validation:")
+    expect(logger.infos[0]).not.toContain("rig-smoke")
   })
 })

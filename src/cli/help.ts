@@ -100,11 +100,13 @@ const HELP: Record<CommandName, HelpSpec> = {
     ],
   },
   docs: {
-    summary: "Browse built-in documentation topics and config schema keys.",
+    summary: "Browse built-in documentation topics, config schema keys, and onboarding guides.",
     usage: [
       "rig docs",
       "rig docs config",
       "rig docs config <key>",
+      "rig docs onboard",
+      "rig docs onboard <topic>",
       "rig docs --help",
     ],
     examples: [
@@ -112,6 +114,9 @@ const HELP: Record<CommandName, HelpSpec> = {
       "rig docs config",
       "rig docs config environments.prod",
       "rig docs config environments.dev.services[]",
+      "rig docs onboard",
+      "rig docs onboard nextjs",
+      "rig docs onboard convex",
     ],
   },
   list: {

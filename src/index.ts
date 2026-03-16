@@ -11,6 +11,7 @@ import { BunServiceRunnerLive } from "./providers/bun-service-runner";
 import { CaddyProxyLive } from "./providers/caddy";
 import { DispatchHealthCheckerLive } from "./providers/health-checker-dispatch";
 import { JsonLoggerLive } from "./providers/json-logger";
+import { runInternalLogCapture } from "./providers/internal-log-capture";
 import { LaunchdManagerLive } from "./providers/launchd";
 import { NodeFileSystemLive } from "./providers/node-fs";
 import { JSONRegistryLive } from "./providers/json-registry";
@@ -136,28 +137,33 @@ const renderUnexpectedErrorDetails = (error: unknown): Record<string, unknown> =
 };
 
 export const main = (argv: string[]): Promise<number> =>
-  Effect.runPromise((
-    Effect.gen(function* () {
-    const normalized = normalizeArgv(argv)
+  argv[0] === "_capture-logs"
+    ? runInternalLogCapture(argv.slice(1))
+    : Effect.runPromise(
+        (Effect.gen(function* () {
+          const normalized = normalizeArgv(argv)
 
-    return yield* runCli(normalized.argv).pipe(
-      Effect.catchAll((error) =>
-        Effect.gen(function* () {
-          const logger = yield* Logger;
+          return yield* runCli(normalized.argv).pipe(
+            Effect.catchAll((error) =>
+              Effect.gen(function* () {
+                const logger = yield* Logger
 
-          if (isRigError(error)) {
-            yield* logger.error(error);
-          } else {
-            yield* logger.warn("Unexpected error while running command.", renderUnexpectedErrorDetails(error));
-          }
+                if (isRigError(error)) {
+                  yield* logger.error(error)
+                } else {
+                  yield* logger.warn(
+                    "Unexpected error while running command.",
+                    renderUnexpectedErrorDetails(error),
+                  )
+                }
 
-          return 1;
-        }),
-      ),
-      Effect.provide(buildRigLayer(normalized.verbose, normalized.json) as never),
-    )
-    })
-  ) as Effect.Effect<number, never, never>);
+                return 1
+              }),
+            ),
+            Effect.provide(buildRigLayer(normalized.verbose, normalized.json) as never),
+          )
+        }) as Effect.Effect<number, never, never>),
+      );
 
 const handleSignal = (signal: string) => {
   // Outside Effect runtime — console.error is the only output available.

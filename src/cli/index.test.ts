@@ -460,7 +460,6 @@ describe("lifecycle positional env parsing", () => {
       "logs",
       "pantry",
       "dev",
-      "--follow",
       "--lines",
       "25",
       "--service",
@@ -469,7 +468,7 @@ describe("lifecycle positional env parsing", () => {
 
     expect(exitCode).toBe(0)
     expect(logger.infos.some((entry) => entry.message.includes("web: cli logs"))).toBe(true)
-    expect(logger.infos.some((entry) => entry.message.includes("follow=true"))).toBe(true)
+    expect(logger.infos.some((entry) => entry.message.includes("follow=false"))).toBe(true)
     expect(logger.infos.some((entry) => entry.message.includes("lines=25"))).toBe(true)
   })
 
@@ -727,6 +726,7 @@ describe("other command parsing", () => {
     expect(exitCode).toBe(0)
     expect(logger.infos.at(-1)?.message).toContain("Docs")
     expect(logger.infos.at(-1)?.message).toContain("config")
+    expect(logger.infos.at(-1)?.message).toContain("onboard")
   })
 
   test("docs config accepts a specific key", async () => {
@@ -735,6 +735,14 @@ describe("other command parsing", () => {
     expect(exitCode).toBe(0)
     expect(logger.infos.at(-1)?.message).toContain("version")
     expect(logger.infos.at(-1)?.message).toContain("Type: semver string")
+  })
+
+  test("docs onboard accepts a topic", async () => {
+    const { exitCode, logger } = await runWithLogger(["docs", "onboard", "convex"])
+
+    expect(exitCode).toBe(0)
+    expect(logger.infos.at(-1)?.message).toContain("Convex")
+    expect(logger.infos.at(-1)?.message).toContain("Agent Guidance:")
   })
 
   test("config unset accepts cwd autodetect", async () => {

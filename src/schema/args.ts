@@ -25,7 +25,7 @@ const EditSelector = z
   .describe("Replacement semantic version or bump level for editing an existing release.")
 
 const DocsTopic = z
-  .enum(["config"])
+  .enum(["config", "onboard"])
   .describe("Docs topic name.")
 
 // ── rig init ────────────────────────────────────────────────────────────────
@@ -229,13 +229,13 @@ export const DocsArgsSchema = z
     topic: DocsTopic.optional(),
     key: z.string().min(1).optional(),
   })
-  .describe("Arguments for 'rig docs' and 'rig docs config [<key>]'.")
+  .describe("Arguments for 'rig docs', 'rig docs config [<key>]', and 'rig docs onboard [<topic>]'.")
   .superRefine((value, ctx) => {
-    if (value.key && value.topic !== "config") {
+    if (value.key && !value.topic) {
       ctx.addIssue({
         code: "custom",
         path: ["key"],
-        message: "A docs key can only be used with the config topic.",
+        message: "A docs key or topic requires a docs namespace.",
       })
     }
   })

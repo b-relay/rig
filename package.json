@@ -5,7 +5,9 @@
   "private": true,
   "scripts": {
     "build": "bun build --compile src/index.ts --outfile rig",
-    "start": "bun run src/index.ts"
+    "build:smoke": "bun build --compile src/index-smoke.ts --outfile rig-smoke",
+    "start": "bun run src/index.ts",
+    "test:e2e": "bun test src/e2e"
   },
   "bin": "./rig",
   "devDependencies": {

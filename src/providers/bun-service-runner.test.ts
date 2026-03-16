@@ -11,6 +11,7 @@ import type { ServerService } from "../schema/config.js"
 import { FileSystemError, ServiceRunnerError } from "../schema/errors.js"
 import { BunServiceRunner } from "./bun-service-runner.js"
 import { NodeFileSystem } from "./node-fs.js"
+import { parseStructuredServiceLogEntries } from "../schema/service-log.js"
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -180,7 +181,7 @@ class FailingPidWriteFileSystem extends NodeFileSystem {
     if (path.endsWith("/pids.json")) {
       return Effect.tryPromise({
         try: async () => {
-          await sleep(150)
+          await sleep(500)
           throw new FileSystemError(
             "write",
             path,
@@ -250,20 +251,13 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     let unrefCalled = false
     const fakePid = 654_321
 
-    Bun.spawn = ((...spawnArgs: Parameters<typeof Bun.spawn>) => {
-      const [command] = spawnArgs
-
-      if (Array.isArray(command) && command[0] === "sh") {
-        return {
-          pid: fakePid,
-          unref: () => {
-            unrefCalled = true
-          },
-        } as unknown as ReturnType<typeof Bun.spawn>
-      }
-
-      return originalSpawn(...spawnArgs)
-    }) as typeof Bun.spawn
+    Bun.spawn = ((_command: Parameters<typeof Bun.spawn>[0], _options?: Parameters<typeof Bun.spawn>[1]) =>
+      ({
+        pid: fakePid,
+        unref: () => {
+          unrefCalled = true
+        },
+      }) as unknown as ReturnType<typeof Bun.spawn>) as typeof Bun.spawn
 
     try {
       const running = await run(runner.start(service, opts))
@@ -336,9 +330,13 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
 
     expect(await run(runner.health(running))).toBe("healthy")
 
-    await sleep(1_300)
+    let health = await run(runner.health(running))
+    for (let index = 0; index < 30 && health !== "unhealthy"; index += 1) {
+      await sleep(100)
+      health = await run(runner.health(running))
+    }
 
-    expect(await run(runner.health(running))).toBe("unhealthy")
+    expect(health).toBe("unhealthy")
     trackedPids.delete(running.pid)
   })
 
@@ -349,6 +347,7 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     const running = await run(runner.start(service, opts))
     trackedPids.add(running.pid)
 
+    await waitForFile(join(opts.logDir, "worker.log.jsonl"))
     await sleep(250)
 
     const tailed = await run(
@@ -367,6 +366,25 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
       }),
     )
     expect(filtered).toBe("three")
+  })
+
+  test("GIVEN a started service WHEN it writes output THEN a structured per-line log file is recorded alongside the raw log", async () => {
+    const { runner, opts } = await createContext()
+    const service = makeService("structured-log", "printf 'alpha\\nbeta\\n'; sleep 30", 3079)
+
+    const running = await run(runner.start(service, opts))
+    trackedPids.add(running.pid)
+
+    const structuredPath = join(opts.logDir, "structured-log.log.jsonl")
+    await waitForFile(structuredPath)
+    await sleep(250)
+
+    const content = await readFile(structuredPath, "utf8")
+    const entries = parseStructuredServiceLogEntries(content)
+
+    expect(entries.map((entry) => entry.message)).toEqual(["alpha", "beta"])
+    expect(entries.every((entry) => entry.service === "structured-log")).toBe(true)
+    expect(entries.every((entry) => entry.stream === "stdout")).toBe(true)
   })
 
   test("GIVEN test setup WHEN stop succeeds and removes PID tracking when process is already dead THEN expected behavior is observed", async () => {
@@ -587,6 +605,7 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     )
     trackedPids.add(running.pid)
 
+    await waitForFile(join(opts.logDir, "env-override.log.jsonl"))
     await sleep(250)
 
     const logs = await run(
@@ -605,6 +624,7 @@ describe("GIVEN suite context WHEN BunServiceRunner THEN behavior is covered", (
     const running = await run(runner.start(service, opts))
     trackedPids.add(running.pid)
 
+    await waitForFile(join(opts.logDir, "stderr-log.log.jsonl"))
     await sleep(250)
 
     const logs = await run(

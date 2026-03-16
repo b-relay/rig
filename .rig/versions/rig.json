@@ -36,6 +36,12 @@
       "oldVersion": "0.3.0",
       "newVersion": "0.4.0",
       "changedAt": "2026-03-10T05:35:44.556Z"
+    },
+    {
+      "action": "minor",
+      "oldVersion": "0.4.0",
+      "newVersion": "0.5.0",
+      "changedAt": "2026-03-10T05:50:10.403Z"
     }
   ]
 }

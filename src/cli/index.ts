@@ -659,7 +659,11 @@ const parseDocs = (args: readonly string[]) =>
 
     if (parsed.positionals.length > 2) {
       return yield* fail(
-        makeCliError("docs", "Too many positional arguments.", "Usage: rig docs [config [<key>]]"),
+        makeCliError(
+          "docs",
+          "Too many positional arguments.",
+          "Usage: rig docs [config [<key>] | onboard [<topic>]]",
+        ),
       )
     }
 
@@ -670,7 +674,7 @@ const parseDocs = (args: readonly string[]) =>
         topic: parsed.positionals[0],
         key: parsed.positionals[1],
       },
-      "rig docs [config [<key>]]",
+      "rig docs [config [<key>] | onboard [<topic>]]",
     )
 
     if ("error" in payload) {

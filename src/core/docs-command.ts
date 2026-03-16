@@ -2,6 +2,12 @@ import { Effect } from "effect"
 
 import { Logger } from "../interfaces/logger.js"
 import { CliArgumentError } from "../schema/errors.js"
+import {
+  ONBOARDING_TOPIC_MAP,
+  renderOnboardingTopic,
+  renderOnboardingTopicList,
+  type OnboardingTopicId,
+} from "./onboarding-docs.js"
 import { CONFIG_FIELD_MAP, CONFIG_FIELDS, type ConfigFieldInfo } from "./config-fields.js"
 
 const formatFieldSummary = (field: ConfigFieldInfo): string =>
@@ -16,7 +22,7 @@ const formatFieldDetails = (field: ConfigFieldInfo): string[] => [
   field.description,
 ]
 
-export const runDocsCommand = (topic?: "config", key?: string) =>
+export const runDocsCommand = (topic?: "config" | "onboard", key?: string) =>
   Effect.gen(function* () {
     const logger = yield* Logger
 
@@ -25,11 +31,34 @@ export const runDocsCommand = (topic?: "config", key?: string) =>
         [
           "Docs",
           "  config  rig.json schema keys, value types, and settable paths",
+          "  onboard rig-first starter recipes for common app shapes",
           "",
           "Run `rig docs <topic>` for a topic overview.",
         ].join("\n"),
       )
 
+      return 0
+    }
+
+    if (topic === "onboard") {
+      if (!key) {
+        yield* logger.info(renderOnboardingTopicList().join("\n"))
+        return 0
+      }
+
+      const onboardingTopic = ONBOARDING_TOPIC_MAP.get(key as OnboardingTopicId)
+      if (!onboardingTopic) {
+        return yield* Effect.fail(
+          new CliArgumentError(
+            "docs",
+            `Unknown onboarding docs topic '${key}'.`,
+            "Run `rig docs onboard` to see available onboarding topics.",
+            { key },
+          ),
+        )
+      }
+
+      yield* logger.info(renderOnboardingTopic(onboardingTopic))
       return 0
     }
 

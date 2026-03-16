@@ -1,8 +1,8 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, rm, writeFile, appendFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Fiber, Layer } from "effect"
 
 import { runLogsCommand } from "./logs.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
@@ -25,6 +25,7 @@ import {
 } from "../interfaces/service-runner.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import type { ServerService } from "../schema/config.js"
+import { serializeStructuredServiceLogEntry } from "../schema/service-log.js"
 import { CliArgumentError, ServiceRunnerError, type RigError } from "../schema/errors.js"
 
 class CaptureLogger implements LoggerService {
@@ -172,10 +173,45 @@ const createLayer = (repoPath: string, logger: CaptureLogger, serviceRunner: Tra
     Layer.succeed(ServiceRunner, serviceRunner),
   )
 
+const writeStructuredLog = async (
+  repoPath: string,
+  serviceName: string,
+  entries: ReadonlyArray<{
+    readonly timestamp: string
+    readonly message: string
+    readonly stream?: "stdout" | "stderr"
+  }>,
+) => {
+  const logDir = join(repoPath, ".rig", "logs")
+  await mkdir(logDir, { recursive: true })
+  await writeFile(
+    join(logDir, `${serviceName}.log.jsonl`),
+    entries
+      .map((entry) =>
+        serializeStructuredServiceLogEntry({
+          timestamp: entry.timestamp,
+          service: serviceName,
+          stream: entry.stream ?? "stdout",
+          message: entry.message,
+        }),
+      )
+      .join(""),
+    "utf8",
+  )
+}
+
 describe("GIVEN suite context WHEN logs command executes THEN behavior is covered", () => {
-  test("GIVEN multiple services WHEN logs runs without --service THEN it fetches and prints logs for each service", async () => {
+  test("GIVEN multiple services with structured history WHEN logs runs without --service THEN it interleaves the latest lines across services", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-logs-all-"))
     await writeRigConfig(repoPath)
+    await writeStructuredLog(repoPath, "web", [
+      { timestamp: "2026-03-10T06:00:01.000Z", message: "web one" },
+      { timestamp: "2026-03-10T06:00:03.000Z", message: "web two" },
+    ])
+    await writeStructuredLog(repoPath, "worker", [
+      { timestamp: "2026-03-10T06:00:02.000Z", message: "worker one" },
+      { timestamp: "2026-03-10T06:00:04.000Z", message: "worker two" },
+    ])
 
     const logger = new CaptureLogger()
     const serviceRunner = new TrackingServiceRunner({
@@ -191,9 +227,55 @@ describe("GIVEN suite context WHEN logs command executes THEN behavior is covere
     )
 
     expect(exitCode).toBe(0)
-    expect(serviceRunner.logsCalls).toHaveLength(2)
-    expect(serviceRunner.logsCalls.map((call) => call.service)).toEqual(["web", "worker"])
-    expect(logger.infos).toEqual(["web log line", "worker log line"])
+    expect(serviceRunner.logsCalls).toHaveLength(0)
+    expect(logger.infos).toEqual([
+      "web | web one",
+      "worker | worker one",
+      "web | web two",
+      "worker | worker two",
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN a single configured service WHEN logs runs without --service THEN it uses that one service directly", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-logs-single-"))
+    await writeFile(
+      join(repoPath, "rig.json"),
+      `${JSON.stringify(
+        {
+          name: "pantry",
+          version: "1.0.0",
+          environments: {
+            dev: {
+              services: [
+                { name: "web", type: "server", command: "echo web", port: 5173 },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+
+    const logger = new CaptureLogger()
+    const serviceRunner = new TrackingServiceRunner({
+      web: "web only logs",
+    })
+    const layer = createLayer(repoPath, logger, serviceRunner)
+
+    const exitCode = await Effect.runPromise(
+      runLogsCommand({ name: "pantry", env: "dev", follow: false, lines: 50 }).pipe(
+        Effect.provide(layer),
+      ),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(serviceRunner.logsCalls).toHaveLength(1)
+    expect(serviceRunner.logsCalls[0]?.service).toBe("web")
+    expect(logger.infos).toEqual(["web only logs"])
 
     await rm(repoPath, { recursive: true, force: true })
   })
@@ -213,7 +295,7 @@ describe("GIVEN suite context WHEN logs command executes THEN behavior is covere
       runLogsCommand({
         name: "pantry",
         env: "dev",
-        follow: true,
+        follow: false,
         lines: 25,
         service: "web",
       }).pipe(Effect.provide(layer)),
@@ -224,7 +306,7 @@ describe("GIVEN suite context WHEN logs command executes THEN behavior is covere
       {
         service: "web",
         opts: {
-          follow: true,
+          follow: false,
           lines: 25,
           service: "web",
           workspacePath: repoPath,
@@ -232,6 +314,109 @@ describe("GIVEN suite context WHEN logs command executes THEN behavior is covere
       },
     ])
     expect(logger.infos).toEqual(["web selected logs"])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN follow mode with structured history WHEN new log lines arrive THEN logs streams appended lines", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-logs-follow-"))
+    await writeFile(
+      join(repoPath, "rig.json"),
+      `${JSON.stringify(
+        {
+          name: "pantry",
+          version: "1.0.0",
+          environments: {
+            dev: {
+              services: [
+                { name: "web", type: "server", command: "echo web", port: 5173 },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+    const logDir = join(repoPath, ".rig", "logs")
+    const logPath = join(logDir, "web.log.jsonl")
+    await mkdir(logDir, { recursive: true })
+    await writeFile(
+      logPath,
+      [
+        serializeStructuredServiceLogEntry({
+          timestamp: "2026-03-10T06:00:01.000Z",
+          service: "web",
+          stream: "stdout",
+          message: "one",
+        }),
+        serializeStructuredServiceLogEntry({
+          timestamp: "2026-03-10T06:00:02.000Z",
+          service: "web",
+          stream: "stdout",
+          message: "two",
+        }),
+      ].join(""),
+      "utf8",
+    )
+
+    const logger = new CaptureLogger()
+    const serviceRunner = new TrackingServiceRunner({
+      web: "one\ntwo",
+    })
+    const layer = createLayer(repoPath, logger, serviceRunner)
+    const program = runLogsCommand({
+      name: "pantry",
+      env: "dev",
+      follow: true,
+      lines: 2,
+    }).pipe(Effect.provide(layer))
+
+    const fiber = Effect.runFork(program)
+
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    await appendFile(
+      logPath,
+      serializeStructuredServiceLogEntry({
+        timestamp: "2026-03-10T06:00:03.000Z",
+        service: "web",
+        stream: "stdout",
+        message: "three",
+      }),
+      "utf8",
+    )
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    await Effect.runPromise(Fiber.interrupt(fiber))
+
+    expect(logger.infos).toEqual(["one", "two", "three"])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN multiple services without structured history WHEN logs runs without --service THEN it asks for a specific service", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-logs-no-structured-"))
+    await writeRigConfig(repoPath)
+
+    const logger = new CaptureLogger()
+    const serviceRunner = new TrackingServiceRunner({
+      web: "web log line",
+      worker: "worker log line",
+    })
+    const layer = createLayer(repoPath, logger, serviceRunner)
+
+    const result = await Effect.runPromise(
+      runLogsCommand({ name: "pantry", env: "dev", follow: false, lines: 50 }).pipe(
+        Effect.provide(layer),
+        Effect.either,
+      ),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(CliArgumentError)
+      expect(result.left.message).toContain("Cannot interleave historical logs")
+    }
 
     await rm(repoPath, { recursive: true, force: true })
   })

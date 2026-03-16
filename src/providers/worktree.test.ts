@@ -132,6 +132,10 @@ class MockGit implements GitService {
     return Effect.succeed(false)
   }
 
+  listTags(_repoPath: string) {
+    return Effect.succeed([] as readonly string[])
+  }
+
   commitHasTag(_repoPath: string, _commit: string) {
     return Effect.succeed(null as string | null)
   }

@@ -48,7 +48,7 @@ const allocatePorts = async (
 }
 
 const runShellCommand = async (
-  project: { readonly repoPath: string; readonly homeDir: string },
+  project: { readonly repoPath: string; readonly homeDir: string; readonly rigRootDir: string },
   cmd: readonly string[],
 ) => {
   const child = Bun.spawn({
@@ -57,6 +57,7 @@ const runShellCommand = async (
     env: {
       ...process.env,
       HOME: project.homeDir,
+      RIG_ROOT: project.rigRootDir,
     },
     stdout: "pipe",
     stderr: "pipe",

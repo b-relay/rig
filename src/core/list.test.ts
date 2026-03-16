@@ -1,10 +1,12 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { describe, expect, test } from "bun:test"
+import { dirname, join } from "node:path"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { runListCommand } from "./list.js"
+import { versionHistoryPath } from "./state-paths.js"
+import { Git, type Git as GitService } from "../interfaces/git.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import {
   Registry,
@@ -17,7 +19,8 @@ import {
   type WorkspaceInfo,
 } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
-import type { RigError } from "../schema/errors.js"
+import { StubGit } from "../providers/stub-git.js"
+import { GitError, type RigError } from "../schema/errors.js"
 
 class CaptureLogger implements LoggerService {
   readonly tables: Array<readonly Record<string, unknown>[]> = []
@@ -43,6 +46,16 @@ class CaptureLogger implements LoggerService {
     return Effect.void
   }
 }
+
+const PREVIOUS_RIG_ROOT = process.env.RIG_ROOT
+
+afterEach(() => {
+  if (PREVIOUS_RIG_ROOT === undefined) {
+    delete process.env.RIG_ROOT
+  } else {
+    process.env.RIG_ROOT = PREVIOUS_RIG_ROOT
+  }
+})
 
 class StaticRegistry implements RegistryService {
   constructor(private readonly entries: readonly RegistryEntry[]) {}
@@ -102,10 +115,10 @@ describe("GIVEN suite context WHEN list command executes THEN behavior is covere
     const root = await mkdtemp(join(tmpdir(), "rig-list-command-"))
     const pantryRepo = join(root, "pantry")
     const docsRepo = join(root, "docs")
-    await mkdir(join(pantryRepo, ".rig", "versions"), { recursive: true })
-    await mkdir(join(docsRepo, ".rig", "versions"), { recursive: true })
+    process.env.RIG_ROOT = join(root, ".rig-state")
+    await mkdir(dirname(versionHistoryPath("pantry")), { recursive: true })
     await writeFile(
-      join(pantryRepo, ".rig", "versions", "pantry.json"),
+      versionHistoryPath("pantry"),
       `${JSON.stringify({
         name: "pantry",
         entries: [
@@ -123,6 +136,7 @@ describe("GIVEN suite context WHEN list command executes THEN behavior is covere
     const logger = new CaptureLogger()
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(
         Registry,
@@ -169,6 +183,126 @@ describe("GIVEN suite context WHEN list command executes THEN behavior is covere
           repoPath: docsRepo,
           currentProdVersion: "N/A",
           registeredAt: "2026-01-02T00:00:00.000Z",
+        },
+      ],
+    ])
+
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("GIVEN a registered project that is not a git repo WHEN list runs THEN it still returns rows with N/A release history", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-list-non-git-"))
+    process.env.RIG_ROOT = join(root, ".rig-state")
+
+    class NonGitStub implements GitService {
+      private readonly base = new StubGit()
+
+      detectMainBranch(repoPath: string) {
+        return this.base.detectMainBranch(repoPath)
+      }
+
+      isDirty(repoPath: string) {
+        return this.base.isDirty(repoPath)
+      }
+
+      currentBranch(repoPath: string) {
+        return this.base.currentBranch(repoPath)
+      }
+
+      commitHash(repoPath: string, ref?: string) {
+        return this.base.commitHash(repoPath, ref)
+      }
+
+      changedFiles(repoPath: string) {
+        return this.base.changedFiles(repoPath)
+      }
+
+      commit(repoPath: string, message: string, paths?: readonly string[]) {
+        return this.base.commit(repoPath, message, paths)
+      }
+
+      createTag(repoPath: string, tag: string) {
+        return this.base.createTag(repoPath, tag)
+      }
+
+      createTagAtRef(repoPath: string, tag: string, ref: string) {
+        return this.base.createTagAtRef(repoPath, tag, ref)
+      }
+
+      deleteTag(repoPath: string, tag: string) {
+        return this.base.deleteTag(repoPath, tag)
+      }
+
+      tagExists(repoPath: string, tag: string) {
+        return this.base.tagExists(repoPath, tag)
+      }
+
+      listTags(repoPath: string) {
+        return Effect.fail(
+          new GitError(
+            "listTags",
+            repoPath,
+            128,
+            "fatal: not a git repository (or any of the parent directories): .git",
+            "Git listTags failed.",
+            "Ensure the repository path is valid and readable.",
+          ),
+        )
+      }
+
+      commitHasTag(repoPath: string, commit: string) {
+        return this.base.commitHasTag(repoPath, commit)
+      }
+
+      commitTags(repoPath: string, commit: string) {
+        return this.base.commitTags(repoPath, commit)
+      }
+
+      isAncestor(repoPath: string, ancestorRef: string, descendantRef: string) {
+        return this.base.isAncestor(repoPath, ancestorRef, descendantRef)
+      }
+
+      createWorktree(repoPath: string, dest: string, ref: string) {
+        return this.base.createWorktree(repoPath, dest, ref)
+      }
+
+      removeWorktree(repoPath: string, dest: string) {
+        return this.base.removeWorktree(repoPath, dest)
+      }
+
+      moveWorktree(repoPath: string, src: string, dest: string) {
+        return this.base.moveWorktree(repoPath, src, dest)
+      }
+    }
+
+    const logger = new CaptureLogger()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Git, new NonGitStub()),
+      Layer.succeed(Logger, logger),
+      Layer.succeed(
+        Registry,
+        new StaticRegistry([
+          {
+            name: "tmp-app",
+            repoPath: "/tmp/not-a-git-repo",
+            registeredAt: new Date("2026-01-03T00:00:00.000Z"),
+          },
+        ]),
+      ),
+      Layer.succeed(Workspace, new StaticWorkspace([])),
+    )
+
+    const exitCode = await Effect.runPromise(runListCommand().pipe(Effect.provide(layer)))
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toEqual([
+      [
+        {
+          name: "tmp-app",
+          repoPath: "/tmp/not-a-git-repo",
+          currentProdVersion: "N/A",
+          registeredAt: "2026-01-03T00:00:00.000Z",
         },
       ],
     ])

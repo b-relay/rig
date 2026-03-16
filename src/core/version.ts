@@ -13,12 +13,12 @@ import {
   bumpVersion,
   compareVersions,
   isBumpAction,
-  readVersionHistory,
-  versionHistoryPath,
+  loadVersionHistory,
   versionTag,
   writeRigJsonVersion,
   writeVersionHistory,
 } from "./release.js"
+import { versionHistoryPath } from "./state-paths.js"
 
 const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+$/
 const SHORT_COMMIT_LENGTH = 7
@@ -98,8 +98,8 @@ export const runVersionCommand = (args: VersionArgs) =>
     const workspace = yield* Workspace
     const fileSystem = yield* FileSystem
     const loaded = yield* loadProjectConfig(args.name)
-    const historyPath = versionHistoryPath(loaded.repoPath, args.name)
-    const history = yield* readVersionHistory(historyPath, args.name)
+    const historyPath = versionHistoryPath(args.name)
+    const history = yield* loadVersionHistory(loaded.repoPath, args.name)
     const releaseState = yield* resolveProdReleaseState(args.name, loaded.repoPath)
 
     if (!args.targetVersion) {
@@ -117,7 +117,7 @@ export const runVersionCommand = (args: VersionArgs) =>
                 Effect.catchAll(() => Effect.succeed("N/A")),
               ),
             ),
-            changedAt: entry.changedAt,
+            changedAt: entry.changedAt ?? "N/A",
             markers: markers.length > 0 ? markers.join(", ") : null,
           }
         }),

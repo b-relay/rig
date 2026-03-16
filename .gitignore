@@ -16,6 +16,10 @@ coverage
 logs
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+.rig/logs/
+.rig/pids.json
+.rig/bins.json
+.rig/versions/
 
 # dotenv environment variable files
 .env

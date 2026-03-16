@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { describe, expect, test } from "bun:test"
+import { dirname, join } from "node:path"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { runDeployCommand } from "./deploy.js"
+import { versionHistoryPath } from "./state-paths.js"
 import { BinInstaller, type BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"
 import { EnvLoader, type EnvLoader as EnvLoaderService } from "../interfaces/env-loader.js"
 import { Git, type Git as GitService } from "../interfaces/git.js"
@@ -37,6 +38,16 @@ import {
   type ServiceRunner as ServiceRunnerService,
 } from "../interfaces/service-runner.js"
 import { Workspace, type Workspace as WorkspaceService, type WorkspaceInfo } from "../interfaces/workspace.js"
+
+const PREVIOUS_RIG_ROOT = process.env.RIG_ROOT
+
+afterEach(() => {
+  if (PREVIOUS_RIG_ROOT === undefined) {
+    delete process.env.RIG_ROOT
+  } else {
+    process.env.RIG_ROOT = PREVIOUS_RIG_ROOT
+  }
+})
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import type { ServerService } from "../schema/config.js"
 import { ConfigValidationError, GitError, MainBranchDetectionError, ProcessError, ProxyError, WorkspaceError, type RigError } from "../schema/errors.js"
@@ -339,6 +350,10 @@ class StaticGit implements GitService {
 
   tagExists(_repoPath: string, _tag: string): Effect.Effect<boolean, GitError> {
     return Effect.succeed(false)
+  }
+
+  listTags(_repoPath: string): Effect.Effect<readonly string[], GitError> {
+    return Effect.succeed([])
   }
 
   commitHasTag(_repoPath: string, _commit: string): Effect.Effect<string | null, GitError> {
@@ -1585,6 +1600,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
 
   test("GIVEN latest prod release is not active WHEN revert runs THEN metadata is removed and runtime stays pinned", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-revert-pinned-"))
+    process.env.RIG_ROOT = join(repoPath, ".rig-state")
     await writeRigConfig(repoPath, {
       name: "pantry",
       version: "1.1.0",
@@ -1602,9 +1618,9 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
         },
       },
     })
-    await mkdir(join(repoPath, ".rig", "versions"), { recursive: true })
+    await mkdir(dirname(versionHistoryPath("pantry")), { recursive: true })
     await writeFile(
-      join(repoPath, ".rig", "versions", "pantry.json"),
+      versionHistoryPath("pantry"),
       `${JSON.stringify(
         {
           name: "pantry",

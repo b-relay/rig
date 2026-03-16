@@ -200,6 +200,22 @@ export class BunGit implements GitService {
     )
   }
 
+  listTags(repoPath: string): Effect.Effect<readonly string[], GitError> {
+    return this.runGitExpectingSuccess(
+      repoPath,
+      ["tag", "--list"],
+      "listTags",
+      "Ensure the repository path is valid and readable.",
+    ).pipe(
+      Effect.map((result) =>
+        result.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0),
+      ),
+    )
+  }
+
   commitHasTag(repoPath: string, commit: string): Effect.Effect<string | null, GitError> {
     return this.commitTags(repoPath, commit).pipe(
       Effect.map((tags) => tags[0] ?? null),

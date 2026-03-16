@@ -4,6 +4,7 @@ import { getuid } from "node:process"
 import { copyFile, mkdir, unlink } from "node:fs/promises"
 import { Effect, Layer } from "effect"
 
+import { rigLaunchdBackupRoot } from "../core/rig-paths.js"
 import {
   ProcessManager,
   type DaemonConfig,
@@ -273,7 +274,7 @@ export class LaunchdManager implements ProcessManagerService {
     return Effect.tryPromise({
       try: async () => {
         const src = plistPath(label, this.home)
-        const backupDir = join(this.home, ".rig", "launchd")
+        const backupDir = rigLaunchdBackupRoot()
         await mkdir(backupDir, { recursive: true })
 
         const ts = new Date().toISOString().replace(/[:.]/g, "-")

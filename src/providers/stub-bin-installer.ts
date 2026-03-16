@@ -1,12 +1,11 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer } from "effect"
 
+import { rigBinPath } from "../core/rig-paths.js"
 import { BinInstaller, type BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"
 import type { BinService } from "../schema/config.js"
 import { BinInstallerError } from "../schema/errors.js"
 
-const binName = (name: string, env: string): string => (env === "dev" ? `${name}-dev` : name)
 const binKey = (name: string, env: string): string => `${name}:${env}`
 
 interface StubBinInstallerOptions {
@@ -41,7 +40,7 @@ export class StubBinInstaller implements BinInstallerService {
       return Effect.fail(failure)
     }
 
-    const installedPath = join(homedir(), ".rig", "bin", binName(name, env))
+    const installedPath = rigBinPath(name, env)
     this.installed.set(key, installedPath)
     return Effect.succeed(installedPath)
   }

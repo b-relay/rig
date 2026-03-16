@@ -119,7 +119,7 @@ export const ServerServiceSchema = z
 export const BinServiceSchema = z
   .object({
     name: ServiceNameSchema,
-    type: z.literal("bin").describe("bin = CLI tool installed to ~/.local/bin/."),
+    type: z.literal("bin").describe("bin = CLI tool installed to the rig-managed bin directory under ~/.rig/bin by default."),
     entrypoint: z
       .string()
       .min(1)
@@ -155,7 +155,7 @@ export const BinServiceSchema = z
       path: ["build"],
     }
   )
-  .describe("CLI tool service. Built and/or installed to ~/.local/bin/.")
+  .describe("CLI tool service. Built and/or installed to the rig-managed bin directory under ~/.rig/bin by default.")
 
 export const ServiceSchema = z
   .discriminatedUnion("type", [ServerServiceSchema, BinServiceSchema])

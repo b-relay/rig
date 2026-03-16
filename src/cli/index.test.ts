@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto"
 import { copyFileSync, existsSync, mkdirSync } from "node:fs"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { renderCommandHelp, renderMainHelp } from "./help.js"
 import { runCli } from "./index.js"
+import { versionHistoryPath } from "../core/state-paths.js"
 import { BinInstaller } from "../interfaces/bin-installer.js"
 import { EnvLoader } from "../interfaces/env-loader.js"
 import { Git, type Git as GitService } from "../interfaces/git.js"
@@ -293,9 +294,10 @@ const writeVersionHistoryFile = async (
     readonly changedAt: string
   }>,
 ) => {
-  await mkdir(join(repoPath, ".rig", "versions"), { recursive: true })
+  process.env.RIG_ROOT = join(repoPath, ".rig-state")
+  await mkdir(dirname(versionHistoryPath(name)), { recursive: true })
   await writeFile(
-    join(repoPath, ".rig", "versions", `${name}.json`),
+    versionHistoryPath(name),
     `${JSON.stringify({ name, entries }, null, 2)}\n`,
     "utf8",
   )
@@ -304,6 +306,7 @@ const writeVersionHistoryFile = async (
 let tempRoot: string
 let repoPath: string
 let workspaceRoot: string
+const PREVIOUS_RIG_ROOT = process.env.RIG_ROOT
 
 beforeAll(async () => {
   tempRoot = await mkdtemp(join(tmpdir(), "rig-cli-args-"))
@@ -320,6 +323,11 @@ beforeEach(async () => {
 })
 
 afterAll(async () => {
+  if (PREVIOUS_RIG_ROOT === undefined) {
+    delete process.env.RIG_ROOT
+  } else {
+    process.env.RIG_ROOT = PREVIOUS_RIG_ROOT
+  }
   if (tempRoot) {
     await rm(tempRoot, { recursive: true, force: true })
   }
@@ -691,6 +699,23 @@ describe("version command", () => {
 })
 
 describe("other command parsing", () => {
+  test("forget requires an explicit project name and supports purge", async () => {
+    let result = await runWithLogger(["forget", "pantry"])
+    expect(result.exitCode).toBe(0)
+    expect(result.logger.errors).toHaveLength(0)
+
+    result = await runWithLogger(["forget", "pantry", "--purge"])
+    expect(result.exitCode).toBe(0)
+    expect(result.logger.errors).toHaveLength(0)
+
+    result = await runWithLogger(["forget"])
+    expect(result.exitCode).toBe(1)
+    expect(result.logger.errors[0]?._tag).toBe("CliArgumentError")
+    if (result.logger.errors[0]?._tag === "CliArgumentError") {
+      expect(result.logger.errors[0].hint).toBe("Usage: rig forget <name> [--purge]")
+    }
+  })
+
   test("init still parses and resolves paths", async () => {
     const relativePath = "./tmp/rig-cli-init-relative"
     const { exitCode, logger, registry } = await runWithLogger(["init", "pantry", "--path", relativePath])

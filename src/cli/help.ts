@@ -1,6 +1,7 @@
 export const COMMANDS = [
   "deploy",
   "init",
+  "forget",
   "start",
   "stop",
   "restart",
@@ -44,6 +45,15 @@ const HELP: Record<CommandName, HelpSpec> = {
     summary: "Initialize a project and register its path.",
     usage: ["rig init <name> --path <project-path>", "rig init --help"],
     examples: ["rig init pantry --path ~/Projects/pantry"],
+  },
+  forget: {
+    summary: "Unregister a project, optionally purging rig-managed state.",
+    usage: ["rig forget <name> [--purge]", "rig forget --help"],
+    examples: ["rig forget pantry", "rig forget pantry --purge"],
+    notes: [
+      "`--purge` removes rig-managed workspaces, version history, installed bins, and related local rig state.",
+      "The source repository is never deleted.",
+    ],
   },
   start: {
     summary: "Start all configured services for an environment.",
@@ -189,6 +199,7 @@ export const renderMainHelp = (): string => {
     "  --help, -h     Show help for command",
     "  --verbose      Show detailed error information",
     "  --json         Emit newline-delimited JSON log events",
+    "  RIG_ROOT       Override the default rig root (defaults to ~/.rig)",
     "  <dev|prod>     Positional environment selector for environment-scoped commands",
     "  --version      Prod-only deployed version selector for deploy/start/stop/status/logs",
     "  --bump         Prod-only release bump selector for deploy",

@@ -1,8 +1,8 @@
 import { join } from "node:path"
-import { homedir } from "node:os"
 import { copyFile, mkdir } from "node:fs/promises"
 import { Effect, Layer } from "effect"
 
+import { rigCaddyfilePath } from "../core/rig-paths.js"
 import {
   ReverseProxy,
   type ProxyChange,
@@ -114,7 +114,7 @@ export class CaddyProxy implements ReverseProxyService {
   readonly caddyfilePath: string
 
   constructor(caddyfilePath?: string) {
-    this.caddyfilePath = caddyfilePath ?? join(homedir(), ".rig", "caddy", "Caddyfile")
+    this.caddyfilePath = caddyfilePath ?? rigCaddyfilePath()
   }
 
   read(): Effect.Effect<readonly ProxyEntry[], ProxyError> {

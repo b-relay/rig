@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
+import { rigBinRoot } from "../core/rig-paths.js"
 import { FileSystem } from "../interfaces/file-system.js"
 import { BinInstaller } from "../interfaces/bin-installer.js"
 import { BunBinInstaller, BunBinInstallerLive, type CommandRunner } from "./bun-bin.js"
@@ -119,6 +120,20 @@ const runWithMockFail = <A, E>(
   const layer = Layer.succeed(FileSystem, mockFs)
   return Effect.runPromise(Effect.flip(Effect.provide(effect, layer)))
 }
+
+const PREVIOUS_RIG_ROOT = process.env.RIG_ROOT
+
+beforeEach(() => {
+  process.env.RIG_ROOT = "/tmp/rig-bin-test-root"
+})
+
+afterEach(() => {
+  if (PREVIOUS_RIG_ROOT === undefined) {
+    delete process.env.RIG_ROOT
+  } else {
+    process.env.RIG_ROOT = PREVIOUS_RIG_ROOT
+  }
+})
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -263,7 +278,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
   })
 
   describe("GIVEN suite context WHEN install() THEN behavior is covered", () => {
-    test("GIVEN test setup WHEN binary file → copies to ~/.local/bin/<name> THEN expected behavior is observed", async () => {
+    test("GIVEN test setup WHEN binary file → copies to ~/.rig/bin/<name> THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
       const binContent = binaryContent()
@@ -271,7 +286,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       mockFs.files.set(srcPath, binContent)
 
       const result = await runWithMock(mockFs, installer.install("pantry", "prod", srcPath))
-      expect(result).toContain(".local/bin/pantry")
+      expect(result).toBe(`${rigBinRoot()}/pantry`)
       expect(result).not.toContain("-dev")
       // File was copied
       expect(mockFs.files.has(result)).toBe(true)
@@ -295,7 +310,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       const marker = "cmd:/tmp/test-project:bun cli/index.ts"
 
       const result = await runWithMock(mockFs, installer.install("pantry", "prod", marker))
-      expect(result).toContain(".local/bin/pantry")
+      expect(result).toBe(`${rigBinRoot()}/pantry`)
 
       const shimContent = mockFs.files.get(result)
       expect(shimContent).toBeDefined()
@@ -313,7 +328,7 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
       const marker = "shim:/tmp/test-project:cli/index.ts"
 
       const result = await runWithMock(mockFs, installer.install("pantry", "prod", marker))
-      expect(result).toContain(".local/bin/pantry")
+      expect(result).toBe(`${rigBinRoot()}/pantry`)
 
       const shimContent = mockFs.files.get(result)
       expect(shimContent).toBeDefined()
@@ -330,16 +345,16 @@ describe("GIVEN suite context WHEN BunBinInstaller THEN behavior is covered", ()
 
       await runWithMock(mockFs, installer.install("pantry", "prod", srcPath))
       // bin dir was created
-      const hasBinDir = [...mockFs.dirs].some((d) => d.includes(".local/bin"))
+      const hasBinDir = mockFs.dirs.has(rigBinRoot())
       expect(hasBinDir).toBe(true)
     })
   })
 
   describe("GIVEN suite context WHEN uninstall() THEN behavior is covered", () => {
-    test("GIVEN test setup WHEN removes bin from ~/.local/bin/<name> THEN expected behavior is observed", async () => {
+    test("GIVEN test setup WHEN removes bin from ~/.rig/bin/<name> THEN expected behavior is observed", async () => {
       const mockFs = new MockFileSystem()
       const installer = new BunBinInstaller(mockFs)
-      const binPath = [...mockFs.files.keys()].find((k) => k.includes(".local/bin")) ?? ""
+      const binPath = [...mockFs.files.keys()].find((k) => k.includes("/bin/")) ?? ""
 
       // Pre-install a bin
       const srcPath = "/tmp/test-project/dist/pantry"

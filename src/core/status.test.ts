@@ -1,10 +1,12 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { describe, expect, test } from "bun:test"
+import { dirname, join } from "node:path"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { runStatusCommand } from "./status.js"
+import { versionHistoryPath } from "./state-paths.js"
+import { Git } from "../interfaces/git.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import {
   ProcessManager,
@@ -23,6 +25,7 @@ import {
   type WorkspaceInfo,
 } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
+import { StubGit } from "../providers/stub-git.js"
 import { ConfigValidationError, ProcessError, RegistryError, type RigError } from "../schema/errors.js"
 
 class CaptureLogger implements LoggerService {
@@ -49,6 +52,16 @@ class CaptureLogger implements LoggerService {
     return Effect.void
   }
 }
+
+const PREVIOUS_RIG_ROOT = process.env.RIG_ROOT
+
+afterEach(() => {
+  if (PREVIOUS_RIG_ROOT === undefined) {
+    delete process.env.RIG_ROOT
+  } else {
+    process.env.RIG_ROOT = PREVIOUS_RIG_ROOT
+  }
+})
 
 class StaticRegistry implements RegistryService {
   constructor(
@@ -192,6 +205,10 @@ const findDefinitelyDeadPid = (): number => {
 }
 
 describe("GIVEN suite context WHEN status command executes THEN behavior is covered", () => {
+  beforeEach(async () => {
+    process.env.RIG_ROOT = await mkdtemp(join(tmpdir(), "rig-status-state-"))
+  })
+
   test("GIVEN a project with both dev and prod envs WHEN status is called without env flag THEN it shows rows for both environments", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-status-both-envs-"))
     await writeRigConfig(repoPath, {
@@ -229,6 +246,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
@@ -306,6 +324,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
@@ -367,6 +386,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
@@ -420,6 +440,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
     const processManager = new StaticProcessManager()
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
@@ -468,6 +489,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
@@ -528,6 +550,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
@@ -593,6 +616,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
@@ -662,6 +686,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({}, entries)),
       Layer.succeed(Workspace, new StaticWorkspace({})),
@@ -696,6 +721,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
   test("GIVEN prod is pinned older WHEN project status is called THEN it shows distinct latest and current prod versions", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-status-prod-release-state-"))
+    process.env.RIG_ROOT = join(repoPath, ".rig-state")
     await writeRigConfig(repoPath, {
       name: "pantry",
       version: "0.3.0",
@@ -707,9 +733,9 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         },
       },
     })
-    await mkdir(join(repoPath, ".rig", "versions"), { recursive: true })
+    await mkdir(dirname(versionHistoryPath("pantry")), { recursive: true })
     await writeFile(
-      join(repoPath, ".rig", "versions", "pantry.json"),
+      versionHistoryPath("pantry"),
       `${JSON.stringify(
         {
           name: "pantry",
@@ -746,6 +772,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
+      Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(

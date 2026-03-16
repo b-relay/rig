@@ -1,7 +1,7 @@
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname } from "node:path"
 import { Effect, Layer } from "effect"
 
+import { rigRegistryPath } from "../core/rig-paths.js"
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
 import { Registry, type Registry as RegistryService, type RegistryEntry } from "../interfaces/registry.js"
 import { RegistryError } from "../schema/errors.js"
@@ -15,7 +15,7 @@ type RawRegistryValue =
 
 type RawRegistry = Record<string, RawRegistryValue>
 
-const DEFAULT_REGISTRY_PATH = join(homedir(), ".rig", "registry.json")
+const DEFAULT_REGISTRY_PATH = rigRegistryPath()
 const PROJECT_NAME_RE = /^[a-z0-9-]+$/
 
 const causeMessage = (cause: unknown): string =>

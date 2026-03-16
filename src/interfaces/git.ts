@@ -24,6 +24,7 @@ export interface Git {
   ) => Effect.Effect<void, GitError>
   readonly deleteTag: (repoPath: string, tag: string) => Effect.Effect<void, GitError>
   readonly tagExists: (repoPath: string, tag: string) => Effect.Effect<boolean, GitError>
+  readonly listTags: (repoPath: string) => Effect.Effect<readonly string[], GitError>
   readonly commitHasTag: (
     repoPath: string,
     commit: string

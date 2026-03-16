@@ -46,6 +46,10 @@ export class StubGit implements GitService {
     return Effect.succeed(false)
   }
 
+  listTags(_repoPath: string): Effect.Effect<readonly string[]> {
+    return Effect.succeed([])
+  }
+
   commitHasTag(_repoPath: string, _commit: string): Effect.Effect<string | null> {
     return Effect.succeed(null)
   }

@@ -1,7 +1,7 @@
-import { homedir } from "node:os"
 import { join, resolve, isAbsolute, relative } from "node:path"
 import { Effect, Layer } from "effect"
 
+import { rigBinPath, rigBinRoot } from "../core/rig-paths.js"
 import { BinInstaller, type BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"
 import { FileSystem } from "../interfaces/file-system.js"
 import type { BinService } from "../schema/config.js"
@@ -9,7 +9,7 @@ import { BinInstallerError } from "../schema/errors.js"
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const BIN_DIR = () => join(homedir(), ".local", "bin")
+const BIN_DIR = () => rigBinRoot()
 
 /** Marker prefixes for non-binary install strategies */
 const CMD_PREFIX = "cmd:"
@@ -21,7 +21,7 @@ const binName = (name: string, env: string): string =>
   env === "dev" ? `${name}-dev` : name
 
 const binPath = (name: string, env: string): string =>
-  join(BIN_DIR(), binName(name, env))
+  rigBinPath(name, env)
 
 // Detects whether file content should be treated as a native binary.
 const isBinaryContent = (content: string): boolean => {

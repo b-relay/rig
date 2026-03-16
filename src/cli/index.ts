@@ -9,6 +9,7 @@ import { runDocsCommand } from "../core/docs-command.js"
 import { runConfigSetCommand } from "../core/config-set-command.js"
 import { runConfigUnsetCommand } from "../core/config-unset-command.js"
 import { runDeployCommand } from "../core/deploy.js"
+import { runForgetCommand } from "../core/forget.js"
 import { runInitCommand } from "../core/init.js"
 import { runListCommand } from "../core/list.js"
 import { runLogsCommand } from "../core/logs.js"
@@ -21,6 +22,7 @@ import {
   ConfigSetArgsSchema,
   ConfigUnsetArgsSchema,
   DeployArgsSchema,
+  ForgetArgsSchema,
   DocsArgsSchema,
   InitArgsSchema,
   ListArgsSchema,
@@ -439,6 +441,44 @@ const parseInit = (args: readonly string[]) =>
     return yield* runInitCommand(payload.data)
   })
 
+const parseForget = (args: readonly string[]) =>
+  Effect.gen(function* () {
+    const parsed = parseWithOptions("forget", args, {
+      help: { type: "boolean", short: "h" },
+      purge: { type: "boolean" },
+    })
+
+    if ("error" in parsed) {
+      return yield* fail(parsed.error)
+    }
+
+    if (parsed.values.help || parsed.positionals[0] === "help") {
+      return yield* showCommandHelp("forget")
+    }
+
+    if (parsed.positionals.length !== 1) {
+      return yield* fail(
+        makeCliError("forget", "Invalid arguments.", "Usage: rig forget <name> [--purge]"),
+      )
+    }
+
+    const payload = validate(
+      "forget",
+      ForgetArgsSchema,
+      {
+        name: parsed.positionals[0],
+        purge: parsed.values.purge === true,
+      },
+      "rig forget <name> [--purge]",
+    )
+
+    if ("error" in payload) {
+      return yield* fail(payload.error)
+    }
+
+    return yield* runForgetCommand(payload.data)
+  })
+
 const parseStatus = (args: readonly string[]) =>
   Effect.gen(function* () {
     const parsed = parseWithOptions("status", args, {
@@ -796,6 +836,8 @@ const runCommand = (command: CommandName, args: readonly string[]) => {
       return parseLifecycleCommand(command, args)
     case "init":
       return parseInit(args)
+    case "forget":
+      return parseForget(args)
     case "status":
       return parseStatus(args)
     case "logs":

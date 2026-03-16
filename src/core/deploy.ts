@@ -21,14 +21,14 @@ import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment, type Lo
 import {
   bumpVersion,
   compareVersions,
-  readVersionHistory,
-  versionHistoryPath,
+  loadVersionHistory,
   versionTag,
   writeRigJsonVersion,
   writeVersionHistory,
   type BumpAction,
   type VersionHistory,
 } from "./release.js"
+import { versionHistoryPath } from "./state-paths.js"
 import { configError, daemonLabel } from "./shared.js"
 import { runStartCommand, runStopCommand } from "./lifecycle.js"
 
@@ -285,8 +285,8 @@ const createReleaseMutation = (
     yield* ensureReleaseBranchAndHistory(args.name, loaded)
     const currentVersion = loaded.config.version
     const configPath = join(loaded.repoPath, "rig.json")
-    const historyPath = versionHistoryPath(loaded.repoPath, args.name)
-    const originalHistory = yield* readVersionHistory(historyPath, args.name)
+    const historyPath = versionHistoryPath(args.name)
+    const originalHistory = yield* loadVersionHistory(loaded.repoPath, args.name)
     const latestEntry = originalHistory.entries.at(-1) ?? null
 
     if (latestEntry) {
@@ -342,8 +342,8 @@ const runRevertDeployCommand = (args: DeployArgs): Effect.Effect<number, RigErro
     const git = yield* Git
     const loaded = yield* loadProjectConfig(args.name)
     const configPath = join(loaded.repoPath, "rig.json")
-    const historyPath = versionHistoryPath(loaded.repoPath, args.name)
-    const history = yield* readVersionHistory(historyPath, args.name)
+    const historyPath = versionHistoryPath(args.name)
+    const history = yield* loadVersionHistory(loaded.repoPath, args.name)
     const latestEntry = history.entries.at(-1) ?? null
 
     if (!args.revert || !latestEntry || latestEntry.newVersion !== args.revert) {

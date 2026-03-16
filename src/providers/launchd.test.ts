@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 
+import { rigLaunchdBackupRoot } from "../core/rig-paths.js"
 import { LaunchdManager, generatePlist, plistPath } from "./launchd.js"
 import type { DaemonConfig } from "../interfaces/process-manager.js"
 
@@ -14,8 +15,8 @@ const GUI_DOMAIN = `gui/${getuid!()}`
 
 const sampleConfig: DaemonConfig = {
   label: "pantry-prod",
-  command: "/Users/clay/.local/bin/rig",
-  args: ["start", "pantry", "--prod", "--foreground"],
+  command: "/Users/clay/.rig/bin/rig",
+  args: ["start", "pantry", "prod", "--foreground"],
   keepAlive: true,
   envVars: { NODE_ENV: "production", PORT: "3070" },
   workdir: "/Users/clay/.rig/workspaces/pantry/prod/current",
@@ -43,12 +44,19 @@ const createMockRunner = (responses?: Record<string, { stdout: string; stderr: s
 }
 
 let tmpDir: string
+const PREVIOUS_RIG_ROOT = process.env.RIG_ROOT
 
 beforeEach(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), "rig-launchd-test-"))
+  process.env.RIG_ROOT = join(tmpDir, ".rig-root")
 })
 
 afterEach(async () => {
+  if (PREVIOUS_RIG_ROOT === undefined) {
+    delete process.env.RIG_ROOT
+  } else {
+    process.env.RIG_ROOT = PREVIOUS_RIG_ROOT
+  }
   await rm(tmpDir, { recursive: true, force: true })
 })
 
@@ -64,10 +72,10 @@ describe("GIVEN suite context WHEN generatePlist THEN behavior is covered", () =
     expect(xml).toContain("<key>Label</key>")
     expect(xml).toContain("<string>pantry-prod</string>")
     expect(xml).toContain("<key>ProgramArguments</key>")
-    expect(xml).toContain("<string>/Users/clay/.local/bin/rig</string>")
+    expect(xml).toContain("<string>/Users/clay/.rig/bin/rig</string>")
     expect(xml).toContain("<string>start</string>")
     expect(xml).toContain("<string>pantry</string>")
-    expect(xml).toContain("<string>--prod</string>")
+    expect(xml).toContain("<string>prod</string>")
     expect(xml).toContain("<string>--foreground</string>")
     expect(xml).toContain("<key>WorkingDirectory</key>")
     expect(xml).toContain("<key>EnvironmentVariables</key>")
@@ -294,7 +302,7 @@ describe("GIVEN suite context WHEN LaunchdManager THEN behavior is covered", () 
 
     const backupPath = await run(mgr.backup(sampleConfig.label))
 
-    expect(backupPath).toContain(join(tmpDir, ".rig", "launchd"))
+    expect(backupPath).toContain(rigLaunchdBackupRoot())
     expect(backupPath).toContain("pantry-prod-backup-")
     expect(backupPath).toEndWith(".plist")
 

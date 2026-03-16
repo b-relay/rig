@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { runRestartCommand, runStartCommand, runStopCommand } from "./lifecycle.js"
+import { rigBinPath } from "./rig-paths.js"
 import { BinInstaller, type BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"
 import { EnvLoader, type EnvLoader as EnvLoaderService } from "../interfaces/env-loader.js"
 import { HealthChecker, type HealthChecker as HealthCheckerService } from "../interfaces/health-checker.js"
@@ -362,11 +363,79 @@ class TrackingBinInstaller extends CaptureBinInstaller {
   }
 }
 
+class RigBinCaptureInstaller extends CaptureBinInstaller {
+  override install(name: string, env: string, _binaryPath: string) {
+    return Effect.succeed(rigBinPath(name, env))
+  }
+}
+
 const writeRigConfig = async (repoPath: string, config: unknown) => {
   await writeFile(join(repoPath, "rig.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8")
 }
 
 describe("GIVEN suite context WHEN lifecycle command orchestration THEN behavior is covered", () => {
+  test("GIVEN installed rig bin directory is not on PATH WHEN start installs a bin THEN it warns with the expected bin directory", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-bin-path-warning-"))
+    const previousPath = process.env.PATH
+    const previousRigRoot = process.env.RIG_ROOT
+    process.env.PATH = "/usr/bin:/bin"
+    process.env.RIG_ROOT = join(repoPath, ".rig-state")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "1.2.3",
+      environments: {
+        dev: {
+          services: [{ name: "tool", type: "bin", entrypoint: "dist/tool" }],
+        },
+      },
+    })
+
+    const logger = new CaptureLogger()
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      StubPortCheckerLive,
+      StubHookRunnerLive,
+      Layer.succeed(Logger, logger),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new StaticWorkspace(repoPath)),
+      Layer.succeed(ServiceRunner, new CaptureServiceRunner()),
+      Layer.succeed(HealthChecker, new CaptureHealthChecker()),
+      Layer.succeed(EnvLoader, new StaticEnvLoader({})),
+      Layer.succeed(BinInstaller, new RigBinCaptureInstaller()),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runStartCommand({ name: "pantry", env: "dev", foreground: false }).pipe(Effect.provide(layer)),
+      )
+
+      expect(exitCode).toBe(0)
+      expect(
+        logger.warnings.some(
+          (warning) =>
+            warning.message === "Installed rig bin directory is not on PATH." &&
+            warning.details?.binDir === join(process.env.RIG_ROOT!, "bin"),
+        ),
+      ).toBe(true)
+    } finally {
+      if (previousPath === undefined) {
+        delete process.env.PATH
+      } else {
+        process.env.PATH = previousPath
+      }
+
+      if (previousRigRoot === undefined) {
+        delete process.env.RIG_ROOT
+      } else {
+        process.env.RIG_ROOT = previousRigRoot
+      }
+
+      await rm(repoPath, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN test setup WHEN start uses dependency order, runs hooks, and applies env precedence THEN expected behavior is observed", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-lifecycle-start-"))
     const hookLog = join(repoPath, "hooks.log")

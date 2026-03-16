@@ -1,4 +1,4 @@
-import { join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { Effect } from "effect"
 
 import { BinInstaller } from "../interfaces/bin-installer.js"
@@ -54,6 +54,35 @@ type LoadedRuntimeTarget = {
 
 const HEALTH_POLL_INTERVAL_MS = 500
 const FOREGROUND_MONITOR_INTERVAL_MS = 500
+
+const isBinDirOnPath = (binDir: string): boolean => {
+  const pathValue = process.env.PATH
+  if (!pathValue) {
+    return false
+  }
+
+  const expected = resolve(binDir)
+  return pathValue
+    .split(":")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .some((entry) => resolve(entry) === expected)
+}
+
+const warnIfBinDirMissingFromPath = (
+  logger: Logger,
+  installedPath: string,
+) => {
+  const binDir = dirname(installedPath)
+  if (isBinDirOnPath(binDir)) {
+    return Effect.void
+  }
+
+  return logger.warn("Installed rig bin directory is not on PATH.", {
+    binDir,
+    hint: `Add ${binDir} to PATH so installed rig binaries are discoverable.`,
+  })
+}
 
 const resolveCheckType = (target: string): "http" | "command" =>
   target.startsWith("http://") || target.startsWith("https://") ? "http" : "command"
@@ -699,6 +728,7 @@ export const runStartCommand = (args: StartArgs) => {
         service: service.name,
         shimPath,
       })
+      yield* warnIfBinDirMissingFromPath(logger, shimPath)
     }
 
     const bins: InstalledBinMap = {}

@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { Effect, Layer } from "effect"
 
+import { rigSmokeLaunchdBackupRoot, rigSmokeStatePath } from "../core/rig-paths.js"
 import {
   ProcessManager,
   type DaemonConfig,
@@ -22,8 +22,8 @@ interface PersistedState {
   readonly daemons: Readonly<Record<string, PersistedDaemonState>>
 }
 
-const STATE_PATH = () => join(homedir(), ".rig", "smoke-process-manager.json")
-const BACKUP_DIR = () => join(homedir(), ".rig", "smoke-launchd-backups")
+const STATE_PATH = () => rigSmokeStatePath()
+const BACKUP_DIR = () => rigSmokeLaunchdBackupRoot()
 const FAILURE_SPEC_ENV = "RIG_SMOKE_PROCESS_FAIL"
 const PID_BASE = 20_000
 

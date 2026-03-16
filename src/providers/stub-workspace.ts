@@ -1,12 +1,12 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer } from "effect"
 
+import { rigWorkspacesRoot } from "../core/rig-paths.js"
 import { Workspace, type Workspace as WorkspaceService, type WorkspaceInfo } from "../interfaces/workspace.js"
 import { WorkspaceError } from "../schema/errors.js"
 
 const workspacePath = (name: string, env: string, version: string): string =>
-  join(homedir(), ".rig", "workspaces", name, env, version)
+  join(rigWorkspacesRoot(), name, env, version)
 
 const keyFor = (name: string, env: "dev" | "prod") => `${name}:${env}`
 

@@ -37,6 +37,18 @@ export const InitArgsSchema = z
   })
   .describe("Arguments for 'rig init <name> --path <project-path>'.")
 
+// ── rig forget ──────────────────────────────────────────────────────────────
+
+export const ForgetArgsSchema = z
+  .object({
+    name: ProjectName.describe("Registered project name to forget."),
+    purge: z
+      .boolean()
+      .default(false)
+      .describe("Also remove rig-managed state for the project."),
+  })
+  .describe("Arguments for 'rig forget <name> [--purge]'.")
+
 // ── rig deploy ──────────────────────────────────────────────────────────────
 
 export const DeployArgsSchema = z
@@ -286,6 +298,7 @@ export const ListArgsSchema = z
 // ── Inferred Types ──────────────────────────────────────────────────────────
 
 export type InitArgs = z.infer<typeof InitArgsSchema>
+export type ForgetArgs = z.infer<typeof ForgetArgsSchema>
 export type DeployArgs = z.infer<typeof DeployArgsSchema>
 export type StartArgs = z.infer<typeof StartArgsSchema>
 export type StopArgs = z.infer<typeof StopArgsSchema>

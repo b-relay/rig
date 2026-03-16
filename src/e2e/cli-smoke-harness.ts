@@ -45,6 +45,7 @@ interface PortPair {
 export interface SmokeProject {
   readonly tempRoot: string
   readonly homeDir: string
+  readonly rigRootDir: string
   readonly repoPath: string
   readonly name: string
   readonly ports: PortPair
@@ -325,12 +326,14 @@ export const createSmokeProject = async (
 ): Promise<SmokeProject> => {
   const tempRoot = await mkdtemp(join(tmpdir(), "rig-smoke-"))
   const homeDir = join(tempRoot, "home")
+  const rigRootDir = join(tempRoot, "rig-root")
   const repoPath = join(tempRoot, "repo")
   const name = opts.name ?? "pantry"
   const web = await allocatePort()
   const worker = opts.multiService ? await allocatePort() : undefined
 
   await mkdir(homeDir, { recursive: true })
+  await mkdir(rigRootDir, { recursive: true })
   await mkdir(repoPath, { recursive: true })
 
   await writeFile(
@@ -385,6 +388,7 @@ export const createSmokeProject = async (
   return {
     tempRoot,
     homeDir,
+    rigRootDir,
     repoPath,
     name,
     ports: { web, worker },
@@ -404,10 +408,12 @@ export const createSmokeFixtureProject = async (
 ): Promise<SmokeProject> => {
   const tempRoot = await mkdtemp(join(tmpdir(), "rig-smoke-fixture-"))
   const homeDir = join(tempRoot, "home")
+  const rigRootDir = join(tempRoot, "rig-root")
   const repoPath = join(tempRoot, "repo")
   const name = fixture.name ?? fixture.rigConfig.name
 
   await mkdir(homeDir, { recursive: true })
+  await mkdir(rigRootDir, { recursive: true })
   await mkdir(repoPath, { recursive: true })
 
   for (const file of fixture.files) {
@@ -425,6 +431,7 @@ export const createSmokeFixtureProject = async (
   return {
     tempRoot,
     homeDir,
+    rigRootDir,
     repoPath,
     name,
     ports: { web: 0 },
@@ -460,6 +467,7 @@ export const runSmokeCommand = async (
     signal: opts?.signal,
     env: {
       HOME: project.homeDir,
+      RIG_ROOT: project.rigRootDir,
       RIG_LOG_FILE: undefined,
       RIG_LOG_FORMAT: undefined,
       ...opts?.env,

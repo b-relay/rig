@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { describe, expect, test } from "bun:test"
+import { dirname, join } from "node:path"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
 import { runVersionCommand } from "./version.js"
+import { versionHistoryPath } from "./state-paths.js"
 import { Git, type Git as GitService } from "../interfaces/git.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import { Registry, type Registry as RegistryService } from "../interfaces/registry.js"
@@ -42,6 +43,16 @@ class CaptureLogger implements LoggerService {
     return Effect.void
   }
 }
+
+const PREVIOUS_RIG_ROOT = process.env.RIG_ROOT
+
+afterEach(() => {
+  if (PREVIOUS_RIG_ROOT === undefined) {
+    delete process.env.RIG_ROOT
+  } else {
+    process.env.RIG_ROOT = PREVIOUS_RIG_ROOT
+  }
+})
 
 class StaticRegistry implements RegistryService {
   constructor(private readonly repoPath: string) {}
@@ -113,6 +124,10 @@ class StaticGit implements GitService {
 
   tagExists(_repoPath: string, _tag: string): Effect.Effect<boolean, GitError> {
     return Effect.succeed(false)
+  }
+
+  listTags(_repoPath: string): Effect.Effect<readonly string[], GitError> {
+    return Effect.succeed([])
   }
 
   commitHasTag(_repoPath: string, _commit: string): Effect.Effect<string | null, GitError> {
@@ -203,10 +218,14 @@ const writeRigConfig = async (repoPath: string, version: string) => {
   )
 }
 
-const writeVersionHistory = async (repoPath: string, entries: readonly Record<string, string>[]) => {
-  await mkdir(join(repoPath, ".rig", "versions"), { recursive: true })
+const setTestStateRoot = (rootPath: string) => {
+  process.env.RIG_ROOT = join(rootPath, ".rig-state")
+}
+
+const writeVersionHistory = async (_repoPath: string, entries: readonly Record<string, string | null>[]) => {
+  await mkdir(dirname(versionHistoryPath("pantry")), { recursive: true })
   await writeFile(
-    join(repoPath, ".rig", "versions", "pantry.json"),
+    versionHistoryPath("pantry"),
     `${JSON.stringify({ name: "pantry", entries }, null, 2)}\n`,
     "utf8",
   )
@@ -229,6 +248,7 @@ const createLayer = (
 describe("GIVEN suite context WHEN version command executes THEN behavior is covered", () => {
   test("GIVEN release history WHEN version runs without a target THEN it shows release rows with latest/current markers", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-version-show-"))
+    setTestStateRoot(repoPath)
     await writeRigConfig(repoPath, "1.3.0")
     await writeVersionHistory(repoPath, [
       {
@@ -288,6 +308,7 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
 
   test("GIVEN release history with no active prod deployment WHEN version runs THEN no row is marked current", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-version-history-no-current-"))
+    setTestStateRoot(repoPath)
     await writeRigConfig(repoPath, "1.2.3")
     await writeVersionHistory(repoPath, [
       {
@@ -334,6 +355,7 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
 
   test("GIVEN a targeted release edit WHEN edit uses a bump keyword THEN tag history and workspace version are rewritten", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-version-edit-"))
+    setTestStateRoot(repoPath)
     await writeRigConfig(repoPath, "1.4.0")
     const workspacePath = join(repoPath, ".workspaces", "prod", "1.2.3")
     await mkdir(workspacePath, { recursive: true })
@@ -399,7 +421,7 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     )
 
     const updatedHistory = JSON.parse(
-      await Bun.file(join(repoPath, ".rig", "versions", "pantry.json")).text(),
+      await Bun.file(versionHistoryPath("pantry")).text(),
     ) as { entries: Array<{ action: string; newVersion: string }> }
 
     expect(exitCode).toBe(0)
@@ -416,6 +438,7 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
 
   test("GIVEN a targeted release commit already has another release tag WHEN edit runs THEN it fails", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-version-edit-duplicate-tag-"))
+    setTestStateRoot(repoPath)
     await writeRigConfig(repoPath, "1.4.0")
     await writeVersionHistory(repoPath, [
       {
@@ -459,4 +482,62 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
 
     await rm(repoPath, { recursive: true, force: true })
   })
+
+  test("GIVEN missing XDG history and existing tags WHEN version runs THEN history is rebuilt and cached", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-rebuild-"))
+    setTestStateRoot(repoPath)
+    await writeRigConfig(repoPath, "1.3.0")
+
+    class RebuildingGit extends StaticGit {
+      override listTags(_repoPath: string) {
+        return Effect.succeed(["v1.3.0", "not-a-release", "v1.2.3"] as const)
+      }
+    }
+
+    const logger = new CaptureLogger()
+    const layer = createLayer(repoPath, logger, new RebuildingGit())
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry" }).pipe(Effect.provide(layer)),
+    )
+
+    const rebuiltHistory = JSON.parse(await Bun.file(versionHistoryPath("pantry")).text()) as {
+      entries: Array<{ action: string; oldVersion: string; newVersion: string; changedAt: string | null }>
+    }
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toEqual([
+      [
+        {
+          version: "1.3.0",
+          commit: "abc1234",
+          changedAt: "N/A",
+          markers: "latest",
+        },
+        {
+          version: "1.2.3",
+          commit: "abc1234",
+          changedAt: "N/A",
+          markers: null,
+        },
+      ],
+    ])
+    expect(rebuiltHistory.entries).toEqual([
+      {
+        action: "reconstructed",
+        oldVersion: "0.0.0",
+        newVersion: "1.2.3",
+        changedAt: null,
+      },
+      {
+        action: "reconstructed",
+        oldVersion: "1.2.3",
+        newVersion: "1.3.0",
+        changedAt: null,
+      },
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
 })

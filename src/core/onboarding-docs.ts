@@ -821,7 +821,7 @@ export const ONBOARDING_TOPICS: readonly OnboardingTopicDefinition[] = [
     title: "CLI",
     summary: "CLI/bin apps, standalone or paired with a shared backend.",
     intro:
-      "Use this when the main product surface is a command-line tool. In dev, a command-style `bin` entrypoint is fine. In prod, prefer a compiled binary build with a file entrypoint so rig installs a concrete artifact into ~/.local/bin.",
+      "Use this when the main product surface is a command-line tool. In dev, a command-style `bin` entrypoint is fine. In prod, prefer a compiled binary build with a file entrypoint so rig installs a concrete artifact into the rig-managed bin directory under ~/.rig/bin by default.",
     variants: [
       {
         id: "cli-standalone",
@@ -839,7 +839,7 @@ export const ONBOARDING_TOPICS: readonly OnboardingTopicDefinition[] = [
           "rig stop my-app prod",
         ],
         pitfalls: [
-          "Use a `bin` service, not a `server`, for tools that should be installed into ~/.local/bin.",
+          "Use a `bin` service, not a `server`, for tools that should be installed into the rig-managed bin directory under ~/.rig/bin by default.",
           "A command-string entrypoint is fine in dev, but prod should usually build a binary and point entrypoint at the built file.",
           "Use `rig stop` to uninstall the managed shim cleanly.",
         ],

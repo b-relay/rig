@@ -1,19 +1,20 @@
-import { join } from "node:path"
 import { Effect } from "effect"
 
 import { FileSystem } from "../interfaces/file-system.js"
-import { CliArgumentError } from "../schema/errors.js"
+import { Git } from "../interfaces/git.js"
+import { CliArgumentError, GitError } from "../schema/errors.js"
+import { versionHistoryPath } from "./state-paths.js"
 
 const SEMVER_RE = /^\d+\.\d+\.\d+$/
 
 export type BumpAction = "patch" | "minor" | "major"
-export type ReleaseAction = BumpAction | "edit"
+export type ReleaseAction = BumpAction | "edit" | "reconstructed"
 
 export interface VersionHistoryEntry {
   readonly action: ReleaseAction
   readonly oldVersion: string
   readonly newVersion: string
-  readonly changedAt: string
+  readonly changedAt: string | null
 }
 
 export interface VersionHistory {
@@ -21,16 +22,13 @@ export interface VersionHistory {
   readonly entries: readonly VersionHistoryEntry[]
 }
 
-export const versionHistoryPath = (repoPath: string, name: string) =>
-  join(repoPath, ".rig", "versions", `${name}.json`)
-
 export const versionTag = (version: string): string => `v${version}`
 
 export const isBumpAction = (value: unknown): value is BumpAction =>
   value === "patch" || value === "minor" || value === "major"
 
 const isReleaseAction = (value: unknown): value is ReleaseAction =>
-  value === "edit" || isBumpAction(value)
+  value === "edit" || value === "reconstructed" || isBumpAction(value)
 
 export const readRigJson = (configPath: string) =>
   Effect.gen(function* () {
@@ -61,7 +59,7 @@ export const writeRigJsonVersion = (configPath: string, version: string) =>
     )
   })
 
-export const readVersionHistory = (historyPath: string, name: string) =>
+export const readVersionHistoryFile = (historyPath: string, name: string) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem
     const exists = yield* fileSystem.exists(historyPath)
@@ -123,7 +121,7 @@ export const readVersionHistory = (historyPath: string, name: string) =>
         !isReleaseAction(action) ||
         typeof oldVersion !== "string" ||
         typeof newVersion !== "string" ||
-        typeof changedAt !== "string"
+        !(typeof changedAt === "string" || changedAt === null)
       ) {
         return null
       }
@@ -157,6 +155,74 @@ export const writeVersionHistory = (historyPath: string, history: VersionHistory
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem
     yield* fileSystem.write(historyPath, `${JSON.stringify(history, null, 2)}\n`)
+  })
+
+const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+$/
+
+const listReleaseVersions = (repoPath: string) =>
+  Effect.gen(function* () {
+    const git = yield* Git
+    const tags = yield* git.listTags(repoPath)
+    const versions = tags
+      .filter((tag) => RELEASE_TAG_RE.test(tag))
+      .map((tag) => tag.slice(1))
+
+    const sorted = [...versions]
+    for (let index = 0; index < sorted.length; index += 1) {
+      for (let inner = index + 1; inner < sorted.length; inner += 1) {
+        const comparison = yield* compareVersions(sorted[index], sorted[inner])
+        if (comparison > 0) {
+          ;[sorted[index], sorted[inner]] = [sorted[inner], sorted[index]]
+        }
+      }
+    }
+
+    return sorted
+  })
+
+const rebuildVersionHistory = (repoPath: string, name: string) =>
+  Effect.gen(function* () {
+    const versions = yield* listReleaseVersions(repoPath)
+
+    return {
+      name,
+      entries: versions.map((version, index) => ({
+        action: "reconstructed" as const,
+        oldVersion: index === 0 ? "0.0.0" : versions[index - 1],
+        newVersion: version,
+        changedAt: null,
+      })),
+    } satisfies VersionHistory
+  })
+
+const isMissingGitRepo = (error: GitError): boolean =>
+  error.operation === "listTags" && error.stderr.includes("not a git repository")
+
+export const loadVersionHistory = (repoPath: string, name: string) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem
+    const preferredPath = versionHistoryPath(name)
+    const preferredExists = yield* fileSystem.exists(preferredPath)
+
+    if (preferredExists) {
+      return yield* readVersionHistoryFile(preferredPath, name)
+    }
+
+    const rebuilt = yield* rebuildVersionHistory(repoPath, name).pipe(
+      Effect.catchIf(
+        (error): error is GitError => error instanceof GitError && isMissingGitRepo(error),
+        () =>
+          Effect.succeed({
+            name,
+            entries: [],
+          } satisfies VersionHistory),
+      ),
+    )
+    if (rebuilt.entries.length > 0) {
+      yield* writeVersionHistory(preferredPath, rebuilt)
+    }
+
+    return rebuilt
   })
 
 export const parseVersion = (

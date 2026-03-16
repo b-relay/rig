@@ -1,8 +1,8 @@
-import { homedir } from "node:os"
 import { join, basename } from "node:path"
 import { readlink } from "node:fs/promises"
 import { Effect, Layer } from "effect"
 
+import { rigWorkspacesRoot } from "../core/rig-paths.js"
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
 import { Git, type Git as GitService } from "../interfaces/git.js"
 import { Registry, type Registry as RegistryService } from "../interfaces/registry.js"
@@ -11,7 +11,7 @@ import { WorkspaceError } from "../schema/errors.js"
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 
-const rigBase = () => join(homedir(), ".rig", "workspaces")
+const rigBase = () => rigWorkspacesRoot()
 
 const workspacePath = (name: string, env: string, version?: string): string =>
   version

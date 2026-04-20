@@ -28,6 +28,7 @@ import {
   type BumpAction,
   type VersionHistory,
 } from "./release.js"
+import { requireActiveProdWorkspace, validateActiveProdWorkspaceIfPresent } from "./prod-state.js"
 import { versionHistoryPath } from "./state-paths.js"
 import { configError, daemonLabel } from "./shared.js"
 import { runStartCommand, runStopCommand } from "./lifecycle.js"
@@ -341,6 +342,7 @@ const runRevertDeployCommand = (args: DeployArgs): Effect.Effect<number, RigErro
     const workspace = yield* Workspace
     const git = yield* Git
     const loaded = yield* loadProjectConfig(args.name)
+    yield* validateActiveProdWorkspaceIfPresent("deploy", args.name)
     const configPath = join(loaded.repoPath, "rig.json")
     const historyPath = versionHistoryPath(args.name)
     const history = yield* loadVersionHistory(loaded.repoPath, args.name)
@@ -422,6 +424,11 @@ export const runDeployCommand = (args: DeployArgs): Effect.Effect<number, RigErr
     let repoLoaded = yield* loadProjectConfig(args.name)
     const releaseAction = args.env === "prod" ? releaseActionFromArgs(args) : null
 
+    const activeProd =
+      args.env === "prod"
+        ? yield* validateActiveProdWorkspaceIfPresent("deploy", args.name)
+        : null
+
     if (releaseAction) {
       const mutation = yield* createReleaseMutation(args, repoLoaded, releaseAction)
       rollbackReleaseMutation = mutation.rollback
@@ -430,7 +437,9 @@ export const runDeployCommand = (args: DeployArgs): Effect.Effect<number, RigErr
 
     const targetVersion =
       args.env === "prod"
-        ? (args.version ?? repoLoaded.config.version)
+        ? releaseAction
+          ? repoLoaded.config.version
+          : (args.version ?? (activeProd ?? (yield* requireActiveProdWorkspace("deploy", args.name))).version)
         : repoLoaded.config.version
 
     const currentProdWorkspace =
@@ -476,10 +485,15 @@ export const runDeployCommand = (args: DeployArgs): Effect.Effect<number, RigErr
       args.env === "prod"
         ? yield* workspace.resolve(args.name, "prod", targetVersion)
         : yield* workspace.resolve(args.name, "dev")
-    const loaded =
+    let loaded =
       args.env === "prod"
         ? yield* loadProjectConfigAtPath(args.name, workspacePath)
         : repoLoaded
+
+    if (args.env === "prod" && releaseAction && loaded.config.version !== targetVersion) {
+      yield* writeRigJsonVersion(join(workspacePath, "rig.json"), targetVersion)
+      loaded = yield* loadProjectConfigAtPath(args.name, workspacePath)
+    }
     const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, args.env)
 
     if (reusedExistingProdWorkspace) {
@@ -538,6 +552,7 @@ export const runDeployCommand = (args: DeployArgs): Effect.Effect<number, RigErr
       yield* runStartCommand({
         name: args.name,
         env: args.env,
+        ...(args.env === "prod" ? { version: targetVersion } : {}),
         foreground: false,
       } as never)
     }

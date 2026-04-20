@@ -82,6 +82,7 @@ class StaticGit implements GitService {
     private readonly commitValue = "abc1234",
     private readonly dirty = false,
     private readonly tagsAtCommit: readonly string[] = [],
+    private readonly tags: readonly string[] = [],
   ) {}
 
   detectMainBranch(_repoPath: string): Effect.Effect<string, MainBranchDetectionError | GitError> {
@@ -127,7 +128,7 @@ class StaticGit implements GitService {
   }
 
   listTags(_repoPath: string): Effect.Effect<readonly string[], GitError> {
-    return Effect.succeed([])
+    return Effect.succeed(this.tags)
   }
 
   commitHasTag(_repoPath: string, _commit: string): Effect.Effect<string | null, GitError> {
@@ -269,7 +270,7 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     const layer = createLayer(
       repoPath,
       logger,
-      new StaticGit("main", "cafebabe", true),
+      new StaticGit("main", "cafebabe", true, [], ["v1.2.3", "v1.3.0"]),
       new StaticWorkspace([
         {
           name: "pantry",
@@ -326,7 +327,7 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
     ])
 
     const logger = new CaptureLogger()
-    const layer = createLayer(repoPath, logger)
+    const layer = createLayer(repoPath, logger, new StaticGit("main", "abc1234", false, [], ["v1.2.3", "v1.3.0"]))
 
     const exitCode = await Effect.runPromise(
       runVersionCommand({ name: "pantry" }).pipe(Effect.provide(layer)),
@@ -345,6 +346,66 @@ describe("GIVEN suite context WHEN version command executes THEN behavior is cov
           version: "1.2.3",
           commit: "abc1234",
           changedAt: "2026-03-09T00:00:00.000Z",
+          markers: null,
+        },
+      ],
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN duplicate history entries and a tagged version missing from history WHEN version runs THEN it shows unique versions including tagged releases", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-version-union-display-"))
+    setTestStateRoot(repoPath)
+    await writeRigConfig(repoPath, "0.2.2")
+    await writeVersionHistory(repoPath, [
+      {
+        action: "minor",
+        oldVersion: "0.1.0",
+        newVersion: "0.2.0",
+        changedAt: "2026-03-09T00:00:00.000Z",
+      },
+      {
+        action: "minor",
+        oldVersion: "0.1.0",
+        newVersion: "0.2.0",
+        changedAt: "2026-03-09T01:00:00.000Z",
+      },
+    ])
+
+    const logger = new CaptureLogger()
+    const layer = createLayer(
+      repoPath,
+      logger,
+      new StaticGit("main", "cafebabe", false, [], ["v0.2.0", "v0.2.2"]),
+      new StaticWorkspace([
+        {
+          name: "pantry",
+          env: "prod",
+          version: "0.2.2",
+          path: "/tmp/pantry/prod/0.2.2",
+          active: true,
+        },
+      ]),
+    )
+
+    const exitCode = await Effect.runPromise(
+      runVersionCommand({ name: "pantry" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(logger.tables).toEqual([
+      [
+        {
+          version: "0.2.2",
+          commit: "cafebab",
+          changedAt: "N/A",
+          markers: "latest, current",
+        },
+        {
+          version: "0.2.0",
+          commit: "cafebab",
+          changedAt: "2026-03-09T01:00:00.000Z",
           markers: null,
         },
       ],

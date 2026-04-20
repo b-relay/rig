@@ -13,6 +13,7 @@ import {
   bumpVersion,
   compareVersions,
   isBumpAction,
+  listReleaseVersions,
   loadVersionHistory,
   versionTag,
   writeRigJsonVersion,
@@ -91,6 +92,33 @@ const highestReleaseTag = (tags: readonly string[]) =>
 const shortCommit = (commit: string): string =>
   commit === "N/A" ? commit : commit.slice(0, SHORT_COMMIT_LENGTH)
 
+const uniqueVersions = (historyVersions: readonly string[], tagVersions: readonly string[]): readonly string[] => {
+  const seen = new Set<string>()
+  const merged: string[] = []
+
+  for (const version of [...historyVersions, ...tagVersions]) {
+    if (seen.has(version)) {
+      continue
+    }
+
+    seen.add(version)
+    merged.push(version)
+  }
+
+  return merged.sort((left, right) => {
+    const [leftMajor, leftMinor, leftPatch] = left.split(".").map(Number)
+    const [rightMajor, rightMinor, rightPatch] = right.split(".").map(Number)
+
+    if (leftMajor !== rightMajor) {
+      return rightMajor - leftMajor
+    }
+    if (leftMinor !== rightMinor) {
+      return rightMinor - leftMinor
+    }
+    return rightPatch - leftPatch
+  })
+}
+
 export const runVersionCommand = (args: VersionArgs) =>
   Effect.gen(function* () {
     const logger = yield* Logger
@@ -101,23 +129,32 @@ export const runVersionCommand = (args: VersionArgs) =>
     const historyPath = versionHistoryPath(args.name)
     const history = yield* loadVersionHistory(loaded.repoPath, args.name)
     const releaseState = yield* resolveProdReleaseState(args.name, loaded.repoPath)
+    const taggedVersions = yield* listReleaseVersions(loaded.repoPath).pipe(
+      Effect.catchAll(() => Effect.succeed([] as readonly string[])),
+    )
 
     if (!args.targetVersion) {
-      const rows = yield* Effect.forEach([...history.entries].reverse(), (entry) =>
+      const orderedVersions = uniqueVersions(
+        [...history.entries].map((entry) => entry.newVersion).reverse(),
+        [...taggedVersions].reverse(),
+      )
+
+      const rows = yield* Effect.forEach(orderedVersions, (version) =>
         Effect.gen(function* () {
+          const entry = [...history.entries].reverse().find((candidate) => candidate.newVersion === version) ?? null
           const markers = [
-            releaseState.latestProdVersion === entry.newVersion ? "latest" : null,
-            releaseState.currentProdVersion === entry.newVersion ? "current" : null,
+            releaseState.latestProdVersion === version ? "latest" : null,
+            releaseState.currentProdVersion === version ? "current" : null,
           ].filter((marker): marker is string => marker !== null)
 
           return {
-            version: entry.newVersion,
+            version,
             commit: shortCommit(
-              yield* git.commitHash(loaded.repoPath, versionTag(entry.newVersion)).pipe(
+              yield* git.commitHash(loaded.repoPath, versionTag(version)).pipe(
                 Effect.catchAll(() => Effect.succeed("N/A")),
               ),
             ),
-            changedAt: entry.changedAt ?? "N/A",
+            changedAt: entry?.changedAt ?? "N/A",
             markers: markers.length > 0 ? markers.join(", ") : null,
           }
         }),
@@ -129,14 +166,14 @@ export const runVersionCommand = (args: VersionArgs) =>
     }
 
     const entryIndex = history.entries.findIndex((entry) => entry.newVersion === args.targetVersion)
-    if (entryIndex === -1) {
+    if (entryIndex === -1 && args.edit) {
       return yield* Effect.fail(releaseNotFoundError(args.name, args.targetVersion))
     }
 
-    const entry = history.entries[entryIndex]
     const targetVersion = args.targetVersion
 
     if (!args.edit) {
+      const entry = entryIndex === -1 ? null : history.entries[entryIndex]
       const rows = yield* workspace.list(args.name)
       const prodWorkspace = rows.find(
         (row) => row.env === "prod" && row.version === args.targetVersion,
@@ -150,9 +187,9 @@ export const runVersionCommand = (args: VersionArgs) =>
       yield* logger.info("Version command resolved release.", {
         name: args.name,
         version: args.targetVersion,
-        action: entry.action,
-        oldVersion: entry.oldVersion,
-        changedAt: entry.changedAt,
+        action: entry?.action ?? "reconstructed",
+        oldVersion: entry?.oldVersion ?? null,
+        changedAt: entry?.changedAt ?? null,
         tagged,
         commit,
         deployed: prodWorkspace !== undefined,
@@ -163,6 +200,7 @@ export const runVersionCommand = (args: VersionArgs) =>
       return 0
     }
 
+    const entry = history.entries[entryIndex]
     const replacementVersion = isBumpAction(args.edit)
       ? yield* bumpVersion(entry.oldVersion, args.edit)
       : args.edit

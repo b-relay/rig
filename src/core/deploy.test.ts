@@ -105,7 +105,11 @@ class CaptureWorkspace implements WorkspaceService {
   readonly removeCalls: Array<{ readonly name: string; readonly env: "dev" | "prod"; readonly version: string }> = []
   readonly renameCalls: Array<{ readonly name: string; readonly env: "dev" | "prod"; readonly fromVersion: string; readonly toVersion: string }> = []
 
-  constructor(private readonly resolvedPath: string) {}
+  constructor(
+    private readonly resolvedPath: string,
+    private readonly rows: readonly WorkspaceInfo[] = [],
+    private readonly resolvedPaths: Readonly<Record<string, string>> = {},
+  ) {}
 
   create(name: string, env: "dev" | "prod", version: string, commitRef: string) {
     this.createCalls.push({ name, env, version, commitRef })
@@ -114,7 +118,9 @@ class CaptureWorkspace implements WorkspaceService {
 
   resolve(name: string, env: "dev" | "prod", version?: string) {
     this.resolveCalls.push({ name, env, version })
-    return Effect.succeed(this.resolvedPath)
+    return Effect.succeed(
+      this.resolvedPaths[`${name}:${env}:${version ?? "default"}`] ?? this.resolvedPath,
+    )
   }
 
   activate(name: string, env: "dev" | "prod", version: string) {
@@ -138,7 +144,7 @@ class CaptureWorkspace implements WorkspaceService {
   }
 
   list(_name: string) {
-    return Effect.succeed([] as readonly WorkspaceInfo[])
+    return Effect.succeed(this.rows)
   }
 }
 
@@ -593,7 +599,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     )
 
     const exitCode = await runTestEffect(
-      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
+      runDeployCommand({ name: "pantry", env: "prod", version: "1.2.3" }).pipe(Effect.provide(layer)),
     )
 
     expect(exitCode).toBe(0)
@@ -605,10 +611,13 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
         commitRef: "v1.2.3",
       },
     ])
-    expect(workspace.activateCalls).toEqual([{ name: "pantry", env: "prod", version: "1.2.3" }])
+    expect(workspace.activateCalls).toEqual([
+      { name: "pantry", env: "prod", version: "1.2.3" },
+      { name: "pantry", env: "prod", version: "1.2.3" },
+    ])
     expect(workspace.resolveCalls).toEqual([
       { name: "pantry", env: "prod", version: "1.2.3" },
-      { name: "pantry", env: "prod", version: undefined },
+      { name: "pantry", env: "prod", version: "1.2.3" },
     ])
     expect(reverseProxy.updateCalls).toEqual([
       {
@@ -622,6 +631,117 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     expect(processManager.installCalls).toEqual([])
     expect(processManager.uninstallCalls).toEqual(["rig.pantry.prod"])
     expect(logger.warnings).toEqual([])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN active prod differs from repo version WHEN plain prod deploy runs THEN it redeploys the active prod version", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-active-prod-"))
+    const activeWorkspacePath = join(repoPath, ".workspaces", "prod", "0.2.0")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "0.1.0",
+      domain: "pantry.example.com",
+      environments: {
+        prod: {
+          services: [{ name: "web", type: "server", command: "echo web", port: 3070 }],
+        },
+      },
+    })
+    await writeRigConfig(activeWorkspacePath, {
+      name: "pantry",
+      version: "0.2.0",
+      domain: "pantry.example.com",
+      environments: {
+        prod: {
+          services: [{ name: "web", type: "server", command: "echo web", port: 3070 }],
+        },
+      },
+    })
+
+    const workspace = new CaptureWorkspace(
+      activeWorkspacePath,
+      [
+        {
+          name: "pantry",
+          env: "prod",
+          version: "0.2.0",
+          path: activeWorkspacePath,
+          active: true,
+        },
+      ],
+      {
+        "pantry:prod:0.2.0": activeWorkspacePath,
+        "pantry:prod:default": activeWorkspacePath,
+      },
+    )
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, workspace),
+      Layer.succeed(ReverseProxy, new CaptureReverseProxy([])),
+      Layer.succeed(ProcessManager, new CaptureProcessManager()),
+      runtimeLayer(),
+    )
+
+    const exitCode = await runTestEffect(
+      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exitCode).toBe(0)
+    expect(workspace.createCalls).toEqual([])
+    expect(workspace.activateCalls).toEqual([
+      { name: "pantry", env: "prod", version: "0.2.0" },
+      { name: "pantry", env: "prod", version: "0.2.0" },
+    ])
+    expect(workspace.resolveCalls).toEqual([
+      { name: "pantry", env: "prod", version: "0.2.0" },
+      { name: "pantry", env: "prod", version: "0.2.0" },
+    ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN no active prod deployment WHEN plain prod deploy runs THEN it fails with a targeted hint", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-deploy-no-active-prod-"))
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "0.1.0",
+      environments: {
+        prod: {
+          services: [{ name: "web", type: "server", command: "echo web", port: 3070 }],
+        },
+      },
+    })
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry(repoPath)),
+      Layer.succeed(Workspace, new CaptureWorkspace(repoPath)),
+      Layer.succeed(ReverseProxy, new CaptureReverseProxy([])),
+      Layer.succeed(ProcessManager, new CaptureProcessManager()),
+      runtimeLayer(),
+    )
+
+    const result = await runTestEffect(
+      runDeployCommand({ name: "pantry", env: "prod" }).pipe(
+        Effect.provide(layer),
+        Effect.either,
+      ),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left._tag).toBe("CliArgumentError")
+      expect(result.left.message).toContain("does not have an active prod deployment")
+      expect(result.left.hint).toContain("--bump")
+      expect(result.left.hint).toContain("--version")
+    }
 
     await rm(repoPath, { recursive: true, force: true })
   })
@@ -970,13 +1090,13 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     )
 
     const exitCode = await runTestEffect(
-      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
+      runDeployCommand({ name: "pantry", env: "prod", version: "1.0.0" }).pipe(Effect.provide(layer)),
     )
 
     expect(exitCode).toBe(0)
     expect(workspace.resolveCalls).toEqual([
       { name: "pantry", env: "prod", version: "1.0.0" },
-      { name: "pantry", env: "prod", version: undefined },
+      { name: "pantry", env: "prod", version: "1.0.0" },
     ])
     expect(logger.warnings).toEqual([
       {
@@ -1327,7 +1447,10 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     )
 
     const result = await runTestEffect(
-      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer), Effect.either),
+      runDeployCommand({ name: "pantry", env: "prod", version: "1.0.0" }).pipe(
+        Effect.provide(layer),
+        Effect.either,
+      ),
     )
 
     expect(result._tag).toBe("Left")
@@ -1476,7 +1599,7 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
     )
 
     const exitCode = await runTestEffect(
-      runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer)),
+      runDeployCommand({ name: "pantry", env: "prod", version: "1.0.0" }).pipe(Effect.provide(layer)),
     )
 
     expect(exitCode).toBe(0)
@@ -1547,7 +1670,10 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
 
     expect(exitCode).toBe(0)
     expect(git.createdTags).toEqual(["v1.3.0"])
-    expect(workspace.activateCalls).toEqual([{ name: "pantry", env: "prod", version: "1.3.0" }])
+    expect(workspace.activateCalls).toEqual([
+      { name: "pantry", env: "prod", version: "1.3.0" },
+      { name: "pantry", env: "prod", version: "1.3.0" },
+    ])
 
     await rm(repoPath, { recursive: true, force: true })
   })
@@ -1644,6 +1770,15 @@ describe("GIVEN suite context WHEN deploy command orchestration THEN behavior is
       )}\n`,
       "utf8",
     )
+    await writeRigConfig(join(repoPath, ".workspaces", "prod", "1.0.1"), {
+      name: "pantry",
+      version: "1.0.1",
+      environments: {
+        prod: {
+          services: [{ name: "web", type: "server", command: "echo web", port: 3070 }],
+        },
+      },
+    })
 
     class PinnedWorkspace extends CaptureWorkspace {
       override list(_name: string) {

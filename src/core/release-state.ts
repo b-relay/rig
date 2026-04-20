@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 
 import { Workspace } from "../interfaces/workspace.js"
-import { loadVersionHistory } from "./release.js"
+import { latestReleaseVersion } from "./release.js"
 
 export interface ProdReleaseState {
   readonly latestProdVersion: string | null
@@ -11,11 +11,13 @@ export interface ProdReleaseState {
 export const resolveProdReleaseState = (name: string, repoPath: string) =>
   Effect.gen(function* () {
     const workspace = yield* Workspace
-    const history = yield* loadVersionHistory(repoPath, name)
+    const latestProdVersion = yield* latestReleaseVersion(repoPath).pipe(
+      Effect.catchAll(() => Effect.succeed(null)),
+    )
     const workspaces = yield* workspace.list(name)
 
     return {
-      latestProdVersion: history.entries.at(-1)?.newVersion ?? null,
+      latestProdVersion,
       currentProdVersion:
         workspaces.find((entry) => entry.env === "prod" && entry.active)?.version ?? null,
     } satisfies ProdReleaseState

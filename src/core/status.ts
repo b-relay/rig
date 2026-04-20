@@ -7,7 +7,9 @@ import { ProcessManager } from "../interfaces/process-manager.js"
 import { Registry } from "../interfaces/registry.js"
 import { Workspace } from "../interfaces/workspace.js"
 import type { StatusArgs } from "../schema/args.js"
+import { CliArgumentError } from "../schema/errors.js"
 import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment } from "./config.js"
+import { requireActiveProdWorkspace } from "./prod-state.js"
 import { resolveProdReleaseState } from "./release-state.js"
 import { daemonLabel } from "./shared.js"
 
@@ -151,6 +153,27 @@ export const runStatusCommand = (args: StatusArgs) =>
           env === "prod" && workspacePath
             ? yield* loadProjectConfigAtPath(name, workspacePath)
             : project
+        if (env === "prod" && workspacePath) {
+          const expectedVersion =
+            args.version ??
+            (yield* requireActiveProdWorkspace("status", name)).version
+          if (loaded.config.version !== expectedVersion) {
+            return yield* Effect.fail(
+              new CliArgumentError(
+                "status",
+                `Active prod workspace '${expectedVersion}' for project '${name}' is inconsistent.`,
+                `Repair or redeploy prod version '${expectedVersion}' before retrying. Workspace rig.json reports '${loaded.config.version}'.`,
+                {
+                  name,
+                  env,
+                  workspaceVersion: expectedVersion,
+                  configVersion: loaded.config.version,
+                  workspacePath,
+                },
+              ),
+            )
+          }
+        }
         const environment = yield* resolveEnvironment(loaded.configPath, loaded.config, env)
         const label = daemonLabel(name, env)
         const daemon = yield* processManager.status(label).pipe(

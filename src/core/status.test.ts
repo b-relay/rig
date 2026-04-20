@@ -26,7 +26,17 @@ import {
 } from "../interfaces/workspace.js"
 import { NodeFileSystemLive } from "../providers/node-fs.js"
 import { StubGit } from "../providers/stub-git.js"
-import { ConfigValidationError, ProcessError, RegistryError, type RigError } from "../schema/errors.js"
+import { ConfigValidationError, ProcessError, RegistryError, WorkspaceError, type RigError } from "../schema/errors.js"
+
+class TaggedGit extends StubGit {
+  constructor(private readonly tags: readonly string[]) {
+    super()
+  }
+
+  override listTags(_repoPath: string) {
+    return Effect.succeed(this.tags)
+  }
+}
 
 class CaptureLogger implements LoggerService {
   readonly tables: Array<readonly Record<string, unknown>[]> = []
@@ -148,8 +158,16 @@ class StaticWorkspace implements WorkspaceService {
   }
 
   resolve(name: string, env: "dev" | "prod", version?: string) {
-    if (env === "prod" && version) {
-      return Effect.succeed(this.pathsByKey[`${name}:${env}:${version}`] ?? this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
+    if (env === "prod") {
+      const key = version ? `${name}:${env}:${version}` : `${name}:${env}`
+      const path = this.pathsByKey[key]
+      if (!path) {
+        return Effect.fail(
+          new WorkspaceError("resolve", name, env, "No active prod deployment.", "Deploy prod first."),
+        )
+      }
+
+      return Effect.succeed(path)
     }
 
     return Effect.succeed(this.pathsByKey[`${name}:${env}`] ?? "/tmp/workspace")
@@ -249,7 +267,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
-      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -327,7 +345,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
-      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -389,7 +407,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
-      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -443,7 +461,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
       Layer.succeed(Git, new StubGit()),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
-      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath, "pantry:prod": repoPath })),
+      Layer.succeed(Workspace, new StaticWorkspace({ "pantry:dev": repoPath })),
       Layer.succeed(ProcessManager, processManager),
     )
 
@@ -721,6 +739,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
   test("GIVEN prod is pinned older WHEN project status is called THEN it shows distinct latest and current prod versions", async () => {
     const repoPath = await mkdtemp(join(tmpdir(), "rig-status-prod-release-state-"))
+    const activeWorkspacePath = join(repoPath, ".workspaces", "prod", "0.2.0")
     process.env.RIG_ROOT = join(repoPath, ".rig-state")
     await writeRigConfig(repoPath, {
       name: "pantry",
@@ -733,32 +752,18 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         },
       },
     })
-    await mkdir(dirname(versionHistoryPath("pantry")), { recursive: true })
-    await writeFile(
-      versionHistoryPath("pantry"),
-      `${JSON.stringify(
-        {
-          name: "pantry",
-          entries: [
-            {
-              action: "minor",
-              oldVersion: "0.1.0",
-              newVersion: "0.2.0",
-              changedAt: "2026-03-08T00:00:00.000Z",
-            },
-            {
-              action: "minor",
-              oldVersion: "0.2.0",
-              newVersion: "0.3.0",
-              changedAt: "2026-03-09T00:00:00.000Z",
-            },
+    await mkdir(dirname(join(activeWorkspacePath, "rig.json")), { recursive: true })
+    await writeRigConfig(activeWorkspacePath, {
+      name: "pantry",
+      version: "0.2.0",
+      environments: {
+        prod: {
+          services: [
+            { name: "web", type: "server", command: "echo web", port: 3070 },
           ],
         },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    )
+      },
+    })
 
     const logger = new CaptureLogger()
     const processManager = new StaticProcessManager({
@@ -772,19 +777,19 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
 
     const layer = Layer.mergeAll(
       NodeFileSystemLive,
-      Layer.succeed(Git, new StubGit()),
+      Layer.succeed(Git, new TaggedGit(["v0.2.0", "v0.3.0"])),
       Layer.succeed(Logger, logger),
       Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
       Layer.succeed(
         Workspace,
         new StaticWorkspace(
-          { "pantry:prod": repoPath, "pantry:prod:0.2.0": repoPath },
+          { "pantry:prod": activeWorkspacePath, "pantry:prod:0.2.0": activeWorkspacePath },
           [
             {
               name: "pantry",
               env: "prod",
               version: "0.2.0",
-              path: repoPath,
+              path: activeWorkspacePath,
               active: true,
             },
           ],
@@ -804,7 +809,7 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         env: "prod",
         latestProdVersion: "0.3.0",
         currentProdVersion: "0.2.0",
-        version: "0.3.0",
+        version: "0.2.0",
         services: 1,
         daemonLoaded: true,
         daemonRunning: true,
@@ -817,6 +822,67 @@ describe("GIVEN suite context WHEN status command executes THEN behavior is cove
         uptimeSeconds: null,
       },
     ])
+
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  test("GIVEN active prod workspace version mismatches its rig.json WHEN prod status runs THEN it fails instead of reporting stale data", async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), "rig-status-prod-corrupt-"))
+    const activeWorkspacePath = join(repoPath, ".workspaces", "prod", "0.2.2")
+
+    await writeRigConfig(repoPath, {
+      name: "pantry",
+      version: "0.2.2",
+      environments: {
+        prod: {
+          services: [{ name: "web", type: "server", command: "echo web", port: 3070 }],
+        },
+      },
+    })
+    await mkdir(dirname(join(activeWorkspacePath, "rig.json")), { recursive: true })
+    await writeRigConfig(activeWorkspacePath, {
+      name: "pantry",
+      version: "0.2.0",
+      environments: {
+        prod: {
+          services: [{ name: "web", type: "server", command: "echo web", port: 3070 }],
+        },
+      },
+    })
+
+    const layer = Layer.mergeAll(
+      NodeFileSystemLive,
+      Layer.succeed(Git, new TaggedGit(["v0.2.0", "v0.2.2"])),
+      Layer.succeed(Logger, new CaptureLogger()),
+      Layer.succeed(Registry, new StaticRegistry({ pantry: repoPath })),
+      Layer.succeed(
+        Workspace,
+        new StaticWorkspace(
+          { "pantry:prod": activeWorkspacePath, "pantry:prod:0.2.2": activeWorkspacePath },
+          [
+            {
+              name: "pantry",
+              env: "prod",
+              version: "0.2.2",
+              path: activeWorkspacePath,
+              active: true,
+            },
+          ],
+        ),
+      ),
+      Layer.succeed(ProcessManager, new StaticProcessManager()),
+    )
+
+    const result = await Effect.runPromise(
+      runStatusCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(layer), Effect.either),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left._tag).toBe("CliArgumentError")
+      expect(result.left.message).toContain("is inconsistent")
+      expect(result.left.hint).toContain("Repair or redeploy")
+    }
 
     await rm(repoPath, { recursive: true, force: true })
   })

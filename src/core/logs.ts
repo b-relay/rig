@@ -13,6 +13,7 @@ import {
 import type { LogsArgs } from "../schema/args.js"
 import { CliArgumentError } from "../schema/errors.js"
 import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment } from "./config.js"
+import { requireActiveProdWorkspace, validateActiveProdWorkspaceIfPresent } from "./prod-state.js"
 
 const FOLLOW_POLL_MS = 250
 
@@ -183,6 +184,13 @@ export const runLogsCommand = (args: LogsArgs) =>
     const fileSystem = yield* FileSystem
     const serviceRunner = yield* ServiceRunner
     const workspace = yield* Workspace
+
+    if (args.env === "prod") {
+      yield* validateActiveProdWorkspaceIfPresent("logs", args.name)
+      if (!args.version) {
+        yield* requireActiveProdWorkspace("logs", args.name)
+      }
+    }
 
     const workspacePath =
       args.env === "prod"

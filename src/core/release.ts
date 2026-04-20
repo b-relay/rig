@@ -159,7 +159,7 @@ export const writeVersionHistory = (historyPath: string, history: VersionHistory
 
 const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+$/
 
-const listReleaseVersions = (repoPath: string) =>
+export const listReleaseVersions = (repoPath: string) =>
   Effect.gen(function* () {
     const git = yield* Git
     const tags = yield* git.listTags(repoPath)
@@ -178,6 +178,12 @@ const listReleaseVersions = (repoPath: string) =>
     }
 
     return sorted
+  })
+
+export const latestReleaseVersion = (repoPath: string) =>
+  Effect.gen(function* () {
+    const versions = yield* listReleaseVersions(repoPath)
+    return versions.at(-1) ?? null
   })
 
 const rebuildVersionHistory = (repoPath: string, name: string) =>

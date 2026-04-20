@@ -6,6 +6,7 @@ import { Effect, Layer } from "effect"
 
 import { runDeployCommand } from "../core/deploy.js"
 import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"
+import { rigWorkspacesRoot } from "../core/rig-paths.js"
 import { BinInstaller } from "../interfaces/bin-installer.js"
 import { EnvLoader, type EnvLoader as EnvLoaderService } from "../interfaces/env-loader.js"
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
@@ -314,18 +315,14 @@ const createHarness = (options: HarnessOptions): Harness => {
 
   if (inferredVersion) {
     const prodVersionPath = join(
-      homedir(),
-      ".rig",
-      "workspaces",
+      rigWorkspacesRoot(),
       projectName,
       "prod",
       inferredVersion,
       "rig.json",
     )
     const prodCurrentPath = join(
-      homedir(),
-      ".rig",
-      "workspaces",
+      rigWorkspacesRoot(),
       projectName,
       "prod",
       "current",
@@ -470,7 +467,7 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
       },
     })
 
-    const deploy = await run(runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(harness.layer)))
+    const deploy = await run(runDeployCommand({ name: "pantry", env: "prod", version: "2.3.4" }).pipe(Effect.provide(harness.layer)))
     const start = await run(runStartCommand({ name: "pantry", env: "prod", foreground: false }).pipe(Effect.provide(harness.layer)))
     const stop = await run(runStopCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(harness.layer)))
 
@@ -584,10 +581,13 @@ describe("GIVEN suite context WHEN E2E workflow coverage THEN behavior is covere
       },
     }, null, 2)}\n`)
 
-    const result = await run(runDeployCommand({ name: "pantry", env: "prod" }).pipe(Effect.provide(harness.layer)))
+    const result = await run(runDeployCommand({ name: "pantry", env: "prod", version: "1.0.0" }).pipe(Effect.provide(harness.layer)))
 
     expect(result).toBe(0)
-    expect(harness.workspace.activateCalls).toEqual([{ name: "pantry", env: "prod", version: "1.0.0" }])
+    expect(harness.workspace.activateCalls).toEqual([
+      { name: "pantry", env: "prod", version: "1.0.0" },
+      { name: "pantry", env: "prod", version: "1.0.0" },
+    ])
     expect(harness.logger.warnings.some((entry) => entry.message === "Redeploying existing tagged prod version.")).toBe(true)
   })
 

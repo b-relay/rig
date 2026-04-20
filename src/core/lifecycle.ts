@@ -23,6 +23,7 @@ import type { RestartArgs, StartArgs, StopArgs } from "../schema/args.js"
 import { CliArgumentError, ConfigValidationError, ServiceRunnerError } from "../schema/errors.js"
 import { loadProjectConfig, loadProjectConfigAtPath, resolveEnvironment } from "./config.js"
 import { configError, daemonLabel } from "./shared.js"
+import { requireActiveProdWorkspace, validateActiveProdWorkspaceIfPresent } from "./prod-state.js"
 
 type HookPhase = "preStart" | "postStart" | "preStop" | "postStop"
 
@@ -412,10 +413,14 @@ const resolveRuntimeConfig = (
     const workspace = yield* Workspace
 
     if (args.env === "prod") {
+      yield* validateActiveProdWorkspaceIfPresent("start", args.name)
+
       if (args.version) {
         yield* workspace.activate(args.name, "prod", args.version).pipe(
           Effect.catchTag("WorkspaceError", () => Effect.void),
         )
+      } else {
+        yield* requireActiveProdWorkspace("start", args.name)
       }
 
       const workspacePath = yield* workspace.resolve(args.name, "prod", args.version)
@@ -433,6 +438,7 @@ const resolveStopTarget = (args: StopArgs & { readonly version?: string }) =>
     const workspace = yield* Workspace
 
     if (args.env === "prod") {
+      yield* validateActiveProdWorkspaceIfPresent("stop", args.name)
       const workspaces = yield* workspace.list(args.name)
       const activeProd = workspaces.find((entry) => entry.env === "prod" && entry.active) ?? null
 
@@ -452,6 +458,7 @@ const resolveStopTarget = (args: StopArgs & { readonly version?: string }) =>
         return { loaded, workspacePath }
       }
 
+      yield* requireActiveProdWorkspace("stop", args.name)
       const workspacePath = yield* workspace.resolve(args.name, "prod")
       const loaded = yield* loadProjectConfigAtPath(args.name, workspacePath)
       return { loaded, workspacePath }

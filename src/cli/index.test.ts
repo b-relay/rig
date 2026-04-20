@@ -450,14 +450,14 @@ describe("lifecycle positional env parsing", () => {
   })
 
   test("stop accepts positional env", async () => {
-    const { exitCode, logger } = await runWithLogger(["stop", "pantry", "prod"])
+    const { exitCode, logger } = await runWithLogger(["stop", "pantry", "dev"])
 
     expect(exitCode).toBe(0)
     expect(logger.successes.some((entry) => entry.message === "Services stopped.")).toBe(true)
   })
 
   test("restart accepts positional env", async () => {
-    const { exitCode, logger } = await runWithLogger(["restart", "pantry", "prod"])
+    const { exitCode, logger } = await runWithLogger(["restart", "pantry", "dev"])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
@@ -481,7 +481,7 @@ describe("lifecycle positional env parsing", () => {
   })
 
   test("status accepts positional env", async () => {
-    const { exitCode, logger } = await runWithLogger(["status", "pantry", "prod"])
+    const { exitCode, logger } = await runWithLogger(["status", "pantry", "dev"])
 
     expect(exitCode).toBe(0)
     expect(logger.tables.at(-1)?.length).toBe(1)
@@ -638,11 +638,11 @@ describe("cwd autodetect", () => {
     expect(logger.successes.find((entry) => entry.message === "Deploy applied.")?.details?.name).toBe("testapp")
   })
 
-  test("supports stop prod from the project root", async () => {
+  test("supports stop dev from the project root", async () => {
     const cwd = await mkdtemp(join(tempRoot, "rig-cli-cwd-stop-"))
     await writeRigConfig(cwd, "testapp")
 
-    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["stop", "prod"])
+    const { exitCode, logger } = await runWithLoggerInCwd(cwd, ["stop", "dev"])
 
     expect(exitCode).toBe(0)
     expect(logger.successes.find((entry) => entry.message === "Services stopped.")?.details?.name).toBe("testapp")

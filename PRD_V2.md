@@ -319,15 +319,8 @@ The next milestone should make provider selection explicit enough that the main 
 
 The most consequential milestone is `rigd`. It should be treated as the boundary between legacy command-assembled runtime truth and the v2 control-plane model. The CLI can migrate incrementally, but new runtime-facing functionality should be designed around `rigd` ownership.
 
-Open product decisions still need resolution before implementation is complete:
+The initial v2 operating decisions are recorded in `DESIGN_V2.md`. In short: cross-project operations use `--project <name>`, repo-first commands outside a managed repo fail unless explicitly targeted, path-based lifecycle targeting is rejected, simultaneous same-port runtime conflicts fail during preflight, health checks must be tied to rig-owned runtime state, explicit status for undeployed runtime targets fails, and aggregate runtime logs include managed components only.
 
-- The final cross-project selector flag.
-- Behavior when repo-first commands run outside a managed repo.
-- Whether path-based targeting is part of the explicit selector model.
-- Whether the smoke binary is removed entirely or kept temporarily as a thin harness.
-- Whether same-port `local` and `live` runtimes are categorically disallowed.
-- Whether health validation must be tied to process ownership, port ownership, or both.
-- Whether explicit status for an undeployed version should always fail.
-- How installed components appear in aggregate logs, if at all.
+One migration decision remains intentionally later-stage: whether the smoke binary is removed entirely or kept temporarily as a thin harness. That is handled by the rig-smoke retirement work after main-binary isolated E2E coverage exists.
 
 Smoke-discovered reliability issues around stale release metadata, dirty release deploys, false-positive port health, missing prod versions, and installed-component logs should be handled as v2-aligned reliability work even if they land before the full v2 migration.

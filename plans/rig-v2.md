@@ -17,6 +17,9 @@ Durable decisions that apply across all phases:
 - **Parallel v2 runway**: v1 `rig` remains the production manager for always-on apps such as `pantry` until explicit cutover. V2 gets a separate dev binary or entrypoint, isolated state root, and namespaced runtime/provider state.
 - **Testing model**: the main `rig` binary must become testable under isolated state with stub providers. `rig-smoke` is transitional.
 - **Migration model**: existing v1 behavior remains supported while v2 docs, config resolution, CLI, provider composition, `rigd`, and deploy flows land incrementally.
+- **Targeting model**: repo-first commands infer the project only inside a managed repo; cross-project operations use `--project <name>` and path-based lifecycle targeting is rejected.
+- **Runtime safety model**: `rigd` owns port reservations, simultaneous same-port runtime conflicts fail during preflight, and health checks must prove rig-owned runtime state rather than arbitrary port success.
+- **Inspection model**: explicit status for undeployed runtime targets fails, and aggregate runtime logs include `managed` components only.
 
 ---
 
@@ -32,13 +35,13 @@ Create the decision record that closes the open product questions needed before 
 
 ### Acceptance Criteria
 
-- [ ] The cross-project selector flag is decided.
-- [ ] Behavior outside a managed repo is specified for repo-first commands.
-- [ ] Path-based targeting is either accepted or explicitly rejected.
-- [ ] Same-port `local` and `live` runtime behavior is specified.
-- [ ] Health validation ownership expectations are specified.
-- [ ] Explicit status for undeployed versions is specified.
-- [ ] Installed-component aggregate log behavior is specified.
+- [x] The cross-project selector flag is decided.
+- [x] Behavior outside a managed repo is specified for repo-first commands.
+- [x] Path-based targeting is either accepted or explicitly rejected.
+- [x] Same-port `local` and `live` runtime behavior is specified.
+- [x] Health validation ownership expectations are specified.
+- [x] Explicit status for undeployed versions is specified.
+- [x] Installed-component aggregate log behavior is specified.
 
 ---
 

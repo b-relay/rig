@@ -78,6 +78,65 @@ Future contributors should understand this as product context: match the ease an
 7. `rig` v2 is Effect-native.
    Backend logic, schema validation, CLI parsing, services, layers, and structured errors should use the Effect ecosystem rather than a mix of Effect plus one-off parser/validator libraries.
 
+## Operating Decisions
+
+These decisions close the initial v2 product questions that affect command behavior, generated deployments, health checks, status, and logs.
+
+### Cross-project targeting
+
+The explicit cross-project selector is `--project <name>`.
+
+Rules:
+
+- repo-first commands infer the project only when run inside a registered managed repo
+- outside a managed repo, project-scoped commands require `--project <name>`
+- `--project` is intentionally long-form only for v2; no short alias is defined initially
+- cross-project operations should never fall back to "first" or "last used" project state
+- inventory commands that truly operate across projects must use an explicit flag such as `--all`
+
+### Outside-repo behavior
+
+When a repo-first command runs outside a managed repo and no explicit project is provided, it fails with a tagged argument error and a hint to either run from a managed repo or pass `--project <name>`.
+
+This applies to lifecycle and deployment commands such as `up`, `down`, `logs`, `deploy`, and `bump`. `status` follows the same rule for project-scoped status; global status must be explicit, for example `rig status --all`.
+
+### Path targeting
+
+Path-based project targeting is rejected for lifecycle, logs, status, deploy, and bump commands.
+
+`rig` operates on registered project identities. Paths may still appear in setup flows such as `rig init --path <path>` or provider/debug output, but a path is not a runtime selector. This keeps destructive or cross-project operations tied to a stable project name rather than an arbitrary filesystem location.
+
+### Same-port local and live runtimes
+
+`local` and `live` may declare the same concrete port, but they cannot run at the same time while requiring that same port.
+
+`rigd` owns port reservations. Starting or deploying a lane must preflight required ports before cutover and fail with a structured conflict if another active rig deployment owns the port. Generated deployments should use assigned ports by default so branch previews can run concurrently without manual port management.
+
+### Health ownership
+
+Health checks must be tied to rig-owned runtime state, not just an arbitrary successful probe.
+
+For managed components:
+
+- HTTP health checks must target the component's assigned or reserved endpoint for that deployment
+- the checked endpoint must belong to a currently supervised rig process or provider-owned runtime for that component
+- command health checks run in the component workspace with the component environment and are attributed to that component
+- a health check cannot pass solely because another process is listening on the expected port
+
+This gives `doctor`, `status`, and deploy preflight a reliable way to detect false-positive health.
+
+### Status for undeployed versions
+
+Runtime status is about materialized deployments, not abstract release metadata.
+
+If a command explicitly asks for a deployment, branch, lane instance, or version that has not been materialized, `status` fails with a tagged not-found style error and a hint to deploy or list available deployments. Listing commands may still show available metadata and deployment inventory, but explicit runtime inspection of an undeployed target does not silently synthesize a status row.
+
+### Installed component logs
+
+Aggregate runtime logs include `managed` components only.
+
+`installed` components do not have long-running runtime logs by default. They can appear in status as installed/build surfaces, and build/install events may be visible through structured event history, but `rig logs` does not mix installed-component build output into runtime logs. If a user explicitly asks for logs for an installed component with no event log support, the command returns a tagged error with a hint that installed components do not produce runtime logs.
+
 ## Current vs Target
 
 ### Current model

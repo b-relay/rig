@@ -53,18 +53,17 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 
 **Issue**: #3
 
-Resolve the product decisions that would otherwise leak into schema, CLI, provider, and runtime authority work.
+Status: complete. The product decisions that would otherwise leak into schema, CLI, provider, and runtime authority work are recorded in `DESIGN_V2.md`.
 
-Required outputs:
+Resolved outputs:
 
-- Cross-project selector decision.
-- Outside-managed-repo behavior for repo-first commands.
-- Path-targeting decision.
-- Same-port `local` and `live` policy.
-- Health ownership policy.
-- Status behavior for undeployed versions.
-- Installed-component aggregate log behavior.
-- Updates to the local plan/docs if decisions alter acceptance criteria.
+- Cross-project selector is `--project <name>`.
+- Outside a managed repo, repo-first project-scoped commands require `--project <name>`; global inventory must be explicit.
+- Path-based lifecycle targeting is rejected.
+- `local` and `live` cannot run concurrently when they need the same concrete port; `rigd` owns reservations.
+- Health must prove rig-owned runtime state, not just arbitrary port success.
+- Explicit runtime status for undeployed targets fails.
+- Aggregate runtime logs include `managed` components only.
 
 Exit condition:
 
@@ -188,14 +187,7 @@ Exit condition:
 
 ## Recommended Next Move
 
-Start with #3 and do not write v2 implementation code until the decisions are recorded. The highest-risk unresolved choices are:
-
-- Cross-project selector spelling.
-- Whether explicit path targeting exists.
-- Same-port `local` and `live` behavior.
-- Whether health must prove process ownership, port ownership, or both.
-
-Once #3 is done, pick up #15 immediately. That issue is the gate that unlocks the rest of the v2 queue.
+Pick up #15 immediately. That issue creates the isolated `rig2` / Effect v4 runway and unlocks the rest of the v2 queue.
 
 ## Suggested First Milestone
 

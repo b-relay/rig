@@ -1,6 +1,6 @@
 # Effect v4 + Bun + Codex notes
 
-Last updated: 2026-04-19
+Last updated: 2026-04-20
 
 ## How to use this file
 
@@ -10,7 +10,9 @@ Keep this file current as you learn. When you verify an API, package version con
 
 ## TL;DR
 
-- **Effect v4 is in beta**. The official beta post says v4 is beta and points to the migration guides. For production, treat APIs as still settling.
+- **Effect v4 is in beta**. Verified on 2026-04-20: `npm view effect version dist-tags --json` reports `latest` as `3.21.1` and `beta` as `4.0.0-beta.52`. For production, treat APIs as still settling.
+- **Rig v2 pins v4 through an alias**: `effect-v4: npm:effect@4.0.0-beta.52`. This keeps existing v1 code on `effect@3` while v2 imports from `effect-v4`.
+- **Effect CLI for v4 currently lives in the beta package** under `effect-v4/unstable/cli`. `@effect/cli@0.75.1` still peers against Effect 3; do not use it for the v2 beta path unless its peer requirements change.
 - **For Bun**, the official docs support Bun directly, and the v4 beta post shows `bun add effect@beta`.
 - **Helpful first-party tooling**:
   - `@effect/language-service`
@@ -43,6 +45,61 @@ The official Effect v4 beta post shows:
 ```bash
 bun add effect@beta
 ```
+
+In Rig during the v1/v2 transition, use the alias instead:
+
+```bash
+bun add effect-v4@npm:effect@4.0.0-beta.52
+```
+
+Import v2 code from the alias:
+
+```ts
+import { Effect, Schema } from "effect-v4"
+import { Command, Flag } from "effect-v4/unstable/cli"
+```
+
+This avoids upgrading the package named `effect`, which would put v1 production code on the v4 beta.
+
+## Verified Rig v2 beta APIs
+
+### Effect v4 package state
+
+Verified on 2026-04-20:
+
+- `effect@latest` is `3.21.1`
+- `effect@beta` is `4.0.0-beta.52`
+- `@effect/cli@latest` is `0.75.1` and peers against `effect@^3.21.1`
+- `effect@4.0.0-beta.52` exports `./unstable/cli`, so v2 can use `effect-v4/unstable/cli` without adding `@effect/cli`
+
+Planned stable upgrade path:
+
+1. Keep v1 on `effect@3` while `rig2` is incomplete.
+2. Keep v2 imports explicit through `effect-v4`.
+3. When Effect v4 is promoted to `latest` and v1 compatibility is no longer required, migrate imports from `effect-v4` to `effect`, remove the alias, and update package docs.
+
+### Effect API renames confirmed in v4 beta
+
+- `Effect.catchAll` from v3 is now `Effect.catch` in v4.
+- `Effect.flip` works for tests that need to assert the typed error value.
+- `Context.Service<{ ... }>("Name")` works for simple service tags.
+- The service-class form is `class X extends Context.Service<X, Shape>()("Name") {}`; calling `Context.Service("Name")<...>` is invalid.
+
+### Effect Schema v4 basics confirmed
+
+- Use `Schema.Struct`, `Schema.Union`, `Schema.Literal`, `Schema.Record`, `Schema.optionalKey`.
+- Use `Schema.decodeUnknownEffect(schema)(input)` for Effect-based validation.
+- Use `.check(...)` with filters such as `Schema.isMinLength`, `Schema.isPattern`, `Schema.isGreaterThanOrEqualTo`, `Schema.isLessThanOrEqualTo`.
+- Use `Schema.makeFilter<T>((value) => true | "message")` for custom validation such as rejecting `0.0.0.0`.
+- Use `Schema.annotateKey({ description })` for user-facing field docs.
+
+### Effect CLI v4 beta basics confirmed
+
+- Import `Command` and `Flag` from `effect-v4/unstable/cli`.
+- Build commands with `Command.make(name, config, handler)`.
+- Execute commands in tests with `Command.runWith(command, { version })(argv)`.
+- `Command.runWith` needs CLI environment services even with explicit argv: `FileSystem.FileSystem`, `Path.Path`, `Terminal.Terminal`, `Stdio.Stdio`, and `ChildProcessSpawner`.
+- For the current `rig2` foundation path, tests provide those with `FileSystem.layerNoop({})`, `Path.layer`, `Terminal.make(...)`, `Stdio.layerTest(...)`, and a no-op `ChildProcessSpawner`.
 
 ### Scaffold from the official starter
 

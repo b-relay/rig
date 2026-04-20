@@ -510,6 +510,8 @@ Core architectural rules (from `AGENTS.md` + source layout):
 - Schema and argument validation use Zod (`src/schema/config.ts`, `src/schema/args.ts`).
 - Errors are tagged classes with structured context + `hint` (`src/schema/errors.ts`).
 
+For v2 Effect work, read [`effect-v4-help-notes.md`](./effect-v4-help-notes.md) before changing Effect v4, Effect Schema, Effect CLI, Effect Platform, or Effect testing code. Keep that file updated with verified APIs, package/version constraints, migration findings, Bun integration notes, and links that would help the next contributor.
+
 ### Extending rig
 
 Typical extension workflow:

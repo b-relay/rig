@@ -1,5 +1,7 @@
 # rig — Local Mac Deployment Manager
 
+Note: this document describes the current implementation model. The forward-looking redesign spec lives in [DESIGN_V2.md](./DESIGN_V2.md).
+
 A declarative, config-driven CLI for managing local project deployments on a Mac Mini server. Non-interactive, AI-agent friendly. Think Vercel, but for any project on your local machine.
 
 ## Problem

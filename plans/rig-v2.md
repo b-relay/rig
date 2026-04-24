@@ -300,3 +300,19 @@ Remove the need for the separate smoke-only binary once main-binary E2E coverage
 - [x] Tests run safely under isolated state without touching real launchd, Caddy, or user rig state.
 - [x] The smoke binary is removed or reduced to a temporary thin wrapper according to the decision record.
 - [x] Build scripts and docs no longer teach smoke-only behavior as the target architecture.
+
+---
+
+## Stage 2 Continuation
+
+The next issue batch is planned in [`plans/rig-v2-stage-2.md`](./rig-v2-stage-2.md).
+
+Stage 2 covers:
+
+- #16 Define v2 provider plugin contracts.
+- #17 Persist rigd runtime state and reconciliation journal.
+- #18 Add outbound control-plane transport interface.
+- #19 Expose web read models through rigd.
+- #20 Route web lifecycle and deploy actions through rigd.
+- #21 Add safe config edit workflow through rigd.
+- #22 Prepare rig2 to main rig cutover readiness.

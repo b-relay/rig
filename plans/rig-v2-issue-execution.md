@@ -1,7 +1,7 @@
 # Plan: rig v2 issue execution
 
 > Source PRD: GitHub issue #2 and local `PRD_V2.md`
-> Source issue set: GitHub issues #3 through #15
+> Source issue set: GitHub issues #3 through #22
 
 This plan converts the open v2 GitHub issues into an execution order. It is intentionally more operational than `plans/rig-v2.md`: it answers what to pick up next, what is blocked, and which issues should move together.
 
@@ -18,6 +18,13 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 - #12 depends on #8, #10, and #11.
 - #13 depends on #5 and #7.
 - #14 depends on #7 and #11.
+- #16 depends on #7 and #10.
+- #17 depends on #11, #12, and #16.
+- #18 depends on #16.
+- #19 depends on #17 and #18.
+- #20 depends on #18 and #19.
+- #21 depends on #19.
+- #22 depends on #14, #20, and #21.
 
 ## Dependency Graph
 
@@ -45,6 +52,16 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
   -> #11 Move lifecycle, logs, and status behind rigd
       -> #12 Harden deploy reliability and doctor
       -> #14 Retire rig-smoke
+
+#16 Define v2 provider plugin contracts
+  -> #17 Persist rigd runtime state and reconciliation journal
+      -> #19 Expose web read models through rigd
+          -> #20 Route web lifecycle and deploy actions through rigd
+          -> #21 Add safe config edit workflow through rigd
+              -> #22 Prepare rig2 to main rig cutover readiness
+  -> #18 Add outbound control-plane transport interface
+      -> #19 Expose web read models through rigd
+      -> #20 Route web lifecycle and deploy actions through rigd
 ```
 
 ## Execution Waves
@@ -211,9 +228,68 @@ Exit condition:
 - Preflight and doctor cover the failure modes called out in the PRD.
 - Main binary E2E coverage replaces smoke-only architecture.
 
+### Wave 7: Provider Contracts And Persistent Runtime Authority
+
+**Issues**: #16, #17
+
+#16 defines the explicit Effect v4 provider/plugin contracts for all external concerns before deeper `rigd` integration relies on them.
+
+#17 makes `rigd` restart-safe by persisting runtime state, receipts, health summaries, port reservations, provider observations, and recovery evidence under the isolated v2 state root.
+
+Recommended order:
+
+1. #16 first, so `rigd` persistence records provider observations through stable interfaces.
+2. #17 second, so control-plane read/action slices have durable state to expose.
+
+Exit condition:
+
+- V2 core code can swap provider compositions through interfaces.
+- `rigd` can reconstruct safe minimum state after restart and fail explicitly when evidence is insufficient.
+
+### Wave 8: Outbound Control Plane And Web Read Models
+
+**Issues**: #18, #19
+
+#18 adds the outbound-only control-plane transport interface, machine identity boundary, heartbeat/event envelopes, and stub transport coverage.
+
+#19 exposes the web-facing read model for projects, deployments, health, and structured logs through `rigd`.
+
+Recommended order:
+
+1. #18 can run after #16.
+2. #19 should follow #17 and #18 so read models are both durable and serializable through the transport contract.
+
+Exit condition:
+
+- `rigd` can describe control-plane connection state without opening inbound local management ports.
+- Project, deployment, health, and log read models are ready for the hosted UI contract.
+
+### Wave 9: Web Actions And Config Editing
+
+**Issues**: #20, #21
+
+#20 routes web/control-plane lifecycle and deploy actions through the same `rigd` authority used by CLI commands.
+
+#21 adds safe structured config editing through `rigd`, including schema validation, diff/preview, atomic apply, and rollback behavior.
+
+Exit condition:
+
+- Web-originated lifecycle and deploy actions produce the same receipts, logs, health, and inventory effects as CLI actions.
+- Config edits are validated and recoverable instead of arbitrary file writes.
+
+### Wave 10: Main Binary Cutover Readiness
+
+**Issue**: #22
+
+#22 is the HITL readiness gate for moving v2 behavior from the isolated `rig2` runway toward the main `rig` binary.
+
+Exit condition:
+
+- Command parity, provider safety, compatibility/deprecation behavior, validation steps, rollback docs, and remaining follow-up issues are explicit before cutover.
+
 ## Recommended Next Move
 
-Pick up #15 immediately. That issue creates the isolated `rig2` / Effect v4 runway and unlocks the rest of the v2 queue.
+Pick up #16 next. It defines the provider/plugin contracts that the persistent `rigd`, control-plane transport, web read models, and web action paths need to share.
 
 ## Suggested First Milestone
 
@@ -235,3 +311,24 @@ Why this milestone:
 - It gives contributors docs that match the target architecture.
 
 Do not include #8 or later in the first milestone unless #5 and #7 are already complete.
+
+## Suggested Second Milestone
+
+Milestone name: `v2 control plane runway`
+
+Scope:
+
+- #16 Define v2 provider plugin contracts.
+- #17 Persist rigd runtime state and reconciliation journal.
+- #18 Add outbound control-plane transport interface.
+- #19 Expose web read models through rigd.
+- #20 Route web lifecycle and deploy actions through rigd.
+- #21 Add safe config edit workflow through rigd.
+- #22 Prepare rig2 to main rig cutover readiness.
+
+Why this milestone:
+
+- It turns the MVP `rigd` into a durable runtime authority.
+- It keeps external systems behind interfaces before transport and web-facing behavior expand.
+- It creates the local contracts the hosted control plane can consume later.
+- It preserves a deliberate HITL gate before moving v2 behavior into the main binary.

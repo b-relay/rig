@@ -1,14 +1,29 @@
 import { Effect, Layer } from "effect-v4"
 
 import { runRig2Cli } from "./v2/cli.js"
+import { V2DeploymentManagerLive, V2FileDeploymentStoreLive } from "./v2/deployments.js"
 import { V2RuntimeError } from "./v2/errors.js"
 import { V2LifecycleLive } from "./v2/lifecycle.js"
+import { V2RigdLive } from "./v2/rigd.js"
 import { Rig2Live, V2Logger, V2LoggerLive } from "./v2/services.js"
+
+const V2DeploymentLive = Layer.provide(V2DeploymentManagerLive, V2FileDeploymentStoreLive)
+const V2RigdRuntimeLive = Layer.provide(
+  V2RigdLive,
+  Layer.mergeAll(Rig2Live, V2DeploymentLive),
+)
 
 export const main = (argv: readonly string[]): Promise<number> =>
   Effect.runPromise(
     runRig2Cli(argv).pipe(
-      Effect.provide(Layer.mergeAll(Rig2Live, Layer.provide(V2LifecycleLive, Rig2Live))),
+      Effect.provide(
+        Layer.mergeAll(
+          Rig2Live,
+          V2DeploymentLive,
+          V2RigdRuntimeLive,
+          Layer.provide(V2LifecycleLive, Rig2Live),
+        ),
+      ),
     ),
   )
 

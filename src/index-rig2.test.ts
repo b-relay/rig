@@ -37,6 +37,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(exitCode).toBe(0)
       expect(stderr).toBe("")
       expect(stdout).toContain("[INFO] rig2 foundation ready")
+      expect(stdout).toContain("[INFO] rigd status")
       expect(stdout).toContain(`"stateRoot":"${root}"`)
       expect(stdout).toContain('"namespace":"rig.v2.pantry"')
       expect(stdout).toContain('"launchdLabelPrefix":"com.b-relay.rig2"')
@@ -60,6 +61,25 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(stdout).toContain('"project":"rig"')
       expect(stdout).toContain('"lane":"local"')
       expect(stdout).toContain(`"stateRoot":"${root}"`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN rigd command WHEN run directly THEN it starts the local MVP API", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+
+    try {
+      const { stdout, stderr, exitCode } = await runRig2Command(
+        ["rigd", "--state-root", root],
+        { RIG_V2_ROOT: root },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(stdout).toContain("[INFO] rigd local API ready")
+      expect(stdout).toContain('"service":"rigd"')
+      expect(stdout).toContain('"transport":"outbound-websocket"')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

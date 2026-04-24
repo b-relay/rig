@@ -212,12 +212,12 @@ Introduce `rigd` as a local runtime authority with a minimal local API for inven
 
 ### Acceptance Criteria
 
-- [ ] `rigd` can start and report its own health locally.
-- [ ] `rigd` exposes project and deployment inventory.
-- [ ] `rigd` exposes structured log and health state.
-- [ ] `rigd` can accept lifecycle and deploy actions through the local API.
-- [ ] CLI commands can use `rigd` for at least one complete lifecycle/status path.
-- [ ] The outbound control-plane contract is documented even if the hosted side is not implemented here.
+- [x] `rigd` can start and report its own health locally.
+- [x] `rigd` exposes project and deployment inventory.
+- [x] `rigd` exposes structured log and health state.
+- [x] `rigd` can accept lifecycle and deploy actions through the local API.
+- [x] CLI commands can use `rigd` for at least one complete lifecycle/status path.
+- [x] The outbound control-plane contract is documented even if the hosted side is not implemented here.
 
 ---
 

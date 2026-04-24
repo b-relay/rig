@@ -45,6 +45,7 @@ Current v2 vocabulary:
 Try the foundation path:
 
 ```bash
+bun run start:rig2 rigd
 bun run start:rig2 status --project pantry
 bun run start:rig2 up
 bun run start:rig2 logs --lane live --project pantry

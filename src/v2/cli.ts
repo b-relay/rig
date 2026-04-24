@@ -7,6 +7,7 @@ import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleAction, type V2LifecycleLane } from "./lifecycle.js"
 import { rigV2Root } from "./paths.js"
 import { V2ProjectLocator } from "./project-locator.js"
+import { V2Rigd } from "./rigd.js"
 import { V2Logger, V2Runtime } from "./services.js"
 
 const terminal = Terminal.make({
@@ -186,17 +187,46 @@ const statusCommand = Command.make(
       const decoded = yield* decodeV2StatusInput(scoped)
       const runtime = yield* V2Runtime
       const logger = yield* V2Logger
+      const rigd = yield* V2Rigd
       const state = yield* runtime.describeFoundation(decoded)
 
       yield* logger.info("rig2 foundation ready", {
         ...state,
         lane: scoped.lane,
       })
+      const health = yield* rigd.health({
+        stateRoot: decoded.stateRoot,
+      })
+      const inventory = yield* rigd.inventory({
+        project: decoded.project,
+        stateRoot: decoded.stateRoot,
+      })
+      yield* logger.info("rigd status", {
+        health,
+        inventory: {
+          project: inventory.project,
+          deploymentCount: inventory.deployments.length,
+        },
+      })
       yield* runLifecycleAction("status", scoped)
     }),
 ).pipe(
   Command.withDescription("Inspect the isolated v2 runtime foundation."),
 )
+
+const rigdCommand = Command.make(
+  "rigd",
+  {
+    stateRoot: stateRootFlag,
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const rigd = yield* V2Rigd
+      yield* rigd.start({
+        stateRoot: input.stateRoot,
+      })
+    }),
+).pipe(Command.withDescription("Start the local rigd MVP API and report health."))
 
 const rig2Command = Command.make("rig2").pipe(
   Command.withDescription("Experimental rig v2 entrypoint."),
@@ -205,6 +235,7 @@ const rig2Command = Command.make("rig2").pipe(
     downCommand,
     logsCommand,
     statusCommand,
+    rigdCommand,
   ]),
 )
 

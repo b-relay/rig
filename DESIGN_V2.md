@@ -483,9 +483,19 @@ It is a local daemon/server process and should itself be manageable by `rig` as 
 
 The CLI becomes a client of `rigd` over a local API/socket.
 
+Current MVP: `rig2` uses an in-process local API contract while the daemon boundary is still being built. The API surface already models health, project/deployment inventory, structured logs, health state, lifecycle action receipts, and deploy action receipts so later transport work can preserve the same interface shape.
+
 ### Web relationship
 
 `rigd` makes an outbound authenticated connection to `core.b-relay.com`.
+
+Current MVP control-plane contract:
+
+- endpoint: `https://core.b-relay.com`
+- transport: outbound WebSocket
+- direction: outbound only; no inbound machine port is required
+- auth: machine token
+- status: documented but not connected by the local MVP
 
 There is no separate rig website.
 

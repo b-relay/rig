@@ -166,6 +166,8 @@ Exit condition:
 
 #10 depends on #7 and #8 and introduces the `rigd` MVP.
 
+Current output: `rigd` now exists as an Effect v4 service/interface with an in-process MVP local API for health, inventory, logs, health state, lifecycle receipts, and deploy receipts. `rig2 rigd` starts and reports the local API, and `rig2 status` reads rigd health/inventory as the first CLI status path through the runtime authority.
+
 Recommended order:
 
 1. Build #10 before deepening runtime-facing command behavior.

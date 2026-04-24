@@ -5,6 +5,7 @@ import { runRig2Cli } from "./cli.js"
 import { V2CliArgumentError, type V2TaggedError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleRequest } from "./lifecycle.js"
 import { V2ProjectLocator } from "./project-locator.js"
+import { V2Rigd, type V2RigdProjectInventoryInput, type V2RigdStartInput } from "./rigd.js"
 import { V2Logger, V2RuntimeLive, type V2FoundationState } from "./services.js"
 
 class CaptureV2Logger {
@@ -31,6 +32,83 @@ class CaptureV2Lifecycle {
   }
 }
 
+class CaptureV2Rigd {
+  readonly healthRequests: V2RigdStartInput[] = []
+  readonly inventoryRequests: V2RigdProjectInventoryInput[] = []
+  readonly startRequests: V2RigdStartInput[] = []
+
+  start(input: V2RigdStartInput) {
+    this.startRequests.push(input)
+    return Effect.succeed({
+      service: "rigd" as const,
+      status: "running" as const,
+      stateRoot: input.stateRoot,
+      startedAt: "2026-04-24T00:00:00.000Z",
+      localApi: {
+        transport: "in-process" as const,
+        version: "v2-mvp" as const,
+      },
+      controlPlane: {
+        endpoint: "https://core.b-relay.com" as const,
+        transport: "outbound-websocket" as const,
+        outboundOnly: true as const,
+        auth: "machine-token" as const,
+        status: "documented-not-connected" as const,
+      },
+    })
+  }
+
+  health(input: V2RigdStartInput) {
+    this.healthRequests.push(input)
+    return this.start(input)
+  }
+
+  inventory(input: V2RigdProjectInventoryInput) {
+    this.inventoryRequests.push(input)
+    return Effect.succeed({
+      project: input.project,
+      foundation: {
+        project: input.project,
+        namespace: `rig.v2.${input.project}`,
+        stateRoot: input.stateRoot,
+        registryPath: `${input.stateRoot}/registry.json`,
+        workspacesRoot: `${input.stateRoot}/workspaces`,
+        projectWorkspaceRoot: `${input.stateRoot}/workspaces/${input.project}`,
+        logsRoot: `${input.stateRoot}/logs`,
+        projectLogRoot: `${input.stateRoot}/logs/${input.project}`,
+        runtimeRoot: `${input.stateRoot}/runtime`,
+        runtimeStatePath: `${input.stateRoot}/runtime/runtime.json`,
+        proxyRoot: `${input.stateRoot}/proxy`,
+        proxyNamespace: "rig2",
+        launchdLabelPrefix: "com.b-relay.rig2",
+        launchdBackupRoot: `${input.stateRoot}/launchd`,
+      },
+      deployments: [],
+    })
+  }
+
+  logs() {
+    return Effect.succeed([])
+  }
+
+  healthState(input: V2RigdProjectInventoryInput) {
+    return this.health({ stateRoot: input.stateRoot }).pipe(
+      Effect.map((rigd) => ({
+        rigd,
+        deployments: [],
+      })),
+    )
+  }
+
+  lifecycle() {
+    return Effect.die("unused")
+  }
+
+  deploy() {
+    return Effect.die("unused")
+  }
+}
+
 const runWithLogger = async (
   argv: readonly string[],
   options: {
@@ -39,10 +117,12 @@ const runWithLogger = async (
 ) => {
   const logger = new CaptureV2Logger()
   const lifecycle = new CaptureV2Lifecycle()
+  const rigd = new CaptureV2Rigd()
   const layer = Layer.mergeAll(
     V2RuntimeLive,
     Layer.succeed(V2Logger, logger),
     Layer.succeed(V2Lifecycle, lifecycle),
+    Layer.succeed(V2Rigd, rigd),
     Layer.succeed(V2ProjectLocator, {
       inferCurrentProject: options.inferredProject
         ? Effect.succeed({
@@ -60,12 +140,12 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRig2Cli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle }
+  return { exitCode, logger, lifecycle, rigd }
 }
 
 describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
   test("GIVEN status command with project and state root WHEN running THEN it reports isolated v2 state", async () => {
-    const { exitCode, logger } = await runWithLogger([
+    const { exitCode, logger, rigd } = await runWithLogger([
       "status",
       "--project",
       "pantry",
@@ -75,8 +155,9 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
-    expect(logger.infos).toHaveLength(1)
+    expect(logger.infos).toHaveLength(2)
     expect(logger.infos[0]?.message).toBe("rig2 foundation ready")
+    expect(logger.infos[1]?.message).toBe("rigd status")
 
     const state = logger.infos[0]?.details as unknown as V2FoundationState
     expect(state.project).toBe("pantry")
@@ -85,6 +166,20 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(state.registryPath).toBe("/tmp/rig-v2/registry.json")
     expect(state.workspacesRoot).toBe("/tmp/rig-v2/workspaces")
     expect(state.launchdLabelPrefix).toBe("com.b-relay.rig2")
+    expect(rigd.healthRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
+    expect(rigd.inventoryRequests).toEqual([{ project: "pantry", stateRoot: "/tmp/rig-v2" }])
+  })
+
+  test("GIVEN rigd command WHEN running THEN local API start is requested", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "rigd",
+      "--state-root",
+      "/tmp/rig-v2",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(rigd.startRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
   })
 
   test("GIVEN up without project inside managed repo WHEN running THEN it infers project and targets local lane", async () => {

@@ -13,7 +13,7 @@ import {
   successMessages,
 } from "./cli-smoke-harness.js"
 
-describe("compiled rig-smoke command surface E2E", () => {
+describe("compiled main rig binary command surface E2E", () => {
   test("init registers a project structurally and rejects missing args with help", async () => {
     const project = await createSmokeProject()
 

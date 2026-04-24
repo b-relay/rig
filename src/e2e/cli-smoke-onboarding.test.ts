@@ -184,7 +184,7 @@ const validateVariant = async (variant: OnboardingVariantDefinition, topicId: st
   }
 }
 
-describe("compiled rig-smoke onboarding recipe validation", () => {
+describe("compiled main rig binary onboarding recipe validation", () => {
   for (const topic of ONBOARDING_TOPICS) {
     for (const variant of topic.variants) {
       test(

@@ -8,7 +8,7 @@ import {
   runSmokeCommand,
 } from "./cli-smoke-harness.js"
 
-describe("compiled rig-smoke CLI argument and discovery matrix", () => {
+describe("compiled main rig binary CLI argument and discovery matrix", () => {
   test("commands that support cwd autodetect fail clearly when rig.json is missing", async () => {
     const project = await createSmokeProject()
 

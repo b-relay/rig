@@ -11,7 +11,7 @@ import {
   successMessages,
 } from "./cli-smoke-harness.js"
 
-describe("compiled rig-smoke lifecycle CLI E2E", () => {
+describe("compiled main rig binary lifecycle CLI E2E", () => {
   test("start shows command help structurally", async () => {
     const project = await createSmokeProject()
 

@@ -112,9 +112,9 @@ Current output: v2 shared component schemas, lane override schemas, mode/depende
 - Default provider composition.
 - Stub provider composition.
 - Main-binary isolated test execution path.
-- Transitional status of `rig-smoke` documented.
+- Transitional status of the smoke-only binary documented.
 
-Current output: main binary provider composition is centralized behind selectable `default`, `stub`, and transitional `smoke` profiles; v2 also has an Effect v4 provider profile service. Full main-binary isolated E2E parity remains open.
+Current output: main binary provider composition is centralized behind selectable `default`, `stub`, and isolated E2E profiles; v2 also has an Effect v4 provider profile service. Full main-binary isolated E2E parity is now covered by #14.
 
 #4 should update docs and onboarding after #15 has settled the real Effect stack wording:
 
@@ -122,7 +122,7 @@ Current output: main binary provider composition is centralized behind selectabl
 - Legacy command forms marked transitional where useful.
 - Onboarding steers lifecycle through rig.
 
-Current output: README introduces the v2 vocabulary, Effect v4 / Effect Schema / Effect CLI direction, isolated state, provider profiles, and `rig-smoke` transitional status before legacy v1 command docs.
+Current output: README introduces the v2 vocabulary, Effect v4 / Effect Schema / Effect CLI direction, isolated state, provider profiles, and main-binary E2E direction before legacy v1 command docs.
 
 Exit condition:
 
@@ -202,7 +202,9 @@ Exit condition:
 
 Current output: `V2Doctor` exposes deploy preflight, doctor reporting, and bounded reconstruction interfaces. The `rig2 doctor` command now emits PATH, binary/file, health, port, stale-state, and provider categories, while tests cover false-positive health ownership, actionable port conflicts, safe reconstruction plans, and structured unsafe reconstruction failures.
 
-#14 retires or reduces `rig-smoke` once main-binary isolated E2E coverage is sufficient.
+#14 retires the smoke-only binary once main-binary isolated E2E coverage is sufficient.
+
+Current output: the compiled E2E command matrix, lifecycle, command-surface, and onboarding suites now build and execute the main `rig` binary with isolated `RIG_ROOT` plus safe provider composition. The `build:smoke` script and smoke-only entrypoint are removed, and docs no longer point users or contributors at a smoke-only architecture.
 
 Exit condition:
 

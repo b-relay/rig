@@ -146,7 +146,7 @@ Aggregate runtime logs include `managed` components only.
 - `type: "server" | "bin"`
 - Release/tag driven prod deploy flow
 - File-oriented runtime state assembled directly by commands
-- Separate `rig-smoke` binary for isolated E2E testing
+- Main-binary E2E coverage now uses isolated state and safe provider composition
 
 ### Target model
 
@@ -566,7 +566,7 @@ This does not mean “silently rewrite everything,” but it does mean accidenta
 
 ## Testing Direction
 
-The long-term target is to stop needing a separate `rig-smoke` binary.
+The long-term target is to keep end-to-end coverage on the main shipped binary.
 
 ### Target test model
 
@@ -577,7 +577,7 @@ Use the main `rig` binary with:
 
 ### Transitional rule
 
-`rig-smoke` may remain during migration, but it is not the target architecture.
+The separate smoke-only binary has been retired; coverage should stay on the main binary.
 
 The target architecture is:
 
@@ -634,7 +634,7 @@ Transition CLI and config model from old env/service/type semantics to the new m
 
 ### Phase F
 
-Retire `rig-smoke` once main-binary E2E coverage under `RIG_ROOT` and stub providers reaches parity.
+Keep main-binary E2E coverage under `RIG_ROOT` and safe provider composition at parity.
 
 ## Non-Goals
 

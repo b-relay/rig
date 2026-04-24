@@ -6,7 +6,6 @@
   "scripts": {
     "build": "bun build --compile src/index.ts --outfile rig",
     "build:rig2": "bun build --compile src/index-rig2.ts --outfile rig2",
-    "build:smoke": "bun build --compile src/index-smoke.ts --outfile rig-smoke",
     "start": "bun run src/index.ts",
     "start:rig2": "bun run src/index-rig2.ts",
     "test:e2e": "bun test src/e2e"

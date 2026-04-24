@@ -65,7 +65,7 @@ export interface SmokeFixtureSpec {
   readonly files: readonly SmokeFixtureFile[]
 }
 
-const SMOKE_BINARY_PATH = join(process.cwd(), "rig-smoke")
+const MAIN_BINARY_PATH = join(process.cwd(), "rig")
 
 let ensureBuiltPromise: Promise<void> | null = null
 
@@ -304,16 +304,16 @@ const makeRigConfig = (
   }
 }
 
-export const ensureSmokeBinaryBuilt = async (): Promise<void> => {
+export const ensureMainBinaryBuilt = async (): Promise<void> => {
   if (!ensureBuiltPromise) {
     ensureBuiltPromise = (async () => {
       const result = await runProcess(
-        [process.execPath, "build", "--compile", "src/index-smoke.ts", "--outfile", "rig-smoke"],
+        [process.execPath, "build", "--compile", "src/index.ts", "--outfile", "rig"],
         { cwd: process.cwd() },
       )
 
       if (result.exitCode !== 0) {
-        throw new Error(`Failed to build rig-smoke: ${result.stderr || result.stdout}`)
+        throw new Error(`Failed to build main rig binary: ${result.stderr || result.stdout}`)
       }
     })()
   }
@@ -324,7 +324,7 @@ export const ensureSmokeBinaryBuilt = async (): Promise<void> => {
 export const createSmokeProject = async (
   opts: SmokeProjectOptions = {},
 ): Promise<SmokeProject> => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "rig-smoke-"))
+  const tempRoot = await mkdtemp(join(tmpdir(), "rig-main-e2e-"))
   const homeDir = join(tempRoot, "home")
   const rigRootDir = join(tempRoot, "rig-root")
   const repoPath = join(tempRoot, "repo")
@@ -372,7 +372,7 @@ export const createSmokeProject = async (
   )
   await writeFile(join(repoPath, ".env.dev"), "DEV_ONLY=1\n", "utf8")
   await writeFile(join(repoPath, ".env.prod"), "PROD_ONLY=1\n", "utf8")
-  await writeFile(join(repoPath, "README.md"), "# Smoke Fixture\n", "utf8")
+  await writeFile(join(repoPath, "README.md"), "# Main Binary E2E Fixture\n", "utf8")
   await writeFile(
     join(repoPath, "rig.json"),
     `${JSON.stringify(makeRigConfig(name, { web, worker }, opts), null, 2)}\n`,
@@ -380,8 +380,8 @@ export const createSmokeProject = async (
   )
 
   await git(repoPath, ["init", "-b", "main"])
-  await git(repoPath, ["config", "user.name", "Rig Smoke"])
-  await git(repoPath, ["config", "user.email", "rig-smoke@example.test"])
+  await git(repoPath, ["config", "user.name", "Rig Main E2E"])
+  await git(repoPath, ["config", "user.email", "rig-main-e2e@example.test"])
   await git(repoPath, ["add", "."])
   await git(repoPath, ["commit", "-m", "feat: initial smoke fixture"])
 
@@ -406,7 +406,7 @@ export const createSmokeProject = async (
 export const createSmokeFixtureProject = async (
   fixture: SmokeFixtureSpec,
 ): Promise<SmokeProject> => {
-  const tempRoot = await mkdtemp(join(tmpdir(), "rig-smoke-fixture-"))
+  const tempRoot = await mkdtemp(join(tmpdir(), "rig-main-e2e-fixture-"))
   const homeDir = join(tempRoot, "home")
   const rigRootDir = join(tempRoot, "rig-root")
   const repoPath = join(tempRoot, "repo")
@@ -423,8 +423,8 @@ export const createSmokeFixtureProject = async (
   await writeFile(join(repoPath, "rig.json"), `${JSON.stringify(fixture.rigConfig, null, 2)}\n`, "utf8")
 
   await git(repoPath, ["init", "-b", "main"])
-  await git(repoPath, ["config", "user.name", "Rig Smoke"])
-  await git(repoPath, ["config", "user.email", "rig-smoke@example.test"])
+  await git(repoPath, ["config", "user.name", "Rig Main E2E"])
+  await git(repoPath, ["config", "user.email", "rig-main-e2e@example.test"])
   await git(repoPath, ["add", "."])
   await git(repoPath, ["commit", "-m", "feat: initial fixture"])
 
@@ -457,17 +457,18 @@ export const runSmokeCommand = async (
     readonly signal?: NodeJS.Signals
   },
 ): Promise<SmokeCommandResult> => {
-  await ensureSmokeBinaryBuilt()
+  await ensureMainBinaryBuilt()
 
   const fullArgv = opts?.json === false ? [...argv] : ["--json", ...argv]
   const cwd = opts?.cwd ?? project.repoPath
-  const result = await runProcess([SMOKE_BINARY_PATH, ...fullArgv], {
+  const result = await runProcess([MAIN_BINARY_PATH, ...fullArgv], {
     cwd,
     waitForMs: opts?.waitForMs,
     signal: opts?.signal,
     env: {
       HOME: project.homeDir,
       RIG_ROOT: project.rigRootDir,
+      RIG_PROVIDER_PROFILE: "smoke",
       RIG_LOG_FILE: undefined,
       RIG_LOG_FORMAT: undefined,
       ...opts?.env,

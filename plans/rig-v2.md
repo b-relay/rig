@@ -15,7 +15,7 @@ Durable decisions that apply across all phases:
 - **Effect stack**: v2 targets Effect v4 for backend logic, Effect Schema for config and argument validation, and Effect CLI for command parsing/help. Legacy Zod and hand-written parser code are migration scaffolding only.
 - **Provider model**: external concerns stay behind interfaces and are selected at composition time. Stub providers are first-class provider choices.
 - **Parallel v2 runway**: v1 `rig` remains the production manager for always-on apps such as `pantry` until explicit cutover. V2 gets a separate dev binary or entrypoint, isolated state root, and namespaced runtime/provider state.
-- **Testing model**: the main `rig` binary must become testable under isolated state with stub providers. `rig-smoke` is transitional.
+- **Testing model**: the main `rig` binary is testable under isolated state with safe provider composition.
 - **Migration model**: existing v1 behavior remains supported while v2 docs, config resolution, CLI, provider composition, `rigd`, and deploy flows land incrementally.
 - **Targeting model**: repo-first commands infer the project only inside a managed repo; cross-project operations use `--project <name>` and path-based lifecycle targeting is rejected.
 - **Runtime safety model**: `rigd` owns port reservations, simultaneous same-port runtime conflicts fail during preflight, and health checks must prove rig-owned runtime state rather than arbitrary port success.
@@ -155,7 +155,7 @@ Add explicit provider/profile selection so the main `rig` binary can compose def
 - [x] Provider selection is visible in config or execution context as appropriate.
 - [x] Main-binary E2E tests can run with isolated state and stub providers.
 - [x] V2 provider composition uses Effect v4 services/layers.
-- [x] `rig-smoke` is documented as transitional after parity begins.
+- [x] The separate smoke-only binary is documented as transitional after parity begins.
 
 ---
 
@@ -296,7 +296,7 @@ Remove the need for the separate smoke-only binary once main-binary E2E coverage
 
 ### Acceptance Criteria
 
-- [ ] Main-binary E2E coverage matches or exceeds the smoke binary coverage.
-- [ ] Tests run safely under isolated state without touching real launchd, Caddy, or user rig state.
-- [ ] The smoke binary is removed or reduced to a temporary thin wrapper according to the decision record.
-- [ ] Build scripts and docs no longer teach smoke-only behavior as the target architecture.
+- [x] Main-binary E2E coverage matches or exceeds the smoke binary coverage.
+- [x] Tests run safely under isolated state without touching real launchd, Caddy, or user rig state.
+- [x] The smoke binary is removed or reduced to a temporary thin wrapper according to the decision record.
+- [x] Build scripts and docs no longer teach smoke-only behavior as the target architecture.

@@ -547,6 +547,10 @@ Generated deployments must support automatic port assignment.
 - stale runtime state
 - provider misconfiguration
 
+The v2 runway exposes this as a `V2Doctor` interface so deploy preflight,
+doctor output, and recovery checks can share the same structured failure model
+without binding core logic to concrete process or provider implementations.
+
 ## Recoverable State
 
 `.rig` remains the persisted rig root, but the system should be able to recover from partial loss where safe.

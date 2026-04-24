@@ -4,6 +4,7 @@ import { ChildProcessSpawner } from "effect-v4/unstable/process/ChildProcessSpaw
 
 import { decodeV2StatusInput } from "./config.js"
 import { V2DeployIntents, type V2DeployTarget } from "./deploy-intent.js"
+import { V2Doctor } from "./doctor.js"
 import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleAction, type V2LifecycleLane } from "./lifecycle.js"
 import { rigV2Root } from "./paths.js"
@@ -311,6 +312,36 @@ const bumpCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Manage optional version metadata and rollback tag anchors."))
 
+const doctorCommand = Command.make(
+  "doctor",
+  {
+    project: projectFlag,
+    stateRoot: stateRootFlag,
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const scoped = yield* resolveProjectScopedInput({
+        project: input.project,
+        lane: "live",
+        stateRoot: input.stateRoot,
+      })
+      const decoded = yield* decodeV2StatusInput(scoped)
+      const doctor = yield* V2Doctor
+      const logger = yield* V2Logger
+      const report = yield* doctor.report({
+        project: decoded.project,
+        path: { ok: true, entries: [decoded.stateRoot] },
+        binaries: [],
+        health: [],
+        ports: [],
+        staleState: [],
+        providers: [],
+      })
+
+      yield* logger.info("rig2 doctor report", report)
+    }),
+).pipe(Command.withDescription("Report v2 PATH, binary, health, port, stale-state, and provider checks."))
+
 const rig2Command = Command.make("rig2").pipe(
   Command.withDescription("Experimental rig v2 entrypoint."),
   Command.withSubcommands([
@@ -321,6 +352,7 @@ const rig2Command = Command.make("rig2").pipe(
     rigdCommand,
     deployCommand,
     bumpCommand,
+    doctorCommand,
   ]),
 )
 

@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect-v4"
 import { runRig2Cli } from "./v2/cli.js"
 import { V2DeployIntentsLive } from "./v2/deploy-intent.js"
 import { V2DeploymentManagerLive, V2FileDeploymentStoreLive } from "./v2/deployments.js"
+import { V2DoctorLive } from "./v2/doctor.js"
 import { V2RuntimeError } from "./v2/errors.js"
 import { V2LifecycleLive } from "./v2/lifecycle.js"
 import { V2RigdLive } from "./v2/rigd.js"
@@ -24,6 +25,7 @@ export const main = (argv: readonly string[]): Promise<number> =>
           V2DeploymentLive,
           V2DeployIntentsRuntimeLive,
           V2RigdRuntimeLive,
+          V2DoctorLive,
           Layer.provide(V2LifecycleLive, Layer.mergeAll(Rig2Live, V2RigdRuntimeLive)),
         ),
       ),

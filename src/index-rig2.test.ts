@@ -117,6 +117,25 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
     expect(stdout).toContain('"rollbackAnchor":"v1.2.3"')
   })
 
+  test("GIVEN doctor command WHEN run directly THEN it emits reliability categories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+
+    try {
+      const { stdout, stderr, exitCode } = await runRig2Command(
+        ["doctor", "--project", "pantry", "--state-root", root],
+        { RIG_V2_ROOT: root },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(stdout).toContain("[INFO] rig2 doctor report")
+      expect(stdout).toContain('"category":"path"')
+      expect(stdout).toContain('"category":"providers"')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN v2 lifecycle command help WHEN run directly THEN Effect CLI renders subcommand help", async () => {
     const { stdout, stderr, exitCode } = await runRig2Command(["up", "--help"], {})
 

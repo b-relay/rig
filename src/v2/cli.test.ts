@@ -8,6 +8,7 @@ import {
   type V2CliDeployInput,
   type V2GitPushDeployInput,
 } from "./deploy-intent.js"
+import { V2Doctor, type V2DoctorReportInput } from "./doctor.js"
 import { V2CliArgumentError, type V2TaggedError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleRequest } from "./lifecycle.js"
 import { V2ProjectLocator } from "./project-locator.js"
@@ -148,6 +149,34 @@ class CaptureV2DeployIntents {
   }
 }
 
+class CaptureV2Doctor {
+  readonly reports: V2DoctorReportInput[] = []
+
+  preflight() {
+    return Effect.die("unused")
+  }
+
+  report(input: V2DoctorReportInput) {
+    this.reports.push(input)
+    return Effect.succeed({
+      project: input.project,
+      ok: true,
+      categories: [
+        { category: "path" as const, ok: true, details: input.path },
+        { category: "binaries" as const, ok: true, details: input.binaries },
+        { category: "health" as const, ok: true, details: input.health },
+        { category: "ports" as const, ok: true, details: input.ports },
+        { category: "stale-state" as const, ok: true, details: input.staleState },
+        { category: "providers" as const, ok: true, details: input.providers },
+      ],
+    })
+  }
+
+  reconstruct() {
+    return Effect.die("unused")
+  }
+}
+
 const runWithLogger = async (
   argv: readonly string[],
   options: {
@@ -158,12 +187,14 @@ const runWithLogger = async (
   const lifecycle = new CaptureV2Lifecycle()
   const rigd = new CaptureV2Rigd()
   const deployIntents = new CaptureV2DeployIntents()
+  const doctor = new CaptureV2Doctor()
   const layer = Layer.mergeAll(
     V2RuntimeLive,
     Layer.succeed(V2Logger, logger),
     Layer.succeed(V2Lifecycle, lifecycle),
     Layer.succeed(V2Rigd, rigd),
     Layer.succeed(V2DeployIntents, deployIntents),
+    Layer.succeed(V2Doctor, doctor),
     Layer.succeed(V2ProjectLocator, {
       inferCurrentProject: options.inferredProject
         ? Effect.succeed({
@@ -181,7 +212,7 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRig2Cli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle, rigd, deployIntents }
+  return { exitCode, logger, lifecycle, rigd, deployIntents, doctor }
 }
 
 describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
@@ -275,6 +306,27 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       },
     ])
     expect(logger.infos.at(-1)?.message).toBe("rig2 bump metadata")
+  })
+
+  test("GIVEN doctor command WHEN running THEN doctor report is emitted", async () => {
+    const { exitCode, logger, doctor } = await runWithLogger([
+      "doctor",
+      "--project",
+      "pantry",
+      "--state-root",
+      "/tmp/rig-v2",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(doctor.reports[0]).toMatchObject({
+      project: "pantry",
+      path: {
+        ok: true,
+        entries: ["/tmp/rig-v2"],
+      },
+    })
+    expect(logger.infos.at(-1)?.message).toBe("rig2 doctor report")
   })
 
   test("GIVEN up without project inside managed repo WHEN running THEN it infers project and targets local lane", async () => {

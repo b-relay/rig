@@ -200,6 +200,8 @@ Exit condition:
 
 #12 hardens deploy reliability and introduces `doctor`.
 
+Current output: `V2Doctor` exposes deploy preflight, doctor reporting, and bounded reconstruction interfaces. The `rig2 doctor` command now emits PATH, binary/file, health, port, stale-state, and provider categories, while tests cover false-positive health ownership, actionable port conflicts, safe reconstruction plans, and structured unsafe reconstruction failures.
+
 #14 retires or reduces `rig-smoke` once main-binary isolated E2E coverage is sufficient.
 
 Exit condition:

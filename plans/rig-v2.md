@@ -254,12 +254,12 @@ Add preflight, process-aware health validation, cutover safety, recovery behavio
 
 ### Acceptance Criteria
 
-- [ ] Deploy preflight verifies dependencies, binaries, env, hooks, health checks, and port reservations before cutover.
-- [ ] Health checks cannot pass by accidentally observing another process.
-- [ ] Port conflicts report actionable process ownership details where available.
-- [ ] `doctor` reports PATH, binary/file, health, port, stale state, and provider issues.
-- [ ] Safe reconstruction paths are covered by tests.
-- [ ] Unsafe reconstruction fails with clear structured errors instead of guessing.
+- [x] Deploy preflight verifies dependencies, binaries, env, hooks, health checks, and port reservations before cutover.
+- [x] Health checks cannot pass by accidentally observing another process.
+- [x] Port conflicts report actionable process ownership details where available.
+- [x] `doctor` reports PATH, binary/file, health, port, stale state, and provider issues.
+- [x] Safe reconstruction paths are covered by tests.
+- [x] Unsafe reconstruction fails with clear structured errors instead of guessing.
 
 ---
 

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
@@ -183,5 +183,59 @@ describe("GIVEN suite context WHEN logger output targets are configured through 
     expect(normalized).toContain("  hint: Run `rig --help` to see available commands.")
     expect(normalized).toContain("  command: global")
     expect(normalized).toContain("  details:")
+  })
+
+  test("GIVEN stub provider profile and isolated RIG_ROOT WHEN running main binary THEN deploy avoids machine providers", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "rig-main-stub-profile-"))
+    const repoPath = join(tempRoot, "repo")
+    const rigRoot = join(tempRoot, "rig-root")
+
+    try {
+      await mkdir(repoPath, { recursive: true })
+      await writeFile(
+        join(repoPath, "rig.json"),
+        `${JSON.stringify(
+          {
+            name: "pantry",
+            version: "0.1.0",
+            environments: {
+              dev: {
+                services: [
+                  {
+                    name: "web",
+                    type: "server",
+                    command: "bun run dev -- --host 127.0.0.1 --port 5173",
+                    port: 5173,
+                  },
+                ],
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      )
+
+      const env = {
+        RIG_ROOT: rigRoot,
+        RIG_PROVIDER_PROFILE: "stub",
+        RIG_LOG_FORMAT: "json",
+        RIG_LOG_FILE: undefined,
+      }
+
+      const initialized = await runRigCommand(["init", "pantry", "--path", repoPath], env)
+      expect(initialized.exitCode).toBe(0)
+      expect(initialized.stderr).toBe("")
+
+      const deployed = await runRigCommand(["deploy", "pantry", "dev"], env)
+      expect(deployed.exitCode).toBe(0)
+      expect(deployed.stderr).toBe("")
+      expect(deployed.stdout).toContain("Deploy applied.")
+
+      const registry = await readFile(join(rigRoot, "registry.json"), "utf8")
+      expect(registry).toContain(repoPath)
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
   })
 })

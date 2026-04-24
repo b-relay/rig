@@ -426,8 +426,10 @@ describe("global help", () => {
     const versionHelp = renderCommandHelp("version")
 
     expect(mainHelp).toContain("<dev|prod>")
+    expect(mainHelp).toContain("v1 transitional")
     expect(mainHelp).toContain("rig deploy pantry prod --bump minor")
     expect(deployHelp).toContain("rig deploy [name] <dev|prod>")
+    expect(deployHelp).toContain("V2 will use repo-first deploy targets")
     expect(deployHelp).toContain("--revert <semver>")
     expect(versionHelp).toContain("rig version [name] [<semver>]")
   })

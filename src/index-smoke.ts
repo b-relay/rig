@@ -2,7 +2,7 @@ import { Effect, Layer } from "effect"
 
 import { runCli } from "./cli/index"
 import { Logger } from "./interfaces/logger.js"
-import { buildLoggerLayer } from "./index.js"
+import { buildLoggerLayer } from "./provider-profiles.js"
 import { BunBinInstallerLive } from "./providers/bun-bin"
 import { BunHookRunnerLive } from "./providers/bun-hook-runner"
 import { BunPortCheckerLive } from "./providers/bun-port-checker"

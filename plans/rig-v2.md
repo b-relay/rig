@@ -57,17 +57,17 @@ Create the v2 technical foundation around Effect v4, Effect Schema, and Effect C
 
 ### Acceptance Criteria
 
-- [ ] The project targets Effect v4 for v2 backend logic.
-- [ ] If Effect v4 is still prerelease, the implementation pins an explicit beta and documents the stable upgrade path.
-- [ ] `effect-v4-help-notes.md` is consulted before Effect v4 work and kept updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
-- [ ] A separate v2 dev binary or entrypoint, such as `rig2`, exists while v2 is incomplete.
-- [ ] V2 uses an isolated state root by default or requires explicit isolated state during early development.
-- [ ] V2 launchd labels, workspaces, logs, proxy entries, ports, and runtime metadata cannot collide with v1 defaults.
-- [ ] V1 `rig` can keep managing production apps such as `pantry` while v2 is tested.
-- [ ] A representative Effect Schema replaces equivalent Zod validation for a v2 path.
-- [ ] A representative Effect CLI command replaces equivalent hand-written parsing for a v2 path.
-- [ ] Structured errors, logger output, services, and layers still compose through Effect.
-- [ ] Legacy v1 Zod and hand-parser code remains only as migration scaffolding.
+- [x] The project targets Effect v4 for v2 backend logic.
+- [x] If Effect v4 is still prerelease, the implementation pins an explicit beta and documents the stable upgrade path.
+- [x] `effect-v4-help-notes.md` is consulted before Effect v4 work and kept updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
+- [x] A separate v2 dev binary or entrypoint, such as `rig2`, exists while v2 is incomplete.
+- [x] V2 uses an isolated state root by default or requires explicit isolated state during early development.
+- [x] V2 launchd labels, workspaces, logs, proxy entries, ports, and runtime metadata cannot collide with v1 defaults.
+- [x] V1 `rig` can keep managing production apps such as `pantry` while v2 is tested.
+- [x] A representative Effect Schema replaces equivalent Zod validation for a v2 path.
+- [x] A representative Effect CLI command replaces equivalent hand-written parsing for a v2 path.
+- [x] Structured errors, logger output, services, and layers still compose through Effect.
+- [x] Legacy v1 Zod and hand-parser code remains only as migration scaffolding.
 
 ---
 
@@ -83,11 +83,14 @@ Update user-facing docs, help text, onboarding guidance, and setup examples so c
 
 ### Acceptance Criteria
 
-- [ ] Docs introduce the v2 vocabulary before legacy environment terminology.
-- [ ] Onboarding examples avoid teaching unmanaged long-running package-manager commands as the normal workflow.
-- [ ] Help output identifies legacy command shapes as transitional where appropriate.
-- [ ] The Dokploy-but-non-Docker product context remains visible in planning docs.
-- [ ] Existing docs and onboarding tests pass.
+- [x] Docs introduce the v2 vocabulary before legacy environment terminology.
+- [x] Docs describe v2 as targeting Effect v4 for backend logic.
+- [x] Docs describe Effect Schema replacing Zod for v2 validation.
+- [x] Docs describe Effect CLI replacing hand-written parser code for v2 command parsing/help.
+- [x] Onboarding examples avoid teaching unmanaged long-running package-manager commands as the normal workflow.
+- [x] Help output identifies legacy command shapes as transitional where appropriate.
+- [x] The Dokploy-but-non-Docker product context remains visible in planning docs.
+- [x] Existing docs and onboarding tests pass.
 
 ---
 
@@ -103,13 +106,13 @@ Add a v2 config path that can parse shared components, component modes, lane ove
 
 ### Acceptance Criteria
 
-- [ ] V2 configs validate shared components and lane overrides using Effect Schema.
-- [ ] Every new schema field has clear documentation.
-- [ ] Invalid mode-specific fields fail with structured errors and hints.
-- [ ] Interpolation values resolve for lane, workspace, deployment, subdomain, branch slug, and assigned ports.
-- [ ] Dependencies are accepted only for managed components.
-- [ ] A resolved v2 lane can drive existing lifecycle behavior without duplicating component definitions.
-- [ ] V1 config behavior remains covered and compatible.
+- [x] V2 configs validate shared components and lane overrides using Effect Schema.
+- [x] Every new schema field has clear documentation.
+- [x] Invalid mode-specific fields fail with structured errors and hints.
+- [x] Interpolation values resolve for lane, workspace, deployment, subdomain, branch slug, and assigned ports.
+- [x] Dependencies are accepted only for managed components.
+- [x] A resolved v2 lane can drive existing lifecycle behavior without duplicating component definitions.
+- [x] V1 config behavior remains covered and compatible.
 
 ---
 
@@ -146,11 +149,12 @@ Add explicit provider/profile selection so the main `rig` binary can compose def
 
 ### Acceptance Criteria
 
-- [ ] Default provider composition remains launchd, Caddy, local git, and native process/runtime providers.
-- [ ] Stub provider composition is selectable for tests and isolated runs.
-- [ ] Provider selection is visible in config or execution context as appropriate.
-- [ ] Main-binary E2E tests can run with isolated state and stub providers.
-- [ ] `rig-smoke` is documented as transitional after parity begins.
+- [x] Default provider composition remains launchd, Caddy, local git, and native process/runtime providers.
+- [x] Stub provider composition is selectable for tests and isolated runs.
+- [x] Provider selection is visible in config or execution context as appropriate.
+- [x] Main-binary E2E tests can run with isolated state and stub providers.
+- [x] V2 provider composition uses Effect v4 services/layers.
+- [x] `rig-smoke` is documented as transitional after parity begins.
 
 ---
 

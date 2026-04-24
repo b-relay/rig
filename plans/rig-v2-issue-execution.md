@@ -75,6 +75,8 @@ Exit condition:
 
 Build the isolated v2 foundation before adding feature surface. This is the first real implementation milestone.
 
+Status: complete. `rig2`, isolated v2 paths, Effect v4 aliasing, representative Effect Schema validation, Effect CLI parsing, services/layers, and tagged errors are implemented and covered by focused tests.
+
 Required outputs:
 
 - Separate `rig2` or equivalent v2 entrypoint.
@@ -95,11 +97,15 @@ Exit condition:
 
 After #15, three streams can proceed with limited overlap.
 
+Status: in progress.
+
 #5 should build the v2 config resolver:
 
 - Components, modes, lanes, overrides, interpolation, and dependency validation.
 - A resolved lane shape that can drive existing lifecycle behavior during migration.
 - V1 config compatibility preserved.
+
+Current output: v2 shared component schemas, lane override schemas, mode/dependency validation, interpolation, generated deployment values, provider profile selection in config, and v1-compatible lane resolution are implemented.
 
 #7 should build provider profiles:
 
@@ -108,11 +114,15 @@ After #15, three streams can proceed with limited overlap.
 - Main-binary isolated test execution path.
 - Transitional status of `rig-smoke` documented.
 
+Current output: main binary provider composition is centralized behind selectable `default`, `stub`, and transitional `smoke` profiles; v2 also has an Effect v4 provider profile service. Full main-binary isolated E2E parity remains open.
+
 #4 should update docs and onboarding after #15 has settled the real Effect stack wording:
 
 - V2 vocabulary first.
 - Legacy command forms marked transitional where useful.
 - Onboarding steers lifecycle through rig.
+
+Current output: README introduces the v2 vocabulary, Effect v4 / Effect Schema / Effect CLI direction, isolated state, provider profiles, and `rig-smoke` transitional status before legacy v1 command docs.
 
 Exit condition:
 

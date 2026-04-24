@@ -1,25 +1,12 @@
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 
 import { runCli } from "./cli/index";
-import { Logger } from "./interfaces/logger.js";
-import { BunBinInstallerLive } from "./providers/bun-bin";
-import { BunHookRunnerLive } from "./providers/bun-hook-runner";
-import { BunPortCheckerLive } from "./providers/bun-port-checker";
-import { DotenvLoaderLive } from "./providers/dotenv-loader";
-import { BunGitLive } from "./providers/bun-git";
-import { BunServiceRunnerLive } from "./providers/bun-service-runner";
-import { CaddyProxyLive } from "./providers/caddy";
-import { DispatchHealthCheckerLive } from "./providers/health-checker-dispatch";
-import { JsonLoggerLive } from "./providers/json-logger";
+import { Logger } from "./interfaces/logger.js"
+import { buildRigLayer } from "./provider-profiles.js"
 import { runInternalLogCapture } from "./providers/internal-log-capture";
-import { LaunchdManagerLive } from "./providers/launchd";
-import { NodeFileSystemLive } from "./providers/node-fs";
-import { JSONRegistryLive } from "./providers/json-registry";
-import { CompositeLoggerLive } from "./providers/composite-logger";
-import { FileLoggerLive } from "./providers/file-logger";
-import { TerminalLogger, TerminalLoggerLive } from "./providers/terminal-logger";
-import { GitWorktreeWorkspaceLive } from "./providers/worktree";
 import type { RigError } from "./schema/errors.js";
+
+export { buildLoggerLayer, buildRigLayer, normalizeRigProviderProfile } from "./provider-profiles.js"
 
 const normalizeArgv = (
   argv: readonly string[],
@@ -34,57 +21,6 @@ const normalizeArgv = (
     verbose: argv.includes("--verbose"),
     json: argv.includes("--json"),
   };
-};
-
-export const buildLoggerLayer = (verbose = false, json = false): Layer.Layer<Logger> => {
-  const primaryLayer =
-    json || process.env.RIG_LOG_FORMAT === "json"
-      ? JsonLoggerLive
-      : verbose
-        ? Layer.succeed(Logger, new TerminalLogger(true))
-        : TerminalLoggerLive;
-  const logFilePath = process.env.RIG_LOG_FILE
-
-  if (!logFilePath) {
-    return primaryLayer
-  }
-
-  return CompositeLoggerLive(
-    primaryLayer,
-    Layer.provide(FileLoggerLive(logFilePath), NodeFileSystemLive),
-  )
-}
-
-const DotenvWithFileSystemLive = Layer.provide(DotenvLoaderLive, NodeFileSystemLive);
-const RegistryWithFileSystemLive = Layer.provide(JSONRegistryLive, NodeFileSystemLive);
-const BinInstallerWithFileSystemLive = Layer.provide(BunBinInstallerLive, NodeFileSystemLive);
-const WorkspaceWithDependenciesLive = Layer.provide(
-  GitWorktreeWorkspaceLive,
-  Layer.mergeAll(BunGitLive, NodeFileSystemLive, RegistryWithFileSystemLive),
-);
-
-export const buildRigLayer = (verbose = false, json = false) => {
-  const loggerLayer = buildLoggerLayer(verbose, json);
-  const serviceRunnerWithFileSystemLive = Layer.provide(
-    BunServiceRunnerLive,
-    Layer.mergeAll(NodeFileSystemLive, loggerLayer),
-  );
-
-  return Layer.mergeAll(
-    NodeFileSystemLive,
-    DotenvWithFileSystemLive,
-    RegistryWithFileSystemLive,
-    BunGitLive,
-    BunHookRunnerLive,
-    BunPortCheckerLive,
-    CaddyProxyLive,
-    LaunchdManagerLive,
-    WorkspaceWithDependenciesLive,
-    DispatchHealthCheckerLive,
-    serviceRunnerWithFileSystemLive,
-    BinInstallerWithFileSystemLive,
-    loggerLayer,
-  );
 };
 
 export const RigLive = buildRigLayer();

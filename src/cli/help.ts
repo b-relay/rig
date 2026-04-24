@@ -37,6 +37,7 @@ const HELP: Record<CommandName, HelpSpec> = {
       "rig deploy pantry prod --revert 1.2.3",
     ],
     notes: [
+      "This is the v1 transitional deploy form. V2 will use repo-first deploy targets with local/live/deployment lanes.",
       "`--version` is supported on prod only.",
       "`--bump`, `--version`, and `--revert` are mutually exclusive.",
     ],
@@ -64,13 +65,19 @@ const HELP: Record<CommandName, HelpSpec> = {
       "rig start pantry prod --version 1.2.3",
       "rig start pantry prod --foreground",
     ],
-    notes: ["`--version` is supported on prod only."],
+    notes: [
+      "This is the v1 transitional lifecycle form. V2 will use repo-first `rig up` with local/live lanes.",
+      "`--version` is supported on prod only.",
+    ],
   },
   stop: {
     summary: "Stop all running services for an environment.",
     usage: ["rig stop [name] <dev|prod> [--version <semver>]", "rig stop --help"],
     examples: ["rig stop pantry dev", "rig stop pantry prod", "rig stop pantry prod --version 1.2.3"],
-    notes: ["`--version` is supported on prod only."],
+    notes: [
+      "This is the v1 transitional lifecycle form. V2 will use repo-first `rig down` with local/live lanes.",
+      "`--version` is supported on prod only.",
+    ],
   },
   restart: {
     summary: "Restart all services and run lifecycle hooks.",
@@ -81,7 +88,10 @@ const HELP: Record<CommandName, HelpSpec> = {
     summary: "Show deployment status, including latest and current prod versions.",
     usage: ["rig status [name] [dev|prod] [--version <semver>]", "rig status --help"],
     examples: ["rig status", "rig status pantry", "rig status pantry prod", "rig status pantry prod --version 1.2.3"],
-    notes: ["`--version` is supported on prod only and requires an explicit project name."],
+    notes: [
+      "This is the v1 transitional status form. V2 status is repo-first and uses local/live/deployment lanes.",
+      "`--version` is supported on prod only and requires an explicit project name.",
+    ],
   },
   logs: {
     summary: "Show service logs with optional streaming and filtering.",
@@ -94,7 +104,10 @@ const HELP: Record<CommandName, HelpSpec> = {
       "rig logs pantry prod --lines 100 --service web",
       "rig logs pantry prod --version 1.2.3 --service web",
     ],
-    notes: ["`--version` is supported on prod only."],
+    notes: [
+      "This is the v1 transitional logs form. V2 logs are repo-first and include managed runtime components by default.",
+      "`--version` is supported on prod only.",
+    ],
   },
   version: {
     summary: "Inspect release history and release details.",
@@ -196,6 +209,7 @@ export const renderMainHelp = (): string => {
     commandLines,
     "",
     "Global Patterns:",
+    "  Current command forms are v1 transitional while v2 repo-first local/live/deployment commands land.",
     "  --help, -h     Show help for command",
     "  --verbose      Show detailed error information",
     "  --json         Emit newline-delimited JSON log events",

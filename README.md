@@ -2,7 +2,9 @@
 
 Local Mac deployment manager.
 
-`rig` is a declarative, config-driven CLI for running project deployments on your own Mac. Think Vercel, but for your local machine: one `rig.json`, explicit `dev`/`prod` environments, service lifecycle orchestration, reverse proxy wiring, and daemon integration.
+`rig` is a declarative, config-driven CLI for running project deployments on your own Mac. Think Vercel, but for your local machine: one `rig.json`, service lifecycle orchestration, reverse proxy wiring, and daemon integration.
+
+The active v1 binary still uses explicit `dev`/`prod` environments. The v2 runway is being built in parallel around repo-first projects, shared `components`, `managed` and `installed` component modes, `local`, `live`, and generated `deployments`. See [DESIGN_V2.md](./DESIGN_V2.md) for the target model.
 
 ## Why Rig Exists
 
@@ -14,7 +16,36 @@ Every project eventually reinvents the same deployment boilerplate:
 - Reverse proxy configuration
 - launchd plist management
 
-`rig` centralizes that into one tool and one schema (`rig.json`).
+`rig` centralizes that into one tool and one schema (`rig.json`). V2 keeps that goal but reduces repeated config by defining components once and resolving lane-specific overrides.
+
+## V2 Runway
+
+V2 is intentionally isolated while v1 keeps managing production apps.
+
+- `rig2` is the experimental v2 entrypoint.
+- V2 backend work targets Effect v4 through the pinned `effect-v4` package alias.
+- V2 validation uses Effect Schema; v1 Zod schemas remain only for legacy compatibility.
+- V2 command parsing uses Effect CLI; v1 hand-written parsing remains transitional.
+- V2 state defaults to `~/.rig-v2` or `RIG_V2_ROOT`, never `~/.rig`.
+- Provider profiles are explicit: `default` keeps launchd/Caddy/local git defaults, and `stub` is selectable for isolated tests and agent runs.
+- `rig-smoke` remains transitional until main-binary isolated E2E coverage reaches parity.
+
+Current v2 vocabulary:
+
+| V2 term | Meaning |
+|---|---|
+| `components` | Shared project units defined once. |
+| `managed` | Long-running supervised runtime component. |
+| `installed` | Build/install executable surface, not a supervised runtime. |
+| `local` | Working-copy runtime lane. |
+| `live` | Stable built deployment lane. |
+| `deployments` | Template for generated previews and named deployments. |
+
+Try the foundation path:
+
+```bash
+bun run start:rig2 status --project pantry
+```
 
 ## Installation
 
@@ -36,8 +67,8 @@ Register, deploy, and start rig:
 
 ```bash
 bun run src/index.ts init rig --path .
-bun run src/index.ts deploy rig --prod
-bun run src/index.ts start rig --prod
+bun run src/index.ts deploy rig prod
+bun run src/index.ts start rig prod
 ```
 
 After this, `~/.rig/bin/rig` should be on your PATH and rig is self-deployed.
@@ -90,11 +121,13 @@ Example minimal config:
 
 ### 4. Deploy and run
 
+These commands are the v1 production surface. V2 will replace this with repo-first `rig up`, `rig down`, `rig status`, and `rig logs` once the v2 CLI aliases land.
+
 ```bash
-./rig deploy pantry --dev
-./rig start pantry --dev
-./rig status pantry --dev
-./rig stop pantry --dev
+./rig deploy pantry dev
+./rig start pantry dev
+./rig status pantry dev
+./rig stop pantry dev
 ```
 
 ## CLI Reference
@@ -105,7 +138,7 @@ Example minimal config:
 - `rig help`: show main help
 - `rig help <command>`: show command help
 - Every subcommand supports `--help` and `-h`
-- Environment is explicit where required: pass exactly one of `--dev` or `--prod`
+- Environment is explicit where required: pass exactly one positional `dev` or `prod`
 
 ### Command summary
 
@@ -125,19 +158,19 @@ Example minimal config:
 ### `deploy`
 
 ```bash
-rig deploy <name> --dev|--prod
+rig deploy <name> <dev|prod>
 rig deploy --help
 ```
 
 Flags:
-- `--dev` or `--prod` (required)
+- `<dev|prod>` positional environment selector (required)
 - `--help`, `-h`
 
 Examples:
 
 ```bash
-rig deploy pantry --dev
-rig deploy pantry --prod
+rig deploy pantry dev
+rig deploy pantry prod
 ```
 
 ### `init`
@@ -160,68 +193,68 @@ rig init pantry --path ~/Projects/pantry
 ### `start`
 
 ```bash
-rig start <name> --dev|--prod [--foreground]
+rig start <name> <dev|prod> [--foreground]
 rig start --help
 ```
 
 Flags:
-- `--dev` or `--prod` (required)
+- `<dev|prod>` positional environment selector (required)
 - `--foreground` (optional, default: `false`)
 - `--help`, `-h`
 
 Examples:
 
 ```bash
-rig start pantry --dev
-rig start pantry --prod
-rig start pantry --prod --foreground
+rig start pantry dev
+rig start pantry prod
+rig start pantry prod --foreground
 ```
 
 ### `stop`
 
 ```bash
-rig stop <name> --dev|--prod
+rig stop <name> <dev|prod>
 rig stop --help
 ```
 
 Flags:
-- `--dev` or `--prod` (required)
+- `<dev|prod>` positional environment selector (required)
 - `--help`, `-h`
 
 Examples:
 
 ```bash
-rig stop pantry --dev
-rig stop pantry --prod
+rig stop pantry dev
+rig stop pantry prod
 ```
 
 ### `restart`
 
 ```bash
-rig restart <name> --dev|--prod
+rig restart <name> <dev|prod>
 rig restart --help
 ```
 
 Flags:
-- `--dev` or `--prod` (required)
+- `<dev|prod>` positional environment selector (required)
 - `--help`, `-h`
 
 Examples:
 
 ```bash
-rig restart pantry --dev
-rig restart pantry --prod
+rig restart pantry dev
+rig restart pantry prod
 ```
 
 ### `status`
 
 ```bash
-rig status [<name>] [--dev|--prod]
+rig status [<name>] [dev|prod]
 rig status --help
 ```
 
 Flags:
-- `--dev` or `--prod` (optional; if omitted, shows both)
+- `dev` or `prod` positional environment selector (optional; if omitted, shows both)
 - `--help`, `-h`
 
 Examples:
@@ -229,18 +262,18 @@ Examples:
 ```bash
 rig status
 rig status pantry
-rig status pantry --prod
+rig status pantry prod
 ```
 
 ### `logs`
 
 ```bash
-rig logs <name> --dev|--prod [--follow] [--lines <n>] [--service <name>]
+rig logs <name> <dev|prod> [--follow] [--lines <n>] [--service <name>]
 rig logs --help
 ```
 
 Flags:
-- `--dev` or `--prod` (required)
+- `<dev|prod>` positional environment selector (required)
 - `--follow` (optional, default: `false`)
 - `--lines <n>` (optional integer, default: `50`, min: `1`)
 - `--service <name>` (optional)
@@ -249,8 +282,8 @@ Flags:
 Examples:
 
 ```bash
-rig logs pantry --dev --follow
-rig logs pantry --prod --lines 100 --service web
+rig logs pantry dev --follow
+rig logs pantry prod --lines 100 --service web
 ```
 
 ### `version`
@@ -423,7 +456,7 @@ Use `127.0.0.1` bindings.
 
 ### Dev vs prod behavior
 
-- `--dev` and `--prod` are explicit flags; no implicit default.
+- `dev` and `prod` are explicit positional environment selectors; no implicit default.
 - Dev deploy/start resolve workspace to the registered repo path.
 - Prod deploy creates versioned workspaces under `~/.rig/workspaces/<name>/prod/<version>` and updates `current` symlink.
 - Deploy computes proxy domain as:

@@ -180,17 +180,22 @@ rig deploy pantry prod
 
 ```bash
 rig init <name> --path <project-path>
+rig init <name> --path <project-path> --v2 --provider-profile <default|stub> [--package-scripts]
 rig init --help
 ```
 
 Flags:
 - `--path <project-path>` (required)
+- `--v2` (optional): scaffold a v2 `rig.json` when one does not already exist
+- `--provider-profile <default|stub>` (optional, default: `default`)
+- `--package-scripts` (optional): add non-overwriting `rig:` scripts when `package.json` exists
 - `--help`, `-h`
 
-Example:
+Examples:
 
 ```bash
 rig init pantry --path ~/Projects/pantry
+rig init pantry --path . --v2 --provider-profile stub --package-scripts
 ```
 
 ### `start`

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { copyFileSync, existsSync, mkdirSync } from "node:fs"
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
@@ -725,6 +725,46 @@ describe("other command parsing", () => {
     expect(exitCode).toBe(0)
     expect(logger.errors).toHaveLength(0)
     expect(await Effect.runPromise(registry.resolve("pantry"))).toBe(resolve(relativePath))
+  })
+
+  test("init parses v2 scaffold provider profile and package script flags", async () => {
+    const projectPath = join(tempRoot, `init-v2-${randomUUID()}`)
+    await mkdir(projectPath, { recursive: true })
+    await writeFile(
+      join(projectPath, "package.json"),
+      `${JSON.stringify({ scripts: { dev: "vite dev" } }, null, 2)}\n`,
+      "utf8",
+    )
+
+    const { exitCode, logger, registry } = await runWithLogger([
+      "init",
+      "pantry-v2",
+      "--path",
+      projectPath,
+      "--v2",
+      "--provider-profile",
+      "stub",
+      "--package-scripts",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toHaveLength(0)
+    expect(await Effect.runPromise(registry.resolve("pantry-v2"))).toBe(projectPath)
+
+    const rigJson = JSON.parse(await readFile(join(projectPath, "rig.json"), "utf8")) as {
+      readonly local: { readonly providerProfile: string }
+      readonly live: { readonly providerProfile: string }
+      readonly deployments: { readonly providerProfile: string }
+    }
+    expect(rigJson.local.providerProfile).toBe("stub")
+    expect(rigJson.live.providerProfile).toBe("stub")
+    expect(rigJson.deployments.providerProfile).toBe("stub")
+
+    const packageJson = JSON.parse(await readFile(join(projectPath, "package.json"), "utf8")) as {
+      readonly scripts: Record<string, string>
+    }
+    expect(packageJson.scripts.dev).toBe("vite dev")
+    expect(packageJson.scripts["rig:up"]).toBe("rig2 up")
   })
 
   test("list still rejects unexpected positionals", async () => {

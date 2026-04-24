@@ -144,6 +144,8 @@ Current output: generated deployment materialization now runs behind v2 deployme
 
 #13 depends on #5 and #7, and should expand `rig init` once the config resolver and provider profiles exist.
 
+Current output: `rig init` now has an opt-in v2 scaffold path. `--v2` writes a valid lane-wired v2 config, `--provider-profile default|stub` is scriptable, and `--package-scripts` adds non-overwriting `rig:` scripts only when `package.json` already exists.
+
 Recommended order:
 
 1. #6 first, if the goal is early human-visible UX.

@@ -44,8 +44,18 @@ const HELP: Record<CommandName, HelpSpec> = {
   },
   init: {
     summary: "Initialize a project and register its path.",
-    usage: ["rig init <name> --path <project-path>", "rig init --help"],
-    examples: ["rig init pantry --path ~/Projects/pantry"],
+    usage: [
+      "rig init <name> --path <project-path> [--v2] [--provider-profile <default|stub>] [--package-scripts]",
+      "rig init --help",
+    ],
+    examples: [
+      "rig init pantry --path ~/Projects/pantry",
+      "rig init pantry --path . --v2 --provider-profile stub --package-scripts",
+    ],
+    notes: [
+      "`--v2` scaffolds a lane-wired v2 rig.json when one does not already exist.",
+      "`--package-scripts` adds rig: scripts to package.json only when that file exists and never overwrites existing scripts.",
+    ],
   },
   forget: {
     summary: "Unregister a project, optionally purging rig-managed state.",

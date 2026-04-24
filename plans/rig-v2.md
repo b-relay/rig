@@ -275,12 +275,12 @@ Make `rig init` a full non-interactive setup tool for v2 config, provider/profil
 
 ### Acceptance Criteria
 
-- [ ] `rig init` can scaffold a valid v2 config.
-- [ ] Provider/profile selection is explicit and scriptable.
-- [ ] Lane wiring is generated for `local`, `live`, and `deployments`.
-- [ ] Optional package-manager integration can add `rig:` scripts.
-- [ ] Conventional package scripts are not overwritten by default.
-- [ ] Non-JavaScript projects are unaffected unless they opt in.
+- [x] `rig init` can scaffold a valid v2 config.
+- [x] Provider/profile selection is explicit and scriptable.
+- [x] Lane wiring is generated for `local`, `live`, and `deployments`.
+- [x] Optional package-manager integration can add `rig:` scripts.
+- [x] Conventional package scripts are not overwritten by default.
+- [x] Non-JavaScript projects are unaffected unless they opt in.
 
 ---
 

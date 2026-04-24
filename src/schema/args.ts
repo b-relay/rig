@@ -28,14 +28,27 @@ const DocsTopic = z
   .enum(["config", "onboard"])
   .describe("Docs topic name.")
 
+const ProviderProfile = z
+  .enum(["default", "stub"])
+  .describe("Provider profile selected for generated v2 lane wiring.")
+
 // ── rig init ────────────────────────────────────────────────────────────────
 
 export const InitArgsSchema = z
   .object({
     name: ProjectName,
     path: z.string().min(1).describe("Absolute path to the project repository."),
+    v2: z
+      .boolean()
+      .default(false)
+      .describe("Scaffold a v2 rig.json with components and local/live/deployments lane wiring."),
+    providerProfile: ProviderProfile.default("default"),
+    packageScripts: z
+      .boolean()
+      .default(false)
+      .describe("Opt in to adding non-overwriting rig: package scripts when package.json exists."),
   })
-  .describe("Arguments for 'rig init <name> --path <project-path>'.")
+  .describe("Arguments for 'rig init <name> --path <project-path> [--v2]'.")
 
 // ── rig forget ──────────────────────────────────────────────────────────────
 

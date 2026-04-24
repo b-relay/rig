@@ -410,6 +410,9 @@ const parseInit = (args: readonly string[]) =>
     const parsed = parseWithOptions("init", args, {
       help: { type: "boolean", short: "h" },
       path: { type: "string" },
+      v2: { type: "boolean" },
+      "provider-profile": { type: "string" },
+      "package-scripts": { type: "boolean" },
     })
 
     if ("error" in parsed) {
@@ -426,15 +429,22 @@ const parseInit = (args: readonly string[]) =>
       {
         name: parsed.positionals[0],
         path: parsed.values.path,
+        v2: parsed.values.v2 === true,
+        providerProfile: parsed.values["provider-profile"],
+        packageScripts: parsed.values["package-scripts"] === true,
       },
-      "rig init <name> --path <project-path>",
+      "rig init <name> --path <project-path> [--v2] [--provider-profile <default|stub>] [--package-scripts]",
     )
 
     if ("error" in payload || parsed.positionals.length > 1) {
       return yield* fail(
         "error" in payload
           ? payload.error
-          : makeCliError("init", "Invalid arguments.", "Usage: rig init <name> --path <project-path>"),
+          : makeCliError(
+              "init",
+              "Invalid arguments.",
+              "Usage: rig init <name> --path <project-path> [--v2] [--provider-profile <default|stub>] [--package-scripts]",
+            ),
       )
     }
 

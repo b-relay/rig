@@ -136,6 +136,8 @@ Exit condition:
 
 #6 depends on #5 and #15, and should introduce repo-first command aliases through the v2 command path.
 
+Current output: `rig2 up`, `rig2 down`, `rig2 logs`, and `rig2 status` are Effect CLI commands. They infer project identity from the current repo when `--project` is omitted, expose `local`/`live` lanes, reject `down --destroy` for local/live lanes, and delegate through a v2 lifecycle interface.
+
 #8 depends on #5 and #7, and should materialize generated deployments from the `deployments` template.
 
 #13 depends on #5 and #7, and should expand `rig init` once the config resolver and provider profiles exist.

@@ -44,4 +44,35 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test("GIVEN up command without project WHEN run from repo THEN it infers current project", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+
+    try {
+      const { stdout, stderr, exitCode } = await runRig2Command(
+        ["up", "--state-root", root],
+        { RIG_V2_ROOT: root },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(stdout).toContain("[INFO] rig2 lifecycle intent")
+      expect(stdout).toContain('"project":"rig"')
+      expect(stdout).toContain('"lane":"local"')
+      expect(stdout).toContain(`"stateRoot":"${root}"`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN v2 lifecycle command help WHEN run directly THEN Effect CLI renders subcommand help", async () => {
+    const { stdout, stderr, exitCode } = await runRig2Command(["up", "--help"], {})
+
+    expect(exitCode).toBe(0)
+    expect(stderr).toBe("")
+    expect(stdout).toContain("Start a v2 local or live lane.")
+    expect(stdout).toContain("--project string")
+    expect(stdout).toContain("--lane choice")
+    expect(stdout).toContain("--help, -h")
+  })
 })

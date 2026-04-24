@@ -3,6 +3,7 @@ import { Context, Effect, Layer } from "effect-v4"
 
 import type { V2TaggedError } from "./errors.js"
 import { V2ProviderProfileLive } from "./provider-profiles.js"
+import { V2ProjectLocatorLive } from "./project-locator.js"
 import {
   RIG_V2_LAUNCHD_LABEL_PREFIX,
   RIG_V2_NAMESPACE,
@@ -87,7 +88,12 @@ export const V2LoggerLive = Layer.succeed(V2Logger, {
     ),
 })
 
-export const Rig2Live = Layer.mergeAll(V2RuntimeLive, V2LoggerLive, V2ProviderProfileLive())
+export const Rig2Live = Layer.mergeAll(
+  V2RuntimeLive,
+  V2LoggerLive,
+  V2ProviderProfileLive(),
+  V2ProjectLocatorLive,
+)
 
 export const v2NamespaceSummary = () => ({
   namespace: RIG_V2_NAMESPACE,

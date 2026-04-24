@@ -128,12 +128,13 @@ Introduce the repo-first command surface around `up`, `down`, `logs`, `status`, 
 
 ### Acceptance Criteria
 
-- [ ] Commands infer the current project from a managed repo.
-- [ ] Cross-project operations require the chosen explicit selector.
-- [ ] `up`, `down`, `logs`, and `status` support `local` and `live` terminology.
-- [ ] `down --destroy` is reserved for generated deployment teardown semantics.
-- [ ] Legacy command forms continue to work during migration.
-- [ ] Every new or changed subcommand supports `--help` and `-h` through Effect CLI.
+- [x] Commands infer the current project from a managed repo.
+- [x] Cross-project operations require the chosen explicit selector.
+- [x] `up`, `down`, `logs`, and `status` support `local` and `live` terminology.
+- [x] `down --destroy` is reserved for generated deployment teardown semantics.
+- [x] Legacy command forms continue to work during migration.
+- [x] Every new or changed subcommand supports `--help` and `-h` through Effect CLI.
+- [x] Parse failures still map to tagged rig errors and structured logger output.
 
 ---
 

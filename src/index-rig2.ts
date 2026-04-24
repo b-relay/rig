@@ -1,11 +1,16 @@
-import { Effect } from "effect-v4"
+import { Effect, Layer } from "effect-v4"
 
 import { runRig2Cli } from "./v2/cli.js"
 import { V2RuntimeError } from "./v2/errors.js"
+import { V2LifecycleLive } from "./v2/lifecycle.js"
 import { Rig2Live, V2Logger, V2LoggerLive } from "./v2/services.js"
 
 export const main = (argv: readonly string[]): Promise<number> =>
-  Effect.runPromise(runRig2Cli(argv).pipe(Effect.provide(Rig2Live)))
+  Effect.runPromise(
+    runRig2Cli(argv).pipe(
+      Effect.provide(Layer.mergeAll(Rig2Live, Layer.provide(V2LifecycleLive, Rig2Live))),
+    ),
+  )
 
 const logSignal = (signal: string) =>
   Effect.gen(function* () {

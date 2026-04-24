@@ -45,6 +45,8 @@ Try the foundation path:
 
 ```bash
 bun run start:rig2 status --project pantry
+bun run start:rig2 up
+bun run start:rig2 logs --lane live --project pantry
 ```
 
 ## Installation
@@ -121,7 +123,7 @@ Example minimal config:
 
 ### 4. Deploy and run
 
-These commands are the v1 production surface. V2 will replace this with repo-first `rig up`, `rig down`, `rig status`, and `rig logs` once the v2 CLI aliases land.
+These commands are the v1 production surface. The experimental `rig2` entrypoint already exposes repo-first `up`, `down`, `status`, and `logs` aliases as the v2 command runway.
 
 ```bash
 ./rig deploy pantry dev

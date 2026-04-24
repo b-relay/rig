@@ -187,6 +187,8 @@ Exit condition:
 
 Move lifecycle, logs, status, health, and process supervision behind `rigd`.
 
+Current output: `V2LifecycleLive` now delegates `up`, `down`, `logs`, and `status` to the rigd local API. The live `rig2` composition uses the rigd-backed lifecycle implementation, while older direct lifecycle assembly remains a compatibility testing seam rather than the runtime source of truth.
+
 Exit condition:
 
 - CLI and local API agree on runtime state.

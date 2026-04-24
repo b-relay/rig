@@ -485,6 +485,8 @@ The CLI becomes a client of `rigd` over a local API/socket.
 
 Current MVP: `rig2` uses an in-process local API contract while the daemon boundary is still being built. The API surface already models health, project/deployment inventory, structured logs, health state, lifecycle action receipts, and deploy action receipts so later transport work can preserve the same interface shape.
 
+Current runtime-facing v2 commands route through the rigd-backed lifecycle service. Any remaining direct command assembly is compatibility scaffolding for v1 or tests, not the v2 source of truth.
+
 ### Web relationship
 
 `rigd` makes an outbound authenticated connection to `core.b-relay.com`.

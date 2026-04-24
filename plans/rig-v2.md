@@ -233,12 +233,12 @@ Move the main runtime-facing command paths so lifecycle, logs, status, health, a
 
 ### Acceptance Criteria
 
-- [ ] `up` and `down` use `rigd` for managed runtime lifecycle.
-- [ ] `status` reads deployment, health, and process state from `rigd`.
-- [ ] `logs` reads structured logs from `rigd`.
-- [ ] Process-group-aware supervision is preserved or improved.
-- [ ] CLI and local API views of runtime state agree.
-- [ ] Legacy direct-command paths are either compatibility wrappers or explicitly deprecated.
+- [x] `up` and `down` use `rigd` for managed runtime lifecycle.
+- [x] `status` reads deployment, health, and process state from `rigd`.
+- [x] `logs` reads structured logs from `rigd`.
+- [x] Process-group-aware supervision is preserved or improved.
+- [x] CLI and local API views of runtime state agree.
+- [x] Legacy direct-command paths are either compatibility wrappers or explicitly deprecated.
 
 ---
 

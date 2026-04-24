@@ -24,7 +24,7 @@ export const main = (argv: readonly string[]): Promise<number> =>
           V2DeploymentLive,
           V2DeployIntentsRuntimeLive,
           V2RigdRuntimeLive,
-          Layer.provide(V2LifecycleLive, Rig2Live),
+          Layer.provide(V2LifecycleLive, Layer.mergeAll(Rig2Live, V2RigdRuntimeLive)),
         ),
       ),
     ),

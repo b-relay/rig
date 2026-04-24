@@ -57,9 +57,9 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
 
       expect(exitCode).toBe(0)
       expect(stderr).toBe("")
-      expect(stdout).toContain("[INFO] rig2 lifecycle intent")
+      expect(stdout).toContain("[INFO] rig2 lifecycle accepted")
       expect(stdout).toContain('"project":"rig"')
-      expect(stdout).toContain('"lane":"local"')
+      expect(stdout).toContain('"target":"local"')
       expect(stdout).toContain(`"stateRoot":"${root}"`)
     } finally {
       await rm(root, { recursive: true, force: true })

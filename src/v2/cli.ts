@@ -3,6 +3,7 @@ import { Command, Flag } from "effect-v4/unstable/cli"
 import { ChildProcessSpawner } from "effect-v4/unstable/process/ChildProcessSpawner"
 
 import { decodeV2StatusInput } from "./config.js"
+import { V2DeployIntents, type V2DeployTarget } from "./deploy-intent.js"
 import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleAction, type V2LifecycleLane } from "./lifecycle.js"
 import { rigV2Root } from "./paths.js"
@@ -58,6 +59,16 @@ const laneFlag = Flag.choice("lane", ["local", "live"]).pipe(
 const stateRootFlag = Flag.string("state-root").pipe(
   Flag.withDefault(rigV2Root()),
   Flag.withDescription("Isolated v2 state root. Defaults to ~/.rig-v2."),
+)
+
+const deployRefFlag = Flag.string("ref").pipe(
+  Flag.withDefault("HEAD"),
+  Flag.withDescription("Git ref to deploy. Semver is optional metadata, not required."),
+)
+
+const deployTargetFlag = Flag.choice("target", ["live", "generated"]).pipe(
+  Flag.withDefault("live" as V2DeployTarget),
+  Flag.withDescription("Deploy target: live or generated."),
 )
 
 const resolveProjectScopedInput = (input: {
@@ -228,6 +239,78 @@ const rigdCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Start the local rigd MVP API and report health."))
 
+const deployCommand = Command.make(
+  "deploy",
+  {
+    project: projectFlag,
+    stateRoot: stateRootFlag,
+    ref: deployRefFlag,
+    target: deployTargetFlag,
+    deployment: Flag.string("deployment").pipe(
+      Flag.withDefault(""),
+      Flag.withDescription("Optional generated deployment name override."),
+    ),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const scoped = yield* resolveProjectScopedInput({
+        project: input.project,
+        lane: "live",
+        stateRoot: input.stateRoot,
+      })
+      const decoded = yield* decodeV2StatusInput(scoped)
+      const intents = yield* V2DeployIntents
+      const logger = yield* V2Logger
+      const intent = yield* intents.fromCliDeploy({
+        project: decoded.project,
+        stateRoot: decoded.stateRoot,
+        ref: input.ref,
+        target: input.target,
+        ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
+      })
+
+      yield* logger.info("rig2 deploy intent", intent)
+    }),
+).pipe(Command.withDescription("Create a v2 deploy intent for a ref and target without requiring semver."))
+
+const bumpCommand = Command.make(
+  "bump",
+  {
+    project: projectFlag,
+    stateRoot: stateRootFlag,
+    current: Flag.string("current").pipe(
+      Flag.withDefault("0.0.0"),
+      Flag.withDescription("Current optional version metadata."),
+    ),
+    bump: Flag.choice("bump", ["patch", "minor", "major"]).pipe(
+      Flag.withDefault("patch" as const),
+      Flag.withDescription("Semantic version bump to apply when --set is omitted."),
+    ),
+    set: Flag.string("set").pipe(
+      Flag.withDefault(""),
+      Flag.withDescription("Explicit optional version metadata to set."),
+    ),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const scoped = yield* resolveProjectScopedInput({
+        project: input.project,
+        lane: "live",
+        stateRoot: input.stateRoot,
+      })
+      const decoded = yield* decodeV2StatusInput(scoped)
+      const intents = yield* V2DeployIntents
+      const logger = yield* V2Logger
+      const metadata = yield* intents.bump({
+        project: decoded.project,
+        currentVersion: input.current,
+        ...(input.set.trim().length > 0 ? { set: input.set.trim() } : { bump: input.bump }),
+      })
+
+      yield* logger.info("rig2 bump metadata", metadata)
+    }),
+).pipe(Command.withDescription("Manage optional version metadata and rollback tag anchors."))
+
 const rig2Command = Command.make("rig2").pipe(
   Command.withDescription("Experimental rig v2 entrypoint."),
   Command.withSubcommands([
@@ -236,6 +319,8 @@ const rig2Command = Command.make("rig2").pipe(
     logsCommand,
     statusCommand,
     rigdCommand,
+    deployCommand,
+    bumpCommand,
   ]),
 )
 

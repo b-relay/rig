@@ -191,12 +191,12 @@ Introduce the deploy intent model that turns git pushes and CLI deploy requests 
 
 ### Acceptance Criteria
 
-- [ ] Pushes to the configured main ref update `live`.
-- [ ] Pushes to other refs create or update generated deployments.
-- [ ] CLI deploy can target refs and lanes without requiring semver.
-- [ ] `bump` manages optional version metadata.
-- [ ] Tags remain available as rollback anchors.
-- [ ] Dirty and stale-release edge cases fail with structured errors where required by the decision record.
+- [x] Pushes to the configured main ref update `live`.
+- [x] Pushes to other refs create or update generated deployments.
+- [x] CLI deploy can target refs and lanes without requiring semver.
+- [x] `bump` manages optional version metadata.
+- [x] Tags remain available as rollback anchors.
+- [x] Dirty and stale-release edge cases fail with structured errors where required by the decision record.
 
 ---
 

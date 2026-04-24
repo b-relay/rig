@@ -164,6 +164,8 @@ Exit condition:
 
 #9 can start after #8 and turns generated deployment inventory into deploy intent from git pushes and CLI deploy targets.
 
+Current output: deploy intent resolution now classifies git pushes to the configured main ref as `live` updates and other refs as generated deployment updates, materializing generated deployment inventory when config is available. `rig2 deploy` creates ref/target intents without requiring semver, `rig2 bump` emits optional version metadata with rollback tag anchors, and dirty/stale-release edge cases fail with structured v2 runtime errors.
+
 #10 depends on #7 and #8 and introduces the `rigd` MVP.
 
 Current output: `rigd` now exists as an Effect v4 service/interface with an in-process MVP local API for health, inventory, logs, health state, lifecycle receipts, and deploy receipts. `rig2 rigd` starts and reports the local API, and `rig2 status` reads rigd health/inventory as the first CLI status path through the runtime authority.

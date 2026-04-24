@@ -85,6 +85,38 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
     }
   })
 
+  test("GIVEN deploy command WHEN run directly THEN it emits a ref-based deploy intent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+
+    try {
+      const { stdout, stderr, exitCode } = await runRig2Command(
+        ["deploy", "--project", "pantry", "--state-root", root, "--ref", "feature/preview", "--target", "generated"],
+        { RIG_V2_ROOT: root },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(stdout).toContain("[INFO] rig2 deploy intent")
+      expect(stdout).toContain('"ref":"feature/preview"')
+      expect(stdout).toContain('"target":"generated"')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN bump command WHEN run directly THEN it emits optional version metadata", async () => {
+    const { stdout, stderr, exitCode } = await runRig2Command(
+      ["bump", "--project", "pantry", "--current", "1.2.3", "--bump", "patch"],
+      {},
+    )
+
+    expect(exitCode).toBe(0)
+    expect(stderr).toBe("")
+    expect(stdout).toContain("[INFO] rig2 bump metadata")
+    expect(stdout).toContain('"nextVersion":"1.2.4"')
+    expect(stdout).toContain('"rollbackAnchor":"v1.2.3"')
+  })
+
   test("GIVEN v2 lifecycle command help WHEN run directly THEN Effect CLI renders subcommand help", async () => {
     const { stdout, stderr, exitCode } = await runRig2Command(["up", "--help"], {})
 

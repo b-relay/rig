@@ -2,6 +2,12 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect-v4"
 
 import { runRig2Cli } from "./cli.js"
+import {
+  V2DeployIntents,
+  type V2BumpInput,
+  type V2CliDeployInput,
+  type V2GitPushDeployInput,
+} from "./deploy-intent.js"
 import { V2CliArgumentError, type V2TaggedError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleRequest } from "./lifecycle.js"
 import { V2ProjectLocator } from "./project-locator.js"
@@ -109,6 +115,39 @@ class CaptureV2Rigd {
   }
 }
 
+class CaptureV2DeployIntents {
+  readonly cliDeploys: V2CliDeployInput[] = []
+  readonly bumps: V2BumpInput[] = []
+
+  fromGitPush(_input: V2GitPushDeployInput) {
+    return Effect.die("unused")
+  }
+
+  fromCliDeploy(input: V2CliDeployInput) {
+    this.cliDeploys.push(input)
+    return Effect.succeed({
+      source: "cli" as const,
+      project: input.project,
+      stateRoot: input.stateRoot,
+      ref: input.ref,
+      target: input.target,
+      lane: input.target === "live" ? "live" as const : "deployment" as const,
+      ...(input.deploymentName ? { deploymentName: input.deploymentName } : {}),
+    })
+  }
+
+  bump(input: V2BumpInput) {
+    this.bumps.push(input)
+    return Effect.succeed({
+      project: input.project,
+      previousVersion: input.currentVersion,
+      nextVersion: input.set ?? "1.3.0",
+      tag: `v${input.set ?? "1.3.0"}`,
+      rollbackAnchor: `v${input.currentVersion}`,
+    })
+  }
+}
+
 const runWithLogger = async (
   argv: readonly string[],
   options: {
@@ -118,11 +157,13 @@ const runWithLogger = async (
   const logger = new CaptureV2Logger()
   const lifecycle = new CaptureV2Lifecycle()
   const rigd = new CaptureV2Rigd()
+  const deployIntents = new CaptureV2DeployIntents()
   const layer = Layer.mergeAll(
     V2RuntimeLive,
     Layer.succeed(V2Logger, logger),
     Layer.succeed(V2Lifecycle, lifecycle),
     Layer.succeed(V2Rigd, rigd),
+    Layer.succeed(V2DeployIntents, deployIntents),
     Layer.succeed(V2ProjectLocator, {
       inferCurrentProject: options.inferredProject
         ? Effect.succeed({
@@ -140,7 +181,7 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRig2Cli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle, rigd }
+  return { exitCode, logger, lifecycle, rigd, deployIntents }
 }
 
 describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
@@ -180,6 +221,60 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
     expect(rigd.startRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
+  })
+
+  test("GIVEN deploy command WHEN running THEN CLI deploy intent targets refs without semver", async () => {
+    const { exitCode, logger, deployIntents } = await runWithLogger([
+      "deploy",
+      "--project",
+      "pantry",
+      "--state-root",
+      "/tmp/rig-v2",
+      "--ref",
+      "feature/preview",
+      "--target",
+      "generated",
+      "--deployment",
+      "qa",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(deployIntents.cliDeploys).toEqual([
+      {
+        project: "pantry",
+        stateRoot: "/tmp/rig-v2",
+        ref: "feature/preview",
+        target: "generated",
+        deploymentName: "qa",
+      },
+    ])
+    expect(logger.infos.at(-1)?.message).toBe("rig2 deploy intent")
+  })
+
+  test("GIVEN bump command WHEN running THEN optional version metadata is emitted", async () => {
+    const { exitCode, logger, deployIntents } = await runWithLogger([
+      "bump",
+      "--project",
+      "pantry",
+      "--state-root",
+      "/tmp/rig-v2",
+      "--current",
+      "1.2.3",
+      "--bump",
+      "minor",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(deployIntents.bumps).toEqual([
+      {
+        project: "pantry",
+        currentVersion: "1.2.3",
+        bump: "minor",
+      },
+    ])
+    expect(logger.infos.at(-1)?.message).toBe("rig2 bump metadata")
   })
 
   test("GIVEN up without project inside managed repo WHEN running THEN it infers project and targets local lane", async () => {

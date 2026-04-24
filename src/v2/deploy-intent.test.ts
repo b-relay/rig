@@ -1,0 +1,190 @@
+import { describe, expect, test } from "bun:test"
+import { Effect, Layer } from "effect-v4"
+
+import { decodeV2ProjectConfig } from "./config.js"
+import {
+  V2DeploymentManagerLive,
+  V2DeploymentStore,
+  type V2DeploymentRecord,
+  type V2DeploymentStoreService,
+} from "./deployments.js"
+import { V2DeployIntents, V2DeployIntentsLive } from "./deploy-intent.js"
+
+class MemoryDeploymentStore implements V2DeploymentStoreService {
+  readonly records = new Map<string, V2DeploymentRecord[]>()
+
+  read(project: string, _stateRoot: string) {
+    return Effect.succeed(this.records.get(project) ?? [])
+  }
+
+  write(project: string, _stateRoot: string, records: readonly V2DeploymentRecord[]) {
+    this.records.set(project, [...records])
+    return Effect.void
+  }
+
+  ensureState(_record: V2DeploymentRecord) {
+    return Effect.void
+  }
+
+  removeState(_record: V2DeploymentRecord) {
+    return Effect.void
+  }
+}
+
+const projectConfig = () =>
+  decodeV2ProjectConfig({
+    name: "pantry",
+    domain: "${subdomain}.preview.b-relay.com",
+    components: {
+      web: {
+        mode: "managed",
+        command: "bun run start -- --port ${port.web}",
+        port: 3070,
+      },
+    },
+    deployments: {
+      subdomain: "${branchSlug}",
+      providerProfile: "stub",
+    },
+  })
+
+const runWithDeployIntents = async <A>(effect: Effect.Effect<A, unknown, V2DeployIntents>) => {
+  const store = new MemoryDeploymentStore()
+  const deployments = Layer.provide(
+    V2DeploymentManagerLive,
+    Layer.succeed(V2DeploymentStore, store),
+  )
+  const layer = Layer.provide(V2DeployIntentsLive, deployments)
+  const result = await Effect.runPromise(effect.pipe(Effect.provide(layer)))
+  return { result, store }
+}
+
+describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THEN behavior is covered", () => {
+  test("GIVEN git push to main ref WHEN resolving intent THEN live is targeted without semver", async () => {
+    const config = await Effect.runPromise(projectConfig())
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        return yield* intents.fromGitPush({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "main",
+          mainRef: "main",
+          config,
+        })
+      }),
+    )
+
+    expect(result).toMatchObject({
+      source: "git-push",
+      project: "pantry",
+      ref: "main",
+      target: "live",
+      lane: "live",
+    })
+    expect(result.version).toBeUndefined()
+    expect(result.rollbackAnchor).toBeUndefined()
+    expect(result.generatedDeployment).toBeUndefined()
+  })
+
+  test("GIVEN git push to feature ref WHEN resolving intent THEN generated deployment is materialized", async () => {
+    const config = await Effect.runPromise(projectConfig())
+    const { result, store } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        return yield* intents.fromGitPush({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "feature/preview",
+          mainRef: "main",
+          config,
+        })
+      }),
+    )
+
+    expect(result.target).toBe("generated")
+    expect(result.generatedDeployment?.name).toBe("feature-preview")
+    expect(result.generatedDeployment?.subdomain).toBe("feature-preview")
+    expect(store.records.get("pantry")?.map((record) => record.name)).toEqual(["feature-preview"])
+  })
+
+  test("GIVEN CLI deploy target WHEN resolving intent THEN refs and lanes do not require semver", async () => {
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        return yield* intents.fromCliDeploy({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "HEAD",
+          target: "live",
+        })
+      }),
+    )
+
+    expect(result).toMatchObject({
+      source: "cli",
+      project: "pantry",
+      ref: "HEAD",
+      target: "live",
+      lane: "live",
+    })
+    expect(result.version).toBeUndefined()
+  })
+
+  test("GIVEN version bump metadata WHEN resolving THEN tags remain rollback anchors", async () => {
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        const patch = yield* intents.bump({
+          project: "pantry",
+          currentVersion: "1.2.3",
+          bump: "patch",
+        })
+        const explicit = yield* intents.bump({
+          project: "pantry",
+          currentVersion: "1.2.4",
+          set: "2.0.0",
+        })
+        return { patch, explicit }
+      }),
+    )
+
+    expect(result.patch).toMatchObject({
+      project: "pantry",
+      previousVersion: "1.2.3",
+      nextVersion: "1.2.4",
+      rollbackAnchor: "v1.2.3",
+      tag: "v1.2.4",
+    })
+    expect(result.explicit.nextVersion).toBe("2.0.0")
+    expect(result.explicit.rollbackAnchor).toBe("v1.2.4")
+  })
+
+  test("GIVEN dirty or stale release edge cases WHEN resolving THEN structured errors are returned", async () => {
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        const dirty = yield* intents.fromCliDeploy({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "HEAD",
+          target: "live",
+          dirty: true,
+        }).pipe(Effect.catch((error) => Effect.succeed(error)))
+        const stale = yield* intents.fromGitPush({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "main",
+          mainRef: "main",
+          staleRelease: true,
+        }).pipe(Effect.catch((error) => Effect.succeed(error)))
+        return { dirty, stale }
+      }),
+    )
+
+    expect(result.dirty._tag).toBe("V2RuntimeError")
+    expect(result.dirty.details?.reason).toBe("dirty")
+    expect(result.stale._tag).toBe("V2RuntimeError")
+    expect(result.stale.details?.reason).toBe("stale-release")
+  })
+})

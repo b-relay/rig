@@ -1,16 +1,16 @@
 import { describe, expect, test } from "bun:test"
 
 import {
-  createSmokeProject,
+  createE2EProject,
   firstErrorRecord,
   helpFragmentsForCommand,
   mainHelpFragments,
-  runSmokeCommand,
-} from "./cli-smoke-harness.js"
+  runE2ECommand,
+} from "./cli-e2e-harness.js"
 
 describe("compiled main rig binary CLI argument and discovery matrix", () => {
   test("commands that support cwd autodetect fail clearly when rig.json is missing", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
       const cases = [
@@ -24,7 +24,7 @@ describe("compiled main rig binary CLI argument and discovery matrix", () => {
       ]
 
       for (const entry of cases) {
-        const result = await runSmokeCommand(project, entry.argv, { cwd: project.tempRoot })
+        const result = await runE2ECommand(project, entry.argv, { cwd: project.tempRoot })
         const error = firstErrorRecord(result)
 
         expect(result.exitCode).toBe(1)
@@ -40,7 +40,7 @@ describe("compiled main rig binary CLI argument and discovery matrix", () => {
   })
 
   test("registered-project commands fail structurally when the registry entry is missing", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
       const cases = [
@@ -55,7 +55,7 @@ describe("compiled main rig binary CLI argument and discovery matrix", () => {
       ] as const
 
       for (const argv of cases) {
-        const result = await runSmokeCommand(project, argv)
+        const result = await runE2ECommand(project, argv)
         const error = firstErrorRecord(result)
 
         expect(result.exitCode).toBe(1)
@@ -71,12 +71,12 @@ describe("compiled main rig binary CLI argument and discovery matrix", () => {
   })
 
   test("deploy, status, and list reject invalid or conflicting argument shapes structurally", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
 
-      const invalidDeploy = await runSmokeCommand(project, [
+      const invalidDeploy = await runE2ECommand(project, [
         "deploy",
         project.name,
         "prod",
@@ -87,10 +87,10 @@ describe("compiled main rig binary CLI argument and discovery matrix", () => {
       ])
       expect(firstErrorRecord(invalidDeploy)?.error?._tag).toBe("CliArgumentError")
 
-      const invalidStatus = await runSmokeCommand(project, ["status", "prod", "--version", "1.2.3"])
+      const invalidStatus = await runE2ECommand(project, ["status", "prod", "--version", "1.2.3"])
       expect(firstErrorRecord(invalidStatus)?.error?.message).toContain("project name")
 
-      const invalidList = await runSmokeCommand(project, ["list", "extra"])
+      const invalidList = await runE2ECommand(project, ["list", "extra"])
       expect(firstErrorRecord(invalidList)?.error?._tag).toBe("CliArgumentError")
       for (const fragment of helpFragmentsForCommand("list")) {
         expect(invalidList.stdout).toContain(fragment)
@@ -101,17 +101,17 @@ describe("compiled main rig binary CLI argument and discovery matrix", () => {
   })
 
   test("docs rejects unknown keys with guidance and global help is structurally rendered", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      const unknownDocs = await runSmokeCommand(project, ["docs", "config", "missing.key"])
+      const unknownDocs = await runE2ECommand(project, ["docs", "config", "missing.key"])
       const error = firstErrorRecord(unknownDocs)
 
       expect(unknownDocs.exitCode).toBe(1)
       expect(error?.error?._tag).toBe("CliArgumentError")
       expect(error?.error?.hint).toContain("rig docs config")
 
-      const mainHelp = await runSmokeCommand(project, ["--help"], { json: false })
+      const mainHelp = await runE2ECommand(project, ["--help"], { json: false })
       expect(mainHelp.exitCode).toBe(0)
       for (const fragment of mainHelpFragments()) {
         expect(mainHelp.stdout).toContain(fragment)
@@ -122,14 +122,14 @@ describe("compiled main rig binary CLI argument and discovery matrix", () => {
   })
 
   test("config set and unset require valid arity and still render config help context", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      const missingValue = await runSmokeCommand(project, ["config", "set"])
+      const missingValue = await runE2ECommand(project, ["config", "set"])
       expect(firstErrorRecord(missingValue)?.error?._tag).toBe("CliArgumentError")
       expect(firstErrorRecord(missingValue)?.error?.hint ?? "").toContain("Usage:")
 
-      const missingKey = await runSmokeCommand(project, ["config", "unset"])
+      const missingKey = await runE2ECommand(project, ["config", "unset"])
       expect(firstErrorRecord(missingKey)?.error?._tag).toBe("CliArgumentError")
       expect(firstErrorRecord(missingKey)?.error?.hint ?? "").toContain("Usage:")
     } finally {

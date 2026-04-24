@@ -104,8 +104,8 @@ describe("GIVEN rigd MVP local API WHEN used through its interface THEN behavior
       },
     })
     expect(result.health.status).toBe("running")
-    expect(result.health.controlPlane.outboundOnly).toBe(true)
-    expect(result.health.controlPlane.endpoint).toBe("https://core.b-relay.com")
+    expect(result.health.controlPlane.bindHost).toBe("127.0.0.1")
+    expect(result.health.controlPlane.website).toBe("https://rig.b-relay.com")
   })
 
   test("GIVEN materialized deployments WHEN inventory is requested THEN project and deployment inventory are exposed", async () => {

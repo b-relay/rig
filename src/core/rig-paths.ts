@@ -36,8 +36,8 @@ export const rigCaddyfilePath = (): string =>
 export const rigLaunchdBackupRoot = (): string =>
   join(rigRoot(), "launchd")
 
-export const rigSmokeStatePath = (): string =>
-  join(rigRoot(), "smoke-process-manager.json")
+export const rigIsolatedE2EStatePath = (): string =>
+  join(rigRoot(), "isolated-e2e-process-manager.json")
 
-export const rigSmokeLaunchdBackupRoot = (): string =>
-  join(rigRoot(), "smoke-launchd-backups")
+export const rigIsolatedE2ELaunchdBackupRoot = (): string =>
+  join(rigRoot(), "isolated-e2e-launchd-backups")

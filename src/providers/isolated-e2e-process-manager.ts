@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { Effect, Layer } from "effect"
 
-import { rigSmokeLaunchdBackupRoot, rigSmokeStatePath } from "../core/rig-paths.js"
+import { rigIsolatedE2ELaunchdBackupRoot, rigIsolatedE2EStatePath } from "../core/rig-paths.js"
 import {
   ProcessManager,
   type DaemonConfig,
@@ -22,9 +22,9 @@ interface PersistedState {
   readonly daemons: Readonly<Record<string, PersistedDaemonState>>
 }
 
-const STATE_PATH = () => rigSmokeStatePath()
-const BACKUP_DIR = () => rigSmokeLaunchdBackupRoot()
-const FAILURE_SPEC_ENV = "RIG_SMOKE_PROCESS_FAIL"
+const STATE_PATH = () => rigIsolatedE2EStatePath()
+const BACKUP_DIR = () => rigIsolatedE2ELaunchdBackupRoot()
+const FAILURE_SPEC_ENV = "RIG_ISOLATED_E2E_PROCESS_FAIL"
 const PID_BASE = 20_000
 
 const causeMessage = (cause: unknown): string =>
@@ -79,7 +79,7 @@ const nextPid = (state: PersistedState): number => {
   return Math.max(PID_BASE, ...existing) + 1
 }
 
-export class SmokeProcessManager implements ProcessManagerService {
+export class IsolatedE2EProcessManager implements ProcessManagerService {
   private readonly statePath: string
   private readonly backupDir: string
   private readonly failures: ReadonlySet<string>
@@ -172,8 +172,8 @@ export class SmokeProcessManager implements ProcessManagerService {
         new ProcessError(
           "status",
           label,
-          `Failed to read smoke launchd state for ${label}: ${causeMessage(cause)}`,
-          `Check smoke process state at ${this.statePath}.`,
+          `Failed to read isolated e2e launchd state for ${label}: ${causeMessage(cause)}`,
+          `Check isolated e2e process state at ${this.statePath}.`,
         ),
     })
   }
@@ -185,15 +185,15 @@ export class SmokeProcessManager implements ProcessManagerService {
 
         await mkdir(this.backupDir, { recursive: true })
         const backupPath = join(this.backupDir, `${label}.plist`)
-        await Bun.write(backupPath, `# smoke launchd backup for ${label}\n`)
+        await Bun.write(backupPath, `# isolated e2e launchd backup for ${label}\n`)
         return backupPath
       },
       catch: (cause) =>
         new ProcessError(
           "install",
           label,
-          `Failed to write smoke launchd backup for ${label}: ${causeMessage(cause)}`,
-          `Check smoke backup directory at ${this.backupDir}.`,
+          `Failed to write isolated e2e launchd backup for ${label}: ${causeMessage(cause)}`,
+          `Check isolated e2e backup directory at ${this.backupDir}.`,
         ),
     })
   }
@@ -215,8 +215,8 @@ export class SmokeProcessManager implements ProcessManagerService {
         new ProcessError(
           operation,
           label,
-          `Failed to update smoke launchd state for ${label}: ${causeMessage(cause)}`,
-          `Check smoke process state at ${this.statePath}.`,
+          `Failed to update isolated e2e launchd state for ${label}: ${causeMessage(cause)}`,
+          `Check isolated e2e process state at ${this.statePath}.`,
         ),
     })
   }
@@ -227,7 +227,7 @@ export class SmokeProcessManager implements ProcessManagerService {
       this.failures.has(`${operation}:*`) ||
       this.failures.has("*")
     ) {
-      throw new Error(`Injected smoke process-manager failure for ${operation}:${label}`)
+      throw new Error(`Injected isolated e2e process-manager failure for ${operation}:${label}`)
     }
   }
 
@@ -247,4 +247,4 @@ export class SmokeProcessManager implements ProcessManagerService {
   }
 }
 
-export const SmokeProcessManagerLive = Layer.succeed(ProcessManager, new SmokeProcessManager())
+export const IsolatedE2EProcessManagerLive = Layer.succeed(ProcessManager, new IsolatedE2EProcessManager())

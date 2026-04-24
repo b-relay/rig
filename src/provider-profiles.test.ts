@@ -10,7 +10,7 @@ describe("GIVEN provider profile selection WHEN composing the main rig layer THE
     expect(normalizeRigProviderProfile("default")).toBe("default")
     expect(normalizeRigProviderProfile("invalid")).toBe("default")
     expect(normalizeRigProviderProfile("stub")).toBe("stub")
-    expect(normalizeRigProviderProfile("smoke")).toBe("smoke")
+    expect(normalizeRigProviderProfile("isolated-e2e")).toBe("isolated-e2e")
   })
 
   test("GIVEN stub provider profile WHEN layer is used THEN process management is test-safe", async () => {

@@ -7,11 +7,16 @@ import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
 export interface V2ControlPlaneContract {
-  readonly endpoint: "https://core.b-relay.com"
-  readonly transport: "outbound-websocket"
-  readonly outboundOnly: true
-  readonly auth: "machine-token"
-  readonly status: "documented-not-connected"
+  readonly website: "https://rig.b-relay.com"
+  readonly transport: "localhost-http"
+  readonly bindHost: "127.0.0.1"
+  readonly exposure: "localhost-first"
+  readonly remoteAccess: readonly ["tailscale-dns", "cloudflare-tunnel-plugin"]
+  readonly auth: {
+    readonly tailscale: "not-required"
+    readonly publicInternet: "token-pairing"
+  }
+  readonly status: "documented-localhost-first"
 }
 
 export interface V2RigdHealth {
@@ -109,11 +114,16 @@ export interface V2RigdService {
 export const V2Rigd = Context.Service<V2RigdService>("rig/v2/V2Rigd")
 
 const controlPlaneContract: V2ControlPlaneContract = {
-  endpoint: "https://core.b-relay.com",
-  transport: "outbound-websocket",
-  outboundOnly: true,
-  auth: "machine-token",
-  status: "documented-not-connected",
+  website: "https://rig.b-relay.com",
+  transport: "localhost-http",
+  bindHost: "127.0.0.1",
+  exposure: "localhost-first",
+  remoteAccess: ["tailscale-dns", "cloudflare-tunnel-plugin"],
+  auth: {
+    tailscale: "not-required",
+    publicInternet: "token-pairing",
+  },
+  status: "documented-localhost-first",
 }
 
 const now = (): string => new Date().toISOString()

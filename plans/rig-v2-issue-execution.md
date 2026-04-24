@@ -59,7 +59,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
           -> #20 Route web lifecycle and deploy actions through rigd
           -> #21 Add safe config edit workflow through rigd
               -> #22 Prepare rig2 to main rig cutover readiness
-  -> #18 Add outbound control-plane transport interface
+  -> #18 Add localhost-first control-plane interface
       -> #19 Expose web read models through rigd
       -> #20 Route web lifecycle and deploy actions through rigd
 ```
@@ -246,11 +246,11 @@ Exit condition:
 - V2 core code can swap provider compositions through interfaces.
 - `rigd` can reconstruct safe minimum state after restart and fail explicitly when evidence is insufficient.
 
-### Wave 8: Outbound Control Plane And Web Read Models
+### Wave 8: Local Control Plane And Web Read Models
 
 **Issues**: #18, #19
 
-#18 adds the outbound-only control-plane transport interface, machine identity boundary, heartbeat/event envelopes, and stub transport coverage.
+#18 adds the localhost-first control-plane interface, Tailscale-friendly access assumptions, optional tunnel-provider shape, token-pairing boundary for public internet exposure, heartbeat/event envelopes, and stub transport coverage.
 
 #19 exposes the web-facing read model for projects, deployments, health, and structured logs through `rigd`.
 
@@ -261,7 +261,7 @@ Recommended order:
 
 Exit condition:
 
-- `rigd` can describe control-plane connection state without opening inbound local management ports.
+- `rigd` can describe local control-plane server state, private Tailscale exposure, and optional tunnel/provider state while binding the default server to `127.0.0.1`.
 - Project, deployment, health, and log read models are ready for the hosted UI contract.
 
 ### Wave 9: Web Actions And Config Editing
@@ -320,7 +320,7 @@ Scope:
 
 - #16 Define v2 provider plugin contracts.
 - #17 Persist rigd runtime state and reconciliation journal.
-- #18 Add outbound control-plane transport interface.
+- #18 Add localhost-first control-plane interface.
 - #19 Expose web read models through rigd.
 - #20 Route web lifecycle and deploy actions through rigd.
 - #21 Add safe config edit workflow through rigd.

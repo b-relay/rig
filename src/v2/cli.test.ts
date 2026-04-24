@@ -56,11 +56,16 @@ class CaptureV2Rigd {
         version: "v2-mvp" as const,
       },
       controlPlane: {
-        endpoint: "https://core.b-relay.com" as const,
-        transport: "outbound-websocket" as const,
-        outboundOnly: true as const,
-        auth: "machine-token" as const,
-        status: "documented-not-connected" as const,
+        website: "https://rig.b-relay.com" as const,
+        transport: "localhost-http" as const,
+        bindHost: "127.0.0.1" as const,
+        exposure: "localhost-first" as const,
+        remoteAccess: ["tailscale-dns", "cloudflare-tunnel-plugin"] as const,
+        auth: {
+          tailscale: "not-required" as const,
+          publicInternet: "token-pairing" as const,
+        },
+        status: "documented-localhost-first" as const,
       },
     })
   }

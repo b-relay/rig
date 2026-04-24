@@ -7,9 +7,9 @@
 
 Durable decisions that apply across this stage:
 
-- **Provider boundary**: every external concern stays behind an Effect v4 service interface. Core v2 and `rigd` code should consume provider contracts, not concrete provider modules.
+- **Provider boundary**: every external concern stays behind an Effect v4 service interface. First-party bundled plugins and future external plugins should use the same API; the difference is distribution, not abstraction.
 - **Runtime authority**: `rigd` remains the owner of deployment inventory, receipts, logs, health, ports, provider observations, and reconciliation state.
-- **Control-plane shape**: web integration is outbound-only from local `rigd` to `core.b-relay.com`; this repo defines local contracts, DTOs, and transport boundaries, not a separate hosted web app.
+- **Control-plane shape**: `rigd` is localhost-first on `127.0.0.1`, and the hosted web UI is `https://rig.b-relay.com`. Private remote access can be handled by Tailscale DNS routing to localhost; public internet exposure should be handled by a provider/plugin such as Cloudflare Tunnel.
 - **Read/write split**: web-facing read models and write actions are separate slices. Read models expose project, deployment, health, and log state. Write actions route lifecycle and deploy operations through the same `rigd` authority used by CLI commands.
 - **Config editing**: web-facing config changes use structured patches validated by Effect Schema before atomic apply. Direct arbitrary file writes are not part of the control-plane contract.
 - **Cutover safety**: v1 remains compatible until an explicit readiness gate verifies command parity, provider safety, docs, and rollback behavior.
@@ -28,12 +28,13 @@ Durable decisions that apply across this stage:
 
 ### What To Build
 
-Deepen the v2 provider model into explicit Effect v4 service interfaces for process supervision, proxy/routing, SCM, workspace/deployment materialization, logging/event transport, control-plane transport, health checking, and package-manager integration.
+Deepen the v2 provider model into explicit Effect v4 service interfaces for process supervision, proxy/routing, SCM, workspace/deployment materialization, logging/event transport, control-plane transport, health checking, package-manager integration, and optional tunnel/exposure providers.
 
 ### Acceptance Criteria
 
 - [ ] V2 provider families are represented as explicit interfaces/services, not concrete provider imports in core logic.
-- [ ] Default and stub provider compositions satisfy the same provider contract surface.
+- [ ] First-party bundled providers and future external providers use the same API shape.
+- [ ] Default, stub, and isolated E2E provider compositions satisfy the same provider contract surface.
 - [ ] Provider selection remains visible at config or execution boundaries where users and tests need to inspect it.
 - [ ] Provider capability metadata can be reported to `rigd` and `doctor`.
 - [ ] Tests prove v2 runtime code can swap provider compositions without changing command or core modules.
@@ -66,7 +67,7 @@ Make `rigd` persist deployment inventory snapshots, action receipts, structured 
 
 ---
 
-## Phase 16: Add Outbound Control-Plane Transport Interface
+## Phase 16: Add Localhost-First Control-Plane Interface
 
 **GitHub issue**: #18
 
@@ -78,16 +79,17 @@ Make `rigd` persist deployment inventory snapshots, action receipts, structured 
 
 ### What To Build
 
-Add the outbound-only transport boundary for `rigd` to connect to `core.b-relay.com`, including machine identity, token storage boundaries, connection state, heartbeat/event envelopes, command envelopes, and stub transport coverage.
+Add the localhost-first control-plane boundary for `rigd`, including the local server contract, Tailscale-friendly access assumptions, optional tunnel-provider shape, token-pairing boundaries for public internet exposure, connection state, heartbeat/event envelopes, command envelopes, and stub transport coverage.
 
 ### Acceptance Criteria
 
-- [ ] Control-plane transport is an interface/service with default and stub implementations.
-- [ ] The contract is outbound-only and does not require opening an inbound local port.
-- [ ] Machine identity and token storage are modeled behind interfaces with structured errors.
-- [ ] `rigd` can report connection status, last heartbeat, and last transport error.
-- [ ] Runtime events and action receipts can be serialized into control-plane envelopes.
-- [ ] Tests cover connected, disconnected, auth failure, retryable transport failure, and stub transport paths.
+- [ ] Control-plane local server and optional tunnel exposure are interface/services with default and stub implementations.
+- [ ] The default contract binds to `127.0.0.1` and does not expose a public machine port.
+- [ ] Tailscale-only access can run without app-level auth when the network already provides access control.
+- [ ] Public internet exposure uses token-pairing auth behind an interface.
+- [ ] `rigd` can report local server status, exposure mode, last heartbeat, and last transport/tunnel error.
+- [ ] Runtime events and action receipts can be serialized into plain JSON control-plane message shapes.
+- [ ] Tests cover localhost-only, Tailscale-mode, token-pairing required, tunnel failure, and stub transport paths.
 
 ---
 
@@ -111,7 +113,7 @@ Expose the read-side contract that the future web control plane needs from `rigd
 - [ ] `rigd` exposes deployment rows for `local`, `live`, and generated deployments.
 - [ ] Health snapshots distinguish `rigd`, deployment, component, and provider status.
 - [ ] Structured logs are queryable by project, deployment/lane, component, and line window.
-- [ ] Read models serialize cleanly into control-plane DTOs without leaking provider internals.
+- [ ] Read models serialize cleanly into plain JSON control-plane message shapes without leaking provider internals.
 - [ ] Tests cover empty state, multiple projects, generated deployments, stale health, and log filtering.
 
 ---
@@ -155,9 +157,14 @@ Add the write-side control-plane action contract for lifecycle actions, deploy a
 
 Add the config edit workflow required by the future web control plane: read current v2 config, propose a structured patch, validate it through Effect Schema, preview the diff, apply it atomically, and report rollback/recovery information.
 
+The target product behavior is that all v2 config fields can be edited through
+the web UI eventually. Implementation can land in safe vertical slices, but the
+interface should not assume only a tiny permanent subset of fields is editable.
+
 ### Acceptance Criteria
 
 - [ ] `rigd` exposes current config read output suitable for a web editor.
+- [ ] All v2 config fields are representable by the edit model, even if advanced UI controls land incrementally.
 - [ ] Proposed config edits are represented as structured patches rather than arbitrary string writes.
 - [ ] Every edit is validated with v2 Effect Schema before writing.
 - [ ] Diff/preview output identifies changed fields and user-facing schema documentation where useful.
@@ -178,7 +185,9 @@ Add the config edit workflow required by the future web control plane: read curr
 
 ### What To Build
 
-Create the cutover readiness slice for moving v2 behavior from the isolated `rig2` runway toward the main `rig` binary when it is safe, without prematurely removing v1 compatibility.
+Create the cutover readiness slice for moving v2 behavior from the isolated `rig2` runway into the main `rig` binary when it is safe. The long-term goal is that v2 becomes `rig`; `rig2` is temporary migration runway, not a permanent second product.
+
+This should not prematurely remove v1 compatibility.
 
 ### Acceptance Criteria
 
@@ -187,4 +196,5 @@ Create the cutover readiness slice for moving v2 behavior from the isolated `rig
 - [ ] Legacy v1 command behavior remains available or has explicit deprecation messaging.
 - [ ] Provider/profile selection prevents accidental launchd, Caddy, or user-state mutation in tests.
 - [ ] Release/cutover docs explain how to validate, roll back, and keep production apps safe during migration.
+- [ ] The plan explicitly covers renaming or routing `rig2` behavior into `rig` when v2 becomes default.
 - [ ] Remaining post-cutover gaps are filed as follow-up issues instead of hidden in the plan.

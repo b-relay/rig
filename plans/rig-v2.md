@@ -311,7 +311,7 @@ Stage 2 covers:
 
 - #16 Define v2 provider plugin contracts.
 - #17 Persist rigd runtime state and reconciliation journal.
-- #18 Add outbound control-plane transport interface.
+- #18 Add localhost-first control-plane interface.
 - #19 Expose web read models through rigd.
 - #20 Route web lifecycle and deploy actions through rigd.
 - #21 Add safe config edit workflow through rigd.

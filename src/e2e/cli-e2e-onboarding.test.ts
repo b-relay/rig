@@ -5,14 +5,14 @@ import { describe, expect, test } from "bun:test"
 import { ONBOARDING_TOPICS, type OnboardingVariantDefinition } from "../core/onboarding-docs.js"
 import {
   appendRepoChange,
-  createSmokeFixtureProject,
+  createE2EFixtureProject,
   firstTableRecord,
   infoMessages,
-  runSmokeCommand,
+  runE2ECommand,
   successMessages,
-  type SmokeCommandResult,
-  type SmokeProject,
-} from "./cli-smoke-harness.js"
+  type E2ECommandResult,
+  type E2EProject,
+} from "./cli-e2e-harness.js"
 
 const allocatePort = async (): Promise<number> =>
   new Promise((resolve, reject) => {
@@ -85,7 +85,7 @@ const splitRigCommand = (command: string): readonly string[] => {
     .split(/\s+/)
 }
 
-const assertRigCommandResult = (command: string, result: SmokeCommandResult) => {
+const assertRigCommandResult = (command: string, result: E2ECommandResult) => {
   if (command.includes("--follow")) {
     expect([0, 130]).toContain(result.exitCode)
     expect(infoMessages(result).length).toBeGreaterThan(0)
@@ -125,7 +125,7 @@ const assertRigCommandResult = (command: string, result: SmokeCommandResult) => 
 }
 
 const runDocumentedCommand = async (
-  project: SmokeProject,
+  project: E2EProject,
   command: string,
 ) => {
   if (command === "npm install") {
@@ -140,7 +140,7 @@ const runDocumentedCommand = async (
   }
 
   const argv = splitRigCommand(command)
-  const result = await runSmokeCommand(project, argv, command.includes("--follow")
+  const result = await runE2ECommand(project, argv, command.includes("--follow")
     ? { waitForMs: 900, signal: "SIGINT" }
     : undefined)
 
@@ -154,19 +154,19 @@ const validateVariant = async (variant: OnboardingVariantDefinition, topicId: st
     projectName,
     ports,
   })
-  const project = await createSmokeFixtureProject({
+  const project = await createE2EFixtureProject({
     name: projectName,
     rigConfig: projectSpec.rigConfig,
     files: projectSpec.files,
   })
 
   try {
-    const docs = await runSmokeCommand(project, ["docs", "onboard", topicId])
+    const docs = await runE2ECommand(project, ["docs", "onboard", topicId])
     expect(docs.exitCode).toBe(0)
     expect(infoMessages(docs).some((message) => message.includes(variant.title))).toBe(true)
     expect(infoMessages(docs).some((message) => message.includes("Important Notes:"))).toBe(true)
     expect(infoMessages(docs).some((message) => message.includes("Agent Guidance:"))).toBe(true)
-    expect(infoMessages(docs).some((message) => message.includes("rig-smoke"))).toBe(false)
+    expect(infoMessages(docs).some((message) => message.includes("rig-isolated-e2e"))).toBe(false)
 
     for (const command of variant.setupCommands) {
       await runDocumentedCommand(project, command)

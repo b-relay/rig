@@ -43,7 +43,7 @@ The redesign optimizes for:
 - first-class preview deployments
 - one Effect-native backend stack
 - plugin-driven architecture for portability and testing
-- a local control plane that can feed the web UI at `core.b-relay.com`
+- a local control plane that can feed the web UI at `rig.b-relay.com`
 
 ## Product Inspiration
 
@@ -450,7 +450,7 @@ But they are defaults, not assumptions embedded in core logic.
 
 Stub/test providers must be first-class plugins.
 
-They are not special smoke-only hacks.
+They are not special test-only hacks.
 
 Examples:
 
@@ -489,17 +489,22 @@ Current runtime-facing v2 commands route through the rigd-backed lifecycle servi
 
 ### Web relationship
 
-`rigd` makes an outbound authenticated connection to `core.b-relay.com`.
+`rigd` serves a localhost-first control plane on `127.0.0.1`.
+
+The hosted web UI lives at `https://rig.b-relay.com`, but the local machine does
+not need to expose a public port by default. A user can route a private
+Tailscale DNS name to the localhost server. Public internet exposure should be a
+provider/plugin concern, for example a Cloudflare Tunnel plugin.
 
 Current MVP control-plane contract:
 
-- endpoint: `https://core.b-relay.com`
-- transport: outbound WebSocket
-- direction: outbound only; no inbound machine port is required
-- auth: machine token
-- status: documented but not connected by the local MVP
+- website: `https://rig.b-relay.com`
+- transport: localhost HTTP server bound to `127.0.0.1`
+- exposure: localhost first, with optional Tailscale DNS or tunnel plugins
+- auth: not required for local/Tailscale-only access; token pairing required for public internet exposure
+- status: documented localhost-first contract
 
-There is no separate rig website.
+The hosted control plane is `rig.b-relay.com`.
 
 The web UI should:
 

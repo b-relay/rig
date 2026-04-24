@@ -79,7 +79,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(stderr).toBe("")
       expect(stdout).toContain("[INFO] rigd local API ready")
       expect(stdout).toContain('"service":"rigd"')
-      expect(stdout).toContain('"transport":"outbound-websocket"')
+      expect(stdout).toContain('"transport":"localhost-http"')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

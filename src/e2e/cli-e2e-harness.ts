@@ -6,17 +6,17 @@ import { dirname, join } from "node:path"
 import { renderCommandHelp, renderMainHelp, type CommandName } from "../cli/help.js"
 import type { RigConfig } from "../schema/config.js"
 
-export interface SmokeCommandResult {
+export interface E2ECommandResult {
   readonly argv: readonly string[]
   readonly cwd: string
   readonly exitCode: number
   readonly stdout: string
   readonly stderr: string
-  readonly stdoutRecords: readonly SmokeJsonRecord[]
-  readonly stderrRecords: readonly SmokeJsonRecord[]
+  readonly stdoutRecords: readonly E2EJsonRecord[]
+  readonly stderrRecords: readonly E2EJsonRecord[]
 }
 
-export interface SmokeJsonRecord {
+export interface E2EJsonRecord {
   readonly timestamp?: string
   readonly level?: string
   readonly message?: string
@@ -30,7 +30,7 @@ export interface SmokeJsonRecord {
   readonly rows?: readonly Record<string, unknown>[]
 }
 
-interface SmokeProjectOptions {
+interface E2EProjectOptions {
   readonly name?: string
   readonly multiService?: boolean
   readonly includeBinService?: boolean
@@ -42,7 +42,7 @@ interface PortPair {
   readonly worker?: number
 }
 
-export interface SmokeProject {
+export interface E2EProject {
   readonly tempRoot: string
   readonly homeDir: string
   readonly rigRootDir: string
@@ -53,16 +53,16 @@ export interface SmokeProject {
   readonly commitAll: (message: string) => Promise<void>
 }
 
-export interface SmokeFixtureFile {
+export interface E2EFixtureFile {
   readonly path: string
   readonly content: string
   readonly executable?: boolean
 }
 
-export interface SmokeFixtureSpec {
+export interface E2EFixtureSpec {
   readonly name?: string
   readonly rigConfig: RigConfig
-  readonly files: readonly SmokeFixtureFile[]
+  readonly files: readonly E2EFixtureFile[]
 }
 
 const MAIN_BINARY_PATH = join(process.cwd(), "rig")
@@ -120,14 +120,14 @@ const runProcess = async (
   return { stdout, stderr, exitCode }
 }
 
-const parseJsonLines = (raw: string): readonly SmokeJsonRecord[] =>
+const parseJsonLines = (raw: string): readonly E2EJsonRecord[] =>
   raw
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .flatMap((line) => {
       try {
-        return [JSON.parse(line) as SmokeJsonRecord]
+        return [JSON.parse(line) as E2EJsonRecord]
       } catch {
         return []
       }
@@ -162,7 +162,7 @@ const writeExecutable = async (path: string, content: string) => {
   await chmod(path, 0o755)
 }
 
-const writeFixtureFile = async (root: string, file: SmokeFixtureFile) => {
+const writeFixtureFile = async (root: string, file: E2EFixtureFile) => {
   const targetPath = join(root, file.path)
   await mkdir(dirname(targetPath), { recursive: true })
   if (file.executable) {
@@ -241,7 +241,7 @@ const killTrackedProcesses = async (roots: readonly string[]) => {
 const makeRigConfig = (
   name: string,
   ports: PortPair,
-  opts: SmokeProjectOptions,
+  opts: E2EProjectOptions,
 ) => {
   const webCommand = `SERVICE_NAME=web PORT=${ports.web} bun run server.ts`
   const workerCommand =
@@ -321,9 +321,9 @@ export const ensureMainBinaryBuilt = async (): Promise<void> => {
   return ensureBuiltPromise
 }
 
-export const createSmokeProject = async (
-  opts: SmokeProjectOptions = {},
-): Promise<SmokeProject> => {
+export const createE2EProject = async (
+  opts: E2EProjectOptions = {},
+): Promise<E2EProject> => {
   const tempRoot = await mkdtemp(join(tmpdir(), "rig-main-e2e-"))
   const homeDir = join(tempRoot, "home")
   const rigRootDir = join(tempRoot, "rig-root")
@@ -383,7 +383,7 @@ export const createSmokeProject = async (
   await git(repoPath, ["config", "user.name", "Rig Main E2E"])
   await git(repoPath, ["config", "user.email", "rig-main-e2e@example.test"])
   await git(repoPath, ["add", "."])
-  await git(repoPath, ["commit", "-m", "feat: initial smoke fixture"])
+  await git(repoPath, ["commit", "-m", "feat: initial isolated e2e fixture"])
 
   return {
     tempRoot,
@@ -403,9 +403,9 @@ export const createSmokeProject = async (
   }
 }
 
-export const createSmokeFixtureProject = async (
-  fixture: SmokeFixtureSpec,
-): Promise<SmokeProject> => {
+export const createE2EFixtureProject = async (
+  fixture: E2EFixtureSpec,
+): Promise<E2EProject> => {
   const tempRoot = await mkdtemp(join(tmpdir(), "rig-main-e2e-fixture-"))
   const homeDir = join(tempRoot, "home")
   const rigRootDir = join(tempRoot, "rig-root")
@@ -446,8 +446,8 @@ export const createSmokeFixtureProject = async (
   }
 }
 
-export const runSmokeCommand = async (
-  project: SmokeProject,
+export const runE2ECommand = async (
+  project: E2EProject,
   argv: readonly string[],
   opts?: {
     readonly cwd?: string
@@ -456,7 +456,7 @@ export const runSmokeCommand = async (
     readonly env?: Record<string, string | undefined>
     readonly signal?: NodeJS.Signals
   },
-): Promise<SmokeCommandResult> => {
+): Promise<E2ECommandResult> => {
   await ensureMainBinaryBuilt()
 
   const fullArgv = opts?.json === false ? [...argv] : ["--json", ...argv]
@@ -468,7 +468,7 @@ export const runSmokeCommand = async (
     env: {
       HOME: project.homeDir,
       RIG_ROOT: project.rigRootDir,
-      RIG_PROVIDER_PROFILE: "smoke",
+      RIG_PROVIDER_PROFILE: "isolated-e2e",
       RIG_LOG_FILE: undefined,
       RIG_LOG_FORMAT: undefined,
       ...opts?.env,
@@ -497,21 +497,21 @@ export const mainHelpFragments = (): readonly string[] => {
   return [lines[0] ?? "rig", "Commands:", "Examples:"]
 }
 
-export const firstErrorRecord = (result: SmokeCommandResult) =>
+export const firstErrorRecord = (result: E2ECommandResult) =>
   result.stderrRecords.find((record) => record.level === "error")
 
-export const firstTableRecord = (result: SmokeCommandResult) =>
+export const firstTableRecord = (result: E2ECommandResult) =>
   result.stdoutRecords.find((record) => record.level === "table")
 
-export const infoMessages = (result: SmokeCommandResult): readonly string[] =>
+export const infoMessages = (result: E2ECommandResult): readonly string[] =>
   result.stdoutRecords
     .map((record) => record.message)
     .filter((message): message is string => typeof message === "string")
 
-export const successMessages = (result: SmokeCommandResult): readonly SmokeJsonRecord[] =>
+export const successMessages = (result: E2ECommandResult): readonly E2EJsonRecord[] =>
   result.stdoutRecords.filter((record) => record.level === "success")
 
-export const appendRepoChange = async (project: SmokeProject, filename = "README.md") => {
+export const appendRepoChange = async (project: E2EProject, filename = "README.md") => {
   const path = join(project.repoPath, filename)
   const current = await readFile(path, "utf8")
   await writeFile(path, `${current}\nchange:${Date.now()}\n`, "utf8")

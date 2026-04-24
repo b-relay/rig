@@ -4,21 +4,21 @@ import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 
 import {
-  createSmokeProject,
+  createE2EProject,
   firstErrorRecord,
   firstTableRecord,
   helpFragmentsForCommand,
   infoMessages,
-  runSmokeCommand,
+  runE2ECommand,
   successMessages,
-} from "./cli-smoke-harness.js"
+} from "./cli-e2e-harness.js"
 
 describe("compiled main rig binary command surface E2E", () => {
   test("init registers a project structurally and rejects missing args with help", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      const invalid = await runSmokeCommand(project, ["init", project.name])
+      const invalid = await runE2ECommand(project, ["init", project.name])
       const invalidError = firstErrorRecord(invalid)
 
       expect(invalid.exitCode).toBe(1)
@@ -27,7 +27,7 @@ describe("compiled main rig binary command surface E2E", () => {
         expect(invalid.stdout).toContain(fragment)
       }
 
-      const success = await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
+      const success = await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
       expect(success.exitCode).toBe(0)
       expect(successMessages(success).some((record) => record.message?.includes("Registered") === true)).toBe(true)
     } finally {
@@ -36,21 +36,21 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("restart restarts services and changes the tracked pid", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
-      await runSmokeCommand(project, ["start", project.name, "dev"])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["start", project.name, "dev"])
 
-      const before = await runSmokeCommand(project, ["status", project.name, "dev"])
+      const before = await runE2ECommand(project, ["status", project.name, "dev"])
       const beforeRow = (firstTableRecord(before)?.rows ?? []).find((row) => row.service === "web")
 
-      const restarted = await runSmokeCommand(project, ["restart", "dev"])
+      const restarted = await runE2ECommand(project, ["restart", "dev"])
       expect(restarted.exitCode).toBe(0)
       expect(successMessages(restarted).some((record) => record.message?.includes("Services stopped.") === true)).toBe(true)
       expect(successMessages(restarted).some((record) => record.message?.includes("Services started.") === true)).toBe(true)
 
-      const after = await runSmokeCommand(project, ["status", project.name, "dev"])
+      const after = await runE2ECommand(project, ["status", project.name, "dev"])
       const afterRow = (firstTableRecord(after)?.rows ?? []).find((row) => row.service === "web")
 
       expect(typeof beforeRow?.pid).toBe("number")
@@ -62,14 +62,14 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("logs defaults to the only service and returns bounded history", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
-      await runSmokeCommand(project, ["start", project.name, "dev"])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["start", project.name, "dev"])
       await new Promise((resolve) => setTimeout(resolve, 700))
 
-      const result = await runSmokeCommand(project, ["logs", "dev", "--lines", "5"])
+      const result = await runE2ECommand(project, ["logs", "dev", "--lines", "5"])
       expect(result.exitCode).toBe(0)
 
       const messages = infoMessages(result)
@@ -81,14 +81,14 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("logs interleaves multi-service history and follow streams appended lines", async () => {
-    const project = await createSmokeProject({ multiService: true })
+    const project = await createE2EProject({ multiService: true })
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
-      await runSmokeCommand(project, ["start", project.name, "dev"])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["start", project.name, "dev"])
       await new Promise((resolve) => setTimeout(resolve, 800))
 
-      const interleaved = await runSmokeCommand(project, ["logs", project.name, "dev", "--lines", "6"])
+      const interleaved = await runE2ECommand(project, ["logs", project.name, "dev", "--lines", "6"])
       const historyMessages = infoMessages(interleaved)
 
       expect(interleaved.exitCode).toBe(0)
@@ -96,7 +96,7 @@ describe("compiled main rig binary command surface E2E", () => {
       expect(historyMessages.some((message) => message.startsWith("worker |"))).toBe(true)
       expect(historyMessages.length).toBeLessThanOrEqual(6)
 
-      const follow = await runSmokeCommand(
+      const follow = await runE2ECommand(
         project,
         ["logs", project.name, "dev", "--follow", "--lines", "2"],
         { waitForMs: 900, signal: "SIGINT" },
@@ -110,13 +110,13 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("version defaults to release history, supports detail, and can edit the latest release semver", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
-      await runSmokeCommand(project, ["deploy", project.name, "prod", "--bump", "minor"])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["deploy", project.name, "prod", "--bump", "minor"])
 
-      const history = await runSmokeCommand(project, ["version", project.name])
+      const history = await runE2ECommand(project, ["version", project.name])
       const historyRows = firstTableRecord(history)?.rows ?? []
 
       expect(history.exitCode).toBe(0)
@@ -124,15 +124,15 @@ describe("compiled main rig binary command surface E2E", () => {
       expect(typeof historyRows[0]?.commit).toBe("string")
       expect(String(historyRows[0]?.commit).length).toBe(7)
 
-      const detail = await runSmokeCommand(project, ["version", project.name, "0.2.0"])
+      const detail = await runE2ECommand(project, ["version", project.name, "0.2.0"])
       expect(detail.exitCode).toBe(0)
       expect(infoMessages(detail).some((message) => message.includes("resolved release"))).toBe(true)
 
-      const edited = await runSmokeCommand(project, ["version", project.name, "0.2.0", "--edit", "0.2.1"])
+      const edited = await runE2ECommand(project, ["version", project.name, "0.2.0", "--edit", "0.2.1"])
       expect(edited.exitCode).toBe(0)
       expect(successMessages(edited).some((record) => record.message?.includes("Release version updated.") === true)).toBe(true)
 
-      const updated = await runSmokeCommand(project, ["version", project.name])
+      const updated = await runE2ECommand(project, ["version", project.name])
       expect((firstTableRecord(updated)?.rows ?? [])[0]?.version).toBe("0.2.1")
     } finally {
       await project.cleanup()
@@ -140,16 +140,16 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("config shows project data, set updates a primitive, and unset removes it", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
 
-      const shown = await runSmokeCommand(project, ["config", project.name])
+      const shown = await runE2ECommand(project, ["config", project.name])
       expect(shown.exitCode).toBe(0)
       expect(infoMessages(shown).some((message) => message.includes(`Project: ${project.name}`))).toBe(true)
 
-      const setResult = await runSmokeCommand(project, ["config", "set", project.name, "description", "Updated description"])
+      const setResult = await runE2ECommand(project, ["config", "set", project.name, "description", "Updated description"])
       expect(setResult.exitCode).toBe(0)
 
       const afterSet = JSON.parse(await readFile(join(project.repoPath, "rig.json"), "utf8")) as {
@@ -157,7 +157,7 @@ describe("compiled main rig binary command surface E2E", () => {
       }
       expect(afterSet.description).toBe("Updated description")
 
-      const unsetResult = await runSmokeCommand(project, ["config", "unset", project.name, "description"])
+      const unsetResult = await runE2ECommand(project, ["config", "unset", project.name, "description"])
       expect(unsetResult.exitCode).toBe(0)
 
       const afterUnset = JSON.parse(await readFile(join(project.repoPath, "rig.json"), "utf8")) as {
@@ -170,12 +170,12 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("config set rejects unsupported non-primitive values and points to docs", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
 
-      const result = await runSmokeCommand(project, [
+      const result = await runE2ECommand(project, [
         "config",
         "set",
         project.name,
@@ -194,13 +194,13 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("list shows registered projects and current prod deployment", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
-      await runSmokeCommand(project, ["deploy", project.name, "prod", "--bump", "minor"])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["deploy", project.name, "prod", "--bump", "minor"])
 
-      const result = await runSmokeCommand(project, ["list"])
+      const result = await runE2ECommand(project, ["list"])
       const rows = firstTableRecord(result)?.rows ?? []
 
       expect(result.exitCode).toBe(0)
@@ -214,29 +214,29 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("docs lists config keys briefly and key detail shows long description and config-set guidance", async () => {
-    const project = await createSmokeProject()
+    const project = await createE2EProject()
 
     try {
-      const toc = await runSmokeCommand(project, ["docs"])
+      const toc = await runE2ECommand(project, ["docs"])
       expect(toc.exitCode).toBe(0)
       expect(infoMessages(toc).some((message) => message.includes("config"))).toBe(true)
 
-      const configDocs = await runSmokeCommand(project, ["docs", "config"])
+      const configDocs = await runE2ECommand(project, ["docs", "config"])
       expect(configDocs.exitCode).toBe(0)
       expect(infoMessages(configDocs).some((message) => message.includes("version ("))).toBe(true)
 
-      const detail = await runSmokeCommand(project, ["docs", "config", "description"])
+      const detail = await runE2ECommand(project, ["docs", "config", "description"])
       expect(detail.exitCode).toBe(0)
       expect(infoMessages(detail).some((message) => message.includes("settable"))).toBe(true)
       expect(infoMessages(detail).some((message) => message.includes("rig config"))).toBe(true)
 
-      const onboardList = await runSmokeCommand(project, ["docs", "onboard"])
+      const onboardList = await runE2ECommand(project, ["docs", "onboard"])
       expect(onboardList.exitCode).toBe(0)
       expect(infoMessages(onboardList).some((message) => message.includes("nextjs"))).toBe(true)
       expect(infoMessages(onboardList).some((message) => message.includes("convex"))).toBe(true)
-      expect(infoMessages(onboardList).some((message) => message.includes("rig-smoke"))).toBe(false)
+      expect(infoMessages(onboardList).some((message) => message.includes("rig-isolated-e2e"))).toBe(false)
 
-      const onboardDetail = await runSmokeCommand(project, ["docs", "onboard", "vite"])
+      const onboardDetail = await runE2ECommand(project, ["docs", "onboard", "vite"])
       expect(onboardDetail.exitCode).toBe(0)
       expect(infoMessages(onboardDetail).some((message) => message.includes("Important Notes:"))).toBe(true)
       expect(infoMessages(onboardDetail).some((message) => message.includes("example localhost ports"))).toBe(true)
@@ -249,19 +249,19 @@ describe("compiled main rig binary command surface E2E", () => {
   })
 
   test("config help and logs invalid service errors remain structural instead of snapshot-based", async () => {
-    const project = await createSmokeProject({ multiService: true })
+    const project = await createE2EProject({ multiService: true })
 
     try {
-      const help = await runSmokeCommand(project, ["config", "--help"], { json: false })
+      const help = await runE2ECommand(project, ["config", "--help"], { json: false })
       expect(help.exitCode).toBe(0)
       for (const fragment of helpFragmentsForCommand("config")) {
         expect(help.stdout).toContain(fragment)
       }
 
-      await runSmokeCommand(project, ["init", project.name, "--path", project.repoPath])
-      await runSmokeCommand(project, ["start", project.name, "dev"])
+      await runE2ECommand(project, ["init", project.name, "--path", project.repoPath])
+      await runE2ECommand(project, ["start", project.name, "dev"])
 
-      const invalidService = await runSmokeCommand(project, ["logs", project.name, "dev", "--service", "missing"])
+      const invalidService = await runE2ECommand(project, ["logs", project.name, "dev", "--service", "missing"])
       const error = firstErrorRecord(invalidService)
 
       expect(invalidService.exitCode).toBe(1)

@@ -22,7 +22,7 @@ import { JsonLoggerLive } from "./providers/json-logger"
 import { JSONRegistryLive } from "./providers/json-registry"
 import { LaunchdManagerLive } from "./providers/launchd"
 import { NodeFileSystemLive } from "./providers/node-fs"
-import { SmokeProcessManagerLive } from "./providers/smoke-process-manager"
+import { IsolatedE2EProcessManagerLive } from "./providers/isolated-e2e-process-manager"
 import { StubBinInstaller } from "./providers/stub-bin-installer"
 import { StubGit } from "./providers/stub-git"
 import { StubHealthChecker } from "./providers/stub-health-checker"
@@ -36,10 +36,10 @@ import { TerminalLogger, TerminalLoggerLive } from "./providers/terminal-logger"
 import { BunServiceRunnerLive } from "./providers/bun-service-runner"
 import { GitWorktreeWorkspaceLive } from "./providers/worktree"
 
-export type RigProviderProfile = "default" | "stub" | "smoke"
+export type RigProviderProfile = "default" | "stub" | "isolated-e2e"
 
 export const normalizeRigProviderProfile = (value: string | undefined): RigProviderProfile =>
-  value === "stub" || value === "smoke" ? value : "default"
+  value === "stub" || value === "isolated-e2e" ? value : "default"
 
 export const buildLoggerLayer = (verbose = false, json = false): Layer.Layer<Logger> => {
   const primaryLayer =
@@ -112,7 +112,7 @@ const buildStubRigLayer = (loggerLayer: Layer.Layer<Logger>) =>
     loggerLayer,
   )
 
-const buildSmokeRigLayer = (loggerLayer: Layer.Layer<Logger>) => {
+const buildIsolatedE2ERigLayer = (loggerLayer: Layer.Layer<Logger>) => {
   const serviceRunnerWithFileSystemLive = Layer.provide(
     BunServiceRunnerLive,
     Layer.mergeAll(NodeFileSystemLive, loggerLayer),
@@ -126,7 +126,7 @@ const buildSmokeRigLayer = (loggerLayer: Layer.Layer<Logger>) => {
     BunHookRunnerLive,
     BunPortCheckerLive,
     CaddyProxyLive,
-    SmokeProcessManagerLive,
+    IsolatedE2EProcessManagerLive,
     WorkspaceWithDependenciesLive,
     DispatchHealthCheckerLive,
     serviceRunnerWithFileSystemLive,
@@ -146,8 +146,8 @@ export const buildRigLayer = (
     return buildStubRigLayer(loggerLayer)
   }
 
-  if (profile === "smoke") {
-    return buildSmokeRigLayer(loggerLayer)
+  if (profile === "isolated-e2e") {
+    return buildIsolatedE2ERigLayer(loggerLayer)
   }
 
   return buildDefaultRigLayer(loggerLayer)

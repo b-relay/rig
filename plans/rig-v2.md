@@ -171,11 +171,11 @@ Implement generated deployment inventory and materialization from the `deploymen
 
 ### Acceptance Criteria
 
-- [ ] A generated deployment can be created from a branch or explicit deployment name.
-- [ ] Generated deployments receive isolated workspace, logs, runtime state, and assigned ports.
-- [ ] Generated subdomains default from branch slugs and can be overridden.
-- [ ] Deployment inventory can list `local`, `live`, and generated deployments consistently.
-- [ ] Destroying a generated deployment removes its rig-managed state without affecting `local` or `live`.
+- [x] A generated deployment can be created from a branch or explicit deployment name.
+- [x] Generated deployments receive isolated workspace, logs, runtime state, and assigned ports.
+- [x] Generated subdomains default from branch slugs and can be overridden.
+- [x] Deployment inventory can list `local`, `live`, and generated deployments consistently.
+- [x] Destroying a generated deployment removes its rig-managed state without affecting `local` or `live`.
 
 ---
 

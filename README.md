@@ -28,6 +28,7 @@ V2 is intentionally isolated while v1 keeps managing production apps.
 - V2 command parsing uses Effect CLI; v1 hand-written parsing remains transitional.
 - V2 state defaults to `~/.rig-v2` or `RIG_V2_ROOT`, never `~/.rig`.
 - Provider profiles are explicit: `default` keeps launchd/Caddy/local git defaults, and `stub` is selectable for isolated tests and agent runs.
+- Generated deployment materialization uses v2 interfaces for deployment inventory and state storage, with isolated workspace, log, and runtime roots under the v2 state root.
 - `rig-smoke` remains transitional until main-binary isolated E2E coverage reaches parity.
 
 Current v2 vocabulary:

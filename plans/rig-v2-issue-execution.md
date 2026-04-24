@@ -140,6 +140,8 @@ Current output: `rig2 up`, `rig2 down`, `rig2 logs`, and `rig2 status` are Effec
 
 #8 depends on #5 and #7, and should materialize generated deployments from the `deployments` template.
 
+Current output: generated deployment materialization now runs behind v2 deployment manager/store interfaces. Branch and named deployments resolve isolated workspace/log/runtime state, generated subdomains, deterministic assigned ports, persisted inventory, and generated-only teardown semantics.
+
 #13 depends on #5 and #7, and should expand `rig init` once the config resolver and provider profiles exist.
 
 Recommended order:

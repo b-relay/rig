@@ -479,7 +479,10 @@ const resolvePort = (
   name: string,
   value: number | undefined,
   interpolation: V2LaneInterpolation,
-): number | undefined => value ?? interpolation.assignedPorts[name]
+): number | undefined =>
+  interpolation.lane === "deployment"
+    ? interpolation.assignedPorts[name] ?? value
+    : value ?? interpolation.assignedPorts[name]
 
 export const resolveV2Lane = (
   config: V2ProjectConfig,

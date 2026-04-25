@@ -69,12 +69,21 @@ Make `rigd` persist deployment inventory snapshots, action receipts, structured 
 
 ### Acceptance Criteria
 
-- [ ] `rigd` persists action receipts, runtime events, deployment state, and health summaries under the v2 state root.
-- [ ] Port reservations are owned by `rigd` and survive process restart where safe.
-- [ ] Reconciliation records provider observations and separates confirmed state from stale or missing evidence.
-- [ ] Restarting `rigd` reconstructs minimum operational state from persisted evidence and provider state where safe.
-- [ ] Unsafe reconstruction returns tagged structured errors with actionable hints.
-- [ ] Tests cover restart, stale state, missing evidence, and generated deployment inventory reconciliation.
+- [x] `rigd` persists action receipts, runtime events, deployment state, and health summaries under the v2 state root.
+- [x] Port reservations are owned by `rigd` and survive process restart where safe.
+- [x] Reconciliation records provider observations and separates confirmed state from stale or missing evidence.
+- [x] Restarting `rigd` reconstructs minimum operational state from persisted evidence and provider state where safe.
+- [x] Unsafe reconstruction returns tagged structured errors with actionable hints.
+- [x] Tests cover restart, stale state, missing evidence, and generated deployment inventory reconciliation.
+
+### Current Output
+
+`src/v2/rigd-state.ts` defines the `V2RigdStateStore` interface with file and
+memory-backed layers. The live `rigd` path persists runtime events, accepted
+action receipts, health summaries, provider observations, deployment snapshots,
+and rigd-owned port reservations to `runtime/rigd-state.json`. Restart tests
+prove a fresh `rigd` layer can recover persisted logs and reconstruct minimum
+state, while missing evidence returns a tagged unsafe-reconstruction error.
 
 ---
 

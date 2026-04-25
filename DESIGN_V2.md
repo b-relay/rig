@@ -497,6 +497,17 @@ Current MVP: `rig2` uses an in-process local API contract while the daemon bound
 
 Current runtime-facing v2 commands route through the rigd-backed lifecycle service. Any remaining direct command assembly is compatibility scaffolding for v1 or tests, not the v2 source of truth.
 
+### Persistent state
+
+`rigd` persists restart evidence under the isolated v2 state root. The current
+state-store contract records runtime events, accepted action receipts, health
+summaries, provider observations, deployment snapshots, and rigd-owned port
+reservations in `runtime/rigd-state.json`.
+
+Reconstruction is evidence-based. Missing health, provider, or deployment
+evidence returns a tagged unsafe-reconstruction error with a recovery hint
+rather than guessing at runtime state.
+
 ### Web relationship
 
 `rigd` serves a localhost-first control plane on `127.0.0.1`.

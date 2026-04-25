@@ -5,6 +5,7 @@ import { V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
 import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
 import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
+import { V2RigdStateStore, type V2DeploymentSnapshot, type V2PortReservation } from "./rigd-state.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
 export interface V2ControlPlaneContract {
@@ -137,15 +138,14 @@ export const V2RigdLive = Layer.effect(
     const deployments = yield* V2DeploymentManager
     const logger = yield* V2Logger
     const providerRegistry = yield* V2ProviderRegistry
+    const stateStore = yield* V2RigdStateStore
     const startedAt = now()
     const events: V2RigdLogEntry[] = []
-    let sequence = 0
 
     const health = (stateRoot: string): Effect.Effect<V2RigdHealth> =>
       Effect.gen(function* () {
         const providers = yield* providerRegistry.current
-
-        return {
+        const current = {
           service: "rigd",
           status: "running",
           stateRoot,
@@ -156,38 +156,112 @@ export const V2RigdLive = Layer.effect(
           },
           controlPlane: controlPlaneContract,
           providers,
-        }
+        } satisfies V2RigdHealth
+
+        yield* stateStore.writeHealthSummary({
+          stateRoot,
+          summary: {
+            service: "rigd",
+            status: "running",
+            checkedAt: now(),
+            providerProfile: providers.profile,
+          },
+        })
+        yield* stateStore.writeProviderObservations({
+          stateRoot,
+          observations: providers.providers.map((provider) => ({
+            id: provider.id,
+            family: provider.family,
+            status: "confirmed" as const,
+            observedAt: now(),
+            capabilities: provider.capabilities,
+          })),
+        })
+
+        return current
       })
 
-    const appendEvent = (entry: Omit<V2RigdLogEntry, "timestamp">) => {
-      events.push({
-        timestamp: now(),
-        ...entry,
+    const persistInventoryEvidence = (
+      stateRoot: string,
+      deploymentInventory: readonly V2DeploymentRecord[],
+    ): Effect.Effect<void, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const observedAt = now()
+        const snapshots: readonly V2DeploymentSnapshot[] = deploymentInventory.map((deployment) => ({
+          project: deployment.project,
+          deployment: deployment.name,
+          kind: deployment.kind,
+          observedAt,
+          providerProfile: deployment.providerProfile,
+        }))
+        const reservations: readonly V2PortReservation[] = deploymentInventory.flatMap((deployment) =>
+          Object.entries(deployment.assignedPorts).map(([component, port]) => ({
+            project: deployment.project,
+            deployment: deployment.name,
+            component,
+            port,
+            owner: "rigd" as const,
+            status: "reserved" as const,
+            observedAt,
+          })),
+        )
+
+        yield* stateStore.writeDeploymentSnapshot({
+          stateRoot,
+          snapshots,
+        })
+        yield* stateStore.writePortReservations({
+          stateRoot,
+          reservations,
+        })
       })
-    }
+
+    const appendEvent = (
+      stateRoot: string,
+      entry: Omit<V2RigdLogEntry, "timestamp">,
+    ): Effect.Effect<void, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const event = {
+          timestamp: now(),
+          ...entry,
+        }
+        events.push(event)
+        yield* stateStore.appendEvent({
+          stateRoot,
+          event,
+        })
+      })
 
     const receipt = (
       kind: V2RigdActionReceipt["kind"],
       project: string,
       stateRoot: string,
       target: string,
-    ): V2RigdActionReceipt => {
-      sequence += 1
-      return {
-        id: `rigd-${sequence}`,
-        kind,
-        accepted: true,
-        project,
-        stateRoot,
-        target,
-        receivedAt: now(),
-      }
-    }
+    ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const persisted = yield* stateStore.load({ stateRoot })
+        const accepted = {
+          id: `rigd-${persisted.receipts.length + 1}`,
+          kind,
+          accepted: true,
+          project,
+          stateRoot,
+          target,
+          receivedAt: now(),
+        } satisfies V2RigdActionReceipt
+
+        yield* stateStore.appendReceipt({
+          stateRoot,
+          receipt: accepted,
+        })
+
+        return accepted
+      })
 
     return {
       start: (input) =>
         Effect.gen(function* () {
-          appendEvent({
+          yield* appendEvent(input.stateRoot, {
             event: "rigd.started",
             details: {
               stateRoot: input.stateRoot,
@@ -211,6 +285,10 @@ export const V2RigdLive = Layer.effect(
             })
             : []
 
+          if (input.config) {
+            yield* persistInventoryEvidence(input.stateRoot, deploymentInventory)
+          }
+
           return {
             project: input.project,
             foundation,
@@ -218,11 +296,16 @@ export const V2RigdLive = Layer.effect(
           }
         }),
       logs: (input) =>
-        Effect.succeed(
-          events
+        Effect.gen(function* () {
+          const persisted = yield* stateStore.load({
+            stateRoot: input.stateRoot,
+          })
+          const source = persisted.events.length > 0 ? persisted.events : events
+
+          return source
             .filter((entry) => entry.project === undefined || entry.project === input.project)
-            .slice(Math.max(0, events.length - input.lines)),
-        ),
+            .slice(Math.max(0, source.length - input.lines))
+        }),
       healthState: (input) =>
         Effect.gen(function* () {
           const inventory = yield* (input.config
@@ -231,6 +314,10 @@ export const V2RigdLive = Layer.effect(
               stateRoot: input.stateRoot,
             })
             : Effect.succeed([]))
+
+          if (input.config) {
+            yield* persistInventoryEvidence(input.stateRoot, inventory)
+          }
 
           return {
             rigd: yield* health(input.stateRoot),
@@ -242,9 +329,9 @@ export const V2RigdLive = Layer.effect(
           }
         }),
       lifecycle: (input) =>
-        Effect.sync(() => {
-          const accepted = receipt("lifecycle", input.project, input.stateRoot, input.lane)
-          appendEvent({
+        Effect.gen(function* () {
+          const accepted = yield* receipt("lifecycle", input.project, input.stateRoot, input.lane)
+          yield* appendEvent(input.stateRoot, {
             event: "rigd.lifecycle.accepted",
             project: input.project,
             lane: input.lane,
@@ -256,13 +343,13 @@ export const V2RigdLive = Layer.effect(
           return accepted
         }),
       deploy: (input) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           const target =
             input.target === "generated" && input.deploymentName
               ? `${input.target}:${input.deploymentName}`
               : input.target
-          const accepted = receipt("deploy", input.project, input.stateRoot, target)
-          appendEvent({
+          const accepted = yield* receipt("deploy", input.project, input.stateRoot, target)
+          yield* appendEvent(input.stateRoot, {
             event: "rigd.deploy.accepted",
             project: input.project,
             details: {

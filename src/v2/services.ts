@@ -5,6 +5,7 @@ import type { V2TaggedError } from "./errors.js"
 import { V2ProviderContractsLive } from "./provider-contracts.js"
 import { V2ProviderProfileLive } from "./provider-profiles.js"
 import { V2ProjectLocatorLive } from "./project-locator.js"
+import { V2FileRigdStateStoreLive } from "./rigd-state.js"
 import {
   RIG_V2_LAUNCHD_LABEL_PREFIX,
   RIG_V2_NAMESPACE,
@@ -94,6 +95,7 @@ export const Rig2Live = Layer.mergeAll(
   V2LoggerLive,
   V2ProviderProfileLive(),
   V2ProviderContractsLive("default"),
+  V2FileRigdStateStoreLive,
   V2ProjectLocatorLive,
 )
 

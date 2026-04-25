@@ -19,7 +19,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 - #13 depends on #5 and #7.
 - #14 depends on #7 and #11.
 - #16 depends on #7 and #10 and is complete.
-- #17 depends on #11, #12, and #16.
+- #17 depends on #11, #12, and #16 and is complete.
 - #18 depends on #16.
 - #19 depends on #17 and #18.
 - #20 depends on #18 and #19.
@@ -242,6 +242,12 @@ visible through `rigd` health and `rig2 doctor`.
 
 #17 makes `rigd` restart-safe by persisting runtime state, receipts, health summaries, port reservations, provider observations, and recovery evidence under the isolated v2 state root.
 
+Current output: `V2RigdStateStore` persists runtime events, receipts, health
+summaries, provider observations, deployment snapshots, and rigd-owned port
+reservations under `runtime/rigd-state.json`. Restart tests prove persisted logs
+and minimum reconstruction evidence survive a fresh `rigd` layer, while missing
+evidence fails with a tagged unsafe-reconstruction error.
+
 Recommended order:
 
 1. #16 first, so `rigd` persistence records provider observations through stable interfaces.
@@ -295,7 +301,7 @@ Exit condition:
 
 ## Recommended Next Move
 
-Pick up #17 next. #16 is complete, so the provider/plugin contract that persistent `rigd`, control-plane transport, web read models, and web action paths need to share is now available.
+Pick up #18 next. #16 and #17 are complete, so the provider/plugin contract and durable `rigd` state boundary are available for the localhost-first control-plane interface.
 
 ## Suggested First Milestone
 

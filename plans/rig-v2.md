@@ -312,7 +312,9 @@ Stage 2 covers:
 - #16 Define v2 provider plugin contracts. Complete: `V2ProviderRegistry`
   now reports shared first-party/external plugin metadata for default, stub,
   and isolated E2E compositions.
-- #17 Persist rigd runtime state and reconciliation journal.
+- #17 Persist rigd runtime state and reconciliation journal. Complete:
+  `V2RigdStateStore` persists events, receipts, health summaries, provider
+  observations, deployment snapshots, and rigd-owned port reservations.
 - #18 Add localhost-first control-plane interface.
 - #19 Expose web read models through rigd.
 - #20 Route web lifecycle and deploy actions through rigd.

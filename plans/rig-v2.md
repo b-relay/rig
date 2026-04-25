@@ -325,5 +325,8 @@ Stage 2 covers:
   `rigd` accepts control-plane lifecycle, live deploy, generated deploy, and
   generated teardown actions through the same durable receipt/event state used
   by CLI-visible runtime behavior.
-- #21 Add safe config edit workflow through rigd.
+- #21 Add safe config edit workflow through rigd. Complete:
+  `rigd.configRead`, `rigd.configPreview`, and `rigd.configApply` expose
+  structured, schema-validated, revision-checked config editing with atomic
+  writes and backup recovery information.
 - #22 Prepare rig2 to main rig cutover readiness.

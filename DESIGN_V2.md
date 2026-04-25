@@ -557,6 +557,15 @@ materialized generated deployments. Provider capability checks and deploy
 preflight checks stay behind the `V2RigdActionPreflight` interface so bundled
 and future external providers can share the same validation boundary.
 
+Current config-edit contract: `rigd.configRead` returns editor-ready v2 config
+state with raw JSON data, decoded config, a content revision, and editable
+field docs. `rigd.configPreview` accepts structured `set` and `remove` patch
+operations expressed as path arrays, applies them in memory, validates the
+candidate config with the v2 Effect Schema, and returns field-doc-aware diffs
+without writing. `rigd.configApply` repeats the same validation, rejects stale
+revisions, writes atomically through the config file store interface, and
+returns a backup path for recovery.
+
 ## Reliability Requirements
 
 The redesign is also a reliability pass.

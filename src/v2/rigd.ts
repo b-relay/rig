@@ -1,6 +1,14 @@
 import { Context, Effect, Layer } from "effect-v4"
 
 import type { V2ProjectConfig } from "./config.js"
+import {
+  V2ConfigEditor,
+  type V2ConfigApplyResult,
+  type V2ConfigPreviewInput,
+  type V2ConfigPreviewResult,
+  type V2ConfigReadInput,
+  type V2ConfigReadModel,
+} from "./config-editor.js"
 import { V2ControlPlane, type V2ControlPlaneStatus } from "./control-plane.js"
 import { branchSlug, V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
@@ -203,6 +211,9 @@ export interface V2RigdService {
   readonly controlPlaneDestroyGenerated: (
     input: V2RigdControlPlaneDestroyGeneratedInput,
   ) => Effect.Effect<V2RigdActionReceipt, V2RuntimeError>
+  readonly configRead: (input: V2ConfigReadInput) => Effect.Effect<V2ConfigReadModel, V2RuntimeError>
+  readonly configPreview: (input: V2ConfigPreviewInput) => Effect.Effect<V2ConfigPreviewResult, V2RuntimeError>
+  readonly configApply: (input: V2ConfigPreviewInput) => Effect.Effect<V2ConfigApplyResult, V2RuntimeError>
   readonly webReadModel: (input: V2RigdWebReadInput) => Effect.Effect<V2RigdWebReadModel, V2RuntimeError>
   readonly webLogs: (input: V2RigdWebLogsInput) => Effect.Effect<readonly V2RigdLogEntry[], V2RuntimeError>
 }
@@ -246,6 +257,7 @@ export const V2RigdLive = Layer.effect(
     const stateStore = yield* V2RigdStateStore
     const controlPlane = yield* V2ControlPlane
     const actionPreflight = yield* V2RigdActionPreflight
+    const configEditor = yield* V2ConfigEditor
     const startedAt = now()
     const events: V2RigdLogEntry[] = []
 
@@ -618,6 +630,9 @@ export const V2RigdLive = Layer.effect(
           })
           return accepted
         }),
+      configRead: (input) => configEditor.read(input),
+      configPreview: (input) => configEditor.preview(input),
+      configApply: (input) => configEditor.apply(input),
       webReadModel: (input) =>
         Effect.gen(function* () {
           const state = yield* stateStore.load({ stateRoot: input.stateRoot })

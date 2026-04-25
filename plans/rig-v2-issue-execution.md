@@ -23,7 +23,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 - #18 depends on #16 and is complete.
 - #19 depends on #17 and #18 and is complete.
 - #20 depends on #18 and #19 and is complete.
-- #21 depends on #19.
+- #21 depends on #19 and is complete.
 - #22 depends on #14, #20, and #21.
 
 ## Dependency Graph
@@ -302,6 +302,12 @@ generated targets, and provider/preflight validation is behind the
 
 #21 adds safe structured config editing through `rigd`, including schema validation, diff/preview, atomic apply, and rollback behavior.
 
+Current output: `V2ConfigEditor` exposes read, preview, and apply interfaces
+for structured v2 config patches. `rigd` returns editor-ready config with
+field docs and revisions, previews schema-validated diffs without writing, and
+applies validated edits atomically with backup/recovery information while
+rejecting stale revisions.
+
 Exit condition:
 
 - Web-originated lifecycle and deploy actions produce the same receipts, logs, health, and inventory effects as CLI actions.
@@ -319,9 +325,9 @@ Exit condition:
 
 ## Recommended Next Move
 
-Pick up #21 next. #16 through #20 are complete, so provider contracts, durable
-`rigd` state, localhost-first transport envelopes, web read models, and
-write-side action receipts are ready for the safe config editing workflow.
+Pick up #22 next. #16 through #21 are complete, so provider contracts, durable
+`rigd` state, localhost-first transport envelopes, web read/write models, and
+safe config editing are ready for the cutover readiness gate.
 
 ## Suggested First Milestone
 

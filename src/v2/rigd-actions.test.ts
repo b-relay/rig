@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect-v4"
 
 import { decodeV2ProjectConfig, type V2ProjectConfig } from "./config.js"
+import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
 import { V2ControlPlane, V2DefaultControlPlaneLive } from "./control-plane.js"
 import {
   V2DeploymentManager,
@@ -122,6 +123,7 @@ const runWithRigd = async <A>(
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     preflightLive,
+    Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
   )
   const layer = Layer.mergeAll(
     V2RuntimeLive,
@@ -131,6 +133,7 @@ const runWithRigd = async <A>(
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     preflightLive,
+    Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
     Layer.provide(V2RigdLive, rigdDependencies),
   )
 

@@ -217,13 +217,29 @@ interface should not assume only a tiny permanent subset of fields is editable.
 
 ### Acceptance Criteria
 
-- [ ] `rigd` exposes current config read output suitable for a web editor.
-- [ ] All v2 config fields are representable by the edit model, even if advanced UI controls land incrementally.
-- [ ] Proposed config edits are represented as structured patches rather than arbitrary string writes.
-- [ ] Every edit is validated with v2 Effect Schema before writing.
-- [ ] Diff/preview output identifies changed fields and user-facing schema documentation where useful.
-- [ ] Apply is atomic and leaves the previous config recoverable on write or validation failure.
-- [ ] Tests cover valid edits, invalid schema edits, concurrent/stale edit attempts, and rollback behavior.
+- [x] `rigd` exposes current config read output suitable for a web editor.
+- [x] All v2 config fields are representable by the edit model, even if advanced UI controls land incrementally.
+- [x] Proposed config edits are represented as structured patches rather than arbitrary string writes.
+- [x] Every edit is validated with v2 Effect Schema before writing.
+- [x] Diff/preview output identifies changed fields and user-facing schema documentation where useful.
+- [x] Apply is atomic and leaves the previous config recoverable on write or validation failure.
+- [x] Tests cover valid edits, invalid schema edits, concurrent/stale edit attempts, and rollback behavior.
+
+### Current Output
+
+`src/v2/config-editor.ts` defines the config editor interfaces for reading,
+previewing, and applying v2 config edits through structured patch operations.
+`rigd.configRead` returns editor-ready raw config, decoded config, revision,
+and field docs. `rigd.configPreview` applies patches in memory, validates the
+candidate config with the v2 Effect Schema, and returns field-doc-aware diffs
+without writing. `rigd.configApply` repeats the same validation, rejects stale
+revisions, writes atomically through the config file store, and reports the
+backup path for recovery.
+
+The patch model uses path arrays and `set`/`remove` operations, so every v2
+config field can be represented without arbitrary text writes. Tests cover
+valid preview/apply, invalid schema edits, stale concurrent edits, and write
+failure recovery.
 
 ---
 

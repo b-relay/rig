@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect-v4"
 
 import { decodeV2ProjectConfig } from "./config.js"
+import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
 import { V2DefaultControlPlaneLive } from "./control-plane.js"
 import {
   V2DeploymentManager,
@@ -94,6 +95,7 @@ const runWithRigd = async <A>(effect: Effect.Effect<A, unknown, V2Rigd | V2Deplo
         V2MemoryRigdStateStoreLive(),
         V2DefaultControlPlaneLive,
         V2RigdActionPreflightLive,
+        Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
       ),
     ),
   )
@@ -118,6 +120,7 @@ const runWithFileBackedRigd = async <A>(
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     V2RigdActionPreflightLive,
+    Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
     Layer.provide(
       V2RigdLive,
       Layer.mergeAll(
@@ -128,6 +131,7 @@ const runWithFileBackedRigd = async <A>(
         V2FileRigdStateStoreLive,
         V2DefaultControlPlaneLive,
         V2RigdActionPreflightLive,
+        Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
       ),
     ),
   )

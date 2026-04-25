@@ -525,6 +525,12 @@ Current MVP control-plane contract:
 - auth: not required for local/Tailscale-only access; token pairing required for public internet exposure
 - status: documented localhost-first contract
 
+The current implementation exposes this through interfaces for the local
+server, tunnel exposure provider, and auth boundary. `rigd` health reports the
+local server status, exposure mode, auth mode, heartbeat, and tunnel/transport
+errors. Runtime events and action receipts serialize into plain JSON envelopes
+for later hosted-control-plane transport work.
+
 The hosted control plane is `rig.b-relay.com`.
 
 The web UI should:

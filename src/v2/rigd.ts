@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from "effect-v4"
 
 import type { V2ProjectConfig } from "./config.js"
+import { V2ControlPlane, type V2ControlPlaneStatus } from "./control-plane.js"
 import { V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
 import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
@@ -19,6 +20,7 @@ export interface V2ControlPlaneContract {
     readonly publicInternet: "token-pairing"
   }
   readonly status: "documented-localhost-first"
+  readonly runtime: V2ControlPlaneStatus
 }
 
 export interface V2RigdHealth {
@@ -116,7 +118,7 @@ export interface V2RigdService {
 
 export const V2Rigd = Context.Service<V2RigdService>("rig/v2/V2Rigd")
 
-const controlPlaneContract: V2ControlPlaneContract = {
+const controlPlaneContract = (runtime: V2ControlPlaneStatus): V2ControlPlaneContract => ({
   website: "https://rig.b-relay.com",
   transport: "localhost-http",
   bindHost: "127.0.0.1",
@@ -127,7 +129,8 @@ const controlPlaneContract: V2ControlPlaneContract = {
     publicInternet: "token-pairing",
   },
   status: "documented-localhost-first",
-}
+  runtime,
+})
 
 const now = (): string => new Date().toISOString()
 
@@ -139,12 +142,14 @@ export const V2RigdLive = Layer.effect(
     const logger = yield* V2Logger
     const providerRegistry = yield* V2ProviderRegistry
     const stateStore = yield* V2RigdStateStore
+    const controlPlane = yield* V2ControlPlane
     const startedAt = now()
     const events: V2RigdLogEntry[] = []
 
     const health = (stateRoot: string): Effect.Effect<V2RigdHealth> =>
       Effect.gen(function* () {
         const providers = yield* providerRegistry.current
+        const controlPlaneStatus = yield* controlPlane.status
         const current = {
           service: "rigd",
           status: "running",
@@ -154,7 +159,7 @@ export const V2RigdLive = Layer.effect(
             transport: "in-process",
             version: "v2-mvp",
           },
-          controlPlane: controlPlaneContract,
+          controlPlane: controlPlaneContract(controlPlaneStatus),
           providers,
         } satisfies V2RigdHealth
 
@@ -261,6 +266,7 @@ export const V2RigdLive = Layer.effect(
     return {
       start: (input) =>
         Effect.gen(function* () {
+          yield* controlPlane.start({ exposure: "localhost-only" })
           yield* appendEvent(input.stateRoot, {
             event: "rigd.started",
             details: {

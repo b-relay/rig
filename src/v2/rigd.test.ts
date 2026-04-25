@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect-v4"
 
 import { decodeV2ProjectConfig } from "./config.js"
+import { V2DefaultControlPlaneLive } from "./control-plane.js"
 import {
   V2DeploymentManager,
   V2DeploymentManagerLive,
@@ -90,6 +91,7 @@ const runWithRigd = async <A>(effect: Effect.Effect<A, unknown, V2Rigd | V2Deplo
         Layer.succeed(V2Logger, logger),
         V2ProviderRegistryLive("default"),
         V2MemoryRigdStateStoreLive(),
+        V2DefaultControlPlaneLive,
       ),
     ),
   )
@@ -112,6 +114,7 @@ const runWithFileBackedRigd = async <A>(
     deploymentManagerLive,
     V2ProviderRegistryLive("default"),
     V2FileRigdStateStoreLive,
+    V2DefaultControlPlaneLive,
     Layer.provide(
       V2RigdLive,
       Layer.mergeAll(
@@ -120,6 +123,7 @@ const runWithFileBackedRigd = async <A>(
         Layer.succeed(V2Logger, logger),
         V2ProviderRegistryLive("default"),
         V2FileRigdStateStoreLive,
+        V2DefaultControlPlaneLive,
       ),
     ),
   )
@@ -150,6 +154,16 @@ describe("GIVEN rigd MVP local API WHEN used through its interface THEN behavior
     expect(result.health.status).toBe("running")
     expect(result.health.controlPlane.bindHost).toBe("127.0.0.1")
     expect(result.health.controlPlane.website).toBe("https://rig.b-relay.com")
+    expect(result.health.controlPlane.runtime).toMatchObject({
+      localServer: {
+        status: "running",
+        bindHost: "127.0.0.1",
+        publicPort: false,
+      },
+      exposure: {
+        mode: "localhost-only",
+      },
+    })
     expect(result.health.providers.profile).toBe("default")
     expect(result.health.providers.providers).toContainEqual(
       expect.objectContaining({

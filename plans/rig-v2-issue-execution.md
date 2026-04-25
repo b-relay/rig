@@ -20,7 +20,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 - #14 depends on #7 and #11.
 - #16 depends on #7 and #10 and is complete.
 - #17 depends on #11, #12, and #16 and is complete.
-- #18 depends on #16.
+- #18 depends on #16 and is complete.
 - #19 depends on #17 and #18.
 - #20 depends on #18 and #19.
 - #21 depends on #19.
@@ -264,6 +264,11 @@ Exit condition:
 
 #18 adds the localhost-first control-plane interface, Tailscale-friendly access assumptions, optional tunnel-provider shape, token-pairing boundary for public internet exposure, heartbeat/event envelopes, and stub transport coverage.
 
+Current output: `V2ControlPlane` composes local server, tunnel exposure, and
+token-pairing auth services. It covers localhost-only, Tailscale DNS, and
+public tunnel modes, reports runtime status through `rigd` health, and
+serializes runtime events and receipts into plain JSON envelopes.
+
 #19 exposes the web-facing read model for projects, deployments, health, and structured logs through `rigd`.
 
 Recommended order:
@@ -301,7 +306,9 @@ Exit condition:
 
 ## Recommended Next Move
 
-Pick up #18 next. #16 and #17 are complete, so the provider/plugin contract and durable `rigd` state boundary are available for the localhost-first control-plane interface.
+Pick up #19 next. #16, #17, and #18 are complete, so provider contracts,
+durable `rigd` state, and localhost-first transport envelopes are ready for the
+web-facing read model.
 
 ## Suggested First Milestone
 

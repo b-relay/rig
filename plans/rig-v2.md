@@ -315,7 +315,9 @@ Stage 2 covers:
 - #17 Persist rigd runtime state and reconciliation journal. Complete:
   `V2RigdStateStore` persists events, receipts, health summaries, provider
   observations, deployment snapshots, and rigd-owned port reservations.
-- #18 Add localhost-first control-plane interface.
+- #18 Add localhost-first control-plane interface. Complete: `V2ControlPlane`
+  now reports localhost-only, Tailscale DNS, public tunnel, token-pairing, and
+  envelope serialization contracts through interfaces.
 - #19 Expose web read models through rigd.
 - #20 Route web lifecycle and deploy actions through rigd.
 - #21 Add safe config edit workflow through rigd.

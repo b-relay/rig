@@ -103,13 +103,23 @@ Add the localhost-first control-plane boundary for `rigd`, including the local s
 
 ### Acceptance Criteria
 
-- [ ] Control-plane local server and optional tunnel exposure are interface/services with default and stub implementations.
-- [ ] The default contract binds to `127.0.0.1` and does not expose a public machine port.
-- [ ] Tailscale-only access can run without app-level auth when the network already provides access control.
-- [ ] Public internet exposure uses token-pairing auth behind an interface.
-- [ ] `rigd` can report local server status, exposure mode, last heartbeat, and last transport/tunnel error.
-- [ ] Runtime events and action receipts can be serialized into plain JSON control-plane message shapes.
-- [ ] Tests cover localhost-only, Tailscale-mode, token-pairing required, tunnel failure, and stub transport paths.
+- [x] Control-plane local server and optional tunnel exposure are interface/services with default and stub implementations.
+- [x] The default contract binds to `127.0.0.1` and does not expose a public machine port.
+- [x] Tailscale-only access can run without app-level auth when the network already provides access control.
+- [x] Public internet exposure uses token-pairing auth behind an interface.
+- [x] `rigd` can report local server status, exposure mode, last heartbeat, and last transport/tunnel error.
+- [x] Runtime events and action receipts can be serialized into plain JSON control-plane message shapes.
+- [x] Tests cover localhost-only, Tailscale-mode, token-pairing required, tunnel failure, and stub transport paths.
+
+### Current Output
+
+`src/v2/control-plane.ts` defines the localhost-first control-plane service,
+local-server service, tunnel exposure service, and auth service. The default
+composition reports a local server bound to `127.0.0.1` with no public machine
+port, Tailscale DNS mode without app auth, and public tunnel mode with
+token-pairing auth plus tunnel error reporting. Stub composition is available
+for tests. `rigd` health now includes the control-plane runtime status, and
+events/receipts serialize into plain JSON envelopes.
 
 ---
 

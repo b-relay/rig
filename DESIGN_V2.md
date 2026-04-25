@@ -547,6 +547,16 @@ providers from durable state. `rigd.webLogs` exposes filtered structured log
 windows by project, lane, deployment, component, and line count. These read
 models serialize through the control-plane `read-model` envelope.
 
+Current write-side contract: `rigd` accepts control-plane lifecycle actions,
+live deploy actions, generated deploy actions, and explicit generated teardown
+actions. These route through the same runtime authority used by CLI-visible
+state, persist durable action receipts, and emit structured events/logs.
+Generated deploy writes materialize deployment inventory before acceptance.
+Generated teardown writes reject `local` and `live` targets and only operate on
+materialized generated deployments. Provider capability checks and deploy
+preflight checks stay behind the `V2RigdActionPreflight` interface so bundled
+and future external providers can share the same validation boundary.
+
 ## Reliability Requirements
 
 The redesign is also a reliability pass.

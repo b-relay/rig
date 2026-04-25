@@ -18,7 +18,7 @@ export interface V2PersistedRigdEvent {
 
 export interface V2PersistedRigdReceipt {
   readonly id: string
-  readonly kind: "lifecycle" | "deploy"
+  readonly kind: "lifecycle" | "deploy" | "destroy"
   readonly accepted: true
   readonly project: string
   readonly stateRoot: string
@@ -209,30 +209,24 @@ const updateState = (
 const mergeDeploymentSnapshots = (
   existing: readonly V2DeploymentSnapshot[],
   next: readonly V2DeploymentSnapshot[],
-): readonly V2DeploymentSnapshot[] => [
-  ...existing.filter((current) =>
-    !next.some((candidate) =>
-      candidate.project === current.project &&
-      candidate.deployment === current.deployment &&
-      candidate.kind === current.kind
-    )
-  ),
-  ...next,
-]
+): readonly V2DeploymentSnapshot[] => {
+  const nextProjects = new Set(next.map((candidate) => candidate.project))
+  return [
+    ...existing.filter((current) => !nextProjects.has(current.project)),
+    ...next,
+  ]
+}
 
 const mergePortReservations = (
   existing: readonly V2PortReservation[],
   next: readonly V2PortReservation[],
-): readonly V2PortReservation[] => [
-  ...existing.filter((current) =>
-    !next.some((candidate) =>
-      candidate.project === current.project &&
-      candidate.deployment === current.deployment &&
-      candidate.component === current.component
-    )
-  ),
-  ...next,
-]
+): readonly V2PortReservation[] => {
+  const nextProjects = new Set(next.map((candidate) => candidate.project))
+  return [
+    ...existing.filter((current) => !nextProjects.has(current.project)),
+    ...next,
+  ]
+}
 
 const reconstructMinimum = (
   stateRoot: string,

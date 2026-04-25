@@ -2,10 +2,11 @@ import { Context, Effect, Layer } from "effect-v4"
 
 import type { V2ProjectConfig } from "./config.js"
 import { V2ControlPlane, type V2ControlPlaneStatus } from "./control-plane.js"
-import { V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
+import { branchSlug, V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
 import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
 import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
+import { V2RigdActionPreflight, type V2RigdActionKind } from "./rigd-actions.js"
 import { V2RigdStateStore, type V2DeploymentSnapshot, type V2PortReservation } from "./rigd-state.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
@@ -150,6 +151,13 @@ export interface V2RigdLifecycleInput {
   readonly stateRoot: string
 }
 
+export interface V2RigdControlPlaneLifecycleInput {
+  readonly action: "up" | "down"
+  readonly project: string
+  readonly lane: V2LifecycleLane
+  readonly stateRoot: string
+}
+
 export interface V2RigdDeployInput {
   readonly project: string
   readonly target: "live" | "generated"
@@ -158,9 +166,21 @@ export interface V2RigdDeployInput {
   readonly deploymentName?: string
 }
 
+export interface V2RigdControlPlaneDeployInput extends V2RigdDeployInput {
+  readonly config?: V2ProjectConfig
+}
+
+export interface V2RigdControlPlaneDestroyGeneratedInput {
+  readonly project: string
+  readonly target: "generated" | "local" | "live"
+  readonly deploymentName: string
+  readonly stateRoot: string
+  readonly config: V2ProjectConfig
+}
+
 export interface V2RigdActionReceipt {
   readonly id: string
-  readonly kind: "lifecycle" | "deploy"
+  readonly kind: V2RigdActionKind
   readonly accepted: true
   readonly project: string
   readonly stateRoot: string
@@ -176,6 +196,13 @@ export interface V2RigdService {
   readonly healthState: (input: V2RigdHealthStateInput) => Effect.Effect<V2RigdHealthState, V2RuntimeError>
   readonly lifecycle: (input: V2RigdLifecycleInput) => Effect.Effect<V2RigdActionReceipt, V2RuntimeError>
   readonly deploy: (input: V2RigdDeployInput) => Effect.Effect<V2RigdActionReceipt, V2RuntimeError>
+  readonly controlPlaneLifecycle: (
+    input: V2RigdControlPlaneLifecycleInput,
+  ) => Effect.Effect<V2RigdActionReceipt, V2RuntimeError>
+  readonly controlPlaneDeploy: (input: V2RigdControlPlaneDeployInput) => Effect.Effect<V2RigdActionReceipt, V2RuntimeError>
+  readonly controlPlaneDestroyGenerated: (
+    input: V2RigdControlPlaneDestroyGeneratedInput,
+  ) => Effect.Effect<V2RigdActionReceipt, V2RuntimeError>
   readonly webReadModel: (input: V2RigdWebReadInput) => Effect.Effect<V2RigdWebReadModel, V2RuntimeError>
   readonly webLogs: (input: V2RigdWebLogsInput) => Effect.Effect<readonly V2RigdLogEntry[], V2RuntimeError>
 }
@@ -218,6 +245,7 @@ export const V2RigdLive = Layer.effect(
     const providerRegistry = yield* V2ProviderRegistry
     const stateStore = yield* V2RigdStateStore
     const controlPlane = yield* V2ControlPlane
+    const actionPreflight = yield* V2RigdActionPreflight
     const startedAt = now()
     const events: V2RigdLogEntry[] = []
 
@@ -338,6 +366,55 @@ export const V2RigdLive = Layer.effect(
         return accepted
       })
 
+    const lifecycleAccepted = (
+      input: V2RigdLifecycleInput,
+      source: "cli" | "control-plane",
+    ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const accepted = yield* receipt("lifecycle", input.project, input.stateRoot, input.lane)
+        yield* appendEvent(input.stateRoot, {
+          event: "rigd.lifecycle.accepted",
+          project: input.project,
+          lane: input.lane,
+          details: {
+            action: input.action,
+            receiptId: accepted.id,
+            source,
+          },
+        })
+        return accepted
+      })
+
+    const deployAccepted = (
+      input: V2RigdDeployInput,
+      target: string,
+      source: "cli" | "control-plane",
+    ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const accepted = yield* receipt("deploy", input.project, input.stateRoot, target)
+        yield* appendEvent(input.stateRoot, {
+          event: "rigd.deploy.accepted",
+          project: input.project,
+          deployment: input.target === "generated" ? target.replace(/^generated:/, "") : undefined,
+          details: {
+            target: input.target,
+            ref: input.ref,
+            deploymentName: input.deploymentName,
+            receiptId: accepted.id,
+            source,
+          },
+        })
+        return accepted
+      })
+
+    const generatedDeployTarget = (input: V2RigdDeployInput): string =>
+      input.target === "generated" && input.deploymentName
+        ? `${input.target}:${input.deploymentName}`
+        : input.target
+
+    const isLifecycleWriteAction = (action: V2LifecycleAction): action is "up" | "down" =>
+      action === "up" || action === "down"
+
     return {
       start: (input) =>
         Effect.gen(function* () {
@@ -410,34 +487,133 @@ export const V2RigdLive = Layer.effect(
           }
         }),
       lifecycle: (input) =>
-        Effect.gen(function* () {
-          const accepted = yield* receipt("lifecycle", input.project, input.stateRoot, input.lane)
-          yield* appendEvent(input.stateRoot, {
-            event: "rigd.lifecycle.accepted",
-            project: input.project,
-            lane: input.lane,
-            details: {
-              action: input.action,
-              receiptId: accepted.id,
-            },
-          })
-          return accepted
-        }),
+        lifecycleAccepted(input, "cli"),
       deploy: (input) =>
         Effect.gen(function* () {
-          const target =
-            input.target === "generated" && input.deploymentName
-              ? `${input.target}:${input.deploymentName}`
-              : input.target
-          const accepted = yield* receipt("deploy", input.project, input.stateRoot, target)
-          yield* appendEvent(input.stateRoot, {
-            event: "rigd.deploy.accepted",
+          return yield* deployAccepted(input, generatedDeployTarget(input), "cli")
+        }),
+      controlPlaneLifecycle: (input) =>
+        Effect.gen(function* () {
+          if (!isLifecycleWriteAction(input.action)) {
+            return yield* Effect.fail(
+              new V2RuntimeError(
+                "Control-plane lifecycle write action must be up or down.",
+                "Use the read-side log or status endpoints for non-mutating lifecycle views.",
+                {
+                  reason: "invalid-lifecycle-action",
+                  project: input.project,
+                  action: input.action,
+                },
+              ),
+            )
+          }
+          yield* actionPreflight.verify({
+            kind: "lifecycle",
             project: input.project,
+            stateRoot: input.stateRoot,
+            target: input.lane,
+          })
+          return yield* lifecycleAccepted(input, "control-plane")
+        }),
+      controlPlaneDeploy: (input) =>
+        Effect.gen(function* () {
+          if (input.target !== "live" && input.target !== "generated") {
+            return yield* Effect.fail(
+              new V2RuntimeError(
+                "Control-plane deploy action target must be live or generated.",
+                "Choose live or a generated deployment target before requesting deploy.",
+                {
+                  reason: "invalid-deploy-target",
+                  project: input.project,
+                  target: input.target,
+                },
+              ),
+            )
+          }
+          let target = generatedDeployTarget(input)
+          const generatedConfig = input.target === "generated" ? input.config : undefined
+          if (input.target === "generated") {
+            if (!generatedConfig) {
+              return yield* Effect.fail(
+                new V2RuntimeError(
+                  "Generated deployment control-plane action requires project config.",
+                  "Load and validate the v2 project config before requesting a generated deployment action.",
+                  {
+                    reason: "missing-generated-config",
+                    project: input.project,
+                    target: input.target,
+                  },
+                ),
+              )
+            }
+            target = `generated:${branchSlug(input.deploymentName ?? input.ref)}`
+          }
+
+          yield* actionPreflight.verify({
+            kind: "deploy",
+            project: input.project,
+            stateRoot: input.stateRoot,
+            target,
+          })
+
+          if (input.target === "generated") {
+            const materialized = yield* deployments.materializeGenerated({
+              config: generatedConfig,
+              stateRoot: input.stateRoot,
+              branch: input.ref,
+              name: input.deploymentName,
+            })
+            target = `generated:${materialized.name}`
+            const inventory = yield* deployments.list({
+              config: generatedConfig,
+              stateRoot: input.stateRoot,
+            })
+            yield* persistInventoryEvidence(input.stateRoot, inventory)
+          }
+
+          return yield* deployAccepted(input, target, "control-plane")
+        }),
+      controlPlaneDestroyGenerated: (input) =>
+        Effect.gen(function* () {
+          if (input.target !== "generated") {
+            return yield* Effect.fail(
+              new V2RuntimeError(
+                "Generated deployment destroy action cannot target local or live.",
+                "Choose a generated deployment name before requesting teardown.",
+                {
+                  reason: "invalid-destroy-target",
+                  project: input.project,
+                  target: input.target,
+                  deploymentName: input.deploymentName,
+                },
+              ),
+            )
+          }
+          const target = `generated:${input.deploymentName}`
+          yield* actionPreflight.verify({
+            kind: "destroy",
+            project: input.project,
+            stateRoot: input.stateRoot,
+            target,
+          })
+          const destroyed = yield* deployments.destroyGenerated({
+            config: input.config,
+            stateRoot: input.stateRoot,
+            name: input.deploymentName,
+          })
+          const inventory = yield* deployments.list({
+            config: input.config,
+            stateRoot: input.stateRoot,
+          })
+          yield* persistInventoryEvidence(input.stateRoot, inventory)
+          const accepted = yield* receipt("destroy", input.project, input.stateRoot, target)
+          yield* appendEvent(input.stateRoot, {
+            event: "rigd.generated.destroy.accepted",
+            project: input.project,
+            deployment: destroyed.name,
             details: {
-              target: input.target,
-              ref: input.ref,
-              deploymentName: input.deploymentName,
               receiptId: accepted.id,
+              source: "control-plane",
             },
           })
           return accepted

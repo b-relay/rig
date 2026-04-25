@@ -22,7 +22,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 - #17 depends on #11, #12, and #16 and is complete.
 - #18 depends on #16 and is complete.
 - #19 depends on #17 and #18 and is complete.
-- #20 depends on #18 and #19.
+- #20 depends on #18 and #19 and is complete.
 - #21 depends on #19.
 - #22 depends on #14, #20, and #21.
 
@@ -293,6 +293,13 @@ Exit condition:
 
 #20 routes web/control-plane lifecycle and deploy actions through the same `rigd` authority used by CLI commands.
 
+Current output: `rigd` accepts control-plane lifecycle, live deploy, generated
+deploy, and generated teardown actions. Accepted actions emit durable
+receipts and structured events. Generated deploy actions materialize
+deployment inventory before acceptance, generated teardown only accepts
+generated targets, and provider/preflight validation is behind the
+`V2RigdActionPreflight` interface.
+
 #21 adds safe structured config editing through `rigd`, including schema validation, diff/preview, atomic apply, and rollback behavior.
 
 Exit condition:
@@ -312,9 +319,9 @@ Exit condition:
 
 ## Recommended Next Move
 
-Pick up #20 next. #16 through #19 are complete, so provider contracts, durable
-`rigd` state, localhost-first transport envelopes, and web read models are ready
-for the write-side action contract.
+Pick up #21 next. #16 through #20 are complete, so provider contracts, durable
+`rigd` state, localhost-first transport envelopes, web read models, and
+write-side action receipts are ready for the safe config editing workflow.
 
 ## Suggested First Milestone
 

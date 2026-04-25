@@ -13,6 +13,7 @@ import {
   type V2DeploymentRecord,
   type V2DeploymentStoreService,
 } from "./deployments.js"
+import { V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive } from "./rigd.js"
 import { V2ProviderRegistryLive } from "./provider-contracts.js"
 import { V2FileRigdStateStoreLive, V2MemoryRigdStateStoreLive, V2RigdStateStore } from "./rigd-state.js"
@@ -92,6 +93,7 @@ const runWithRigd = async <A>(effect: Effect.Effect<A, unknown, V2Rigd | V2Deplo
         V2ProviderRegistryLive("default"),
         V2MemoryRigdStateStoreLive(),
         V2DefaultControlPlaneLive,
+        V2RigdActionPreflightLive,
       ),
     ),
   )
@@ -115,6 +117,7 @@ const runWithFileBackedRigd = async <A>(
     V2ProviderRegistryLive("default"),
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
+    V2RigdActionPreflightLive,
     Layer.provide(
       V2RigdLive,
       Layer.mergeAll(
@@ -124,6 +127,7 @@ const runWithFileBackedRigd = async <A>(
         V2ProviderRegistryLive("default"),
         V2FileRigdStateStoreLive,
         V2DefaultControlPlaneLive,
+        V2RigdActionPreflightLive,
       ),
     ),
   )

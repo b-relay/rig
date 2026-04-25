@@ -14,6 +14,7 @@ import {
   type V2DeploymentStoreService,
 } from "./deployments.js"
 import { V2ProviderRegistryLive } from "./provider-contracts.js"
+import { V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive } from "./rigd.js"
 import { V2FileRigdStateStoreLive, V2RigdStateStore } from "./rigd-state.js"
 import { V2Logger, V2RuntimeLive } from "./services.js"
@@ -83,6 +84,7 @@ const runWithRigd = async <A>(
     V2ProviderRegistryLive("default"),
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
+    V2RigdActionPreflightLive,
     Layer.provide(
       V2RigdLive,
       Layer.mergeAll(
@@ -92,6 +94,7 @@ const runWithRigd = async <A>(
         V2ProviderRegistryLive("default"),
         V2FileRigdStateStoreLive,
         V2DefaultControlPlaneLive,
+        V2RigdActionPreflightLive,
       ),
     ),
   )

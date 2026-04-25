@@ -321,6 +321,9 @@ Stage 2 covers:
 - #19 Expose web read models through rigd. Complete: `rigd.webReadModel` and
   `rigd.webLogs` expose project, deployment, health, and filtered log read
   models through plain control-plane envelopes.
-- #20 Route web lifecycle and deploy actions through rigd.
+- #20 Route web lifecycle and deploy actions through rigd. Complete:
+  `rigd` accepts control-plane lifecycle, live deploy, generated deploy, and
+  generated teardown actions through the same durable receipt/event state used
+  by CLI-visible runtime behavior.
 - #21 Add safe config edit workflow through rigd.
 - #22 Prepare rig2 to main rig cutover readiness.

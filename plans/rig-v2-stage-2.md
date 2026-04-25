@@ -172,12 +172,28 @@ Add the write-side control-plane action contract for lifecycle actions, deploy a
 
 ### Acceptance Criteria
 
-- [ ] `rigd` accepts lifecycle actions from the control-plane boundary and routes them through the same runtime authority path as CLI actions.
-- [ ] `rigd` accepts deploy actions from the control-plane boundary for `live` and generated deployments.
-- [ ] Generated deployment destroy actions are explicit and cannot target `local` or `live` accidentally.
-- [ ] Every accepted action returns a durable receipt and emits structured events/logs.
-- [ ] Invalid target, stale state, provider failure, and preflight failure cases return tagged structured errors.
-- [ ] Tests prove CLI and control-plane action paths produce consistent inventory, health, log, and receipt state.
+- [x] `rigd` accepts lifecycle actions from the control-plane boundary and routes them through the same runtime authority path as CLI actions.
+- [x] `rigd` accepts deploy actions from the control-plane boundary for `live` and generated deployments.
+- [x] Generated deployment destroy actions are explicit and cannot target `local` or `live` accidentally.
+- [x] Every accepted action returns a durable receipt and emits structured events/logs.
+- [x] Invalid target, stale state, provider failure, and preflight failure cases return tagged structured errors.
+- [x] Tests prove CLI and control-plane action paths produce consistent inventory, health, log, and receipt state.
+
+### Current Output
+
+`rigd` now exposes control-plane write methods for lifecycle, live deploy,
+generated deploy, and generated teardown. Lifecycle actions share the same
+receipt/event path as CLI lifecycle calls. Generated deploy actions
+materialize inventory before accepting the action, generated teardown can only
+target generated deployments, and accepted write actions persist receipts plus
+structured events into `runtime/rigd-state.json`.
+
+`src/v2/rigd-actions.ts` defines an injectable action preflight interface so
+provider capability checks and deploy preflight checks stay behind an Effect
+service boundary. Tests cover CLI/control-plane lifecycle parity, live and
+generated deploy receipts, generated inventory updates, explicit destroy
+target validation, stale generated teardown, provider failure, preflight
+failure, filtered logs, read models, and control-plane receipt envelopes.
 
 ---
 

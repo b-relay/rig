@@ -74,6 +74,9 @@ export interface V2ControlPlaneService {
   readonly serializeReceipt: (
     receipt: V2PersistedRigdReceipt,
   ) => Effect.Effect<V2ControlPlaneEnvelope<"receipt", V2PersistedRigdReceipt>>
+  readonly serializeReadModel: <Payload>(
+    model: Payload,
+  ) => Effect.Effect<V2ControlPlaneEnvelope<"read-model", Payload>>
 }
 
 export const V2ControlPlaneLocalServer =
@@ -214,6 +217,12 @@ export const V2ControlPlaneLive = Layer.effect(
           version: 1,
           payload: receipt,
         }),
+      serializeReadModel: (model) =>
+        Effect.succeed({
+          type: "read-model",
+          version: 1,
+          payload: model,
+        }),
     } satisfies V2ControlPlaneService
   }),
 )
@@ -280,5 +289,11 @@ export const V2StubControlPlaneLive = Layer.succeed(V2ControlPlane, {
       type: "receipt",
       version: 1,
       payload: receipt,
+    }),
+  serializeReadModel: (model) =>
+    Effect.succeed({
+      type: "read-model",
+      version: 1,
+      payload: model,
     }),
 } satisfies V2ControlPlaneService)

@@ -318,7 +318,9 @@ Stage 2 covers:
 - #18 Add localhost-first control-plane interface. Complete: `V2ControlPlane`
   now reports localhost-only, Tailscale DNS, public tunnel, token-pairing, and
   envelope serialization contracts through interfaces.
-- #19 Expose web read models through rigd.
+- #19 Expose web read models through rigd. Complete: `rigd.webReadModel` and
+  `rigd.webLogs` expose project, deployment, health, and filtered log read
+  models through plain control-plane envelopes.
 - #20 Route web lifecycle and deploy actions through rigd.
 - #21 Add safe config edit workflow through rigd.
 - #22 Prepare rig2 to main rig cutover readiness.

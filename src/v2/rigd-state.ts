@@ -11,6 +11,8 @@ export interface V2PersistedRigdEvent {
   readonly event: string
   readonly project?: string
   readonly lane?: string
+  readonly deployment?: string
+  readonly component?: string
   readonly details?: Readonly<Record<string, unknown>>
 }
 
@@ -204,6 +206,34 @@ const updateState = (
     yield* writeState(stateRoot, update(current))
   })
 
+const mergeDeploymentSnapshots = (
+  existing: readonly V2DeploymentSnapshot[],
+  next: readonly V2DeploymentSnapshot[],
+): readonly V2DeploymentSnapshot[] => [
+  ...existing.filter((current) =>
+    !next.some((candidate) =>
+      candidate.project === current.project &&
+      candidate.deployment === current.deployment &&
+      candidate.kind === current.kind
+    )
+  ),
+  ...next,
+]
+
+const mergePortReservations = (
+  existing: readonly V2PortReservation[],
+  next: readonly V2PortReservation[],
+): readonly V2PortReservation[] => [
+  ...existing.filter((current) =>
+    !next.some((candidate) =>
+      candidate.project === current.project &&
+      candidate.deployment === current.deployment &&
+      candidate.component === current.component
+    )
+  ),
+  ...next,
+]
+
 const reconstructMinimum = (
   stateRoot: string,
   state: V2RigdPersistentState,
@@ -252,12 +282,12 @@ export const V2FileRigdStateStoreLive = Layer.succeed(V2RigdStateStore, {
   writePortReservations: (input) =>
     updateState(input.stateRoot, (state) => ({
       ...state,
-      portReservations: input.reservations,
+      portReservations: mergePortReservations(state.portReservations, input.reservations),
     })),
   writeDeploymentSnapshot: (input) =>
     updateState(input.stateRoot, (state) => ({
       ...state,
-      deploymentSnapshots: input.snapshots,
+      deploymentSnapshots: mergeDeploymentSnapshots(state.deploymentSnapshots, input.snapshots),
     })),
   reconstructMinimum: (input) =>
     Effect.gen(function* () {
@@ -305,12 +335,12 @@ export const V2MemoryRigdStateStoreLive = () => {
     writePortReservations: (input) =>
       update(input.stateRoot, (state) => ({
         ...state,
-        portReservations: input.reservations,
+        portReservations: mergePortReservations(state.portReservations, input.reservations),
       })),
     writeDeploymentSnapshot: (input) =>
       update(input.stateRoot, (state) => ({
         ...state,
-        deploymentSnapshots: input.snapshots,
+        deploymentSnapshots: mergeDeploymentSnapshots(state.deploymentSnapshots, input.snapshots),
       })),
     reconstructMinimum: (input) => reconstructMinimum(input.stateRoot, load(input.stateRoot)),
   } satisfies V2RigdStateStoreService)

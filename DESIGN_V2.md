@@ -541,6 +541,12 @@ The web UI should:
 - trigger lifecycle and deploy actions
 - edit config
 
+Current read-side contract: `rigd.webReadModel` exposes project rows,
+deployment rows, and health snapshots for `rigd`, deployments, components, and
+providers from durable state. `rigd.webLogs` exposes filtered structured log
+windows by project, lane, deployment, component, and line count. These read
+models serialize through the control-plane `read-model` envelope.
+
 ## Reliability Requirements
 
 The redesign is also a reliability pass.

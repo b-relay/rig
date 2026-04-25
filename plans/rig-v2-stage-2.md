@@ -139,12 +139,20 @@ Expose the read-side contract that the future web control plane needs from `rigd
 
 ### Acceptance Criteria
 
-- [ ] `rigd` exposes a project list read model suitable for the web control plane.
-- [ ] `rigd` exposes deployment rows for `local`, `live`, and generated deployments.
-- [ ] Health snapshots distinguish `rigd`, deployment, component, and provider status.
-- [ ] Structured logs are queryable by project, deployment/lane, component, and line window.
-- [ ] Read models serialize cleanly into plain JSON control-plane message shapes without leaking provider internals.
-- [ ] Tests cover empty state, multiple projects, generated deployments, stale health, and log filtering.
+- [x] `rigd` exposes a project list read model suitable for the web control plane.
+- [x] `rigd` exposes deployment rows for `local`, `live`, and generated deployments.
+- [x] Health snapshots distinguish `rigd`, deployment, component, and provider status.
+- [x] Structured logs are queryable by project, deployment/lane, component, and line window.
+- [x] Read models serialize cleanly into plain JSON control-plane message shapes without leaking provider internals.
+- [x] Tests cover empty state, multiple projects, generated deployments, stale health, and log filtering.
+
+### Current Output
+
+`rigd.webReadModel` reads durable state and returns web-ready project rows,
+deployment rows, and health snapshots for `rigd`, deployments, components, and
+providers. `rigd.webLogs` filters structured events by project, lane,
+deployment, component, and line window. The control-plane service serializes
+read models into plain JSON `read-model` envelopes for the future hosted UI.
 
 ---
 

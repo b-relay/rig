@@ -21,7 +21,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 - #16 depends on #7 and #10 and is complete.
 - #17 depends on #11, #12, and #16 and is complete.
 - #18 depends on #16 and is complete.
-- #19 depends on #17 and #18.
+- #19 depends on #17 and #18 and is complete.
 - #20 depends on #18 and #19.
 - #21 depends on #19.
 - #22 depends on #14, #20, and #21.
@@ -271,6 +271,12 @@ serializes runtime events and receipts into plain JSON envelopes.
 
 #19 exposes the web-facing read model for projects, deployments, health, and structured logs through `rigd`.
 
+Current output: `rigd.webReadModel` returns project rows, deployment rows, and
+health snapshots for `rigd`, deployments, components, and providers from
+durable state. `rigd.webLogs` filters structured events by project, lane,
+deployment, component, and line window. Control-plane read-model envelopes are
+plain JSON.
+
 Recommended order:
 
 1. #18 can run after #16.
@@ -306,9 +312,9 @@ Exit condition:
 
 ## Recommended Next Move
 
-Pick up #19 next. #16, #17, and #18 are complete, so provider contracts,
-durable `rigd` state, and localhost-first transport envelopes are ready for the
-web-facing read model.
+Pick up #20 next. #16 through #19 are complete, so provider contracts, durable
+`rigd` state, localhost-first transport envelopes, and web read models are ready
+for the write-side action contract.
 
 ## Suggested First Milestone
 

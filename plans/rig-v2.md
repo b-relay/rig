@@ -309,7 +309,9 @@ The next issue batch is planned in [`plans/rig-v2-stage-2.md`](./rig-v2-stage-2.
 
 Stage 2 covers:
 
-- #16 Define v2 provider plugin contracts.
+- #16 Define v2 provider plugin contracts. Complete: `V2ProviderRegistry`
+  now reports shared first-party/external plugin metadata for default, stub,
+  and isolated E2E compositions.
 - #17 Persist rigd runtime state and reconciliation journal.
 - #18 Add localhost-first control-plane interface.
 - #19 Expose web read models through rigd.

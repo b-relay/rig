@@ -2,6 +2,7 @@ import { join } from "node:path"
 import { Context, Effect, Layer } from "effect-v4"
 
 import type { V2TaggedError } from "./errors.js"
+import { V2ProviderContractsLive } from "./provider-contracts.js"
 import { V2ProviderProfileLive } from "./provider-profiles.js"
 import { V2ProjectLocatorLive } from "./project-locator.js"
 import {
@@ -92,6 +93,7 @@ export const Rig2Live = Layer.mergeAll(
   V2RuntimeLive,
   V2LoggerLive,
   V2ProviderProfileLive(),
+  V2ProviderContractsLive("default"),
   V2ProjectLocatorLive,
 )
 

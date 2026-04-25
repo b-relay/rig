@@ -32,13 +32,24 @@ Deepen the v2 provider model into explicit Effect v4 service interfaces for proc
 
 ### Acceptance Criteria
 
-- [ ] V2 provider families are represented as explicit interfaces/services, not concrete provider imports in core logic.
-- [ ] First-party bundled providers and future external providers use the same API shape.
-- [ ] Default, stub, and isolated E2E provider compositions satisfy the same provider contract surface.
-- [ ] Provider selection remains visible at config or execution boundaries where users and tests need to inspect it.
-- [ ] Provider capability metadata can be reported to `rigd` and `doctor`.
-- [ ] Tests prove v2 runtime code can swap provider compositions without changing command or core modules.
-- [ ] Existing v1 provider behavior remains compatible during migration.
+- [x] V2 provider families are represented as explicit interfaces/services, not concrete provider imports in core logic.
+- [x] First-party bundled providers and future external providers use the same API shape.
+- [x] Default, stub, and isolated E2E provider compositions satisfy the same provider contract surface.
+- [x] Provider selection remains visible at config or execution boundaries where users and tests need to inspect it.
+- [x] Provider capability metadata can be reported to `rigd` and `doctor`.
+- [x] Tests prove v2 runtime code can swap provider compositions without changing command or core modules.
+- [x] Existing v1 provider behavior remains compatible during migration.
+
+### Current Output
+
+`src/v2/provider-contracts.ts` defines explicit Effect service tags for each
+provider family plus the v2 provider registry service and shared plugin
+metadata shape for first-party and future external providers. Default, stub,
+and isolated E2E reports cover process supervision,
+proxy/routing, SCM, workspace materialization, event transport, localhost
+control-plane transport, health checks, package-manager integration, and
+tunnel/exposure. `rigd` health and `rig2 doctor` now report the selected
+provider profile and capability metadata.
 
 ---
 

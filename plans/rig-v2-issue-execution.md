@@ -18,7 +18,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 - #12 depends on #8, #10, and #11.
 - #13 depends on #5 and #7.
 - #14 depends on #7 and #11.
-- #16 depends on #7 and #10.
+- #16 depends on #7 and #10 and is complete.
 - #17 depends on #11, #12, and #16.
 - #18 depends on #16.
 - #19 depends on #17 and #18.
@@ -234,6 +234,12 @@ Exit condition:
 
 #16 defines the explicit Effect v4 provider/plugin contracts for all external concerns before deeper `rigd` integration relies on them.
 
+Current output: `V2ProviderRegistry` reports a shared plugin metadata shape for
+first-party bundled providers and future external providers, with explicit
+Effect service tags for each provider family. Default, stub, and isolated E2E
+compositions satisfy the same provider families, and capability metadata is
+visible through `rigd` health and `rig2 doctor`.
+
 #17 makes `rigd` restart-safe by persisting runtime state, receipts, health summaries, port reservations, provider observations, and recovery evidence under the isolated v2 state root.
 
 Recommended order:
@@ -289,7 +295,7 @@ Exit condition:
 
 ## Recommended Next Move
 
-Pick up #16 next. It defines the provider/plugin contracts that the persistent `rigd`, control-plane transport, web read models, and web action paths need to share.
+Pick up #17 next. #16 is complete, so the provider/plugin contract that persistent `rigd`, control-plane transport, web read models, and web action paths need to share is now available.
 
 ## Suggested First Milestone
 

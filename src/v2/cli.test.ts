@@ -12,6 +12,7 @@ import { V2Doctor, type V2DoctorReportInput } from "./doctor.js"
 import { V2CliArgumentError, type V2TaggedError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleRequest } from "./lifecycle.js"
 import { V2ProjectLocator } from "./project-locator.js"
+import { V2ProviderRegistryLive } from "./provider-contracts.js"
 import { V2Rigd, type V2RigdProjectInventoryInput, type V2RigdStartInput } from "./rigd.js"
 import { V2Logger, V2RuntimeLive, type V2FoundationState } from "./services.js"
 
@@ -66,6 +67,19 @@ class CaptureV2Rigd {
           publicInternet: "token-pairing" as const,
         },
         status: "documented-localhost-first" as const,
+      },
+      providers: {
+        profile: "default" as const,
+        families: ["control-plane-transport"] as const,
+        providers: [
+          {
+            id: "localhost-http",
+            family: "control-plane-transport" as const,
+            source: "first-party" as const,
+            displayName: "Localhost HTTP",
+            capabilities: ["127.0.0.1-bind"],
+          },
+        ],
       },
     })
   }
@@ -200,6 +214,7 @@ const runWithLogger = async (
     Layer.succeed(V2Rigd, rigd),
     Layer.succeed(V2DeployIntents, deployIntents),
     Layer.succeed(V2Doctor, doctor),
+    V2ProviderRegistryLive("default"),
     Layer.succeed(V2ProjectLocator, {
       inferCurrentProject: options.inferredProject
         ? Effect.succeed({
@@ -330,6 +345,16 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         ok: true,
         entries: ["/tmp/rig-v2"],
       },
+      providers: expect.arrayContaining([
+        expect.objectContaining({
+          name: "localhost-http",
+          profile: "default",
+          details: expect.objectContaining({
+            family: "control-plane-transport",
+            source: "first-party",
+          }),
+        }),
+      ]),
     })
     expect(logger.infos.at(-1)?.message).toBe("rig2 doctor report")
   })

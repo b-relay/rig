@@ -131,6 +131,8 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(stdout).toContain("[INFO] rig2 doctor report")
       expect(stdout).toContain('"category":"path"')
       expect(stdout).toContain('"category":"providers"')
+      expect(stdout).toContain('"name":"localhost-http"')
+      expect(stdout).toContain('"family":"control-plane-transport"')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

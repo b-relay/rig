@@ -4,6 +4,7 @@ import type { V2ProjectConfig } from "./config.js"
 import { V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
 import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
+import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
 export interface V2ControlPlaneContract {
@@ -29,6 +30,7 @@ export interface V2RigdHealth {
     readonly version: "v2-mvp"
   }
   readonly controlPlane: V2ControlPlaneContract
+  readonly providers: V2ProviderRegistryReport
 }
 
 export interface V2RigdStartInput {
@@ -134,21 +136,28 @@ export const V2RigdLive = Layer.effect(
     const runtime = yield* V2Runtime
     const deployments = yield* V2DeploymentManager
     const logger = yield* V2Logger
+    const providerRegistry = yield* V2ProviderRegistry
     const startedAt = now()
     const events: V2RigdLogEntry[] = []
     let sequence = 0
 
-    const health = (stateRoot: string): V2RigdHealth => ({
-      service: "rigd",
-      status: "running",
-      stateRoot,
-      startedAt,
-      localApi: {
-        transport: "in-process",
-        version: "v2-mvp",
-      },
-      controlPlane: controlPlaneContract,
-    })
+    const health = (stateRoot: string): Effect.Effect<V2RigdHealth> =>
+      Effect.gen(function* () {
+        const providers = yield* providerRegistry.current
+
+        return {
+          service: "rigd",
+          status: "running",
+          stateRoot,
+          startedAt,
+          localApi: {
+            transport: "in-process",
+            version: "v2-mvp",
+          },
+          controlPlane: controlPlaneContract,
+          providers,
+        }
+      })
 
     const appendEvent = (entry: Omit<V2RigdLogEntry, "timestamp">) => {
       events.push({
@@ -184,11 +193,11 @@ export const V2RigdLive = Layer.effect(
               stateRoot: input.stateRoot,
             },
           })
-          const current = health(input.stateRoot)
+          const current = yield* health(input.stateRoot)
           yield* logger.info("rigd local API ready", current)
           return current
         }),
-      health: (input) => Effect.succeed(health(input.stateRoot)),
+      health: (input) => health(input.stateRoot),
       inventory: (input) =>
         Effect.gen(function* () {
           const foundation = yield* runtime.describeFoundation({
@@ -224,7 +233,7 @@ export const V2RigdLive = Layer.effect(
             : Effect.succeed([]))
 
           return {
-            rigd: health(input.stateRoot),
+            rigd: yield* health(input.stateRoot),
             deployments: inventory.map((deployment) => ({
               name: deployment.name,
               kind: deployment.kind,

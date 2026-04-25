@@ -435,6 +435,7 @@ All external concerns remain behind interfaces.
 - control-plane transport
 - health checking
 - package-manager integration
+- tunnel/exposure
 
 ### Default providers
 
@@ -443,8 +444,15 @@ The shipped defaults may still be:
 - launchd
 - Caddy
 - local git
+- localhost HTTP control-plane transport on `127.0.0.1`
+- manual Tailscale DNS routing for private remote access
 
 But they are defaults, not assumptions embedded in core logic.
+
+V2 exposes these through explicit provider-family service tags and a provider
+registry service so `rigd`, `doctor`, and future web control-plane surfaces can
+report the selected provider profile and capability metadata without importing
+concrete providers from core logic.
 
 ### Stub providers
 
@@ -457,6 +465,8 @@ Examples:
 - stub process supervisor
 - stub proxy manager
 - stub SCM provider
+- stub control-plane transport
+- stub tunnel/exposure provider
 
 These are necessary so the main binary can be tested safely without touching real system integrations.
 

@@ -10,6 +10,7 @@ import {
   type V2DeploymentStoreService,
 } from "./deployments.js"
 import { V2Rigd, V2RigdLive } from "./rigd.js"
+import { V2ProviderRegistryLive } from "./provider-contracts.js"
 import { V2Logger, V2RuntimeLive } from "./services.js"
 
 class MemoryDeploymentStore implements V2DeploymentStoreService {
@@ -77,7 +78,10 @@ const runWithRigd = async <A>(effect: Effect.Effect<A, unknown, V2Rigd | V2Deplo
     V2RuntimeLive,
     Layer.succeed(V2Logger, logger),
     deploymentManagerLive,
-    Layer.provide(V2RigdLive, Layer.mergeAll(V2RuntimeLive, deploymentManagerLive, Layer.succeed(V2Logger, logger))),
+    Layer.provide(
+      V2RigdLive,
+      Layer.mergeAll(V2RuntimeLive, deploymentManagerLive, Layer.succeed(V2Logger, logger), V2ProviderRegistryLive("default")),
+    ),
   )
   const result = await Effect.runPromise(effect.pipe(Effect.provide(layer)))
   return { result, logger, deploymentStore }
@@ -106,6 +110,14 @@ describe("GIVEN rigd MVP local API WHEN used through its interface THEN behavior
     expect(result.health.status).toBe("running")
     expect(result.health.controlPlane.bindHost).toBe("127.0.0.1")
     expect(result.health.controlPlane.website).toBe("https://rig.b-relay.com")
+    expect(result.health.providers.profile).toBe("default")
+    expect(result.health.providers.providers).toContainEqual(
+      expect.objectContaining({
+        id: "localhost-http",
+        family: "control-plane-transport",
+        capabilities: expect.arrayContaining(["127.0.0.1-bind"]),
+      }),
+    )
   })
 
   test("GIVEN materialized deployments WHEN inventory is requested THEN project and deployment inventory are exposed", async () => {

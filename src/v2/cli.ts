@@ -9,6 +9,7 @@ import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleAction, type V2LifecycleLane } from "./lifecycle.js"
 import { rigV2Root } from "./paths.js"
 import { V2ProjectLocator } from "./project-locator.js"
+import { V2ProviderRegistry } from "./provider-contracts.js"
 import { V2Rigd } from "./rigd.js"
 import { V2Logger, V2Runtime } from "./services.js"
 
@@ -328,6 +329,8 @@ const doctorCommand = Command.make(
       const decoded = yield* decodeV2StatusInput(scoped)
       const doctor = yield* V2Doctor
       const logger = yield* V2Logger
+      const providerRegistry = yield* V2ProviderRegistry
+      const providerReport = yield* providerRegistry.current
       const report = yield* doctor.report({
         project: decoded.project,
         path: { ok: true, entries: [decoded.stateRoot] },
@@ -335,7 +338,18 @@ const doctorCommand = Command.make(
         health: [],
         ports: [],
         staleState: [],
-        providers: [],
+        providers: providerReport.providers.map((provider) => ({
+          name: provider.id,
+          ok: true,
+          profile: providerReport.profile,
+          details: {
+            displayName: provider.displayName,
+            family: provider.family,
+            source: provider.source,
+            capabilities: provider.capabilities,
+            ...(provider.packageName ? { packageName: provider.packageName } : {}),
+          },
+        })),
       })
 
       yield* logger.info("rig2 doctor report", report)

@@ -95,6 +95,7 @@ export interface V2EventTransportProviderService
   readonly append: (input: {
     readonly deployment: V2DeploymentRecord
     readonly event: string
+    readonly component?: string
     readonly details?: Readonly<Record<string, unknown>>
   }) => Effect.Effect<string, V2RuntimeError>
 }
@@ -370,7 +371,8 @@ const eventTransportService = (
 
   return {
     ...base,
-    append: (input) => providerOperation(selected, `append:${input.event}`),
+    append: (input) =>
+      providerOperation(selected, `append:${input.event}${input.component ? `:${input.component}` : ""}`),
   }
 }
 

@@ -48,7 +48,7 @@ intentionally deferred.
 | Lifecycle stop | `rig stop <name> dev|prod` | `rig2 down --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; concrete first-party adapter parity still pending | #25 in progress |
 | Lifecycle restart | `rig restart` | no direct `rig2 restart` | not implemented | add first-class v2 `restart` or intentionally omit before replacement |
 | Status | `rig status` | `rig2 status` | partial: reports foundation and `rigd` state; runtime execution result details are recorded for config-backed writes | #25 in progress |
-| Logs | `rig logs` | `rig2 logs` | partial: reads structured `rigd` logs with execution details; provider-backed component log ingestion pending | #25 in progress |
+| Logs | `rig logs` | `rig2 logs` | partial: reads structured `rigd` logs with execution details and provider-backed component execution events; real process stdout/stderr ingestion still pending | #25 in progress |
 | Deploy | `rig deploy <name> dev|prod` | `rig2 deploy --target live|generated --ref <ref>` | partial: repo-inferred and `--config` paths load validated v2 config; config-backed live/generated deploy actions execute through ordered runtime provider methods; concrete first-party adapter parity still pending | #25 in progress |
 | Version metadata | `rig version` | `rig2 bump` | partial: semver is optional metadata | final CLI can keep `bump` if it remains simpler than `version` |
 | Global inventory | `rig list` | no direct `rig2 list` | not implemented | add v2 CLI inventory if shell workflows need it |

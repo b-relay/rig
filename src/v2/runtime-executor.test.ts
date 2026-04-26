@@ -132,7 +132,8 @@ const captureProviderLayer = (calls: string[]) => {
     Layer.succeed(V2EventTransportProvider, {
       family: "event-transport" as const,
       plugin: Effect.succeed(plugin("capture-event", "event-transport")),
-      append: (input: { readonly event: string }) => record(`event:append:${input.event}`),
+      append: (input: { readonly event: string; readonly component?: string }) =>
+        record(`event:append:${input.event}${input.component ? `:${input.component}` : ""}`),
     }),
     Layer.succeed(V2ScmProvider, {
       family: "scm" as const,
@@ -173,9 +174,40 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
     expect(result.operations).toEqual([
       "workspace-materializer:stub-workspace-materializer:resolve:/tmp/rig-v2/workspaces/pantry/live",
       "process-supervisor:rigd:up:web",
+      "event-transport:stub-event-transport:append:component.log:web",
       "process-supervisor:rigd:up:worker",
+      "event-transport:stub-event-transport:append:component.log:worker",
       "health-checker:stub-health-checker:check:web",
+      "event-transport:stub-event-transport:append:component.health:web",
       "event-transport:stub-event-transport:append:lifecycle:up",
+    ])
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        event: "component.log",
+        project: "pantry",
+        lane: "live",
+        deployment: "live",
+        component: "web",
+        details: {
+          action: "up",
+          operation: "process-supervisor:rigd:up:web",
+        },
+      }),
+      expect.objectContaining({
+        event: "component.log",
+        component: "worker",
+        details: {
+          action: "up",
+          operation: "process-supervisor:rigd:up:worker",
+        },
+      }),
+      expect.objectContaining({
+        event: "component.health",
+        component: "web",
+        details: {
+          operation: "health-checker:stub-health-checker:check:web",
+        },
+      }),
     ])
   })
 
@@ -197,15 +229,21 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
     expect(calls).toEqual([
       "workspace:resolve:live",
       "process:up:web",
+      "event:append:component.log:web",
       "process:up:worker",
+      "event:append:component.log:worker",
       "health:check:web",
+      "event:append:component.health:web",
       "event:append:lifecycle:up",
     ])
     expect(result.operations).toEqual([
       "capture:workspace:resolve:live",
       "capture:process:up:web",
+      "capture:event:append:component.log:web",
       "capture:process:up:worker",
+      "capture:event:append:component.log:worker",
       "capture:health:check:web",
+      "capture:event:append:component.health:web",
       "capture:event:append:lifecycle:up",
     ])
   })
@@ -229,9 +267,13 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       "scm:checkout:feature/provider-methods",
       "workspace:materialize:live:feature/provider-methods",
       "package:install:tool",
+      "event:append:component.install:tool",
       "process:restart:web",
+      "event:append:component.log:web",
       "process:restart:worker",
+      "event:append:component.log:worker",
       "health:check:web",
+      "event:append:component.health:web",
       "proxy:upsert:web",
       "event:append:deploy:feature/provider-methods",
     ])
@@ -239,9 +281,13 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       "capture:scm:checkout:feature/provider-methods",
       "capture:workspace:materialize:live:feature/provider-methods",
       "capture:package:install:tool",
+      "capture:event:append:component.install:tool",
       "capture:process:restart:web",
+      "capture:event:append:component.log:web",
       "capture:process:restart:worker",
+      "capture:event:append:component.log:worker",
       "capture:health:check:web",
+      "capture:event:append:component.health:web",
       "capture:proxy:upsert:web",
       "capture:event:append:deploy:feature/provider-methods",
     ])
@@ -268,14 +314,18 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
 
     expect(calls).toEqual([
       "process:down:worker",
+      "event:append:component.log:worker",
       "process:down:web",
+      "event:append:component.log:web",
       "proxy:remove:web",
       "workspace:remove:feature-provider-methods",
       "event:append:destroy:feature-provider-methods",
     ])
     expect(result.operations).toEqual([
       "capture:process:down:worker",
+      "capture:event:append:component.log:worker",
       "capture:process:down:web",
+      "capture:event:append:component.log:web",
       "capture:proxy:remove:web",
       "capture:workspace:remove:feature-provider-methods",
       "capture:event:append:destroy:feature-provider-methods",

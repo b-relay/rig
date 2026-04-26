@@ -100,6 +100,21 @@ class CaptureRuntimeExecutor {
       kind: deployment.kind,
       providerProfile: deployment.providerProfile,
       operations,
+      events: operations.map((operation) => ({
+        event: "component.log",
+        project: deployment.project,
+        ...(deployment.kind === "local" || deployment.kind === "live" ? { lane: deployment.kind } : {}),
+        deployment: deployment.name,
+        component: "web",
+        details: {
+          action: operation.startsWith("provider:lifecycle")
+            ? "up"
+            : operation.startsWith("provider:destroy")
+              ? "down"
+              : "deploy",
+          operation,
+        },
+      })),
     }
   }
 
@@ -283,8 +298,15 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
             stateRoot,
             config,
           })
+          const componentLogs = yield* rigd.webLogs({
+            stateRoot,
+            project: "pantry",
+            lane: "local",
+            component: "web",
+            lines: 10,
+          })
           const persisted = yield* store.load({ stateRoot })
-          return { lifecycle, liveDeploy, generatedDeploy, persisted }
+          return { lifecycle, liveDeploy, generatedDeploy, componentLogs, persisted }
         }),
         { executor },
       )
@@ -305,9 +327,17 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
       ])
       expect(result.persisted.events.map((event) => event.details)).toEqual([
         expect.objectContaining({
+          action: "up",
+          operation: "provider:lifecycle:up",
+        }),
+        expect.objectContaining({
           execution: expect.objectContaining({
             operations: ["provider:lifecycle:up"],
           }),
+        }),
+        expect.objectContaining({
+          action: "deploy",
+          operation: "provider:deploy:main",
         }),
         expect.objectContaining({
           execution: expect.objectContaining({
@@ -315,9 +345,26 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
           }),
         }),
         expect.objectContaining({
+          action: "deploy",
+          operation: "provider:deploy:feature/provider-backed",
+        }),
+        expect.objectContaining({
           execution: expect.objectContaining({
             operations: ["provider:deploy:feature/provider-backed"],
           }),
+        }),
+      ])
+      expect(result.componentLogs).toEqual([
+        expect.objectContaining({
+          event: "component.log",
+          project: "pantry",
+          lane: "local",
+          deployment: "local",
+          component: "web",
+          details: {
+            action: "up",
+            operation: "provider:lifecycle:up",
+          },
         }),
       ])
       expect(result.persisted.receipts).toHaveLength(3)
@@ -403,6 +450,7 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
       ])
       expect(result.logs.map((entry) => entry.event)).toEqual([
         "rigd.deploy.accepted",
+        "component.log",
         "rigd.deploy.accepted",
       ])
       expect(result.envelope).toMatchObject({
@@ -469,7 +517,9 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         "live:live",
       ])
       expect(result.logs.map((entry) => entry.event)).toEqual([
+        "component.log",
         "rigd.deploy.accepted",
+        "component.log",
         "rigd.generated.destroy.accepted",
       ])
     } finally {

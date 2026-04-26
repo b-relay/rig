@@ -175,7 +175,8 @@ work: #24.
   `rig.json` through the config-loader interface. Outside the repo, use
   `--project` plus `--config` to get the same validated config-backed path.
 - Config-backed `rigd` lifecycle and deploy actions now run through ordered v2
-  runtime provider methods before receipts are persisted, but concrete
+  runtime provider methods before receipts are persisted. Runtime execution
+  emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
   first-party provider adapter parity is still pending.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.

@@ -18,6 +18,16 @@ export interface V2RuntimeExecutionResult {
   readonly kind: V2DeploymentRecord["kind"]
   readonly providerProfile: V2DeploymentRecord["providerProfile"]
   readonly operations: readonly string[]
+  readonly events: readonly V2RuntimeExecutionEvent[]
+}
+
+export interface V2RuntimeExecutionEvent {
+  readonly event: string
+  readonly project: string
+  readonly lane?: "local" | "live"
+  readonly deployment: string
+  readonly component?: string
+  readonly details?: Readonly<Record<string, unknown>>
 }
 
 export interface V2RuntimeLifecycleExecutionInput {
@@ -58,12 +68,28 @@ const installedServices = (deployment: V2DeploymentRecord) =>
 const executionResult = (
   deployment: V2DeploymentRecord,
   operations: readonly string[],
+  events: readonly V2RuntimeExecutionEvent[],
 ): V2RuntimeExecutionResult => ({
   project: deployment.project,
   deployment: deployment.name,
   kind: deployment.kind,
   providerProfile: deployment.providerProfile,
   operations,
+  events,
+})
+
+const runtimeEvent = (
+  deployment: V2DeploymentRecord,
+  event: string,
+  component: string | undefined,
+  details: Readonly<Record<string, unknown>>,
+): V2RuntimeExecutionEvent => ({
+  event,
+  project: deployment.project,
+  ...(deployment.kind === "local" || deployment.kind === "live" ? { lane: deployment.kind } : {}),
+  deployment: deployment.name,
+  ...(component ? { component } : {}),
+  details,
 })
 
 export const V2RuntimeExecutorLive = Layer.effect(
@@ -83,16 +109,40 @@ export const V2RuntimeExecutorLive = Layer.effect(
           const services = managedServices(input.deployment)
           const ordered = input.action === "down" ? [...services].reverse() : services
           const operations: string[] = []
+          const events: V2RuntimeExecutionEvent[] = []
 
           operations.push(yield* workspaceMaterializer.resolve({ deployment: input.deployment }))
           for (const service of ordered) {
-            operations.push(yield* (input.action === "up"
+            const operation = yield* (input.action === "up"
               ? processSupervisor.up({ deployment: input.deployment, service })
-              : processSupervisor.down({ deployment: input.deployment, service })))
+              : processSupervisor.down({ deployment: input.deployment, service }))
+            operations.push(operation)
+            const event = runtimeEvent(input.deployment, "component.log", service.name, {
+              action: input.action,
+              operation,
+            })
+            events.push(event)
+            operations.push(yield* eventTransport.append({
+              deployment: input.deployment,
+              event: event.event,
+              component: service.name,
+              details: event.details,
+            }))
           }
           if (input.action === "up") {
             for (const service of services.filter((service) => service.healthCheck)) {
-              operations.push(yield* healthChecker.check({ deployment: input.deployment, service }))
+              const operation = yield* healthChecker.check({ deployment: input.deployment, service })
+              operations.push(operation)
+              const event = runtimeEvent(input.deployment, "component.health", service.name, {
+                operation,
+              })
+              events.push(event)
+              operations.push(yield* eventTransport.append({
+                deployment: input.deployment,
+                event: event.event,
+                component: service.name,
+                details: event.details,
+              }))
             }
           }
           operations.push(yield* eventTransport.append({
@@ -100,7 +150,7 @@ export const V2RuntimeExecutorLive = Layer.effect(
             event: `lifecycle:${input.action}`,
           }))
 
-          return executionResult(input.deployment, operations)
+          return executionResult(input.deployment, operations, events)
         }),
       deploy: (input) =>
         Effect.gen(function* () {
@@ -108,6 +158,7 @@ export const V2RuntimeExecutorLive = Layer.effect(
           const installed = installedServices(input.deployment)
           const proxy = input.deployment.resolved.environment.proxy
           const operations: string[] = []
+          const events: V2RuntimeExecutionEvent[] = []
 
           operations.push(yield* scm.checkout({ deployment: input.deployment, ref: input.ref }))
           operations.push(yield* workspaceMaterializer.materialize({
@@ -115,13 +166,48 @@ export const V2RuntimeExecutorLive = Layer.effect(
             ref: input.ref,
           }))
           for (const service of installed) {
-            operations.push(yield* packageManager.install({ deployment: input.deployment, service }))
+            const operation = yield* packageManager.install({ deployment: input.deployment, service })
+            operations.push(operation)
+            const event = runtimeEvent(input.deployment, "component.install", service.name, {
+              action: "deploy",
+              operation,
+            })
+            events.push(event)
+            operations.push(yield* eventTransport.append({
+              deployment: input.deployment,
+              event: event.event,
+              component: service.name,
+              details: event.details,
+            }))
           }
           for (const service of managed) {
-            operations.push(yield* processSupervisor.restart({ deployment: input.deployment, service }))
+            const operation = yield* processSupervisor.restart({ deployment: input.deployment, service })
+            operations.push(operation)
+            const event = runtimeEvent(input.deployment, "component.log", service.name, {
+              action: "deploy",
+              operation,
+            })
+            events.push(event)
+            operations.push(yield* eventTransport.append({
+              deployment: input.deployment,
+              event: event.event,
+              component: service.name,
+              details: event.details,
+            }))
           }
           for (const service of managed.filter((service) => service.healthCheck)) {
-            operations.push(yield* healthChecker.check({ deployment: input.deployment, service }))
+            const operation = yield* healthChecker.check({ deployment: input.deployment, service })
+            operations.push(operation)
+            const event = runtimeEvent(input.deployment, "component.health", service.name, {
+              operation,
+            })
+            events.push(event)
+            operations.push(yield* eventTransport.append({
+              deployment: input.deployment,
+              event: event.event,
+              component: service.name,
+              details: event.details,
+            }))
           }
           if (proxy) {
             operations.push(yield* proxyRouter.upsert({ deployment: input.deployment, proxy }))
@@ -131,16 +217,29 @@ export const V2RuntimeExecutorLive = Layer.effect(
             event: `deploy:${input.ref}`,
           }))
 
-          return executionResult(input.deployment, operations)
+          return executionResult(input.deployment, operations, events)
         }),
       destroyGenerated: (input) =>
         Effect.gen(function* () {
           const services = [...managedServices(input.deployment)].reverse()
           const proxy = input.deployment.resolved.environment.proxy
           const operations: string[] = []
+          const events: V2RuntimeExecutionEvent[] = []
 
           for (const service of services) {
-            operations.push(yield* processSupervisor.down({ deployment: input.deployment, service }))
+            const operation = yield* processSupervisor.down({ deployment: input.deployment, service })
+            operations.push(operation)
+            const event = runtimeEvent(input.deployment, "component.log", service.name, {
+              action: "down",
+              operation,
+            })
+            events.push(event)
+            operations.push(yield* eventTransport.append({
+              deployment: input.deployment,
+              event: event.event,
+              component: service.name,
+              details: event.details,
+            }))
           }
           if (proxy) {
             operations.push(yield* proxyRouter.remove({ deployment: input.deployment, proxy }))
@@ -151,7 +250,7 @@ export const V2RuntimeExecutorLive = Layer.effect(
             event: `destroy:${input.deployment.name}`,
           }))
 
-          return executionResult(input.deployment, operations)
+          return executionResult(input.deployment, operations, events)
         }),
     } satisfies V2RuntimeExecutorService
   }),

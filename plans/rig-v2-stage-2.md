@@ -303,5 +303,8 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   `V2RuntimeExecutorLive` invokes in order. Lane config now carries
   `providers.processSupervisor`, defaulting to core `rigd` while letting lanes
   select the bundled `launchd` process-supervisor plugin through the same
-  interface shape future external providers will use. Remaining #25 work:
-  concrete first-party provider adapter behavior and component log ingestion.
+  interface shape future external providers will use. Runtime execution now
+  emits component-scoped events through the event-transport provider, and
+  `rigd` persists them into the same log stream used by CLI and web filters.
+  Remaining #25 work: concrete first-party provider adapter behavior and real
+  process stdout/stderr ingestion.

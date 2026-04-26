@@ -382,6 +382,20 @@ export const V2RigdLive = Layer.effect(
         return accepted
       })
 
+    const persistExecutionEvents = (
+      stateRoot: string,
+      execution: V2RuntimeExecutionResult | undefined,
+    ): Effect.Effect<void, V2RuntimeError> =>
+      Effect.gen(function* () {
+        if (!execution) {
+          return
+        }
+
+        for (const event of execution.events) {
+          yield* appendEvent(stateRoot, event)
+        }
+      })
+
     const lifecycleAccepted = (
       input: V2RigdLifecycleInput,
       source: "cli" | "control-plane",
@@ -389,6 +403,7 @@ export const V2RigdLive = Layer.effect(
     ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
       Effect.gen(function* () {
         const accepted = yield* receipt("lifecycle", input.project, input.stateRoot, input.lane)
+        yield* persistExecutionEvents(input.stateRoot, execution)
         yield* appendEvent(input.stateRoot, {
           event: "rigd.lifecycle.accepted",
           project: input.project,
@@ -411,6 +426,7 @@ export const V2RigdLive = Layer.effect(
     ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
       Effect.gen(function* () {
         const accepted = yield* receipt("deploy", input.project, input.stateRoot, target)
+        yield* persistExecutionEvents(input.stateRoot, execution)
         yield* appendEvent(input.stateRoot, {
           event: "rigd.deploy.accepted",
           project: input.project,
@@ -692,6 +708,7 @@ export const V2RigdLive = Layer.effect(
           })
           yield* persistInventoryEvidence(input.stateRoot, inventory)
           const accepted = yield* receipt("destroy", input.project, input.stateRoot, target)
+          yield* persistExecutionEvents(input.stateRoot, execution)
           yield* appendEvent(input.stateRoot, {
             event: "rigd.generated.destroy.accepted",
             project: input.project,

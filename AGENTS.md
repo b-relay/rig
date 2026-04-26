@@ -14,9 +14,9 @@ Local Mac deployment manager. See DESIGN.md for full spec.
 - Process management: Bun.spawn
 
 ## Effect v4 Notes
-- Read `effect-v4-help-notes.md` before implementing or reviewing Effect v4, Effect Schema, Effect CLI, Effect Platform, or Effect testing work.
-- Treat `effect-v4-help-notes.md` as living repo-local memory. Update it when you verify a new Effect v4 API, migration detail, Bun integration pattern, package version constraint, or gotcha that would help the next agent.
-- Prefer official Effect docs, `effect-smol`, and migration docs over older blog posts or v3 examples. Record useful source links in `effect-v4-help-notes.md`.
+- Read `docs/effect-v4-help-notes.md` before implementing or reviewing Effect v4, Effect Schema, Effect CLI, Effect Platform, or Effect testing work.
+- Treat `docs/effect-v4-help-notes.md` as living repo-local memory. Update it when you verify a new Effect v4 API, migration detail, Bun integration pattern, package version constraint, or gotcha that would help the next agent.
+- Prefer official Effect docs, `effect-smol`, and migration docs over older blog posts or v3 examples. Record useful source links in `docs/effect-v4-help-notes.md`.
 - If Effect v4 is still prerelease, pin the exact beta intentionally and document the planned stable upgrade path in code/docs touched by the change.
 
 ## Commands

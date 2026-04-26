@@ -12,7 +12,7 @@ Durable decisions that apply across this stage:
 - **Control-plane shape**: `rigd` is localhost-first on `127.0.0.1`, and the hosted web UI is `https://rig.b-relay.com`. Private remote access can be handled by Tailscale DNS routing to localhost; public internet exposure should be handled by a provider/plugin such as Cloudflare Tunnel.
 - **Read/write split**: web-facing read models and write actions are separate slices. Read models expose project, deployment, health, and log state. Write actions route lifecycle and deploy operations through the same `rigd` authority used by CLI commands.
 - **Config editing**: web-facing config changes use structured patches validated by Effect Schema before atomic apply. Direct arbitrary file writes are not part of the control-plane contract.
-- **Cutover safety**: v1 remains compatible until an explicit readiness gate verifies command parity, provider safety, docs, and rollback behavior.
+- **Cutover safety**: `rig2` remains isolated until replacement readiness verifies provider safety, docs, validation, rollback behavior, and the final rename/build path.
 
 ---
 
@@ -255,33 +255,38 @@ failure recovery.
 
 ### What To Build
 
-Create the cutover readiness slice for moving v2 behavior from the isolated `rig2` runway into the main `rig` binary when it is safe. The long-term goal is that v2 becomes `rig`; `rig2` is temporary migration runway, not a permanent second product.
+Create the cutover readiness slice for replacing the current `rig` CLI with
+the isolated `rig2` CLI when it is safe. The long-term goal is that v2 becomes
+`rig`; `rig2` is temporary migration runway, not a permanent second product.
 
-This should not prematurely remove v1 compatibility.
+There are no external users to preserve compatibility for. The cutover is a
+rename/build replacement, not gradual command routing through v1. The safety
+requirement is to keep current machine state isolated until the replacement is
+deliberate.
 
 ### Acceptance Criteria
 
-- [x] A cutover readiness checklist exists in docs and maps each main command to its v2 equivalent or compatibility behavior.
-- [ ] Main-binary tests cover the selected v2 paths under isolated state and safe provider composition.
-- [ ] Legacy v1 command behavior remains available or has explicit deprecation messaging.
+- [x] A cutover readiness checklist exists in docs and maps final CLI areas to their v2 readiness status.
+- [ ] Main-binary tests cover the replacement `rig` CLI under isolated state and safe provider composition.
+- [x] Legacy v1 command behavior is not a long-term compatibility requirement; v1 remains available only until the deliberate replacement rename.
 - [x] Provider/profile selection prevents accidental launchd, Caddy, or user-state mutation in tests.
 - [x] Release/cutover docs explain how to validate, roll back, and keep production apps safe during migration.
-- [x] The plan explicitly covers renaming or routing `rig2` behavior into `rig` when v2 becomes default.
+- [x] The plan explicitly covers renaming/building `rig2` behavior as `rig` when v2 becomes default.
 - [x] Remaining post-cutover gaps are filed as follow-up issues instead of hidden in the plan.
 
 ### Current AFK Output
 
-`docs/rig-v2-cutover-readiness.md` records the command parity matrix, provider
-safety requirements, validation checklist, rollback checklist, cutover routing
-plan, and HITL decisions still needed before v2 becomes the default `rig`
-behavior. `docs/rig2-guide.md` gives a short user-facing guide for using
-`rig2` today and understanding the differences from rig v1.
+`docs/rig-v2-cutover-readiness.md` records the replacement readiness matrix,
+provider safety requirements, validation checklist, rollback checklist, rename
+plan, and remaining gaps before v2 becomes the default `rig` behavior.
+`docs/rig2-guide.md` gives a short user-facing guide for using `rig2` today
+and understanding the differences from rig v1.
 
 Follow-up issues #23 through #26 capture the remaining implementation gaps:
-main-binary v2 routing behind a cutover gate, CLI/control-plane config editing
+the final `rig2` to `rig` replacement path, CLI/control-plane config editing
 surface, provider-backed lifecycle/deploy execution, and hosted control-plane
 transport for `rig.b-relay.com`.
 
-Runtime routing from `rig` to v2 remains intentionally unchanged until HITL
-approval. The unchecked acceptance criteria are the parts that require that
-selected cutover behavior to be implemented and validated after approval.
+Runtime routing from `rig` to v2 remains intentionally unchanged. The approved
+direction is to keep `rig2` isolated until it is ready, then rename/build it as
+`rig` as an entirely new CLI.

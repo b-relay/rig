@@ -1,6 +1,6 @@
 # Plan: rig v2
 
-> Source PRD: `PRD_V2.md`
+> Source PRD: `docs/PRD_V2.md`
 
 ## Architectural Decisions
 
@@ -59,7 +59,7 @@ Create the v2 technical foundation around Effect v4, Effect Schema, and Effect C
 
 - [x] The project targets Effect v4 for v2 backend logic.
 - [x] If Effect v4 is still prerelease, the implementation pins an explicit beta and documents the stable upgrade path.
-- [x] `effect-v4-help-notes.md` is consulted before Effect v4 work and kept updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
+- [x] `docs/effect-v4-help-notes.md` is consulted before Effect v4 work and kept updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
 - [x] A separate v2 dev binary or entrypoint, such as `rig2`, exists while v2 is incomplete.
 - [x] V2 uses an isolated state root by default or requires explicit isolated state during early development.
 - [x] V2 launchd labels, workspaces, logs, proxy entries, ports, and runtime metadata cannot collide with v1 defaults.
@@ -331,5 +331,6 @@ Stage 2 covers:
   writes and backup recovery information.
 - #22 Prepare rig2 to main rig cutover readiness. In progress: the AFK
   readiness audit and rig2 user guide are documented in
-  `docs/rig-v2-cutover-readiness.md` and `docs/rig2-guide.md`; runtime routing
-  remains unchanged until HITL cutover approval.
+  `docs/rig-v2-cutover-readiness.md` and `docs/rig2-guide.md`; HITL decision
+  is to keep `rig2` isolated until it is ready, then rename/build it as `rig`
+  as a replacement CLI rather than routing selected commands through v1.

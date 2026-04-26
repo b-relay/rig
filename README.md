@@ -4,7 +4,7 @@ Local Mac deployment manager.
 
 `rig` is a declarative, config-driven CLI for running project deployments on your own Mac. Think Vercel, but for your local machine: one `rig.json`, service lifecycle orchestration, reverse proxy wiring, and daemon integration.
 
-The active v1 binary still uses explicit `dev`/`prod` environments. The v2 runway is being built in parallel around repo-first projects, shared `components`, `managed` and `installed` component modes, `local`, `live`, and generated `deployments`. See [DESIGN_V2.md](./DESIGN_V2.md) for the target model.
+The active v1 binary still uses explicit `dev`/`prod` environments. The v2 runway is being built in parallel around repo-first projects, shared `components`, `managed` and `installed` component modes, `local`, `live`, and generated `deployments`. See [docs/DESIGN_V2.md](./docs/DESIGN_V2.md) for the target model.
 
 ## Why Rig Exists
 
@@ -45,7 +45,7 @@ Current v2 vocabulary:
 V2 docs:
 
 - [Rig2 guide](./docs/rig2-guide.md): practical usage and the important differences from rig v1.
-- [Rig v2 cutover readiness](./docs/rig-v2-cutover-readiness.md): command parity, provider safety, validation, rollback, and remaining cutover decisions.
+- [Rig v2 cutover readiness](./docs/rig-v2-cutover-readiness.md): replacement readiness, provider safety, validation, rollback, and remaining cutover decisions.
 
 Try the foundation path:
 
@@ -560,7 +560,7 @@ Core architectural rules (from `AGENTS.md` + source layout):
 - Schema and argument validation use Zod (`src/schema/config.ts`, `src/schema/args.ts`).
 - Errors are tagged classes with structured context + `hint` (`src/schema/errors.ts`).
 
-For v2 Effect work, read [`effect-v4-help-notes.md`](./effect-v4-help-notes.md) before changing Effect v4, Effect Schema, Effect CLI, Effect Platform, or Effect testing code. Keep that file updated with verified APIs, package/version constraints, migration findings, Bun integration notes, and links that would help the next contributor.
+For v2 Effect work, read [`docs/effect-v4-help-notes.md`](./docs/effect-v4-help-notes.md) before changing Effect v4, Effect Schema, Effect CLI, Effect Platform, or Effect testing code. Keep that file updated with verified APIs, package/version constraints, migration findings, Bun integration notes, and links that would help the next contributor.
 
 ### Extending rig
 

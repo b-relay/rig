@@ -165,7 +165,7 @@ work: #24.
 
 Tracked follow-ups:
 
-- #23 route selected v2 paths through `rig` behind a cutover gate
+- #23 rename/build `rig2` as `rig` when replacement criteria are met
 - #24 expose config editing through a CLI or control-plane transport
 - #25 connect lifecycle and deploy actions to provider-backed execution
 - #26 add hosted control-plane transport adapter

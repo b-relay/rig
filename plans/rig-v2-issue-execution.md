@@ -1,6 +1,6 @@
 # Plan: rig v2 issue execution
 
-> Source PRD: GitHub issue #2 and local `PRD_V2.md`
+> Source PRD: GitHub issue #2 and local `docs/PRD_V2.md`
 > Source issue set: GitHub issues #3 through #22
 
 This plan converts the open v2 GitHub issues into an execution order. It is intentionally more operational than `plans/rig-v2.md`: it answers what to pick up next, what is blocked, and which issues should move together.
@@ -70,7 +70,7 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 
 **Issue**: #3
 
-Status: complete. The product decisions that would otherwise leak into schema, CLI, provider, and runtime authority work are recorded in `DESIGN_V2.md`.
+Status: complete. The product decisions that would otherwise leak into schema, CLI, provider, and runtime authority work are recorded in `docs/DESIGN_V2.md`.
 
 Resolved outputs:
 
@@ -317,23 +317,26 @@ Exit condition:
 
 **Issue**: #22
 
-#22 is the HITL readiness gate for moving v2 behavior from the isolated `rig2` runway toward the main `rig` binary.
+#22 is the HITL readiness gate for replacing the current `rig` CLI with the isolated `rig2` CLI once v2 is ready.
 
-Current AFK output: `docs/rig-v2-cutover-readiness.md` now records command
-parity, provider safety, validation, rollback, and the routing plan for moving
-selected v2 behavior into `rig`. `docs/rig2-guide.md` gives the user-facing
-usage guide and v1/v2 differences. Follow-up issues #23 through #26 are filed
-for the remaining implementation slices.
+Current HITL output: the cutover model is replacement, not gradual routing.
+`rig2` remains isolated while incomplete; when it is good enough, it is renamed
+or built as `rig` as the new CLI. `docs/rig-v2-cutover-readiness.md` records
+the replacement readiness criteria, validation, rollback, and remaining gaps.
+`docs/rig2-guide.md` gives the user-facing usage guide and v1/v2 differences.
+Follow-up issues #23 through #26 are filed for the remaining implementation
+slices.
 
 Exit condition:
 
-- Command parity, provider safety, compatibility/deprecation behavior, validation steps, rollback docs, and remaining follow-up issues are explicit before cutover.
+- Replacement readiness, provider safety, validation steps, rollback docs, and remaining follow-up issues are explicit before renaming `rig2` to `rig`.
 
 ## Recommended Next Move
 
-Review the #22 HITL cutover decisions with the user. The AFK audit docs and
-follow-up issues are filed; next implementation work should start from #23
-through #26 after the selected cutover direction is approved.
+Start #23 with the approved replacement direction: no command-by-command gate,
+no gradual v2 routing through the v1 CLI. The work should prepare the final
+rename/build path for `rig2` to become `rig` after #24 and #25 close the known
+surface gaps.
 
 ## Suggested First Milestone
 
@@ -375,4 +378,4 @@ Why this milestone:
 - It turns the MVP `rigd` into a durable runtime authority.
 - It keeps external systems behind interfaces before transport and web-facing behavior expand.
 - It creates the local contracts the hosted control plane can consume later.
-- It preserves a deliberate HITL gate before moving v2 behavior into the main binary.
+- It preserves a deliberate HITL replacement decision before `rig2` becomes the main `rig` binary.

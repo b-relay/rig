@@ -37,7 +37,7 @@ The new operational model uses:
 
 The new deployment model is git-push-first. A push to the configured main ref updates `live`; a push to another ref creates or updates a generated deployment. CLI deploy commands remain available, but they target refs and lanes rather than the old environment model. Semver and tags become optional metadata for labeling and rollback anchors, not a requirement for routine deploys.
 
-The new runtime model introduces `rigd` as the local control plane. `rigd` owns deployment inventory, process supervision, structured logs, health state, port allocation, deploy actions, provider coordination, and local state reconciliation. The CLI becomes a client of `rigd`, and `rigd` provides the authenticated connection that allows the web UI at `core.b-relay.com` to inspect and control the local machine.
+The new runtime model introduces `rigd` as the local control plane. `rigd` owns deployment inventory, process supervision, structured logs, health state, port allocation, deploy actions, provider coordination, and local state reconciliation. The CLI becomes a client of `rigd`, and `rigd` provides the authenticated connection that allows the web UI at `rig.b-relay.com` to inspect and control the local machine.
 
 The new architecture makes provider selection explicit. Launchd, Caddy, and local git can remain the defaults, but they become default providers rather than assumptions embedded in core logic. Stub providers become first-class composition options, which allows the main `rig` binary to run end-to-end tests under isolated state without needing a separate smoke-only binary.
 
@@ -129,7 +129,7 @@ The current implementation remains supported during migration while new docs, on
 
 40. As an operator, I want the CLI to talk to `rigd`, so that command behavior matches the web UI's view of runtime state.
 
-41. As an operator, I want `rigd` to connect outbound to `core.b-relay.com`, so that the local machine does not need an exposed inbound management service.
+41. As an operator, I want `rigd` to connect to `rig.b-relay.com`, so that the local machine can be inspected and controlled through the hosted control plane when that transport is enabled.
 
 42. As a web UI user, I want to list projects, so that I can see what this machine is managing.
 
@@ -165,7 +165,7 @@ The current implementation remains supported during migration while new docs, on
 
 58. As a new user, I want `rig init` to support provider selection, lane wiring, and optional package-manager integration, so that a project can be initialized into the v2 model in one explicit flow.
 
-59. As a maintainer, I want the old model to keep working during migration, so that v2 can be shipped incrementally.
+59. As a maintainer, I want v2 to be isolated while it is incomplete, so that the replacement CLI can be built quickly without mutating current machine state.
 
 60. As a maintainer, I want clear non-goals, so that v2 does not expand into app presets, broad tool dependency modeling, or a separate rig website.
 
@@ -175,7 +175,7 @@ The current implementation remains supported during migration while new docs, on
 
 63. As a contributor, I want CLI parsing to use Effect CLI, so that command parsing, help output, and execution compose with Effect services and errors.
 
-64. As an operator, I want v1 `rig` to keep managing production apps while v2 is in development, so that always-on apps such as `pantry` stay available.
+64. As an operator, I want v1 `rig` to remain available while v2 is in development, so that current local workflows stay available until the replacement rename is deliberate.
 
 65. As a contributor, I want a separate v2 dev binary or entrypoint, so that I can test v2 behavior without affecting the production v1 binary.
 
@@ -197,7 +197,7 @@ The current implementation remains supported during migration while new docs, on
 
 - V2 backend logic targets Effect v4. If Effect v4 is still prerelease when implementation starts, the project should pin an explicit v4 beta and document the later stable upgrade path.
 
-- Contributors should consult `effect-v4-help-notes.md` before Effect v4 implementation or review work, and keep it updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
+- Contributors should consult `docs/effect-v4-help-notes.md` before Effect v4 implementation or review work, and keep it updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
 
 - V2 config validation and argument validation should use Effect Schema instead of Zod. Legacy Zod schemas may remain only where needed for v1 compatibility during migration.
 
@@ -291,7 +291,7 @@ The current implementation remains supported during migration while new docs, on
 
 - A built-in migration CLI command is not part of v2.
 
-- A separate rig website is not part of v2. The web surface is the hosted control plane at `core.b-relay.com`.
+- A separate rig website is not part of v2. The web surface is the hosted control plane at `rig.b-relay.com`.
 
 - Broad dependency modeling for installed tools or prerequisites is not part of v2.
 
@@ -319,7 +319,7 @@ The next milestone should make provider selection explicit enough that the main 
 
 The most consequential milestone is `rigd`. It should be treated as the boundary between legacy command-assembled runtime truth and the v2 control-plane model. The CLI can migrate incrementally, but new runtime-facing functionality should be designed around `rigd` ownership.
 
-The initial v2 operating decisions are recorded in `DESIGN_V2.md`. In short: cross-project operations use `--project <name>`, repo-first commands outside a managed repo fail unless explicitly targeted, path-based lifecycle targeting is rejected, simultaneous same-port runtime conflicts fail during preflight, health checks must be tied to rig-owned runtime state, explicit status for undeployed runtime targets fails, and aggregate runtime logs include managed components only.
+The initial v2 operating decisions are recorded in `docs/DESIGN_V2.md`. In short: cross-project operations use `--project <name>`, repo-first commands outside a managed repo fail unless explicitly targeted, path-based lifecycle targeting is rejected, simultaneous same-port runtime conflicts fail during preflight, health checks must be tied to rig-owned runtime state, explicit status for undeployed runtime targets fails, and aggregate runtime logs include managed components only.
 
 One migration decision remains intentionally later-stage: whether the smoke binary is removed entirely or kept temporarily as a thin harness. That is handled by the rig-smoke retirement work after main-binary isolated E2E coverage exists.
 

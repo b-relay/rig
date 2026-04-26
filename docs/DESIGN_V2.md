@@ -4,33 +4,42 @@ This document defines the target redesign for `rig`.
 
 It is intentionally forward-looking. It describes where the product and architecture are going, not just what is implemented today.
 
-For the currently shipped behavior, see [DESIGN.md](./DESIGN.md).
+For the currently shipped behavior, see [DESIGN.md](../DESIGN.md).
 
 ## Status
 
-- `DESIGN.md`: current/legacy implementation model
+- `../DESIGN.md`: current/legacy implementation model
 - `DESIGN_V2.md`: target redesign and migration contract
 
 During the transition, contributors should treat this document as the source of truth for new architecture and UX decisions.
 
 For practical rig2 usage during the transition, see
-[`docs/rig2-guide.md`](./docs/rig2-guide.md). For the current cutover audit,
-command parity, validation, rollback, and remaining HITL decisions, see
-[`docs/rig-v2-cutover-readiness.md`](./docs/rig-v2-cutover-readiness.md).
+[`rig2-guide.md`](./rig2-guide.md). For the current replacement-readiness
+audit, validation, rollback, and remaining HITL decisions, see
+[`rig-v2-cutover-readiness.md`](./rig-v2-cutover-readiness.md).
 
 ## Migration Posture
 
 V2 should be built as a parallel implementation path that can run next to the current v1 `rig`.
 
-The current v1 binary must remain able to manage production apps, especially always-on hosted apps such as `pantry`, while v2 is being developed and tested. V2 does not need to preserve v1 as the long-term user experience after cutover, but it must avoid disturbing v1-managed production state during development.
+The current v1 binary can remain available while v2 is being developed and
+tested, but there are no external users to preserve compatibility for. V2 is an
+entirely new CLI model. When `rig2` is good enough, the cutover is a rename:
+`rig2` becomes `rig`, rather than gradually routing selected v2 commands
+through the old CLI.
+
+The main safety requirement during development is not long-term v1
+compatibility; it is avoiding accidental mutation of the maintainer's current
+machine state until the replacement is ready.
 
 Rules:
 
-- keep the existing `rig` binary as the v1 production manager until an explicit cutover
+- keep the existing `rig` binary available until the replacement CLI is ready
 - introduce a separate v2 dev binary or entrypoint, such as `rig2`, while v2 is incomplete
 - use a separate v2 state root by default, such as `~/.rig-v2`, or require an explicit isolated `RIG_ROOT` during early work
 - namespace v2 launchd labels, workspaces, logs, proxy entries, and runtime state so they cannot collide with v1
-- do not let v2 manage `pantry` prod or other v1-managed production apps until the cutover is deliberate
+- do not let v2 manage current machine state until the replacement cutover is deliberate
+- when v2 is ready, rename/build the `rig2` CLI as `rig` rather than adding a command-by-command compatibility gate
 - copy or reuse proven v1 code patterns where useful, but do not force v2 through v1's env/service/release assumptions
 
 Good candidates to reuse are provider interface ideas, structured logger shape, process-group handling, health checks, worktree mechanics, tagged error style, and behavior-focused tests.

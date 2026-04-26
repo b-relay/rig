@@ -124,6 +124,9 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
     )
 
     expect(resolved.providerProfile).toBe("default")
+    expect(resolved.providers).toEqual({
+      processSupervisor: "rigd",
+    })
     expect(resolved.environment.proxy?.upstream).toBe("api")
     expect(resolved.environment.services).toHaveLength(3)
     expect(resolved.environment.services[0]).toMatchObject({
@@ -147,6 +150,37 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
     expect(resolved.v1Config.environments.dev).toBe(resolved.environment)
     expect(resolved.v1Config.environments.prod).toBeUndefined()
     expect(resolved.v1Config.hooks?.preStart).toBe("echo local:/tmp/pantry")
+  })
+
+  test("GIVEN lane provider selections WHEN resolving THEN process supervisor provider ids are preserved", async () => {
+    const config = await Effect.runPromise(
+      decodeV2ProjectConfig({
+        name: "pantry",
+        components: {
+          web: {
+            mode: "managed",
+            command: "bun run start",
+            port: 3070,
+          },
+        },
+        live: {
+          providers: {
+            processSupervisor: "launchd",
+          },
+        },
+      }),
+    )
+
+    const resolved = await Effect.runPromise(
+      resolveV2Lane(config, {
+        lane: "live",
+        workspacePath: "/tmp/pantry-live",
+      }),
+    )
+
+    expect(resolved.providers).toEqual({
+      processSupervisor: "launchd",
+    })
   })
 
   test("GIVEN generated deployment interpolation WHEN resolving THEN branch values and assigned ports are substituted", async () => {

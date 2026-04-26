@@ -65,7 +65,7 @@ Dokploy (sometimes written informally as Docploy in project notes) is an importa
 
 The inspiration is not a one-for-one copy. The useful idea is Dokploy's simplicity: a deployment wrapper with a friendly interface, practical defaults, and a feature set that makes self-hosting feel approachable.
 
-`rig` aims for that same wrapper-style product feel, but without Docker or containers as the foundation. The design in this document stays centered on native local-machine process management, `launchd`/Caddy/local git defaults, provider plugins, `rigd`, and repo-first workflows.
+`rig` aims for that same wrapper-style product feel, but without Docker or containers as the foundation. The design in this document stays centered on native local-machine process management, core `rigd` supervision, bundled launchd/Caddy/local git providers, provider plugins, and repo-first workflows.
 
 Future contributors should understand this as product context: match the ease and polish of a Docker-first tool like Dokploy, while building the non-Docker architecture described here.
 
@@ -451,17 +451,27 @@ All external concerns remain behind interfaces.
 - package-manager integration
 - tunnel/exposure
 
-### Default providers
+### Core And Bundled Providers
 
-The shipped defaults may still be:
+`rigd` is the core process supervisor and runtime authority. It is bundled with
+Rig, but it is not a plugin in the same sense as optional provider extensions.
+Lane config still selects it through the same provider id slot so bundled and
+future third-party providers use one interface shape.
 
+The shipped bundled providers include:
+
+- rigd core process supervisor
 - launchd
 - Caddy
 - local git
 - localhost HTTP control-plane transport on `127.0.0.1`
 - manual Tailscale DNS routing for private remote access
 
-But they are defaults, not assumptions embedded in core logic.
+Launchd is a bundled first-party process supervisor plugin. A lane may choose
+`providers.processSupervisor = "launchd"` when it should install/use launchd
+instead of the default core `rigd` supervisor path.
+
+These are defaults and bundled options, not assumptions embedded in core logic.
 
 V2 exposes these through explicit provider-family service tags and a provider
 registry service so `rigd`, `doctor`, and future web control-plane surfaces can

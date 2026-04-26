@@ -4,7 +4,7 @@ export type V2ProviderProfileName = "default" | "stub"
 
 export interface V2ProviderProfile {
   readonly name: V2ProviderProfileName
-  readonly processSupervisor: "launchd" | "stub"
+  readonly processSupervisor: "rigd" | "stub"
   readonly proxyRouter: "caddy" | "stub"
   readonly scm: "local-git" | "stub"
   readonly workspaceMaterializer: "git-worktree" | "stub"
@@ -20,7 +20,7 @@ export const V2ProviderProfileContext =
 
 export const V2DefaultProviderProfile: V2ProviderProfile = {
   name: "default",
-  processSupervisor: "launchd",
+  processSupervisor: "rigd",
   proxyRouter: "caddy",
   scm: "local-git",
   workspaceMaterializer: "git-worktree",

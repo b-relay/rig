@@ -107,6 +107,18 @@ const ProxySchema = Schema.Struct({
   upstream: fieldDoc(ComponentName, "Managed component that receives reverse proxy traffic for this lane."),
 })
 
+const ProviderId = schemaDoc(
+  Schema.String.check(Schema.isMinLength(1, { message: "Provider id must not be empty." })),
+  "Provider id selected for a provider family. Bundled and future plugin providers use the same id shape.",
+)
+
+const LaneProvidersSchema = Schema.Struct({
+  processSupervisor: fieldDoc(
+    Schema.optionalKey(ProviderId),
+    "Process supervisor provider id for this lane. Defaults to core rigd; launchd is a bundled first-party plugin.",
+  ),
+})
+
 const CommonComponentFields = {
   env: fieldDoc(Schema.optionalKey(StringMap), "Inline environment variables applied to this component."),
   envFile: fieldDoc(Schema.optionalKey(Schema.String), "Env file applied to this component."),
@@ -162,6 +174,10 @@ const LaneConfigSchema = Schema.Struct({
   envFile: fieldDoc(Schema.optionalKey(Schema.String), "Default env file for all components in this lane."),
   proxy: fieldDoc(Schema.optionalKey(ProxySchema), "Reverse proxy settings for this lane."),
   daemon: fieldDoc(Schema.optionalKey(DaemonSchema), "Daemon settings for this lane."),
+  providers: fieldDoc(
+    Schema.optionalKey(LaneProvidersSchema),
+    "Provider ids selected for this lane by provider family.",
+  ),
   domain: fieldDoc(Schema.optionalKey(Schema.String), "Domain override for this lane."),
   subdomain: fieldDoc(Schema.optionalKey(Schema.String), "Generated deployment subdomain override."),
   deployBranch: fieldDoc(Schema.optionalKey(Schema.String), "Branch allowed to update this lane when applicable."),
@@ -217,6 +233,10 @@ export interface ResolveV2LaneOptions {
   readonly assignedPorts?: Readonly<Record<string, number>>
 }
 
+export interface ResolvedV2Providers {
+  readonly processSupervisor: string
+}
+
 export interface ResolvedV2Lane {
   readonly project: string
   readonly lane: V2LaneName
@@ -225,6 +245,7 @@ export interface ResolvedV2Lane {
   readonly subdomain: string
   readonly workspacePath: string
   readonly providerProfile: "default" | "stub"
+  readonly providers: ResolvedV2Providers
   readonly environment: Environment
   readonly v1Config: RigConfig
 }
@@ -395,6 +416,16 @@ export const decodeV2StatusInput = (input: unknown) =>
 const laneConfigFor = (config: V2ProjectConfig, lane: V2LaneName) =>
   lane === "local" ? config.local : lane === "live" ? config.live : config.deployments
 
+const defaultV2Providers: ResolvedV2Providers = {
+  processSupervisor: "rigd",
+}
+
+const resolveLaneProviders = (
+  laneConfig: ReturnType<typeof laneConfigFor>,
+): ResolvedV2Providers => ({
+  processSupervisor: laneConfig?.providers?.processSupervisor ?? defaultV2Providers.processSupervisor,
+})
+
 const interpolationFor = (
   config: V2ProjectConfig,
   laneConfig: ReturnType<typeof laneConfigFor>,
@@ -491,6 +522,7 @@ export const resolveV2Lane = (
   Effect.gen(function* () {
     const laneConfig = laneConfigFor(config, options.lane)
     const interpolation = interpolationFor(config, laneConfig, options)
+    const providers = resolveLaneProviders(laneConfig)
     const services: Environment["services"] = []
 
     for (const [name, component] of Object.entries(config.components)) {
@@ -576,6 +608,7 @@ export const resolveV2Lane = (
       subdomain: interpolation.subdomain,
       workspacePath: interpolation.workspace,
       providerProfile: laneConfig?.providerProfile ?? "default",
+      providers,
       environment,
       v1Config,
     }

@@ -57,7 +57,9 @@ You can scaffold a v2-style `rig.json` with the current `rig` init command:
 ```
 
 Use `stub` for isolated tests and agent runs. Use `default` only when you are
-ready for real local providers.
+ready for real local providers. The process supervisor is selected per lane
+with `providers.processSupervisor`; it defaults to the core `rigd` supervisor.
+Use `"launchd"` there only for lanes that should use the bundled launchd plugin.
 
 Minimal v2 shape:
 
@@ -74,7 +76,10 @@ Minimal v2 shape:
   },
   "deployments": {
     "subdomain": "${branchSlug}",
-    "providerProfile": "stub"
+    "providerProfile": "stub",
+    "providers": {
+      "processSupervisor": "rigd"
+    }
   }
 }
 ```

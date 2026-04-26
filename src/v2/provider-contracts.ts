@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect-v4"
 
 import type { V2DeploymentRecord } from "./deployments.js"
-import type { V2RuntimeError } from "./errors.js"
+import { V2RuntimeError } from "./errors.js"
 
 export type V2ProviderProfileName = "default" | "stub" | "isolated-e2e"
 
@@ -16,7 +16,7 @@ export type V2ProviderFamily =
   | "package-manager"
   | "tunnel"
 
-export type V2ProviderPluginSource = "first-party" | "external"
+export type V2ProviderPluginSource = "core" | "first-party" | "external"
 
 export interface V2ProviderPlugin {
   readonly id: string
@@ -174,15 +174,25 @@ const plugin = (
   family: V2ProviderFamily,
   displayName: string,
   capabilities: readonly string[],
+  source: V2ProviderPluginSource = "first-party",
 ): V2ProviderPlugin => ({
   id,
   family,
-  source: "first-party",
+  source,
   displayName,
   capabilities,
 })
 
+const rigdProcessSupervisorProvider = plugin(
+  "rigd",
+  "process-supervisor",
+  "rigd Core Supervisor",
+  ["core-supervisor", "session-processes", "same-provider-interface"],
+  "core",
+)
+
 const defaultProviders: readonly V2ProviderPlugin[] = [
+  rigdProcessSupervisorProvider,
   plugin("launchd", "process-supervisor", "launchd", ["user-agent", "restart-policy", "v1-compatible"]),
   plugin("caddy", "proxy-router", "Caddy", ["local-reverse-proxy", "tls-termination"]),
   plugin("local-git", "scm", "Local Git", ["ref-resolution", "rollback-anchor"]),
@@ -195,6 +205,7 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
 ]
 
 const stubProviders: readonly V2ProviderPlugin[] = [
+  rigdProcessSupervisorProvider,
   plugin("stub-process-supervisor", "process-supervisor", "Stub Process Supervisor", ["process-supervisor-contract-test"]),
   plugin("stub-proxy-router", "proxy-router", "Stub Proxy Router", ["proxy-router-contract-test"]),
   plugin("stub-scm", "scm", "Stub SCM", ["scm-contract-test"]),
@@ -209,6 +220,7 @@ const stubProviders: readonly V2ProviderPlugin[] = [
 ]
 
 const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
+  rigdProcessSupervisorProvider,
   plugin("isolated-e2e-process-supervisor", "process-supervisor", "Isolated E2E Process Supervisor", [
     "fake-launchd",
     "real-subprocess",
@@ -257,6 +269,34 @@ const familyService = <Family extends V2ProviderFamily>(
   }
 }
 
+const missingProviderError = (
+  family: V2ProviderFamily,
+  providerId: string | undefined,
+): V2RuntimeError =>
+  new V2RuntimeError(
+    providerId
+      ? `Provider '${providerId}' is not registered for '${family}'.`
+      : `No provider is registered for '${family}'.`,
+    "Select a registered provider id in rig.json or install the provider before running the command.",
+    {
+      family,
+      ...(providerId ? { providerId } : {}),
+    },
+  )
+
+const providerForFamily = <Family extends V2ProviderFamily>(
+  report: V2ProviderRegistryReport,
+  family: Family,
+  providerId?: string,
+): Effect.Effect<V2ProviderPluginForFamily<Family>, V2RuntimeError> => {
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<Family> =>
+      provider.family === family && (providerId === undefined || provider.id === providerId),
+  )
+
+  return selected ? Effect.succeed(selected) : Effect.fail(missingProviderError(family, providerId))
+}
+
 const providerOperation = (provider: V2ProviderPlugin, operation: string): Effect.Effect<string, V2RuntimeError> =>
   Effect.succeed(`${provider.family}:${provider.id}:${operation}`)
 
@@ -281,16 +321,26 @@ const processSupervisorService = (
   report: V2ProviderRegistryReport,
 ): V2ProcessSupervisorProviderService => {
   const base = familyService(report, "process-supervisor")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"process-supervisor"> =>
-      provider.family === "process-supervisor",
-  ) as V2ProviderPluginForFamily<"process-supervisor">
+  const selectedForDeployment = (deployment: V2DeploymentRecord) =>
+    providerForFamily(report, "process-supervisor", deployment.resolved.providers.processSupervisor)
 
   return {
     ...base,
-    up: (input) => providerOperation(selected, `up:${input.service.name}`),
-    down: (input) => providerOperation(selected, `down:${input.service.name}`),
-    restart: (input) => providerOperation(selected, `restart:${input.service.name}`),
+    up: (input) =>
+      Effect.gen(function* () {
+        const selected = yield* selectedForDeployment(input.deployment)
+        return yield* providerOperation(selected, `up:${input.service.name}`)
+      }),
+    down: (input) =>
+      Effect.gen(function* () {
+        const selected = yield* selectedForDeployment(input.deployment)
+        return yield* providerOperation(selected, `down:${input.service.name}`)
+      }),
+    restart: (input) =>
+      Effect.gen(function* () {
+        const selected = yield* selectedForDeployment(input.deployment)
+        return yield* providerOperation(selected, `restart:${input.service.name}`)
+      }),
   }
 }
 

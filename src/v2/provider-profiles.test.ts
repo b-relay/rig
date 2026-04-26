@@ -11,7 +11,7 @@ describe("GIVEN v2 provider profiles WHEN selected through Effect services THEN 
   test("GIVEN default profile WHEN inspected THEN concrete default provider families are named", () => {
     expect(v2ProviderProfileFromName("default")).toMatchObject({
       name: "default",
-      processSupervisor: "launchd",
+      processSupervisor: "rigd",
       proxyRouter: "caddy",
       scm: "local-git",
       workspaceMaterializer: "git-worktree",

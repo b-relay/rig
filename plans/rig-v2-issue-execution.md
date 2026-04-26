@@ -342,8 +342,11 @@ status, and deploy calls pass the validated config into the rigd/provider path.
 The provider-method boundary is now in place: process supervisor, workspace,
 SCM, package manager, health, proxy, and event transport services expose
 runtime operation methods, and `V2RuntimeExecutorLive` calls them in order for
-lifecycle, deploy, and generated teardown. Remaining #25 work is concrete
-first-party provider adapter behavior and component log ingestion.
+lifecycle, deploy, and generated teardown. Lane config now also resolves
+`providers.processSupervisor`, defaulting to core `rigd` while allowing the
+bundled `launchd` plugin and future external process-supervisor providers to
+use the same selection shape. Remaining #25 work is concrete first-party
+provider adapter behavior and component log ingestion.
 
 After #25, do #24 for the user-facing config-edit surface. Then #23 can prepare
 the final `rig2` to `rig` replacement build path.

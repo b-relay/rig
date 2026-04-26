@@ -11,6 +11,7 @@ import {
   v2ProviderFamilies,
   type V2ProviderPlugin,
 } from "./provider-contracts.js"
+import type { V2DeploymentRecord } from "./deployments.js"
 
 const runWithRegistry = <A>(
   effect: Effect.Effect<A, unknown, V2ProviderRegistry>,
@@ -37,10 +38,23 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
 
     for (const report of reports) {
       expect(report.families).toEqual(v2ProviderFamilies)
-      expect(report.providers.map((provider) => provider.family).sort()).toEqual([...v2ProviderFamilies].sort())
-      expect(report.providers.every((provider) => provider.source === "first-party")).toBe(true)
+      for (const family of v2ProviderFamilies) {
+        expect(report.providers.some((provider) => provider.family === family)).toBe(true)
+      }
+      expect(report.providers.every((provider) => provider.source === "core" || provider.source === "first-party")).toBe(true)
       expect(report.providers.every((provider) => provider.capabilities.length > 0)).toBe(true)
     }
+
+    expect(reports[0].providers).toContainEqual(expect.objectContaining({
+      id: "rigd",
+      family: "process-supervisor",
+      source: "core",
+    }))
+    expect(reports[0].providers).toContainEqual(expect.objectContaining({
+      id: "launchd",
+      family: "process-supervisor",
+      source: "first-party",
+    }))
   })
 
   test("GIVEN an external provider WHEN registered THEN it uses the same plugin shape as bundled providers", async () => {
@@ -80,7 +94,7 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     )
 
     expect(report.profile).toBe("stub")
-    expect(report.providers.every((provider) => provider.id.startsWith("stub-"))).toBe(true)
+    expect(report.providers.every((provider) => provider.source === "core" || provider.id.startsWith("stub-"))).toBe(true)
     expect(report.providers.find((provider) => provider.family === "control-plane-transport")).toMatchObject({
       id: "stub-control-plane",
       capabilities: ["localhost-contract-test"],
@@ -103,7 +117,7 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     )
 
     expect(selected.processSupervisor).toMatchObject({
-      id: "isolated-e2e-process-supervisor",
+      id: "rigd",
       family: "process-supervisor",
     })
     expect(selected.controlPlane).toMatchObject({
@@ -114,5 +128,34 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
       id: "native-health",
       family: "health-checker",
     })
+  })
+
+  test("GIVEN a deployment-selected process supervisor WHEN executing operations THEN bundled providers share the same interface", async () => {
+    const deployment = {
+      name: "live",
+      workspacePath: "/tmp/rig-v2/workspaces/pantry/live",
+      resolved: {
+        providers: {
+          processSupervisor: "launchd",
+        },
+      },
+    } as V2DeploymentRecord
+
+    const operation = await Effect.runPromise(
+      Effect.gen(function* () {
+        const processSupervisor = yield* V2ProcessSupervisorProvider
+        return yield* processSupervisor.up({
+          deployment,
+          service: {
+            name: "web",
+            type: "server",
+            command: "bun run start",
+            port: 3070,
+          },
+        })
+      }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+    )
+
+    expect(operation).toBe("process-supervisor:launchd:up:web")
   })
 })

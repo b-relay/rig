@@ -65,6 +65,9 @@ const deployment = (): V2DeploymentRecord => ({
     },
     workspacePath: "/tmp/rig-v2/workspaces/pantry/live",
     providerProfile: "stub",
+    providers: {
+      processSupervisor: "rigd",
+    },
   },
 })
 
@@ -169,8 +172,8 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
 
     expect(result.operations).toEqual([
       "workspace-materializer:stub-workspace-materializer:resolve:/tmp/rig-v2/workspaces/pantry/live",
-      "process-supervisor:stub-process-supervisor:up:web",
-      "process-supervisor:stub-process-supervisor:up:worker",
+      "process-supervisor:rigd:up:web",
+      "process-supervisor:rigd:up:worker",
       "health-checker:stub-health-checker:check:web",
       "event-transport:stub-event-transport:append:lifecycle:up",
     ])

@@ -39,7 +39,7 @@ The new deployment model is git-push-first. A push to the configured main ref up
 
 The new runtime model introduces `rigd` as the local control plane. `rigd` owns deployment inventory, process supervision, structured logs, health state, port allocation, deploy actions, provider coordination, and local state reconciliation. The CLI becomes a client of `rigd`, and `rigd` provides the authenticated connection that allows the web UI at `rig.b-relay.com` to inspect and control the local machine.
 
-The new architecture makes provider selection explicit. Launchd, Caddy, and local git can remain the defaults, but they become default providers rather than assumptions embedded in core logic. Stub providers become first-class composition options, which allows the main `rig` binary to run end-to-end tests under isolated state without needing a separate smoke-only binary.
+The new architecture makes provider selection explicit. `rigd` is the core process supervisor, launchd is a bundled first-party process-supervisor plugin, and Caddy/local git remain provider-backed defaults rather than assumptions embedded in core logic. Stub providers become first-class composition options, which allows the main `rig` binary to run end-to-end tests under isolated state without needing a separate smoke-only binary.
 
 The new backend foundation is Effect-native. V2 targets Effect v4 for backend logic, Effect Schema for config and argument validation, and Effect CLI for command parsing. Legacy Zod schemas and hand-written parser code can remain only as migration scaffolding for v1 compatibility.
 
@@ -155,7 +155,7 @@ The current implementation remains supported during migration while new docs, on
 
 53. As a contributor, I want external concerns to remain behind interfaces, so that the plugin architecture is enforceable.
 
-54. As a contributor, I want default providers to be selected at composition time, so that launchd, Caddy, and local git do not leak into core logic.
+54. As a contributor, I want providers to be selected at composition time, so that rigd, launchd, Caddy, and local git do not leak into core logic.
 
 55. As a contributor, I want new docs and onboarding to use v2 concepts, so that users learn the model we are building toward.
 
@@ -227,7 +227,7 @@ The current implementation remains supported during migration while new docs, on
 
 - Provider families must include process supervision, proxy/routing, SCM integration, workspace/deployment materialization, logging/event transport, control-plane transport, health checking, and package-manager integration.
 
-- Default providers can remain launchd, Caddy, and local git, but core logic should depend on interfaces and provider composition rather than concrete implementations.
+- Default providers can remain core rigd, Caddy, and local git. Launchd remains a bundled first-party process-supervisor plugin selectable through the same provider interface as future external plugins. Core logic should depend on interfaces and provider composition rather than concrete implementations.
 
 - Stub providers must be first-class provider choices, not smoke-test-only hacks.
 

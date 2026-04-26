@@ -300,5 +300,8 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   validated v2 config for repo-inferred and explicit `--config` command paths,
   then passes that config into lifecycle, status, and deploy calls. Runtime
   provider family services now expose operation methods that
-  `V2RuntimeExecutorLive` invokes in order. Remaining #25 work: concrete
-  first-party provider adapter behavior and component log ingestion.
+  `V2RuntimeExecutorLive` invokes in order. Lane config now carries
+  `providers.processSupervisor`, defaulting to core `rigd` while letting lanes
+  select the bundled `launchd` process-supervisor plugin through the same
+  interface shape future external providers will use. Remaining #25 work:
+  concrete first-party provider adapter behavior and component log ingestion.

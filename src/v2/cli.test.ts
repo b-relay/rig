@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect-v4"
 
 import { runRig2Cli } from "./cli.js"
+import type { V2ProjectConfig } from "./config.js"
 import {
   V2DeployIntents,
   type V2BumpInput,
@@ -11,9 +12,16 @@ import {
 import { V2Doctor, type V2DoctorReportInput } from "./doctor.js"
 import { V2CliArgumentError, type V2TaggedError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleRequest } from "./lifecycle.js"
+import { V2ProjectConfigLoader, type V2ProjectConfigLoadInput } from "./project-config-loader.js"
 import { V2ProjectLocator } from "./project-locator.js"
 import { V2ProviderRegistryLive } from "./provider-contracts.js"
-import { V2Rigd, type V2RigdProjectInventoryInput, type V2RigdStartInput } from "./rigd.js"
+import {
+  V2Rigd,
+  type V2RigdControlPlaneDeployInput,
+  type V2RigdHealthStateInput,
+  type V2RigdProjectInventoryInput,
+  type V2RigdStartInput,
+} from "./rigd.js"
 import { V2Logger, V2RuntimeLive, type V2FoundationState } from "./services.js"
 
 class CaptureV2Logger {
@@ -41,7 +49,9 @@ class CaptureV2Lifecycle {
 }
 
 class CaptureV2Rigd {
+  readonly controlPlaneDeployRequests: V2RigdControlPlaneDeployInput[] = []
   readonly healthRequests: V2RigdStartInput[] = []
+  readonly healthStateRequests: V2RigdHealthStateInput[] = []
   readonly inventoryRequests: V2RigdProjectInventoryInput[] = []
   readonly startRequests: V2RigdStartInput[] = []
 
@@ -117,7 +127,8 @@ class CaptureV2Rigd {
     return Effect.succeed([])
   }
 
-  healthState(input: V2RigdProjectInventoryInput) {
+  healthState(input: V2RigdHealthStateInput) {
+    this.healthStateRequests.push(input)
     return this.health({ stateRoot: input.stateRoot }).pipe(
       Effect.map((rigd) => ({
         rigd,
@@ -132,6 +143,19 @@ class CaptureV2Rigd {
 
   deploy() {
     return Effect.die("unused")
+  }
+
+  controlPlaneDeploy(input: V2RigdControlPlaneDeployInput) {
+    this.controlPlaneDeployRequests.push(input)
+    return Effect.succeed({
+      id: "rigd-1",
+      kind: "deploy" as const,
+      accepted: true as const,
+      project: input.project,
+      stateRoot: input.stateRoot,
+      target: input.target,
+      receivedAt: "2026-04-24T00:00:00.000Z",
+    })
   }
 }
 
@@ -196,6 +220,32 @@ class CaptureV2Doctor {
   }
 }
 
+class CaptureV2ProjectConfigLoader {
+  readonly loads: V2ProjectConfigLoadInput[] = []
+
+  load(input: V2ProjectConfigLoadInput) {
+    this.loads.push(input)
+    return Effect.succeed({
+      project: input.project,
+      configPath: input.configPath,
+      config: {
+        name: input.project,
+        components: {
+          web: {
+            mode: "managed" as const,
+            command: "bun run start -- --port ${port.web}",
+            port: 3070,
+            health: "http://127.0.0.1:${port.web}/health",
+          },
+        },
+        deployments: {
+          providerProfile: "stub" as const,
+        },
+      } satisfies V2ProjectConfig,
+    })
+  }
+}
+
 const runWithLogger = async (
   argv: readonly string[],
   options: {
@@ -207,6 +257,7 @@ const runWithLogger = async (
   const rigd = new CaptureV2Rigd()
   const deployIntents = new CaptureV2DeployIntents()
   const doctor = new CaptureV2Doctor()
+  const configLoader = new CaptureV2ProjectConfigLoader()
   const layer = Layer.mergeAll(
     V2RuntimeLive,
     Layer.succeed(V2Logger, logger),
@@ -214,6 +265,7 @@ const runWithLogger = async (
     Layer.succeed(V2Rigd, rigd),
     Layer.succeed(V2DeployIntents, deployIntents),
     Layer.succeed(V2Doctor, doctor),
+    Layer.succeed(V2ProjectConfigLoader, configLoader),
     V2ProviderRegistryLive("default"),
     Layer.succeed(V2ProjectLocator, {
       inferCurrentProject: options.inferredProject
@@ -232,7 +284,7 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRig2Cli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle, rigd, deployIntents, doctor }
+  return { exitCode, logger, lifecycle, rigd, deployIntents, doctor, configLoader }
 }
 
 describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
@@ -303,6 +355,71 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(logger.infos.at(-1)?.message).toBe("rig2 deploy intent")
   })
 
+  test("GIVEN deploy inside managed repo WHEN running THEN config is loaded and accepted by rigd", async () => {
+    const { exitCode, logger, deployIntents, rigd, configLoader } = await runWithLogger([
+      "deploy",
+      "--ref",
+      "feature/preview",
+      "--target",
+      "generated",
+    ], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(configLoader.loads).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/repo/rig.json",
+      },
+    ])
+    expect(deployIntents.cliDeploys[0]).toMatchObject({
+      project: "pantry",
+      ref: "feature/preview",
+      target: "generated",
+      config: expect.objectContaining({
+        name: "pantry",
+      }),
+    })
+    expect(rigd.controlPlaneDeployRequests).toEqual([
+      expect.objectContaining({
+        project: "pantry",
+        ref: "feature/preview",
+        target: "generated",
+        config: expect.objectContaining({
+          name: "pantry",
+        }),
+      }),
+    ])
+    expect(logger.infos.map((entry) => entry.message)).toContain("rig2 deploy accepted")
+  })
+
+  test("GIVEN explicit project with config path WHEN running up THEN it loads that config", async () => {
+    const { exitCode, lifecycle, configLoader } = await runWithLogger([
+      "up",
+      "--project",
+      "pantry",
+      "--config",
+      "/tmp/pantry/rig.json",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(configLoader.loads).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/pantry/rig.json",
+      },
+    ])
+    expect(lifecycle.requests[0]).toMatchObject({
+      action: "up",
+      project: "pantry",
+      config: expect.objectContaining({
+        name: "pantry",
+      }),
+    })
+  })
+
   test("GIVEN bump command WHEN running THEN optional version metadata is emitted", async () => {
     const { exitCode, logger, deployIntents } = await runWithLogger([
       "bump",
@@ -359,21 +476,57 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(logger.infos.at(-1)?.message).toBe("rig2 doctor report")
   })
 
-  test("GIVEN up without project inside managed repo WHEN running THEN it infers project and targets local lane", async () => {
-    const { exitCode, logger, lifecycle } = await runWithLogger(["up"], {
+  test("GIVEN up without project inside managed repo WHEN running THEN it loads config and targets local lane", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger(["up"], {
       inferredProject: "pantry",
     })
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
+    expect(configLoader.loads).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/repo/rig.json",
+      },
+    ])
     expect(lifecycle.requests).toEqual([
       {
         action: "up",
         project: "pantry",
         lane: "local",
         stateRoot: expect.stringContaining(".rig-v2"),
+        config: expect.objectContaining({
+          name: "pantry",
+        }),
       },
     ])
+  })
+
+  test("GIVEN status inside managed repo WHEN running THEN inventory and health use config", async () => {
+    const { exitCode, rigd, lifecycle, configLoader } = await runWithLogger(["status"], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(configLoader.loads).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/repo/rig.json",
+      },
+    ])
+    expect(rigd.inventoryRequests[0]).toMatchObject({
+      project: "pantry",
+      config: expect.objectContaining({
+        name: "pantry",
+      }),
+    })
+    expect(lifecycle.requests[0]).toMatchObject({
+      action: "status",
+      project: "pantry",
+      config: expect.objectContaining({
+        name: "pantry",
+      }),
+    })
   })
 
   test("GIVEN logs with explicit project and live lane WHEN running THEN lifecycle request includes log options", async () => {

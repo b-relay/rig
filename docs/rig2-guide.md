@@ -15,7 +15,7 @@ under isolated state.
 | Config shape | `environments.dev` and `environments.prod` | shared `components`, plus `local`, `live`, and `deployments` |
 | Runtime lanes | `dev` and `prod` | `local`, `live`, and generated deployments |
 | Components | v1 `services` with `server` or `bin` type | v2 `components` with `managed` or `installed` mode |
-| CLI style | project/env positional commands | repo-first commands, with `--project` for cross-project use |
+| CLI style | project/env positional commands | repo-first commands, with `--project` and `--config` for cross-project use |
 | Deploy model | prod release/version oriented | git ref oriented; semver is optional metadata |
 | Runtime authority | command-assembled runtime state | `rigd` owns state, receipts, logs, health, and control-plane contracts |
 | Providers | concrete local defaults | provider interfaces and profiles |
@@ -100,6 +100,14 @@ Start or inspect a project from outside the repo:
 ./rig2 status --project pantry
 ```
 
+When running outside the project repo, pass the v2 config path if the command
+should use deployment inventory or provider-backed execution:
+
+```bash
+./rig2 up --project pantry --config /path/to/pantry/rig.json
+./rig2 status --project pantry --config /path/to/pantry/rig.json
+```
+
 Use the live lane:
 
 ```bash
@@ -113,6 +121,7 @@ Create deploy intents:
 ./rig2 deploy --project pantry --ref main --target live
 ./rig2 deploy --project pantry --ref feature/preview --target generated
 ./rig2 deploy --project pantry --ref feature/preview --target generated --deployment preview-a
+./rig2 deploy --project pantry --config /path/to/pantry/rig.json --ref feature/preview --target generated
 ```
 
 Manage optional version metadata:
@@ -157,9 +166,11 @@ work: #24.
 ## Current Limits
 
 - `rig2` is not the default `rig` behavior yet.
-- `rig2 deploy` currently proves ref/target intent and generated deployment
-  state. Config-backed `rigd` deploy actions now run through the v2 runtime
-  executor provider interface before receipts are persisted, but full
+- Repo-inferred `rig2 up`, `down`, `status`, `logs`, and `deploy` load the v2
+  `rig.json` through the config-loader interface. Outside the repo, use
+  `--project` plus `--config` to get the same validated config-backed path.
+- Config-backed `rigd` lifecycle and deploy actions now run through the v2
+  runtime executor provider interface before receipts are persisted, but full
   real-process production parity is still pending.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.

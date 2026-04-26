@@ -1,12 +1,18 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 
-const runRig2Command = async (argv: readonly string[], env: Record<string, string>) => {
+const runRig2Command = async (
+  argv: readonly string[],
+  env: Record<string, string>,
+  options: {
+    readonly cwd?: string
+  } = {},
+) => {
   const processHandle = Bun.spawn({
-    cmd: [process.execPath, "run", "src/index-rig2.ts", ...argv],
-    cwd: process.cwd(),
+    cmd: [process.execPath, "run", join(process.cwd(), "src/index-rig2.ts"), ...argv],
+    cwd: options.cwd ?? process.cwd(),
     env: {
       ...process.env,
       ...env,
@@ -48,11 +54,32 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
 
   test("GIVEN up command without project WHEN run from repo THEN it infers current project", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig2-repo-"))
 
     try {
+      await writeFile(
+        join(repo, "rig.json"),
+        `${JSON.stringify({
+          name: "rig",
+          components: {
+            web: {
+              mode: "managed",
+              command: "bun run start -- --port ${port.web}",
+              port: 3070,
+              health: "http://127.0.0.1:${port.web}/health",
+            },
+          },
+          deployments: {
+            providerProfile: "stub",
+          },
+        }, null, 2)}\n`,
+        "utf8",
+      )
+
       const { stdout, stderr, exitCode } = await runRig2Command(
         ["up", "--state-root", root],
         { RIG_V2_ROOT: root },
+        { cwd: repo },
       )
 
       expect(exitCode).toBe(0)
@@ -63,6 +90,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(stdout).toContain(`"stateRoot":"${root}"`)
     } finally {
       await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
     }
   })
 

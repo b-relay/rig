@@ -52,6 +52,7 @@ Try the foundation path:
 ```bash
 bun run start:rig2 rigd
 bun run start:rig2 status --project pantry
+bun run start:rig2 status --project pantry --config /path/to/pantry/rig.json
 bun run start:rig2 up
 bun run start:rig2 deploy --project pantry --ref feature/preview --target generated
 bun run start:rig2 bump --project pantry --current 1.2.3 --bump patch

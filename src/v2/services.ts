@@ -6,6 +6,7 @@ import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
 import type { V2TaggedError } from "./errors.js"
 import { V2ProviderContractsLive } from "./provider-contracts.js"
 import { V2ProviderProfileLive } from "./provider-profiles.js"
+import { V2ProjectConfigLoaderLive } from "./project-config-loader.js"
 import { V2ProjectLocatorLive } from "./project-locator.js"
 import { V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2FileRigdStateStoreLive } from "./rigd-state.js"
@@ -104,6 +105,7 @@ export const Rig2Live = Layer.mergeAll(
   V2RigdActionPreflightLive,
   Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
   Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
+  Layer.provide(V2ProjectConfigLoaderLive, Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive)),
   V2ProjectLocatorLive,
 )
 

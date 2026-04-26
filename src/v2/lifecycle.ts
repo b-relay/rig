@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect-v4"
 
+import type { V2ProjectConfig } from "./config.js"
 import { V2Rigd } from "./rigd.js"
 import { V2Logger } from "./services.js"
 
@@ -11,6 +12,7 @@ export interface V2LifecycleRequest {
   readonly project: string
   readonly lane: V2LifecycleLane
   readonly stateRoot: string
+  readonly config?: V2ProjectConfig
   readonly follow?: boolean
   readonly lines?: number
 }
@@ -49,6 +51,7 @@ export const V2LifecycleLive = Layer.effect(
             const status = yield* rigd.healthState({
               project: request.project,
               stateRoot: request.stateRoot,
+              ...(request.config ? { config: request.config } : {}),
             })
             yield* logger.info("rig2 runtime status", status)
             return
@@ -59,6 +62,7 @@ export const V2LifecycleLive = Layer.effect(
             project: request.project,
             lane: request.lane,
             stateRoot: request.stateRoot,
+            ...(request.config ? { config: request.config } : {}),
           })
           yield* logger.info("rig2 lifecycle accepted", receipt)
         }),

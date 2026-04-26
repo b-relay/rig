@@ -44,12 +44,12 @@ intentionally deferred.
 | Final CLI area | Current v1 behavior | Current `rig2` equivalent | Readiness status | Replacement decision |
 |---|---|---|---|---|
 | Init/setup | `rig init` registers projects and can scaffold v1 or v2 config | v2 scaffold exists through `rig init --v2`; no `rig2 init` yet | partial | add v2-native init surface before replacement or intentionally keep setup in final `rig init` |
-| Lifecycle start | `rig start <name> dev|prod` | `rig2 up --lane local|live` | partial: config-backed `rigd` lifecycle writes execute through the v2 runtime executor provider interface; direct CLI config loading and real-process parity still pending | #25 in progress |
-| Lifecycle stop | `rig stop <name> dev|prod` | `rig2 down --lane local|live` | partial: config-backed `rigd` lifecycle writes execute through the v2 runtime executor provider interface; direct CLI config loading and real-process parity still pending | #25 in progress |
+| Lifecycle start | `rig start <name> dev|prod` | `rig2 up --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through the v2 runtime executor provider interface; real-process parity still pending | #25 in progress |
+| Lifecycle stop | `rig stop <name> dev|prod` | `rig2 down --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through the v2 runtime executor provider interface; real-process parity still pending | #25 in progress |
 | Lifecycle restart | `rig restart` | no direct `rig2 restart` | not implemented | add first-class v2 `restart` or intentionally omit before replacement |
 | Status | `rig status` | `rig2 status` | partial: reports foundation and `rigd` state; runtime execution result details are recorded for config-backed writes | #25 in progress |
 | Logs | `rig logs` | `rig2 logs` | partial: reads structured `rigd` logs with execution details; provider-backed component log ingestion pending | #25 in progress |
-| Deploy | `rig deploy <name> dev|prod` | `rig2 deploy --target live|generated --ref <ref>` | partial: generated state and config-backed deploy actions execute through the v2 runtime executor provider interface; direct CLI config loading and real-process parity still pending | #25 in progress |
+| Deploy | `rig deploy <name> dev|prod` | `rig2 deploy --target live|generated --ref <ref>` | partial: repo-inferred and `--config` paths load validated v2 config; config-backed live/generated deploy actions execute through the v2 runtime executor provider interface; real-process parity still pending | #25 in progress |
 | Version metadata | `rig version` | `rig2 bump` | partial: semver is optional metadata | final CLI can keep `bump` if it remains simpler than `version` |
 | Global inventory | `rig list` | no direct `rig2 list` | not implemented | add v2 CLI inventory if shell workflows need it |
 | Config | `rig config` | `rigd.configRead/configPreview/configApply` interfaces | partial: no CLI/transport surface | blocked by #24 |

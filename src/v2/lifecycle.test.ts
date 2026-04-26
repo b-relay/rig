@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect-v4"
 
 import { V2Lifecycle, V2LifecycleLive } from "./lifecycle.js"
+import type { V2ProjectConfig } from "./config.js"
 import { V2Rigd, type V2RigdLifecycleInput, type V2RigdLogInput, type V2RigdHealthStateInput } from "./rigd.js"
 import { V2Logger, type V2LoggerService } from "./services.js"
 
@@ -112,6 +113,15 @@ const runWithLifecycle = async <A>(effect: Effect.Effect<A, unknown, V2Lifecycle
 
 describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN rigd is the source of truth", () => {
   test("GIVEN up and down WHEN running THEN lifecycle actions are accepted by rigd", async () => {
+    const config = {
+      name: "pantry",
+      components: {
+        web: {
+          mode: "managed" as const,
+          command: "bun run start -- --port ${port.web}",
+        },
+      },
+    } satisfies V2ProjectConfig
     const { rigd, logger } = await runWithLifecycle(
       Effect.gen(function* () {
         const lifecycle = yield* V2Lifecycle
@@ -120,6 +130,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
           project: "pantry",
           lane: "local",
           stateRoot: "/tmp/rig-v2",
+          config,
         })
         yield* lifecycle.run({
           action: "down",
@@ -131,6 +142,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
     )
 
     expect(rigd.lifecycleRequests.map((request) => request.action)).toEqual(["up", "down"])
+    expect(rigd.lifecycleRequests[0]?.config).toEqual(config)
     expect(logger.infos.map((entry) => entry.message)).toEqual([
       "rig2 lifecycle accepted",
       "rig2 lifecycle accepted",
@@ -172,6 +184,15 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
   })
 
   test("GIVEN status WHEN running THEN health and deployment state come from rigd", async () => {
+    const config = {
+      name: "pantry",
+      components: {
+        web: {
+          mode: "managed" as const,
+          command: "bun run start -- --port ${port.web}",
+        },
+      },
+    } satisfies V2ProjectConfig
     const { rigd, logger } = await runWithLifecycle(
       Effect.gen(function* () {
         const lifecycle = yield* V2Lifecycle
@@ -180,6 +201,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
           project: "pantry",
           lane: "live",
           stateRoot: "/tmp/rig-v2",
+          config,
         })
       }),
     )
@@ -188,6 +210,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
       {
         project: "pantry",
         stateRoot: "/tmp/rig-v2",
+        config,
       },
     ])
     expect(logger.infos[0]?.message).toBe("rig2 runtime status")

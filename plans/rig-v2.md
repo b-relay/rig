@@ -336,5 +336,7 @@ Stage 2 covers:
   as a replacement CLI rather than routing selected commands through v1.
 - #25 Connect rig2 lifecycle and deploy actions to provider-backed execution.
   In progress: config-backed `rigd` lifecycle/deploy/destroy writes now execute
-  through `V2RuntimeExecutor` before receipts/logs persist; CLI config loading
-  and real process/workspace/proxy parity remain.
+  through `V2RuntimeExecutor` before receipts/logs persist; repo-inferred and
+  explicit `--config` CLI paths now load validated v2 config through an
+  interface and pass it into lifecycle, status, and deploy calls. Real
+  process/workspace/proxy parity and component log ingestion remain.

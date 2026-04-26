@@ -2,12 +2,13 @@ import { Effect, FileSystem, Layer, Path, Sink, Stdio, Stream, Terminal } from "
 import { Command, Flag } from "effect-v4/unstable/cli"
 import { ChildProcessSpawner } from "effect-v4/unstable/process/ChildProcessSpawner"
 
-import { decodeV2StatusInput } from "./config.js"
+import { decodeV2StatusInput, type V2ProjectConfig } from "./config.js"
 import { V2DeployIntents, type V2DeployTarget } from "./deploy-intent.js"
 import { V2Doctor } from "./doctor.js"
 import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleAction, type V2LifecycleLane } from "./lifecycle.js"
 import { rigV2Root } from "./paths.js"
+import { V2ProjectConfigLoader } from "./project-config-loader.js"
 import { V2ProjectLocator } from "./project-locator.js"
 import { V2ProviderRegistry } from "./provider-contracts.js"
 import { V2Rigd } from "./rigd.js"
@@ -46,6 +47,7 @@ interface ProjectScopedInput {
   readonly project: string
   readonly lane: V2LifecycleLane
   readonly stateRoot: string
+  readonly configPath?: string
 }
 
 const projectFlag = Flag.string("project").pipe(
@@ -63,6 +65,11 @@ const stateRootFlag = Flag.string("state-root").pipe(
   Flag.withDescription("Isolated v2 state root. Defaults to ~/.rig-v2."),
 )
 
+const configFlag = Flag.string("config").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Path to a v2 rig.json. Optional inside a managed repo."),
+)
+
 const deployRefFlag = Flag.string("ref").pipe(
   Flag.withDefault("HEAD"),
   Flag.withDescription("Git ref to deploy. Semver is optional metadata, not required."),
@@ -77,13 +84,16 @@ const resolveProjectScopedInput = (input: {
   readonly project: string
   readonly lane: V2LifecycleLane
   readonly stateRoot: string
+  readonly configPath?: string
 }): Effect.Effect<ProjectScopedInput, V2CliArgumentError, V2ProjectLocator> =>
   Effect.gen(function* () {
     const explicitProject = input.project.trim()
+    const explicitConfigPath = input.configPath?.trim()
     if (explicitProject.length > 0) {
       return {
         ...input,
         project: explicitProject,
+        ...(explicitConfigPath ? { configPath: explicitConfigPath } : {}),
       }
     }
 
@@ -93,7 +103,25 @@ const resolveProjectScopedInput = (input: {
     return {
       ...input,
       project: located.name,
+      configPath: explicitConfigPath || located.configPath,
     }
+  })
+
+const loadProjectConfig = (input: {
+  readonly project: string
+  readonly configPath?: string
+}): Effect.Effect<V2ProjectConfig | undefined, V2CliArgumentError, V2ProjectConfigLoader> =>
+  Effect.gen(function* () {
+    if (!input.configPath) {
+      return undefined
+    }
+
+    const loader = yield* V2ProjectConfigLoader
+    const loaded = yield* loader.load({
+      project: input.project,
+      configPath: input.configPath,
+    })
+    return loaded.config
   })
 
 const runLifecycleAction = (
@@ -104,6 +132,8 @@ const runLifecycleAction = (
     readonly stateRoot: string
     readonly follow?: boolean
     readonly lines?: number
+    readonly configPath?: string
+    readonly config?: V2ProjectConfig
   },
 ) =>
   Effect.gen(function* () {
@@ -111,12 +141,17 @@ const runLifecycleAction = (
       project: input.project,
       stateRoot: input.stateRoot,
     })
+    const config = input.config ?? (yield* loadProjectConfig({
+      project: decoded.project,
+      configPath: input.configPath,
+    }))
     const lifecycle = yield* V2Lifecycle
     yield* lifecycle.run({
       action,
       project: decoded.project,
       lane: input.lane,
       stateRoot: decoded.stateRoot,
+      ...(config ? { config } : {}),
       ...(input.follow !== undefined ? { follow: input.follow } : {}),
       ...(input.lines !== undefined ? { lines: input.lines } : {}),
     })
@@ -129,6 +164,7 @@ const lifecycleCommand = (action: V2LifecycleAction, description: string) =>
       project: projectFlag,
       lane: laneFlag,
       stateRoot: stateRootFlag,
+      configPath: configFlag,
     },
     (input) =>
       Effect.gen(function* () {
@@ -143,6 +179,7 @@ const logsCommand = Command.make(
     project: projectFlag,
     lane: laneFlag,
     stateRoot: stateRootFlag,
+    configPath: configFlag,
     follow: Flag.boolean("follow").pipe(Flag.withDescription("Follow log output.")),
     lines: Flag.integer("lines").pipe(
       Flag.withDefault(50),
@@ -166,6 +203,7 @@ const downCommand = Command.make(
     project: projectFlag,
     lane: laneFlag,
     stateRoot: stateRootFlag,
+    configPath: configFlag,
     destroy: Flag.boolean("destroy").pipe(
       Flag.withDescription("Reserved for generated deployment teardown; rejected for local/live lanes."),
     ),
@@ -193,11 +231,16 @@ const statusCommand = Command.make(
     project: projectFlag,
     lane: laneFlag,
     stateRoot: stateRootFlag,
+    configPath: configFlag,
   },
   (input) =>
     Effect.gen(function* () {
       const scoped = yield* resolveProjectScopedInput(input)
       const decoded = yield* decodeV2StatusInput(scoped)
+      const config = yield* loadProjectConfig({
+        project: decoded.project,
+        configPath: scoped.configPath,
+      })
       const runtime = yield* V2Runtime
       const logger = yield* V2Logger
       const rigd = yield* V2Rigd
@@ -213,6 +256,7 @@ const statusCommand = Command.make(
       const inventory = yield* rigd.inventory({
         project: decoded.project,
         stateRoot: decoded.stateRoot,
+        ...(config ? { config } : {}),
       })
       yield* logger.info("rigd status", {
         health,
@@ -221,7 +265,10 @@ const statusCommand = Command.make(
           deploymentCount: inventory.deployments.length,
         },
       })
-      yield* runLifecycleAction("status", scoped)
+      yield* runLifecycleAction("status", {
+        ...scoped,
+        ...(config ? { config } : {}),
+      })
     }),
 ).pipe(
   Command.withDescription("Inspect the isolated v2 runtime foundation."),
@@ -246,6 +293,7 @@ const deployCommand = Command.make(
   {
     project: projectFlag,
     stateRoot: stateRootFlag,
+    configPath: configFlag,
     ref: deployRefFlag,
     target: deployTargetFlag,
     deployment: Flag.string("deployment").pipe(
@@ -259,19 +307,37 @@ const deployCommand = Command.make(
         project: input.project,
         lane: "live",
         stateRoot: input.stateRoot,
+        configPath: input.configPath,
       })
       const decoded = yield* decodeV2StatusInput(scoped)
+      const config = yield* loadProjectConfig({
+        project: decoded.project,
+        configPath: scoped.configPath,
+      })
       const intents = yield* V2DeployIntents
       const logger = yield* V2Logger
+      const rigd = yield* V2Rigd
       const intent = yield* intents.fromCliDeploy({
         project: decoded.project,
         stateRoot: decoded.stateRoot,
         ref: input.ref,
         target: input.target,
+        ...(config ? { config } : {}),
         ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
       })
 
       yield* logger.info("rig2 deploy intent", intent)
+      if (config) {
+        const receipt = yield* rigd.controlPlaneDeploy({
+          project: decoded.project,
+          stateRoot: decoded.stateRoot,
+          ref: input.ref,
+          target: input.target,
+          config,
+          ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
+        })
+        yield* logger.info("rig2 deploy accepted", receipt)
+      }
     }),
 ).pipe(Command.withDescription("Create a v2 deploy intent for a ref and target without requiring semver."))
 

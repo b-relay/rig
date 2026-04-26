@@ -338,5 +338,7 @@ Stage 2 covers:
   In progress: config-backed `rigd` lifecycle/deploy/destroy writes now execute
   through `V2RuntimeExecutor` before receipts/logs persist; repo-inferred and
   explicit `--config` CLI paths now load validated v2 config through an
-  interface and pass it into lifecycle, status, and deploy calls. Real
-  process/workspace/proxy parity and component log ingestion remain.
+  interface and pass it into lifecycle, status, and deploy calls. Runtime
+  provider family services now expose operation methods that the executor
+  calls in order for lifecycle, deploy, and generated teardown. Concrete
+  first-party provider adapters and component log ingestion remain.

@@ -169,9 +169,9 @@ work: #24.
 - Repo-inferred `rig2 up`, `down`, `status`, `logs`, and `deploy` load the v2
   `rig.json` through the config-loader interface. Outside the repo, use
   `--project` plus `--config` to get the same validated config-backed path.
-- Config-backed `rigd` lifecycle and deploy actions now run through the v2
-  runtime executor provider interface before receipts are persisted, but full
-  real-process production parity is still pending.
+- Config-backed `rigd` lifecycle and deploy actions now run through ordered v2
+  runtime provider methods before receipts are persisted, but concrete
+  first-party provider adapter parity is still pending.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.

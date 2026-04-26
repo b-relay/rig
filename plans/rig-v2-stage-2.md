@@ -298,6 +298,7 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   deploy, and generated destroy actions now execute through that provider
   interface before durable receipts and logs are persisted. `rig2` now loads
   validated v2 config for repo-inferred and explicit `--config` command paths,
-  then passes that config into lifecycle, status, and deploy calls. Remaining
-  #25 work: real process/workspace/proxy execution parity and component log
-  ingestion.
+  then passes that config into lifecycle, status, and deploy calls. Runtime
+  provider family services now expose operation methods that
+  `V2RuntimeExecutorLive` invokes in order. Remaining #25 work: concrete
+  first-party provider adapter behavior and component log ingestion.

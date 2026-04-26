@@ -10,7 +10,6 @@ import {
   V2ProxyRouterProvider,
   V2ScmProvider,
   V2WorkspaceMaterializerProvider,
-  type V2ProviderPlugin,
 } from "./provider-contracts.js"
 
 export interface V2RuntimeExecutionResult {
@@ -50,9 +49,6 @@ export interface V2RuntimeExecutorService {
 export const V2RuntimeExecutor =
   Context.Service<V2RuntimeExecutorService>("rig/v2/V2RuntimeExecutor")
 
-const providerOperation = (provider: V2ProviderPlugin, operation: string): string =>
-  `${provider.family}:${provider.id}:${operation}`
-
 const managedServices = (deployment: V2DeploymentRecord) =>
   deployment.resolved.environment.services.filter((service) => service.type === "server")
 
@@ -81,29 +77,28 @@ export const V2RuntimeExecutorLive = Layer.effect(
     const healthChecker = yield* V2HealthCheckerProvider
     const packageManager = yield* V2PackageManagerProvider
 
-    const processPlugin = yield* processSupervisor.plugin
-    const proxyPlugin = yield* proxyRouter.plugin
-    const scmPlugin = yield* scm.plugin
-    const workspacePlugin = yield* workspaceMaterializer.plugin
-    const eventPlugin = yield* eventTransport.plugin
-    const healthPlugin = yield* healthChecker.plugin
-    const packagePlugin = yield* packageManager.plugin
-
     return {
       lifecycle: (input) =>
         Effect.gen(function* () {
           const services = managedServices(input.deployment)
           const ordered = input.action === "down" ? [...services].reverse() : services
-          const operations = [
-            providerOperation(workspacePlugin, `resolve:${input.deployment.workspacePath}`),
-            ...ordered.map((service) => providerOperation(processPlugin, `${input.action}:${service.name}`)),
-            ...(input.action === "up"
-              ? services
-                .filter((service) => service.healthCheck)
-                .map((service) => providerOperation(healthPlugin, `check:${service.name}`))
-              : []),
-            providerOperation(eventPlugin, `append:lifecycle:${input.action}`),
-          ]
+          const operations: string[] = []
+
+          operations.push(yield* workspaceMaterializer.resolve({ deployment: input.deployment }))
+          for (const service of ordered) {
+            operations.push(yield* (input.action === "up"
+              ? processSupervisor.up({ deployment: input.deployment, service })
+              : processSupervisor.down({ deployment: input.deployment, service })))
+          }
+          if (input.action === "up") {
+            for (const service of services.filter((service) => service.healthCheck)) {
+              operations.push(yield* healthChecker.check({ deployment: input.deployment, service }))
+            }
+          }
+          operations.push(yield* eventTransport.append({
+            deployment: input.deployment,
+            event: `lifecycle:${input.action}`,
+          }))
 
           return executionResult(input.deployment, operations)
         }),
@@ -112,17 +107,29 @@ export const V2RuntimeExecutorLive = Layer.effect(
           const managed = managedServices(input.deployment)
           const installed = installedServices(input.deployment)
           const proxy = input.deployment.resolved.environment.proxy
-          const operations = [
-            providerOperation(scmPlugin, `checkout:${input.ref}`),
-            providerOperation(workspacePlugin, `materialize:${input.deployment.workspacePath}`),
-            ...installed.map((service) => providerOperation(packagePlugin, `install:${service.name}`)),
-            ...managed.map((service) => providerOperation(processPlugin, `restart:${service.name}`)),
-            ...managed
-              .filter((service) => service.healthCheck)
-              .map((service) => providerOperation(healthPlugin, `check:${service.name}`)),
-            ...(proxy ? [providerOperation(proxyPlugin, `upsert:${proxy.upstream}`)] : []),
-            providerOperation(eventPlugin, `append:deploy:${input.ref}`),
-          ]
+          const operations: string[] = []
+
+          operations.push(yield* scm.checkout({ deployment: input.deployment, ref: input.ref }))
+          operations.push(yield* workspaceMaterializer.materialize({
+            deployment: input.deployment,
+            ref: input.ref,
+          }))
+          for (const service of installed) {
+            operations.push(yield* packageManager.install({ deployment: input.deployment, service }))
+          }
+          for (const service of managed) {
+            operations.push(yield* processSupervisor.restart({ deployment: input.deployment, service }))
+          }
+          for (const service of managed.filter((service) => service.healthCheck)) {
+            operations.push(yield* healthChecker.check({ deployment: input.deployment, service }))
+          }
+          if (proxy) {
+            operations.push(yield* proxyRouter.upsert({ deployment: input.deployment, proxy }))
+          }
+          operations.push(yield* eventTransport.append({
+            deployment: input.deployment,
+            event: `deploy:${input.ref}`,
+          }))
 
           return executionResult(input.deployment, operations)
         }),
@@ -130,12 +137,19 @@ export const V2RuntimeExecutorLive = Layer.effect(
         Effect.gen(function* () {
           const services = [...managedServices(input.deployment)].reverse()
           const proxy = input.deployment.resolved.environment.proxy
-          const operations = [
-            ...services.map((service) => providerOperation(processPlugin, `stop:${service.name}`)),
-            ...(proxy ? [providerOperation(proxyPlugin, `remove:${proxy.upstream}`)] : []),
-            providerOperation(workspacePlugin, `remove:${input.deployment.workspacePath}`),
-            providerOperation(eventPlugin, `append:destroy:${input.deployment.name}`),
-          ]
+          const operations: string[] = []
+
+          for (const service of services) {
+            operations.push(yield* processSupervisor.down({ deployment: input.deployment, service }))
+          }
+          if (proxy) {
+            operations.push(yield* proxyRouter.remove({ deployment: input.deployment, proxy }))
+          }
+          operations.push(yield* workspaceMaterializer.remove({ deployment: input.deployment }))
+          operations.push(yield* eventTransport.append({
+            deployment: input.deployment,
+            event: `destroy:${input.deployment.name}`,
+          }))
 
           return executionResult(input.deployment, operations)
         }),

@@ -1,5 +1,8 @@
 import { Context, Effect, Layer } from "effect-v4"
 
+import type { V2DeploymentRecord } from "./deployments.js"
+import type { V2RuntimeError } from "./errors.js"
+
 export type V2ProviderProfileName = "default" | "stub" | "isolated-e2e"
 
 export type V2ProviderFamily =
@@ -43,32 +46,113 @@ export interface V2ProviderFamilyService<Family extends V2ProviderFamily> {
   readonly plugin: Effect.Effect<V2ProviderPluginForFamily<Family>>
 }
 
+export type V2RuntimeServiceConfig =
+  V2DeploymentRecord["resolved"]["environment"]["services"][number]
+
+export type V2RuntimeProxyConfig =
+  NonNullable<V2DeploymentRecord["resolved"]["environment"]["proxy"]>
+
+export interface V2WorkspaceMaterializerProviderService
+  extends V2ProviderFamilyService<"workspace-materializer"> {
+  readonly resolve: (input: {
+    readonly deployment: V2DeploymentRecord
+  }) => Effect.Effect<string, V2RuntimeError>
+  readonly materialize: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly ref: string
+  }) => Effect.Effect<string, V2RuntimeError>
+  readonly remove: (input: {
+    readonly deployment: V2DeploymentRecord
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
+export interface V2ProcessSupervisorProviderService
+  extends V2ProviderFamilyService<"process-supervisor"> {
+  readonly up: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly service: V2RuntimeServiceConfig
+  }) => Effect.Effect<string, V2RuntimeError>
+  readonly down: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly service: V2RuntimeServiceConfig
+  }) => Effect.Effect<string, V2RuntimeError>
+  readonly restart: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly service: V2RuntimeServiceConfig
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
+export interface V2HealthCheckerProviderService
+  extends V2ProviderFamilyService<"health-checker"> {
+  readonly check: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly service: V2RuntimeServiceConfig
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
+export interface V2EventTransportProviderService
+  extends V2ProviderFamilyService<"event-transport"> {
+  readonly append: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly event: string
+    readonly details?: Readonly<Record<string, unknown>>
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
+export interface V2ScmProviderService
+  extends V2ProviderFamilyService<"scm"> {
+  readonly checkout: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly ref: string
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
+export interface V2PackageManagerProviderService
+  extends V2ProviderFamilyService<"package-manager"> {
+  readonly install: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly service: V2RuntimeServiceConfig
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
+export interface V2ProxyRouterProviderService
+  extends V2ProviderFamilyService<"proxy-router"> {
+  readonly upsert: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly proxy: V2RuntimeProxyConfig
+  }) => Effect.Effect<string, V2RuntimeError>
+  readonly remove: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly proxy: V2RuntimeProxyConfig
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
 export const V2ProviderRegistry =
   Context.Service<V2ProviderRegistryService>("rig/v2/V2ProviderRegistry")
 
 export const V2ProcessSupervisorProvider =
-  Context.Service<V2ProviderFamilyService<"process-supervisor">>("rig/v2/V2ProcessSupervisorProvider")
+  Context.Service<V2ProcessSupervisorProviderService>("rig/v2/V2ProcessSupervisorProvider")
 
 export const V2ProxyRouterProvider =
-  Context.Service<V2ProviderFamilyService<"proxy-router">>("rig/v2/V2ProxyRouterProvider")
+  Context.Service<V2ProxyRouterProviderService>("rig/v2/V2ProxyRouterProvider")
 
 export const V2ScmProvider =
-  Context.Service<V2ProviderFamilyService<"scm">>("rig/v2/V2ScmProvider")
+  Context.Service<V2ScmProviderService>("rig/v2/V2ScmProvider")
 
 export const V2WorkspaceMaterializerProvider =
-  Context.Service<V2ProviderFamilyService<"workspace-materializer">>("rig/v2/V2WorkspaceMaterializerProvider")
+  Context.Service<V2WorkspaceMaterializerProviderService>("rig/v2/V2WorkspaceMaterializerProvider")
 
 export const V2EventTransportProvider =
-  Context.Service<V2ProviderFamilyService<"event-transport">>("rig/v2/V2EventTransportProvider")
+  Context.Service<V2EventTransportProviderService>("rig/v2/V2EventTransportProvider")
 
 export const V2ControlPlaneTransportProvider =
   Context.Service<V2ProviderFamilyService<"control-plane-transport">>("rig/v2/V2ControlPlaneTransportProvider")
 
 export const V2HealthCheckerProvider =
-  Context.Service<V2ProviderFamilyService<"health-checker">>("rig/v2/V2HealthCheckerProvider")
+  Context.Service<V2HealthCheckerProviderService>("rig/v2/V2HealthCheckerProvider")
 
 export const V2PackageManagerProvider =
-  Context.Service<V2ProviderFamilyService<"package-manager">>("rig/v2/V2PackageManagerProvider")
+  Context.Service<V2PackageManagerProviderService>("rig/v2/V2PackageManagerProvider")
 
 export const V2TunnelProvider =
   Context.Service<V2ProviderFamilyService<"tunnel">>("rig/v2/V2TunnelProvider")
@@ -173,6 +257,116 @@ const familyService = <Family extends V2ProviderFamily>(
   }
 }
 
+const providerOperation = (provider: V2ProviderPlugin, operation: string): Effect.Effect<string, V2RuntimeError> =>
+  Effect.succeed(`${provider.family}:${provider.id}:${operation}`)
+
+const workspaceMaterializerService = (
+  report: V2ProviderRegistryReport,
+): V2WorkspaceMaterializerProviderService => {
+  const base = familyService(report, "workspace-materializer")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"workspace-materializer"> =>
+      provider.family === "workspace-materializer",
+  ) as V2ProviderPluginForFamily<"workspace-materializer">
+
+  return {
+    ...base,
+    resolve: (input) => providerOperation(selected, `resolve:${input.deployment.workspacePath}`),
+    materialize: (input) => providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
+    remove: (input) => providerOperation(selected, `remove:${input.deployment.workspacePath}`),
+  }
+}
+
+const processSupervisorService = (
+  report: V2ProviderRegistryReport,
+): V2ProcessSupervisorProviderService => {
+  const base = familyService(report, "process-supervisor")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"process-supervisor"> =>
+      provider.family === "process-supervisor",
+  ) as V2ProviderPluginForFamily<"process-supervisor">
+
+  return {
+    ...base,
+    up: (input) => providerOperation(selected, `up:${input.service.name}`),
+    down: (input) => providerOperation(selected, `down:${input.service.name}`),
+    restart: (input) => providerOperation(selected, `restart:${input.service.name}`),
+  }
+}
+
+const healthCheckerService = (
+  report: V2ProviderRegistryReport,
+): V2HealthCheckerProviderService => {
+  const base = familyService(report, "health-checker")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"health-checker"> =>
+      provider.family === "health-checker",
+  ) as V2ProviderPluginForFamily<"health-checker">
+
+  return {
+    ...base,
+    check: (input) => providerOperation(selected, `check:${input.service.name}`),
+  }
+}
+
+const eventTransportService = (
+  report: V2ProviderRegistryReport,
+): V2EventTransportProviderService => {
+  const base = familyService(report, "event-transport")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"event-transport"> =>
+      provider.family === "event-transport",
+  ) as V2ProviderPluginForFamily<"event-transport">
+
+  return {
+    ...base,
+    append: (input) => providerOperation(selected, `append:${input.event}`),
+  }
+}
+
+const scmService = (report: V2ProviderRegistryReport): V2ScmProviderService => {
+  const base = familyService(report, "scm")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"scm"> => provider.family === "scm",
+  ) as V2ProviderPluginForFamily<"scm">
+
+  return {
+    ...base,
+    checkout: (input) => providerOperation(selected, `checkout:${input.ref}`),
+  }
+}
+
+const packageManagerService = (
+  report: V2ProviderRegistryReport,
+): V2PackageManagerProviderService => {
+  const base = familyService(report, "package-manager")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"package-manager"> =>
+      provider.family === "package-manager",
+  ) as V2ProviderPluginForFamily<"package-manager">
+
+  return {
+    ...base,
+    install: (input) => providerOperation(selected, `install:${input.service.name}`),
+  }
+}
+
+const proxyRouterService = (
+  report: V2ProviderRegistryReport,
+): V2ProxyRouterProviderService => {
+  const base = familyService(report, "proxy-router")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"proxy-router"> =>
+      provider.family === "proxy-router",
+  ) as V2ProviderPluginForFamily<"proxy-router">
+
+  return {
+    ...base,
+    upsert: (input) => providerOperation(selected, `upsert:${input.proxy.upstream}`),
+    remove: (input) => providerOperation(selected, `remove:${input.proxy.upstream}`),
+  }
+}
+
 export const V2ProviderRegistryLive = (
   profile: V2ProviderProfileName = "default",
   externalProviders: readonly V2ProviderPlugin[] = [],
@@ -190,14 +384,14 @@ export const V2ProviderContractsLive = (
 
   return Layer.mergeAll(
     V2ProviderRegistryLive(profile, externalProviders),
-    Layer.succeed(V2ProcessSupervisorProvider, familyService(report, "process-supervisor")),
-    Layer.succeed(V2ProxyRouterProvider, familyService(report, "proxy-router")),
-    Layer.succeed(V2ScmProvider, familyService(report, "scm")),
-    Layer.succeed(V2WorkspaceMaterializerProvider, familyService(report, "workspace-materializer")),
-    Layer.succeed(V2EventTransportProvider, familyService(report, "event-transport")),
+    Layer.succeed(V2ProcessSupervisorProvider, processSupervisorService(report)),
+    Layer.succeed(V2ProxyRouterProvider, proxyRouterService(report)),
+    Layer.succeed(V2ScmProvider, scmService(report)),
+    Layer.succeed(V2WorkspaceMaterializerProvider, workspaceMaterializerService(report)),
+    Layer.succeed(V2EventTransportProvider, eventTransportService(report)),
     Layer.succeed(V2ControlPlaneTransportProvider, familyService(report, "control-plane-transport")),
-    Layer.succeed(V2HealthCheckerProvider, familyService(report, "health-checker")),
-    Layer.succeed(V2PackageManagerProvider, familyService(report, "package-manager")),
+    Layer.succeed(V2HealthCheckerProvider, healthCheckerService(report)),
+    Layer.succeed(V2PackageManagerProvider, packageManagerService(report)),
     Layer.succeed(V2TunnelProvider, familyService(report, "tunnel")),
   )
 }

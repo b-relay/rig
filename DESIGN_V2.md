@@ -13,6 +13,11 @@ For the currently shipped behavior, see [DESIGN.md](./DESIGN.md).
 
 During the transition, contributors should treat this document as the source of truth for new architecture and UX decisions.
 
+For practical rig2 usage during the transition, see
+[`docs/rig2-guide.md`](./docs/rig2-guide.md). For the current cutover audit,
+command parity, validation, rollback, and remaining HITL decisions, see
+[`docs/rig-v2-cutover-readiness.md`](./docs/rig-v2-cutover-readiness.md).
+
 ## Migration Posture
 
 V2 should be built as a parallel implementation path that can run next to the current v1 `rig`.

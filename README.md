@@ -42,6 +42,11 @@ Current v2 vocabulary:
 | `live` | Stable built deployment lane. |
 | `deployments` | Template for generated previews and named deployments. |
 
+V2 docs:
+
+- [Rig2 guide](./docs/rig2-guide.md): practical usage and the important differences from rig v1.
+- [Rig v2 cutover readiness](./docs/rig-v2-cutover-readiness.md): command parity, provider safety, validation, rollback, and remaining cutover decisions.
+
 Try the foundation path:
 
 ```bash

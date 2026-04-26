@@ -319,15 +319,21 @@ Exit condition:
 
 #22 is the HITL readiness gate for moving v2 behavior from the isolated `rig2` runway toward the main `rig` binary.
 
+Current AFK output: `docs/rig-v2-cutover-readiness.md` now records command
+parity, provider safety, validation, rollback, and the routing plan for moving
+selected v2 behavior into `rig`. `docs/rig2-guide.md` gives the user-facing
+usage guide and v1/v2 differences. Follow-up issues #23 through #26 are filed
+for the remaining implementation slices.
+
 Exit condition:
 
 - Command parity, provider safety, compatibility/deprecation behavior, validation steps, rollback docs, and remaining follow-up issues are explicit before cutover.
 
 ## Recommended Next Move
 
-Pick up #22 next. #16 through #21 are complete, so provider contracts, durable
-`rigd` state, localhost-first transport envelopes, web read/write models, and
-safe config editing are ready for the cutover readiness gate.
+Review the #22 HITL cutover decisions with the user. The AFK audit docs and
+follow-up issues are filed; next implementation work should start from #23
+through #26 after the selected cutover direction is approved.
 
 ## Suggested First Milestone
 

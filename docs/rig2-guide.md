@@ -1,0 +1,171 @@
+# Rig2 Guide
+
+`rig2` is the v2 runway for Rig. It is intentionally separate from the current
+`rig` binary while v2 is still being validated.
+
+Use `rig` for current production workflows. Use `rig2` to try the new v2 model
+under isolated state.
+
+## What Is Different
+
+| Area | Rig v1 | Rig2 |
+|---|---|---|
+| Binary | `rig` | `rig2` |
+| State root | `~/.rig` or `RIG_ROOT` | `~/.rig-v2` or `RIG_V2_ROOT` |
+| Config shape | `environments.dev` and `environments.prod` | shared `components`, plus `local`, `live`, and `deployments` |
+| Runtime lanes | `dev` and `prod` | `local`, `live`, and generated deployments |
+| Components | v1 `services` with `server` or `bin` type | v2 `components` with `managed` or `installed` mode |
+| CLI style | project/env positional commands | repo-first commands, with `--project` for cross-project use |
+| Deploy model | prod release/version oriented | git ref oriented; semver is optional metadata |
+| Runtime authority | command-assembled runtime state | `rigd` owns state, receipts, logs, health, and control-plane contracts |
+| Providers | concrete local defaults | provider interfaces and profiles |
+
+## When To Use It
+
+Use `rig2` for:
+
+- testing the v2 config model
+- validating repo-first lifecycle commands
+- exercising `rigd` state, read models, action receipts, and config editing
+- isolated agent or CI work with `RIG_V2_ROOT`
+
+Do not use `rig2` as the default production manager yet. The current production
+manager is still `rig`.
+
+## Basic Setup
+
+Install dependencies and build both binaries:
+
+```bash
+bun install
+bun run build
+bun run build:rig2
+```
+
+For isolated testing, set a temporary v2 state root:
+
+```bash
+export RIG_V2_ROOT="$(mktemp -d)"
+```
+
+## Create A V2 Config
+
+You can scaffold a v2-style `rig.json` with the current `rig` init command:
+
+```bash
+./rig init pantry --path . --v2 --provider-profile stub --package-scripts
+```
+
+Use `stub` for isolated tests and agent runs. Use `default` only when you are
+ready for real local providers.
+
+Minimal v2 shape:
+
+```json
+{
+  "name": "pantry",
+  "components": {
+    "web": {
+      "mode": "managed",
+      "command": "bun run start -- --port ${port.web}",
+      "port": 3070,
+      "health": "http://127.0.0.1:${port.web}/health"
+    }
+  },
+  "deployments": {
+    "subdomain": "${branchSlug}",
+    "providerProfile": "stub"
+  }
+}
+```
+
+## Common Commands
+
+Start the local `rigd` authority:
+
+```bash
+./rig2 rigd
+```
+
+Start the local lane from inside a managed repo:
+
+```bash
+./rig2 up
+```
+
+Start or inspect a project from outside the repo:
+
+```bash
+./rig2 up --project pantry
+./rig2 status --project pantry
+```
+
+Use the live lane:
+
+```bash
+./rig2 status --project pantry --lane live
+./rig2 logs --project pantry --lane live --lines 100
+```
+
+Create deploy intents:
+
+```bash
+./rig2 deploy --project pantry --ref main --target live
+./rig2 deploy --project pantry --ref feature/preview --target generated
+./rig2 deploy --project pantry --ref feature/preview --target generated --deployment preview-a
+```
+
+Manage optional version metadata:
+
+```bash
+./rig2 bump --project pantry --current 1.2.3 --bump patch
+./rig2 bump --project pantry --current 1.2.3 --set 2.0.0
+```
+
+Run doctor checks:
+
+```bash
+./rig2 doctor --project pantry
+```
+
+## Config Editing Model
+
+The v2 config editor is exposed through `rigd` interfaces today:
+
+- `configRead`
+- `configPreview`
+- `configApply`
+
+Edits are structured patches, not raw text writes. A patch operation uses a
+path array:
+
+```json
+{
+  "op": "set",
+  "path": ["components", "web", "port"],
+  "value": 4080
+}
+```
+
+`configPreview` validates the candidate config with the v2 Effect Schema and
+returns diffs without writing. `configApply` checks the expected revision,
+validates again, writes atomically, and returns a backup path.
+
+A CLI or hosted control-plane surface for these methods is still follow-up
+work: #24.
+
+## Current Limits
+
+- `rig2` is not the default `rig` behavior yet.
+- `rig2 deploy` currently proves ref/target intent and generated deployment
+  state, not full provider-backed production cutover.
+- `rig2` config editing exists behind `rigd` interfaces, but there is no
+  polished user-facing CLI command for it yet.
+- Hosted web transport for `rig.b-relay.com` is not implemented yet.
+
+Tracked follow-ups:
+
+- #23 route selected v2 paths through `rig` behind a cutover gate
+- #24 expose config editing through a CLI or control-plane transport
+- #25 connect lifecycle and deploy actions to provider-backed execution
+- #26 add hosted control-plane transport adapter

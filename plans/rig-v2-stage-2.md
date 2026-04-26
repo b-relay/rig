@@ -261,10 +261,27 @@ This should not prematurely remove v1 compatibility.
 
 ### Acceptance Criteria
 
-- [ ] A cutover readiness checklist exists in docs and maps each main command to its v2 equivalent or compatibility behavior.
+- [x] A cutover readiness checklist exists in docs and maps each main command to its v2 equivalent or compatibility behavior.
 - [ ] Main-binary tests cover the selected v2 paths under isolated state and safe provider composition.
 - [ ] Legacy v1 command behavior remains available or has explicit deprecation messaging.
-- [ ] Provider/profile selection prevents accidental launchd, Caddy, or user-state mutation in tests.
-- [ ] Release/cutover docs explain how to validate, roll back, and keep production apps safe during migration.
-- [ ] The plan explicitly covers renaming or routing `rig2` behavior into `rig` when v2 becomes default.
-- [ ] Remaining post-cutover gaps are filed as follow-up issues instead of hidden in the plan.
+- [x] Provider/profile selection prevents accidental launchd, Caddy, or user-state mutation in tests.
+- [x] Release/cutover docs explain how to validate, roll back, and keep production apps safe during migration.
+- [x] The plan explicitly covers renaming or routing `rig2` behavior into `rig` when v2 becomes default.
+- [x] Remaining post-cutover gaps are filed as follow-up issues instead of hidden in the plan.
+
+### Current AFK Output
+
+`docs/rig-v2-cutover-readiness.md` records the command parity matrix, provider
+safety requirements, validation checklist, rollback checklist, cutover routing
+plan, and HITL decisions still needed before v2 becomes the default `rig`
+behavior. `docs/rig2-guide.md` gives a short user-facing guide for using
+`rig2` today and understanding the differences from rig v1.
+
+Follow-up issues #23 through #26 capture the remaining implementation gaps:
+main-binary v2 routing behind a cutover gate, CLI/control-plane config editing
+surface, provider-backed lifecycle/deploy execution, and hosted control-plane
+transport for `rig.b-relay.com`.
+
+Runtime routing from `rig` to v2 remains intentionally unchanged until HITL
+approval. The unchecked acceptance criteria are the parts that require that
+selected cutover behavior to be implemented and validated after approval.

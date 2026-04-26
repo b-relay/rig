@@ -329,4 +329,7 @@ Stage 2 covers:
   `rigd.configRead`, `rigd.configPreview`, and `rigd.configApply` expose
   structured, schema-validated, revision-checked config editing with atomic
   writes and backup recovery information.
-- #22 Prepare rig2 to main rig cutover readiness.
+- #22 Prepare rig2 to main rig cutover readiness. In progress: the AFK
+  readiness audit and rig2 user guide are documented in
+  `docs/rig-v2-cutover-readiness.md` and `docs/rig2-guide.md`; runtime routing
+  remains unchanged until HITL cutover approval.

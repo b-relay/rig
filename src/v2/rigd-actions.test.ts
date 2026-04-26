@@ -19,6 +19,13 @@ import { V2ProviderRegistryLive } from "./provider-contracts.js"
 import { V2RigdActionPreflight, V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive, type V2RigdService } from "./rigd.js"
 import { V2FileRigdStateStoreLive, V2RigdStateStore } from "./rigd-state.js"
+import {
+  V2RuntimeExecutor,
+  type V2RuntimeDeployExecutionInput,
+  type V2RuntimeDestroyGeneratedExecutionInput,
+  type V2RuntimeExecutionResult,
+  type V2RuntimeLifecycleExecutionInput,
+} from "./runtime-executor.js"
 import { V2Logger, V2RuntimeLive } from "./services.js"
 
 class MemoryDeploymentStore implements V2DeploymentStoreService {
@@ -49,6 +56,63 @@ class CaptureV2Logger {
 
   error() {
     return Effect.void
+  }
+}
+
+class CaptureRuntimeExecutor {
+  readonly lifecycleCalls: V2RuntimeLifecycleExecutionInput[] = []
+  readonly deployCalls: V2RuntimeDeployExecutionInput[] = []
+  readonly destroyGeneratedCalls: V2RuntimeDestroyGeneratedExecutionInput[] = []
+
+  constructor(private readonly fail?: "lifecycle" | "deploy" | "destroy") {}
+
+  lifecycle(input: V2RuntimeLifecycleExecutionInput) {
+    this.lifecycleCalls.push(input)
+    if (this.fail === "lifecycle") {
+      return Effect.fail(this.failure("lifecycle", input.deployment.name))
+    }
+    return Effect.succeed(this.result(input.deployment, [`provider:lifecycle:${input.action}`]))
+  }
+
+  deploy(input: V2RuntimeDeployExecutionInput) {
+    this.deployCalls.push(input)
+    if (this.fail === "deploy") {
+      return Effect.fail(this.failure("deploy", input.deployment.name))
+    }
+    return Effect.succeed(this.result(input.deployment, [`provider:deploy:${input.ref}`]))
+  }
+
+  destroyGenerated(input: V2RuntimeDestroyGeneratedExecutionInput) {
+    this.destroyGeneratedCalls.push(input)
+    if (this.fail === "destroy") {
+      return Effect.fail(this.failure("destroy", input.deployment.name))
+    }
+    return Effect.succeed(this.result(input.deployment, [`provider:destroy:${input.deployment.name}`]))
+  }
+
+  private result(
+    deployment: V2DeploymentRecord,
+    operations: readonly string[],
+  ): V2RuntimeExecutionResult {
+    return {
+      project: deployment.project,
+      deployment: deployment.name,
+      kind: deployment.kind,
+      providerProfile: deployment.providerProfile,
+      operations,
+    }
+  }
+
+  private failure(kind: string, deployment: string) {
+    return new V2RuntimeError(
+      `Provider-backed ${kind} execution failed for '${deployment}'.`,
+      "Fix the selected provider and retry the runtime action.",
+      {
+        reason: "runtime-execution-failed",
+        kind,
+        deployment,
+      },
+    )
   }
 }
 
@@ -106,10 +170,14 @@ const runWithRigd = async <A>(
     unknown,
     V2Rigd | V2DeploymentManager | V2RigdStateStore | V2ControlPlane
   >,
-  options?: { readonly preflight?: Layer.Layer<V2RigdActionPreflight> },
+  options?: {
+    readonly preflight?: Layer.Layer<V2RigdActionPreflight>
+    readonly executor?: CaptureRuntimeExecutor
+  },
 ) => {
   const logger = new CaptureV2Logger()
   const deploymentStore = new MemoryDeploymentStore()
+  const executor = options?.executor ?? new CaptureRuntimeExecutor()
   const deploymentManagerLive = Layer.provide(
     V2DeploymentManagerLive,
     Layer.succeed(V2DeploymentStore, deploymentStore),
@@ -123,6 +191,7 @@ const runWithRigd = async <A>(
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     preflightLive,
+    Layer.succeed(V2RuntimeExecutor, executor),
     Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
   )
   const layer = Layer.mergeAll(
@@ -133,6 +202,7 @@ const runWithRigd = async <A>(
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     preflightLive,
+    Layer.succeed(V2RuntimeExecutor, executor),
     Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
     Layer.provide(V2RigdLive, rigdDependencies),
   )
@@ -177,6 +247,115 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         "lifecycle:local",
         "lifecycle:local",
       ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN config-backed lifecycle and deploy actions WHEN accepted THEN provider executor runs before receipts persist", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor()
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          const lifecycle = yield* rigd.controlPlaneLifecycle({
+            action: "up",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+          const liveDeploy = yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            stateRoot,
+            config,
+          })
+          const generatedDeploy = yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/provider-backed",
+            stateRoot,
+            config,
+          })
+          const persisted = yield* store.load({ stateRoot })
+          return { lifecycle, liveDeploy, generatedDeploy, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.lifecycle).toMatchObject({ kind: "lifecycle", target: "local", accepted: true })
+      expect(result.liveDeploy).toMatchObject({ kind: "deploy", target: "live", accepted: true })
+      expect(result.generatedDeploy).toMatchObject({
+        kind: "deploy",
+        target: "generated:feature-provider-backed",
+        accepted: true,
+      })
+      expect(executor.lifecycleCalls.map((call) => `${call.action}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "up:local:local",
+      ])
+      expect(executor.deployCalls.map((call) => `${call.ref}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "main:live:live",
+        "feature/provider-backed:generated:feature-provider-backed",
+      ])
+      expect(result.persisted.events.map((event) => event.details)).toEqual([
+        expect.objectContaining({
+          execution: expect.objectContaining({
+            operations: ["provider:lifecycle:up"],
+          }),
+        }),
+        expect.objectContaining({
+          execution: expect.objectContaining({
+            operations: ["provider:deploy:main"],
+          }),
+        }),
+        expect.objectContaining({
+          execution: expect.objectContaining({
+            operations: ["provider:deploy:feature/provider-backed"],
+          }),
+        }),
+      ])
+      expect(result.persisted.receipts).toHaveLength(3)
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN provider-backed execution fails WHEN action is requested THEN no receipt or log is persisted", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          const error = yield* Effect.flip(
+            rigd.controlPlaneLifecycle({
+              action: "up",
+              project: "pantry",
+              lane: "local",
+              stateRoot,
+              config,
+            }),
+          )
+          const persisted = yield* store.load({ stateRoot })
+          return { error, persisted }
+        }),
+        { executor: new CaptureRuntimeExecutor("lifecycle") },
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "V2RuntimeError",
+        details: { reason: "runtime-execution-failed", kind: "lifecycle", deployment: "local" },
+      })
+      expect(result.persisted.receipts).toEqual([])
+      expect(result.persisted.events).toEqual([])
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }

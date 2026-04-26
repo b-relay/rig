@@ -9,6 +9,7 @@ import { V2ProviderProfileLive } from "./provider-profiles.js"
 import { V2ProjectLocatorLive } from "./project-locator.js"
 import { V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2FileRigdStateStoreLive } from "./rigd-state.js"
+import { V2RuntimeExecutorLive } from "./runtime-executor.js"
 import {
   RIG_V2_LAUNCHD_LABEL_PREFIX,
   RIG_V2_NAMESPACE,
@@ -101,6 +102,7 @@ export const Rig2Live = Layer.mergeAll(
   V2FileRigdStateStoreLive,
   V2DefaultControlPlaneLive,
   V2RigdActionPreflightLive,
+  Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
   Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
   V2ProjectLocatorLive,
 )

@@ -17,10 +17,11 @@ import {
   type V2DeploymentRecord,
   type V2DeploymentStoreService,
 } from "./deployments.js"
-import { V2ProviderRegistryLive } from "./provider-contracts.js"
+import { V2ProviderContractsLive } from "./provider-contracts.js"
 import { V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive } from "./rigd.js"
 import { V2FileRigdStateStoreLive } from "./rigd-state.js"
+import { V2RuntimeExecutorLive } from "./runtime-executor.js"
 import { V2Logger, V2RuntimeLive } from "./services.js"
 import { V2RuntimeError } from "./errors.js"
 
@@ -88,10 +89,11 @@ const runWithRigd = async <A>(effect: Effect.Effect<A, unknown, V2Rigd>) => {
     V2RuntimeLive,
     deploymentManagerLive,
     Layer.succeed(V2Logger, logger),
-    V2ProviderRegistryLive("default"),
+    V2ProviderContractsLive("default"),
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     V2RigdActionPreflightLive,
+    Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
     Layer.provide(V2ConfigEditorLive, configStoreLive),
   )
 
@@ -102,10 +104,11 @@ const runWithRigd = async <A>(effect: Effect.Effect<A, unknown, V2Rigd>) => {
           V2RuntimeLive,
           Layer.succeed(V2Logger, logger),
           deploymentManagerLive,
-          V2ProviderRegistryLive("default"),
+          V2ProviderContractsLive("default"),
           V2FileRigdStateStoreLive,
           V2DefaultControlPlaneLive,
           V2RigdActionPreflightLive,
+          Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
           Layer.provide(V2ConfigEditorLive, configStoreLive),
           Layer.provide(V2RigdLive, rigdDependencies),
         ),
@@ -128,10 +131,11 @@ const runWithConfigStore = async <A>(
     V2RuntimeLive,
     deploymentManagerLive,
     Layer.succeed(V2Logger, logger),
-    V2ProviderRegistryLive("default"),
+    V2ProviderContractsLive("default"),
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     V2RigdActionPreflightLive,
+    Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
     Layer.provide(V2ConfigEditorLive, configStoreLive),
   )
 
@@ -142,10 +146,11 @@ const runWithConfigStore = async <A>(
           V2RuntimeLive,
           Layer.succeed(V2Logger, logger),
           deploymentManagerLive,
-          V2ProviderRegistryLive("default"),
+          V2ProviderContractsLive("default"),
           V2FileRigdStateStoreLive,
           V2DefaultControlPlaneLive,
           V2RigdActionPreflightLive,
+          Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
           Layer.provide(V2ConfigEditorLive, configStoreLive),
           Layer.provide(V2RigdLive, rigdDependencies),
         ),

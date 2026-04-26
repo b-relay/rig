@@ -334,3 +334,7 @@ Stage 2 covers:
   `docs/rig-v2-cutover-readiness.md` and `docs/rig2-guide.md`; HITL decision
   is to keep `rig2` isolated until it is ready, then rename/build it as `rig`
   as a replacement CLI rather than routing selected commands through v1.
+- #25 Connect rig2 lifecycle and deploy actions to provider-backed execution.
+  In progress: config-backed `rigd` lifecycle/deploy/destroy writes now execute
+  through `V2RuntimeExecutor` before receipts/logs persist; CLI config loading
+  and real process/workspace/proxy parity remain.

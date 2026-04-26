@@ -14,10 +14,11 @@ import {
   type V2DeploymentRecord,
   type V2DeploymentStoreService,
 } from "./deployments.js"
-import { V2ProviderRegistryLive } from "./provider-contracts.js"
+import { V2ProviderContractsLive } from "./provider-contracts.js"
 import { V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive } from "./rigd.js"
 import { V2FileRigdStateStoreLive, V2RigdStateStore } from "./rigd-state.js"
+import { V2RuntimeExecutorLive } from "./runtime-executor.js"
 import { V2Logger, V2RuntimeLive } from "./services.js"
 
 class MemoryDeploymentStore implements V2DeploymentStoreService {
@@ -82,10 +83,11 @@ const runWithRigd = async <A>(
     V2RuntimeLive,
     Layer.succeed(V2Logger, logger),
     deploymentManagerLive,
-    V2ProviderRegistryLive("default"),
+    V2ProviderContractsLive("default"),
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     V2RigdActionPreflightLive,
+    Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
     Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
     Layer.provide(
       V2RigdLive,
@@ -93,10 +95,11 @@ const runWithRigd = async <A>(
         V2RuntimeLive,
         deploymentManagerLive,
         Layer.succeed(V2Logger, logger),
-        V2ProviderRegistryLive("default"),
+        V2ProviderContractsLive("default"),
         V2FileRigdStateStoreLive,
         V2DefaultControlPlaneLive,
         V2RigdActionPreflightLive,
+        Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
         Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
       ),
     ),

@@ -333,10 +333,14 @@ Exit condition:
 
 ## Recommended Next Move
 
-Start #23 with the approved replacement direction: no command-by-command gate,
-no gradual v2 routing through the v1 CLI. The work should prepare the final
-rename/build path for `rig2` to become `rig` after #24 and #25 close the known
-surface gaps.
+Continue #25. The first provider-execution slice is in place: config-backed
+`rigd` lifecycle, deploy, and generated-destroy actions now resolve deployment
+records and execute through the v2 runtime executor provider interface before
+receipts/logs persist. Remaining #25 work is direct `rig2` CLI config loading,
+real process/workspace/proxy execution parity, and component log ingestion.
+
+After #25, do #24 for the user-facing config-edit surface. Then #23 can prepare
+the final `rig2` to `rig` replacement build path.
 
 ## Suggested First Milestone
 

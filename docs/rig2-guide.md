@@ -158,7 +158,9 @@ work: #24.
 
 - `rig2` is not the default `rig` behavior yet.
 - `rig2 deploy` currently proves ref/target intent and generated deployment
-  state, not full provider-backed production cutover.
+  state. Config-backed `rigd` deploy actions now run through the v2 runtime
+  executor provider interface before receipts are persisted, but full
+  real-process production parity is still pending.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.

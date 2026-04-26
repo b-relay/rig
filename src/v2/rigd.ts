@@ -16,6 +16,7 @@ import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
 import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
 import { V2RigdActionPreflight, type V2RigdActionKind } from "./rigd-actions.js"
 import { V2RigdStateStore, type V2DeploymentSnapshot, type V2PortReservation } from "./rigd-state.js"
+import { V2RuntimeExecutor, type V2RuntimeExecutionResult } from "./runtime-executor.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
 export interface V2ControlPlaneContract {
@@ -157,6 +158,7 @@ export interface V2RigdLifecycleInput {
   readonly project: string
   readonly lane: V2LifecycleLane
   readonly stateRoot: string
+  readonly config?: V2ProjectConfig
 }
 
 export interface V2RigdControlPlaneLifecycleInput {
@@ -164,6 +166,7 @@ export interface V2RigdControlPlaneLifecycleInput {
   readonly project: string
   readonly lane: V2LifecycleLane
   readonly stateRoot: string
+  readonly config?: V2ProjectConfig
 }
 
 export interface V2RigdDeployInput {
@@ -258,6 +261,7 @@ export const V2RigdLive = Layer.effect(
     const controlPlane = yield* V2ControlPlane
     const actionPreflight = yield* V2RigdActionPreflight
     const configEditor = yield* V2ConfigEditor
+    const runtimeExecutor = yield* V2RuntimeExecutor
     const startedAt = now()
     const events: V2RigdLogEntry[] = []
 
@@ -381,6 +385,7 @@ export const V2RigdLive = Layer.effect(
     const lifecycleAccepted = (
       input: V2RigdLifecycleInput,
       source: "cli" | "control-plane",
+      execution?: V2RuntimeExecutionResult,
     ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
       Effect.gen(function* () {
         const accepted = yield* receipt("lifecycle", input.project, input.stateRoot, input.lane)
@@ -392,6 +397,7 @@ export const V2RigdLive = Layer.effect(
             action: input.action,
             receiptId: accepted.id,
             source,
+            ...(execution ? { execution } : {}),
           },
         })
         return accepted
@@ -401,6 +407,7 @@ export const V2RigdLive = Layer.effect(
       input: V2RigdDeployInput,
       target: string,
       source: "cli" | "control-plane",
+      execution?: V2RuntimeExecutionResult,
     ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
       Effect.gen(function* () {
         const accepted = yield* receipt("deploy", input.project, input.stateRoot, target)
@@ -414,6 +421,7 @@ export const V2RigdLive = Layer.effect(
             deploymentName: input.deploymentName,
             receiptId: accepted.id,
             source,
+            ...(execution ? { execution } : {}),
           },
         })
         return accepted
@@ -426,6 +434,64 @@ export const V2RigdLive = Layer.effect(
 
     const isLifecycleWriteAction = (action: V2LifecycleAction): action is "up" | "down" =>
       action === "up" || action === "down"
+
+    const deploymentForLane = (
+      config: V2ProjectConfig,
+      stateRoot: string,
+      lane: V2LifecycleLane,
+    ): Effect.Effect<V2DeploymentRecord, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const inventory = yield* deployments.list({ config, stateRoot })
+        yield* persistInventoryEvidence(stateRoot, inventory)
+        const found = inventory.find((deployment) => deployment.kind === lane)
+        if (!found) {
+          return yield* Effect.fail(
+            new V2RuntimeError(
+              `Unable to resolve ${lane} deployment for '${config.name}'.`,
+              "Validate the v2 config and deployment inventory before retrying the runtime action.",
+              { project: config.name, lane },
+            ),
+          )
+        }
+        return found
+      })
+
+    const lifecycleExecution = (
+      input: V2RigdLifecycleInput,
+    ): Effect.Effect<V2RuntimeExecutionResult | undefined, V2RuntimeError> =>
+      Effect.gen(function* () {
+        if (!input.config || !isLifecycleWriteAction(input.action)) {
+          return undefined
+        }
+        const deployment = yield* deploymentForLane(input.config, input.stateRoot, input.lane)
+        return yield* runtimeExecutor.lifecycle({
+          action: input.action,
+          deployment,
+        })
+      })
+
+    const deployExecution = (
+      input: V2RigdControlPlaneDeployInput,
+      generatedDeployment?: V2DeploymentRecord,
+    ): Effect.Effect<V2RuntimeExecutionResult | undefined, V2RuntimeError> =>
+      Effect.gen(function* () {
+        if (generatedDeployment) {
+          return yield* runtimeExecutor.deploy({
+            deployment: generatedDeployment,
+            ref: input.ref,
+          })
+        }
+
+        if (!input.config) {
+          return undefined
+        }
+
+        const deployment = yield* deploymentForLane(input.config, input.stateRoot, "live")
+        return yield* runtimeExecutor.deploy({
+          deployment,
+          ref: input.ref,
+        })
+      })
 
     return {
       start: (input) =>
@@ -499,7 +565,10 @@ export const V2RigdLive = Layer.effect(
           }
         }),
       lifecycle: (input) =>
-        lifecycleAccepted(input, "cli"),
+        Effect.gen(function* () {
+          const execution = yield* lifecycleExecution(input)
+          return yield* lifecycleAccepted(input, "cli", execution)
+        }),
       deploy: (input) =>
         Effect.gen(function* () {
           return yield* deployAccepted(input, generatedDeployTarget(input), "cli")
@@ -525,7 +594,8 @@ export const V2RigdLive = Layer.effect(
             stateRoot: input.stateRoot,
             target: input.lane,
           })
-          return yield* lifecycleAccepted(input, "control-plane")
+          const execution = yield* lifecycleExecution(input)
+          return yield* lifecycleAccepted(input, "control-plane", execution)
         }),
       controlPlaneDeploy: (input) =>
         Effect.gen(function* () {
@@ -568,8 +638,9 @@ export const V2RigdLive = Layer.effect(
             target,
           })
 
+          let materialized: V2DeploymentRecord | undefined
           if (input.target === "generated") {
-            const materialized = yield* deployments.materializeGenerated({
+            materialized = yield* deployments.materializeGenerated({
               config: generatedConfig,
               stateRoot: input.stateRoot,
               branch: input.ref,
@@ -583,7 +654,8 @@ export const V2RigdLive = Layer.effect(
             yield* persistInventoryEvidence(input.stateRoot, inventory)
           }
 
-          return yield* deployAccepted(input, target, "control-plane")
+          const execution = yield* deployExecution(input, materialized)
+          return yield* deployAccepted(input, target, "control-plane", execution)
         }),
       controlPlaneDestroyGenerated: (input) =>
         Effect.gen(function* () {
@@ -613,6 +685,7 @@ export const V2RigdLive = Layer.effect(
             stateRoot: input.stateRoot,
             name: input.deploymentName,
           })
+          const execution = yield* runtimeExecutor.destroyGenerated({ deployment: destroyed })
           const inventory = yield* deployments.list({
             config: input.config,
             stateRoot: input.stateRoot,
@@ -626,6 +699,7 @@ export const V2RigdLive = Layer.effect(
             details: {
               receiptId: accepted.id,
               source: "control-plane",
+              execution,
             },
           })
           return accepted

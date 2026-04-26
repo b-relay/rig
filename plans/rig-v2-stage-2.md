@@ -290,3 +290,12 @@ transport for `rig.b-relay.com`.
 Runtime routing from `rig` to v2 remains intentionally unchanged. The approved
 direction is to keep `rig2` isolated until it is ready, then rename/build it as
 `rig` as an entirely new CLI.
+
+### Follow-Up Progress
+
+- #25 in progress: `src/v2/runtime-executor.ts` defines the v2 runtime
+  executor interface. Config-backed `rigd` lifecycle, live deploy, generated
+  deploy, and generated destroy actions now execute through that provider
+  interface before durable receipts and logs are persisted. Remaining #25 work:
+  direct `rig2` CLI config loading, real process/workspace/proxy execution
+  parity, and component log ingestion.

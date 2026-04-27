@@ -9,6 +9,7 @@ import {
   type V2DeploymentStoreService,
 } from "./deployments.js"
 import { V2DeployIntents, V2DeployIntentsLive } from "./deploy-intent.js"
+import { V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
 
 class MemoryDeploymentStore implements V2DeploymentStoreService {
   readonly records = new Map<string, V2DeploymentRecord[]>()
@@ -54,7 +55,30 @@ const runWithDeployIntents = async <A>(effect: Effect.Effect<A, unknown, V2Deplo
     V2DeploymentManagerLive,
     Layer.succeed(V2DeploymentStore, store),
   )
-  const layer = Layer.provide(V2DeployIntentsLive, deployments)
+  const layer = Layer.provide(
+    V2DeployIntentsLive,
+    Layer.mergeAll(
+      deployments,
+      Layer.succeed(V2HomeConfigStore, {
+        read: () => Effect.succeed({
+          deploy: {
+            productionBranch: "main",
+            generated: {
+              maxActive: 5,
+              replacePolicy: "oldest",
+            },
+          },
+          providers: {
+            defaultProfile: "default",
+          },
+          web: {
+            controlPlane: "localhost",
+          },
+        } satisfies V2HomeConfig),
+        write: () => Effect.void,
+      }),
+    ),
+  )
   const result = await Effect.runPromise(effect.pipe(Effect.provide(layer)))
   return { result, store }
 }
@@ -106,6 +130,59 @@ describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THE
     expect(result.generatedDeployment?.name).toBe("feature-preview")
     expect(result.generatedDeployment?.subdomain).toBe("feature-preview")
     expect(store.records.get("pantry")?.map((record) => record.name)).toEqual(["feature-preview"])
+  })
+
+  test("GIVEN git push and no main ref WHEN home production branch matches THEN live is targeted", async () => {
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        return yield* intents.fromGitPush({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "main",
+        })
+      }),
+    )
+
+    expect(result).toMatchObject({
+      source: "git-push",
+      ref: "main",
+      target: "live",
+      lane: "live",
+    })
+  })
+
+  test("GIVEN project live deployBranch WHEN git push matches it THEN project config overrides home production branch", async () => {
+    const config = await Effect.runPromise(decodeV2ProjectConfig({
+      name: "pantry",
+      components: {
+        web: {
+          mode: "managed",
+          command: "bun run start -- --port ${port.web}",
+          port: 3070,
+        },
+      },
+      live: {
+        deployBranch: "stable",
+      },
+    }))
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        return yield* intents.fromGitPush({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "stable",
+          config,
+        })
+      }),
+    )
+
+    expect(result).toMatchObject({
+      ref: "stable",
+      target: "live",
+      lane: "live",
+    })
   })
 
   test("GIVEN CLI deploy target WHEN resolving intent THEN refs and lanes do not require semver", async () => {

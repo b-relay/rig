@@ -225,6 +225,13 @@ A built deployment instance materialized from `deployments`, typically keyed by 
   preferences. `rigd` reads these defaults when resolving deploy intent and
   enforcing runtime inventory limits. Project config can override them.
 
+Current implementation: `V2HomeConfigStore` reads and writes
+`$RIG_V2_ROOT/config.json` or `~/.rig-v2/config.json` and normalizes missing
+fields to explicit defaults. Deploy intent resolution uses project
+`live.deployBranch` first, then home `deploy.productionBranch`, then `main`.
+Generated deployment caps are represented in the schema and still need runtime
+enforcement in `rigd`.
+
 ## High-Level UX
 
 ### Primary deployment model

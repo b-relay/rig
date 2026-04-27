@@ -358,9 +358,13 @@ and returns tagged runtime failures for unhealthy, unreachable, or non-zero
 checks. The `package-json-scripts` provider now runs installed-component build
 commands from the deployment workspace and reports tagged failures.
 Process-supervisor providers can now return stdout/stderr lines that are
-persisted through component log events. Remaining #25 work is concrete
+persisted through component log events. `V2HomeConfigStore` now reads and
+writes schema-validated home config under the v2 state root, and deploy intent
+resolution uses project `live.deployBranch` before home
+`deploy.productionBranch` before `main`. Remaining #25 work is concrete
 first-party provider adapter behavior that supplies live managed-process
-behavior and output.
+behavior and output, plus generated deployment cap enforcement from home
+config.
 
 After #25, do #24 for the user-facing config-edit surface. Then #23 can prepare
 the final `rig2` to `rig` replacement build path.

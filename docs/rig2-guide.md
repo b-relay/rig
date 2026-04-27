@@ -13,6 +13,28 @@ V2 uses two config scopes:
 - home rig config for machine/user defaults such as production branch defaults,
   generated deployment caps, replacement policy, and provider defaults
 
+The home config lives at `~/.rig-v2/config.json` by default, or
+`$RIG_V2_ROOT/config.json` when `RIG_V2_ROOT` is set. Missing home config uses
+these defaults:
+
+```json
+{
+  "deploy": {
+    "productionBranch": "main",
+    "generated": {
+      "maxActive": 5,
+      "replacePolicy": "oldest"
+    }
+  },
+  "providers": {
+    "defaultProfile": "default"
+  },
+  "web": {
+    "controlPlane": "localhost"
+  }
+}
+```
+
 ## What Is Different
 
 | Area | Rig v1 | Rig2 |
@@ -195,6 +217,10 @@ work: #24.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.
+- Home config is schema-validated and file-backed. Deploy intent now uses
+  project `live.deployBranch` first, then home `deploy.productionBranch`, then
+  the built-in `main` default. Generated deployment caps are stored in home
+  config but not enforced yet.
 
 Tracked follow-ups:
 

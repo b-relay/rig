@@ -4,6 +4,7 @@ import { Context, Effect, Layer } from "effect-v4"
 import { V2DefaultControlPlaneLive } from "./control-plane.js"
 import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
 import type { V2TaggedError } from "./errors.js"
+import { V2FileHomeConfigStoreLive } from "./home-config.js"
 import { V2ProviderContractsLive } from "./provider-contracts.js"
 import { V2ProviderProfileLive } from "./provider-profiles.js"
 import { V2ProjectConfigLoaderLive } from "./project-config-loader.js"
@@ -101,6 +102,7 @@ export const Rig2Live = Layer.mergeAll(
   V2ProviderProfileLive(),
   V2ProviderContractsLive("default"),
   V2FileRigdStateStoreLive,
+  V2FileHomeConfigStoreLive,
   V2DefaultControlPlaneLive,
   V2RigdActionPreflightLive,
   Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),

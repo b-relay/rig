@@ -5,12 +5,16 @@ import { V2DeployIntentsLive } from "./v2/deploy-intent.js"
 import { V2DeploymentManagerLive, V2FileDeploymentStoreLive } from "./v2/deployments.js"
 import { V2DoctorLive } from "./v2/doctor.js"
 import { V2RuntimeError } from "./v2/errors.js"
+import { V2FileHomeConfigStoreLive } from "./v2/home-config.js"
 import { V2LifecycleLive } from "./v2/lifecycle.js"
 import { V2RigdLive } from "./v2/rigd.js"
 import { Rig2Live, V2Logger, V2LoggerLive } from "./v2/services.js"
 
 const V2DeploymentLive = Layer.provide(V2DeploymentManagerLive, V2FileDeploymentStoreLive)
-const V2DeployIntentsRuntimeLive = Layer.provide(V2DeployIntentsLive, V2DeploymentLive)
+const V2DeployIntentsRuntimeLive = Layer.provide(
+  V2DeployIntentsLive,
+  Layer.mergeAll(V2DeploymentLive, V2FileHomeConfigStoreLive),
+)
 const V2RigdRuntimeLive = Layer.provide(
   V2RigdLive,
   Layer.mergeAll(Rig2Live, V2DeploymentLive),

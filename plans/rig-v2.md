@@ -351,5 +351,9 @@ Stage 2 covers:
   provider now runs installed-component build commands from the deployment
   workspace and reports tagged failures. Process-supervisor providers can now
   return stdout/stderr lines that are persisted through component log events.
+  `V2HomeConfigStore` now reads and writes schema-validated home config under
+  the v2 state root, and deploy intent resolution uses project
+  `live.deployBranch` before home `deploy.productionBranch` before `main`.
   Remaining work is concrete first-party provider adapters that supply live
-  managed-process behavior and output.
+  managed-process behavior and output, plus generated deployment cap
+  enforcement from home config.

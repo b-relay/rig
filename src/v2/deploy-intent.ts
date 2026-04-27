@@ -7,6 +7,7 @@ import {
   type V2DeploymentRecord,
 } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
+import { V2HomeConfigStore } from "./home-config.js"
 
 export type V2DeploySource = "git-push" | "cli"
 export type V2DeployTarget = "live" | "generated"
@@ -29,7 +30,7 @@ export interface V2GitPushDeployInput {
   readonly project: string
   readonly stateRoot: string
   readonly ref: string
-  readonly mainRef: string
+  readonly mainRef?: string
   readonly config?: V2ProjectConfig
   readonly dirty?: boolean
   readonly staleRelease?: boolean
@@ -166,6 +167,7 @@ export const V2DeployIntentsLive = Layer.effect(
   V2DeployIntents,
   Effect.gen(function* () {
     const deployments = yield* V2DeploymentManager
+    const homeConfigStore = yield* V2HomeConfigStore
 
     const generatedIntent = (
       source: V2DeploySource,
@@ -197,20 +199,26 @@ export const V2DeployIntentsLive = Layer.effect(
     return {
       fromGitPush: (input) =>
         validateDeployEdges(input).pipe(
-          Effect.flatMap(() => {
-            if (input.ref === input.mainRef) {
-              return Effect.succeed({
-                source: "git-push",
-                project: input.project,
-                stateRoot: input.stateRoot,
-                ref: input.ref,
-                target: "live",
-                lane: "live",
-              } satisfies V2DeployIntent)
-            }
+          Effect.flatMap(() =>
+            Effect.gen(function* () {
+              const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
+              const productionBranch =
+                input.mainRef ?? input.config?.live?.deployBranch ?? homeConfig.deploy.productionBranch
 
-            return generatedIntent("git-push", input)
-          }),
+              if (input.ref === productionBranch) {
+                return {
+                  source: "git-push",
+                  project: input.project,
+                  stateRoot: input.stateRoot,
+                  ref: input.ref,
+                  target: "live",
+                  lane: "live",
+                } satisfies V2DeployIntent
+              }
+
+              return yield* generatedIntent("git-push", input)
+            }),
+          ),
         ),
       fromCliDeploy: (input) =>
         validateDeployEdges(input).pipe(

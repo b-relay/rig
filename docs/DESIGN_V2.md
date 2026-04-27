@@ -210,12 +210,29 @@ Each component has a `mode`:
 
 A built deployment instance materialized from `deployments`, typically keyed by branch slug or explicit deployment name.
 
+### Home config
+
+`rig` v2 has two config scopes:
+
+- Project config (`rig.json`)
+  Defines components, lane overrides, project-specific production branch behavior,
+  generated deployment template settings, and provider choices that should travel
+  with the repo.
+
+- Home config (`~/.rig-v2/config.json` or equivalent)
+  Defines machine/user defaults such as default production branch, generated
+  deployment caps, replacement policy, default provider profile, and web-control
+  preferences. `rigd` reads these defaults when resolving deploy intent and
+  enforcing runtime inventory limits. Project config can override them.
+
 ## High-Level UX
 
 ### Primary deployment model
 
-- `git push rig main` updates `live`
-- `git push rig <branch>` creates or updates the corresponding generated deployment
+- `git push rig <production-branch>` updates `live`; the production branch
+  defaults from home config, and can be overridden by project config.
+- `git push rig <branch>` creates or updates the corresponding generated
+  deployment when the branch is not the configured production branch.
 
 CLI deploys still exist, but they target refs/lanes instead of the old env model.
 

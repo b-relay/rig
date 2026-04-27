@@ -8,9 +8,10 @@ Durable decisions that apply across all phases:
 
 - **Product reference**: Dokploy is a useful reference for product feel: simple deployment wrapper, polished interface, practical defaults, broad deployment features. `rig` follows that product ambition without using Docker or containers as the runtime substrate.
 - **Primary model**: projects contain shared `components`; components run in `local`, `live`, or generated `deployments`.
+- **Config scope model**: project config owns repo-specific components and overrides; home config owns machine/user defaults such as production branch defaults, generated deployment caps, replacement policy, and provider defaults. Project config can override home defaults.
 - **Component modes**: `managed` is a supervised long-running runtime; `installed` is an executable build/install surface.
 - **Dependency semantics**: dependencies are only for managed component startup and shutdown ordering. They do not imply restart propagation, runtime cascade behavior, or tool prerequisite modeling.
-- **Deployment model**: git push is the primary deployment path. Semver and tags are optional metadata and rollback anchors, not required for routine deploys.
+- **Deployment model**: git push is the primary deployment path. The configured production branch updates `live`; all other pushed refs create or update generated deployments. Semver and tags are optional metadata and rollback anchors, not required for routine deploys.
 - **Runtime authority**: `rigd` owns deployment inventory, process supervision, logs, health state, port allocation, deploy actions, provider coordination, and state reconciliation.
 - **Effect stack**: v2 targets Effect v4 for backend logic, Effect Schema for config and argument validation, and Effect CLI for command parsing/help. Legacy Zod and hand-written parser code are migration scaffolding only.
 - **Provider model**: external concerns stay behind interfaces and are selected at composition time. Stub providers are first-class provider choices.

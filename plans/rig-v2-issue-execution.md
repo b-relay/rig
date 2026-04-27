@@ -76,6 +76,10 @@ Resolved outputs:
 
 - Cross-project selector is `--project <name>`.
 - Outside a managed repo, repo-first project-scoped commands require `--project <name>`; global inventory must be explicit.
+- Home-level rig config provides machine/user defaults such as production branch,
+  generated deployment caps, replacement policy, and provider defaults. Project
+  config remains the repo-local source for components and project-specific
+  overrides, and can override home defaults.
 - Path-based lifecycle targeting is rejected.
 - `local` and `live` cannot run concurrently when they need the same concrete port; `rigd` owns reservations.
 - Health must prove rig-owned runtime state, not just arbitrary port success.

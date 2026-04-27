@@ -6,6 +6,13 @@
 Use `rig` for current production workflows. Use `rig2` to try the new v2 model
 under isolated state.
 
+V2 uses two config scopes:
+
+- project `rig.json` for repo-specific components, lane overrides, and
+  project-specific deploy behavior
+- home rig config for machine/user defaults such as production branch defaults,
+  generated deployment caps, replacement policy, and provider defaults
+
 ## What Is Different
 
 | Area | Rig v1 | Rig2 |

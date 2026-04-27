@@ -35,6 +35,11 @@ The new operational model uses:
 - `live` for the stable built deployment.
 - `deployments` as the template for generated deployments, such as branch previews.
 
+Project `rig.json` owns per-project behavior, while a home-level rig config owns
+machine/user defaults such as the preferred production branch, generated
+deployment caps, replacement policy, and provider defaults. Project config can
+override those defaults when a project needs different behavior.
+
 The new deployment model is git-push-first. A push to the configured main ref updates `live`; a push to another ref creates or updates a generated deployment. CLI deploy commands remain available, but they target refs and lanes rather than the old environment model. Semver and tags become optional metadata for labeling and rollback anchors, not a requirement for routine deploys.
 
 The new runtime model introduces `rigd` as the local control plane. `rigd` owns deployment inventory, process supervision, structured logs, health state, port allocation, deploy actions, provider coordination, and local state reconciliation. The CLI becomes a client of `rigd`, and `rigd` provides the authenticated connection that allows the web UI at `rig.b-relay.com` to inspect and control the local machine.
@@ -117,71 +122,73 @@ The current implementation remains supported during migration while new docs, on
 
 34. As a developer, I want automatic port assignment for generated deployments, so that branch previews do not require manual port bookkeeping.
 
-35. As a developer, I want `rig doctor` to find PATH issues, missing binaries, missing files, health mismatch, port conflicts, stale runtime state, and provider misconfiguration, so that local machine failures are actionable.
+35. As a developer, I want home-level rig defaults for production branch selection and generated deployment limits, so that repeated project setup is minimal and machine-wide policies are consistent.
 
-36. As a developer, I want accidental partial loss of local state to be recoverable where possible, so that deletion of local rig state is not automatically catastrophic.
+36. As a developer, I want `rig doctor` to find PATH issues, missing binaries, missing files, health mismatch, port conflicts, stale runtime state, and provider misconfiguration, so that local machine failures are actionable.
 
-37. As a developer, I want recovery to be explicit and bounded, so that `rig` does not silently rewrite state it cannot confidently reconstruct.
+37. As a developer, I want accidental partial loss of local state to be recoverable where possible, so that deletion of local rig state is not automatically catastrophic.
 
-38. As an operator, I want one runtime authority, so that deploy inventory, process state, logs, health, and ports are not inferred differently by each command.
+38. As a developer, I want recovery to be explicit and bounded, so that `rig` does not silently rewrite state it cannot confidently reconstruct.
 
-39. As an operator, I want `rigd` to own provider coordination, so that provider failures and reconciliation have one place to live.
+39. As an operator, I want one runtime authority, so that deploy inventory, process state, logs, health, and ports are not inferred differently by each command.
 
-40. As an operator, I want the CLI to talk to `rigd`, so that command behavior matches the web UI's view of runtime state.
+40. As an operator, I want `rigd` to own provider coordination, so that provider failures and reconciliation have one place to live.
 
-41. As an operator, I want `rigd` to connect to `rig.b-relay.com`, so that the local machine can be inspected and controlled through the hosted control plane when that transport is enabled.
+41. As an operator, I want the CLI to talk to `rigd`, so that command behavior matches the web UI's view of runtime state.
 
-42. As a web UI user, I want to list projects, so that I can see what this machine is managing.
+42. As an operator, I want `rigd` to connect to `rig.b-relay.com`, so that the local machine can be inspected and controlled through the hosted control plane when that transport is enabled.
 
-43. As a web UI user, I want to list deployments, so that I can find `local`, `live`, and branch preview runtime state.
+43. As a web UI user, I want to list projects, so that I can see what this machine is managing.
 
-44. As a web UI user, I want to inspect logs and health, so that I can debug without shell access.
+44. As a web UI user, I want to list deployments, so that I can find `local`, `live`, and branch preview runtime state.
 
-45. As a web UI user, I want to trigger lifecycle and deploy actions, so that routine operations can be done from the web UI.
+45. As a web UI user, I want to inspect logs and health, so that I can debug without shell access.
 
-46. As a web UI user, I want to edit config, so that basic operational changes do not require direct file editing.
+46. As a web UI user, I want to trigger lifecycle and deploy actions, so that routine operations can be done from the web UI.
 
-47. As a project maintainer, I want package-manager integration to be optional, so that non-JavaScript projects are unaffected.
+47. As a web UI user, I want to edit config, so that basic operational changes do not require direct file editing.
 
-48. As a project maintainer, I want package-manager integration to generate `rig:` scripts when enabled, so that team members can discover the rig workflow from familiar tooling.
+48. As a project maintainer, I want package-manager integration to be optional, so that non-JavaScript projects are unaffected.
 
-49. As a project maintainer, I want package-manager integration not to overwrite conventional scripts by default, so that existing workflows are not broken unexpectedly.
+49. As a project maintainer, I want package-manager integration to generate `rig:` scripts when enabled, so that team members can discover the rig workflow from familiar tooling.
 
-50. As a test author, I want the main `rig` binary to run under an isolated state root, so that end-to-end tests exercise shipped behavior.
+50. As a project maintainer, I want package-manager integration not to overwrite conventional scripts by default, so that existing workflows are not broken unexpectedly.
 
-51. As a test author, I want stub providers for process supervision, proxy management, SCM, and other external concerns, so that tests cannot mutate real machine state.
+51. As a test author, I want the main `rig` binary to run under an isolated state root, so that end-to-end tests exercise shipped behavior.
 
-52. As a test author, I want to retire the separate smoke-only binary, so that there is less duplicate test surface.
+52. As a test author, I want stub providers for process supervision, proxy management, SCM, and other external concerns, so that tests cannot mutate real machine state.
 
-53. As a contributor, I want external concerns to remain behind interfaces, so that the plugin architecture is enforceable.
+53. As a test author, I want to retire the separate smoke-only binary, so that there is less duplicate test surface.
 
-54. As a contributor, I want providers to be selected at composition time, so that rigd, launchd, Caddy, and local git do not leak into core logic.
+54. As a contributor, I want external concerns to remain behind interfaces, so that the plugin architecture is enforceable.
 
-55. As a contributor, I want new docs and onboarding to use v2 concepts, so that users learn the model we are building toward.
+55. As a contributor, I want providers to be selected at composition time, so that rigd, launchd, Caddy, and local git do not leak into core logic.
 
-56. As a new user, I want `rig init` to scaffold a useful base config, so that setup is more than just a registry entry.
+56. As a contributor, I want new docs and onboarding to use v2 concepts, so that users learn the model we are building toward.
 
-57. As a new user, I want `rig init` to remain non-interactive, so that humans and AI agents can run it in scripts.
+57. As a new user, I want `rig init` to scaffold a useful base config, so that setup is more than just a registry entry.
 
-58. As a new user, I want `rig init` to support provider selection, lane wiring, and optional package-manager integration, so that a project can be initialized into the v2 model in one explicit flow.
+58. As a new user, I want `rig init` to remain non-interactive, so that humans and AI agents can run it in scripts.
 
-59. As a maintainer, I want v2 to be isolated while it is incomplete, so that the replacement CLI can be built quickly without mutating current machine state.
+59. As a new user, I want `rig init` to support provider selection, lane wiring, and optional package-manager integration, so that a project can be initialized into the v2 model in one explicit flow.
 
-60. As a maintainer, I want clear non-goals, so that v2 does not expand into app presets, broad tool dependency modeling, or a separate rig website.
+60. As a maintainer, I want v2 to be isolated while it is incomplete, so that the replacement CLI can be built quickly without mutating current machine state.
 
-61. As a contributor, I want v2 backend logic to target Effect v4, so that new runtime code is built on the current Effect architecture.
+61. As a maintainer, I want clear non-goals, so that v2 does not expand into app presets, broad tool dependency modeling, or a separate rig website.
 
-62. As a contributor, I want config and argument validation to use Effect Schema, so that validation, typed data, and structured errors live in the same Effect-native model.
+62. As a contributor, I want v2 backend logic to target Effect v4, so that new runtime code is built on the current Effect architecture.
 
-63. As a contributor, I want CLI parsing to use Effect CLI, so that command parsing, help output, and execution compose with Effect services and errors.
+63. As a contributor, I want config and argument validation to use Effect Schema, so that validation, typed data, and structured errors live in the same Effect-native model.
 
-64. As an operator, I want v1 `rig` to remain available while v2 is in development, so that current local workflows stay available until the replacement rename is deliberate.
+64. As a contributor, I want CLI parsing to use Effect CLI, so that command parsing, help output, and execution compose with Effect services and errors.
 
-65. As a contributor, I want a separate v2 dev binary or entrypoint, so that I can test v2 behavior without affecting the production v1 binary.
+65. As an operator, I want v1 `rig` to remain available while v2 is in development, so that current local workflows stay available until the replacement rename is deliberate.
 
-66. As a contributor, I want v2 to use isolated state, labels, workspaces, logs, ports, and proxy entries, so that v2 cannot accidentally collide with v1-managed production state.
+66. As a contributor, I want a separate v2 dev binary or entrypoint, so that I can test v2 behavior without affecting the production v1 binary.
 
-67. As a maintainer, I want v2 to reuse proven v1 patterns selectively, so that we keep working process, provider, logger, health, and test ideas without preserving v1 product assumptions.
+67. As a contributor, I want v2 to use isolated state, labels, workspaces, logs, ports, and proxy entries, so that v2 cannot accidentally collide with v1-managed production state.
+
+68. As a maintainer, I want v2 to reuse proven v1 patterns selectively, so that we keep working process, provider, logger, health, and test ideas without preserving v1 product assumptions.
 
 ## Implementation Decisions
 
@@ -208,6 +215,12 @@ The current implementation remains supported during migration while new docs, on
 - The v2 deployment model uses `local`, `live`, and generated `deployments` instead of duplicated `dev` and `prod` environment definitions.
 
 - The v2 config model defines shared components once and applies lane-specific overrides as partial patches.
+
+- V2 has both project config and home config. Project config travels with the
+  repo and defines components plus project-specific overrides. Home config
+  stays on the machine and supplies defaults for production branch behavior,
+  generated deployment limits, replacement policy, provider defaults, and
+  web-control preferences.
 
 - Component mode replaces the old server/bin distinction. `managed` means supervised long-running runtime. `installed` means executable installation/build output.
 

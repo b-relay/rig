@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Context, Effect } from "effect-v3"
 import type { FileSystemError } from "../schema/errors.js"
 
 export interface FileSystem {

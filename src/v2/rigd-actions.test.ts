@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect-v4"
+import { Effect, Layer } from "effect"
 
 import { decodeV2ProjectConfig, type V2ProjectConfig } from "./config.js"
 import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
@@ -139,9 +139,9 @@ const projectConfig = (): Effect.Effect<V2ProjectConfig> =>
     components: {
       web: {
         mode: "managed",
-        command: "bun run start -- --port ${port.web}",
+        command: "bun run start -- --port ${web.port}",
         port: 3070,
-        health: "http://127.0.0.1:${port.web}/health",
+        health: "http://127.0.0.1:${web.port}/health",
       },
     },
     deployments: {
@@ -378,6 +378,286 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         }),
       ])
       expect(result.persisted.receipts).toHaveLength(3)
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN a config-backed lifecycle up WHEN rigd restarts THEN desired running deployments are reconciled", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-reconcile-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const firstExecutor = new CaptureRuntimeExecutor()
+      const firstRun = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* rigd.controlPlaneLifecycle({
+            action: "up",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+          return yield* store.load({ stateRoot })
+        }),
+        { executor: firstExecutor },
+      )
+
+      const restartExecutor = new CaptureRuntimeExecutor()
+      const restarted = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* rigd.start({ stateRoot })
+          return yield* store.load({ stateRoot })
+        }),
+        { executor: restartExecutor },
+      )
+
+      expect(firstRun.desiredDeployments).toEqual([
+        expect.objectContaining({
+          project: "pantry",
+          deployment: "local",
+          kind: "local",
+          desiredStatus: "running",
+        }),
+      ])
+      expect(restartExecutor.lifecycleCalls.map((call) => `${call.action}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "up:local:local",
+      ])
+      expect(restarted.events.map((event) => event.event)).toContain("rigd.reconcile.deployment-started")
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN a config-backed lifecycle down WHEN persisted THEN restart reconciliation skips the stopped deployment", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-reconcile-stopped-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          yield* rigd.controlPlaneLifecycle({
+            action: "up",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+          return yield* rigd.controlPlaneLifecycle({
+            action: "down",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+        }),
+      )
+
+      const restartExecutor = new CaptureRuntimeExecutor()
+      const restarted = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* rigd.start({ stateRoot })
+          return yield* store.load({ stateRoot })
+        }),
+        { executor: restartExecutor },
+      )
+
+      expect(restarted.desiredDeployments).toEqual([
+        expect.objectContaining({
+          project: "pantry",
+          deployment: "local",
+          kind: "local",
+          desiredStatus: "stopped",
+        }),
+      ])
+      expect(restartExecutor.lifecycleCalls).toEqual([])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN a config-backed live deploy WHEN rigd restarts THEN the deployed live runtime is reconciled", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-reconcile-deploy-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const firstExecutor = new CaptureRuntimeExecutor()
+      const firstRun = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            stateRoot,
+            config,
+          })
+          return yield* store.load({ stateRoot })
+        }),
+        { executor: firstExecutor },
+      )
+
+      const restartExecutor = new CaptureRuntimeExecutor()
+      await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          return yield* rigd.start({ stateRoot })
+        }),
+        { executor: restartExecutor },
+      )
+
+      expect(firstExecutor.deployCalls.map((call) => `${call.ref}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "main:live:live",
+      ])
+      expect(firstRun.desiredDeployments).toEqual([
+        expect.objectContaining({
+          project: "pantry",
+          deployment: "live",
+          kind: "live",
+          desiredStatus: "running",
+        }),
+      ])
+      expect(restartExecutor.lifecycleCalls.map((call) => `${call.action}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "up:live:live",
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN a desired-running process exits WHEN crash policy allows restart THEN rigd records the crash and restarts it", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-crash-restart-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor()
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* rigd.controlPlaneLifecycle({
+            action: "up",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+          const exit = yield* rigd.managedProcessExited({
+            project: "pantry",
+            deployment: "local",
+            component: "web",
+            stateRoot,
+            exitCode: 1,
+            occurredAt: "2026-04-27T12:00:00.000Z",
+            stderr: "server crashed",
+          })
+          const persisted = yield* store.load({ stateRoot })
+          return { exit, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.exit).toEqual({
+        action: "restarted",
+        project: "pantry",
+        deployment: "local",
+        component: "web",
+        recentCrashCount: 1,
+      })
+      expect(executor.lifecycleCalls.map((call) => `${call.action}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "up:local:local",
+        "up:local:local",
+      ])
+      expect(result.persisted.managedServiceFailures).toEqual([
+        expect.objectContaining({
+          project: "pantry",
+          deployment: "local",
+          component: "web",
+          exitCode: 1,
+          stderr: "server crashed",
+        }),
+      ])
+      expect(result.persisted.events.map((event) => event.event)).toContain("rigd.process.restarted")
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN repeated process exits inside the backoff window WHEN retry budget is exhausted THEN rigd leaves it failed", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-crash-failed-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor()
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* rigd.controlPlaneLifecycle({
+            action: "up",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+          yield* rigd.managedProcessExited({
+            project: "pantry",
+            deployment: "local",
+            component: "web",
+            stateRoot,
+            exitCode: 1,
+            occurredAt: "2026-04-27T12:00:00.000Z",
+          })
+          yield* rigd.managedProcessExited({
+            project: "pantry",
+            deployment: "local",
+            component: "web",
+            stateRoot,
+            exitCode: 1,
+            occurredAt: "2026-04-27T12:01:00.000Z",
+          })
+          const exhausted = yield* rigd.managedProcessExited({
+            project: "pantry",
+            deployment: "local",
+            component: "web",
+            stateRoot,
+            exitCode: 1,
+            occurredAt: "2026-04-27T12:02:00.000Z",
+          })
+          const persisted = yield* store.load({ stateRoot })
+          return { exhausted, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.exhausted).toEqual({
+        action: "failed",
+        project: "pantry",
+        deployment: "local",
+        component: "web",
+        recentCrashCount: 3,
+      })
+      expect(executor.lifecycleCalls.map((call) => `${call.action}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "up:local:local",
+        "up:local:local",
+        "up:local:local",
+      ])
+      expect(result.persisted.desiredDeployments).toEqual([
+        expect.objectContaining({
+          project: "pantry",
+          deployment: "local",
+          desiredStatus: "failed",
+        }),
+      ])
+      expect(result.persisted.events.map((event) => event.event)).toContain("rigd.process.failed")
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }

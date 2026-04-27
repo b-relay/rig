@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
 
 import type { V2ProjectConfig } from "./config.js"
 import {
@@ -190,6 +190,25 @@ export interface V2RigdControlPlaneDestroyGeneratedInput {
   readonly config: V2ProjectConfig
 }
 
+export interface V2RigdManagedProcessExitInput {
+  readonly project: string
+  readonly deployment: string
+  readonly component: string
+  readonly stateRoot: string
+  readonly exitCode?: number
+  readonly occurredAt?: string
+  readonly stdout?: string
+  readonly stderr?: string
+}
+
+export interface V2RigdManagedProcessExitResult {
+  readonly action: "ignored" | "restarted" | "failed"
+  readonly project: string
+  readonly deployment: string
+  readonly component: string
+  readonly recentCrashCount: number
+}
+
 export interface V2RigdActionReceipt {
   readonly id: string
   readonly kind: V2RigdActionKind
@@ -215,6 +234,9 @@ export interface V2RigdService {
   readonly controlPlaneDestroyGenerated: (
     input: V2RigdControlPlaneDestroyGeneratedInput,
   ) => Effect.Effect<V2RigdActionReceipt, V2RuntimeError>
+  readonly managedProcessExited: (
+    input: V2RigdManagedProcessExitInput,
+  ) => Effect.Effect<V2RigdManagedProcessExitResult, V2RuntimeError>
   readonly configRead: (input: V2ConfigReadInput) => Effect.Effect<V2ConfigReadModel, V2RuntimeError>
   readonly configPreview: (input: V2ConfigPreviewInput) => Effect.Effect<V2ConfigPreviewResult, V2RuntimeError>
   readonly configApply: (input: V2ConfigPreviewInput) => Effect.Effect<V2ConfigApplyResult, V2RuntimeError>
@@ -223,6 +245,16 @@ export interface V2RigdService {
 }
 
 export const V2Rigd = Context.Service<V2RigdService>("rig/v2/V2Rigd")
+
+interface V2LifecycleRuntimeResult {
+  readonly deployment: V2DeploymentRecord
+  readonly execution: V2RuntimeExecutionResult
+}
+
+interface V2DeployRuntimeResult {
+  readonly deployment: V2DeploymentRecord
+  readonly execution: V2RuntimeExecutionResult
+}
 
 const controlPlaneContract = (runtime: V2ControlPlaneStatus): V2ControlPlaneContract => ({
   website: "https://rig.b-relay.com",
@@ -239,6 +271,8 @@ const controlPlaneContract = (runtime: V2ControlPlaneStatus): V2ControlPlaneCont
 })
 
 const now = (): string => new Date().toISOString()
+const CRASH_BACKOFF_WINDOW_MS = 5 * 60 * 1000
+const MAX_RESTARTS_IN_BACKOFF_WINDOW = 2
 
 const deploymentKindRank = (kind: V2DeploymentRecord["kind"]): number => {
   switch (kind) {
@@ -475,28 +509,227 @@ export const V2RigdLive = Layer.effect(
 
     const lifecycleExecution = (
       input: V2RigdLifecycleInput,
-    ): Effect.Effect<V2RuntimeExecutionResult | undefined, V2RuntimeError> =>
+    ): Effect.Effect<V2LifecycleRuntimeResult | undefined, V2RuntimeError> =>
       Effect.gen(function* () {
         if (!input.config || !isLifecycleWriteAction(input.action)) {
           return undefined
         }
         const deployment = yield* deploymentForLane(input.config, input.stateRoot, input.lane)
-        return yield* runtimeExecutor.lifecycle({
+        const execution = yield* runtimeExecutor.lifecycle({
           action: input.action,
           deployment,
         })
+        return { deployment, execution }
+      })
+
+    const persistDesiredLifecycle = (
+      input: V2RigdLifecycleInput,
+      runtimeResult: V2LifecycleRuntimeResult | undefined,
+    ): Effect.Effect<void, V2RuntimeError> =>
+      runtimeResult
+        ? stateStore.writeDesiredDeployment({
+          stateRoot: input.stateRoot,
+          desired: {
+            project: runtimeResult.deployment.project,
+            deployment: runtimeResult.deployment.name,
+            kind: runtimeResult.deployment.kind,
+            desiredStatus: input.action === "up" ? "running" : "stopped",
+            updatedAt: now(),
+            providerProfile: runtimeResult.deployment.providerProfile,
+            record: runtimeResult.deployment,
+          },
+        })
+        : Effect.void
+
+    const persistDesiredDeployment = (
+      stateRoot: string,
+      deployment: V2DeploymentRecord,
+      desiredStatus: "running" | "stopped" | "failed",
+    ): Effect.Effect<void, V2RuntimeError> =>
+      stateStore.writeDesiredDeployment({
+        stateRoot,
+        desired: {
+          project: deployment.project,
+          deployment: deployment.name,
+          kind: deployment.kind,
+          desiredStatus,
+          updatedAt: now(),
+          providerProfile: deployment.providerProfile,
+          record: deployment,
+        },
+      })
+
+    const recentFailuresForProcess = (
+      failures: readonly {
+        readonly project: string
+        readonly deployment: string
+        readonly component: string
+        readonly occurredAt: string
+      }[],
+      input: V2RigdManagedProcessExitInput,
+      occurredAt: string,
+    ) => {
+      const cutoff = new Date(occurredAt).getTime() - CRASH_BACKOFF_WINDOW_MS
+      return failures.filter((failure) =>
+        failure.project === input.project &&
+        failure.deployment === input.deployment &&
+        failure.component === input.component &&
+        new Date(failure.occurredAt).getTime() >= cutoff
+      )
+    }
+
+    const ignoredProcessExit = (
+      input: V2RigdManagedProcessExitInput,
+      recentCrashCount: number,
+      reason: string,
+    ): Effect.Effect<V2RigdManagedProcessExitResult, V2RuntimeError> =>
+      Effect.gen(function* () {
+        yield* appendEvent(input.stateRoot, {
+          event: "rigd.process.exit-ignored",
+          project: input.project,
+          deployment: input.deployment,
+          component: input.component,
+          details: {
+            reason,
+            exitCode: input.exitCode,
+          },
+        })
+        return {
+          action: "ignored",
+          project: input.project,
+          deployment: input.deployment,
+          component: input.component,
+          recentCrashCount,
+        }
+      })
+
+    const handleManagedProcessExit = (
+      input: V2RigdManagedProcessExitInput,
+    ): Effect.Effect<V2RigdManagedProcessExitResult, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const occurredAt = input.occurredAt ?? now()
+        const state = yield* stateStore.load({ stateRoot: input.stateRoot })
+        const desired = state.desiredDeployments.find((candidate) =>
+          candidate.project === input.project &&
+          candidate.deployment === input.deployment
+        )
+
+        if (!desired || desired.desiredStatus !== "running") {
+          return yield* ignoredProcessExit(input, 0, desired ? `desired-${desired.desiredStatus}` : "not-desired")
+        }
+
+        const failure = {
+          project: input.project,
+          deployment: input.deployment,
+          component: input.component,
+          occurredAt,
+          ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
+          ...(input.stdout ? { stdout: input.stdout } : {}),
+          ...(input.stderr ? { stderr: input.stderr } : {}),
+        }
+        const recent = recentFailuresForProcess(
+          [...state.managedServiceFailures, failure],
+          input,
+          occurredAt,
+        )
+        yield* stateStore.appendManagedServiceFailure({
+          stateRoot: input.stateRoot,
+          failure,
+        })
+
+        if (recent.length <= MAX_RESTARTS_IN_BACKOFF_WINDOW) {
+          const execution = yield* runtimeExecutor.lifecycle({
+            action: "up",
+            deployment: desired.record,
+          })
+          yield* persistExecutionEvents(input.stateRoot, execution)
+          yield* appendEvent(input.stateRoot, {
+            event: "rigd.process.restarted",
+            project: input.project,
+            ...(desired.kind === "local" || desired.kind === "live" ? { lane: desired.kind } : {}),
+            deployment: input.deployment,
+            component: input.component,
+            details: {
+              reason: "managed-process-exited",
+              recentCrashCount: recent.length,
+              maxRestarts: MAX_RESTARTS_IN_BACKOFF_WINDOW,
+              windowMs: CRASH_BACKOFF_WINDOW_MS,
+              exitCode: input.exitCode,
+              execution,
+            },
+          })
+          return {
+            action: "restarted",
+            project: input.project,
+            deployment: input.deployment,
+            component: input.component,
+            recentCrashCount: recent.length,
+          }
+        }
+
+        yield* persistDesiredDeployment(input.stateRoot, desired.record, "failed")
+        yield* appendEvent(input.stateRoot, {
+          event: "rigd.process.failed",
+          project: input.project,
+          ...(desired.kind === "local" || desired.kind === "live" ? { lane: desired.kind } : {}),
+          deployment: input.deployment,
+          component: input.component,
+          details: {
+            reason: "restart-budget-exhausted",
+            recentCrashCount: recent.length,
+            maxRestarts: MAX_RESTARTS_IN_BACKOFF_WINDOW,
+            windowMs: CRASH_BACKOFF_WINDOW_MS,
+            exitCode: input.exitCode,
+            stdout: input.stdout,
+            stderr: input.stderr,
+          },
+        })
+        return {
+          action: "failed",
+          project: input.project,
+          deployment: input.deployment,
+          component: input.component,
+          recentCrashCount: recent.length,
+        }
+      })
+
+    const reconcileDesiredRunning = (
+      stateRoot: string,
+    ): Effect.Effect<void, V2RuntimeError> =>
+      Effect.gen(function* () {
+        const state = yield* stateStore.load({ stateRoot })
+        const desiredRunning = state.desiredDeployments.filter((desired) => desired.desiredStatus === "running")
+
+        for (const desired of desiredRunning) {
+          const execution = yield* runtimeExecutor.lifecycle({
+            action: "up",
+            deployment: desired.record,
+          })
+          yield* persistExecutionEvents(stateRoot, execution)
+          yield* appendEvent(stateRoot, {
+            event: "rigd.reconcile.deployment-started",
+            project: desired.project,
+            ...(desired.kind === "local" || desired.kind === "live" ? { lane: desired.kind } : {}),
+            deployment: desired.deployment,
+            details: {
+              reason: "desired-running",
+              execution,
+            },
+          })
+        }
       })
 
     const deployExecution = (
       input: V2RigdControlPlaneDeployInput,
       generatedDeployment?: V2DeploymentRecord,
-    ): Effect.Effect<V2RuntimeExecutionResult | undefined, V2RuntimeError> =>
+    ): Effect.Effect<V2DeployRuntimeResult | undefined, V2RuntimeError> =>
       Effect.gen(function* () {
         if (generatedDeployment) {
-          return yield* runtimeExecutor.deploy({
+          const execution = yield* runtimeExecutor.deploy({
             deployment: generatedDeployment,
             ref: input.ref,
           })
+          return { deployment: generatedDeployment, execution }
         }
 
         if (!input.config) {
@@ -504,10 +737,11 @@ export const V2RigdLive = Layer.effect(
         }
 
         const deployment = yield* deploymentForLane(input.config, input.stateRoot, "live")
-        return yield* runtimeExecutor.deploy({
+        const execution = yield* runtimeExecutor.deploy({
           deployment,
           ref: input.ref,
         })
+        return { deployment, execution }
       })
 
     const enforceGeneratedDeploymentCap = (
@@ -582,6 +816,7 @@ export const V2RigdLive = Layer.effect(
               stateRoot: input.stateRoot,
             },
           })
+          yield* reconcileDesiredRunning(input.stateRoot)
           const current = yield* health(input.stateRoot)
           yield* logger.info("rigd local API ready", current)
           return current
@@ -645,8 +880,9 @@ export const V2RigdLive = Layer.effect(
         }),
       lifecycle: (input) =>
         Effect.gen(function* () {
-          const execution = yield* lifecycleExecution(input)
-          return yield* lifecycleAccepted(input, "cli", execution)
+          const runtimeResult = yield* lifecycleExecution(input)
+          yield* persistDesiredLifecycle(input, runtimeResult)
+          return yield* lifecycleAccepted(input, "cli", runtimeResult?.execution)
         }),
       deploy: (input) =>
         Effect.gen(function* () {
@@ -673,8 +909,9 @@ export const V2RigdLive = Layer.effect(
             stateRoot: input.stateRoot,
             target: input.lane,
           })
-          const execution = yield* lifecycleExecution(input)
-          return yield* lifecycleAccepted(input, "control-plane", execution)
+          const runtimeResult = yield* lifecycleExecution(input)
+          yield* persistDesiredLifecycle(input, runtimeResult)
+          return yield* lifecycleAccepted(input, "control-plane", runtimeResult?.execution)
         }),
       controlPlaneDeploy: (input) =>
         Effect.gen(function* () {
@@ -736,8 +973,11 @@ export const V2RigdLive = Layer.effect(
             yield* persistInventoryEvidence(input.stateRoot, inventory)
           }
 
-          const execution = yield* deployExecution(input, materialized)
-          return yield* deployAccepted(input, target, "control-plane", execution)
+          const runtimeResult = yield* deployExecution(input, materialized)
+          if (runtimeResult) {
+            yield* persistDesiredDeployment(input.stateRoot, runtimeResult.deployment, "running")
+          }
+          return yield* deployAccepted(input, target, "control-plane", runtimeResult?.execution)
         }),
       controlPlaneDestroyGenerated: (input) =>
         Effect.gen(function* () {
@@ -768,6 +1008,7 @@ export const V2RigdLive = Layer.effect(
             name: input.deploymentName,
           })
           const execution = yield* runtimeExecutor.destroyGenerated({ deployment: destroyed })
+          yield* persistDesiredDeployment(input.stateRoot, destroyed, "stopped")
           const inventory = yield* deployments.list({
             config: input.config,
             stateRoot: input.stateRoot,
@@ -787,6 +1028,7 @@ export const V2RigdLive = Layer.effect(
           })
           return accepted
         }),
+      managedProcessExited: (input) => handleManagedProcessExit(input),
       configRead: (input) => configEditor.read(input),
       configPreview: (input) => configEditor.preview(input),
       configApply: (input) => configEditor.apply(input),

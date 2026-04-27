@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { runDocsCommand } from "./docs-command.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"

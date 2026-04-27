@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { renderCommandHelp, renderMainHelp } from "./help.js"
 import { runCli } from "./index.js"

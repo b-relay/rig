@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { BinInstaller } from "./interfaces/bin-installer.js"
 import { EnvLoader } from "./interfaces/env-loader.js"

@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from "node:path"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { BinInstaller } from "../interfaces/bin-installer.js"
 import { EnvLoader } from "../interfaces/env-loader.js"

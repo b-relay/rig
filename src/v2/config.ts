@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect-v4"
+import { Effect, Schema } from "effect"
 
 import type { DaemonConfig, Environment, RigConfig, ServiceHooks, TopLevelHooks } from "../schema/config.js"
 import { V2ConfigValidationError } from "./errors.js"
@@ -201,7 +201,9 @@ export const V2ProjectConfigSchema = Schema.Struct({
   deployments: fieldDoc(Schema.optionalKey(LaneConfigSchema), "Optional generated deployment template overrides."),
 })
 
-export type V2ProjectConfig = Schema.Schema.Type<typeof V2ProjectConfigSchema>
+export type V2ProjectConfig = Schema.Schema.Type<typeof V2ProjectConfigSchema> & {
+  readonly __sourceRepoPath?: string
+}
 export type V2ManagedComponent = Schema.Schema.Type<typeof V2ManagedComponentSchema>
 export type V2InstalledComponent = Schema.Schema.Type<typeof V2InstalledComponentSchema>
 export type V2Component = Schema.Schema.Type<typeof V2ComponentSchema>
@@ -244,6 +246,7 @@ export interface ResolvedV2Lane {
   readonly branchSlug: string
   readonly subdomain: string
   readonly workspacePath: string
+  readonly sourceRepoPath?: string
   readonly providerProfile: "default" | "stub"
   readonly providers: ResolvedV2Providers
   readonly environment: Environment
@@ -466,6 +469,10 @@ const interpolateString = (value: string, interpolation: V2LaneInterpolation): s
       const component = key.slice("port.".length)
       return String(interpolation.assignedPorts[component] ?? "")
     }
+    if (key.endsWith(".port")) {
+      const component = key.slice(0, -".port".length)
+      return String(interpolation.assignedPorts[component] ?? "")
+    }
     return ""
   })
 
@@ -515,6 +522,18 @@ const resolvePort = (
     ? interpolation.assignedPorts[name] ?? value
     : value ?? interpolation.assignedPorts[name]
 
+const interpolationWithPort = (
+  interpolation: V2LaneInterpolation,
+  name: string,
+  port: number,
+): V2LaneInterpolation => ({
+  ...interpolation,
+  assignedPorts: {
+    ...interpolation.assignedPorts,
+    [name]: port,
+  },
+})
+
 export const resolveV2Lane = (
   config: V2ProjectConfig,
   options: ResolveV2LaneOptions,
@@ -529,7 +548,6 @@ export const resolveV2Lane = (
       const override = laneConfig?.components?.[name]
 
       if (component.mode === "managed") {
-        const command = interpolateString(override?.command ?? component.command, interpolation)
         const port = resolvePort(name, override?.port ?? component.port, interpolation)
         if (port === undefined) {
           return yield* Effect.fail(
@@ -540,6 +558,8 @@ export const resolveV2Lane = (
             ),
           )
         }
+        const componentInterpolation = interpolationWithPort(interpolation, name, port)
+        const command = interpolateString(override?.command ?? component.command, componentInterpolation)
 
         services.push({
           name,
@@ -547,7 +567,7 @@ export const resolveV2Lane = (
           command,
           port,
           ...(override?.health ?? component.health
-            ? { healthCheck: interpolateString((override?.health ?? component.health) as string, interpolation) }
+            ? { healthCheck: interpolateString((override?.health ?? component.health) as string, componentInterpolation) }
             : {}),
           readyTimeout: override?.readyTimeout ?? component.readyTimeout ?? 30,
           ...(override?.dependsOn ?? component.dependsOn ? { dependsOn: override?.dependsOn ?? component.dependsOn } : {}),
@@ -607,6 +627,7 @@ export const resolveV2Lane = (
       branchSlug: interpolation.branchSlug,
       subdomain: interpolation.subdomain,
       workspacePath: interpolation.workspace,
+      ...(config.__sourceRepoPath ? { sourceRepoPath: config.__sourceRepoPath } : {}),
       providerProfile: laneConfig?.providerProfile ?? "default",
       providers,
       environment,

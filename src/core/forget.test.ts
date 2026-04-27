@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { runForgetCommand } from "./forget.js"
 import { rigBinPath, rigVersionHistoryPath, rigWorkspacesRoot } from "./rig-paths.js"

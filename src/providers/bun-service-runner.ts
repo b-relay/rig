@@ -1,6 +1,6 @@
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"

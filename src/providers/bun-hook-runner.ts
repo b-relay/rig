@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { HookRunner } from "../interfaces/hook-runner.js"
 import { ServiceRunnerError } from "../schema/errors.js"

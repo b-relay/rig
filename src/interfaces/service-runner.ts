@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Context, Effect } from "effect-v3"
 import type { ServiceRunnerError } from "../schema/errors.js"
 import type { ServerService } from "../schema/config.js"
 

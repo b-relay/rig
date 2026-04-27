@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { HttpHealthChecker } from "./http-health.js"
 import type { HealthCheckConfig } from "../interfaces/health-checker.js"

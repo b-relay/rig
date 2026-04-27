@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { HealthChecker, type HealthCheckConfig, type HealthChecker as HealthCheckerService, type HealthResult } from "../interfaces/health-checker.js"
 import { HealthCheckError } from "../schema/errors.js"

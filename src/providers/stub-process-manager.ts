@@ -1,6 +1,6 @@
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import {
   ProcessManager,

@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import type { Logger as LoggerService } from "../interfaces/logger.js"
 import type { RunOpts } from "../interfaces/service-runner.js"

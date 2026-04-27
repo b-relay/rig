@@ -1,5 +1,5 @@
 import { isAbsolute, join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { EnvLoader, type EnvLoader as EnvLoaderService } from "../interfaces/env-loader.js"
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"

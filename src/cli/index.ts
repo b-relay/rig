@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { parseArgs } from "node:util"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 import { z } from "zod"
 
 import { runConfigCommand } from "../core/config-command.js"

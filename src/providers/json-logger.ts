@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"
 import type { RigError } from "../schema/errors.js"

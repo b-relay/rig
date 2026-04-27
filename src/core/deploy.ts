@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
 import { Git, type Git as GitService } from "../interfaces/git.js"

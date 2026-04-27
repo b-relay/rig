@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { rigBinPath, rigLaunchdBackupRoot, rigVersionHistoryPath, rigWorkspacesRoot } from "./rig-paths.js"
 import { loadProjectConfigAtPath } from "./config.js"

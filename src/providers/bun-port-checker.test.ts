@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { PortChecker } from "../interfaces/port-checker.js"
 import { PortConflictError } from "../schema/errors.js"

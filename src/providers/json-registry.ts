@@ -1,5 +1,5 @@
 import { dirname } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { rigRegistryPath } from "../core/rig-paths.js"
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"

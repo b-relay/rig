@@ -39,17 +39,57 @@ V2 is ready as an isolated runway:
 V2 is not ready to be renamed to `rig` until the follow-up gaps are closed or
 intentionally deferred.
 
+## Pantry Cutover Target
+
+The first real replacement validation target is `pantry`:
+
+- live web routing must resolve `pantry.b-relay.com` to the configured
+  localhost-bound managed service through the v2 Caddy proxy router
+- Caddy upsert must adopt or replace an existing `pantry.b-relay.com` site
+  block instead of appending a duplicate; Caddy rejects duplicate site
+  definitions as ambiguous
+- the default Caddy provider should render the portable baseline only:
+  `domain { reverse_proxy http://127.0.0.1:<port> }`. Local extras such as
+  `import cloudflare` and `import backend_errors` belong in Caddy provider
+  config, not in the hard-coded default renderer. The v2 home config now
+  carries bundled Caddy provider defaults for the Caddyfile path, per-site
+  extra config lines, and reload behavior.
+- v2 config interpolation should be component-first: `${web.port}` resolves
+  the port for the `web` component. The older `${port.web}` shape is not the
+  preferred public syntax.
+- the installed CLI component must build from the deployment workspace and
+  install an executable named `pantry` into the v2-managed bin root
+- live config should use the `pantry` project identity, `pantry.b-relay.com`
+  domain, a `live.proxy.upstream` managed service, and an installed component
+  with `installName: "pantry"`
+- tests should keep the bin root, Caddyfile, launchd home, and v2 state root
+  isolated until the replacement is deliberate
+
+On the maintainer machine, the running root Caddy service currently starts
+`/usr/local/bin/caddy run --config /usr/local/etc/Caddyfile --envfile
+/etc/secrets/cloudflare.env` from launchd label `com.caddyserver.caddy`.
+Updating a Caddyfile is not enough by itself; the running server must receive a
+graceful reload or be restarted by launchd. Prefer Caddy's reload/admin API
+path where possible. `rig2` should not be run as root; the Caddy provider
+defaults to manual reload, and command-mode reload should only use a
+non-interactive command the current user is allowed to run. If the root launchd
+service must be restarted manually, the machine-specific fallback is:
+
+```bash
+sudo launchctl kickstart -k system/com.caddyserver.caddy
+```
+
 ## Replacement Readiness Matrix
 
 | Final CLI area | Current v1 behavior | Current `rig2` equivalent | Readiness status | Replacement decision |
 |---|---|---|---|---|
 | Init/setup | `rig init` registers projects and can scaffold v1 or v2 config | v2 scaffold exists through `rig init --v2`; no `rig2 init` yet | partial | add v2-native init surface before replacement or intentionally keep setup in final `rig init` |
-| Lifecycle start | `rig start <name> dev|prod` | `rig2 up --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; core `rigd` process supervision, provider stdout/stderr ingestion, and `native-health` HTTP/command checks are concrete; broader launchd/proxy/materializer parity still pending | #27, #28, #30 |
-| Lifecycle stop | `rig stop <name> dev|prod` | `rig2 down --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; core `rigd` process stop behavior is concrete; broader launchd/proxy/materializer parity still pending | #27, #28, #30 |
+| Lifecycle start | `rig start <name> dev|prod` | `rig2 up --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; desired running state is persisted and reconciled on `rigd.start`; `rigd.managedProcessExited` records crashes, restarts while budget allows, and marks repeated crashes failed; core `rigd` process supervision, launchd plist install/bootstrap, provider stdout/stderr ingestion, `git-worktree` workspace resolution, and `native-health` HTTP/command checks are concrete | #23 rename/build validation |
+| Lifecycle stop | `rig stop <name> dev|prod` | `rig2 down --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; desired state is marked stopped so startup reconciliation skips it; core `rigd` process stop behavior, launchd bootout/plist removal, and `git-worktree` workspace resolution are concrete | #23 rename/build validation |
 | Lifecycle restart | `rig restart` | no direct `rig2 restart` | not implemented | add first-class v2 `restart` or intentionally omit before replacement |
 | Status | `rig status` | `rig2 status` | partial: reports foundation and `rigd` state; runtime execution result details are recorded for config-backed writes | adapter parity follow-ups |
 | Logs | `rig logs` | `rig2 logs` | partial: reads structured `rigd` logs with execution details and provider-backed component execution events; `structured-log-file` writes deployment JSONL event logs; process-supervisor stdout/stderr lines from the core `rigd` provider are ingested when commands emit them | adapter parity follow-ups |
-| Deploy | `rig deploy <name> dev|prod` | `rig2 deploy --target live|generated --ref <ref>` | partial: repo-inferred and `--config` paths load validated v2 config; config-backed live/generated deploy actions execute through ordered runtime provider methods; generated deployment caps enforce home-config `reject`/`oldest` policies; `native-health` HTTP/command validation, `structured-log-file` event persistence, `package-json-scripts` installed-component builds, and core `rigd` process supervision are concrete; broader launchd/proxy/SCM/materializer parity still pending | #27, #28, #29, #30 |
+| Deploy | `rig deploy <name> dev|prod` | `rig2 deploy --target live|generated --ref <ref>` | partial: repo-inferred and `--config` paths load validated v2 config; config-backed live/generated deploy actions execute through ordered runtime provider methods and persist desired running state for startup reconciliation; generated deployment caps enforce home-config `reject`/`oldest` policies; `native-health` HTTP/command validation, `structured-log-file` event persistence, `package-json-scripts` installed-component builds, core `rigd` process supervision, launchd process supervision, `local-git` ref fetch/verification, `git-worktree` workspace materialization, and v2-namespaced Caddy route upsert/remove are concrete | #23 rename/build validation |
 | Version metadata | `rig version` | `rig2 bump` | partial: semver is optional metadata | final CLI can keep `bump` if it remains simpler than `version` |
 | Global inventory | `rig list` | no direct `rig2 list` | not implemented | add v2 CLI inventory if shell workflows need it |
 | Config | `rig config` | `rig2 config read/set/unset` backed by `rigd.configRead/configPreview/configApply` | partial: project config CLI surface exists; hosted/web editing is still future work | #24 complete |
@@ -85,6 +125,8 @@ Before renaming or building `rig2` as `rig`:
 - Run `rig2` command tests with isolated `RIG_V2_ROOT`.
 - Run a stub-provider lifecycle path.
 - Run a stub-provider generated deployment path.
+- Run the Pantry readiness tests proving `pantry.b-relay.com` Caddy routing and
+  `pantry` CLI installation under an isolated v2 bin root.
 - Run `rigd` read model, write action, and config edit tests.
 - Confirm current v1 state is preserved until the replacement is deliberate.
 - Confirm rollback steps are documented and tested for the rename/build path.
@@ -121,10 +163,24 @@ Known gaps are filed instead of hidden in this plan:
 
 - #23 Rename/build rig2 as rig when replacement criteria are met.
 - #26 Add hosted control-plane transport adapter for rig.b-relay.com.
-- #27 Add launchd process-supervisor adapter for rig2 execution.
-- #28 Add proxy router adapter for rig2 provider execution.
-- #29 Add SCM checkout adapter for rig2 deploy execution.
-- #30 Add workspace materializer adapter for rig2 deployments.
+- #27 Add launchd process-supervisor adapter for rig2 execution. Complete:
+  v2 launchd process supervision now installs v2-namespaced plists,
+  bootstraps them through launchctl, removes them on down, and supports
+  injected launchctl/home paths for isolated tests.
+- #30 Add workspace materializer adapter for rig2 deployments. Complete:
+  `git-worktree` now removes stale worktrees, materializes detached workspaces
+  at deploy refs, removes generated workspaces during teardown, and receives
+  source repo paths from loaded config.
+- #29 Add SCM checkout adapter for rig2 deploy execution. Complete:
+  `local-git` now fetches origin refs, verifies deploy refs resolve to commits,
+  and reports tagged runtime errors for fetch or ref-resolution failures.
+- #28 Add proxy router adapter for rig2 provider execution. Complete:
+  `caddy` now upserts and removes v2-namespaced Caddyfile routes from
+  deployment domains to localhost component ports, adopts same-domain existing
+  blocks to avoid duplicate ambiguous site definitions, renders portable
+  reverse-proxy-only blocks by default, accepts home-config-style per-site
+  extra config, and can run an explicitly configured reload command after
+  writes.
 
 ## HITL Decisions
 

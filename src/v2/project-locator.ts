@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
 
 import { V2CliArgumentError } from "./errors.js"
 

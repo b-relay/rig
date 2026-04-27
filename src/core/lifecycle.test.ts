@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { runRestartCommand, runStartCommand, runStopCommand } from "./lifecycle.js"
 import { rigBinPath } from "./rig-paths.js"

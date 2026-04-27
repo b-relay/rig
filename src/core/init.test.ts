@@ -1,7 +1,7 @@
 import { resolve } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
-import { Effect as EffectV4 } from "effect-v4"
+import { Effect, Layer } from "effect-v3"
+import { Effect as EffectV4 } from "effect"
 
 import { runInitCommand } from "./init.js"
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"

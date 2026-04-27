@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
 
 export type V2ProviderProfileName = "default" | "stub"
 

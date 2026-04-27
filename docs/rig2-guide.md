@@ -27,7 +27,13 @@ these defaults:
     }
   },
   "providers": {
-    "defaultProfile": "default"
+    "defaultProfile": "default",
+    "caddy": {
+      "extraConfig": [],
+      "reload": {
+        "mode": "manual"
+      }
+    }
   },
   "web": {
     "controlPlane": "localhost"
@@ -98,9 +104,9 @@ Minimal v2 shape:
   "components": {
     "web": {
       "mode": "managed",
-      "command": "bun run start -- --port ${port.web}",
+      "command": "bun run start -- --port ${web.port}",
       "port": 3070,
-      "health": "http://127.0.0.1:${port.web}/health"
+      "health": "http://127.0.0.1:${web.port}/health"
     }
   },
   "deployments": {
@@ -112,6 +118,48 @@ Minimal v2 shape:
   }
 }
 ```
+
+Interpolation is component-first. For a component named `web`, `${web.port}`
+means "the resolved port for the `web` component." In the `local` and `live`
+lanes that is usually the component's configured `port`; in generated
+deployments it can be the assigned per-deployment port.
+
+## Caddy Provider Config
+
+The bundled Caddy provider renders portable site blocks by default:
+
+```caddy
+# [rig2:pantry:live:web]
+pantry.b-relay.com {
+  reverse_proxy http://127.0.0.1:3070
+}
+```
+
+Machine-specific Caddy behavior belongs in the v2 home config, not in project
+config or the hard-coded renderer. For example, a maintainer machine that uses
+the system Caddyfile plus reusable snippets can set:
+
+```json
+{
+  "providers": {
+    "caddy": {
+      "caddyfile": "/usr/local/etc/Caddyfile",
+      "extraConfig": ["import cloudflare", "import backend_errors"],
+      "reload": {
+        "mode": "manual",
+        "command": "sudo launchctl kickstart -k system/com.caddyserver.caddy"
+      }
+    }
+  }
+}
+```
+
+`extraConfig` lines are inserted inside every Rig-managed site block after the
+`reverse_proxy` line. The default reload mode is `manual`, so `rig2` writes the
+Caddyfile but does not require sudo. If `reload.mode` is `command`, the bundled
+Caddy provider runs the configured command after route upsert/remove. Use that
+only with a command the current user can run non-interactively, such as a
+passwordless narrow helper or an unprivileged Caddy admin reload.
 
 ## Common Commands
 
@@ -238,11 +286,28 @@ Outside the repo, pass both project and config path:
 - Config-backed `rigd` lifecycle and deploy actions now run through ordered v2
   runtime provider methods before receipts are persisted. Runtime execution
   emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
-  first-party adapter parity is still pending, but `structured-log-file` writes
-  deployment-scoped JSONL event logs, `native-health` performs real HTTP and
-  command health checks, `package-json-scripts` runs installed-component build
-  commands, and the core `rigd` process supervisor runs managed component
-  commands while returning provider stdout/stderr lines for log ingestion.
+  `structured-log-file` writes deployment-scoped JSONL event logs,
+  `native-health` performs real HTTP and command health checks,
+  `package-json-scripts` runs installed-component build commands and installs
+  executables into the v2-managed bin root, the core `rigd` process supervisor
+  runs managed component commands while returning provider stdout/stderr lines
+  for log ingestion, the bundled `launchd` process supervisor installs/removes
+  v2-namespaced plists, `local-git` fetches and verifies deploy refs,
+  `git-worktree` materializes/removes deployment workspaces at those refs, and
+  `caddy` upserts/removes v2-namespaced Caddyfile routes.
+- Config-backed lifecycle and deploy writes persist desired runtime state.
+  `rigd.start` reconciles desired-running deployments from that state, so a
+  fresh `rigd` process can restart previously running local/live/generated
+  deployment records without needing project config to be passed again.
+- `rigd.managedProcessExited` records managed process crashes, keeps stdout and
+  stderr evidence when provided, restarts the desired-running deployment while
+  the retry budget allows it, and marks the deployment failed after repeated
+  crashes inside the backoff window. The remaining integration step is wiring
+  concrete process watchers to call this entrypoint when a supervised child
+  exits unexpectedly.
+- Pantry cutover readiness is covered by v2 tests for a live
+  `pantry.b-relay.com` route and an installed `pantry` CLI under an isolated
+  v2 bin root.
 - `rig2 config read`, `rig2 config set`, and `rig2 config unset` expose
   project config read/preview/apply through `rigd`. Hosted web config editing
   is still future work.
@@ -257,7 +322,18 @@ Tracked follow-ups:
 
 - #23 rename/build `rig2` as `rig` when replacement criteria are met
 - #26 add hosted control-plane transport adapter
-- #27 add launchd process-supervisor adapter
-- #28 add proxy router adapter
-- #29 add SCM checkout adapter
-- #30 add workspace materializer adapter
+
+Future plugin/preset track:
+
+- Convex Local plugin for per-deployment Convex instances, data roots, ports,
+  generated DNS/subdomain values, health checks, CORS/allowed-origin values,
+  and environment variables.
+- Next.js plugin for common component/build/health/proxy config scaffolding
+  plus domain/CORS environment wiring.
+- Vite plugin for dev/preview/build component scaffolding and generated
+  deployment env/proxy defaults.
+
+Rig should supervise localhost-bound services and generate the deployment URLs,
+ports, and environment variables they need. Caddy and future Cloudflare Tunnel
+providers can expose those services. Tailscale access is treated as external
+machine/network setup rather than a Rig plugin.

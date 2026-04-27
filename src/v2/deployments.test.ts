@@ -2,7 +2,7 @@ import { access, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect-v4"
+import { Effect, Layer } from "effect"
 
 import { decodeV2ProjectConfig } from "./config.js"
 import {
@@ -71,13 +71,13 @@ const projectConfig = () =>
     components: {
       web: {
         mode: "managed",
-        command: "bun run start -- --port ${port.web}",
+        command: "bun run start -- --port ${web.port}",
         port: 3070,
-        health: "http://127.0.0.1:${port.web}/health",
+        health: "http://127.0.0.1:${web.port}/health",
       },
       worker: {
         mode: "managed",
-        command: "bun run worker -- --port ${port.worker}",
+        command: "bun run worker -- --port ${worker.port}",
       },
       cli: {
         mode: "installed",

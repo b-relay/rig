@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect-v4"
+import { Effect } from "effect"
 
 import { decodeV2ProjectConfig, decodeV2StatusInput, resolveV2Lane } from "./config.js"
 
@@ -81,9 +81,9 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
         components: {
           api: {
             mode: "managed",
-            command: "bun run start -- --port ${port.api}",
+            command: "bun run start -- --port ${api.port}",
             port: 3070,
-            health: "http://127.0.0.1:${port.api}/health",
+            health: "http://127.0.0.1:${api.port}/health",
           },
           worker: {
             mode: "managed",
@@ -104,9 +104,9 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
           },
           components: {
             api: {
-              command: "bun run dev -- --port ${port.api}",
+              command: "bun run dev -- --port ${api.port}",
               port: 5173,
-              health: "http://127.0.0.1:${port.api}",
+              health: "http://127.0.0.1:${api.port}",
             },
           },
         },
@@ -132,9 +132,9 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
     expect(resolved.environment.services[0]).toMatchObject({
       name: "api",
       type: "server",
-      command: "bun run dev -- --port 9999",
+      command: "bun run dev -- --port 5173",
       port: 5173,
-      healthCheck: "http://127.0.0.1:9999",
+      healthCheck: "http://127.0.0.1:5173",
       envFile: ".env.local",
     })
     expect(resolved.environment.services[1]).toMatchObject({
@@ -183,6 +183,59 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
     })
   })
 
+  test("GIVEN pantry live config WHEN resolving THEN the domain proxy and CLI install name are ready for cutover", async () => {
+    const config = await Effect.runPromise(
+      decodeV2ProjectConfig({
+        name: "pantry",
+        domain: "pantry.b-relay.com",
+        components: {
+          web: {
+            mode: "managed",
+            command: "bun run start -- --host 127.0.0.1 --port ${web.port}",
+            port: 3070,
+            health: "http://127.0.0.1:${web.port}/health",
+          },
+          cli: {
+            mode: "installed",
+            entrypoint: "dist/pantry",
+            build: "bun build --compile cli/index.ts --outfile dist/pantry",
+            installName: "pantry",
+          },
+        },
+        live: {
+          proxy: {
+            upstream: "web",
+          },
+          providers: {
+            processSupervisor: "launchd",
+          },
+        },
+      }),
+    )
+
+    const resolved = await Effect.runPromise(
+      resolveV2Lane(config, {
+        lane: "live",
+        workspacePath: "/tmp/rig-v2/workspaces/pantry/live",
+      }),
+    )
+
+    expect(resolved.v1Config.domain).toBe("pantry.b-relay.com")
+    expect(resolved.environment.proxy?.upstream).toBe("web")
+    expect(resolved.environment.services).toContainEqual(expect.objectContaining({
+      name: "pantry",
+      type: "bin",
+      entrypoint: "dist/pantry",
+      build: "bun build --compile cli/index.ts --outfile dist/pantry",
+    }))
+    expect(resolved.environment.services).toContainEqual(expect.objectContaining({
+      name: "web",
+      type: "server",
+      command: "bun run start -- --host 127.0.0.1 --port 3070",
+      healthCheck: "http://127.0.0.1:3070/health",
+    }))
+  })
+
   test("GIVEN generated deployment interpolation WHEN resolving THEN branch values and assigned ports are substituted", async () => {
     const config = await Effect.runPromise(
       decodeV2ProjectConfig({
@@ -191,8 +244,8 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
         components: {
           web: {
             mode: "managed",
-            command: "bun run start -- --port ${ports.web}",
-            health: "http://127.0.0.1:${ports.web}/health",
+            command: "bun run start -- --port ${web.port}",
+            health: "http://127.0.0.1:${web.port}/health",
           },
         },
         deployments: {

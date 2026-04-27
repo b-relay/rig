@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect-v4"
+import { Effect, Layer } from "effect"
 
 import { V2Lifecycle, V2LifecycleLive } from "./lifecycle.js"
 import type { V2ProjectConfig } from "./config.js"
@@ -118,7 +118,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
       components: {
         web: {
           mode: "managed" as const,
-          command: "bun run start -- --port ${port.web}",
+          command: "bun run start -- --port ${web.port}",
         },
       },
     } satisfies V2ProjectConfig
@@ -189,7 +189,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
       components: {
         web: {
           mode: "managed" as const,
-          command: "bun run start -- --port ${port.web}",
+          command: "bun run start -- --port ${web.port}",
         },
       },
     } satisfies V2ProjectConfig

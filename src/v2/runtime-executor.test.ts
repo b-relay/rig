@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect-v4"
+import { Effect, Layer } from "effect"
 
 import type { V2DeploymentRecord } from "./deployments.js"
 import {

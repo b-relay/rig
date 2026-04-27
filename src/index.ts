@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect } from "effect-v3";
 
 import { runCli } from "./cli/index";
 import { Logger } from "./interfaces/logger.js"

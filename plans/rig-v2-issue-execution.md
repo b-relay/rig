@@ -248,9 +248,15 @@ visible through `rigd` health and `rig2 doctor`.
 
 Current output: `V2RigdStateStore` persists runtime events, receipts, health
 summaries, provider observations, deployment snapshots, and rigd-owned port
-reservations under `runtime/rigd-state.json`. Restart tests prove persisted logs
-and minimum reconstruction evidence survive a fresh `rigd` layer, while missing
-evidence fails with a tagged unsafe-reconstruction error.
+reservations under `runtime/rigd-state.json`. It also persists desired
+deployment state for config-backed lifecycle and deploy writes. Restart tests
+prove persisted logs, desired running records, and minimum reconstruction
+evidence survive a fresh `rigd` layer; `rigd.start` reconciles desired-running
+deployment records, while missing evidence fails with a tagged
+unsafe-reconstruction error. `rigd.managedProcessExited` records managed
+process crash evidence, restarts desired-running deployments while the retry
+budget allows it, and marks repeated crashes failed instead of retrying
+forever.
 
 Recommended order:
 
@@ -358,7 +364,8 @@ transport now appends deployment-scoped JSONL under each v2 deployment log
 root. The `native-health` provider now performs real HTTP and command checks
 and returns tagged runtime failures for unhealthy, unreachable, or non-zero
 checks. The `package-json-scripts` provider now runs installed-component build
-commands from the deployment workspace and reports tagged failures.
+commands from the deployment workspace, installs executables into the
+v2-managed bin root, and reports tagged failures.
 Process-supervisor providers can now return stdout/stderr lines that are
 persisted through component log events, and the core `rigd` process supervisor
 now runs managed component commands while returning stdout/stderr output for log
@@ -367,12 +374,23 @@ config under the v2 state root, and deploy intent resolution uses project
 `live.deployBranch` before home `deploy.productionBranch` before `main`.
 Generated deployment caps from home config are enforced during deploy-intent
 materialization and `rigd` generated deploy actions with `reject` and `oldest`
-replacement policies. Broader first-party launchd, proxy, SCM, and workspace
-materializer adapter parity is tracked by #27 through #30.
+replacement policies. #27 is complete for launchd process-supervisor
+execution, #28 is complete for `caddy` proxy routing, #29 is complete for
+`local-git` ref preparation, and #30 is complete for `git-worktree` workspace
+materialization. The bundled Caddy provider now adopts existing same-domain
+site blocks instead of appending ambiguous duplicates, renders portable
+reverse-proxy-only blocks by default, accepts home-config-style Caddyfile path
+and per-site extra config, and can run an explicitly configured reload command
+after route writes.
+Config-backed lifecycle and deploy actions now persist desired running/stopped
+deployment state, and `rigd.start` reconciles desired-running records through
+the runtime executor after process restart.
+`rigd.managedProcessExited` now records crash evidence, restarts while the
+retry budget allows it, and marks repeated crashes failed. A later integration
+slice should wire concrete process watchers into that policy entrypoint.
 
-After the #27 through #30 provider-adapter follow-ups, #23 can prepare the
-final `rig2` to `rig` replacement build path. #24 is complete for the CLI
-config-edit surface.
+After the provider-adapter follow-ups, #23 can prepare the final `rig2` to
+`rig` replacement build path. #24 is complete for the CLI config-edit surface.
 
 ## Suggested First Milestone
 

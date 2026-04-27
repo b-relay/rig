@@ -1,6 +1,6 @@
 import { dirname } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import type { FileSystem as FileSystemService } from "../interfaces/file-system.js"
 import { FileSystemError, RegistryError } from "../schema/errors.js"

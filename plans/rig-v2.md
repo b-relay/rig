@@ -315,7 +315,11 @@ Stage 2 covers:
   and isolated E2E compositions.
 - #17 Persist rigd runtime state and reconciliation journal. Complete:
   `V2RigdStateStore` persists events, receipts, health summaries, provider
-  observations, deployment snapshots, and rigd-owned port reservations.
+  observations, deployment snapshots, rigd-owned port reservations, and desired
+  deployment state. `rigd.start` reconciles desired-running deployment records
+  after process restart. `rigd.managedProcessExited` records crash evidence,
+  restarts desired-running deployments while the retry budget allows it, and
+  marks repeated crashes failed.
 - #18 Add localhost-first control-plane interface. Complete: `V2ControlPlane`
   now reports localhost-only, Tailscale DNS, public tunnel, token-pairing, and
   envelope serialization contracts through interfaces.
@@ -353,7 +357,8 @@ Stage 2 covers:
   real HTTP and command checks and returns tagged runtime failures for
   unhealthy, unreachable, or non-zero checks. The `package-json-scripts`
   provider now runs installed-component build commands from the deployment
-  workspace and reports tagged failures. Process-supervisor providers can now
+  workspace, installs executables into the v2-managed bin root, and reports
+  tagged failures. Process-supervisor providers can now
   return stdout/stderr lines that are persisted through component log events,
   and the core `rigd` process supervisor now runs managed component commands
   while returning stdout/stderr output for log ingestion.
@@ -362,5 +367,17 @@ Stage 2 covers:
   `live.deployBranch` before home `deploy.productionBranch` before `main`.
   Generated deployment caps from home config are enforced during deploy-intent
   materialization and `rigd` generated deploy actions with `reject` and
-  `oldest` replacement policies. Broader first-party launchd, proxy, SCM, and
-  workspace materializer adapter parity is tracked by #27 through #30.
+  `oldest` replacement policies. #27 is complete for launchd
+  process-supervisor execution, #28 is complete for `caddy` proxy routing,
+  #29 is complete for `local-git` ref preparation, and #30 is complete for
+  `git-worktree` workspace materialization. The bundled Caddy provider now
+  adopts existing same-domain site blocks instead of appending ambiguous
+  duplicates, renders portable reverse-proxy-only blocks by default, accepts
+  home-config-style Caddyfile path and per-site extra config, and can run an
+  explicitly configured reload command after route writes. Config-backed
+  lifecycle and deploy actions now persist desired running/stopped deployment
+  state, and `rigd.start` reconciles desired-running records through the
+  runtime executor after process restart. `rigd.managedProcessExited` records
+  crash evidence, restarts while the retry budget allows it, and marks repeated
+  crashes failed. A later integration slice should wire concrete process
+  watchers into that policy entrypoint.

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { Context, Effect, Layer, Schema } from "effect-v4"
+import { Context, Effect, Layer, Schema } from "effect"
 
 import { V2RuntimeError } from "./errors.js"
 import type { V2ProviderProfileName } from "./provider-contracts.js"
@@ -14,6 +14,10 @@ const BranchName = Schema.String.check(
 
 const PositiveInteger = Schema.Number.check(
   Schema.isGreaterThanOrEqualTo(1, { message: "Value must be at least one." }),
+)
+
+const NonEmptyString = Schema.String.check(
+  Schema.isMinLength(1, { message: "Value must not be empty." }),
 )
 
 export const V2HomeConfigSchema = Schema.Struct({
@@ -49,6 +53,36 @@ export const V2HomeConfigSchema = Schema.Struct({
         ])),
         "Default provider profile used when a project does not select one.",
       ),
+      caddy: fieldDoc(
+        Schema.optionalKey(Schema.Struct({
+          caddyfile: fieldDoc(
+            Schema.optionalKey(NonEmptyString),
+            "Caddyfile path used by the bundled Caddy provider.",
+          ),
+          extraConfig: fieldDoc(
+            Schema.optionalKey(Schema.Array(NonEmptyString)),
+            "Additional Caddyfile lines inserted into each Rig-managed site block.",
+          ),
+          reload: fieldDoc(
+            Schema.optionalKey(Schema.Struct({
+              mode: fieldDoc(
+                Schema.optionalKey(Schema.Union([
+                  Schema.Literal("manual"),
+                  Schema.Literal("command"),
+                  Schema.Literal("disabled"),
+                ])),
+                "How Rig should handle reloading Caddy after config changes.",
+              ),
+              command: fieldDoc(
+                Schema.optionalKey(NonEmptyString),
+                "Command to show or run for reloading Caddy, depending on reload mode.",
+              ),
+            })),
+            "Reload behavior for Caddy config changes.",
+          ),
+        })),
+        "Machine/user defaults for the bundled Caddy provider.",
+      ),
     })),
     "Machine/user provider defaults.",
   ),
@@ -80,6 +114,14 @@ export interface V2HomeConfig {
   }
   readonly providers: {
     readonly defaultProfile: V2ProviderProfileName
+    readonly caddy: {
+      readonly caddyfile?: string
+      readonly extraConfig: readonly string[]
+      readonly reload: {
+        readonly mode: "manual" | "command" | "disabled"
+        readonly command?: string
+      }
+    }
   }
   readonly web: {
     readonly controlPlane: "localhost" | "tailscale" | "cloudflare" | "disabled"
@@ -113,6 +155,12 @@ export const v2HomeConfigDefaults: V2HomeConfig = {
   },
   providers: {
     defaultProfile: "default",
+    caddy: {
+      extraConfig: [],
+      reload: {
+        mode: "manual",
+      },
+    },
   },
   web: {
     controlPlane: "localhost",
@@ -132,6 +180,14 @@ const normalizeV2HomeConfig = (config: V2HomeConfigInput): V2HomeConfig => ({
   },
   providers: {
     defaultProfile: config.providers?.defaultProfile ?? v2HomeConfigDefaults.providers.defaultProfile,
+    caddy: {
+      ...(config.providers?.caddy?.caddyfile ? { caddyfile: config.providers.caddy.caddyfile } : {}),
+      extraConfig: config.providers?.caddy?.extraConfig ?? v2HomeConfigDefaults.providers.caddy.extraConfig,
+      reload: {
+        mode: config.providers?.caddy?.reload?.mode ?? v2HomeConfigDefaults.providers.caddy.reload.mode,
+        ...(config.providers?.caddy?.reload?.command ? { command: config.providers.caddy.reload.command } : {}),
+      },
+    },
   },
   web: {
     controlPlane: config.web?.controlPlane ?? v2HomeConfigDefaults.web.controlPlane,

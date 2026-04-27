@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { rigBinPath } from "../core/rig-paths.js"
 import { BinInstaller, type BinInstaller as BinInstallerService } from "../interfaces/bin-installer.js"

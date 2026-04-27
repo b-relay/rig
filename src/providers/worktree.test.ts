@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { FileSystem } from "../interfaces/file-system.js"
 import { Git } from "../interfaces/git.js"

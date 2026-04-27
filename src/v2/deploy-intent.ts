@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
 
 import type { V2ProjectConfig } from "./config.js"
 import {

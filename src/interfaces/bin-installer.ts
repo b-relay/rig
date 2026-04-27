@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Context, Effect } from "effect-v3"
 import type { BinInstallerError } from "../schema/errors.js"
 import type { BinService } from "../schema/config.js"
 

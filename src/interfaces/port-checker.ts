@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Context, Effect } from "effect-v3"
 import type { PortConflictError, ServiceRunnerError } from "../schema/errors.js"
 
 // Checks whether a TCP port is available for binding on 127.0.0.1.

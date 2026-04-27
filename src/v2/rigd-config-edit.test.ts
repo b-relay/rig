@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect-v4"
+import { Effect, Layer } from "effect"
 
 import {
   V2ConfigEditorLive,
@@ -63,9 +63,9 @@ const rawConfig = () => ({
   components: {
     web: {
       mode: "managed",
-      command: "bun run start -- --port ${port.web}",
+      command: "bun run start -- --port ${web.port}",
       port: 3070,
-      health: "http://127.0.0.1:${port.web}/health",
+      health: "http://127.0.0.1:${web.port}/health",
     },
   },
   deployments: {

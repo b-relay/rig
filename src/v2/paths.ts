@@ -31,6 +31,12 @@ export const rigV2RuntimeStatePath = (): string =>
 export const rigV2ProxyRoot = (): string =>
   join(rigV2Root(), "proxy")
 
+export const rigV2BinRoot = (): string =>
+  join(rigV2Root(), "bin")
+
+export const rigV2BinPath = (name: string): string =>
+  join(rigV2BinRoot(), name)
+
 export const rigV2LaunchdBackupRoot = (): string =>
   join(rigV2Root(), "launchd")
 

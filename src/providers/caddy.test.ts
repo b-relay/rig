@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { CaddyProxy } from "./caddy.js"
 import { ProxyError } from "../schema/errors.js"

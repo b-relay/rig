@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { Workspace } from "../interfaces/workspace.js"
 import { CliArgumentError } from "../schema/errors.js"

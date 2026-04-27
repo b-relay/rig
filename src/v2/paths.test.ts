@@ -6,6 +6,8 @@ import { rigRoot, rigWorkspacesRoot } from "../core/rig-paths.js"
 import {
   RIG_V2_LAUNCHD_LABEL_PREFIX,
   RIG_V2_NAMESPACE,
+  rigV2BinPath,
+  rigV2BinRoot,
   rigV2LaunchdLabel,
   rigV2LogsRoot,
   rigV2ProjectNamespace,
@@ -41,6 +43,8 @@ describe("GIVEN v2 path helpers WHEN resolving isolated state THEN behavior is c
     expect(rigV2WorkspacesRoot()).toBe(join(homedir(), ".rig-v2", "workspaces"))
     expect(rigV2LogsRoot()).toBe(join(homedir(), ".rig-v2", "logs"))
     expect(rigV2RuntimeRoot()).toBe(join(homedir(), ".rig-v2", "runtime"))
+    expect(rigV2BinRoot()).toBe(join(homedir(), ".rig-v2", "bin"))
+    expect(rigV2BinPath("pantry")).toBe(join(homedir(), ".rig-v2", "bin", "pantry"))
     expect(rigV2WorkspacesRoot()).not.toBe(rigWorkspacesRoot())
   })
 

@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
 
-import type { V2DeploymentKind } from "./deployments.js"
+import type { V2DeploymentKind, V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
 import type { V2ProviderFamily, V2ProviderProfileName } from "./provider-contracts.js"
 
@@ -59,6 +59,26 @@ export interface V2DeploymentSnapshot {
   readonly providerProfile: V2ProviderProfileName
 }
 
+export interface V2DesiredDeploymentState {
+  readonly project: string
+  readonly deployment: string
+  readonly kind: V2DeploymentKind
+  readonly desiredStatus: "running" | "stopped" | "failed"
+  readonly updatedAt: string
+  readonly providerProfile: V2ProviderProfileName
+  readonly record: V2DeploymentRecord
+}
+
+export interface V2ManagedServiceFailure {
+  readonly project: string
+  readonly deployment: string
+  readonly component: string
+  readonly occurredAt: string
+  readonly exitCode?: number
+  readonly stdout?: string
+  readonly stderr?: string
+}
+
 export interface V2RigdPersistentState {
   readonly version: 1
   readonly events: readonly V2PersistedRigdEvent[]
@@ -67,6 +87,8 @@ export interface V2RigdPersistentState {
   readonly providerObservations: readonly V2ProviderObservation[]
   readonly portReservations: readonly V2PortReservation[]
   readonly deploymentSnapshots: readonly V2DeploymentSnapshot[]
+  readonly desiredDeployments: readonly V2DesiredDeploymentState[]
+  readonly managedServiceFailures: readonly V2ManagedServiceFailure[]
 }
 
 export interface V2RigdStateRootInput {
@@ -99,6 +121,14 @@ export interface V2RigdStateStoreService {
     readonly stateRoot: string
     readonly snapshots: readonly V2DeploymentSnapshot[]
   }) => Effect.Effect<void, V2RuntimeError>
+  readonly writeDesiredDeployment: (input: {
+    readonly stateRoot: string
+    readonly desired: V2DesiredDeploymentState
+  }) => Effect.Effect<void, V2RuntimeError>
+  readonly appendManagedServiceFailure: (input: {
+    readonly stateRoot: string
+    readonly failure: V2ManagedServiceFailure
+  }) => Effect.Effect<void, V2RuntimeError>
   readonly reconstructMinimum: (input: V2RigdStateRootInput) => Effect.Effect<V2RigdPersistentState, V2RuntimeError>
 }
 
@@ -113,6 +143,8 @@ const emptyState = (): V2RigdPersistentState => ({
   providerObservations: [],
   portReservations: [],
   deploymentSnapshots: [],
+  desiredDeployments: [],
+  managedServiceFailures: [],
 })
 
 const rigdStatePath = (stateRoot: string): string =>
@@ -149,6 +181,8 @@ const normalizeState = (value: unknown): V2RigdPersistentState => {
     providerObservations: Array.isArray(record.providerObservations) ? record.providerObservations : [],
     portReservations: Array.isArray(record.portReservations) ? record.portReservations : [],
     deploymentSnapshots: Array.isArray(record.deploymentSnapshots) ? record.deploymentSnapshots : [],
+    desiredDeployments: Array.isArray(record.desiredDeployments) ? record.desiredDeployments : [],
+    managedServiceFailures: Array.isArray(record.managedServiceFailures) ? record.managedServiceFailures : [],
   }
 }
 
@@ -228,6 +262,17 @@ const mergePortReservations = (
   ]
 }
 
+const mergeDesiredDeployment = (
+  existing: readonly V2DesiredDeploymentState[],
+  next: V2DesiredDeploymentState,
+): readonly V2DesiredDeploymentState[] => [
+  ...existing.filter((current) =>
+    current.project !== next.project ||
+    current.deployment !== next.deployment
+  ),
+  next,
+]
+
 const reconstructMinimum = (
   stateRoot: string,
   state: V2RigdPersistentState,
@@ -283,6 +328,16 @@ export const V2FileRigdStateStoreLive = Layer.succeed(V2RigdStateStore, {
       ...state,
       deploymentSnapshots: mergeDeploymentSnapshots(state.deploymentSnapshots, input.snapshots),
     })),
+  writeDesiredDeployment: (input) =>
+    updateState(input.stateRoot, (state) => ({
+      ...state,
+      desiredDeployments: mergeDesiredDeployment(state.desiredDeployments, input.desired),
+    })),
+  appendManagedServiceFailure: (input) =>
+    updateState(input.stateRoot, (state) => ({
+      ...state,
+      managedServiceFailures: [...state.managedServiceFailures, input.failure],
+    })),
   reconstructMinimum: (input) =>
     Effect.gen(function* () {
       const state = yield* readState(input.stateRoot)
@@ -335,6 +390,16 @@ export const V2MemoryRigdStateStoreLive = () => {
       update(input.stateRoot, (state) => ({
         ...state,
         deploymentSnapshots: mergeDeploymentSnapshots(state.deploymentSnapshots, input.snapshots),
+      })),
+    writeDesiredDeployment: (input) =>
+      update(input.stateRoot, (state) => ({
+        ...state,
+        desiredDeployments: mergeDesiredDeployment(state.desiredDeployments, input.desired),
+      })),
+    appendManagedServiceFailure: (input) =>
+      update(input.stateRoot, (state) => ({
+        ...state,
+        managedServiceFailures: [...state.managedServiceFailures, input.failure],
       })),
     reconstructMinimum: (input) => reconstructMinimum(input.stateRoot, load(input.stateRoot)),
   } satisfies V2RigdStateStoreService)

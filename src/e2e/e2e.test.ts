@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { runDeployCommand } from "../core/deploy.js"
 import { runRestartCommand, runStartCommand, runStopCommand } from "../core/lifecycle.js"

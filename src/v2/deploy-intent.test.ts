@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect-v4"
+import { Effect, Layer } from "effect"
 
 import { decodeV2ProjectConfig } from "./config.js"
 import {
@@ -39,7 +39,7 @@ const projectConfig = () =>
     components: {
       web: {
         mode: "managed",
-        command: "bun run start -- --port ${port.web}",
+        command: "bun run start -- --port ${web.port}",
         port: 3070,
       },
     },
@@ -214,7 +214,7 @@ describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THE
       components: {
         web: {
           mode: "managed",
-          command: "bun run start -- --port ${port.web}",
+          command: "bun run start -- --port ${web.port}",
           port: 3070,
         },
       },

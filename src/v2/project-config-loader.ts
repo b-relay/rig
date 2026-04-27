@@ -1,4 +1,5 @@
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
+import { dirname } from "node:path"
 
 import type { V2ProjectConfig } from "./config.js"
 import { V2ConfigEditor } from "./config-editor.js"
@@ -35,7 +36,10 @@ export const V2ProjectConfigLoaderLive = Layer.effect(
           Effect.map((model) => ({
             project: model.project,
             configPath: model.configPath,
-            config: model.config,
+            config: {
+              ...model.config,
+              __sourceRepoPath: dirname(model.configPath),
+            },
           })),
           Effect.mapError((error) =>
             new V2CliArgumentError(

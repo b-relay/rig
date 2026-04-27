@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import type { Logger as LoggerService } from "../interfaces/logger.js"
 import { ProcessError, type RigError } from "../schema/errors.js"

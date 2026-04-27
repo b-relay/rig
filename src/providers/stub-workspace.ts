@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { rigWorkspacesRoot } from "../core/rig-paths.js"
 import { Workspace, type Workspace as WorkspaceService, type WorkspaceInfo } from "../interfaces/workspace.js"

@@ -1,6 +1,6 @@
-import { Effect, FileSystem, Layer, Path, Sink, Stdio, Stream, Terminal } from "effect-v4"
-import { Command, Flag } from "effect-v4/unstable/cli"
-import { ChildProcessSpawner } from "effect-v4/unstable/process/ChildProcessSpawner"
+import { Effect, FileSystem, Layer, Path, Sink, Stdio, Stream, Terminal } from "effect"
+import { Command, Flag } from "effect/unstable/cli"
+import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 
 import { decodeV2StatusInput, type V2ProjectConfig } from "./config.js"
 import type { V2ConfigPatchOperation } from "./config-editor.js"

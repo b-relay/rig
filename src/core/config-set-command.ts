@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 import { type ZodIssue } from "zod"
 
 import { FileSystem } from "../interfaces/file-system.js"

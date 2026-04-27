@@ -81,9 +81,14 @@ Make `rigd` persist deployment inventory snapshots, action receipts, structured 
 `src/v2/rigd-state.ts` defines the `V2RigdStateStore` interface with file and
 memory-backed layers. The live `rigd` path persists runtime events, accepted
 action receipts, health summaries, provider observations, deployment snapshots,
-and rigd-owned port reservations to `runtime/rigd-state.json`. Restart tests
-prove a fresh `rigd` layer can recover persisted logs and reconstruct minimum
-state, while missing evidence returns a tagged unsafe-reconstruction error.
+rigd-owned port reservations, and desired deployment state to
+`runtime/rigd-state.json`. Restart tests prove a fresh `rigd` layer can recover
+persisted logs, reconstruct minimum state, and reconcile desired-running
+deployment records on `rigd.start`, while missing evidence returns a tagged
+unsafe-reconstruction error. `rigd.managedProcessExited` now records managed
+process crash evidence, restarts desired-running deployments while the retry
+budget allows it, and marks repeated crashes as failed instead of retrying
+forever.
 
 ---
 
@@ -284,7 +289,7 @@ and understanding the differences from rig v1.
 
 Remaining follow-up issues capture the final `rig2` to `rig` replacement path,
 hosted control-plane transport for `rig.b-relay.com`, and provider adapter
-parity for launchd, proxy routing, SCM checkout, and workspace materialization.
+parity for proxy routing, SCM checkout, and workspace materialization.
 #24 is complete: `rig2 config read/set/unset` now expose the `rigd` config
 read, preview, and apply workflow through a user-facing CLI.
 
@@ -312,11 +317,60 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   real HTTP and command checks and returns tagged runtime failures for
   unhealthy, unreachable, or non-zero checks. The `package-json-scripts`
   provider now runs installed-component build commands from the deployment
-  workspace and reports tagged failures. Process-supervisor providers can now
+  workspace, installs the resulting executable into the v2-managed bin root,
+  and reports tagged failures. Process-supervisor providers can now
   return stdout/stderr lines that are persisted through component log events,
   and the core `rigd` process supervisor now runs managed component commands
   while returning stdout/stderr output for log ingestion. Generated deployment
   caps from home config are enforced during deploy-intent materialization and
   `rigd` generated deploy actions with `reject` and `oldest` replacement
-  policies. Broader first-party adapter parity is tracked separately in #27
-  through #30 for launchd, proxy, SCM, and workspace materialization.
+  policies. Config-backed lifecycle and deploy actions now persist desired
+  running/stopped deployment state, and `rigd.start` reconciles desired-running
+  records through the runtime executor after process restart.
+  `rigd.managedProcessExited` records crash evidence, restarts while the retry
+  budget allows it, and marks repeated crashes failed. The remaining crash
+  integration work is wiring concrete process watchers to report unexpected
+  exits into that policy entrypoint. #27 is complete: the launchd
+  process-supervisor provider installs
+  v2-namespaced plists, bootstraps them with launchctl, removes them on down,
+  and supports injected launchctl/home paths for isolated tests. #30 is
+  complete: the `git-worktree` workspace materializer removes stale worktrees,
+  materializes detached workspaces at deploy refs, removes generated
+  workspaces during teardown, and receives source repo paths from loaded
+  config. #29 is complete: `local-git` fetches origin refs, verifies deploy
+  refs resolve to commits, and reports tagged runtime errors for fetch or
+  ref-resolution failures. #28 is complete: `caddy` upserts and removes
+  v2-namespaced Caddyfile routes from deployment domains to localhost
+  component ports, adopts same-domain existing blocks to avoid duplicate
+  ambiguous site definitions, renders portable reverse-proxy-only blocks by
+  default, accepts home-config-style per-site extra config, and can run an
+  explicitly configured reload command after writes.
+
+### Future Plugin Preset Track
+
+After the core provider-adapter parity work, add a separate product/design
+track for ecosystem plugins and presets. The first useful set is:
+
+- **Convex Local plugin**: manages a per-deployment Convex Local instance,
+  database/data root, ports, health checks, generated DNS/subdomain values, and
+  environment variables for each `local`, `live`, or generated deployment.
+- **Next.js plugin**: scaffolds common managed/installed components, build
+  commands, health checks, CORS/domain environment wiring, and proxy defaults
+  for Next.js apps without requiring users to hand-author the full v2 config.
+- **Vite plugin**: scaffolds Vite dev/preview/build components, port/health
+  defaults, CORS/domain environment wiring, and proxy/env wiring for local and
+  generated deployments.
+
+These should not be hard-coded app presets in core. They should exercise the
+same plugin/provider boundaries as first-party adapters, with the Convex Local
+case treated as a resource-owning environment plugin that can allocate and
+persist per-deployment state.
+
+Rig should own local service supervision plus the deployment metadata needed
+for those services to work correctly: assigned localhost ports, generated
+subdomains, base-domain-derived URLs, CORS/allowed-origin values, and
+per-deployment environment variables. Exposure remains provider-backed. Caddy
+and a future Cloudflare Tunnel provider can route those generated names to
+localhost ports. Tailscale should stay outside Rig as machine/network
+plumbing; users can point private DNS at the machine and Rig only needs to
+serve the configured localhost-bound services and domains.

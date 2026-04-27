@@ -1,6 +1,6 @@
 import { access, appendFile, chmod, cp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"
 import { FileSystemError } from "../schema/errors.js"

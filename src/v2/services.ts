@@ -1,11 +1,11 @@
 import { join } from "node:path"
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
 
 import { V2DefaultControlPlaneLive } from "./control-plane.js"
 import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
 import type { V2TaggedError } from "./errors.js"
-import { V2FileHomeConfigStoreLive } from "./home-config.js"
-import { V2ProviderContractsLive } from "./provider-contracts.js"
+import { V2FileHomeConfigStoreLive, V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
+import { V2ProviderContractsLive, type V2ProviderContractsOptions } from "./provider-contracts.js"
 import { V2ProviderProfileLive } from "./provider-profiles.js"
 import { V2ProjectConfigLoaderLive } from "./project-config-loader.js"
 import { V2ProjectLocatorLive } from "./project-locator.js"
@@ -96,16 +96,39 @@ export const V2LoggerLive = Layer.succeed(V2Logger, {
     ),
 })
 
+const v2ProviderOptionsFromHomeConfig = (config: V2HomeConfig): V2ProviderContractsOptions => ({
+  proxyRouter: {
+    ...(config.providers.caddy.caddyfile ? { caddyfile: config.providers.caddy.caddyfile } : {}),
+    extraConfig: config.providers.caddy.extraConfig,
+    reload: config.providers.caddy.reload,
+  },
+})
+
+export const V2ProviderContractsFromHomeConfigLive = Layer.unwrap(Effect.gen(function* () {
+  const homeConfigStore = yield* V2HomeConfigStore
+  const homeConfig = yield* homeConfigStore.read({ stateRoot: rigV2Root() })
+  return V2ProviderContractsLive(
+    homeConfig.providers.defaultProfile,
+    [],
+    v2ProviderOptionsFromHomeConfig(homeConfig),
+  )
+}))
+
+const V2ConfiguredProviderContractsLive = Layer.provide(
+  V2ProviderContractsFromHomeConfigLive,
+  V2FileHomeConfigStoreLive,
+)
+
 export const Rig2Live = Layer.mergeAll(
   V2RuntimeLive,
   V2LoggerLive,
   V2ProviderProfileLive(),
-  V2ProviderContractsLive("default"),
   V2FileRigdStateStoreLive,
   V2FileHomeConfigStoreLive,
+  V2ConfiguredProviderContractsLive,
   V2DefaultControlPlaneLive,
   V2RigdActionPreflightLive,
-  Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
+  Layer.provide(V2RuntimeExecutorLive, V2ConfiguredProviderContractsLive),
   Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
   Layer.provide(V2ProjectConfigLoaderLive, Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive)),
   V2ProjectLocatorLive,

@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { Logger } from "../interfaces/logger.js"
 import { CliArgumentError } from "../schema/errors.js"

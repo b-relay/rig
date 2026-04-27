@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect-v4"
+import { Effect } from "effect"
 
 import { V2Doctor, V2DoctorLive, type V2DoctorCheckInput, type V2DoctorService } from "./doctor.js"
 

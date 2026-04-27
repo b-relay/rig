@@ -1,9 +1,12 @@
-import { appendFile, mkdir } from "node:fs/promises"
-import { join } from "node:path"
-import { Context, Effect, Layer } from "effect-v4"
+import { appendFile, chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { getuid } from "node:process"
+import { Context, Effect, Layer } from "effect"
 
 import type { V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
+import { RIG_V2_LAUNCHD_LABEL_PREFIX, rigV2BinRoot, rigV2ProxyRoot } from "./paths.js"
 
 export type V2ProviderProfileName = "default" | "stub" | "isolated-e2e"
 
@@ -38,6 +41,42 @@ export interface V2ProviderRegistryReport {
 export interface V2ProviderRegistryService {
   readonly current: Effect.Effect<V2ProviderRegistryReport>
   readonly forProfile: (profile: V2ProviderProfileName) => Effect.Effect<V2ProviderRegistryReport>
+}
+
+interface V2ProviderCommandResult {
+  readonly stdout: string
+  readonly stderr: string
+  readonly exitCode: number
+}
+
+type V2ProviderCommandRunner = (args: readonly string[]) => Promise<V2ProviderCommandResult>
+
+export interface V2ProviderContractsOptions {
+  readonly launchd?: {
+    readonly home?: string
+    readonly runCommand?: V2ProviderCommandRunner
+  }
+  readonly workspaceMaterializer?: {
+    readonly sourceRepoPath?: string
+    readonly runCommand?: V2ProviderCommandRunner
+  }
+  readonly scm?: {
+    readonly sourceRepoPath?: string
+    readonly runCommand?: V2ProviderCommandRunner
+  }
+  readonly proxyRouter?: {
+    readonly caddyfile?: string
+    readonly caddyfilePath?: string
+    readonly extraConfig?: readonly string[]
+    readonly runCommand?: V2ProviderCommandRunner
+    readonly reload?: {
+      readonly mode: "manual" | "command" | "disabled"
+      readonly command?: string
+    }
+  }
+  readonly packageManager?: {
+    readonly binRoot?: string
+  }
 }
 
 export type V2ProviderPluginForFamily<Family extends V2ProviderFamily> =
@@ -342,8 +381,41 @@ const runtimeError = (
     },
   )
 
+const sourceRepoPath = (
+  deployment: V2DeploymentRecord,
+  provider: V2ProviderPlugin,
+  configured?: string,
+): Effect.Effect<string, V2RuntimeError> => {
+  if (configured && configured.trim().length > 0) {
+    return Effect.succeed(configured)
+  }
+
+  const maybeResolvedRepoPath = (deployment.resolved as { readonly sourceRepoPath?: unknown }).sourceRepoPath
+  if (typeof maybeResolvedRepoPath === "string" && maybeResolvedRepoPath.trim().length > 0) {
+    return Effect.succeed(maybeResolvedRepoPath)
+  }
+
+  const maybeRepoPath = (deployment.resolved.v1Config as { readonly repoPath?: unknown } | undefined)?.repoPath
+  if (typeof maybeRepoPath === "string" && maybeRepoPath.trim().length > 0) {
+    return Effect.succeed(maybeRepoPath)
+  }
+
+  return Effect.fail(
+    new V2RuntimeError(
+      `Unable to resolve source repo for deployment '${deployment.name}'.`,
+      "Run from a managed repo or pass a config path that preserves the source repository before deploying.",
+      {
+        providerId: provider.id,
+        deployment: deployment.name,
+        workspacePath: deployment.workspacePath,
+      },
+    ),
+  )
+}
+
 const workspaceMaterializerService = (
   report: V2ProviderRegistryReport,
+  options: V2ProviderContractsOptions,
 ): V2WorkspaceMaterializerProviderService => {
   const base = familyService(report, "workspace-materializer")
   const selected = report.providers.find(
@@ -351,16 +423,217 @@ const workspaceMaterializerService = (
       provider.family === "workspace-materializer",
   ) as V2ProviderPluginForFamily<"workspace-materializer">
 
+  const runGit = options.workspaceMaterializer?.runCommand ?? defaultCommandRunner
+
+  const materializeGitWorktree = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly ref: string
+  }): Effect.Effect<string, V2RuntimeError> =>
+    Effect.gen(function* () {
+      const repoPath = yield* sourceRepoPath(input.deployment, selected, options.workspaceMaterializer?.sourceRepoPath)
+      const workspacePath = input.deployment.workspacePath
+      yield* Effect.tryPromise({
+        try: async () => {
+          await mkdir(dirname(workspacePath), { recursive: true })
+          const removeResult = await runGit(["git", "-C", repoPath, "worktree", "remove", "--force", workspacePath])
+          if (removeResult.exitCode !== 0) {
+            const stderr = removeResult.stderr.toLowerCase()
+            const missing =
+              stderr.includes("is not a working tree") ||
+              stderr.includes("not a working tree") ||
+              stderr.includes("no such file") ||
+              stderr.includes("does not exist")
+            if (!missing) {
+              throw new V2RuntimeError(
+                `Unable to remove existing workspace '${input.deployment.name}'.`,
+                "Inspect the generated deployment workspace and retry the deploy.",
+                {
+                  providerId: selected.id,
+                  repoPath,
+                  workspacePath,
+                  stderr: removeResult.stderr,
+                },
+              )
+            }
+          }
+
+          const addResult = await runGit([
+            "git",
+            "-C",
+            repoPath,
+            "worktree",
+            "add",
+            "--force",
+            "--detach",
+            workspacePath,
+            input.ref,
+          ])
+          if (addResult.exitCode !== 0) {
+            throw new V2RuntimeError(
+              `Unable to materialize workspace '${input.deployment.name}' at ref '${input.ref}'.`,
+              "Ensure the ref exists in the source repository and retry the deploy.",
+              {
+                providerId: selected.id,
+                repoPath,
+                workspacePath,
+                ref: input.ref,
+                stderr: addResult.stderr,
+              },
+            )
+          }
+        },
+        catch: (cause) =>
+          cause instanceof V2RuntimeError
+            ? cause
+            : new V2RuntimeError(
+              `Unable to materialize workspace '${input.deployment.name}'.`,
+              "Ensure the source repository and v2 workspace directory are writable.",
+              {
+                providerId: selected.id,
+                repoPath,
+                workspacePath,
+                ref: input.ref,
+                cause: cause instanceof Error ? cause.message : String(cause),
+              },
+            ),
+      })
+
+      return `${selected.family}:${selected.id}:materialize:${workspacePath}:${input.ref}`
+    })
+
+  const removeGitWorktree = (input: {
+    readonly deployment: V2DeploymentRecord
+  }): Effect.Effect<string, V2RuntimeError> =>
+    Effect.gen(function* () {
+      const repoPath = yield* sourceRepoPath(input.deployment, selected, options.workspaceMaterializer?.sourceRepoPath)
+      const workspacePath = input.deployment.workspacePath
+      yield* Effect.tryPromise({
+        try: async () => {
+          const result = await runGit(["git", "-C", repoPath, "worktree", "remove", "--force", workspacePath])
+          if (result.exitCode !== 0) {
+            const stderr = result.stderr.toLowerCase()
+            const missing =
+              stderr.includes("is not a working tree") ||
+              stderr.includes("not a working tree") ||
+              stderr.includes("no such file") ||
+              stderr.includes("does not exist")
+            if (!missing) {
+              throw new V2RuntimeError(
+                `Unable to remove workspace '${input.deployment.name}'.`,
+                "Inspect the generated deployment workspace and retry teardown.",
+                {
+                  providerId: selected.id,
+                  repoPath,
+                  workspacePath,
+                  stderr: result.stderr,
+                },
+              )
+            }
+          }
+          await rm(workspacePath, { recursive: true, force: true })
+        },
+        catch: (cause) =>
+          cause instanceof V2RuntimeError
+            ? cause
+            : new V2RuntimeError(
+              `Unable to remove workspace '${input.deployment.name}'.`,
+              "Ensure the v2 workspace path is writable and retry teardown.",
+              {
+                providerId: selected.id,
+                repoPath,
+                workspacePath,
+                cause: cause instanceof Error ? cause.message : String(cause),
+              },
+            ),
+      })
+
+      return `${selected.family}:${selected.id}:remove:${workspacePath}`
+    })
+
   return {
     ...base,
     resolve: (input) => providerOperation(selected, `resolve:${input.deployment.workspacePath}`),
-    materialize: (input) => providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
-    remove: (input) => providerOperation(selected, `remove:${input.deployment.workspacePath}`),
+    materialize: (input) =>
+      selected.id === "git-worktree"
+        ? materializeGitWorktree(input)
+        : providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
+    remove: (input) =>
+      selected.id === "git-worktree"
+        ? removeGitWorktree(input)
+        : providerOperation(selected, `remove:${input.deployment.workspacePath}`),
   }
 }
 
+const escapeXml = (value: string): string =>
+  value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
+const guiDomain = (): string => `gui/${getuid!()}`
+
+const defaultCommandRunner: V2ProviderCommandRunner = async (args) => {
+  const child = Bun.spawn([...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ])
+  return { stdout, stderr, exitCode }
+}
+
+const launchdLabelPart = (value: string): string =>
+  value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "component"
+
+const launchdLabel = (deployment: V2DeploymentRecord, service: V2RuntimeServiceConfig): string =>
+  [
+    RIG_V2_LAUNCHD_LABEL_PREFIX,
+    launchdLabelPart(deployment.project),
+    launchdLabelPart(deployment.name),
+    launchdLabelPart(service.name),
+  ].join(".")
+
+const launchdPlistPath = (home: string, label: string): string =>
+  join(home, "Library", "LaunchAgents", `${label}.plist`)
+
+const launchdLogPath = (deployment: V2DeploymentRecord, service: V2RuntimeServiceConfig): string =>
+  join(deployment.logRoot, `${service.name}.launchd.log`)
+
+const launchdPlist = (input: {
+  readonly label: string
+  readonly command: string
+  readonly workdir: string
+  readonly logPath: string
+  readonly keepAlive: boolean
+}): string =>
+  [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
+    `<plist version="1.0">`,
+    `<dict>`,
+    `\t<key>Label</key>`,
+    `\t<string>${escapeXml(input.label)}</string>`,
+    `\t<key>ProgramArguments</key>`,
+    `\t<array>`,
+    `\t\t<string>/bin/sh</string>`,
+    `\t\t<string>-lc</string>`,
+    `\t\t<string>${escapeXml(input.command)}</string>`,
+    `\t</array>`,
+    `\t<key>WorkingDirectory</key>`,
+    `\t<string>${escapeXml(input.workdir)}</string>`,
+    `\t<key>KeepAlive</key>`,
+    `\t<${input.keepAlive}/>`,
+    `\t<key>StandardOutPath</key>`,
+    `\t<string>${escapeXml(input.logPath)}</string>`,
+    `\t<key>StandardErrorPath</key>`,
+    `\t<string>${escapeXml(input.logPath)}</string>`,
+    `</dict>`,
+    `</plist>`,
+  ].join("\n") + "\n"
+
 const processSupervisorService = (
   report: V2ProviderRegistryReport,
+  options: V2ProviderContractsOptions,
 ): V2ProcessSupervisorProviderService => {
   const base = familyService(report, "process-supervisor")
   const selectedForDeployment = (deployment: V2DeploymentRecord) =>
@@ -375,6 +648,138 @@ const processSupervisorService = (
     suffix?: string,
   ): string =>
     `${provider.family}:${provider.id}:${action}:${service.name}${suffix ? `:${suffix}` : ""}`
+
+  const runLaunchd = options.launchd?.runCommand ?? defaultCommandRunner
+  const launchdHome = options.launchd?.home ?? homedir()
+
+  const installLaunchdProcess = (
+    provider: V2ProviderPlugin,
+    input: {
+      readonly deployment: V2DeploymentRecord
+      readonly service: V2RuntimeServiceConfig
+    },
+  ): Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError> => {
+    if (!("command" in input.service)) {
+      return Effect.fail(
+        new V2RuntimeError(
+          `Component '${input.service.name}' cannot be installed as a launchd process.`,
+          "Only managed server components with a command can use the launchd process supervisor.",
+          {
+            providerId: provider.id,
+            component: input.service.name,
+            deployment: input.deployment.name,
+          },
+        ),
+      )
+    }
+
+    return Effect.tryPromise({
+      try: async () => {
+        const label = launchdLabel(input.deployment, input.service)
+        const path = launchdPlistPath(launchdHome, label)
+        const logPath = launchdLogPath(input.deployment, input.service)
+        const domain = guiDomain()
+
+        await mkdir(join(launchdHome, "Library", "LaunchAgents"), { recursive: true })
+        await mkdir(input.deployment.logRoot, { recursive: true })
+        await Bun.write(path, launchdPlist({
+          label,
+          command: input.service.command,
+          workdir: input.deployment.workspacePath,
+          logPath,
+          keepAlive: input.deployment.resolved.v1Config?.daemon?.keepAlive ?? false,
+        }))
+
+        await runLaunchd(["launchctl", "bootout", `${domain}/${label}`])
+        const result = await runLaunchd(["launchctl", "bootstrap", domain, path])
+        if (result.exitCode !== 0) {
+          throw new V2RuntimeError(
+            `launchd failed to bootstrap '${input.service.name}' with exit code ${result.exitCode}.`,
+            "Inspect the generated plist and launchctl stderr, then retry the lifecycle action.",
+            {
+              providerId: provider.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              label,
+              plistPath: path,
+              stderr: result.stderr,
+            },
+          )
+        }
+
+        return {
+          operation: operationName(provider, "up", input.service, "installed"),
+        } satisfies V2ProcessSupervisorOperationResult
+      },
+      catch: (cause) =>
+        cause instanceof V2RuntimeError
+          ? cause
+          : new V2RuntimeError(
+            `Unable to install launchd process '${input.service.name}'.`,
+            "Ensure the v2 launchd plist directory is writable and retry.",
+            {
+              providerId: provider.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              cause: cause instanceof Error ? cause.message : String(cause),
+            },
+          ),
+    })
+  }
+
+  const removeLaunchdProcess = (
+    provider: V2ProviderPlugin,
+    input: {
+      readonly deployment: V2DeploymentRecord
+      readonly service: V2RuntimeServiceConfig
+    },
+  ): Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError> =>
+    Effect.tryPromise({
+      try: async () => {
+        const label = launchdLabel(input.deployment, input.service)
+        const path = launchdPlistPath(launchdHome, label)
+        const result = await runLaunchd(["launchctl", "bootout", `${guiDomain()}/${label}`])
+        if (result.exitCode !== 0) {
+          const stderr = result.stderr.toLowerCase()
+          const isNotLoaded =
+            stderr.includes("no such process") ||
+            stderr.includes("could not find service") ||
+            stderr.includes("not loaded") ||
+            result.exitCode === 3
+          if (!isNotLoaded) {
+            throw new V2RuntimeError(
+              `launchd failed to bootout '${input.service.name}' with exit code ${result.exitCode}.`,
+              "Inspect launchctl stderr and retry the lifecycle action.",
+              {
+                providerId: provider.id,
+                component: input.service.name,
+                deployment: input.deployment.name,
+                label,
+                stderr: result.stderr,
+              },
+            )
+          }
+        }
+
+        await rm(path, { force: true })
+        return {
+          operation: operationName(provider, "down", input.service, "removed"),
+        } satisfies V2ProcessSupervisorOperationResult
+      },
+      catch: (cause) =>
+        cause instanceof V2RuntimeError
+          ? cause
+          : new V2RuntimeError(
+            `Unable to remove launchd process '${input.service.name}'.`,
+            "Ensure the v2 launchd plist path is writable and retry.",
+            {
+              providerId: provider.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              cause: cause instanceof Error ? cause.message : String(cause),
+            },
+          ),
+    })
 
   const collectProcessOutput = async (
     subprocess: ReturnType<typeof Bun.spawn>,
@@ -527,6 +932,9 @@ const processSupervisorService = (
         if (selected.id === "rigd") {
           return yield* startRigdProcess(selected, "up", input)
         }
+        if (selected.id === "launchd") {
+          return yield* installLaunchdProcess(selected, input)
+        }
         return yield* processProviderOperation(selected, `up:${input.service.name}`)
       }),
     down: (input) =>
@@ -535,6 +943,9 @@ const processSupervisorService = (
         if (selected.id === "rigd") {
           return yield* stopRigdProcess(selected, input)
         }
+        if (selected.id === "launchd") {
+          return yield* removeLaunchdProcess(selected, input)
+        }
         return yield* processProviderOperation(selected, `down:${input.service.name}`)
       }),
     restart: (input) =>
@@ -542,6 +953,10 @@ const processSupervisorService = (
         const selected = yield* selectedForDeployment(input.deployment)
         if (selected.id === "rigd") {
           return yield* startRigdProcess(selected, "restart", input)
+        }
+        if (selected.id === "launchd") {
+          yield* removeLaunchdProcess(selected, input)
+          return yield* installLaunchdProcess(selected, input)
         }
         return yield* processProviderOperation(selected, `restart:${input.service.name}`)
       }),
@@ -724,26 +1139,183 @@ const eventTransportService = (
   }
 }
 
-const scmService = (report: V2ProviderRegistryReport): V2ScmProviderService => {
+const scmService = (
+  report: V2ProviderRegistryReport,
+  options: V2ProviderContractsOptions,
+): V2ScmProviderService => {
   const base = familyService(report, "scm")
   const selected = report.providers.find(
     (provider): provider is V2ProviderPluginForFamily<"scm"> => provider.family === "scm",
   ) as V2ProviderPluginForFamily<"scm">
+  const runGit = options.scm?.runCommand ?? defaultCommandRunner
+
+  const checkoutLocalGit = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly ref: string
+  }): Effect.Effect<string, V2RuntimeError> =>
+    Effect.gen(function* () {
+      const repoPath = yield* sourceRepoPath(input.deployment, selected, options.scm?.sourceRepoPath)
+      const commit = yield* Effect.tryPromise({
+        try: async () => {
+          const fetchResult = await runGit(["git", "-C", repoPath, "fetch", "--prune", "origin"])
+          if (fetchResult.exitCode !== 0) {
+            throw new V2RuntimeError(
+              `Unable to fetch refs for '${input.deployment.name}'.`,
+              "Ensure the source repository has an origin remote and network access before retrying deploy.",
+              {
+                providerId: selected.id,
+                repoPath,
+                ref: input.ref,
+                stderr: fetchResult.stderr,
+              },
+            )
+          }
+
+          const verifyResult = await runGit([
+            "git",
+            "-C",
+            repoPath,
+            "rev-parse",
+            "--verify",
+            `${input.ref}^{commit}`,
+          ])
+          if (verifyResult.exitCode !== 0) {
+            throw new V2RuntimeError(
+              `Unable to resolve deploy ref '${input.ref}'.`,
+              "Push or fetch the ref into the source repository before retrying deploy.",
+              {
+                providerId: selected.id,
+                repoPath,
+                ref: input.ref,
+                stderr: verifyResult.stderr,
+              },
+            )
+          }
+
+          return verifyResult.stdout.trim()
+        },
+        catch: (cause) =>
+          cause instanceof V2RuntimeError
+            ? cause
+            : new V2RuntimeError(
+              `Unable to prepare local git checkout for '${input.deployment.name}'.`,
+              "Ensure git is installed and the source repository path is valid.",
+              {
+                providerId: selected.id,
+                repoPath,
+                ref: input.ref,
+                cause: cause instanceof Error ? cause.message : String(cause),
+              },
+            ),
+      })
+
+      return `${selected.family}:${selected.id}:checkout:${input.ref}:${commit}`
+    })
 
   return {
     ...base,
-    checkout: (input) => providerOperation(selected, `checkout:${input.ref}`),
+    checkout: (input) =>
+      selected.id === "local-git"
+        ? checkoutLocalGit(input)
+        : providerOperation(selected, `checkout:${input.ref}`),
   }
 }
 
 const packageManagerService = (
   report: V2ProviderRegistryReport,
+  options: V2ProviderContractsOptions = {},
 ): V2PackageManagerProviderService => {
   const base = familyService(report, "package-manager")
   const selected = report.providers.find(
     (provider): provider is V2ProviderPluginForFamily<"package-manager"> =>
       provider.family === "package-manager",
   ) as V2ProviderPluginForFamily<"package-manager">
+
+  const binRoot = options.packageManager?.binRoot ?? rigV2BinRoot()
+
+  const installName = (deployment: V2DeploymentRecord, serviceName: string): string => {
+    if (deployment.kind === "live") return serviceName
+    if (deployment.kind === "local") return `${serviceName}-dev`
+    return `${serviceName}-${deployment.name}`
+  }
+
+  const installPath = (deployment: V2DeploymentRecord, serviceName: string): string =>
+    join(binRoot, installName(deployment, serviceName))
+
+  const isWithinWorkspace = (path: string, workspacePath: string): boolean => {
+    const workspace = resolve(workspacePath)
+    const candidate = resolve(path)
+    const rel = relative(workspace, candidate)
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+  }
+
+  const resolveEntrypoint = (entrypoint: string, workspacePath: string): string =>
+    isAbsolute(entrypoint) ? entrypoint : resolve(workspacePath, entrypoint)
+
+  const isBinaryContent = (content: Buffer): boolean => {
+    const sample = content.subarray(0, 8192)
+    return sample.includes(0)
+  }
+
+  const commandShim = (workspacePath: string, command: string): string =>
+    `#!/bin/sh\ncd ${JSON.stringify(workspacePath)} && exec ${command} "$@"\n`
+
+  const scriptShim = (workspacePath: string, entrypoint: string): string =>
+    `#!/bin/sh\ncd ${JSON.stringify(workspacePath)} && exec ./${entrypoint} "$@"\n`
+
+  const installEntrypoint = async (
+    deployment: V2DeploymentRecord,
+    service: Extract<V2RuntimeServiceConfig, { readonly type: "bin" }>,
+  ): Promise<string> => {
+    const destination = installPath(deployment, service.name)
+    await mkdir(dirname(destination), { recursive: true })
+
+    if (service.entrypoint.includes(" ") && !service.build) {
+      await writeFile(destination, commandShim(deployment.workspacePath, service.entrypoint), "utf8")
+      await chmod(destination, 0o755)
+      return destination
+    }
+
+    if (service.entrypoint.includes(" ") && service.build) {
+      throw new V2RuntimeError(
+        `Installed component '${service.name}' cannot use a command entrypoint with a build command.`,
+        "Use a file entrypoint for built CLI artifacts.",
+        {
+          providerId: selected.id,
+          component: service.name,
+          deployment: deployment.name,
+          entrypoint: service.entrypoint,
+          build: service.build,
+        },
+      )
+    }
+
+    const entrypoint = resolveEntrypoint(service.entrypoint, deployment.workspacePath)
+    if (!isWithinWorkspace(entrypoint, deployment.workspacePath)) {
+      throw new V2RuntimeError(
+        `Installed component '${service.name}' resolves outside the deployment workspace.`,
+        "Use an entrypoint path inside the deployment workspace.",
+        {
+          providerId: selected.id,
+          component: service.name,
+          deployment: deployment.name,
+          entrypoint: service.entrypoint,
+          workspacePath: deployment.workspacePath,
+        },
+      )
+    }
+
+    const content = await readFile(entrypoint)
+    if (isBinaryContent(content)) {
+      await copyFile(entrypoint, destination)
+    } else if (service.build) {
+      await copyFile(entrypoint, destination)
+    } else {
+      await writeFile(destination, scriptShim(deployment.workspacePath, service.entrypoint), "utf8")
+    }
+    await chmod(destination, 0o755)
+    return destination
+  }
 
   const installPackageJsonScript = (input: {
     readonly deployment: V2DeploymentRecord
@@ -753,52 +1325,53 @@ const packageManagerService = (
       return providerOperation(selected, `install:${input.service.name}`)
     }
 
-    if (!("build" in input.service) || !input.service.build) {
-      return providerOperation(selected, `install:${input.service.name}:ready`)
-    }
-
     return Effect.tryPromise({
       try: async () => {
-        const subprocess = Bun.spawn(["sh", "-lc", input.service.build as string], {
-          cwd: input.deployment.workspacePath,
-          stdout: "pipe",
-          stderr: "pipe",
-        })
-        const [exitCode, stdout, stderr] = await Promise.all([
-          subprocess.exited,
-          new Response(subprocess.stdout).text(),
-          new Response(subprocess.stderr).text(),
-        ])
+        if ("build" in input.service && input.service.build) {
+          const subprocess = Bun.spawn(["sh", "-lc", input.service.build], {
+            cwd: input.deployment.workspacePath,
+            stdout: "pipe",
+            stderr: "pipe",
+          })
+          const [exitCode, stdout, stderr] = await Promise.all([
+            subprocess.exited,
+            new Response(subprocess.stdout).text(),
+            new Response(subprocess.stderr).text(),
+          ])
 
-        if (exitCode !== 0) {
-          throw new V2RuntimeError(
-            `Package build failed for '${input.service.name}' with exit code ${exitCode}.`,
-            "Fix the installed component build command before retrying the deploy action.",
-            {
-              providerId: selected.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              build: input.service.build,
-              exitCode,
-              stdout,
-              stderr,
-            },
-          )
+          if (exitCode !== 0) {
+            throw new V2RuntimeError(
+              `Package build failed for '${input.service.name}' with exit code ${exitCode}.`,
+              "Fix the installed component build command before retrying the deploy action.",
+              {
+                providerId: selected.id,
+                component: input.service.name,
+                deployment: input.deployment.name,
+                build: input.service.build,
+                exitCode,
+                stdout,
+                stderr,
+              },
+            )
+          }
         }
 
-        return `${selected.family}:${selected.id}:install:${input.service.name}:built:${exitCode}`
+        const destination = await installEntrypoint(input.deployment, input.service)
+        return `${selected.family}:${selected.id}:install:${input.service.name}:installed:${destination}`
       },
       catch: (cause) =>
         cause instanceof V2RuntimeError
           ? cause
           : new V2RuntimeError(
-            `Unable to run package build for '${input.service.name}'.`,
-            "Ensure the deployment workspace exists and the build command is available.",
+            `Unable to install package component '${input.service.name}'.`,
+            "Ensure the deployment workspace, entrypoint, build command, and v2 bin root are available.",
             {
               providerId: selected.id,
               component: input.service.name,
               deployment: input.deployment.name,
-              build: input.service.build,
+              ...("build" in input.service && input.service.build ? { build: input.service.build } : {}),
+              entrypoint: input.service.entrypoint,
+              binRoot,
               cause: cause instanceof Error ? cause.message : String(cause),
             },
           ),
@@ -814,19 +1387,374 @@ const packageManagerService = (
   }
 }
 
+interface V2CaddyRoute {
+  readonly project: string
+  readonly deployment: string
+  readonly upstream: string
+  readonly domain: string
+  readonly port: number
+}
+
+interface V2ParsedCaddyBlock {
+  readonly route: V2CaddyRoute
+  readonly startLine: number
+  readonly endLine: number
+}
+
+interface V2CaddySiteBlock {
+  readonly route?: V2CaddyRoute
+  readonly domain: string
+  readonly port: number
+  readonly startLine: number
+  readonly endLine: number
+}
+
+const V2_CADDY_MARKER_RE = /^# \[rig2:([^:]+):([^:]+):([^\]]+)\]\s*$/
+const V1_CADDY_MARKER_RE = /^# \[rig:([^:]+):(dev|prod)(?::([^\]]+))?\]\s*$/
+
+const routeKey = (route: Pick<V2CaddyRoute, "project" | "deployment" | "upstream">): string =>
+  `${route.project}:${route.deployment}:${route.upstream}`
+
+const parseCaddySiteBlocks = (text: string): readonly V2CaddySiteBlock[] => {
+  const lines = text.split("\n")
+  const blocks: V2CaddySiteBlock[] = []
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    const marker = line.match(V2_CADDY_MARKER_RE)
+    const v1Marker = line.match(V1_CADDY_MARKER_RE)
+    const markerLine = marker || v1Marker ? index : undefined
+    const domainLine = markerLine === undefined
+      ? index
+      : (() => {
+        let candidate = markerLine + 1
+        while (candidate < lines.length && lines[candidate]?.trim() === "") {
+          candidate += 1
+        }
+        return candidate
+      })()
+
+    const domainMatch = lines[domainLine]?.match(/^\s*(\S+)\s*\{/)
+    if (!domainMatch || domainMatch[1].startsWith("(")) {
+      continue
+    }
+
+    const domain = domainMatch[1]
+    let port = 0
+    let braceDepth = 1
+    let endLine = domainLine
+
+    for (let scan = domainLine + 1; scan < lines.length && braceDepth > 0; scan += 1) {
+      const trimmed = lines[scan]?.trim() ?? ""
+      if (trimmed.endsWith("{")) {
+        braceDepth += 1
+      }
+      if (trimmed === "}") {
+        braceDepth -= 1
+      }
+
+      const proxyMatch = trimmed.match(/^reverse_proxy\s+https?:\/\/127\.0\.0\.1:(\d+)/)
+      if (proxyMatch) {
+        port = Number.parseInt(proxyMatch[1], 10)
+      }
+
+      if (braceDepth === 0) {
+        endLine = scan
+      }
+    }
+
+    if (port === 0) {
+      continue
+    }
+
+    let startLine = markerLine ?? domainLine
+    if (markerLine === undefined && domainLine > 0 && lines[domainLine - 1]?.trim().startsWith("#")) {
+      startLine = domainLine - 1
+    }
+
+    const route = marker
+      ? {
+        project: marker[1],
+        deployment: marker[2],
+        upstream: marker[3],
+        domain,
+        port,
+      }
+      : v1Marker
+        ? {
+          project: v1Marker[1],
+          deployment: v1Marker[2] === "prod" ? "live" : "local",
+          upstream: v1Marker[3] ?? "web",
+          domain,
+          port,
+        }
+        : undefined
+
+    blocks.push({
+      ...(route ? { route } : {}),
+      domain,
+      port,
+      startLine,
+      endLine,
+    })
+    index = Math.max(index, endLine)
+  }
+
+  return blocks
+}
+
+const parseV2CaddyBlocks = (text: string): readonly V2ParsedCaddyBlock[] =>
+  parseCaddySiteBlocks(text).flatMap((block) =>
+    block.route && block.startLine >= 0
+      ? [{ route: block.route, startLine: block.startLine, endLine: block.endLine }]
+      : [],
+  )
+
+const renderV2CaddyBlock = (
+  route: V2CaddyRoute,
+  extraConfig: readonly string[] = [],
+): string =>
+  [
+    `# [rig2:${route.project}:${route.deployment}:${route.upstream}]`,
+    `${route.domain} {`,
+    `\treverse_proxy http://127.0.0.1:${route.port}`,
+    ...extraConfig.map((line) => `\t${line}`),
+    `}`,
+  ].join("\n")
+
+const readTextIfExists = async (path: string): Promise<string> => {
+  const file = Bun.file(path)
+  return await file.exists() ? file.text() : ""
+}
+
+const backupIfExists = async (path: string): Promise<void> => {
+  const file = Bun.file(path)
+  if (!await file.exists()) {
+    return
+  }
+  const ts = new Date().toISOString().replace(/[:.]/g, "-")
+  await copyFile(path, `${path}.backup-${ts}`)
+}
+
+const writeText = async (path: string, text: string): Promise<void> => {
+  await mkdir(dirname(path), { recursive: true })
+  await Bun.write(path, text)
+}
+
+const deploymentDomain = (
+  deployment: V2DeploymentRecord,
+  provider: V2ProviderPlugin,
+): Effect.Effect<string, V2RuntimeError> => {
+  const domain = deployment.resolved.v1Config.domain
+  if (typeof domain === "string" && domain.trim().length > 0) {
+    return Effect.succeed(domain)
+  }
+
+  return Effect.fail(
+    new V2RuntimeError(
+      `Unable to route deployment '${deployment.name}' without a domain.`,
+      "Set a project domain or lane domain before enabling proxy routing.",
+      {
+        providerId: provider.id,
+        project: deployment.project,
+        deployment: deployment.name,
+      },
+    ),
+  )
+}
+
+const upstreamPort = (
+  deployment: V2DeploymentRecord,
+  upstream: string,
+  provider: V2ProviderPlugin,
+): Effect.Effect<number, V2RuntimeError> => {
+  const service = deployment.resolved.environment.services.find((candidate) => candidate.name === upstream)
+  if (service && service.type === "server" && "port" in service && typeof service.port === "number") {
+    return Effect.succeed(service.port)
+  }
+
+  return Effect.fail(
+    new V2RuntimeError(
+      `Unable to route upstream '${upstream}' for deployment '${deployment.name}'.`,
+      "Proxy upstream must reference a managed component with a concrete port.",
+      {
+        providerId: provider.id,
+        project: deployment.project,
+        deployment: deployment.name,
+        upstream,
+      },
+    ),
+  )
+}
+
 const proxyRouterService = (
   report: V2ProviderRegistryReport,
+  options: V2ProviderContractsOptions,
 ): V2ProxyRouterProviderService => {
   const base = familyService(report, "proxy-router")
   const selected = report.providers.find(
     (provider): provider is V2ProviderPluginForFamily<"proxy-router"> =>
       provider.family === "proxy-router",
   ) as V2ProviderPluginForFamily<"proxy-router">
+  const caddyfilePath = options.proxyRouter?.caddyfilePath ?? options.proxyRouter?.caddyfile ?? join(rigV2ProxyRoot(), "Caddyfile")
+  const extraConfig = options.proxyRouter?.extraConfig ?? []
+  const reloadConfig = options.proxyRouter?.reload ?? { mode: "manual" as const }
+  const runReload = options.proxyRouter?.runCommand ?? defaultCommandRunner
+
+  const reloadCaddyAfterWrite = (details: Readonly<Record<string, unknown>>): Promise<void> => {
+    if (reloadConfig.mode !== "command") {
+      return Promise.resolve()
+    }
+    const command = reloadConfig.command?.trim()
+    if (!command) {
+      return Promise.reject(new V2RuntimeError(
+        "Unable to reload Caddy because no reload command is configured.",
+        "Set providers.caddy.reload.command or use manual reload mode.",
+        {
+          providerId: selected.id,
+          caddyfilePath,
+          ...details,
+        },
+      ))
+    }
+
+    return runReload(["sh", "-lc", command]).then((result) => {
+      if (result.exitCode !== 0) {
+        throw new V2RuntimeError(
+          "Caddy reload command failed.",
+          "Inspect the configured Caddy reload command and retry after fixing Caddy.",
+          {
+            providerId: selected.id,
+            caddyfilePath,
+            command,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            ...details,
+          },
+        )
+      }
+    })
+  }
+
+  const upsertCaddyRoute = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly proxy: V2RuntimeProxyConfig
+  }): Effect.Effect<string, V2RuntimeError> =>
+    Effect.gen(function* () {
+      const domain = yield* deploymentDomain(input.deployment, selected)
+      const port = yield* upstreamPort(input.deployment, input.proxy.upstream, selected)
+      const route: V2CaddyRoute = {
+        project: input.deployment.project,
+        deployment: input.deployment.name,
+        upstream: input.proxy.upstream,
+        domain,
+        port,
+      }
+
+      yield* Effect.tryPromise({
+        try: async () => {
+          const text = await readTextIfExists(caddyfilePath)
+          const lines = text.split("\n")
+          const existing = parseCaddySiteBlocks(text)
+          const target =
+            existing.find((block) => block.route && routeKey(block.route) === routeKey(route)) ??
+            existing.find((block) => block.domain === route.domain)
+          const block = renderV2CaddyBlock(route, extraConfig)
+          const next = target
+            ? [
+              ...lines.slice(0, target.startLine),
+              block,
+              ...lines.slice(target.endLine + 1),
+            ].join("\n")
+            : text.trimEnd() === ""
+              ? `${block}\n`
+              : `${text.trimEnd()}\n\n${block}\n`
+
+          await backupIfExists(caddyfilePath)
+          await writeText(caddyfilePath, next)
+          await reloadCaddyAfterWrite({
+            project: input.deployment.project,
+            deployment: input.deployment.name,
+            upstream: input.proxy.upstream,
+            domain,
+            port,
+          })
+        },
+        catch: runtimeError(
+          `Unable to upsert Caddy route for deployment '${input.deployment.name}'.`,
+          "Ensure the v2 Caddyfile path is writable and retry proxy routing.",
+          {
+            providerId: selected.id,
+            caddyfilePath,
+            project: input.deployment.project,
+            deployment: input.deployment.name,
+            upstream: input.proxy.upstream,
+            domain,
+            port,
+          },
+        ),
+      })
+
+      return `${selected.family}:${selected.id}:upsert:${domain}:${input.proxy.upstream}:${port}`
+    })
+
+  const removeCaddyRoute = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly proxy: V2RuntimeProxyConfig
+  }): Effect.Effect<string, V2RuntimeError> =>
+    Effect.tryPromise({
+      try: async () => {
+        const text = await readTextIfExists(caddyfilePath)
+        const lines = text.split("\n")
+        const key = routeKey({
+          project: input.deployment.project,
+          deployment: input.deployment.name,
+          upstream: input.proxy.upstream,
+        })
+        const target = parseV2CaddyBlocks(text).find((block) => routeKey(block.route) === key)
+        if (target) {
+          let endLine = target.endLine + 1
+          if (endLine < lines.length && lines[endLine]?.trim() === "") {
+            endLine += 1
+          }
+          const next = [
+            ...lines.slice(0, target.startLine),
+            ...lines.slice(endLine),
+          ].join("\n")
+          await backupIfExists(caddyfilePath)
+          await writeText(caddyfilePath, next)
+          await reloadCaddyAfterWrite({
+            project: input.deployment.project,
+            deployment: input.deployment.name,
+            upstream: input.proxy.upstream,
+          })
+        }
+        return `${selected.family}:${selected.id}:remove:${input.deployment.project}:${input.deployment.name}:${input.proxy.upstream}`
+      },
+      catch: runtimeError(
+        `Unable to remove Caddy route for deployment '${input.deployment.name}'.`,
+        "Ensure the v2 Caddyfile path is writable and retry proxy teardown.",
+        {
+          providerId: selected.id,
+          caddyfilePath,
+          project: input.deployment.project,
+          deployment: input.deployment.name,
+          upstream: input.proxy.upstream,
+        },
+      ),
+    })
 
   return {
     ...base,
-    upsert: (input) => providerOperation(selected, `upsert:${input.proxy.upstream}`),
-    remove: (input) => providerOperation(selected, `remove:${input.proxy.upstream}`),
+    upsert: (input) =>
+      selected.id === "caddy"
+        ? upsertCaddyRoute(input)
+        : providerOperation(selected, `upsert:${input.proxy.upstream}`),
+    remove: (input) =>
+      selected.id === "caddy"
+        ? removeCaddyRoute(input)
+        : providerOperation(selected, `remove:${input.proxy.upstream}`),
   }
 }
 
@@ -842,19 +1770,20 @@ export const V2ProviderRegistryLive = (
 export const V2ProviderContractsLive = (
   profile: V2ProviderProfileName = "default",
   externalProviders: readonly V2ProviderPlugin[] = [],
+  options: V2ProviderContractsOptions = {},
 ) => {
   const report = reportForProfile(profile, externalProviders)
 
   return Layer.mergeAll(
     V2ProviderRegistryLive(profile, externalProviders),
-    Layer.succeed(V2ProcessSupervisorProvider, processSupervisorService(report)),
-    Layer.succeed(V2ProxyRouterProvider, proxyRouterService(report)),
-    Layer.succeed(V2ScmProvider, scmService(report)),
-    Layer.succeed(V2WorkspaceMaterializerProvider, workspaceMaterializerService(report)),
+    Layer.succeed(V2ProcessSupervisorProvider, processSupervisorService(report, options)),
+    Layer.succeed(V2ProxyRouterProvider, proxyRouterService(report, options)),
+    Layer.succeed(V2ScmProvider, scmService(report, options)),
+    Layer.succeed(V2WorkspaceMaterializerProvider, workspaceMaterializerService(report, options)),
     Layer.succeed(V2EventTransportProvider, eventTransportService(report)),
     Layer.succeed(V2ControlPlaneTransportProvider, familyService(report, "control-plane-transport")),
     Layer.succeed(V2HealthCheckerProvider, healthCheckerService(report)),
-    Layer.succeed(V2PackageManagerProvider, packageManagerService(report)),
+    Layer.succeed(V2PackageManagerProvider, packageManagerService(report, options)),
     Layer.succeed(V2TunnelProvider, familyService(report, "tunnel")),
   )
 }

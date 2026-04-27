@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
-import { Context, Effect, Layer } from "effect-v4"
+import { Context, Effect, Layer } from "effect"
 
 import { decodeV2ProjectConfig, type V2ProjectConfig } from "./config.js"
 import { V2RuntimeError } from "./errors.js"

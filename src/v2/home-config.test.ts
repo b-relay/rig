@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect-v4"
+import { Effect } from "effect"
 
 import {
   decodeV2HomeConfig,
@@ -25,6 +25,12 @@ describe("GIVEN v2 home config WHEN defaults and files are used THEN behavior is
       },
       providers: {
         defaultProfile: "default",
+        caddy: {
+          extraConfig: [],
+          reload: {
+            mode: "manual",
+          },
+        },
       },
       web: {
         controlPlane: "localhost",
@@ -70,6 +76,14 @@ describe("GIVEN v2 home config WHEN defaults and files are used THEN behavior is
               },
               providers: {
                 defaultProfile: "stub",
+                caddy: {
+                  caddyfile: "/usr/local/etc/Caddyfile",
+                  extraConfig: ["import cloudflare", "import backend_errors"],
+                  reload: {
+                    mode: "manual",
+                    command: "sudo launchctl kickstart -k system/com.caddyserver.caddy",
+                  },
+                },
               },
               web: {
                 controlPlane: "disabled",
@@ -84,6 +98,14 @@ describe("GIVEN v2 home config WHEN defaults and files are used THEN behavior is
       expect(config.deploy.generated).toEqual({
         maxActive: 2,
         replacePolicy: "reject",
+      })
+      expect(config.providers.caddy).toEqual({
+        caddyfile: "/usr/local/etc/Caddyfile",
+        extraConfig: ["import cloudflare", "import backend_errors"],
+        reload: {
+          mode: "manual",
+          command: "sudo launchctl kickstart -k system/com.caddyserver.caddy",
+        },
       })
       expect(await readFile(v2HomeConfigPath(stateRoot), "utf8")).toContain("\"productionBranch\": \"stable\"")
     } finally {

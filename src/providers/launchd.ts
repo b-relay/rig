@@ -2,7 +2,7 @@ import { join } from "node:path"
 import { homedir } from "node:os"
 import { getuid } from "node:process"
 import { copyFile, mkdir, unlink } from "node:fs/promises"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { rigLaunchdBackupRoot } from "../core/rig-paths.js"
 import {

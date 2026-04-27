@@ -1,6 +1,6 @@
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { ReverseProxy, type ProxyChange, type ProxyDiff, type ProxyEntry, type ReverseProxy as ReverseProxyService } from "../interfaces/reverse-proxy.js"
 import { ProxyError } from "../schema/errors.js"

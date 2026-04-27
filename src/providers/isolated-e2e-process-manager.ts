@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { rigIsolatedE2ELaunchdBackupRoot, rigIsolatedE2EStatePath } from "../core/rig-paths.js"
 import {

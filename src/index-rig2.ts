@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect-v4"
+import { Effect, Layer } from "effect"
 
 import { runRig2Cli } from "./v2/cli.js"
 import { V2DeployIntentsLive } from "./v2/deploy-intent.js"

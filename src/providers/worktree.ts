@@ -1,6 +1,6 @@
 import { join, basename } from "node:path"
 import { readlink } from "node:fs/promises"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { rigWorkspacesRoot } from "../core/rig-paths.js"
 import { FileSystem, type FileSystem as FileSystemService } from "../interfaces/file-system.js"

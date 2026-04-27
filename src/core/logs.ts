@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect } from "effect-v3"
 
 import { FileSystem } from "../interfaces/file-system.js"
 import { Logger } from "../interfaces/logger.js"

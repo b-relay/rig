@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { Git, type Git as GitService } from "../interfaces/git.js"
 import { GitError, MainBranchDetectionError } from "../schema/errors.js"

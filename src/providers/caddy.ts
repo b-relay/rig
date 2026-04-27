@@ -1,6 +1,6 @@
 import { join } from "node:path"
 import { copyFile, mkdir } from "node:fs/promises"
-import { Effect, Layer } from "effect"
+import { Effect, Layer } from "effect-v3"
 
 import { rigCaddyfilePath } from "../core/rig-paths.js"
 import {

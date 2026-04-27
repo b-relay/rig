@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile, appendFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Fiber, Layer } from "effect"
+import { Effect, Fiber, Layer } from "effect-v3"
 
 import { runLogsCommand } from "./logs.js"
 import { Logger, type Logger as LoggerService } from "../interfaces/logger.js"

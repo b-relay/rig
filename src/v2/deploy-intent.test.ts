@@ -49,7 +49,28 @@ const projectConfig = () =>
     },
   })
 
-const runWithDeployIntents = async <A>(effect: Effect.Effect<A, unknown, V2DeployIntents>) => {
+const defaultHomeConfig: V2HomeConfig = {
+  deploy: {
+    productionBranch: "main",
+    generated: {
+      maxActive: 5,
+      replacePolicy: "oldest",
+    },
+  },
+  providers: {
+    defaultProfile: "default",
+  },
+  web: {
+    controlPlane: "localhost",
+  },
+}
+
+const runWithDeployIntents = async <A>(
+  effect: Effect.Effect<A, unknown, V2DeployIntents>,
+  options?: {
+    readonly homeConfig?: V2HomeConfig
+  },
+) => {
   const store = new MemoryDeploymentStore()
   const deployments = Layer.provide(
     V2DeploymentManagerLive,
@@ -60,21 +81,7 @@ const runWithDeployIntents = async <A>(effect: Effect.Effect<A, unknown, V2Deplo
     Layer.mergeAll(
       deployments,
       Layer.succeed(V2HomeConfigStore, {
-        read: () => Effect.succeed({
-          deploy: {
-            productionBranch: "main",
-            generated: {
-              maxActive: 5,
-              replacePolicy: "oldest",
-            },
-          },
-          providers: {
-            defaultProfile: "default",
-          },
-          web: {
-            controlPlane: "localhost",
-          },
-        } satisfies V2HomeConfig),
+        read: () => Effect.succeed(options?.homeConfig ?? defaultHomeConfig),
         write: () => Effect.void,
       }),
     ),
@@ -130,6 +137,55 @@ describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THE
     expect(result.generatedDeployment?.name).toBe("feature-preview")
     expect(result.generatedDeployment?.subdomain).toBe("feature-preview")
     expect(store.records.get("pantry")?.map((record) => record.name)).toEqual(["feature-preview"])
+  })
+
+  test("GIVEN generated deploy intent cap reject policy WHEN cap is reached THEN materialization is rejected", async () => {
+    const config = await Effect.runPromise(projectConfig())
+    const { result, store } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* V2DeployIntents
+        yield* intents.fromCliDeploy({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "feature/one",
+          target: "generated",
+          config,
+        })
+        return yield* Effect.flip(
+          intents.fromCliDeploy({
+            project: "pantry",
+            stateRoot: "/tmp/rig-v2",
+            ref: "feature/two",
+            target: "generated",
+            config,
+          }),
+        )
+      }),
+      {
+        homeConfig: {
+          ...defaultHomeConfig,
+          deploy: {
+            ...defaultHomeConfig.deploy,
+            generated: {
+              maxActive: 1,
+              replacePolicy: "reject",
+            },
+          },
+        },
+      },
+    )
+
+    expect(result).toMatchObject({
+      _tag: "V2RuntimeError",
+      details: {
+        reason: "generated-deployment-cap-reached",
+        maxActive: 1,
+        replacePolicy: "reject",
+        requestedDeployment: "feature-two",
+        activeDeployments: ["feature-one"],
+      },
+    })
+    expect(store.records.get("pantry")?.map((record) => record.name)).toEqual(["feature-one"])
   })
 
   test("GIVEN git push and no main ref WHEN home production branch matches THEN live is targeted", async () => {

@@ -235,10 +235,9 @@ export const V2DeploymentManagerLive = Layer.effect(
         Effect.gen(function* () {
           const record = yield* generatedRecord(input)
           const existing = yield* store.read(input.config.name, input.stateRoot)
-          const next = [
-            ...existing.filter((entry) => !(entry.kind === "generated" && entry.name === record.name)),
-            record,
-          ].sort((a, b) => a.name.localeCompare(b.name))
+          const next = existing.some((entry) => entry.kind === "generated" && entry.name === record.name)
+            ? existing.map((entry) => entry.kind === "generated" && entry.name === record.name ? record : entry)
+            : [...existing, record]
 
           yield* store.ensureState(record)
           yield* store.write(input.config.name, input.stateRoot, next)

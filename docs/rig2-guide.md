@@ -206,21 +206,19 @@ work: #24.
 - Config-backed `rigd` lifecycle and deploy actions now run through ordered v2
   runtime provider methods before receipts are persisted. Runtime execution
   emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
-  first-party adapter parity is still pending, but `structured-log-file` now
-  writes deployment-scoped JSONL event logs under the v2 log root, and
-  `native-health` now performs real HTTP and command health checks.
-  `package-json-scripts` now runs installed-component build commands from the
-  deployment workspace.
-  Process-supervisor providers can now return stdout/stderr lines that are
-  persisted as component log events. Concrete supervisors still need to supply
-  live managed-process output.
+  first-party adapter parity is still pending, but `structured-log-file` writes
+  deployment-scoped JSONL event logs, `native-health` performs real HTTP and
+  command health checks, `package-json-scripts` runs installed-component build
+  commands, and the core `rigd` process supervisor runs managed component
+  commands while returning provider stdout/stderr lines for log ingestion.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.
 - Home config is schema-validated and file-backed. Deploy intent now uses
   project `live.deployBranch` first, then home `deploy.productionBranch`, then
-  the built-in `main` default. Generated deployment caps are stored in home
-  config but not enforced yet.
+  the built-in `main` default. Generated deployment caps from home config are
+  enforced for deploy-intent materialization and `rigd` generated deploy
+  actions with `reject` and `oldest` replacement policies.
 
 Tracked follow-ups:
 

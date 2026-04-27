@@ -12,6 +12,7 @@ import {
 import { V2ControlPlane, type V2ControlPlaneStatus } from "./control-plane.js"
 import { branchSlug, V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
+import { V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
 import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
 import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
 import { V2RigdActionPreflight, type V2RigdActionKind } from "./rigd-actions.js"
@@ -509,6 +510,68 @@ export const V2RigdLive = Layer.effect(
         })
       })
 
+    const enforceGeneratedDeploymentCap = (
+      input: V2RigdControlPlaneDeployInput,
+      homeConfig: V2HomeConfig,
+    ): Effect.Effect<void, V2RuntimeError> =>
+      Effect.gen(function* () {
+        if (input.target !== "generated" || !input.config) {
+          return
+        }
+
+        const requestedDeployment = branchSlug(input.deploymentName ?? input.ref)
+        const inventory = yield* deployments.list({
+          config: input.config,
+          stateRoot: input.stateRoot,
+        })
+        const generated = inventory.filter((deployment) => deployment.kind === "generated")
+        const existing = generated.find((deployment) => deployment.name === requestedDeployment)
+
+        if (existing || generated.length < homeConfig.deploy.generated.maxActive) {
+          return
+        }
+
+        if (homeConfig.deploy.generated.replacePolicy === "reject") {
+          return yield* Effect.fail(
+            new V2RuntimeError(
+              `Generated deployment cap reached for '${input.project}'.`,
+              "Destroy an existing generated deployment or raise deploy.generated.maxActive in the home rig config.",
+              {
+                reason: "generated-deployment-cap-reached",
+                project: input.project,
+                maxActive: homeConfig.deploy.generated.maxActive,
+                replacePolicy: homeConfig.deploy.generated.replacePolicy,
+                requestedDeployment,
+                activeDeployments: generated.map((deployment) => deployment.name),
+              },
+            ),
+          )
+        }
+
+        const oldest = generated[0]
+        if (!oldest) {
+          return
+        }
+
+        yield* deployments.destroyGenerated({
+          config: input.config,
+          stateRoot: input.stateRoot,
+          name: oldest.name,
+        })
+        yield* appendEvent(input.stateRoot, {
+          event: "rigd.generated.cap-replaced",
+          project: input.project,
+          deployment: oldest.name,
+          details: {
+            reason: "generated-deployment-cap-reached",
+            maxActive: homeConfig.deploy.generated.maxActive,
+            replacePolicy: homeConfig.deploy.generated.replacePolicy,
+            requestedDeployment,
+            replacedDeployment: oldest.name,
+          },
+        })
+      })
+
     return {
       start: (input) =>
         Effect.gen(function* () {
@@ -656,6 +719,9 @@ export const V2RigdLive = Layer.effect(
 
           let materialized: V2DeploymentRecord | undefined
           if (input.target === "generated") {
+            const homeConfigStore = yield* V2HomeConfigStore
+            const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
+            yield* enforceGeneratedDeploymentCap(input, homeConfig)
             materialized = yield* deployments.materializeGenerated({
               config: generatedConfig,
               stateRoot: input.stateRoot,

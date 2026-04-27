@@ -312,6 +312,10 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   unhealthy, unreachable, or non-zero checks. The `package-json-scripts`
   provider now runs installed-component build commands from the deployment
   workspace and reports tagged failures. Process-supervisor providers can now
-  return stdout/stderr lines that are persisted through component log events.
-  Remaining #25 work: concrete first-party provider adapter behavior that
-  supplies live managed-process behavior and output.
+  return stdout/stderr lines that are persisted through component log events,
+  and the core `rigd` process supervisor now runs managed component commands
+  while returning stdout/stderr output for log ingestion. Generated deployment
+  caps from home config are enforced during deploy-intent materialization and
+  `rigd` generated deploy actions with `reject` and `oldest` replacement
+  policies. Remaining #25 work: broader first-party launchd, proxy, SCM, and
+  workspace materializer adapter parity.

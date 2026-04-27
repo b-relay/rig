@@ -64,7 +64,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
           components: {
             web: {
               mode: "managed",
-              command: "bun run start -- --port ${port.web}",
+              command: "printf 'started\\n'",
               port: 3070,
             },
           },

@@ -15,6 +15,7 @@ import {
   type V2DeploymentStoreService,
 } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
+import { V2HomeConfigStore, v2HomeConfigDefaults, type V2HomeConfig } from "./home-config.js"
 import { V2ProviderRegistryLive } from "./provider-contracts.js"
 import { V2RigdActionPreflight, V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive, type V2RigdService } from "./rigd.js"
@@ -188,6 +189,7 @@ const runWithRigd = async <A>(
   options?: {
     readonly preflight?: Layer.Layer<V2RigdActionPreflight>
     readonly executor?: CaptureRuntimeExecutor
+    readonly homeConfig?: V2HomeConfig
   },
 ) => {
   const logger = new CaptureV2Logger()
@@ -206,6 +208,10 @@ const runWithRigd = async <A>(
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     preflightLive,
+    Layer.succeed(V2HomeConfigStore, {
+      read: () => Effect.succeed(options?.homeConfig ?? v2HomeConfigDefaults),
+      write: () => Effect.void,
+    }),
     Layer.succeed(V2RuntimeExecutor, executor),
     Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
   )
@@ -217,6 +223,10 @@ const runWithRigd = async <A>(
     V2FileRigdStateStoreLive,
     V2DefaultControlPlaneLive,
     preflightLive,
+    Layer.succeed(V2HomeConfigStore, {
+      read: () => Effect.succeed(options?.homeConfig ?? v2HomeConfigDefaults),
+      write: () => Effect.void,
+    }),
     Layer.succeed(V2RuntimeExecutor, executor),
     Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
     Layer.provide(V2RigdLive, rigdDependencies),
@@ -522,6 +532,139 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         "component.log",
         "rigd.generated.destroy.accepted",
       ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN generated deployment cap reject policy WHEN cap is reached THEN rigd rejects a new generated deploy", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/one",
+            stateRoot,
+            config,
+          })
+          const rejected = yield* Effect.flip(
+            rigd.controlPlaneDeploy({
+              project: "pantry",
+              target: "generated",
+              ref: "feature/two",
+              stateRoot,
+              config,
+            }),
+          )
+          const model = yield* rigd.webReadModel({ stateRoot })
+          return { rejected, model }
+        }),
+        {
+          homeConfig: {
+            ...v2HomeConfigDefaults,
+            deploy: {
+              ...v2HomeConfigDefaults.deploy,
+              generated: {
+                maxActive: 1,
+                replacePolicy: "reject",
+              },
+            },
+          },
+        },
+      )
+
+      expect(result.rejected).toMatchObject({
+        _tag: "V2RuntimeError",
+        details: {
+          reason: "generated-deployment-cap-reached",
+          maxActive: 1,
+          replacePolicy: "reject",
+          requestedDeployment: "feature-two",
+          activeDeployments: ["feature-one"],
+        },
+      })
+      expect(result.model.deployments.map((deployment) => `${deployment.kind}:${deployment.name}`)).toEqual([
+        "local:local",
+        "live:live",
+        "generated:feature-one",
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN generated deployment cap oldest policy WHEN cap is reached THEN rigd replaces the oldest generated deploy", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "z-old",
+            stateRoot,
+            config,
+          })
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "m-middle",
+            stateRoot,
+            config,
+          })
+          const accepted = yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "a-new",
+            stateRoot,
+            config,
+          })
+          const model = yield* rigd.webReadModel({ stateRoot })
+          const logs = yield* rigd.webLogs({ stateRoot, project: "pantry", lines: 20 })
+          return { accepted, model, logs }
+        }),
+        {
+          homeConfig: {
+            ...v2HomeConfigDefaults,
+            deploy: {
+              ...v2HomeConfigDefaults.deploy,
+              generated: {
+                maxActive: 2,
+                replacePolicy: "oldest",
+              },
+            },
+          },
+        },
+      )
+
+      expect(result.accepted).toMatchObject({
+        kind: "deploy",
+        target: "generated:a-new",
+        accepted: true,
+      })
+      expect(result.model.deployments.map((deployment) => `${deployment.kind}:${deployment.name}`).sort()).toEqual([
+        "generated:a-new",
+        "generated:m-middle",
+        "live:live",
+        "local:local",
+      ])
+      expect(result.model.deployments.map((deployment) => deployment.name)).not.toContain("z-old")
+      expect(result.logs).toContainEqual(expect.objectContaining({
+        event: "rigd.generated.cap-replaced",
+        deployment: "z-old",
+        details: expect.objectContaining({
+          requestedDeployment: "a-new",
+          replacedDeployment: "z-old",
+        }),
+      }))
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }

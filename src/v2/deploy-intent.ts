@@ -7,7 +7,7 @@ import {
   type V2DeploymentRecord,
 } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
-import { V2HomeConfigStore } from "./home-config.js"
+import { V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
 
 export type V2DeploySource = "git-push" | "cli"
 export type V2DeployTarget = "live" | "generated"
@@ -163,6 +163,62 @@ const maybeMaterializeGenerated = (
   })
 }
 
+const enforceGeneratedDeploymentCap = (
+  deployments: V2DeploymentManager,
+  input: {
+    readonly project: string
+    readonly stateRoot: string
+    readonly ref: string
+    readonly deploymentName?: string
+    readonly config?: V2ProjectConfig
+  },
+  homeConfig: V2HomeConfig,
+): Effect.Effect<void, V2RuntimeError> => {
+  if (!input.config) {
+    return Effect.void
+  }
+
+  return Effect.gen(function* () {
+    const requestedDeployment = branchSlug(input.deploymentName ?? input.ref)
+    const inventory = yield* deployments.list({
+      config: input.config,
+      stateRoot: input.stateRoot,
+    })
+    const generated = inventory.filter((deployment) => deployment.kind === "generated")
+    const existing = generated.find((deployment) => deployment.name === requestedDeployment)
+
+    if (existing || generated.length < homeConfig.deploy.generated.maxActive) {
+      return
+    }
+
+    if (homeConfig.deploy.generated.replacePolicy === "reject") {
+      return yield* Effect.fail(
+        new V2RuntimeError(
+          `Generated deployment cap reached for '${input.project}'.`,
+          "Destroy an existing generated deployment or raise deploy.generated.maxActive in the home rig config.",
+          {
+            reason: "generated-deployment-cap-reached",
+            project: input.project,
+            maxActive: homeConfig.deploy.generated.maxActive,
+            replacePolicy: homeConfig.deploy.generated.replacePolicy,
+            requestedDeployment,
+            activeDeployments: generated.map((deployment) => deployment.name),
+          },
+        ),
+      )
+    }
+
+    const oldest = generated[0]
+    if (oldest) {
+      yield* deployments.destroyGenerated({
+        config: input.config,
+        stateRoot: input.stateRoot,
+        name: oldest.name,
+      })
+    }
+  })
+}
+
 export const V2DeployIntentsLive = Layer.effect(
   V2DeployIntents,
   Effect.gen(function* () {
@@ -179,22 +235,23 @@ export const V2DeployIntentsLive = Layer.effect(
         readonly config?: V2ProjectConfig
       },
     ) =>
-      maybeMaterializeGenerated(deployments, input).pipe(
-        Effect.map((generatedDeployment) => {
-          const deploymentName =
-            input.deploymentName ?? generatedDeployment?.name ?? branchSlug(input.ref)
-          return {
-            source,
-            project: input.project,
-            stateRoot: input.stateRoot,
-            ref: input.ref,
-            target: "generated",
-            lane: "deployment",
-            deploymentName,
-            ...(generatedDeployment ? { generatedDeployment } : {}),
-          } satisfies V2DeployIntent
-        }),
-      )
+      Effect.gen(function* () {
+        const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
+        yield* enforceGeneratedDeploymentCap(deployments, input, homeConfig)
+        const generatedDeployment = yield* maybeMaterializeGenerated(deployments, input)
+        const deploymentName =
+          input.deploymentName ?? generatedDeployment?.name ?? branchSlug(input.ref)
+        return {
+          source,
+          project: input.project,
+          stateRoot: input.stateRoot,
+          ref: input.ref,
+          target: "generated",
+          lane: "deployment",
+          deploymentName,
+          ...(generatedDeployment ? { generatedDeployment } : {}),
+        } satisfies V2DeployIntent
+      })
 
     return {
       fromGitPush: (input) =>

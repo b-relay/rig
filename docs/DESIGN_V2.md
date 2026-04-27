@@ -229,8 +229,8 @@ Current implementation: `V2HomeConfigStore` reads and writes
 `$RIG_V2_ROOT/config.json` or `~/.rig-v2/config.json` and normalizes missing
 fields to explicit defaults. Deploy intent resolution uses project
 `live.deployBranch` first, then home `deploy.productionBranch`, then `main`.
-Generated deployment caps are represented in the schema and still need runtime
-enforcement in `rigd`.
+Generated deployment caps are enforced during deploy-intent materialization and
+`rigd` generated deploy actions with `reject` and `oldest` replacement policies.
 
 ## High-Level UX
 

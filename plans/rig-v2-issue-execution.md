@@ -310,7 +310,9 @@ Current output: `V2ConfigEditor` exposes read, preview, and apply interfaces
 for structured v2 config patches. `rigd` returns editor-ready config with
 field docs and revisions, previews schema-validated diffs without writing, and
 applies validated edits atomically with backup/recovery information while
-rejecting stale revisions.
+rejecting stale revisions. `rig2 config read`, `rig2 config set`, and
+`rig2 config unset` expose that workflow through the CLI, with preview as the
+default and `--apply` required for writes.
 
 Exit condition:
 
@@ -337,7 +339,7 @@ Exit condition:
 
 ## Recommended Next Move
 
-Continue #25. The first provider-execution slice is in place: config-backed
+Provider-execution foundation from #25 is in place: config-backed
 `rigd` lifecycle, deploy, and generated-destroy actions now resolve deployment
 records and execute through the v2 runtime executor provider interface before
 receipts/logs persist. The direct `rig2` CLI config-loading slice is also in
@@ -365,11 +367,12 @@ config under the v2 state root, and deploy intent resolution uses project
 `live.deployBranch` before home `deploy.productionBranch` before `main`.
 Generated deployment caps from home config are enforced during deploy-intent
 materialization and `rigd` generated deploy actions with `reject` and `oldest`
-replacement policies. Remaining #25 work is broader first-party launchd, proxy,
-SCM, and workspace materializer adapter parity.
+replacement policies. Broader first-party launchd, proxy, SCM, and workspace
+materializer adapter parity is tracked by #27 through #30.
 
-After #25, do #24 for the user-facing config-edit surface. Then #23 can prepare
-the final `rig2` to `rig` replacement build path.
+After the #27 through #30 provider-adapter follow-ups, #23 can prepare the
+final `rig2` to `rig` replacement build path. #24 is complete for the CLI
+config-edit surface.
 
 ## Suggested First Milestone
 

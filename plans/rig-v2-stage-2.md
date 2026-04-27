@@ -282,10 +282,11 @@ plan, and remaining gaps before v2 becomes the default `rig` behavior.
 `docs/rig2-guide.md` gives a short user-facing guide for using `rig2` today
 and understanding the differences from rig v1.
 
-Follow-up issues #23 through #26 capture the remaining implementation gaps:
-the final `rig2` to `rig` replacement path, CLI/control-plane config editing
-surface, provider-backed lifecycle/deploy execution, and hosted control-plane
-transport for `rig.b-relay.com`.
+Remaining follow-up issues capture the final `rig2` to `rig` replacement path,
+hosted control-plane transport for `rig.b-relay.com`, and provider adapter
+parity for launchd, proxy routing, SCM checkout, and workspace materialization.
+#24 is complete: `rig2 config read/set/unset` now expose the `rigd` config
+read, preview, and apply workflow through a user-facing CLI.
 
 Runtime routing from `rig` to v2 remains intentionally unchanged. The approved
 direction is to keep `rig2` isolated until it is ready, then rename/build it as
@@ -293,7 +294,7 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
 
 ### Follow-Up Progress
 
-- #25 in progress: `src/v2/runtime-executor.ts` defines the v2 runtime
+- #25 complete: `src/v2/runtime-executor.ts` defines the v2 runtime
   executor interface. Config-backed `rigd` lifecycle, live deploy, generated
   deploy, and generated destroy actions now execute through that provider
   interface before durable receipts and logs are persisted. `rig2` now loads
@@ -317,5 +318,5 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   while returning stdout/stderr output for log ingestion. Generated deployment
   caps from home config are enforced during deploy-intent materialization and
   `rigd` generated deploy actions with `reject` and `oldest` replacement
-  policies. Remaining #25 work: broader first-party launchd, proxy, SCM, and
-  workspace materializer adapter parity.
+  policies. Broader first-party adapter parity is tracked separately in #27
+  through #30 for launchd, proxy, SCM, and workspace materialization.

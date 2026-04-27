@@ -612,7 +612,9 @@ operations expressed as path arrays, applies them in memory, validates the
 candidate config with the v2 Effect Schema, and returns field-doc-aware diffs
 without writing. `rigd.configApply` repeats the same validation, rejects stale
 revisions, writes atomically through the config file store interface, and
-returns a backup path for recovery.
+returns a backup path for recovery. `rig2 config read`, `rig2 config set`, and
+`rig2 config unset` are the current user-facing project config surface for this
+contract; hosted web editing can call the same interface later.
 
 ## Reliability Requirements
 

@@ -2,6 +2,13 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect-v4"
 
 import { runRig2Cli } from "./cli.js"
+import type {
+  V2ConfigApplyResult,
+  V2ConfigPreviewInput,
+  V2ConfigPreviewResult,
+  V2ConfigReadInput,
+  V2ConfigReadModel,
+} from "./config-editor.js"
 import type { V2ProjectConfig } from "./config.js"
 import {
   V2DeployIntents,
@@ -49,6 +56,9 @@ class CaptureV2Lifecycle {
 }
 
 class CaptureV2Rigd {
+  readonly configApplyRequests: V2ConfigPreviewInput[] = []
+  readonly configPreviewRequests: V2ConfigPreviewInput[] = []
+  readonly configReadRequests: V2ConfigReadInput[] = []
   readonly controlPlaneDeployRequests: V2RigdControlPlaneDeployInput[] = []
   readonly healthRequests: V2RigdStartInput[] = []
   readonly healthStateRequests: V2RigdHealthStateInput[] = []
@@ -156,6 +166,62 @@ class CaptureV2Rigd {
       target: input.target,
       receivedAt: "2026-04-24T00:00:00.000Z",
     })
+  }
+
+  configRead(input: V2ConfigReadInput) {
+    this.configReadRequests.push(input)
+    return Effect.succeed({
+      project: input.project,
+      configPath: input.configPath,
+      revision: "rev-1",
+      raw: { name: input.project },
+      config: {
+        name: input.project,
+        components: {},
+      } as V2ProjectConfig,
+      fields: [
+        {
+          path: ["live", "deployBranch"],
+          valueShape: "string",
+          description: "Live lane deploy branch.",
+        },
+      ],
+    } satisfies V2ConfigReadModel)
+  }
+
+  configPreview(input: V2ConfigPreviewInput) {
+    this.configPreviewRequests.push(input)
+    return Effect.succeed(this.configEditResult(input))
+  }
+
+  configApply(input: V2ConfigPreviewInput) {
+    this.configApplyRequests.push(input)
+    return Effect.succeed({
+      ...this.configEditResult(input),
+      applied: true,
+      backupPath: `${input.configPath}.backup-rev-1.json`,
+    } satisfies V2ConfigApplyResult)
+  }
+
+  private configEditResult(input: V2ConfigPreviewInput): V2ConfigPreviewResult {
+    return {
+      project: input.project,
+      configPath: input.configPath,
+      baseRevision: input.expectedRevision,
+      nextRevision: "rev-2",
+      patch: input.patch,
+      diff: input.patch.map((patch) => ({
+        path: patch.path,
+        before: patch.path.join(".") === "live.deployBranch" ? "main" : undefined,
+        ...(patch.op === "set" ? { after: patch.value } : {}),
+        description: "Live lane deploy branch.",
+      })),
+      raw: { name: input.project },
+      config: {
+        name: input.project,
+        components: {},
+      } as V2ProjectConfig,
+    }
   }
 }
 
@@ -474,6 +540,99 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       ]),
     })
     expect(logger.infos.at(-1)?.message).toBe("rig2 doctor report")
+  })
+
+  test("GIVEN config read inside managed repo WHEN running THEN rigd returns editor-ready config details", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger(["config", "read"], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(rigd.configReadRequests).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/repo/rig.json",
+      },
+    ])
+    expect(logger.infos.at(-1)).toMatchObject({
+      message: "rig2 config read",
+      details: expect.objectContaining({
+        project: "pantry",
+        revision: "rev-1",
+        fieldCount: 1,
+      }),
+    })
+  })
+
+  test("GIVEN config set preview WHEN running THEN rigd previews a structured patch without applying", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "config",
+      "set",
+      "--project",
+      "pantry",
+      "--config",
+      "/tmp/pantry/rig.json",
+      "--path",
+      "live.deployBranch",
+      "--json",
+      "\"stable\"",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(rigd.configPreviewRequests).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/pantry/rig.json",
+        expectedRevision: "rev-1",
+        patch: [
+          {
+            op: "set",
+            path: ["live", "deployBranch"],
+            value: "stable",
+          },
+        ],
+      },
+    ])
+    expect(rigd.configApplyRequests).toEqual([])
+    expect(logger.infos.at(-1)?.message).toBe("rig2 config preview")
+  })
+
+  test("GIVEN config unset apply WHEN running THEN rigd applies a remove patch", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "config",
+      "unset",
+      "--project",
+      "pantry",
+      "--config",
+      "/tmp/pantry/rig.json",
+      "--path",
+      "live.deployBranch",
+      "--apply",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(rigd.configApplyRequests).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/pantry/rig.json",
+        expectedRevision: "rev-1",
+        patch: [
+          {
+            op: "remove",
+            path: ["live", "deployBranch"],
+          },
+        ],
+      },
+    ])
+    expect(logger.infos.at(-1)).toMatchObject({
+      message: "rig2 config applied",
+      details: expect.objectContaining({
+        backupPath: "/tmp/pantry/rig.json.backup-rev-1.json",
+      }),
+    })
   })
 
   test("GIVEN up without project inside managed repo WHEN running THEN it loads config and targets local lane", async () => {

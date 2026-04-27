@@ -330,13 +330,17 @@ Stage 2 covers:
   `rigd.configRead`, `rigd.configPreview`, and `rigd.configApply` expose
   structured, schema-validated, revision-checked config editing with atomic
   writes and backup recovery information.
+- #24 Expose rigd config editing through rig2 CLI or control-plane transport.
+  Complete: `rig2 config read`, `rig2 config set`, and `rig2 config unset`
+  provide project config read, preview-by-default patching, and explicit
+  `--apply` writes through the same revision-checked `rigd` config editor.
 - #22 Prepare rig2 to main rig cutover readiness. In progress: the AFK
   readiness audit and rig2 user guide are documented in
   `docs/rig-v2-cutover-readiness.md` and `docs/rig2-guide.md`; HITL decision
   is to keep `rig2` isolated until it is ready, then rename/build it as `rig`
   as a replacement CLI rather than routing selected commands through v1.
 - #25 Connect rig2 lifecycle and deploy actions to provider-backed execution.
-  In progress: config-backed `rigd` lifecycle/deploy/destroy writes now execute
+  Complete: config-backed `rigd` lifecycle/deploy/destroy writes now execute
   through `V2RuntimeExecutor` before receipts/logs persist; repo-inferred and
   explicit `--config` CLI paths now load validated v2 config through an
   interface and pass it into lifecycle, status, and deploy calls. Runtime
@@ -358,5 +362,5 @@ Stage 2 covers:
   `live.deployBranch` before home `deploy.productionBranch` before `main`.
   Generated deployment caps from home config are enforced during deploy-intent
   materialization and `rigd` generated deploy actions with `reject` and
-  `oldest` replacement policies. Remaining work is broader first-party
-  launchd, proxy, SCM, and workspace materializer adapter parity.
+  `oldest` replacement policies. Broader first-party launchd, proxy, SCM, and
+  workspace materializer adapter parity is tracked by #27 through #30.

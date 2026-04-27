@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
@@ -162,6 +162,48 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(stdout).toContain('"family":"control-plane-transport"')
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN config set apply WHEN run from repo THEN rig.json is safely updated", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig2-repo-"))
+    const configPath = join(repo, "rig.json")
+
+    try {
+      await writeFile(
+        configPath,
+        `${JSON.stringify({
+          name: "rig",
+          components: {
+            web: {
+              mode: "managed",
+              command: "printf 'started\\n'",
+              port: 3070,
+            },
+          },
+        }, null, 2)}\n`,
+        "utf8",
+      )
+
+      const { stdout, stderr, exitCode } = await runRig2Command(
+        ["config", "set", "--path", "live.deployBranch", "--json", "\"stable\"", "--apply"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(stdout).toContain("[INFO] rig2 config applied")
+      expect(stdout).toContain('"backupPath"')
+
+      const updated = JSON.parse(await readFile(configPath, "utf8")) as {
+        readonly live?: { readonly deployBranch?: string }
+      }
+      expect(updated.live?.deployBranch).toBe("stable")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
     }
   })
 

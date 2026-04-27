@@ -3,6 +3,7 @@ import { Command, Flag } from "effect-v4/unstable/cli"
 import { ChildProcessSpawner } from "effect-v4/unstable/process/ChildProcessSpawner"
 
 import { decodeV2StatusInput, type V2ProjectConfig } from "./config.js"
+import type { V2ConfigPatchOperation } from "./config-editor.js"
 import { V2DeployIntents, type V2DeployTarget } from "./deploy-intent.js"
 import { V2Doctor } from "./doctor.js"
 import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
@@ -80,6 +81,16 @@ const deployTargetFlag = Flag.choice("target", ["live", "generated"]).pipe(
   Flag.withDescription("Deploy target: live or generated."),
 )
 
+const configPathFlag = Flag.string("path").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Dot-separated v2 config path, for example live.deployBranch."),
+)
+
+const configJsonFlag = Flag.string("json").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("JSON value for config set, for example '\"main\"', true, 3070, or '{\"upstream\":\"web\"}'."),
+)
+
 const resolveProjectScopedInput = (input: {
   readonly project: string
   readonly lane: V2LifecycleLane
@@ -122,6 +133,93 @@ const loadProjectConfig = (input: {
       configPath: input.configPath,
     })
     return loaded.config
+  })
+
+const requireConfigPath = (
+  input: ProjectScopedInput,
+): Effect.Effect<string, V2CliArgumentError> => {
+  if (input.configPath && input.configPath.trim().length > 0) {
+    return Effect.succeed(input.configPath.trim())
+  }
+
+  return Effect.fail(
+    new V2CliArgumentError(
+      "rig2 config commands require a v2 rig.json path.",
+      "Run the command from a managed repo or pass --config <path>.",
+      { project: input.project },
+    ),
+  )
+}
+
+const parseConfigPatchPath = (path: string): Effect.Effect<readonly [string, ...string[]], V2CliArgumentError> => {
+  const segments = path.split(".").map((segment) => segment.trim())
+  if (segments.length === 0 || segments.some((segment) => segment.length === 0)) {
+    return Effect.fail(
+      new V2CliArgumentError(
+        "Config path must contain non-empty dot-separated segments.",
+        "Use a path like live.deployBranch or components.web.port.",
+        { path },
+      ),
+    )
+  }
+
+  return Effect.succeed(segments as [string, ...string[]])
+}
+
+const parseJsonValue = (raw: string): Effect.Effect<unknown, V2CliArgumentError> =>
+  Effect.try({
+    try: () => JSON.parse(raw) as unknown,
+    catch: (cause) =>
+      new V2CliArgumentError(
+        "Config set requires a valid JSON value.",
+        "Pass strings with JSON quotes, for example --json '\"main\"'.",
+        {
+          value: raw,
+          cause: cause instanceof Error ? cause.message : String(cause),
+        },
+      ),
+  })
+
+const runConfigPatch = (input: {
+  readonly project: string
+  readonly configPath?: string
+  readonly stateRoot: string
+  readonly path: string
+  readonly apply: boolean
+  readonly patchFor: (path: readonly [string, ...string[]]) => Effect.Effect<V2ConfigPatchOperation, V2CliArgumentError>
+}) =>
+  Effect.gen(function* () {
+    const scoped = yield* resolveProjectScopedInput({
+      project: input.project,
+      lane: "live",
+      stateRoot: input.stateRoot,
+      configPath: input.configPath,
+    })
+    const configPath = yield* requireConfigPath(scoped)
+    const decoded = yield* decodeV2StatusInput(scoped)
+    const path = yield* parseConfigPatchPath(input.path)
+    const patch = yield* input.patchFor(path)
+    const rigd = yield* V2Rigd
+    const logger = yield* V2Logger
+    const current = yield* rigd.configRead({
+      project: decoded.project,
+      configPath,
+    })
+    const request = {
+      project: decoded.project,
+      configPath,
+      expectedRevision: current.revision,
+      patch: [patch],
+    }
+
+    if (input.apply) {
+      const result = yield* rigd.configApply(request)
+      yield* logger.info("rig2 config applied", result)
+      return
+    }
+
+    const preview = yield* rigd.configPreview(request)
+    yield* logger.info("rig2 config preview", preview)
   })
 
 const runLifecycleAction = (
@@ -422,6 +520,102 @@ const doctorCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Report v2 PATH, binary, health, port, stale-state, and provider checks."))
 
+const configReadCommand = Command.make(
+  "read",
+  {
+    project: projectFlag,
+    stateRoot: stateRootFlag,
+    configPath: configFlag,
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const scoped = yield* resolveProjectScopedInput({
+        project: input.project,
+        lane: "live",
+        stateRoot: input.stateRoot,
+        configPath: input.configPath,
+      })
+      const configPath = yield* requireConfigPath(scoped)
+      const decoded = yield* decodeV2StatusInput(scoped)
+      const rigd = yield* V2Rigd
+      const logger = yield* V2Logger
+      const model = yield* rigd.configRead({
+        project: decoded.project,
+        configPath,
+      })
+
+      yield* logger.info("rig2 config read", {
+        ...model,
+        fieldCount: model.fields.length,
+      })
+    }),
+).pipe(Command.withDescription("Read editor-ready v2 project config, revision, and field docs."))
+
+const configSetCommand = Command.make(
+  "set",
+  {
+    project: projectFlag,
+    stateRoot: stateRootFlag,
+    configPath: configFlag,
+    path: configPathFlag,
+    json: configJsonFlag,
+    apply: Flag.boolean("apply").pipe(
+      Flag.withDescription("Apply the config change. Without this flag, only preview the diff."),
+    ),
+  },
+  (input) =>
+    runConfigPatch({
+      project: input.project,
+      stateRoot: input.stateRoot,
+      configPath: input.configPath,
+      path: input.path,
+      apply: input.apply,
+      patchFor: (path) =>
+        parseJsonValue(input.json).pipe(
+          Effect.map((value) => ({
+            op: "set" as const,
+            path,
+            value,
+          })),
+        ),
+    }),
+).pipe(Command.withDescription("Preview or apply a structured v2 config set operation."))
+
+const configUnsetCommand = Command.make(
+  "unset",
+  {
+    project: projectFlag,
+    stateRoot: stateRootFlag,
+    configPath: configFlag,
+    path: configPathFlag,
+    apply: Flag.boolean("apply").pipe(
+      Flag.withDescription("Apply the config removal. Without this flag, only preview the diff."),
+    ),
+  },
+  (input) =>
+    runConfigPatch({
+      project: input.project,
+      stateRoot: input.stateRoot,
+      configPath: input.configPath,
+      path: input.path,
+      apply: input.apply,
+      patchFor: (path) =>
+        Effect.succeed({
+          op: "remove" as const,
+          path,
+        }),
+    }),
+).pipe(Command.withDescription("Preview or apply a structured v2 config remove operation."))
+
+const configCommand = Command.make("config").pipe(
+  Command.withDescription("Read, preview, and apply safe v2 project config edits through rigd."),
+  Command.withSubcommands([
+    configReadCommand,
+    configSetCommand,
+    configUnsetCommand,
+  ]),
+)
+
 const rig2Command = Command.make("rig2").pipe(
   Command.withDescription("Experimental rig v2 entrypoint."),
   Command.withSubcommands([
@@ -433,6 +627,7 @@ const rig2Command = Command.make("rig2").pipe(
     deployCommand,
     bumpCommand,
     doctorCommand,
+    configCommand,
   ]),
 )
 

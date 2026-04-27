@@ -44,15 +44,15 @@ intentionally deferred.
 | Final CLI area | Current v1 behavior | Current `rig2` equivalent | Readiness status | Replacement decision |
 |---|---|---|---|---|
 | Init/setup | `rig init` registers projects and can scaffold v1 or v2 config | v2 scaffold exists through `rig init --v2`; no `rig2 init` yet | partial | add v2-native init surface before replacement or intentionally keep setup in final `rig init` |
-| Lifecycle start | `rig start <name> dev|prod` | `rig2 up --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; core `rigd` process supervision, provider stdout/stderr ingestion, and `native-health` HTTP/command checks are concrete; broader launchd/proxy/materializer parity still pending | #25 in progress |
-| Lifecycle stop | `rig stop <name> dev|prod` | `rig2 down --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; core `rigd` process stop behavior is concrete; broader launchd/proxy/materializer parity still pending | #25 in progress |
+| Lifecycle start | `rig start <name> dev|prod` | `rig2 up --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; core `rigd` process supervision, provider stdout/stderr ingestion, and `native-health` HTTP/command checks are concrete; broader launchd/proxy/materializer parity still pending | #27, #28, #30 |
+| Lifecycle stop | `rig stop <name> dev|prod` | `rig2 down --lane local|live` | partial: repo-inferred and `--config` paths load validated v2 config and route config-backed `rigd` lifecycle writes through ordered runtime provider methods; core `rigd` process stop behavior is concrete; broader launchd/proxy/materializer parity still pending | #27, #28, #30 |
 | Lifecycle restart | `rig restart` | no direct `rig2 restart` | not implemented | add first-class v2 `restart` or intentionally omit before replacement |
-| Status | `rig status` | `rig2 status` | partial: reports foundation and `rigd` state; runtime execution result details are recorded for config-backed writes | #25 in progress |
-| Logs | `rig logs` | `rig2 logs` | partial: reads structured `rigd` logs with execution details and provider-backed component execution events; `structured-log-file` writes deployment JSONL event logs; process-supervisor stdout/stderr lines from the core `rigd` provider are ingested when commands emit them | #25 in progress |
-| Deploy | `rig deploy <name> dev|prod` | `rig2 deploy --target live|generated --ref <ref>` | partial: repo-inferred and `--config` paths load validated v2 config; config-backed live/generated deploy actions execute through ordered runtime provider methods; generated deployment caps enforce home-config `reject`/`oldest` policies; `native-health` HTTP/command validation, `structured-log-file` event persistence, `package-json-scripts` installed-component builds, and core `rigd` process supervision are concrete; broader launchd/proxy/materializer parity still pending | #25 in progress |
+| Status | `rig status` | `rig2 status` | partial: reports foundation and `rigd` state; runtime execution result details are recorded for config-backed writes | adapter parity follow-ups |
+| Logs | `rig logs` | `rig2 logs` | partial: reads structured `rigd` logs with execution details and provider-backed component execution events; `structured-log-file` writes deployment JSONL event logs; process-supervisor stdout/stderr lines from the core `rigd` provider are ingested when commands emit them | adapter parity follow-ups |
+| Deploy | `rig deploy <name> dev|prod` | `rig2 deploy --target live|generated --ref <ref>` | partial: repo-inferred and `--config` paths load validated v2 config; config-backed live/generated deploy actions execute through ordered runtime provider methods; generated deployment caps enforce home-config `reject`/`oldest` policies; `native-health` HTTP/command validation, `structured-log-file` event persistence, `package-json-scripts` installed-component builds, and core `rigd` process supervision are concrete; broader launchd/proxy/SCM/materializer parity still pending | #27, #28, #29, #30 |
 | Version metadata | `rig version` | `rig2 bump` | partial: semver is optional metadata | final CLI can keep `bump` if it remains simpler than `version` |
 | Global inventory | `rig list` | no direct `rig2 list` | not implemented | add v2 CLI inventory if shell workflows need it |
-| Config | `rig config` | `rigd.configRead/configPreview/configApply` interfaces | partial: no CLI/transport surface | blocked by #24 |
+| Config | `rig config` | `rig2 config read/set/unset` backed by `rigd.configRead/configPreview/configApply` | partial: project config CLI surface exists; hosted/web editing is still future work | #24 complete |
 | Docs/help | `rig docs`, `--help`, `-h` | README, `docs/DESIGN_V2.md`, `docs/rig2-guide.md`, Effect CLI help | partial | update final docs during replacement work |
 | Forget/purge | `rig forget` | no direct `rig2 forget` | not implemented | defer unless needed for replacement usability |
 | Daemon authority | no v1 equivalent | `rig2 rigd` | v2-only | keep as v2 runtime authority command |
@@ -108,7 +108,7 @@ The replacement should be reversible:
 Recommended order:
 
 1. Keep `rig2` as the proving ground.
-2. Close or intentionally defer the known usability gaps in #24 and #25.
+2. Close or intentionally defer the known usability gaps in #25 and related provider adapter follow-ups.
 3. Update the build so the v2 entrypoint can produce the final `rig` binary.
 4. Run the validation checklist under isolated state and stub providers.
 5. Save or preserve a rollback path to the current v1 binary.
@@ -120,9 +120,11 @@ Recommended order:
 Known gaps are filed instead of hidden in this plan:
 
 - #23 Rename/build rig2 as rig when replacement criteria are met.
-- #24 Expose rigd config editing through rig2 CLI or control-plane transport.
-- #25 Connect rig2 lifecycle and deploy actions to provider-backed execution.
 - #26 Add hosted control-plane transport adapter for rig.b-relay.com.
+- #27 Add launchd process-supervisor adapter for rig2 execution.
+- #28 Add proxy router adapter for rig2 provider execution.
+- #29 Add SCM checkout adapter for rig2 deploy execution.
+- #30 Add workspace materializer adapter for rig2 deployments.
 
 ## HITL Decisions
 

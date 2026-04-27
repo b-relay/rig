@@ -171,9 +171,10 @@ Run doctor checks:
 ./rig2 doctor --project pantry
 ```
 
-## Config Editing Model
+## Config Editing
 
-The v2 config editor is exposed through `rigd` interfaces today:
+The v2 config editor is exposed through `rig2 config` commands backed by
+`rigd` interfaces:
 
 - `configRead`
 - `configPreview`
@@ -194,8 +195,39 @@ path array:
 returns diffs without writing. `configApply` checks the expected revision,
 validates again, writes atomically, and returns a backup path.
 
-A CLI or hosted control-plane surface for these methods is still follow-up
-work: #24.
+Read the current project config from inside a managed repo:
+
+```bash
+./rig2 config read
+```
+
+Preview a config edit without writing:
+
+```bash
+./rig2 config set --path live.deployBranch --json '"stable"'
+```
+
+Apply the same edit:
+
+```bash
+./rig2 config set --path live.deployBranch --json '"stable"' --apply
+```
+
+Remove a field:
+
+```bash
+./rig2 config unset --path live.deployBranch --apply
+```
+
+Outside the repo, pass both project and config path:
+
+```bash
+./rig2 config read --project pantry --config /path/to/pantry/rig.json
+./rig2 config set --project pantry --config /path/to/pantry/rig.json --path components.web.port --json 4080
+```
+
+`--json` must be valid JSON, so strings need quotes, booleans use `true` or
+`false`, numbers are plain numbers, and objects/arrays use normal JSON syntax.
 
 ## Current Limits
 
@@ -211,8 +243,9 @@ work: #24.
   command health checks, `package-json-scripts` runs installed-component build
   commands, and the core `rigd` process supervisor runs managed component
   commands while returning provider stdout/stderr lines for log ingestion.
-- `rig2` config editing exists behind `rigd` interfaces, but there is no
-  polished user-facing CLI command for it yet.
+- `rig2 config read`, `rig2 config set`, and `rig2 config unset` expose
+  project config read/preview/apply through `rigd`. Hosted web config editing
+  is still future work.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.
 - Home config is schema-validated and file-backed. Deploy intent now uses
   project `live.deployBranch` first, then home `deploy.productionBranch`, then
@@ -223,6 +256,8 @@ work: #24.
 Tracked follow-ups:
 
 - #23 rename/build `rig2` as `rig` when replacement criteria are met
-- #24 expose config editing through a CLI or control-plane transport
-- #25 connect lifecycle and deploy actions to provider-backed execution
 - #26 add hosted control-plane transport adapter
+- #27 add launchd process-supervisor adapter
+- #28 add proxy router adapter
+- #29 add SCM checkout adapter
+- #30 add workspace materializer adapter

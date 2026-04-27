@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -209,4 +210,109 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
       await rm(logRoot, { recursive: true, force: true })
     }
   })
+
+  test("GIVEN native-health provider WHEN HTTP check is healthy THEN it verifies the component", async () => {
+    const server = await listen((_, response) => {
+      response.writeHead(204)
+      response.end()
+    })
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const health = yield* V2HealthCheckerProvider
+          return yield* health.check({
+            deployment,
+            service: {
+              name: "web",
+              type: "server",
+              command: "bun run start",
+              port: server.port,
+              healthCheck: `http://127.0.0.1:${server.port}/health`,
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+      )
+
+      expect(operation).toBe("health-checker:native-health:check:web:healthy:204")
+    } finally {
+      await closeServer(server.instance)
+    }
+  })
+
+  test("GIVEN native-health provider WHEN HTTP check is unhealthy THEN it returns a tagged runtime error", async () => {
+    const server = await listen((_, response) => {
+      response.writeHead(503)
+      response.end("not ready")
+    })
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const health = yield* V2HealthCheckerProvider
+          return yield* health.check({
+            deployment,
+            service: {
+              name: "web",
+              type: "server",
+              command: "bun run start",
+              port: server.port,
+              healthCheck: `http://127.0.0.1:${server.port}/health`,
+            },
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default")),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        details: {
+          providerId: "native-health",
+          component: "web",
+          statusCode: 503,
+        },
+      })
+    } finally {
+      await closeServer(server.instance)
+    }
+  })
 })
+
+const listen = (handler: Parameters<typeof createServer>[0]) =>
+  new Promise<{ readonly instance: Server; readonly port: number }>((resolve, reject) => {
+    const instance = createServer(handler)
+    instance.once("error", reject)
+    instance.listen(0, "127.0.0.1", () => {
+      const address = instance.address()
+      if (typeof address === "object" && address !== null) {
+        resolve({ instance, port: address.port })
+        return
+      }
+      reject(new Error("HTTP test server did not expose a TCP port."))
+    })
+  })
+
+const closeServer = (server: Server) =>
+  new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error)
+        return
+      }
+      resolve()
+    })
+  })

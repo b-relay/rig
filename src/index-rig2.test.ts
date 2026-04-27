@@ -66,7 +66,6 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
               mode: "managed",
               command: "bun run start -- --port ${port.web}",
               port: 3070,
-              health: "http://127.0.0.1:${port.web}/health",
             },
           },
           deployments: {

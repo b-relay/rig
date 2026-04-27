@@ -370,9 +370,82 @@ const healthCheckerService = (
       provider.family === "health-checker",
   ) as V2ProviderPluginForFamily<"health-checker">
 
+  const checkNativeHealth = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly service: V2RuntimeServiceConfig
+  }): Effect.Effect<string, V2RuntimeError> => {
+    const target = "healthCheck" in input.service ? input.service.healthCheck : undefined
+    if (!target) {
+      return Effect.fail(
+        new V2RuntimeError(
+          `Component '${input.service.name}' does not define a health check.`,
+          "Add a health check to the managed component before asking native-health to verify it.",
+          {
+            providerId: selected.id,
+            component: input.service.name,
+            deployment: input.deployment.name,
+          },
+        ),
+      )
+    }
+
+    if (!target.startsWith("http://") && !target.startsWith("https://")) {
+      return Effect.fail(
+        new V2RuntimeError(
+          `native-health currently supports HTTP health checks only for '${input.service.name}'.`,
+          "Use an HTTP health check for this component or add command health support behind the provider interface.",
+          {
+            providerId: selected.id,
+            component: input.service.name,
+            deployment: input.deployment.name,
+            target,
+          },
+        ),
+      )
+    }
+
+    return Effect.tryPromise({
+      try: async () => {
+        const response = await fetch(target)
+        if (response.status < 200 || response.status >= 300) {
+          throw new V2RuntimeError(
+            `Health check failed for '${input.service.name}' with HTTP ${response.status}.`,
+            "Fix the component startup or health endpoint before retrying the runtime action.",
+            {
+              providerId: selected.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              target,
+              statusCode: response.status,
+            },
+          )
+        }
+
+        return `${selected.family}:${selected.id}:check:${input.service.name}:healthy:${response.status}`
+      },
+      catch: (cause) =>
+        cause instanceof V2RuntimeError
+          ? cause
+          : new V2RuntimeError(
+            `Unable to run health check for '${input.service.name}'.`,
+            "Ensure the health endpoint is reachable from localhost and retry.",
+            {
+              providerId: selected.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              target,
+              cause: cause instanceof Error ? cause.message : String(cause),
+            },
+          ),
+    })
+  }
+
   return {
     ...base,
-    check: (input) => providerOperation(selected, `check:${input.service.name}`),
+    check: (input) =>
+      selected.id === "native-health"
+        ? checkNativeHealth(input)
+        : providerOperation(selected, `check:${input.service.name}`),
   }
 }
 

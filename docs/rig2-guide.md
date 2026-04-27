@@ -178,7 +178,9 @@ work: #24.
   runtime provider methods before receipts are persisted. Runtime execution
   emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
   first-party adapter parity is still pending, but `structured-log-file` now
-  writes deployment-scoped JSONL event logs under the v2 log root.
+  writes deployment-scoped JSONL event logs under the v2 log root, and
+  `native-health` now performs real HTTP health checks. Command health checks
+  and process stdout/stderr ingestion are still follow-up work.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.

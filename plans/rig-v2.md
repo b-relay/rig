@@ -344,5 +344,7 @@ Stage 2 covers:
   execution now emits component-scoped events through the event-transport
   provider, and `rigd` persists them into web/CLI log filters. The
   `structured-log-file` event transport now appends deployment-scoped JSONL
-  under each v2 deployment log root. Remaining work is additional first-party
-  provider adapters and real process stdout/stderr ingestion.
+  under each v2 deployment log root. The `native-health` provider now performs
+  real HTTP checks and returns tagged runtime failures for unhealthy or
+  unreachable endpoints. Remaining work is command health support, additional
+  first-party provider adapters, and real process stdout/stderr ingestion.

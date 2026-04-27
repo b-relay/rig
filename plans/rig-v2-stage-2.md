@@ -306,5 +306,7 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   interface shape future external providers will use. Runtime execution now
   emits component-scoped events through the event-transport provider, and
   `rigd` persists them into the same log stream used by CLI and web filters.
-  Remaining #25 work: concrete first-party provider adapter behavior and real
-  process stdout/stderr ingestion.
+  The `structured-log-file` event transport now appends deployment-scoped JSONL
+  under each v2 deployment log root. Remaining #25 work: additional
+  first-party provider adapter behavior and real process stdout/stderr
+  ingestion.

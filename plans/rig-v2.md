@@ -342,6 +342,7 @@ Stage 2 covers:
   provider family services now expose operation methods that the executor
   calls in order for lifecycle, deploy, and generated teardown. Runtime
   execution now emits component-scoped events through the event-transport
-  provider, and `rigd` persists them into web/CLI log filters. Concrete
-  first-party provider adapters and real process stdout/stderr ingestion
-  remain.
+  provider, and `rigd` persists them into web/CLI log filters. The
+  `structured-log-file` event transport now appends deployment-scoped JSONL
+  under each v2 deployment log root. Remaining work is additional first-party
+  provider adapters and real process stdout/stderr ingestion.

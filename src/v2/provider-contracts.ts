@@ -1,3 +1,5 @@
+import { appendFile, mkdir } from "node:fs/promises"
+import { join } from "node:path"
 import { Context, Effect, Layer } from "effect-v4"
 
 import type { V2DeploymentRecord } from "./deployments.js"
@@ -301,6 +303,20 @@ const providerForFamily = <Family extends V2ProviderFamily>(
 const providerOperation = (provider: V2ProviderPlugin, operation: string): Effect.Effect<string, V2RuntimeError> =>
   Effect.succeed(`${provider.family}:${provider.id}:${operation}`)
 
+const runtimeError = (
+  message: string,
+  hint: string,
+  details?: Readonly<Record<string, unknown>>,
+) => (cause: unknown) =>
+  new V2RuntimeError(
+    message,
+    hint,
+    {
+      cause: cause instanceof Error ? cause.message : String(cause),
+      ...(details ?? {}),
+    },
+  )
+
 const workspaceMaterializerService = (
   report: V2ProviderRegistryReport,
 ): V2WorkspaceMaterializerProviderService => {
@@ -369,10 +385,48 @@ const eventTransportService = (
       provider.family === "event-transport",
   ) as V2ProviderPluginForFamily<"event-transport">
 
+  const appendStructuredLogFile = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly event: string
+    readonly component?: string
+    readonly details?: Readonly<Record<string, unknown>>
+  }): Effect.Effect<string, V2RuntimeError> => {
+    const logPath = join(input.deployment.logRoot, "events.jsonl")
+    const entry = {
+      timestamp: new Date().toISOString(),
+      event: input.event,
+      project: input.deployment.project,
+      kind: input.deployment.kind,
+      deployment: input.deployment.name,
+      ...(input.component ? { component: input.component } : {}),
+      ...(input.details ? { details: input.details } : {}),
+    }
+
+    return Effect.tryPromise({
+      try: async () => {
+        await mkdir(input.deployment.logRoot, { recursive: true })
+        await appendFile(logPath, `${JSON.stringify(entry)}\n`, "utf8")
+        return `${selected.family}:${selected.id}:append:${input.event}${input.component ? `:${input.component}` : ""}`
+      },
+      catch: runtimeError(
+        "Unable to append v2 runtime event.",
+        "Ensure the deployment log root is writable before retrying the runtime action.",
+        {
+          providerId: selected.id,
+          logPath,
+          event: input.event,
+          ...(input.component ? { component: input.component } : {}),
+        },
+      ),
+    })
+  }
+
   return {
     ...base,
     append: (input) =>
-      providerOperation(selected, `append:${input.event}${input.component ? `:${input.component}` : ""}`),
+      selected.id === "structured-log-file"
+        ? appendStructuredLogFile(input)
+        : providerOperation(selected, `append:${input.event}${input.component ? `:${input.component}` : ""}`),
   }
 }
 

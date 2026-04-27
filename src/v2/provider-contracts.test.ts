@@ -1,8 +1,12 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect-v4"
 
 import {
   V2ControlPlaneTransportProvider,
+  V2EventTransportProvider,
   V2HealthCheckerProvider,
   V2ProcessSupervisorProvider,
   V2ProviderContractsLive,
@@ -157,5 +161,52 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     )
 
     expect(operation).toBe("process-supervisor:launchd:up:web")
+  })
+
+  test("GIVEN structured-log-file event transport WHEN appending THEN it writes deployment JSONL", async () => {
+    const logRoot = await mkdtemp(join(tmpdir(), "rig-v2-provider-events-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        logRoot,
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const events = yield* V2EventTransportProvider
+          return yield* events.append({
+            deployment,
+            event: "component.log",
+            component: "web",
+            details: {
+              line: "started",
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+      )
+
+      const raw = await readFile(join(logRoot, "events.jsonl"), "utf8")
+      const entries = raw.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+
+      expect(operation).toBe("event-transport:structured-log-file:append:component.log:web")
+      expect(entries).toEqual([
+        expect.objectContaining({
+          event: "component.log",
+          project: "pantry",
+          kind: "live",
+          deployment: "live",
+          component: "web",
+          details: {
+            line: "started",
+          },
+        }),
+      ])
+      expect(typeof entries[0]?.timestamp).toBe("string")
+    } finally {
+      await rm(logRoot, { recursive: true, force: true })
+    }
   })
 })

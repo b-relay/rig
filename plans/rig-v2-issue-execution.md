@@ -347,8 +347,10 @@ lifecycle, deploy, and generated teardown. Lane config now also resolves
 bundled `launchd` plugin and future external process-supervisor providers to
 use the same selection shape. Runtime execution now emits component-scoped
 events through the event-transport provider, and `rigd` persists them into the
-same log stream used by CLI and web filters. Remaining #25 work is concrete
-first-party provider adapter behavior and real process stdout/stderr ingestion.
+same log stream used by CLI and web filters. The `structured-log-file` event
+transport now appends deployment-scoped JSONL under each v2 deployment log
+root. Remaining #25 work is additional first-party provider adapter behavior
+and real process stdout/stderr ingestion.
 
 After #25, do #24 for the user-facing config-edit surface. Then #23 can prepare
 the final `rig2` to `rig` replacement build path.

@@ -177,7 +177,8 @@ work: #24.
 - Config-backed `rigd` lifecycle and deploy actions now run through ordered v2
   runtime provider methods before receipts are persisted. Runtime execution
   emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
-  first-party provider adapter parity is still pending.
+  first-party adapter parity is still pending, but `structured-log-file` now
+  writes deployment-scoped JSONL event logs under the v2 log root.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.

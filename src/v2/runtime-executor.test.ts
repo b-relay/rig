@@ -78,7 +78,17 @@ const runWithExecutor = <A>(effect: Effect.Effect<A, unknown, V2RuntimeExecutor>
     ),
   )
 
-const captureProviderLayer = (calls: string[]) => {
+const captureProviderLayer = (
+  calls: string[],
+  options: {
+    readonly processOutput?: Readonly<Record<string, readonly { readonly stream: "stdout" | "stderr"; readonly line: string }[]>>
+    readonly eventAppends?: Array<{
+      readonly event: string
+      readonly component?: string
+      readonly details?: Readonly<Record<string, unknown>>
+    }>
+  } = {},
+) => {
   const plugin = (
     id: string,
     family:
@@ -101,6 +111,13 @@ const captureProviderLayer = (calls: string[]) => {
     calls.push(operation)
     return Effect.succeed(`capture:${operation}`)
   }
+  const recordProcess = (operation: string) => {
+    calls.push(operation)
+    return Effect.succeed({
+      operation: `capture:${operation}`,
+      output: options.processOutput?.[operation] ?? [],
+    })
+  }
 
   return Layer.mergeAll(
     Layer.succeed(V2WorkspaceMaterializerProvider, {
@@ -117,11 +134,11 @@ const captureProviderLayer = (calls: string[]) => {
       family: "process-supervisor" as const,
       plugin: Effect.succeed(plugin("capture-process", "process-supervisor")),
       up: (input: { readonly service: { readonly name: string } }) =>
-        record(`process:up:${input.service.name}`),
+        recordProcess(`process:up:${input.service.name}`),
       down: (input: { readonly service: { readonly name: string } }) =>
-        record(`process:down:${input.service.name}`),
+        recordProcess(`process:down:${input.service.name}`),
       restart: (input: { readonly service: { readonly name: string } }) =>
-        record(`process:restart:${input.service.name}`),
+        recordProcess(`process:restart:${input.service.name}`),
     }),
     Layer.succeed(V2HealthCheckerProvider, {
       family: "health-checker" as const,
@@ -132,8 +149,18 @@ const captureProviderLayer = (calls: string[]) => {
     Layer.succeed(V2EventTransportProvider, {
       family: "event-transport" as const,
       plugin: Effect.succeed(plugin("capture-event", "event-transport")),
-      append: (input: { readonly event: string; readonly component?: string }) =>
-        record(`event:append:${input.event}${input.component ? `:${input.component}` : ""}`),
+      append: (input: {
+        readonly event: string
+        readonly component?: string
+        readonly details?: Readonly<Record<string, unknown>>
+      }) => {
+        options.eventAppends?.push({
+          event: input.event,
+          ...(input.component ? { component: input.component } : {}),
+          ...(input.details ? { details: input.details } : {}),
+        })
+        return record(`event:append:${input.event}${input.component ? `:${input.component}` : ""}`)
+      },
     }),
     Layer.succeed(V2ScmProvider, {
       family: "scm" as const,
@@ -246,6 +273,56 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       "capture:event:append:component.health:web",
       "capture:event:append:lifecycle:up",
     ])
+  })
+
+  test("GIVEN process provider output WHEN lifecycle up runs THEN stdout and stderr become component log events", async () => {
+    const calls: string[] = []
+    const eventAppends: Array<{
+      readonly event: string
+      readonly component?: string
+      readonly details?: Readonly<Record<string, unknown>>
+    }> = []
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const executor = yield* V2RuntimeExecutor
+        return yield* executor.lifecycle({
+          action: "up",
+          deployment: deployment(),
+        })
+      }).pipe(
+        Effect.provide(Layer.provide(V2RuntimeExecutorLive, captureProviderLayer(calls, {
+          eventAppends,
+          processOutput: {
+            "process:up:web": [
+              { stream: "stdout", line: "server listening" },
+              { stream: "stderr", line: "warmup warning" },
+            ],
+          },
+        }))),
+      ),
+    )
+
+    expect(result.events).toContainEqual(expect.objectContaining({
+      event: "component.log",
+      component: "web",
+      details: {
+        action: "up",
+        operation: "capture:process:up:web",
+        stream: "stdout",
+        line: "server listening",
+      },
+    }))
+    expect(eventAppends).toContainEqual({
+      event: "component.log",
+      component: "web",
+      details: {
+        action: "up",
+        operation: "capture:process:up:web",
+        stream: "stderr",
+        line: "warmup warning",
+      },
+    })
   })
 
   test("GIVEN capture providers WHEN deploy runs THEN scm workspace package process health proxy and event methods run", async () => {

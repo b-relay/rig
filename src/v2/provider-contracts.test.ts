@@ -161,7 +161,9 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
       }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
     )
 
-    expect(operation).toBe("process-supervisor:launchd:up:web")
+    expect(operation).toEqual({
+      operation: "process-supervisor:launchd:up:web",
+    })
   })
 
   test("GIVEN structured-log-file event transport WHEN appending THEN it writes deployment JSONL", async () => {

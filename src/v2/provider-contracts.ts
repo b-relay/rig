@@ -54,6 +54,16 @@ export type V2RuntimeServiceConfig =
 export type V2RuntimeProxyConfig =
   NonNullable<V2DeploymentRecord["resolved"]["environment"]["proxy"]>
 
+export interface V2ProviderOutputLine {
+  readonly stream: "stdout" | "stderr"
+  readonly line: string
+}
+
+export interface V2ProcessSupervisorOperationResult {
+  readonly operation: string
+  readonly output?: readonly V2ProviderOutputLine[]
+}
+
 export interface V2WorkspaceMaterializerProviderService
   extends V2ProviderFamilyService<"workspace-materializer"> {
   readonly resolve: (input: {
@@ -73,15 +83,15 @@ export interface V2ProcessSupervisorProviderService
   readonly up: (input: {
     readonly deployment: V2DeploymentRecord
     readonly service: V2RuntimeServiceConfig
-  }) => Effect.Effect<string, V2RuntimeError>
+  }) => Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError>
   readonly down: (input: {
     readonly deployment: V2DeploymentRecord
     readonly service: V2RuntimeServiceConfig
-  }) => Effect.Effect<string, V2RuntimeError>
+  }) => Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError>
   readonly restart: (input: {
     readonly deployment: V2DeploymentRecord
     readonly service: V2RuntimeServiceConfig
-  }) => Effect.Effect<string, V2RuntimeError>
+  }) => Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError>
 }
 
 export interface V2HealthCheckerProviderService
@@ -303,6 +313,12 @@ const providerForFamily = <Family extends V2ProviderFamily>(
 const providerOperation = (provider: V2ProviderPlugin, operation: string): Effect.Effect<string, V2RuntimeError> =>
   Effect.succeed(`${provider.family}:${provider.id}:${operation}`)
 
+const processProviderOperation = (
+  provider: V2ProviderPlugin,
+  operation: string,
+): Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError> =>
+  providerOperation(provider, operation).pipe(Effect.map((operation) => ({ operation })))
+
 const runtimeError = (
   message: string,
   hint: string,
@@ -346,17 +362,17 @@ const processSupervisorService = (
     up: (input) =>
       Effect.gen(function* () {
         const selected = yield* selectedForDeployment(input.deployment)
-        return yield* providerOperation(selected, `up:${input.service.name}`)
+        return yield* processProviderOperation(selected, `up:${input.service.name}`)
       }),
     down: (input) =>
       Effect.gen(function* () {
         const selected = yield* selectedForDeployment(input.deployment)
-        return yield* providerOperation(selected, `down:${input.service.name}`)
+        return yield* processProviderOperation(selected, `down:${input.service.name}`)
       }),
     restart: (input) =>
       Effect.gen(function* () {
         const selected = yield* selectedForDeployment(input.deployment)
-        return yield* providerOperation(selected, `restart:${input.service.name}`)
+        return yield* processProviderOperation(selected, `restart:${input.service.name}`)
       }),
   }
 }

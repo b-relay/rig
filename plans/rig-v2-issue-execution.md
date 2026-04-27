@@ -351,8 +351,10 @@ same log stream used by CLI and web filters. The `structured-log-file` event
 transport now appends deployment-scoped JSONL under each v2 deployment log
 root. The `native-health` provider now performs real HTTP and command checks
 and returns tagged runtime failures for unhealthy, unreachable, or non-zero
-checks. Remaining #25 work is additional first-party provider adapter behavior
-and real process stdout/stderr ingestion.
+checks. Process-supervisor providers can now return stdout/stderr lines that
+are persisted through component log events. Remaining #25 work is concrete
+first-party provider adapter behavior that supplies live managed-process
+behavior and output.
 
 After #25, do #24 for the user-facing config-edit surface. Then #23 can prepare
 the final `rig2` to `rig` replacement build path.

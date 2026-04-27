@@ -179,8 +179,10 @@ work: #24.
   emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
   first-party adapter parity is still pending, but `structured-log-file` now
   writes deployment-scoped JSONL event logs under the v2 log root, and
-  `native-health` now performs real HTTP and command health checks. Real
-  process stdout/stderr ingestion is still follow-up work.
+  `native-health` now performs real HTTP and command health checks.
+  Process-supervisor providers can now return stdout/stderr lines that are
+  persisted as component log events. Concrete supervisors still need to supply
+  live managed-process output.
 - `rig2` config editing exists behind `rigd` interfaces, but there is no
   polished user-facing CLI command for it yet.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.

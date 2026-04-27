@@ -308,7 +308,7 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   `rigd` persists them into the same log stream used by CLI and web filters.
   The `structured-log-file` event transport now appends deployment-scoped JSONL
   under each v2 deployment log root. The `native-health` provider now performs
-  real HTTP checks and returns tagged runtime failures for unhealthy or
-  unreachable endpoints. Remaining #25 work: command health support, additional
-  first-party provider adapter behavior, and real process stdout/stderr
+  real HTTP and command checks and returns tagged runtime failures for
+  unhealthy, unreachable, or non-zero checks. Remaining #25 work: additional
+  first-party provider adapter behavior and real process stdout/stderr
   ingestion.

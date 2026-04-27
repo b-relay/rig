@@ -345,6 +345,6 @@ Stage 2 covers:
   provider, and `rigd` persists them into web/CLI log filters. The
   `structured-log-file` event transport now appends deployment-scoped JSONL
   under each v2 deployment log root. The `native-health` provider now performs
-  real HTTP checks and returns tagged runtime failures for unhealthy or
-  unreachable endpoints. Remaining work is command health support, additional
-  first-party provider adapters, and real process stdout/stderr ingestion.
+  real HTTP and command checks and returns tagged runtime failures for
+  unhealthy, unreachable, or non-zero checks. Remaining work is additional
+  first-party provider adapters and real process stdout/stderr ingestion.

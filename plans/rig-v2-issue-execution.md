@@ -349,10 +349,10 @@ use the same selection shape. Runtime execution now emits component-scoped
 events through the event-transport provider, and `rigd` persists them into the
 same log stream used by CLI and web filters. The `structured-log-file` event
 transport now appends deployment-scoped JSONL under each v2 deployment log
-root. The `native-health` provider now performs real HTTP checks and returns
-tagged runtime failures for unhealthy or unreachable endpoints. Remaining #25
-work is command health support, additional first-party provider adapter
-behavior, and real process stdout/stderr ingestion.
+root. The `native-health` provider now performs real HTTP and command checks
+and returns tagged runtime failures for unhealthy, unreachable, or non-zero
+checks. Remaining #25 work is additional first-party provider adapter behavior
+and real process stdout/stderr ingestion.
 
 After #25, do #24 for the user-facing config-edit surface. Then #23 can prepare
 the final `rig2` to `rig` replacement build path.

@@ -202,7 +202,7 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
   plugin("git-worktree", "workspace-materializer", "Git Worktree", ["branch-workspace", "generated-deployment"]),
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
-  plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "ownership-check"]),
+  plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
   plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
@@ -233,7 +233,7 @@ const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
   plugin("git-worktree", "workspace-materializer", "Git Worktree", ["branch-workspace", "generated-deployment"]),
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
-  plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "ownership-check"]),
+  plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
   plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
@@ -390,18 +390,52 @@ const healthCheckerService = (
     }
 
     if (!target.startsWith("http://") && !target.startsWith("https://")) {
-      return Effect.fail(
-        new V2RuntimeError(
-          `native-health currently supports HTTP health checks only for '${input.service.name}'.`,
-          "Use an HTTP health check for this component or add command health support behind the provider interface.",
-          {
-            providerId: selected.id,
-            component: input.service.name,
-            deployment: input.deployment.name,
-            target,
-          },
-        ),
-      )
+      return Effect.tryPromise({
+        try: async () => {
+          const subprocess = Bun.spawn(["sh", "-lc", target], {
+            cwd: input.deployment.workspacePath,
+            stdout: "pipe",
+            stderr: "pipe",
+          })
+          const [exitCode, stdout, stderr] = await Promise.all([
+            subprocess.exited,
+            new Response(subprocess.stdout).text(),
+            new Response(subprocess.stderr).text(),
+          ])
+
+          if (exitCode !== 0) {
+            throw new V2RuntimeError(
+              `Command health check failed for '${input.service.name}' with exit code ${exitCode}.`,
+              "Fix the component health command before retrying the runtime action.",
+              {
+                providerId: selected.id,
+                component: input.service.name,
+                deployment: input.deployment.name,
+                target,
+                exitCode,
+                stdout,
+                stderr,
+              },
+            )
+          }
+
+          return `${selected.family}:${selected.id}:check:${input.service.name}:command:healthy:${exitCode}`
+        },
+        catch: (cause) =>
+          cause instanceof V2RuntimeError
+            ? cause
+            : new V2RuntimeError(
+              `Unable to run command health check for '${input.service.name}'.`,
+              "Ensure the health command can run from the deployment workspace and retry.",
+              {
+                providerId: selected.id,
+                component: input.service.name,
+                deployment: input.deployment.name,
+                target,
+                cause: cause instanceof Error ? cause.message : String(cause),
+              },
+            ),
+      })
     }
 
     return Effect.tryPromise({

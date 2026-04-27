@@ -290,6 +290,81 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
       await closeServer(server.instance)
     }
   })
+
+  test("GIVEN native-health provider WHEN command check exits zero THEN it verifies the component", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-command-health-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const health = yield* V2HealthCheckerProvider
+          return yield* health.check({
+            deployment,
+            service: {
+              name: "worker",
+              type: "server",
+              command: "bun run worker",
+              healthCheck: "printf ready",
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+      )
+
+      expect(operation).toBe("health-checker:native-health:check:worker:command:healthy:0")
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN native-health provider WHEN command check exits nonzero THEN it returns a tagged runtime error", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-command-health-fail-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const health = yield* V2HealthCheckerProvider
+          return yield* health.check({
+            deployment,
+            service: {
+              name: "worker",
+              type: "server",
+              command: "bun run worker",
+              healthCheck: "printf not-ready >&2; exit 7",
+            },
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default")),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        details: {
+          providerId: "native-health",
+          component: "worker",
+          exitCode: 7,
+          stderr: "not-ready",
+        },
+      })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
 })
 
 const listen = (handler: Parameters<typeof createServer>[0]) =>

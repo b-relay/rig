@@ -9,6 +9,7 @@ import {
   V2ControlPlaneTransportProvider,
   V2EventTransportProvider,
   V2HealthCheckerProvider,
+  V2PackageManagerProvider,
   V2ProcessSupervisorProvider,
   V2ProviderContractsLive,
   V2ProviderRegistry,
@@ -361,6 +362,83 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
           component: "worker",
           exitCode: 7,
           stderr: "not-ready",
+        },
+      })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN package-json-scripts provider WHEN installed component has build command THEN it runs in the deployment workspace", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-package-install-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const packages = yield* V2PackageManagerProvider
+          return yield* packages.install({
+            deployment,
+            service: {
+              name: "tool",
+              type: "bin",
+              entrypoint: "src/cli.ts",
+              build: "printf built > dist.txt",
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+      )
+
+      expect(operation).toBe("package-manager:package-json-scripts:install:tool:built:0")
+      expect(await readFile(join(workspace, "dist.txt"), "utf8")).toBe("built")
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN package-json-scripts provider WHEN build command fails THEN it returns a tagged runtime error", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-package-install-fail-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const packages = yield* V2PackageManagerProvider
+          return yield* packages.install({
+            deployment,
+            service: {
+              name: "tool",
+              type: "bin",
+              entrypoint: "src/cli.ts",
+              build: "printf build-failed >&2; exit 9",
+            },
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default")),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        details: {
+          providerId: "package-json-scripts",
+          component: "tool",
+          build: "printf build-failed >&2; exit 9",
+          exitCode: 9,
+          stderr: "build-failed",
         },
       })
     } finally {

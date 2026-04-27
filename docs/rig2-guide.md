@@ -180,6 +180,8 @@ work: #24.
   first-party adapter parity is still pending, but `structured-log-file` now
   writes deployment-scoped JSONL event logs under the v2 log root, and
   `native-health` now performs real HTTP and command health checks.
+  `package-json-scripts` now runs installed-component build commands from the
+  deployment workspace.
   Process-supervisor providers can now return stdout/stderr lines that are
   persisted as component log events. Concrete supervisors still need to supply
   live managed-process output.

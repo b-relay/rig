@@ -574,9 +574,72 @@ const packageManagerService = (
       provider.family === "package-manager",
   ) as V2ProviderPluginForFamily<"package-manager">
 
+  const installPackageJsonScript = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly service: V2RuntimeServiceConfig
+  }): Effect.Effect<string, V2RuntimeError> => {
+    if (input.service.type !== "bin") {
+      return providerOperation(selected, `install:${input.service.name}`)
+    }
+
+    if (!("build" in input.service) || !input.service.build) {
+      return providerOperation(selected, `install:${input.service.name}:ready`)
+    }
+
+    return Effect.tryPromise({
+      try: async () => {
+        const subprocess = Bun.spawn(["sh", "-lc", input.service.build as string], {
+          cwd: input.deployment.workspacePath,
+          stdout: "pipe",
+          stderr: "pipe",
+        })
+        const [exitCode, stdout, stderr] = await Promise.all([
+          subprocess.exited,
+          new Response(subprocess.stdout).text(),
+          new Response(subprocess.stderr).text(),
+        ])
+
+        if (exitCode !== 0) {
+          throw new V2RuntimeError(
+            `Package build failed for '${input.service.name}' with exit code ${exitCode}.`,
+            "Fix the installed component build command before retrying the deploy action.",
+            {
+              providerId: selected.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              build: input.service.build,
+              exitCode,
+              stdout,
+              stderr,
+            },
+          )
+        }
+
+        return `${selected.family}:${selected.id}:install:${input.service.name}:built:${exitCode}`
+      },
+      catch: (cause) =>
+        cause instanceof V2RuntimeError
+          ? cause
+          : new V2RuntimeError(
+            `Unable to run package build for '${input.service.name}'.`,
+            "Ensure the deployment workspace exists and the build command is available.",
+            {
+              providerId: selected.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              build: input.service.build,
+              cause: cause instanceof Error ? cause.message : String(cause),
+            },
+          ),
+    })
+  }
+
   return {
     ...base,
-    install: (input) => providerOperation(selected, `install:${input.service.name}`),
+    install: (input) =>
+      selected.id === "package-json-scripts"
+        ? installPackageJsonScript(input)
+        : providerOperation(selected, `install:${input.service.name}`),
   }
 }
 

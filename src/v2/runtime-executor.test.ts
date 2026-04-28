@@ -5,6 +5,7 @@ import type { V2DeploymentRecord } from "./deployments.js"
 import {
   V2EventTransportProvider,
   V2HealthCheckerProvider,
+  V2LifecycleHookProvider,
   V2PackageManagerProvider,
   V2ProcessSupervisorProvider,
   V2ProviderContractsLive,
@@ -89,6 +90,10 @@ const captureProviderLayer = (
       readonly stdout?: string
       readonly stderr?: string
     }>>
+    readonly healthChecks?: Array<{
+      readonly component: string
+      readonly timeoutSeconds?: number
+    }>
     readonly eventAppends?: Array<{
       readonly event: string
       readonly component?: string
@@ -105,6 +110,7 @@ const captureProviderLayer = (
       | "workspace-materializer"
       | "event-transport"
       | "health-checker"
+      | "lifecycle-hook"
       | "package-manager",
   ) => ({
     id,
@@ -152,8 +158,23 @@ const captureProviderLayer = (
     Layer.succeed(V2HealthCheckerProvider, {
       family: "health-checker" as const,
       plugin: Effect.succeed(plugin("capture-health", "health-checker")),
-      check: (input: { readonly service: { readonly name: string } }) =>
-        record(`health:check:${input.service.name}`),
+      check: (input: { readonly service: { readonly name: string }; readonly timeoutSeconds?: number }) => {
+        options.healthChecks?.push({
+          component: input.service.name,
+          ...(input.timeoutSeconds === undefined ? {} : { timeoutSeconds: input.timeoutSeconds }),
+        })
+        return record(`health:check:${input.service.name}${input.timeoutSeconds === undefined ? "" : `:${input.timeoutSeconds}`}`)
+      },
+    }),
+    Layer.succeed(V2LifecycleHookProvider, {
+      family: "lifecycle-hook" as const,
+      plugin: Effect.succeed(plugin("capture-hooks", "lifecycle-hook")),
+      run: (input: {
+        readonly hook: string
+        readonly command: string
+        readonly service?: { readonly name: string }
+      }) =>
+        record(`hook:${input.hook}:${input.service?.name ?? "project"}:${input.command}`),
     }),
     Layer.succeed(V2EventTransportProvider, {
       family: "event-transport" as const,
@@ -211,10 +232,10 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       "workspace-materializer:stub-workspace-materializer:resolve:/tmp/rig-v2/workspaces/pantry/live",
       "process-supervisor:stub-process-supervisor:up:web",
       "event-transport:stub-event-transport:append:component.log:web",
-      "process-supervisor:stub-process-supervisor:up:worker",
-      "event-transport:stub-event-transport:append:component.log:worker",
       "health-checker:stub-health-checker:check:web",
       "event-transport:stub-event-transport:append:component.health:web",
+      "process-supervisor:stub-process-supervisor:up:worker",
+      "event-transport:stub-event-transport:append:component.log:worker",
       "event-transport:stub-event-transport:append:lifecycle:up",
     ])
     expect(result.events).toEqual([
@@ -230,18 +251,18 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
         },
       }),
       expect.objectContaining({
+        event: "component.health",
+        component: "web",
+        details: {
+          operation: "health-checker:stub-health-checker:check:web",
+        },
+      }),
+      expect.objectContaining({
         event: "component.log",
         component: "worker",
         details: {
           action: "up",
           operation: "process-supervisor:stub-process-supervisor:up:worker",
-        },
-      }),
-      expect.objectContaining({
-        event: "component.health",
-        component: "web",
-        details: {
-          operation: "health-checker:stub-health-checker:check:web",
         },
       }),
     ])
@@ -317,21 +338,131 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       "workspace:resolve:live",
       "process:up:web",
       "event:append:component.log:web",
-      "process:up:worker",
-      "event:append:component.log:worker",
       "health:check:web",
       "event:append:component.health:web",
+      "process:up:worker",
+      "event:append:component.log:worker",
       "event:append:lifecycle:up",
     ])
     expect(result.operations).toEqual([
       "capture:workspace:resolve:live",
       "capture:process:up:web",
       "capture:event:append:component.log:web",
-      "capture:process:up:worker",
-      "capture:event:append:component.log:worker",
       "capture:health:check:web",
       "capture:event:append:component.health:web",
+      "capture:process:up:worker",
+      "capture:event:append:component.log:worker",
       "capture:event:append:lifecycle:up",
+    ])
+  })
+
+  test("GIVEN lifecycle hooks dependencies and health timeouts WHEN up and down run THEN runtime honors the configured lifecycle controls", async () => {
+    const calls: string[] = []
+    const healthChecks: Array<{ readonly component: string; readonly timeoutSeconds?: number }> = []
+    const controlledDeployment = {
+      ...deployment(),
+      resolved: {
+        ...deployment().resolved,
+        environment: {
+          services: [
+            {
+              name: "web",
+              type: "server",
+              command: "bun run web",
+              port: 3070,
+              healthCheck: "http://127.0.0.1:3070/health",
+              readyTimeout: 4,
+              dependsOn: ["api"],
+              hooks: {
+                preStart: "web-pre-start",
+                postStart: "web-post-start",
+                preStop: "web-pre-stop",
+                postStop: "web-post-stop",
+              },
+            },
+            {
+              name: "api",
+              type: "server",
+              command: "bun run api",
+              port: 3071,
+              healthCheck: "http://127.0.0.1:3071/health",
+              readyTimeout: 12,
+              hooks: {
+                preStart: "api-pre-start",
+                postStart: "api-post-start",
+                preStop: "api-pre-stop",
+                postStop: "api-post-stop",
+              },
+            },
+          ],
+        },
+        v1Config: {
+          name: "pantry",
+          version: "0.0.0",
+          hooks: {
+            preStart: "project-pre-start",
+            postStart: "project-post-start",
+            preStop: "project-pre-stop",
+            postStop: "project-post-stop",
+          },
+          environments: {
+            prod: {
+              services: [],
+            },
+          },
+        },
+      },
+    } as V2DeploymentRecord
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const executor = yield* V2RuntimeExecutor
+        yield* executor.lifecycle({
+          action: "up",
+          deployment: controlledDeployment,
+        })
+        yield* executor.lifecycle({
+          action: "down",
+          deployment: controlledDeployment,
+        })
+      }).pipe(
+        Effect.provide(Layer.provide(V2RuntimeExecutorLive, captureProviderLayer(calls, { healthChecks }))),
+      ),
+    )
+
+    expect(healthChecks).toEqual([
+      { component: "api", timeoutSeconds: 12 },
+      { component: "web", timeoutSeconds: 4 },
+    ])
+    expect(calls).toEqual([
+      "workspace:resolve:live",
+      "hook:preStart:project:project-pre-start",
+      "hook:preStart:api:api-pre-start",
+      "process:up:api",
+      "event:append:component.log:api",
+      "health:check:api:12",
+      "event:append:component.health:api",
+      "hook:postStart:api:api-post-start",
+      "hook:preStart:web:web-pre-start",
+      "process:up:web",
+      "event:append:component.log:web",
+      "health:check:web:4",
+      "event:append:component.health:web",
+      "hook:postStart:web:web-post-start",
+      "hook:postStart:project:project-post-start",
+      "event:append:lifecycle:up",
+      "workspace:resolve:live",
+      "hook:preStop:project:project-pre-stop",
+      "hook:preStop:web:web-pre-stop",
+      "process:down:web",
+      "event:append:component.log:web",
+      "hook:postStop:web:web-post-stop",
+      "hook:preStop:api:api-pre-stop",
+      "process:down:api",
+      "event:append:component.log:api",
+      "hook:postStop:api:api-post-stop",
+      "hook:postStop:project:project-post-stop",
+      "event:append:lifecycle:down",
     ])
   })
 
@@ -407,10 +538,10 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       "event:append:component.install:tool",
       "process:restart:web",
       "event:append:component.log:web",
-      "process:restart:worker",
-      "event:append:component.log:worker",
       "health:check:web",
       "event:append:component.health:web",
+      "process:restart:worker",
+      "event:append:component.log:worker",
       "proxy:upsert:web",
       "event:append:deploy:feature/provider-methods",
     ])
@@ -421,10 +552,10 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       "capture:event:append:component.install:tool",
       "capture:process:restart:web",
       "capture:event:append:component.log:web",
-      "capture:process:restart:worker",
-      "capture:event:append:component.log:worker",
       "capture:health:check:web",
       "capture:event:append:component.health:web",
+      "capture:process:restart:worker",
+      "capture:event:append:component.log:worker",
       "capture:proxy:upsert:web",
       "capture:event:append:deploy:feature/provider-methods",
     ])

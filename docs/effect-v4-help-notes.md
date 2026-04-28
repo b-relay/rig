@@ -105,6 +105,7 @@ Verified again on 2026-04-27:
 - `Effect.catchAll` from v3 is now `Effect.catch` in v4.
 - `Effect.flip` works for tests that need to assert the typed error value.
 - `Effect.try` should use the object form with `try` and `catch` in Rig v2 code. The function shorthand caused runtime failures in `4.0.0-beta.57` because the implementation expects a `catch` callback.
+- `Effect.timeoutFail` is not exported in `4.0.0-beta.57`. Use `Effect.timeoutOrElse({ duration, orElse: () => Effect.fail(error) })` when a timeout must become a domain error.
 - `Context.Service<{ ... }>("Name")` works for simple service tags.
 - The service-class form is `class X extends Context.Service<X, Shape>()("Name") {}`; calling `Context.Service("Name")<...>` is invalid.
 

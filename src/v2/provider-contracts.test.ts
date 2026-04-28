@@ -9,6 +9,7 @@ import {
   V2ControlPlaneTransportProvider,
   V2EventTransportProvider,
   V2HealthCheckerProvider,
+  V2LifecycleHookProvider,
   V2PackageManagerProvider,
   V2ProcessSupervisorProvider,
   V2ProxyRouterProvider,
@@ -1033,6 +1034,84 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
           stderr: "not-ready",
         },
       })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN native-health provider WHEN command check exceeds the timeout THEN it returns a tagged runtime error", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-command-health-timeout-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const health = yield* V2HealthCheckerProvider
+          return yield* health.check({
+            deployment,
+            timeoutSeconds: 0.01,
+            service: {
+              name: "worker",
+              type: "server",
+              command: "bun run worker",
+              healthCheck: "sleep 0.2",
+            },
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default")),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        details: {
+          providerId: "native-health",
+          component: "worker",
+          timeoutSeconds: 0.01,
+        },
+      })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN shell lifecycle hook provider WHEN a hook command succeeds THEN it runs in the deployment workspace", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-shell-hook-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const hooks = yield* V2LifecycleHookProvider
+          return yield* hooks.run({
+            deployment,
+            hook: "preStart",
+            command: "printf hook > hook.txt",
+            service: {
+              name: "web",
+              type: "server",
+              command: "bun run start",
+              port: 3070,
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+      )
+
+      expect(operation).toBe("lifecycle-hook:shell-hook:run:preStart:web:0")
+      await expect(readFile(join(workspace, "hook.txt"), "utf8")).resolves.toBe("hook")
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }

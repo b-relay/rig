@@ -32,6 +32,7 @@ export type V2ProviderFamily =
   | "event-transport"
   | "control-plane-transport"
   | "health-checker"
+  | "lifecycle-hook"
   | "package-manager"
   | "tunnel"
 
@@ -261,6 +262,17 @@ export interface V2HealthCheckerProviderService
   readonly check: (input: {
     readonly deployment: V2DeploymentRecord
     readonly service: V2RuntimeServiceConfig
+    readonly timeoutSeconds?: number
+  }) => Effect.Effect<string, V2RuntimeError>
+}
+
+export interface V2LifecycleHookProviderService
+  extends V2ProviderFamilyService<"lifecycle-hook"> {
+  readonly run: (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly hook: "preStart" | "postStart" | "preStop" | "postStop"
+    readonly command: string
+    readonly service?: V2RuntimeServiceConfig
   }) => Effect.Effect<string, V2RuntimeError>
 }
 
@@ -326,6 +338,9 @@ export const V2ControlPlaneTransportProvider =
 export const V2HealthCheckerProvider =
   Context.Service<V2HealthCheckerProviderService>("rig/v2/V2HealthCheckerProvider")
 
+export const V2LifecycleHookProvider =
+  Context.Service<V2LifecycleHookProviderService>("rig/v2/V2LifecycleHookProvider")
+
 export const V2PackageManagerProvider =
   Context.Service<V2PackageManagerProviderService>("rig/v2/V2PackageManagerProvider")
 
@@ -340,6 +355,7 @@ export const v2ProviderFamilies: readonly V2ProviderFamily[] = [
   "event-transport",
   "control-plane-transport",
   "health-checker",
+  "lifecycle-hook",
   "package-manager",
   "tunnel",
 ]
@@ -375,6 +391,7 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
+  plugin("shell-hook", "lifecycle-hook", "Shell Lifecycle Hooks", ["project-hooks", "component-hooks"]),
   plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
@@ -390,6 +407,7 @@ const stubProviders: readonly V2ProviderPlugin[] = [
   plugin("stub-event-transport", "event-transport", "Stub Event Transport", ["event-transport-contract-test"]),
   plugin("stub-control-plane", "control-plane-transport", "Stub Control Plane", ["localhost-contract-test"]),
   plugin("stub-health-checker", "health-checker", "Stub Health Checker", ["health-checker-contract-test"]),
+  plugin("stub-lifecycle-hook", "lifecycle-hook", "Stub Lifecycle Hook", ["lifecycle-hook-contract-test"]),
   plugin("stub-package-manager", "package-manager", "Stub Package Manager", ["package-manager-contract-test"]),
   plugin("stub-tunnel", "tunnel", "Stub Tunnel", ["tunnel-contract-test"]),
 ]
@@ -406,6 +424,7 @@ const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
+  plugin("shell-hook", "lifecycle-hook", "Shell Lifecycle Hooks", ["project-hooks", "component-hooks"]),
   plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
@@ -1159,6 +1178,7 @@ const healthCheckerService = (
   const checkNativeHealth = (input: {
     readonly deployment: V2DeploymentRecord
     readonly service: V2RuntimeServiceConfig
+    readonly timeoutSeconds?: number
   }): Effect.Effect<string, V2RuntimeError> => {
     const target = "healthCheck" in input.service ? input.service.healthCheck : undefined
     if (!target) {
@@ -1175,8 +1195,12 @@ const healthCheckerService = (
       )
     }
 
-    if (!target.startsWith("http://") && !target.startsWith("https://")) {
-      return Effect.gen(function* () {
+    const timeoutSeconds = input.timeoutSeconds
+      ?? ("readyTimeout" in input.service ? input.service.readyTimeout : undefined)
+      ?? 30
+
+    const check = !target.startsWith("http://") && !target.startsWith("https://")
+      ? Effect.gen(function* () {
         const { exitCode, stdout, stderr } = yield* runPlatformCommand(
           ["sh", "-lc", target],
           { cwd: input.deployment.workspacePath },
@@ -1199,13 +1223,32 @@ const healthCheckerService = (
         }
 
         return `${selected.family}:${selected.id}:check:${input.service.name}:command:healthy:${exitCode}`
-      }).pipe(
-        Effect.mapError((cause) =>
+      })
+      : Effect.tryPromise({
+        try: async () => {
+          const response = await fetch(target)
+          if (response.status < 200 || response.status >= 300) {
+            throw new V2RuntimeError(
+              `Health check failed for '${input.service.name}' with HTTP ${response.status}.`,
+              "Fix the component startup or health endpoint before retrying the runtime action.",
+              {
+                providerId: selected.id,
+                component: input.service.name,
+                deployment: input.deployment.name,
+                target,
+                statusCode: response.status,
+              },
+            )
+          }
+
+          return `${selected.family}:${selected.id}:check:${input.service.name}:healthy:${response.status}`
+        },
+        catch: (cause) =>
           cause instanceof V2RuntimeError
             ? cause
             : new V2RuntimeError(
-              `Unable to run command health check for '${input.service.name}'.`,
-              "Ensure the health command can run from the deployment workspace and retry.",
+              `Unable to run health check for '${input.service.name}'.`,
+              "Ensure the health endpoint is reachable from localhost and retry.",
               {
                 providerId: selected.id,
                 component: input.service.name,
@@ -1213,44 +1256,42 @@ const healthCheckerService = (
                 target,
                 cause: cause instanceof Error ? cause.message : String(cause),
               },
-            )),
-      )
-    }
+            ),
+      })
 
-    return Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(target)
-        if (response.status < 200 || response.status >= 300) {
-          throw new V2RuntimeError(
-            `Health check failed for '${input.service.name}' with HTTP ${response.status}.`,
-            "Fix the component startup or health endpoint before retrying the runtime action.",
+    return check.pipe(
+      Effect.timeoutOrElse({
+        duration: `${timeoutSeconds} seconds`,
+        orElse: () =>
+          Effect.fail(new V2RuntimeError(
+            `Health check timed out for '${input.service.name}' after ${timeoutSeconds} seconds.`,
+            "Increase readyTimeout or fix the component so its health check completes in time.",
             {
               providerId: selected.id,
               component: input.service.name,
               deployment: input.deployment.name,
               target,
-              statusCode: response.status,
+              timeoutSeconds,
             },
-          )
+          )),
+      }),
+      Effect.mapError((cause) => {
+        if (cause instanceof V2RuntimeError) {
+          return cause
         }
-
-        return `${selected.family}:${selected.id}:check:${input.service.name}:healthy:${response.status}`
-      },
-      catch: (cause) =>
-        cause instanceof V2RuntimeError
-          ? cause
-          : new V2RuntimeError(
-            `Unable to run health check for '${input.service.name}'.`,
-            "Ensure the health endpoint is reachable from localhost and retry.",
-            {
-              providerId: selected.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              target,
-              cause: cause instanceof Error ? cause.message : String(cause),
-            },
-          ),
-    })
+        return new V2RuntimeError(
+          `Unable to run health check for '${input.service.name}'.`,
+          "Ensure the health endpoint is reachable from localhost and retry.",
+          {
+            providerId: selected.id,
+            component: input.service.name,
+            deployment: input.deployment.name,
+            target,
+            cause: cause instanceof Error ? cause.message : String(cause),
+          },
+        )
+      }),
+    )
   }
 
   return {
@@ -1259,6 +1300,74 @@ const healthCheckerService = (
       selected.id === "native-health"
         ? checkNativeHealth(input)
         : providerOperation(selected, `check:${input.service.name}`),
+  }
+}
+
+const lifecycleHookService = (
+  report: V2ProviderRegistryReport,
+): V2LifecycleHookProviderService => {
+  const base = familyService(report, "lifecycle-hook")
+  const selected = report.providers.find(
+    (provider): provider is V2ProviderPluginForFamily<"lifecycle-hook"> =>
+      provider.family === "lifecycle-hook",
+  ) as V2ProviderPluginForFamily<"lifecycle-hook">
+
+  const shellHook = (input: {
+    readonly deployment: V2DeploymentRecord
+    readonly hook: "preStart" | "postStart" | "preStop" | "postStop"
+    readonly command: string
+    readonly service?: V2RuntimeServiceConfig
+  }): Effect.Effect<string, V2RuntimeError> =>
+    Effect.gen(function* () {
+      const { exitCode, stdout, stderr } = yield* runPlatformCommand(
+        ["sh", "-lc", input.command],
+        { cwd: input.deployment.workspacePath },
+      )
+
+      if (exitCode !== 0) {
+        return yield* Effect.fail(new V2RuntimeError(
+          `Lifecycle hook '${input.hook}' failed${input.service ? ` for '${input.service.name}'` : ""} with exit code ${exitCode}.`,
+          "Fix the hook command before retrying the runtime action.",
+          {
+            providerId: selected.id,
+            hook: input.hook,
+            command: input.command,
+            project: input.deployment.project,
+            deployment: input.deployment.name,
+            ...(input.service ? { component: input.service.name } : {}),
+            exitCode,
+            stdout,
+            stderr,
+          },
+        ))
+      }
+
+      return `${selected.family}:${selected.id}:run:${input.hook}:${input.service?.name ?? "project"}:${exitCode}`
+    }).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof V2RuntimeError
+          ? cause
+          : new V2RuntimeError(
+            `Unable to run lifecycle hook '${input.hook}'${input.service ? ` for '${input.service.name}'` : ""}.`,
+            "Ensure the hook command can run from the deployment workspace and retry.",
+            {
+              providerId: selected.id,
+              hook: input.hook,
+              command: input.command,
+              project: input.deployment.project,
+              deployment: input.deployment.name,
+              ...(input.service ? { component: input.service.name } : {}),
+              cause: cause instanceof Error ? cause.message : String(cause),
+            },
+          )),
+    )
+
+  return {
+    ...base,
+    run: (input) =>
+      selected.id === "shell-hook"
+        ? shellHook(input)
+        : providerOperation(selected, `run:${input.hook}:${input.service?.name ?? "project"}`),
   }
 }
 
@@ -1958,6 +2067,7 @@ export const V2ProviderContractsLive = (
     Layer.succeed(V2EventTransportProvider, eventTransportService(report)),
     Layer.succeed(V2ControlPlaneTransportProvider, familyService(report, "control-plane-transport")),
     Layer.succeed(V2HealthCheckerProvider, healthCheckerService(report)),
+    Layer.succeed(V2LifecycleHookProvider, lifecycleHookService(report)),
     Layer.succeed(V2PackageManagerProvider, packageManagerService(report, options)),
     Layer.succeed(V2TunnelProvider, familyService(report, "tunnel")),
   )

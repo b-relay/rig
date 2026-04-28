@@ -326,14 +326,26 @@ Tracked follow-ups:
 Future plugin/preset track:
 
 - Convex Local plugin for per-deployment Convex instances, data roots, ports,
-  generated DNS/subdomain values, health checks, CORS/allowed-origin values,
-  and environment variables.
+  and health checks.
 - Next.js plugin for common component/build/health/proxy config scaffolding
-  plus domain/CORS environment wiring.
+  without requiring users to hand-author the full v2 config.
 - Vite plugin for dev/preview/build component scaffolding and generated
-  deployment env/proxy defaults.
+  deployment proxy defaults.
+- Postgres plugin for a supervised localhost-bound Postgres component with
+  per-lane/per-deployment port and data-root tracking.
+- SQLite plugin for per-lane/per-deployment database file path tracking. SQLite
+  is not a long-running supervised process, so this plugin should stay focused
+  on path ownership and status metadata.
 
-Rig should supervise localhost-bound services and generate the deployment URLs,
-ports, and environment variables they need. Caddy and future Cloudflare Tunnel
-providers can expose those services. Tailscale access is treated as external
-machine/network setup rather than a Rig plugin.
+Keep these plugins simple at first. Rig's job is to keep all parts of a
+website/service in one project lifecycle, supervise daemon components through
+`rigd`, and record which localhost ports and paths belong to `local`, `live`,
+and generated deployments. Application environment variables, database users,
+schemas, migrations, and connection strings remain developer-owned unless a
+later plugin explicitly adds helpers.
+
+Caddy remains the first router provider. Traefik and Pangolin are useful
+research references but are not current defaults: Traefik fits Docker/provider
+discovery-heavy systems, while Pangolin is better understood as an
+identity-aware remote-access/tunnel layer. Database remote access is optional
+future scope, not a requirement for database plugins.

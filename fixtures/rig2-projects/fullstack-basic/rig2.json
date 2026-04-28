@@ -1,0 +1,78 @@
+{
+  "name": "fullstack_basic",
+  "domain": "${subdomain}.fixture.test",
+  "components": {
+    "postgres": {
+      "mode": "managed",
+      "command": "postgres -D ${workspace}/data/postgres -h 127.0.0.1 -p ${postgres.port}",
+      "health": "pg_isready -h 127.0.0.1 -p ${postgres.port}",
+      "readyTimeout": 60
+    },
+    "convex": {
+      "mode": "managed",
+      "command": "bunx convex dev --host 127.0.0.1 --port ${convex.port}",
+      "health": "http://127.0.0.1:${convex.port}/version",
+      "readyTimeout": 60,
+      "dependsOn": ["postgres"]
+    },
+    "api": {
+      "mode": "managed",
+      "command": "bun run api -- --host 127.0.0.1 --port ${api.port}",
+      "health": "http://127.0.0.1:${api.port}/health",
+      "dependsOn": ["postgres", "convex"]
+    },
+    "web": {
+      "mode": "managed",
+      "command": "bunx vite preview --host 127.0.0.1 --port ${web.port}",
+      "health": "http://127.0.0.1:${web.port}",
+      "dependsOn": ["api"]
+    }
+  },
+  "local": {
+    "proxy": {
+      "upstream": "web"
+    },
+    "components": {
+      "postgres": {
+        "port": 55432
+      },
+      "convex": {
+        "port": 3210
+      },
+      "api": {
+        "command": "bun --watch run api -- --host 127.0.0.1 --port ${api.port}",
+        "port": 8081
+      },
+      "web": {
+        "command": "bunx vite --host 127.0.0.1 --port ${web.port}",
+        "port": 5173
+      }
+    }
+  },
+  "live": {
+    "proxy": {
+      "upstream": "web"
+    },
+    "components": {
+      "postgres": {
+        "port": 55433
+      },
+      "convex": {
+        "port": 3211
+      },
+      "api": {
+        "port": 8080
+      },
+      "web": {
+        "port": 3070
+      }
+    }
+  },
+  "deployments": {
+    "subdomain": "${branchSlug}",
+    "providerProfile": "stub",
+    "proxy": {
+      "upstream": "web"
+    }
+  }
+}

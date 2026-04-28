@@ -352,25 +352,36 @@ After the core provider-adapter parity work, add a separate product/design
 track for ecosystem plugins and presets. The first useful set is:
 
 - **Convex Local plugin**: manages a per-deployment Convex Local instance,
-  database/data root, ports, health checks, generated DNS/subdomain values, and
-  environment variables for each `local`, `live`, or generated deployment.
+  database/data root, ports, and health checks for each `local`, `live`, or
+  generated deployment.
 - **Next.js plugin**: scaffolds common managed/installed components, build
-  commands, health checks, CORS/domain environment wiring, and proxy defaults
-  for Next.js apps without requiring users to hand-author the full v2 config.
+  commands, health checks, and proxy defaults for Next.js apps without
+  requiring users to hand-author the full v2 config.
 - **Vite plugin**: scaffolds Vite dev/preview/build components, port/health
-  defaults, CORS/domain environment wiring, and proxy/env wiring for local and
-  generated deployments.
+  defaults, and proxy wiring for local and generated deployments.
+- **Postgres plugin**: adds a supervised localhost-bound database component
+  with per-lane/per-deployment port and data-root tracking.
+- **SQLite plugin**: adds per-lane/per-deployment database file path tracking.
+  SQLite is a file-backed dependency rather than a supervised daemon, so the
+  first plugin should not pretend it has a process to supervise.
 
 These should not be hard-coded app presets in core. They should exercise the
 same plugin/provider boundaries as first-party adapters, with the Convex Local
 case treated as a resource-owning environment plugin that can allocate and
 persist per-deployment state.
 
-Rig should own local service supervision plus the deployment metadata needed
-for those services to work correctly: assigned localhost ports, generated
-subdomains, base-domain-derived URLs, CORS/allowed-origin values, and
-per-deployment environment variables. Exposure remains provider-backed. Caddy
-and a future Cloudflare Tunnel provider can route those generated names to
-localhost ports. Tailscale should stay outside Rig as machine/network
-plumbing; users can point private DNS at the machine and Rig only needs to
-serve the configured localhost-bound services and domains.
+Rig should own local service supervision plus the deployment metadata needed to
+keep all parts of a website/service in one project lifecycle: assigned
+localhost ports, data roots, generated subdomains, and base-domain-derived URLs.
+Application environment variables, database users, schemas, migrations, and
+connection strings remain developer-owned unless a later plugin explicitly adds
+helpers.
+
+Caddy remains the first router provider for Rig v2. Traefik and Pangolin are
+tracked as research references, not immediate defaults: Traefik is attractive
+for Docker/provider-discovery systems, while Pangolin is an identity-aware
+remote access/tunnel layer. Database plugins do not require remote access;
+optional exposure can come later through a dedicated provider. Tailscale should
+stay outside Rig as machine/network plumbing; users can point private DNS at
+the machine and Rig only needs to serve the configured localhost-bound services
+and domains.

@@ -109,6 +109,11 @@ Cutover tests must keep provider mutation explicit:
   launchd labels.
 - Keep launchd, Caddy, filesystem, process, SCM, control-plane transport, and
   tunnel/exposure concerns behind interfaces.
+- Prove risky multi-component behavior with checked-in fake Rig 2 projects
+  before using Pantry as the cutover target. The first fixture is
+  `fixtures/rig2-projects/fullstack-basic/rig2.json`, which models a
+  Postgres-like service, Convex-like service, API, and Vite-like web component
+  with isolated `local`, `live`, and generated deployment ports.
 - Main-binary v2 tests must prove the selected provider profile before running
   any lifecycle/deploy action.
 

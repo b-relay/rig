@@ -579,6 +579,13 @@ local server status, exposure mode, auth mode, heartbeat, and tunnel/transport
 errors. Runtime events and action receipts serialize into plain JSON envelopes
 for later hosted-control-plane transport work.
 
+For now, Caddy is the default router provider. Traefik and Pangolin are useful
+references but not current defaults. Traefik maps naturally to Docker and other
+provider-discovery systems; Pangolin is better categorized as an
+identity-aware remote-access/tunnel layer. Rig's immediate router goal is
+simple localhost service routing through Caddy, with optional exposure
+providers deferred.
+
 The hosted control plane is `rig.b-relay.com`.
 
 The web UI should:

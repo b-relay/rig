@@ -106,4 +106,48 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
     ])
     expect(generated?.resolved.v1Config.domain).toBe("feature-fake-preview.fixture.test")
   })
+
+  test("GIVEN fullstack basic fixture WHEN SQLite path is interpolated THEN database files live under each deployment data root", async () => {
+    const inventory = await runWithDeploymentManager(
+      Effect.gen(function* () {
+        const config = yield* loadFixtureConfig("fullstack-basic")
+        const manager = yield* V2DeploymentManager
+        yield* manager.materializeGenerated({
+          config,
+          stateRoot: "/tmp/rig-v2-fixtures",
+          branch: "feature/Fake Preview",
+          assignedPorts: {
+            postgres: 45432,
+            convex: 43210,
+            api: 48080,
+            web: 45173,
+          },
+        })
+        return yield* manager.list({
+          config,
+          stateRoot: "/tmp/rig-v2-fixtures",
+        })
+      }),
+    )
+
+    const local = inventory.find((record) => record.kind === "local")
+    const live = inventory.find((record) => record.kind === "live")
+    const generated = inventory.find((record) => record.kind === "generated")
+
+    expect(local?.dataRoot).toBe("/tmp/rig-v2-fixtures/data/fullstack_basic/local")
+    expect(live?.dataRoot).toBe("/tmp/rig-v2-fixtures/data/fullstack_basic/live")
+    expect(generated?.dataRoot).toBe("/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview")
+    expect(local?.resolved.environment.services).toContainEqual(expect.objectContaining({
+      name: "api",
+      command: "bun --watch run api -- --host 127.0.0.1 --port 8081 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/local/sqlite/app.sqlite",
+    }))
+    expect(live?.resolved.environment.services).toContainEqual(expect.objectContaining({
+      name: "api",
+      command: "bun run api -- --host 127.0.0.1 --port 8080 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/live/sqlite/app.sqlite",
+    }))
+    expect(generated?.resolved.environment.services).toContainEqual(expect.objectContaining({
+      name: "api",
+      command: "bun run api -- --host 127.0.0.1 --port 48080 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/sqlite/app.sqlite",
+    }))
+  })
 })

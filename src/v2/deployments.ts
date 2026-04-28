@@ -24,6 +24,7 @@ export interface V2DeploymentRecord {
   readonly branchSlug: string
   readonly subdomain: string
   readonly workspacePath: string
+  readonly dataRoot: string
   readonly logRoot: string
   readonly runtimeRoot: string
   readonly runtimeStatePath: string
@@ -141,6 +142,7 @@ const generatedPaths = (
   name: string,
 ) => ({
   workspacePath: join(stateRoot, "workspaces", project, "deployments", name),
+  dataRoot: join(stateRoot, "data", project, "deployments", name),
   logRoot: join(stateRoot, "logs", project, "deployments", name),
   runtimeRoot: join(stateRoot, "runtime", project, "deployments", name),
   runtimeStatePath: join(stateRoot, "runtime", project, "deployments", name, "runtime.json"),
@@ -154,6 +156,7 @@ const laneRecord = (
   resolveV2Lane(config, {
     lane: kind,
     workspacePath: join(stateRoot, "workspaces", config.name, kind),
+    dataRoot: join(stateRoot, "data", config.name, kind),
     deploymentName: kind,
     branchSlug: kind,
     subdomain: kind,
@@ -174,6 +177,7 @@ const laneRecord = (
         branchSlug: kind,
         subdomain: kind,
         workspacePath: join(stateRoot, "workspaces", config.name, kind),
+        dataRoot: join(stateRoot, "data", config.name, kind),
         logRoot: join(stateRoot, "logs", config.name, kind),
         runtimeRoot: join(stateRoot, "runtime", config.name, kind),
         runtimeStatePath: join(stateRoot, "runtime", config.name, kind, "runtime.json"),
@@ -205,6 +209,7 @@ const generatedRecord = (
   return resolveV2Lane(input.config, {
     lane: "deployment",
     workspacePath: paths.workspacePath,
+    dataRoot: paths.dataRoot,
     deploymentName: name,
     branchSlug: slug,
     subdomain: input.subdomain,
@@ -334,6 +339,7 @@ export const V2FileDeploymentStoreLive = Layer.succeed(V2DeploymentStore, {
   ensureState: (record) =>
     Effect.gen(function* () {
       yield* platformMakeDirectory(record.workspacePath)
+      yield* platformMakeDirectory(record.dataRoot)
       yield* platformMakeDirectory(record.logRoot)
       yield* platformMakeDirectory(record.runtimeRoot)
       yield* platformWriteFileString(record.runtimeStatePath, `${JSON.stringify(record, null, 2)}\n`)
@@ -347,6 +353,7 @@ export const V2FileDeploymentStoreLive = Layer.succeed(V2DeploymentStore, {
   removeState: (record) =>
     Effect.gen(function* () {
       yield* platformRemove(record.workspacePath, { recursive: true, force: true })
+      yield* platformRemove(record.dataRoot, { recursive: true, force: true })
       yield* platformRemove(record.logRoot, { recursive: true, force: true })
       yield* platformRemove(record.runtimeRoot, { recursive: true, force: true })
     }).pipe(

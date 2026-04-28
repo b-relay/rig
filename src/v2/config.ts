@@ -220,6 +220,7 @@ export type V2LaneName = "local" | "live" | "deployment"
 export interface V2LaneInterpolation {
   readonly lane: V2LaneName
   readonly workspace: string
+  readonly dataRoot: string
   readonly deployment: string
   readonly branchSlug: string
   readonly subdomain: string
@@ -229,6 +230,7 @@ export interface V2LaneInterpolation {
 export interface ResolveV2LaneOptions {
   readonly lane: V2LaneName
   readonly workspacePath: string
+  readonly dataRoot?: string
   readonly deploymentName?: string
   readonly branchSlug?: string
   readonly subdomain?: string
@@ -246,6 +248,7 @@ export interface ResolvedV2Lane {
   readonly branchSlug: string
   readonly subdomain: string
   readonly workspacePath: string
+  readonly dataRoot: string
   readonly sourceRepoPath?: string
   readonly providerProfile: "default" | "stub"
   readonly providers: ResolvedV2Providers
@@ -441,6 +444,7 @@ const interpolationFor = (
   const base = {
     lane: options.lane,
     workspace: options.workspacePath,
+    dataRoot: options.dataRoot ?? `${options.workspacePath}/.rig-data`,
     deployment,
     branchSlug,
     subdomain: branchSlug,
@@ -458,6 +462,7 @@ const interpolateString = (value: string, interpolation: V2LaneInterpolation): s
     const key = rawKey.trim()
     if (key === "lane") return interpolation.lane
     if (key === "workspace") return interpolation.workspace
+    if (key === "dataRoot") return interpolation.dataRoot
     if (key === "deployment") return interpolation.deployment
     if (key === "branchSlug") return interpolation.branchSlug
     if (key === "subdomain") return interpolation.subdomain
@@ -627,6 +632,7 @@ export const resolveV2Lane = (
       branchSlug: interpolation.branchSlug,
       subdomain: interpolation.subdomain,
       workspacePath: interpolation.workspace,
+      dataRoot: interpolation.dataRoot,
       ...(config.__sourceRepoPath ? { sourceRepoPath: config.__sourceRepoPath } : {}),
       providerProfile: laneConfig?.providerProfile ?? "default",
       providers,

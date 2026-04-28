@@ -344,6 +344,14 @@ and generated deployments. Application environment variables, database users,
 schemas, migrations, and connection strings remain developer-owned unless a
 later plugin explicitly adds helpers.
 
+Each v2 deployment has a Rig-owned `dataRoot` outside the app workspace:
+`<stateRoot>/data/<project>/<lane>` for `local` and `live`, and
+`<stateRoot>/data/<project>/deployments/<name>` for generated deployments.
+Configs can interpolate it as `${dataRoot}`. The first SQLite path pattern is
+therefore intentionally simple, for example
+`${dataRoot}/sqlite/app.sqlite`; the app decides how to pass that path to its
+own runtime.
+
 Caddy remains the first router provider. Traefik and Pangolin are useful
 research references but are not current defaults: Traefik fits Docker/provider
 discovery-heavy systems, while Pangolin is better understood as an

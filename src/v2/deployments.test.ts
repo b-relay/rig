@@ -109,6 +109,7 @@ describe("GIVEN v2 generated deployments WHEN materializing inventory THEN behav
     expect(record.branchSlug).toBe("feature-add-login")
     expect(record.subdomain).toBe("feature-add-login")
     expect(record.workspacePath).toBe("/tmp/rig-v2/workspaces/pantry/deployments/feature-add-login")
+    expect(record.dataRoot).toBe("/tmp/rig-v2/data/pantry/deployments/feature-add-login")
     expect(record.logRoot).toBe("/tmp/rig-v2/logs/pantry/deployments/feature-add-login")
     expect(record.runtimeRoot).toBe("/tmp/rig-v2/runtime/pantry/deployments/feature-add-login")
     expect(record.assignedPorts.web).toBeGreaterThanOrEqual(42000)
@@ -225,6 +226,7 @@ describe("GIVEN v2 generated deployments WHEN materializing inventory THEN behav
       )
 
       expect(await pathExists(record.workspacePath)).toBe(true)
+      expect(await pathExists(record.dataRoot)).toBe(true)
       expect(await pathExists(record.logRoot)).toBe(true)
       expect(await pathExists(record.runtimeRoot)).toBe(true)
       expect(await pathExists(record.runtimeStatePath)).toBe(true)
@@ -248,6 +250,7 @@ describe("GIVEN v2 generated deployments WHEN materializing inventory THEN behav
       )
 
       expect(await pathExists(record.workspacePath)).toBe(false)
+      expect(await pathExists(record.dataRoot)).toBe(false)
       expect(await pathExists(record.logRoot)).toBe(false)
       expect(await pathExists(record.runtimeRoot)).toBe(false)
       const rawAfterDestroy = await readFile(inventoryPath, "utf8")

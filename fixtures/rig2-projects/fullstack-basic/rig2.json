@@ -4,7 +4,7 @@
   "components": {
     "postgres": {
       "mode": "managed",
-      "command": "postgres -D ${workspace}/data/postgres -h 127.0.0.1 -p ${postgres.port}",
+      "command": "postgres -D ${dataRoot}/postgres -h 127.0.0.1 -p ${postgres.port}",
       "health": "pg_isready -h 127.0.0.1 -p ${postgres.port}",
       "readyTimeout": 60
     },
@@ -17,7 +17,7 @@
     },
     "api": {
       "mode": "managed",
-      "command": "bun run api -- --host 127.0.0.1 --port ${api.port}",
+      "command": "bun run api -- --host 127.0.0.1 --port ${api.port} --sqlite ${dataRoot}/sqlite/app.sqlite",
       "health": "http://127.0.0.1:${api.port}/health",
       "dependsOn": ["postgres", "convex"]
     },
@@ -40,7 +40,7 @@
         "port": 3210
       },
       "api": {
-        "command": "bun --watch run api -- --host 127.0.0.1 --port ${api.port}",
+        "command": "bun --watch run api -- --host 127.0.0.1 --port ${api.port} --sqlite ${dataRoot}/sqlite/app.sqlite",
         "port": 8081
       },
       "web": {

@@ -579,6 +579,36 @@ export const V2RigdLive = Layer.effect(
       )
     }
 
+    const addMilliseconds = (timestamp: string, milliseconds: number): string =>
+      new Date(new Date(timestamp).getTime() + milliseconds).toISOString()
+
+    const crashPolicyDetails = (
+      input: V2RigdManagedProcessExitInput,
+      recent: readonly { readonly occurredAt: string }[],
+      occurredAt: string,
+      nextAction: "restart" | "leave-failed",
+    ) => {
+      const backoffWindowStartedAt = recent[0]?.occurredAt ?? occurredAt
+      const remainingRestarts = Math.max(0, MAX_RESTARTS_IN_BACKOFF_WINDOW - recent.length)
+
+      return {
+        policy: "restart-with-backoff",
+        failureOccurredAt: occurredAt,
+        retryAttempt: recent.length,
+        recentCrashCount: recent.length,
+        maxRestarts: MAX_RESTARTS_IN_BACKOFF_WINDOW,
+        remainingRestarts,
+        restartBudgetExhausted: remainingRestarts === 0 && recent.length > MAX_RESTARTS_IN_BACKOFF_WINDOW,
+        backoffWindowMs: CRASH_BACKOFF_WINDOW_MS,
+        backoffWindowStartedAt,
+        backoffWindowEndsAt: addMilliseconds(backoffWindowStartedAt, CRASH_BACKOFF_WINDOW_MS),
+        nextAction,
+        ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
+        ...(input.stdout ? { stdout: input.stdout } : {}),
+        ...(input.stderr ? { stderr: input.stderr } : {}),
+      }
+    }
+
     const ignoredProcessExit = (
       input: V2RigdManagedProcessExitInput,
       recentCrashCount: number,
@@ -653,10 +683,9 @@ export const V2RigdLive = Layer.effect(
             component: input.component,
             details: {
               reason: "managed-process-exited",
-              recentCrashCount: recent.length,
-              maxRestarts: MAX_RESTARTS_IN_BACKOFF_WINDOW,
-              windowMs: CRASH_BACKOFF_WINDOW_MS,
-              exitCode: input.exitCode,
+              ...crashPolicyDetails(input, recent, occurredAt, "restart"),
+              restartBudgetExhausted: false,
+              desiredStatus: "running",
               execution,
             },
           })
@@ -678,12 +707,9 @@ export const V2RigdLive = Layer.effect(
           component: input.component,
           details: {
             reason: "restart-budget-exhausted",
-            recentCrashCount: recent.length,
-            maxRestarts: MAX_RESTARTS_IN_BACKOFF_WINDOW,
-            windowMs: CRASH_BACKOFF_WINDOW_MS,
-            exitCode: input.exitCode,
-            stdout: input.stdout,
-            stderr: input.stderr,
+            ...crashPolicyDetails(input, recent, occurredAt, "leave-failed"),
+            restartBudgetExhausted: true,
+            finalDesiredStatus: "failed",
           },
         })
         return {

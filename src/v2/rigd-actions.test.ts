@@ -589,6 +589,27 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         }),
       ])
       expect(result.persisted.events.map((event) => event.event)).toContain("rigd.process.restarted")
+      expect(result.persisted.events).toContainEqual(expect.objectContaining({
+        event: "rigd.process.restarted",
+        component: "web",
+        details: expect.objectContaining({
+          reason: "managed-process-exited",
+          policy: "restart-with-backoff",
+          nextAction: "restart",
+          failureOccurredAt: "2026-04-27T12:00:00.000Z",
+          retryAttempt: 1,
+          recentCrashCount: 1,
+          maxRestarts: 2,
+          remainingRestarts: 1,
+          restartBudgetExhausted: false,
+          desiredStatus: "running",
+          backoffWindowMs: 300000,
+          backoffWindowStartedAt: "2026-04-27T12:00:00.000Z",
+          backoffWindowEndsAt: "2026-04-27T12:05:00.000Z",
+          exitCode: 1,
+          stderr: "server crashed",
+        }),
+      }))
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }
@@ -661,6 +682,26 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         }),
       ])
       expect(result.persisted.events.map((event) => event.event)).toContain("rigd.process.failed")
+      expect(result.persisted.events).toContainEqual(expect.objectContaining({
+        event: "rigd.process.failed",
+        component: "web",
+        details: expect.objectContaining({
+          reason: "restart-budget-exhausted",
+          policy: "restart-with-backoff",
+          nextAction: "leave-failed",
+          finalDesiredStatus: "failed",
+          failureOccurredAt: "2026-04-27T12:02:00.000Z",
+          retryAttempt: 3,
+          recentCrashCount: 3,
+          maxRestarts: 2,
+          remainingRestarts: 0,
+          restartBudgetExhausted: true,
+          backoffWindowMs: 300000,
+          backoffWindowStartedAt: "2026-04-27T12:00:00.000Z",
+          backoffWindowEndsAt: "2026-04-27T12:05:00.000Z",
+          exitCode: 1,
+        }),
+      }))
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }
@@ -693,7 +734,7 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
             config,
           })
 
-          for (let attempt = 0; attempt < 30; attempt += 1) {
+          for (let attempt = 0; attempt < 80; attempt += 1) {
             const state = yield* store.load({ stateRoot })
             if (
               state.managedServiceFailures.length > 0 &&

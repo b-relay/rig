@@ -347,10 +347,32 @@ later plugin explicitly adds helpers.
 Each v2 deployment has a Rig-owned `dataRoot` outside the app workspace:
 `<stateRoot>/data/<project>/<lane>` for `local` and `live`, and
 `<stateRoot>/data/<project>/deployments/<name>` for generated deployments.
-Configs can interpolate it as `${dataRoot}`. The first SQLite path pattern is
-therefore intentionally simple, for example
-`${dataRoot}/sqlite/app.sqlite`; the app decides how to pass that path to its
-own runtime.
+Configs can interpolate it as `${dataRoot}`.
+
+Plugin-backed components use `uses` instead of `mode`. `mode` remains reserved
+for raw Rig primitives such as `managed` and `installed`; `uses` means the
+component comes from a bundled or future external component plugin. The first
+supported shape is SQLite:
+
+```json
+{
+  "components": {
+    "db": {
+      "uses": "sqlite"
+    },
+    "api": {
+      "mode": "managed",
+      "command": "bun run api -- --sqlite ${db.path}",
+      "dependsOn": ["db"]
+    }
+  }
+}
+```
+
+SQLite defaults to `${dataRoot}/sqlite/<component>.sqlite`, so the example
+above resolves `${db.path}` to `${dataRoot}/sqlite/db.sqlite`. `rigd` prepares
+the parent directory on `up` and deploy before starting managed processes; the
+app still decides how to consume the path.
 
 Caddy remains the first router provider. Traefik and Pangolin are useful
 research references but are not current defaults: Traefik fits Docker/provider

@@ -146,9 +146,18 @@ export const V2InstalledComponentSchema = Schema.Struct({
   ...CommonComponentFields,
 })
 
+export const V2SqliteComponentSchema = Schema.Struct({
+  uses: fieldDoc(Schema.Literal("sqlite"), "Uses the bundled SQLite component plugin."),
+  path: fieldDoc(
+    Schema.optionalKey(NonEmptyString("SQLite database file path.")),
+    "Optional SQLite database file path. Defaults to ${dataRoot}/sqlite/<component>.sqlite.",
+  ),
+})
+
 export const V2ComponentSchema = Schema.Union([
   V2ManagedComponentSchema,
   V2InstalledComponentSchema,
+  V2SqliteComponentSchema,
 ])
 
 const LaneComponentOverrideSchema = Schema.Struct({
@@ -160,6 +169,7 @@ const LaneComponentOverrideSchema = Schema.Struct({
   entrypoint: fieldDoc(Schema.optionalKey(Schema.String), "Lane-specific installed entrypoint override."),
   build: fieldDoc(Schema.optionalKey(Schema.String), "Lane-specific installed build command override."),
   installName: fieldDoc(Schema.optionalKey(ComponentName), "Lane-specific installed executable name override."),
+  path: fieldDoc(Schema.optionalKey(Schema.String), "Lane-specific SQLite database file path override."),
   env: fieldDoc(Schema.optionalKey(StringMap), "Lane-specific inline environment variables for this component."),
   envFile: fieldDoc(Schema.optionalKey(Schema.String), "Lane-specific env file for this component."),
   hooks: fieldDoc(Schema.optionalKey(HooksSchema), "Lane-specific component lifecycle hooks."),
@@ -206,6 +216,7 @@ export type V2ProjectConfig = Schema.Schema.Type<typeof V2ProjectConfigSchema> &
 }
 export type V2ManagedComponent = Schema.Schema.Type<typeof V2ManagedComponentSchema>
 export type V2InstalledComponent = Schema.Schema.Type<typeof V2InstalledComponentSchema>
+export type V2SqliteComponent = Schema.Schema.Type<typeof V2SqliteComponentSchema>
 export type V2Component = Schema.Schema.Type<typeof V2ComponentSchema>
 
 export const V2StatusInputSchema = Schema.Struct({
@@ -225,6 +236,7 @@ export interface V2LaneInterpolation {
   readonly branchSlug: string
   readonly subdomain: string
   readonly assignedPorts: Readonly<Record<string, number>>
+  readonly componentProperties: Readonly<Record<string, Readonly<Record<string, string | number>>>>
 }
 
 export interface ResolveV2LaneOptions {
@@ -241,6 +253,12 @@ export interface ResolvedV2Providers {
   readonly processSupervisor: string
 }
 
+export interface ResolvedV2PreparedComponent {
+  readonly name: string
+  readonly uses: "sqlite"
+  readonly path: string
+}
+
 export interface ResolvedV2Lane {
   readonly project: string
   readonly lane: V2LaneName
@@ -252,6 +270,7 @@ export interface ResolvedV2Lane {
   readonly sourceRepoPath?: string
   readonly providerProfile: "default" | "stub"
   readonly providers: ResolvedV2Providers
+  readonly preparedComponents: readonly ResolvedV2PreparedComponent[]
   readonly environment: Environment
   readonly v1Config: RigConfig
 }
@@ -290,23 +309,61 @@ const issue = (
 
 const managedOnlyFields = ["command", "port", "health", "readyTimeout", "dependsOn"] as const
 const installedOnlyFields = ["entrypoint", "build", "installName"] as const
+const sqliteOnlyFields = ["path"] as const
+
+const componentKind = (value: Record<string, unknown>): "managed" | "installed" | "sqlite" | undefined => {
+  if (value.mode === "managed" || value.mode === "installed") {
+    return value.mode
+  }
+  if (value.uses === "sqlite") {
+    return "sqlite"
+  }
+  return undefined
+}
 
 const validateModeFields = (
   value: Record<string, unknown>,
-  mode: unknown,
+  kind: unknown,
   path: readonly (string | number)[],
 ): readonly ValidationIssue[] => {
   const issues: ValidationIssue[] = []
 
-  if (mode === "installed") {
+  if (hasOwn(value, "mode") && hasOwn(value, "uses")) {
+    issues.push(issue(path, "Use either 'mode' or 'uses' for a component, not both.", "invalid_component_source"))
+  }
+
+  if (kind === "installed") {
     for (const key of managedOnlyFields) {
       if (hasOwn(value, key)) {
         issues.push(issue([...path, key], `'${key}' is only valid for managed components.`, "invalid_mode_field"))
       }
     }
+    for (const key of sqliteOnlyFields) {
+      if (hasOwn(value, key)) {
+        issues.push(issue([...path, key], `'${key}' is only valid for SQLite components.`, "invalid_mode_field"))
+      }
+    }
   }
 
-  if (mode === "managed") {
+  if (kind === "managed") {
+    for (const key of installedOnlyFields) {
+      if (hasOwn(value, key)) {
+        issues.push(issue([...path, key], `'${key}' is only valid for installed components.`, "invalid_mode_field"))
+      }
+    }
+    for (const key of sqliteOnlyFields) {
+      if (hasOwn(value, key)) {
+        issues.push(issue([...path, key], `'${key}' is only valid for SQLite components.`, "invalid_mode_field"))
+      }
+    }
+  }
+
+  if (kind === "sqlite") {
+    for (const key of managedOnlyFields) {
+      if (hasOwn(value, key)) {
+        issues.push(issue([...path, key], `'${key}' is only valid for managed components.`, "invalid_mode_field"))
+      }
+    }
     for (const key of installedOnlyFields) {
       if (hasOwn(value, key)) {
         issues.push(issue([...path, key], `'${key}' is only valid for installed components.`, "invalid_mode_field"))
@@ -328,15 +385,16 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
   }
 
   const issues: ValidationIssue[] = []
-  const componentModes = new Map<string, unknown>()
+  const componentKinds = new Map<string, "managed" | "installed" | "sqlite" | undefined>()
 
   for (const [name, rawComponent] of Object.entries(components)) {
     if (!isRecord(rawComponent)) {
       continue
     }
 
-    componentModes.set(name, rawComponent.mode)
-    issues.push(...validateModeFields(rawComponent, rawComponent.mode, ["components", name]))
+    const kind = componentKind(rawComponent)
+    componentKinds.set(name, kind)
+    issues.push(...validateModeFields(rawComponent, kind, ["components", name]))
   }
 
   for (const [name, rawComponent] of Object.entries(components)) {
@@ -345,12 +403,12 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
     }
 
     for (const dependency of rawComponent.dependsOn) {
-      const dependencyMode = typeof dependency === "string" ? componentModes.get(dependency) : undefined
-      if (dependencyMode !== "managed") {
+      const dependencyKind = typeof dependency === "string" ? componentKinds.get(dependency) : undefined
+      if (dependencyKind !== "managed" && dependencyKind !== "sqlite") {
         issues.push(
           issue(
             ["components", name, "dependsOn"],
-            `Dependency '${String(dependency)}' must reference a managed component.`,
+            `Dependency '${String(dependency)}' must reference a managed or SQLite component.`,
             "invalid_dependency",
           ),
         )
@@ -369,8 +427,8 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
         continue
       }
 
-      const mode = componentModes.get(name)
-      if (!mode) {
+      const kind = componentKinds.get(name)
+      if (!kind) {
         issues.push(
           issue(
             [lane, "components", name],
@@ -381,16 +439,16 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
         continue
       }
 
-      issues.push(...validateModeFields(override, mode, [lane, "components", name]))
+      issues.push(...validateModeFields(override, kind, [lane, "components", name]))
 
-      if (mode === "managed" && Array.isArray(override.dependsOn)) {
+      if (kind === "managed" && Array.isArray(override.dependsOn)) {
         for (const dependency of override.dependsOn) {
-          const dependencyMode = typeof dependency === "string" ? componentModes.get(dependency) : undefined
-          if (dependencyMode !== "managed") {
+          const dependencyKind = typeof dependency === "string" ? componentKinds.get(dependency) : undefined
+          if (dependencyKind !== "managed" && dependencyKind !== "sqlite") {
             issues.push(
               issue(
                 [lane, "components", name, "dependsOn"],
-                `Dependency '${String(dependency)}' must reference a managed component.`,
+                `Dependency '${String(dependency)}' must reference a managed or SQLite component.`,
                 "invalid_dependency",
               ),
             )
@@ -449,6 +507,7 @@ const interpolationFor = (
     branchSlug,
     subdomain: branchSlug,
     assignedPorts: options.assignedPorts ?? {},
+    componentProperties: {},
   }
 
   return {
@@ -477,6 +536,10 @@ const interpolateString = (value: string, interpolation: V2LaneInterpolation): s
     if (key.endsWith(".port")) {
       const component = key.slice(0, -".port".length)
       return String(interpolation.assignedPorts[component] ?? "")
+    }
+    const [component, property, ...rest] = key.split(".")
+    if (component && property && rest.length === 0) {
+      return String(interpolation.componentProperties[component]?.[property] ?? "")
     }
     return ""
   })
@@ -539,20 +602,54 @@ const interpolationWithPort = (
   },
 })
 
+const interpolationWithComponentProperty = (
+  interpolation: V2LaneInterpolation,
+  name: string,
+  properties: Readonly<Record<string, string | number>>,
+): V2LaneInterpolation => ({
+  ...interpolation,
+  componentProperties: {
+    ...interpolation.componentProperties,
+    [name]: {
+      ...interpolation.componentProperties[name],
+      ...properties,
+    },
+  },
+})
+
 export const resolveV2Lane = (
   config: V2ProjectConfig,
   options: ResolveV2LaneOptions,
 ): Effect.Effect<ResolvedV2Lane, V2ConfigValidationError> =>
   Effect.gen(function* () {
     const laneConfig = laneConfigFor(config, options.lane)
-    const interpolation = interpolationFor(config, laneConfig, options)
+    let interpolation = interpolationFor(config, laneConfig, options)
     const providers = resolveLaneProviders(laneConfig)
+    const preparedComponents: ResolvedV2PreparedComponent[] = []
     const services: Environment["services"] = []
+
+    for (const [name, component] of Object.entries(config.components)) {
+      if (!("uses" in component) || component.uses !== "sqlite") {
+        continue
+      }
+
+      const override = laneConfig?.components?.[name]
+      const path = interpolateString(
+        override?.path ?? component.path ?? `${interpolation.dataRoot}/sqlite/${name}.sqlite`,
+        interpolation,
+      )
+      preparedComponents.push({
+        name,
+        uses: "sqlite",
+        path,
+      })
+      interpolation = interpolationWithComponentProperty(interpolation, name, { path })
+    }
 
     for (const [name, component] of Object.entries(config.components)) {
       const override = laneConfig?.components?.[name]
 
-      if (component.mode === "managed") {
+      if ("mode" in component && component.mode === "managed") {
         const port = resolvePort(name, override?.port ?? component.port, interpolation)
         if (port === undefined) {
           return yield* Effect.fail(
@@ -565,6 +662,10 @@ export const resolveV2Lane = (
         }
         const componentInterpolation = interpolationWithPort(interpolation, name, port)
         const command = interpolateString(override?.command ?? component.command, componentInterpolation)
+        const managedDependencies = (override?.dependsOn ?? component.dependsOn)?.filter((dependency) => {
+          const dependencyComponent = config.components[dependency]
+          return dependencyComponent !== undefined && "mode" in dependencyComponent && dependencyComponent.mode === "managed"
+        })
 
         services.push({
           name,
@@ -575,7 +676,7 @@ export const resolveV2Lane = (
             ? { healthCheck: interpolateString((override?.health ?? component.health) as string, componentInterpolation) }
             : {}),
           readyTimeout: override?.readyTimeout ?? component.readyTimeout ?? 30,
-          ...(override?.dependsOn ?? component.dependsOn ? { dependsOn: override?.dependsOn ?? component.dependsOn } : {}),
+          ...(managedDependencies && managedDependencies.length > 0 ? { dependsOn: managedDependencies } : {}),
           ...(interpolateHooks(override?.hooks ?? component.hooks, interpolation)
             ? { hooks: interpolateHooks(override?.hooks ?? component.hooks, interpolation) }
             : {}),
@@ -583,6 +684,10 @@ export const resolveV2Lane = (
             ? { envFile: interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation) }
             : {}),
         })
+        continue
+      }
+
+      if (!("mode" in component) || component.mode !== "installed") {
         continue
       }
 
@@ -636,6 +741,7 @@ export const resolveV2Lane = (
       ...(config.__sourceRepoPath ? { sourceRepoPath: config.__sourceRepoPath } : {}),
       providerProfile: laneConfig?.providerProfile ?? "default",
       providers,
+      preparedComponents,
       environment,
       v1Config,
     }

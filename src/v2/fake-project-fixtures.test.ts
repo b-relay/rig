@@ -137,17 +137,32 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
     expect(local?.dataRoot).toBe("/tmp/rig-v2-fixtures/data/fullstack_basic/local")
     expect(live?.dataRoot).toBe("/tmp/rig-v2-fixtures/data/fullstack_basic/live")
     expect(generated?.dataRoot).toBe("/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview")
+    expect(local?.resolved.preparedComponents).toContainEqual({
+      name: "db",
+      uses: "sqlite",
+      path: "/tmp/rig-v2-fixtures/data/fullstack_basic/local/sqlite/db.sqlite",
+    })
+    expect(live?.resolved.preparedComponents).toContainEqual({
+      name: "db",
+      uses: "sqlite",
+      path: "/tmp/rig-v2-fixtures/data/fullstack_basic/live/sqlite/db.sqlite",
+    })
+    expect(generated?.resolved.preparedComponents).toContainEqual({
+      name: "db",
+      uses: "sqlite",
+      path: "/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/sqlite/db.sqlite",
+    })
     expect(local?.resolved.environment.services).toContainEqual(expect.objectContaining({
       name: "api",
-      command: "bun --watch run api -- --host 127.0.0.1 --port 8081 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/local/sqlite/app.sqlite",
+      command: "bun --watch run api -- --host 127.0.0.1 --port 8081 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/local/sqlite/db.sqlite",
     }))
     expect(live?.resolved.environment.services).toContainEqual(expect.objectContaining({
       name: "api",
-      command: "bun run api -- --host 127.0.0.1 --port 8080 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/live/sqlite/app.sqlite",
+      command: "bun run api -- --host 127.0.0.1 --port 8080 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/live/sqlite/db.sqlite",
     }))
     expect(generated?.resolved.environment.services).toContainEqual(expect.objectContaining({
       name: "api",
-      command: "bun run api -- --host 127.0.0.1 --port 48080 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/sqlite/app.sqlite",
+      command: "bun run api -- --host 127.0.0.1 --port 48080 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/sqlite/db.sqlite",
     }))
   })
 })

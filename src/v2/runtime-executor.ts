@@ -1,6 +1,8 @@
+import { dirname } from "node:path"
 import { Context, Effect, Layer } from "effect"
 
 import type { V2DeploymentRecord } from "./deployments.js"
+import { platformMakeDirectory } from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 import {
   V2EventTransportProvider,
@@ -90,6 +92,9 @@ const managedServices = (deployment: V2DeploymentRecord) =>
 
 const installedServices = (deployment: V2DeploymentRecord) =>
   deployment.resolved.environment.services.filter((service) => service.type === "bin")
+
+const preparedComponents = (deployment: V2DeploymentRecord) =>
+  deployment.resolved.preparedComponents ?? []
 
 const hookCommand = (
   hooks: V2LifecycleHooks | undefined,
@@ -298,6 +303,51 @@ const appendHookOperation = (
     })
     : Effect.void
 
+const prepareDeploymentComponents = (
+  eventTransport: {
+    readonly append: (input: {
+      readonly deployment: V2DeploymentRecord
+      readonly event: string
+      readonly component?: string
+      readonly details?: Readonly<Record<string, unknown>>
+    }) => Effect.Effect<string, V2RuntimeError>
+  },
+  deployment: V2DeploymentRecord,
+  events: V2RuntimeExecutionEvent[],
+  operations: string[],
+) =>
+  Effect.forEach(preparedComponents(deployment), (component) =>
+    Effect.gen(function* () {
+      if (component.uses !== "sqlite") {
+        return
+      }
+
+      const directory = dirname(component.path)
+      yield* platformMakeDirectory(directory).pipe(
+        Effect.mapError((cause) =>
+          new V2RuntimeError(
+            `Unable to prepare SQLite component '${component.name}'.`,
+            "Ensure the v2 data root is writable and retry the lifecycle action.",
+            {
+              project: deployment.project,
+              deployment: deployment.name,
+              component: component.name,
+              path: component.path,
+              cause: cause instanceof Error ? cause.message : String(cause),
+            },
+          )
+        ),
+      )
+
+      const event = runtimeEvent(deployment, "component.prepare", component.name, {
+        uses: component.uses,
+        path: component.path,
+        directory,
+      })
+      yield* appendRuntimeEvent(eventTransport, deployment, events, operations, event)
+    }),
+  ).pipe(Effect.asVoid)
+
 export const V2RuntimeExecutorLive = Layer.effect(
   V2RuntimeExecutor,
   Effect.gen(function* () {
@@ -325,6 +375,9 @@ export const V2RuntimeExecutorLive = Layer.effect(
             hook: input.action === "up" ? "preStart" : "preStop",
             command: hookCommand(projectHooks, input.action === "up" ? "preStart" : "preStop"),
           })
+          if (input.action === "up") {
+            yield* prepareDeploymentComponents(eventTransport, input.deployment, events, operations)
+          }
           for (const service of ordered) {
             yield* appendHookOperation(lifecycleHook, operations, {
               deployment: input.deployment,
@@ -403,6 +456,7 @@ export const V2RuntimeExecutorLive = Layer.effect(
             deployment: input.deployment,
             ref: input.ref,
           }))
+          yield* prepareDeploymentComponents(eventTransport, input.deployment, events, operations)
           for (const service of installed) {
             const operation = yield* packageManager.install({ deployment: input.deployment, service })
             operations.push(operation)

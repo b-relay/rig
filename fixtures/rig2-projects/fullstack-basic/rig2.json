@@ -2,6 +2,9 @@
   "name": "fullstack_basic",
   "domain": "${subdomain}.fixture.test",
   "components": {
+    "db": {
+      "uses": "sqlite"
+    },
     "postgres": {
       "mode": "managed",
       "command": "postgres -D ${dataRoot}/postgres -h 127.0.0.1 -p ${postgres.port}",
@@ -17,9 +20,9 @@
     },
     "api": {
       "mode": "managed",
-      "command": "bun run api -- --host 127.0.0.1 --port ${api.port} --sqlite ${dataRoot}/sqlite/app.sqlite",
+      "command": "bun run api -- --host 127.0.0.1 --port ${api.port} --sqlite ${db.path}",
       "health": "http://127.0.0.1:${api.port}/health",
-      "dependsOn": ["postgres", "convex"]
+      "dependsOn": ["db", "postgres", "convex"]
     },
     "web": {
       "mode": "managed",
@@ -40,7 +43,7 @@
         "port": 3210
       },
       "api": {
-        "command": "bun --watch run api -- --host 127.0.0.1 --port ${api.port} --sqlite ${dataRoot}/sqlite/app.sqlite",
+        "command": "bun --watch run api -- --host 127.0.0.1 --port ${api.port} --sqlite ${db.path}",
         "port": 8081
       },
       "web": {

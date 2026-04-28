@@ -367,7 +367,7 @@ track for ecosystem plugins and presets. The first useful set is:
 
 These should not be hard-coded app presets in core. They should exercise the
 same plugin/provider boundaries as first-party adapters, with the Convex Local
-case treated as a resource-owning environment plugin that can allocate and
+case treated as a component-owning environment plugin that can allocate and
 persist per-deployment state.
 
 Rig should own local service supervision plus the deployment metadata needed to
@@ -381,9 +381,33 @@ The first implementation step is a deployment-level `dataRoot` interpolated as
 `${dataRoot}`. It lives under isolated v2 state rather than the app repository:
 `<stateRoot>/data/<project>/<lane>` for `local` and `live`, and
 `<stateRoot>/data/<project>/deployments/<name>` for generated deployments. This
-is enough for simple SQLite usage such as `${dataRoot}/sqlite/app.sqlite`
-without introducing automatic environment variable or connection-string
-management.
+is enough for simple SQLite usage without introducing automatic environment
+variable or connection-string management.
+
+The first component-plugin shape is `uses`, not `type` or another `mode`.
+`mode` stays reserved for raw Rig primitives such as `managed` and `installed`;
+`uses` means the component is supplied by a bundled or future external plugin.
+SQLite now supports:
+
+```json
+{
+  "components": {
+    "db": {
+      "uses": "sqlite"
+    },
+    "api": {
+      "mode": "managed",
+      "command": "bun run api -- --sqlite ${db.path}",
+      "dependsOn": ["db"]
+    }
+  }
+}
+```
+
+The default SQLite path is `${dataRoot}/sqlite/<component>.sqlite`, so
+`${db.path}` resolves to `${dataRoot}/sqlite/db.sqlite` for a component named
+`db`. `rigd` prepares the parent directory on `up` and deploy before managed
+processes start.
 
 Caddy remains the first router provider for Rig v2. Traefik and Pangolin are
 tracked as research references, not immediate defaults: Traefik is attractive

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import { Effect, Layer } from "effect"
 
 import type { V2DeploymentRecord } from "./deployments.js"
@@ -266,6 +269,54 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
         },
       }),
     ])
+  })
+
+  test("GIVEN a deployment with a SQLite component WHEN lifecycle up runs THEN its database directory is prepared before processes start", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-sqlite-prepare-"))
+    const sqlitePath = join(root, "data", "db.sqlite")
+    const calls: string[] = []
+    const input: V2RuntimeLifecycleExecutionInput = {
+      action: "up",
+      deployment: {
+        ...deployment(),
+        dataRoot: root,
+        resolved: {
+          ...deployment().resolved,
+          preparedComponents: [
+            {
+              name: "db",
+              uses: "sqlite",
+              path: sqlitePath,
+            },
+          ],
+          environment: {
+            services: [
+              {
+                name: "api",
+                type: "server",
+                command: `bun run api -- --sqlite ${sqlitePath}`,
+                port: 3080,
+              },
+            ],
+          },
+        },
+      } as V2DeploymentRecord,
+    }
+
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const executor = yield* V2RuntimeExecutor
+          return yield* executor.lifecycle(input)
+        }).pipe(Effect.provide(Layer.provide(V2RuntimeExecutorLive, captureProviderLayer(calls)))),
+      )
+
+      expect(calls.indexOf("event:append:component.prepare:db")).toBeLessThan(calls.indexOf("process:up:api"))
+      expect((await stat(dirname(sqlitePath))).isDirectory()).toBe(true)
+      expect(dirname(sqlitePath)).toBe(join(root, "data"))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test("GIVEN lifecycle up starts a watched process WHEN it exits unexpectedly THEN the exit handler receives deployment and component context", async () => {

@@ -8,6 +8,7 @@ import {
   V2PackageManagerProvider,
   V2ProcessSupervisorProvider,
   type V2ProcessSupervisorOperationResult,
+  type V2RuntimeServiceConfig,
   V2ProxyRouterProvider,
   V2ScmProvider,
   V2WorkspaceMaterializerProvider,
@@ -31,14 +32,28 @@ export interface V2RuntimeExecutionEvent {
   readonly details?: Readonly<Record<string, unknown>>
 }
 
+export interface V2ManagedProcessExitHandlerInput {
+  readonly deployment: V2DeploymentRecord
+  readonly service: V2RuntimeServiceConfig
+  readonly exitCode?: number
+  readonly stdout?: string
+  readonly stderr?: string
+}
+
+export type V2ManagedProcessExitHandler = (
+  input: V2ManagedProcessExitHandlerInput,
+) => Effect.Effect<void, V2RuntimeError>
+
 export interface V2RuntimeLifecycleExecutionInput {
   readonly action: "up" | "down"
   readonly deployment: V2DeploymentRecord
+  readonly onManagedProcessExit?: V2ManagedProcessExitHandler
 }
 
 export interface V2RuntimeDeployExecutionInput {
   readonly deployment: V2DeploymentRecord
   readonly ref: string
+  readonly onManagedProcessExit?: V2ManagedProcessExitHandler
 }
 
 export interface V2RuntimeDestroyGeneratedExecutionInput {
@@ -151,6 +166,31 @@ const appendProcessEvents = (
     }
   })
 
+const startManagedProcessExitWatcher = (
+  deployment: V2DeploymentRecord,
+  service: V2RuntimeServiceConfig,
+  result: V2ProcessSupervisorOperationResult,
+  onManagedProcessExit: V2ManagedProcessExitHandler | undefined,
+) =>
+  result.exit && onManagedProcessExit
+    ? result.exit.pipe(
+      Effect.flatMap((exit) =>
+        exit.expected
+          ? Effect.void
+          : onManagedProcessExit({
+            deployment,
+            service,
+            ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
+            ...(exit.stdout ? { stdout: exit.stdout } : {}),
+            ...(exit.stderr ? { stderr: exit.stderr } : {}),
+          })
+      ),
+      Effect.catch(() => Effect.void),
+      Effect.forkDetach,
+      Effect.asVoid,
+    )
+    : Effect.void
+
 export const V2RuntimeExecutorLive = Layer.effect(
   V2RuntimeExecutor,
   Effect.gen(function* () {
@@ -185,6 +225,14 @@ export const V2RuntimeExecutorLive = Layer.effect(
               service.name,
               operation,
             )
+            if (input.action === "up") {
+              yield* startManagedProcessExitWatcher(
+                input.deployment,
+                service,
+                operation,
+                input.onManagedProcessExit,
+              )
+            }
           }
           if (input.action === "up") {
             for (const service of services.filter((service) => service.healthCheck)) {
@@ -248,6 +296,12 @@ export const V2RuntimeExecutorLive = Layer.effect(
               "deploy",
               service.name,
               operation,
+            )
+            yield* startManagedProcessExitWatcher(
+              input.deployment,
+              service,
+              operation,
+              input.onManagedProcessExit,
             )
           }
           for (const service of managed.filter((service) => service.healthCheck)) {

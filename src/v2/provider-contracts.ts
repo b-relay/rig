@@ -213,9 +213,17 @@ export interface V2ProviderOutputLine {
   readonly line: string
 }
 
+export interface V2ProcessSupervisorExitResult {
+  readonly expected: boolean
+  readonly exitCode?: number
+  readonly stdout?: string
+  readonly stderr?: string
+}
+
 export interface V2ProcessSupervisorOperationResult {
   readonly operation: string
   readonly output?: readonly V2ProviderOutputLine[]
+  readonly exit?: Effect.Effect<V2ProcessSupervisorExitResult, V2RuntimeError>
 }
 
 export interface V2WorkspaceMaterializerProviderService
@@ -743,10 +751,13 @@ const processSupervisorService = (
   const base = familyService(report, "process-supervisor")
   const selectedForDeployment = (deployment: V2DeploymentRecord) =>
     providerForFamily(report, "process-supervisor", deployment.resolved.providers.processSupervisor)
-  const rigdProcesses = new Map<string, {
+  interface RigdManagedProcess {
     readonly handle: ChildProcessHandle
     readonly scope: Scope.Closeable
-  }>()
+    stopping: boolean
+  }
+
+  const rigdProcesses = new Map<string, RigdManagedProcess>()
   const processKey = (deployment: V2DeploymentRecord, service: V2RuntimeServiceConfig): string =>
     `${deployment.project}:${deployment.name}:${service.name}`
   const operationName = (
@@ -917,6 +928,36 @@ const processSupervisorService = (
       ),
     )
 
+  const outputText = (
+    output: readonly V2ProviderOutputLine[],
+    stream: "stdout" | "stderr",
+  ): string | undefined => {
+    const text = output.filter((line) => line.stream === stream).map((line) => line.line).join("\n")
+    return text.length > 0 ? text : undefined
+  }
+
+  const watchRigdProcessExit = (
+    key: string,
+    running: RigdManagedProcess,
+  ): Effect.Effect<V2ProcessSupervisorExitResult, V2RuntimeError> =>
+    Effect.gen(function* () {
+      const exitCode = yield* running.handle.exitCode.pipe(
+        Effect.map((code) => Number(code)),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+      const output = yield* collectProcessOutput(running.handle)
+      if (rigdProcesses.get(key) === running) {
+        rigdProcesses.delete(key)
+      }
+      yield* Scope.close(running.scope, Exit.void).pipe(Effect.ignore)
+      return {
+        expected: running.stopping,
+        ...(exitCode === undefined ? {} : { exitCode }),
+        ...(outputText(output, "stdout") ? { stdout: outputText(output, "stdout") } : {}),
+        ...(outputText(output, "stderr") ? { stderr: outputText(output, "stderr") } : {}),
+      }
+    })
+
   const stopRigdProcess = (
     provider: V2ProviderPlugin,
     input: {
@@ -934,6 +975,7 @@ const processSupervisorService = (
       }
 
       rigdProcesses.delete(key)
+      running.stopping = true
       yield* running.handle.kill({ forceKillAfter: "2 seconds" }).pipe(Effect.ignore)
       const exitCode = yield* running.handle.exitCode.pipe(
         Effect.map((code) => Number(code)),
@@ -988,6 +1030,7 @@ const processSupervisorService = (
       const existing = rigdProcesses.get(key)
       if (existing) {
         rigdProcesses.delete(key)
+        existing.stopping = true
         yield* existing.handle.kill({ forceKillAfter: "2 seconds" }).pipe(Effect.ignore)
         yield* existing.handle.exitCode.pipe(Effect.ignore)
         yield* Scope.close(existing.scope, Exit.void).pipe(Effect.ignore)
@@ -1016,9 +1059,11 @@ const processSupervisorService = (
       const quickExit = yield* handle.exitCode.pipe(Effect.timeoutOption("50 millis"))
 
       if (Option.isNone(quickExit)) {
-        rigdProcesses.set(key, { handle, scope })
+        const running = { handle, scope, stopping: false }
+        rigdProcesses.set(key, running)
         return {
           operation: operationName(provider, action, input.service, "started"),
+          exit: watchRigdProcessExit(key, running),
         } satisfies V2ProcessSupervisorOperationResult
       }
 

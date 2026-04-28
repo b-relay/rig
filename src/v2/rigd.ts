@@ -518,6 +518,7 @@ export const V2RigdLive = Layer.effect(
         const execution = yield* runtimeExecutor.lifecycle({
           action: input.action,
           deployment,
+          onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
         })
         return { deployment, execution }
       })
@@ -641,6 +642,7 @@ export const V2RigdLive = Layer.effect(
           const execution = yield* runtimeExecutor.lifecycle({
             action: "up",
             deployment: desired.record,
+            onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
           })
           yield* persistExecutionEvents(input.stateRoot, execution)
           yield* appendEvent(input.stateRoot, {
@@ -693,6 +695,25 @@ export const V2RigdLive = Layer.effect(
         }
       })
 
+    const managedProcessExitHandler = (stateRoot: string) => (
+      exit: {
+        readonly deployment: V2DeploymentRecord
+        readonly service: V2DeploymentRecord["resolved"]["environment"]["services"][number]
+        readonly exitCode?: number
+        readonly stdout?: string
+        readonly stderr?: string
+      },
+    ): Effect.Effect<void, V2RuntimeError> =>
+      handleManagedProcessExit({
+        project: exit.deployment.project,
+        deployment: exit.deployment.name,
+        component: exit.service.name,
+        stateRoot,
+        ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
+        ...(exit.stdout ? { stdout: exit.stdout } : {}),
+        ...(exit.stderr ? { stderr: exit.stderr } : {}),
+      }).pipe(Effect.asVoid)
+
     const reconcileDesiredRunning = (
       stateRoot: string,
     ): Effect.Effect<void, V2RuntimeError> =>
@@ -704,6 +725,7 @@ export const V2RigdLive = Layer.effect(
           const execution = yield* runtimeExecutor.lifecycle({
             action: "up",
             deployment: desired.record,
+            onManagedProcessExit: managedProcessExitHandler(stateRoot),
           })
           yield* persistExecutionEvents(stateRoot, execution)
           yield* appendEvent(stateRoot, {
@@ -728,6 +750,7 @@ export const V2RigdLive = Layer.effect(
           const execution = yield* runtimeExecutor.deploy({
             deployment: generatedDeployment,
             ref: input.ref,
+            onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
           })
           return { deployment: generatedDeployment, execution }
         }
@@ -740,6 +763,7 @@ export const V2RigdLive = Layer.effect(
         const execution = yield* runtimeExecutor.deploy({
           deployment,
           ref: input.ref,
+          onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
         })
         return { deployment, execution }
       })

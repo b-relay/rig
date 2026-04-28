@@ -16,12 +16,13 @@ import {
 } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
 import { V2HomeConfigStore, v2HomeConfigDefaults, type V2HomeConfig } from "./home-config.js"
-import { V2ProviderRegistryLive } from "./provider-contracts.js"
+import { V2ProviderContractsLive, V2ProviderRegistryLive } from "./provider-contracts.js"
 import { V2RigdActionPreflight, V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive, type V2RigdService } from "./rigd.js"
 import { V2FileRigdStateStoreLive, V2RigdStateStore } from "./rigd-state.js"
 import {
   V2RuntimeExecutor,
+  V2RuntimeExecutorLive,
   type V2RuntimeDeployExecutionInput,
   type V2RuntimeDestroyGeneratedExecutionInput,
   type V2RuntimeExecutionResult,
@@ -189,12 +190,14 @@ const runWithRigd = async <A>(
   options?: {
     readonly preflight?: Layer.Layer<V2RigdActionPreflight>
     readonly executor?: CaptureRuntimeExecutor
+    readonly executorLayer?: Layer.Layer<V2RuntimeExecutor>
     readonly homeConfig?: V2HomeConfig
   },
 ) => {
   const logger = new CaptureV2Logger()
   const deploymentStore = new MemoryDeploymentStore()
   const executor = options?.executor ?? new CaptureRuntimeExecutor()
+  const executorLive = options?.executorLayer ?? Layer.succeed(V2RuntimeExecutor, executor)
   const deploymentManagerLive = Layer.provide(
     V2DeploymentManagerLive,
     Layer.succeed(V2DeploymentStore, deploymentStore),
@@ -212,7 +215,7 @@ const runWithRigd = async <A>(
       read: () => Effect.succeed(options?.homeConfig ?? v2HomeConfigDefaults),
       write: () => Effect.void,
     }),
-    Layer.succeed(V2RuntimeExecutor, executor),
+    executorLive,
     Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
   )
   const layer = Layer.mergeAll(
@@ -227,7 +230,7 @@ const runWithRigd = async <A>(
       read: () => Effect.succeed(options?.homeConfig ?? v2HomeConfigDefaults),
       write: () => Effect.void,
     }),
-    Layer.succeed(V2RuntimeExecutor, executor),
+    executorLive,
     Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
     Layer.provide(V2RigdLive, rigdDependencies),
   )
@@ -658,6 +661,67 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         }),
       ])
       expect(result.persisted.events.map((event) => event.event)).toContain("rigd.process.failed")
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN real rigd-supervised process exits after lifecycle up WHEN watcher observes it THEN rigd records the failure", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-real-process-watch-"))
+
+    try {
+      const config = await Effect.runPromise(decodeV2ProjectConfig({
+        name: "pantry",
+        components: {
+          web: {
+            mode: "managed",
+            command: "sleep 0.05; printf watched >&2; exit 7",
+            port: 3070,
+          },
+        },
+      }))
+
+      const persisted = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* rigd.controlPlaneLifecycle({
+            action: "up",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+
+          for (let attempt = 0; attempt < 30; attempt += 1) {
+            const state = yield* store.load({ stateRoot })
+            if (
+              state.managedServiceFailures.length > 0 &&
+              state.events.some((event) => event.event === "rigd.process.restarted")
+            ) {
+              return state
+            }
+            yield* Effect.sleep("25 millis")
+          }
+
+          return yield* Effect.fail(new V2RuntimeError(
+            "Timed out waiting for rigd to observe the managed process exit.",
+            "Ensure the rigd process supervisor watcher is attached to started process handles.",
+          ))
+        }),
+        {
+          executorLayer: Layer.provide(V2RuntimeExecutorLive, V2ProviderContractsLive("default")),
+        },
+      )
+
+      expect(persisted.managedServiceFailures).toContainEqual(expect.objectContaining({
+        project: "pantry",
+        deployment: "local",
+        component: "web",
+        exitCode: 7,
+        stderr: "watched",
+      }))
+      expect(persisted.events.map((event) => event.event)).toContain("rigd.process.restarted")
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }

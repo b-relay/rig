@@ -791,6 +791,51 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     }
   })
 
+  test("GIVEN rigd process supervisor WHEN a started process exits later THEN its exit effect reports output and code", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-rigd-process-watch-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+        resolved: {
+          providers: {
+            processSupervisor: "rigd",
+          },
+        },
+      } as V2DeploymentRecord
+
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processSupervisor = yield* V2ProcessSupervisorProvider
+          return yield* processSupervisor.up({
+            deployment,
+            service: {
+              name: "web",
+              type: "server",
+              command: "printf started; sleep 0.05; printf crashed >&2; exit 7",
+              port: 3070,
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+      )
+
+      expect(result.operation).toBe("process-supervisor:rigd:up:web:started")
+      expect(result.exit).toBeDefined()
+      const exit = await Effect.runPromise(result.exit!)
+      expect(exit).toEqual({
+        expected: false,
+        exitCode: 7,
+        stdout: "started",
+        stderr: "crashed",
+      })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN structured-log-file event transport WHEN appending THEN it writes deployment JSONL", async () => {
     const logRoot = await mkdtemp(join(tmpdir(), "rig-v2-provider-events-"))
 

@@ -15,6 +15,7 @@ import {
 import {
   V2RuntimeExecutor,
   V2RuntimeExecutorLive,
+  type V2ManagedProcessExitHandlerInput,
   type V2RuntimeLifecycleExecutionInput,
 } from "./runtime-executor.js"
 
@@ -82,6 +83,12 @@ const captureProviderLayer = (
   calls: string[],
   options: {
     readonly processOutput?: Readonly<Record<string, readonly { readonly stream: "stdout" | "stderr"; readonly line: string }[]>>
+    readonly processExits?: Readonly<Record<string, {
+      readonly expected: boolean
+      readonly exitCode?: number
+      readonly stdout?: string
+      readonly stderr?: string
+    }>>
     readonly eventAppends?: Array<{
       readonly event: string
       readonly component?: string
@@ -113,9 +120,11 @@ const captureProviderLayer = (
   }
   const recordProcess = (operation: string) => {
     calls.push(operation)
+    const exit = options.processExits?.[operation]
     return Effect.succeed({
       operation: `capture:${operation}`,
       output: options.processOutput?.[operation] ?? [],
+      ...(exit ? { exit: Effect.succeed(exit) } : {}),
     })
   }
 
@@ -236,6 +245,57 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
         },
       }),
     ])
+  })
+
+  test("GIVEN lifecycle up starts a watched process WHEN it exits unexpectedly THEN the exit handler receives deployment and component context", async () => {
+    let rejectObserved: (cause: unknown) => void = () => undefined
+    const observed = new Promise<V2ManagedProcessExitHandlerInput>((resolve, reject) => {
+      rejectObserved = reject
+      const input: V2RuntimeLifecycleExecutionInput = {
+        action: "up",
+        deployment: deployment(),
+        onManagedProcessExit: (exit) =>
+          Effect.sync(() => {
+            resolve(exit)
+          }),
+      }
+
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const executor = yield* V2RuntimeExecutor
+          return yield* executor.lifecycle(input)
+        }).pipe(
+          Effect.provide(Layer.provide(V2RuntimeExecutorLive, captureProviderLayer([], {
+            processExits: {
+              "process:up:web": {
+                expected: false,
+                exitCode: 7,
+                stdout: "started",
+                stderr: "crashed",
+              },
+            },
+          }))),
+        ),
+      ).catch(reject)
+    })
+
+    const exit = await Promise.race([
+      observed,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("Timed out waiting for managed process exit callback.")), 1000)
+      }),
+    ]).catch((cause) => {
+      rejectObserved(cause)
+      throw cause
+    })
+    expect(exit.deployment).toMatchObject({
+      project: "pantry",
+      name: "live",
+    })
+    expect(exit.service.name).toBe("web")
+    expect(exit.exitCode).toBe(7)
+    expect(exit.stdout).toBe("started")
+    expect(exit.stderr).toBe("crashed")
   })
 
   test("GIVEN capture providers WHEN lifecycle up runs THEN runtime provider methods are called in order", async () => {

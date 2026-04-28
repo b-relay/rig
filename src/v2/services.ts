@@ -1,5 +1,6 @@
 import { join } from "node:path"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Stdio, Stream } from "effect"
+import { BunStdio } from "@effect/platform-bun"
 
 import { V2DefaultControlPlaneLive } from "./control-plane.js"
 import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
@@ -77,17 +78,24 @@ export interface V2LoggerService {
 
 export const V2Logger = Context.Service<V2LoggerService>("rig/v2/V2Logger")
 
-const writeLine = (writer: typeof Bun.stdout, value: string) =>
-  Effect.promise(() => Bun.write(writer, `${value}\n`).then(() => undefined))
+const writeLine = (stream: "stdout" | "stderr", value: string) =>
+  Effect.gen(function* () {
+    const stdio = yield* Stdio.Stdio
+    const sink = stream === "stdout" ? stdio.stdout({ endOnDone: false }) : stdio.stderr({ endOnDone: false })
+    yield* Stream.run(Stream.make(`${value}\n`), sink)
+  }).pipe(
+    Effect.provide(BunStdio.layer),
+    Effect.orDie,
+  )
 
 const renderDetails = (details: unknown): string =>
   details === undefined ? "" : ` ${JSON.stringify(details)}`
 
 export const V2LoggerLive = Layer.succeed(V2Logger, {
-  info: (message, details) => writeLine(Bun.stdout, `[INFO] ${message}${renderDetails(details)}`),
+  info: (message, details) => writeLine("stdout", `[INFO] ${message}${renderDetails(details)}`),
   error: (error) =>
     writeLine(
-      Bun.stderr,
+      "stderr",
       `[ERROR] ${error.message} ${JSON.stringify({
         type: error._tag,
         hint: error.hint,

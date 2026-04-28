@@ -1,7 +1,24 @@
+import { readdir, readFile } from "node:fs/promises"
+import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { BunChildProcessSpawner, BunFileSystem, BunPath } from "@effect/platform-bun"
+
+const repoRoot = process.cwd()
+const v2Root = join(repoRoot, "src", "v2")
+
+const v2SourceFiles = async (dir: string): Promise<readonly string[]> => {
+  const entries = await readdir(dir, { withFileTypes: true })
+  const files = await Promise.all(entries.map(async (entry) => {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      return v2SourceFiles(path)
+    }
+    return entry.isFile() && entry.name.endsWith(".ts") ? [path] : []
+  }))
+  return files.flat()
+}
 
 describe("GIVEN Rig v2 Effect Platform packages WHEN child processes run THEN package versions share Effect v4", () => {
   test("GIVEN the Bun child process spawner WHEN a command exits THEN v2 receives pid and exit code", async () => {
@@ -30,5 +47,37 @@ describe("GIVEN Rig v2 Effect Platform packages WHEN child processes run THEN pa
     expect(result.pid).toBeGreaterThan(0)
     expect(result.running).toBeBoolean()
     expect(result.exitCode).toBe(0)
+  })
+
+  test("GIVEN v2 runtime source WHEN scanned THEN direct Bun APIs are not used", async () => {
+    const violations: string[] = []
+    for (const file of await v2SourceFiles(v2Root)) {
+      const relative = file.slice(repoRoot.length + 1)
+      if (relative.endsWith("effect-platform-version.test.ts")) {
+        continue
+      }
+      const text = await readFile(file, "utf8")
+      if (/\bBun\./.test(text)) {
+        violations.push(relative)
+      }
+    }
+
+    expect(violations).toEqual([])
+  })
+
+  test("GIVEN v2 runtime source WHEN scanned THEN production code does not import node fs APIs", async () => {
+    const violations: string[] = []
+    for (const file of await v2SourceFiles(v2Root)) {
+      const relative = file.slice(repoRoot.length + 1)
+      if (relative.endsWith(".test.ts")) {
+        continue
+      }
+      const text = await readFile(file, "utf8")
+      if (/from\s+["']node:fs(?:\/promises)?["']/.test(text) || /from\s+["']fs(?:\/promises)?["']/.test(text)) {
+        violations.push(relative)
+      }
+    }
+
+    expect(violations).toEqual([])
   })
 })

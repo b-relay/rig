@@ -1,6 +1,7 @@
 import { Effect, FileSystem, Layer, Path, Sink, Stdio, Stream, Terminal } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { BunStdio } from "@effect/platform-bun"
 
 import { decodeV2StatusInput, type V2ProjectConfig } from "./config.js"
 import type { V2ConfigPatchOperation } from "./config-editor.js"
@@ -15,11 +16,20 @@ import { V2ProviderRegistry } from "./provider-contracts.js"
 import { V2Rigd } from "./rigd.js"
 import { V2Logger, V2Runtime } from "./services.js"
 
+const displayText = (text: string) =>
+  Effect.gen(function* () {
+    const stdio = yield* Stdio.Stdio
+    yield* Stream.run(Stream.make(text), stdio.stdout({ endOnDone: false }))
+  }).pipe(
+    Effect.provide(BunStdio.layer),
+    Effect.orDie,
+  )
+
 const terminal = Terminal.make({
   columns: Effect.succeed(100),
   readInput: Effect.die("rig2 foundation CLI does not read terminal input yet."),
   readLine: Effect.succeed(""),
-  display: (text) => Effect.promise(() => Bun.write(Bun.stdout, text).then(() => undefined)),
+  display: displayText,
 })
 
 const childProcessSpawner = ChildProcessSpawner.of({

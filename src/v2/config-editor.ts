@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto"
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { Context, Effect, Layer } from "effect"
 
 import { decodeV2ProjectConfig, type V2ProjectConfig } from "./config.js"
+import {
+  platformMakeDirectory,
+  platformReadFileString,
+  platformRename,
+  platformWriteFileString,
+} from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 
 export type V2ConfigPatchPath = readonly [string, ...string[]]
@@ -380,34 +385,34 @@ const editableFields: readonly V2ConfigFieldDoc[] = [
 
 export const V2ConfigFileStoreLive = Layer.succeed(V2ConfigFileStore, {
   read: (path) =>
-    Effect.tryPromise({
-      try: async () => ({
+    Effect.gen(function* () {
+      return {
         path,
-        raw: await readFile(path, "utf8"),
-      }),
-      catch: runtimeError(
+        raw: yield* platformReadFileString(path),
+      }
+    }).pipe(
+      Effect.mapError(runtimeError(
         "Unable to read v2 project config.",
         "Ensure rig.json exists and is readable before editing it through the control plane.",
         { configPath: path },
-      ),
-    }),
+      )),
+    ),
   writeAtomic: (input) => {
     const backupPath = `${input.path}.backup-${input.revision.slice(0, 12)}.json`
     const tempPath = `${input.path}.tmp-${input.revision.slice(0, 12)}`
-    return Effect.tryPromise({
-      try: async () => {
-        await mkdir(dirname(input.path), { recursive: true })
-        await writeFile(backupPath, input.previousRaw, "utf8")
-        await writeFile(tempPath, input.nextRaw, "utf8")
-        await rename(tempPath, input.path)
+    return Effect.gen(function* () {
+        yield* platformMakeDirectory(dirname(input.path))
+        yield* platformWriteFileString(backupPath, input.previousRaw)
+        yield* platformWriteFileString(tempPath, input.nextRaw)
+        yield* platformRename(tempPath, input.path)
         return { backupPath }
-      },
-      catch: runtimeError(
+      }).pipe(
+        Effect.mapError(runtimeError(
         "Unable to atomically write v2 project config.",
         "Use the reported backup path or retry after fixing filesystem permissions.",
         { configPath: input.path, backupPath, tempPath },
-      ),
-    })
+        )),
+      )
   },
 } satisfies V2ConfigFileStoreService)
 

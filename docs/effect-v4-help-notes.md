@@ -104,6 +104,7 @@ Verified again on 2026-04-27:
 
 - `Effect.catchAll` from v3 is now `Effect.catch` in v4.
 - `Effect.flip` works for tests that need to assert the typed error value.
+- `Effect.try` should use the object form with `try` and `catch` in Rig v2 code. The function shorthand caused runtime failures in `4.0.0-beta.57` because the implementation expects a `catch` callback.
 - `Context.Service<{ ... }>("Name")` works for simple service tags.
 - The service-class form is `class X extends Context.Service<X, Shape>()("Name") {}`; calling `Context.Service("Name")<...>` is invalid.
 
@@ -129,10 +130,16 @@ Verified on 2026-04-27 from the v4 beta package tarballs and official generated 
 
 - In the v4 beta line, process spawning is centered on `effect/unstable/process/ChildProcess` and `ChildProcessSpawner`, not the older `@effect/platform/CommandExecutor` shape from the Effect 3 platform line.
 - `@effect/platform-bun@4.0.0-beta.57` exports `BunChildProcessSpawner`, `BunFileSystem`, and `BunPath`.
+- Rig v2 source must not call direct `Bun.*` runtime APIs. Use Effect services with `@effect/platform-bun` layers instead; `src/v2/effect-platform-version.test.ts` scans v2 source for direct `Bun.` usage.
+- Rig v2 production source must not import `node:fs` or `fs` directly. Put filesystem work behind Effect `FileSystem.FileSystem` and provide `BunFileSystem.layer`.
 - `BunChildProcessSpawner.layer` is backed by `@effect/platform-node-shared/NodeChildProcessSpawner`.
 - `ChildProcessHandle` exposes `pid`, `exitCode`, `isRunning`, `kill(options?)`, `stdout`, `stderr`, `all`, `stdin`, and `unref`.
 - The node-shared implementation uses detached child processes by default on non-Windows platforms and kills the process group with `process.kill(-pid, signal)` when terminating, with timeout escalation support.
 - `src/v2/effect-platform-version.test.ts` verifies that Rig v2 can run a child process through `@effect/platform-bun@4.0.0-beta.57` with package-name `effect@4.0.0-beta.57`.
+
+### Effect testing note
+
+- Keep `bun:test` for now. If v2 Effect tests become noisy to maintain, pilot `@effect/vitest@4.0.0-beta.57` with `vitest@3.2.4` on one small v2 service test before migrating broader suites.
 
 ### Scaffold from the official starter
 

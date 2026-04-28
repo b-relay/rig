@@ -1,10 +1,24 @@
-import { appendFile, chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { getuid } from "node:process"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Exit, Layer, Option, Scope, Stream } from "effect"
+import { ChildProcess } from "effect/unstable/process"
+import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
+import { BunChildProcessSpawner, BunFileSystem, BunPath } from "@effect/platform-bun"
 
 import type { V2DeploymentRecord } from "./deployments.js"
+import {
+  isPlatformNotFound,
+  platformAppendFileString,
+  platformChmod,
+  platformCopyFile,
+  platformExists,
+  platformMakeDirectory,
+  platformReadFileBytes,
+  platformReadFileString,
+  platformRemove,
+  platformWriteFileString,
+} from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 import { RIG_V2_LAUNCHD_LABEL_PREFIX, rigV2BinRoot, rigV2ProxyRoot } from "./paths.js"
 
@@ -50,6 +64,107 @@ interface V2ProviderCommandResult {
 }
 
 type V2ProviderCommandRunner = (args: readonly string[]) => Promise<V2ProviderCommandResult>
+
+const V2PlatformProcessLayer = Layer.provide(
+  BunChildProcessSpawner.layer,
+  Layer.merge(BunFileSystem.layer, BunPath.layer),
+)
+
+const streamText = (stream: Stream.Stream<Uint8Array, unknown, unknown>) =>
+  stream.pipe(
+    Stream.decodeText(),
+    Stream.runCollect,
+    Effect.map((chunks) => chunks.join("")),
+  )
+
+const childProcessCommand = (
+  args: readonly string[],
+  options: {
+    readonly cwd?: string
+  } = {},
+) => {
+  const command = args[0]
+  if (!command) {
+    return Effect.fail(
+      new V2RuntimeError(
+        "Unable to run an empty command.",
+        "Pass a command with at least one argument before invoking the v2 process runner.",
+      ),
+    )
+  }
+
+  return Effect.succeed(
+    ChildProcess.make(command, args.slice(1), {
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+  )
+}
+
+const spawnPlatformProcess = (
+  args: readonly string[],
+  options: {
+    readonly cwd?: string
+    readonly scope: Scope.Scope
+  },
+): Effect.Effect<ChildProcessHandle, V2RuntimeError> =>
+  Effect.gen(function* () {
+    const command = yield* childProcessCommand(args, options)
+    return yield* command
+  }).pipe(
+    Scope.provide(options.scope),
+    Effect.provide(V2PlatformProcessLayer),
+    Effect.mapError((cause) =>
+      cause instanceof V2RuntimeError
+        ? cause
+        : new V2RuntimeError(
+          "Unable to spawn v2 platform process.",
+          "Ensure the command exists and the working directory is accessible.",
+          {
+            command: args.join(" "),
+            ...(options.cwd ? { cwd: options.cwd } : {}),
+            cause: cause instanceof Error ? cause.message : String(cause),
+          },
+        ),
+    ),
+  )
+
+const runPlatformCommand = (
+  args: readonly string[],
+  options: {
+    readonly cwd?: string
+  } = {},
+): Effect.Effect<V2ProviderCommandResult, V2RuntimeError> =>
+  Effect.gen(function* () {
+    const scope = yield* Scope.make()
+    const handle = yield* spawnPlatformProcess(args, { ...options, scope })
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        streamText(handle.stdout),
+        streamText(handle.stderr),
+        handle.exitCode,
+      ],
+      { concurrency: "unbounded" },
+    )
+    yield* Scope.close(scope, Exit.void).pipe(Effect.ignore)
+    return { stdout, stderr, exitCode: Number(exitCode) }
+  }).pipe(
+    Effect.scoped,
+    Effect.mapError((cause) =>
+      cause instanceof V2RuntimeError
+        ? cause
+        : new V2RuntimeError(
+          "Unable to run v2 platform command.",
+          "Ensure the command exists and the working directory is accessible.",
+          {
+            command: args.join(" "),
+            ...(options.cwd ? { cwd: options.cwd } : {}),
+            cause: cause instanceof Error ? cause.message : String(cause),
+          },
+        ),
+    ),
+  )
 
 export interface V2ProviderContractsOptions {
   readonly launchd?: {
@@ -434,7 +549,7 @@ const workspaceMaterializerService = (
       const workspacePath = input.deployment.workspacePath
       yield* Effect.tryPromise({
         try: async () => {
-          await mkdir(dirname(workspacePath), { recursive: true })
+          await Effect.runPromise(platformMakeDirectory(dirname(workspacePath)))
           const removeResult = await runGit(["git", "-C", repoPath, "worktree", "remove", "--force", workspacePath])
           if (removeResult.exitCode !== 0) {
             const stderr = removeResult.stderr.toLowerCase()
@@ -530,7 +645,7 @@ const workspaceMaterializerService = (
               )
             }
           }
-          await rm(workspacePath, { recursive: true, force: true })
+          await Effect.runPromise(platformRemove(workspacePath, { recursive: true, force: true }))
         },
         catch: (cause) =>
           cause instanceof V2RuntimeError
@@ -569,18 +684,8 @@ const escapeXml = (value: string): string =>
 
 const guiDomain = (): string => `gui/${getuid!()}`
 
-const defaultCommandRunner: V2ProviderCommandRunner = async (args) => {
-  const child = Bun.spawn([...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ])
-  return { stdout, stderr, exitCode }
-}
+const defaultCommandRunner: V2ProviderCommandRunner = (args) =>
+  Effect.runPromise(runPlatformCommand(args))
 
 const launchdLabelPart = (value: string): string =>
   value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "component"
@@ -638,7 +743,10 @@ const processSupervisorService = (
   const base = familyService(report, "process-supervisor")
   const selectedForDeployment = (deployment: V2DeploymentRecord) =>
     providerForFamily(report, "process-supervisor", deployment.resolved.providers.processSupervisor)
-  const rigdProcesses = new Map<string, ReturnType<typeof Bun.spawn>>()
+  const rigdProcesses = new Map<string, {
+    readonly handle: ChildProcessHandle
+    readonly scope: Scope.Closeable
+  }>()
   const processKey = (deployment: V2DeploymentRecord, service: V2RuntimeServiceConfig): string =>
     `${deployment.project}:${deployment.name}:${service.name}`
   const operationName = (
@@ -680,15 +788,18 @@ const processSupervisorService = (
         const logPath = launchdLogPath(input.deployment, input.service)
         const domain = guiDomain()
 
-        await mkdir(join(launchdHome, "Library", "LaunchAgents"), { recursive: true })
-        await mkdir(input.deployment.logRoot, { recursive: true })
-        await Bun.write(path, launchdPlist({
-          label,
-          command: input.service.command,
-          workdir: input.deployment.workspacePath,
-          logPath,
-          keepAlive: input.deployment.resolved.v1Config?.daemon?.keepAlive ?? false,
-        }))
+        await Effect.runPromise(platformMakeDirectory(join(launchdHome, "Library", "LaunchAgents")))
+        await Effect.runPromise(platformMakeDirectory(input.deployment.logRoot))
+        await Effect.runPromise(platformWriteFileString(
+          path,
+          launchdPlist({
+            label,
+            command: input.service.command,
+            workdir: input.deployment.workspacePath,
+            logPath,
+            keepAlive: input.deployment.resolved.v1Config?.daemon?.keepAlive ?? false,
+          }),
+        ))
 
         await runLaunchd(["launchctl", "bootout", `${domain}/${label}`])
         const result = await runLaunchd(["launchctl", "bootstrap", domain, path])
@@ -761,7 +872,7 @@ const processSupervisorService = (
           }
         }
 
-        await rm(path, { force: true })
+        await Effect.runPromise(platformRemove(path, { force: true }))
         return {
           operation: operationName(provider, "down", input.service, "removed"),
         } satisfies V2ProcessSupervisorOperationResult
@@ -781,18 +892,30 @@ const processSupervisorService = (
           ),
     })
 
-  const collectProcessOutput = async (
-    subprocess: ReturnType<typeof Bun.spawn>,
-  ): Promise<readonly V2ProviderOutputLine[]> => {
-    const [stdout, stderr] = await Promise.all([
-      new Response(subprocess.stdout).text(),
-      new Response(subprocess.stderr).text(),
-    ])
-    return [
-      ...outputLines("stdout", stdout),
-      ...outputLines("stderr", stderr),
-    ]
-  }
+  const collectProcessOutput = (
+    handle: ChildProcessHandle,
+  ): Effect.Effect<readonly V2ProviderOutputLine[], V2RuntimeError> =>
+    Effect.all(
+      [
+        streamText(handle.stdout),
+        streamText(handle.stderr),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map(([stdout, stderr]) => [
+        ...outputLines("stdout", stdout),
+        ...outputLines("stderr", stderr),
+      ]),
+      Effect.mapError((cause) =>
+        new V2RuntimeError(
+          "Unable to collect v2 process output.",
+          "Inspect the managed process streams and retry the runtime action.",
+          {
+            cause: cause instanceof Error ? cause.message : String(cause),
+          },
+        ),
+      ),
+    )
 
   const stopRigdProcess = (
     provider: V2ProviderPlugin,
@@ -801,24 +924,27 @@ const processSupervisorService = (
       readonly service: V2RuntimeServiceConfig
     },
   ): Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError> =>
-    Effect.tryPromise({
-      try: async () => {
-        const key = processKey(input.deployment, input.service)
-        const running = rigdProcesses.get(key)
-        if (!running) {
-          return {
-            operation: operationName(provider, "down", input.service, "not-running"),
-          } satisfies V2ProcessSupervisorOperationResult
-        }
-
-        running.kill()
-        rigdProcesses.delete(key)
-        const exitCode = await running.exited.catch(() => undefined)
+    Effect.gen(function* () {
+      const key = processKey(input.deployment, input.service)
+      const running = rigdProcesses.get(key)
+      if (!running) {
         return {
-          operation: operationName(provider, "down", input.service, `stopped:${exitCode ?? "unknown"}`),
+          operation: operationName(provider, "down", input.service, "not-running"),
         } satisfies V2ProcessSupervisorOperationResult
-      },
-      catch: runtimeError(
+      }
+
+      rigdProcesses.delete(key)
+      yield* running.handle.kill({ forceKillAfter: "2 seconds" }).pipe(Effect.ignore)
+      const exitCode = yield* running.handle.exitCode.pipe(
+        Effect.map((code) => Number(code)),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+      yield* Scope.close(running.scope, Exit.void).pipe(Effect.ignore)
+      return {
+        operation: operationName(provider, "down", input.service, `stopped:${exitCode ?? "unknown"}`),
+      } satisfies V2ProcessSupervisorOperationResult
+    }).pipe(
+      Effect.mapError(runtimeError(
         `Unable to stop rigd-supervised process '${input.service.name}'.`,
         "Check the managed process state and retry the lifecycle action.",
         {
@@ -826,8 +952,8 @@ const processSupervisorService = (
           component: input.service.name,
           deployment: input.deployment.name,
         },
-      ),
-    })
+      )),
+    )
 
   const startRigdProcess = (
     provider: V2ProviderPlugin,
@@ -851,63 +977,76 @@ const processSupervisorService = (
       )
     }
 
-    return Effect.tryPromise({
-      try: async () => {
-        const key = processKey(input.deployment, input.service)
-        if (action === "up" && rigdProcesses.has(key)) {
-          return {
-            operation: operationName(provider, action, input.service, "already-running"),
-          } satisfies V2ProcessSupervisorOperationResult
-        }
+    return Effect.gen(function* () {
+      const key = processKey(input.deployment, input.service)
+      if (action === "up" && rigdProcesses.has(key)) {
+        return {
+          operation: operationName(provider, action, input.service, "already-running"),
+        } satisfies V2ProcessSupervisorOperationResult
+      }
 
-        const existing = rigdProcesses.get(key)
-        if (existing) {
-          existing.kill()
-          rigdProcesses.delete(key)
-          await existing.exited.catch(() => undefined)
-        }
+      const existing = rigdProcesses.get(key)
+      if (existing) {
+        rigdProcesses.delete(key)
+        yield* existing.handle.kill({ forceKillAfter: "2 seconds" }).pipe(Effect.ignore)
+        yield* existing.handle.exitCode.pipe(Effect.ignore)
+        yield* Scope.close(existing.scope, Exit.void).pipe(Effect.ignore)
+      }
 
-        await mkdir(input.deployment.workspacePath, { recursive: true })
-        const subprocess = Bun.spawn(["sh", "-lc", input.service.command], {
-          cwd: input.deployment.workspacePath,
-          stdout: "pipe",
-          stderr: "pipe",
-        })
-        const exitCode = await Promise.race([
-          subprocess.exited,
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 50)),
-        ])
-
-        if (exitCode === undefined) {
-          rigdProcesses.set(key, subprocess)
-          return {
-            operation: operationName(provider, action, input.service, "started"),
-          } satisfies V2ProcessSupervisorOperationResult
-        }
-
-        const output = await collectProcessOutput(subprocess)
-        if (exitCode !== 0) {
-          throw new V2RuntimeError(
-            `rigd process supervisor command failed for '${input.service.name}' with exit code ${exitCode}.`,
-            "Fix the managed component command before retrying the lifecycle action.",
+      yield* platformMakeDirectory(input.deployment.workspacePath).pipe(
+        Effect.mapError((cause) =>
+          new V2RuntimeError(
+            `Unable to prepare workspace for '${input.service.name}'.`,
+            "Ensure the deployment workspace is writable before starting the component.",
             {
               providerId: provider.id,
               component: input.service.name,
               deployment: input.deployment.name,
-              command: input.service.command,
-              exitCode,
-              stdout: output.filter((line) => line.stream === "stdout").map((line) => line.line).join("\n"),
-              stderr: output.filter((line) => line.stream === "stderr").map((line) => line.line).join("\n"),
+              workspacePath: input.deployment.workspacePath,
+              cause: cause instanceof Error ? cause.message : String(cause),
             },
-          )
-        }
+          ),
+        ),
+      )
+      const scope = yield* Scope.make()
+      const handle = yield* spawnPlatformProcess(
+        ["sh", "-lc", input.service.command],
+        { cwd: input.deployment.workspacePath, scope },
+      )
+      const quickExit = yield* handle.exitCode.pipe(Effect.timeoutOption("50 millis"))
 
+      if (Option.isNone(quickExit)) {
+        rigdProcesses.set(key, { handle, scope })
         return {
-          operation: operationName(provider, action, input.service, `exited:${exitCode}`),
-          ...(output.length > 0 ? { output } : {}),
+          operation: operationName(provider, action, input.service, "started"),
         } satisfies V2ProcessSupervisorOperationResult
-      },
-      catch: (cause) =>
+      }
+
+      const exitCode = Number(quickExit.value)
+      const output = yield* collectProcessOutput(handle)
+      yield* Scope.close(scope, Exit.void).pipe(Effect.ignore)
+      if (exitCode !== 0) {
+        return yield* Effect.fail(new V2RuntimeError(
+          `rigd process supervisor command failed for '${input.service.name}' with exit code ${exitCode}.`,
+          "Fix the managed component command before retrying the lifecycle action.",
+          {
+            providerId: provider.id,
+            component: input.service.name,
+            deployment: input.deployment.name,
+            command: input.service.command,
+            exitCode,
+            stdout: output.filter((line) => line.stream === "stdout").map((line) => line.line).join("\n"),
+            stderr: output.filter((line) => line.stream === "stderr").map((line) => line.line).join("\n"),
+          },
+        ))
+      }
+
+      return {
+        operation: operationName(provider, action, input.service, `exited:${exitCode}`),
+        ...(output.length > 0 ? { output } : {}),
+      } satisfies V2ProcessSupervisorOperationResult
+    }).pipe(
+      Effect.mapError((cause) =>
         cause instanceof V2RuntimeError
           ? cause
           : new V2RuntimeError(
@@ -920,8 +1059,8 @@ const processSupervisorService = (
               command: input.service.command,
               cause: cause instanceof Error ? cause.message : String(cause),
             },
-          ),
-    })
+          )),
+    )
   }
 
   return {
@@ -992,38 +1131,31 @@ const healthCheckerService = (
     }
 
     if (!target.startsWith("http://") && !target.startsWith("https://")) {
-      return Effect.tryPromise({
-        try: async () => {
-          const subprocess = Bun.spawn(["sh", "-lc", target], {
-            cwd: input.deployment.workspacePath,
-            stdout: "pipe",
-            stderr: "pipe",
-          })
-          const [exitCode, stdout, stderr] = await Promise.all([
-            subprocess.exited,
-            new Response(subprocess.stdout).text(),
-            new Response(subprocess.stderr).text(),
-          ])
+      return Effect.gen(function* () {
+        const { exitCode, stdout, stderr } = yield* runPlatformCommand(
+          ["sh", "-lc", target],
+          { cwd: input.deployment.workspacePath },
+        )
 
-          if (exitCode !== 0) {
-            throw new V2RuntimeError(
-              `Command health check failed for '${input.service.name}' with exit code ${exitCode}.`,
-              "Fix the component health command before retrying the runtime action.",
-              {
-                providerId: selected.id,
-                component: input.service.name,
-                deployment: input.deployment.name,
-                target,
-                exitCode,
-                stdout,
-                stderr,
-              },
-            )
-          }
+        if (exitCode !== 0) {
+          return yield* Effect.fail(new V2RuntimeError(
+            `Command health check failed for '${input.service.name}' with exit code ${exitCode}.`,
+            "Fix the component health command before retrying the runtime action.",
+            {
+              providerId: selected.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              target,
+              exitCode,
+              stdout,
+              stderr,
+            },
+          ))
+        }
 
-          return `${selected.family}:${selected.id}:check:${input.service.name}:command:healthy:${exitCode}`
-        },
-        catch: (cause) =>
+        return `${selected.family}:${selected.id}:check:${input.service.name}:command:healthy:${exitCode}`
+      }).pipe(
+        Effect.mapError((cause) =>
           cause instanceof V2RuntimeError
             ? cause
             : new V2RuntimeError(
@@ -1036,8 +1168,8 @@ const healthCheckerService = (
                 target,
                 cause: cause instanceof Error ? cause.message : String(cause),
               },
-            ),
-      })
+            )),
+      )
     }
 
     return Effect.tryPromise({
@@ -1111,13 +1243,12 @@ const eventTransportService = (
       ...(input.details ? { details: input.details } : {}),
     }
 
-    return Effect.tryPromise({
-      try: async () => {
-        await mkdir(input.deployment.logRoot, { recursive: true })
-        await appendFile(logPath, `${JSON.stringify(entry)}\n`, "utf8")
+    return Effect.gen(function* () {
+        yield* platformMakeDirectory(input.deployment.logRoot)
+        yield* platformAppendFileString(logPath, `${JSON.stringify(entry)}\n`)
         return `${selected.family}:${selected.id}:append:${input.event}${input.component ? `:${input.component}` : ""}`
-      },
-      catch: runtimeError(
+      }).pipe(
+        Effect.mapError(runtimeError(
         "Unable to append v2 runtime event.",
         "Ensure the deployment log root is writable before retrying the runtime action.",
         {
@@ -1126,8 +1257,8 @@ const eventTransportService = (
           event: input.event,
           ...(input.component ? { component: input.component } : {}),
         },
-      ),
-    })
+        )),
+      )
   }
 
   return {
@@ -1252,7 +1383,7 @@ const packageManagerService = (
   const resolveEntrypoint = (entrypoint: string, workspacePath: string): string =>
     isAbsolute(entrypoint) ? entrypoint : resolve(workspacePath, entrypoint)
 
-  const isBinaryContent = (content: Buffer): boolean => {
+  const isBinaryContent = (content: Uint8Array): boolean => {
     const sample = content.subarray(0, 8192)
     return sample.includes(0)
   }
@@ -1263,21 +1394,21 @@ const packageManagerService = (
   const scriptShim = (workspacePath: string, entrypoint: string): string =>
     `#!/bin/sh\ncd ${JSON.stringify(workspacePath)} && exec ./${entrypoint} "$@"\n`
 
-  const installEntrypoint = async (
+  const installEntrypoint = (
     deployment: V2DeploymentRecord,
     service: Extract<V2RuntimeServiceConfig, { readonly type: "bin" }>,
-  ): Promise<string> => {
+  ): Effect.Effect<string, V2RuntimeError> => Effect.gen(function* () {
     const destination = installPath(deployment, service.name)
-    await mkdir(dirname(destination), { recursive: true })
+    yield* platformMakeDirectory(dirname(destination))
 
     if (service.entrypoint.includes(" ") && !service.build) {
-      await writeFile(destination, commandShim(deployment.workspacePath, service.entrypoint), "utf8")
-      await chmod(destination, 0o755)
+      yield* platformWriteFileString(destination, commandShim(deployment.workspacePath, service.entrypoint))
+      yield* platformChmod(destination, 0o755)
       return destination
     }
 
     if (service.entrypoint.includes(" ") && service.build) {
-      throw new V2RuntimeError(
+      return yield* Effect.fail(new V2RuntimeError(
         `Installed component '${service.name}' cannot use a command entrypoint with a build command.`,
         "Use a file entrypoint for built CLI artifacts.",
         {
@@ -1287,12 +1418,12 @@ const packageManagerService = (
           entrypoint: service.entrypoint,
           build: service.build,
         },
-      )
+      ))
     }
 
     const entrypoint = resolveEntrypoint(service.entrypoint, deployment.workspacePath)
     if (!isWithinWorkspace(entrypoint, deployment.workspacePath)) {
-      throw new V2RuntimeError(
+      return yield* Effect.fail(new V2RuntimeError(
         `Installed component '${service.name}' resolves outside the deployment workspace.`,
         "Use an entrypoint path inside the deployment workspace.",
         {
@@ -1302,20 +1433,20 @@ const packageManagerService = (
           entrypoint: service.entrypoint,
           workspacePath: deployment.workspacePath,
         },
-      )
+      ))
     }
 
-    const content = await readFile(entrypoint)
+    const content = yield* platformReadFileBytes(entrypoint)
     if (isBinaryContent(content)) {
-      await copyFile(entrypoint, destination)
+      yield* platformCopyFile(entrypoint, destination)
     } else if (service.build) {
-      await copyFile(entrypoint, destination)
+      yield* platformCopyFile(entrypoint, destination)
     } else {
-      await writeFile(destination, scriptShim(deployment.workspacePath, service.entrypoint), "utf8")
+      yield* platformWriteFileString(destination, scriptShim(deployment.workspacePath, service.entrypoint))
     }
-    await chmod(destination, 0o755)
+    yield* platformChmod(destination, 0o755)
     return destination
-  }
+  })
 
   const installPackageJsonScript = (input: {
     readonly deployment: V2DeploymentRecord
@@ -1325,22 +1456,15 @@ const packageManagerService = (
       return providerOperation(selected, `install:${input.service.name}`)
     }
 
-    return Effect.tryPromise({
-      try: async () => {
+    return Effect.gen(function* () {
         if ("build" in input.service && input.service.build) {
-          const subprocess = Bun.spawn(["sh", "-lc", input.service.build], {
-            cwd: input.deployment.workspacePath,
-            stdout: "pipe",
-            stderr: "pipe",
-          })
-          const [exitCode, stdout, stderr] = await Promise.all([
-            subprocess.exited,
-            new Response(subprocess.stdout).text(),
-            new Response(subprocess.stderr).text(),
-          ])
+          const { exitCode, stdout, stderr } = yield* runPlatformCommand(
+            ["sh", "-lc", input.service.build],
+            { cwd: input.deployment.workspacePath },
+          )
 
           if (exitCode !== 0) {
-            throw new V2RuntimeError(
+            return yield* Effect.fail(new V2RuntimeError(
               `Package build failed for '${input.service.name}' with exit code ${exitCode}.`,
               "Fix the installed component build command before retrying the deploy action.",
               {
@@ -1352,14 +1476,14 @@ const packageManagerService = (
                 stdout,
                 stderr,
               },
-            )
+            ))
           }
         }
 
-        const destination = await installEntrypoint(input.deployment, input.service)
+        const destination = yield* installEntrypoint(input.deployment, input.service)
         return `${selected.family}:${selected.id}:install:${input.service.name}:installed:${destination}`
-      },
-      catch: (cause) =>
+    }).pipe(
+      Effect.mapError((cause) =>
         cause instanceof V2RuntimeError
           ? cause
           : new V2RuntimeError(
@@ -1375,7 +1499,8 @@ const packageManagerService = (
               cause: cause instanceof Error ? cause.message : String(cause),
             },
           ),
-    })
+      ),
+    )
   }
 
   return {
@@ -1522,24 +1647,25 @@ const renderV2CaddyBlock = (
     `}`,
   ].join("\n")
 
-const readTextIfExists = async (path: string): Promise<string> => {
-  const file = Bun.file(path)
-  return await file.exists() ? file.text() : ""
-}
+const readTextIfExists = (path: string): Effect.Effect<string, unknown> =>
+  platformReadFileString(path).pipe(
+    Effect.catch((cause) => isPlatformNotFound(cause) ? Effect.succeed("") : Effect.fail(cause)),
+  )
 
-const backupIfExists = async (path: string): Promise<void> => {
-  const file = Bun.file(path)
-  if (!await file.exists()) {
-    return
-  }
-  const ts = new Date().toISOString().replace(/[:.]/g, "-")
-  await copyFile(path, `${path}.backup-${ts}`)
-}
+const backupIfExists = (path: string): Effect.Effect<void, unknown> =>
+  platformExists(path).pipe(
+    Effect.flatMap((exists) =>
+      exists
+        ? platformCopyFile(path, `${path}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}`)
+        : Effect.void
+    ),
+  )
 
-const writeText = async (path: string, text: string): Promise<void> => {
-  await mkdir(dirname(path), { recursive: true })
-  await Bun.write(path, text)
-}
+const writeText = (path: string, text: string): Effect.Effect<void, unknown> =>
+  Effect.gen(function* () {
+    yield* platformMakeDirectory(dirname(path))
+    yield* platformWriteFileString(path, text)
+  })
 
 const deploymentDomain = (
   deployment: V2DeploymentRecord,
@@ -1652,36 +1778,38 @@ const proxyRouterService = (
         port,
       }
 
-      yield* Effect.tryPromise({
-        try: async () => {
-          const text = await readTextIfExists(caddyfilePath)
-          const lines = text.split("\n")
-          const existing = parseCaddySiteBlocks(text)
-          const target =
-            existing.find((block) => block.route && routeKey(block.route) === routeKey(route)) ??
-            existing.find((block) => block.domain === route.domain)
-          const block = renderV2CaddyBlock(route, extraConfig)
-          const next = target
-            ? [
-              ...lines.slice(0, target.startLine),
-              block,
-              ...lines.slice(target.endLine + 1),
-            ].join("\n")
-            : text.trimEnd() === ""
-              ? `${block}\n`
-              : `${text.trimEnd()}\n\n${block}\n`
+      yield* Effect.gen(function* () {
+        const text = yield* readTextIfExists(caddyfilePath)
+        const lines = text.split("\n")
+        const existing = parseCaddySiteBlocks(text)
+        const target =
+          existing.find((block) => block.route && routeKey(block.route) === routeKey(route)) ??
+          existing.find((block) => block.domain === route.domain)
+        const block = renderV2CaddyBlock(route, extraConfig)
+        const next = target
+          ? [
+            ...lines.slice(0, target.startLine),
+            block,
+            ...lines.slice(target.endLine + 1),
+          ].join("\n")
+          : text.trimEnd() === ""
+            ? `${block}\n`
+            : `${text.trimEnd()}\n\n${block}\n`
 
-          await backupIfExists(caddyfilePath)
-          await writeText(caddyfilePath, next)
-          await reloadCaddyAfterWrite({
+        yield* backupIfExists(caddyfilePath)
+        yield* writeText(caddyfilePath, next)
+        yield* Effect.tryPromise({
+          try: () => reloadCaddyAfterWrite({
             project: input.deployment.project,
             deployment: input.deployment.name,
             upstream: input.proxy.upstream,
             domain,
             port,
-          })
-        },
-        catch: runtimeError(
+          }),
+          catch: (cause) => cause,
+        })
+      }).pipe(
+        Effect.mapError(runtimeError(
           `Unable to upsert Caddy route for deployment '${input.deployment.name}'.`,
           "Ensure the v2 Caddyfile path is writable and retry proxy routing.",
           {
@@ -1693,8 +1821,8 @@ const proxyRouterService = (
             domain,
             port,
           },
-        ),
-      })
+        )),
+      )
 
       return `${selected.family}:${selected.id}:upsert:${domain}:${input.proxy.upstream}:${port}`
     })
@@ -1703,9 +1831,8 @@ const proxyRouterService = (
     readonly deployment: V2DeploymentRecord
     readonly proxy: V2RuntimeProxyConfig
   }): Effect.Effect<string, V2RuntimeError> =>
-    Effect.tryPromise({
-      try: async () => {
-        const text = await readTextIfExists(caddyfilePath)
+    Effect.gen(function* () {
+        const text = yield* readTextIfExists(caddyfilePath)
         const lines = text.split("\n")
         const key = routeKey({
           project: input.deployment.project,
@@ -1722,17 +1849,20 @@ const proxyRouterService = (
             ...lines.slice(0, target.startLine),
             ...lines.slice(endLine),
           ].join("\n")
-          await backupIfExists(caddyfilePath)
-          await writeText(caddyfilePath, next)
-          await reloadCaddyAfterWrite({
+          yield* backupIfExists(caddyfilePath)
+          yield* writeText(caddyfilePath, next)
+          yield* Effect.tryPromise({
+            try: () => reloadCaddyAfterWrite({
             project: input.deployment.project,
             deployment: input.deployment.name,
             upstream: input.proxy.upstream,
+            }),
+            catch: (cause) => cause,
           })
         }
         return `${selected.family}:${selected.id}:remove:${input.deployment.project}:${input.deployment.name}:${input.proxy.upstream}`
-      },
-      catch: runtimeError(
+      }).pipe(
+        Effect.mapError(runtimeError(
         `Unable to remove Caddy route for deployment '${input.deployment.name}'.`,
         "Ensure the v2 Caddyfile path is writable and retry proxy teardown.",
         {
@@ -1742,8 +1872,8 @@ const proxyRouterService = (
           deployment: input.deployment.name,
           upstream: input.proxy.upstream,
         },
-      ),
-    })
+        )),
+      )
 
   return {
     ...base,

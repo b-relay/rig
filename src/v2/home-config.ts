@@ -1,7 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { Context, Effect, Layer, Schema } from "effect"
 
+import {
+  isPlatformNotFound,
+  platformMakeDirectory,
+  platformReadFileString,
+  platformWriteFileString,
+} from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 import type { V2ProviderProfileName } from "./provider-contracts.js"
 
@@ -220,40 +225,39 @@ export const decodeV2HomeConfig = (input: unknown): Effect.Effect<V2HomeConfig, 
 
 export const V2FileHomeConfigStoreLive = Layer.succeed(V2HomeConfigStore, {
   read: (input) =>
-    Effect.tryPromise({
-      try: async () => {
-        const path = v2HomeConfigPath(input.stateRoot)
-        try {
-          const raw = await readFile(path, "utf8")
-          return JSON.parse(raw) as unknown
-        } catch (cause) {
-          if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT") {
-            return {}
-          }
-          throw cause
-        }
-      },
-      catch: configError(
+    Effect.gen(function* () {
+      const path = v2HomeConfigPath(input.stateRoot)
+      return yield* platformReadFileString(path).pipe(
+        Effect.matchEffect({
+          onSuccess: (raw) => Effect.try({
+            try: () => JSON.parse(raw) as unknown,
+            catch: (cause) => cause,
+          }),
+          onFailure: (cause) => isPlatformNotFound(cause) ? Effect.succeed({}) : Effect.fail(cause),
+        }),
+      )
+    }).pipe(
+      Effect.mapError(configError(
         "Unable to read v2 home config.",
         "Ensure the v2 state root is readable or repair the home config file.",
         { stateRoot: input.stateRoot },
-      ),
-    }).pipe(Effect.flatMap(decodeV2HomeConfig)),
+      )),
+      Effect.flatMap(decodeV2HomeConfig),
+    ),
   write: (input) =>
     decodeV2HomeConfig(input.config).pipe(
       Effect.flatMap((config) =>
-        Effect.tryPromise({
-          try: async () => {
-            const path = v2HomeConfigPath(input.stateRoot)
-            await mkdir(dirname(path), { recursive: true })
-            await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8")
-          },
-          catch: configError(
+        Effect.gen(function* () {
+          const path = v2HomeConfigPath(input.stateRoot)
+          yield* platformMakeDirectory(dirname(path))
+          yield* platformWriteFileString(path, `${JSON.stringify(config, null, 2)}\n`)
+        }).pipe(
+          Effect.mapError(configError(
             "Unable to write v2 home config.",
             "Ensure the v2 state root is writable and retry.",
             { stateRoot: input.stateRoot },
-          ),
-        }),
+          )),
+        ),
       ),
     ),
 } satisfies V2HomeConfigStoreService)

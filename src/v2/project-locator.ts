@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Context, Effect, Layer } from "effect"
 
+import { platformReadFileString } from "./effect-platform.js"
 import { V2CliArgumentError } from "./errors.js"
 
 export interface V2LocatedProject {
@@ -28,15 +28,15 @@ export const V2ProjectLocatorLive = Layer.succeed(V2ProjectLocator, {
   inferCurrentProject: Effect.gen(function* () {
     const repoPath = process.cwd()
     const configPath = join(repoPath, "rig.json")
-    const raw = yield* Effect.tryPromise({
-      try: () => readFile(configPath, "utf8"),
-      catch: (cause) =>
+    const raw = yield* platformReadFileString(configPath).pipe(
+      Effect.mapError((cause) =>
         invalidCurrentRepo("No rig.json found in the current directory.", {
           repoPath,
           configPath,
           cause: cause instanceof Error ? cause.message : String(cause),
         }),
-    })
+      ),
+    )
 
     const parsed = yield* Effect.try({
       try: () => JSON.parse(raw) as unknown,

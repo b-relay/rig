@@ -1,8 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Context, Effect, Layer } from "effect"
 
 import type { V2DeploymentKind, V2DeploymentRecord } from "./deployments.js"
+import {
+  isPlatformNotFound,
+  platformMakeDirectory,
+  platformReadFileString,
+  platformWriteFileString,
+} from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 import type { V2ProviderFamily, V2ProviderProfileName } from "./provider-contracts.js"
 
@@ -164,9 +169,6 @@ const runtimeError = (
     },
   )
 
-const isMissingFile = (cause: unknown): boolean =>
-  typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT"
-
 const normalizeState = (value: unknown): V2RigdPersistentState => {
   if (typeof value !== "object" || value === null) {
     return emptyState()
@@ -196,40 +198,35 @@ const allEvidencePresent = (evidence: ReturnType<typeof hasMinimumEvidence>): bo
   evidence.healthSummaries && evidence.providerObservations && evidence.deploymentSnapshots
 
 const readState = (stateRoot: string): Effect.Effect<V2RigdPersistentState, V2RuntimeError> =>
-  Effect.tryPromise({
-    try: async () => {
-      try {
-        const raw = await readFile(rigdStatePath(stateRoot), "utf8")
-        return normalizeState(JSON.parse(raw) as unknown)
-      } catch (cause) {
-        if (isMissingFile(cause)) {
-          return emptyState()
-        }
-        throw cause
-      }
-    },
-    catch: runtimeError(
+  platformReadFileString(rigdStatePath(stateRoot)).pipe(
+    Effect.matchEffect({
+      onSuccess: (raw) => Effect.try({
+        try: () => normalizeState(JSON.parse(raw) as unknown),
+        catch: (cause) => cause,
+      }),
+      onFailure: (cause) => isPlatformNotFound(cause) ? Effect.succeed(emptyState()) : Effect.fail(cause),
+    }),
+    Effect.mapError(runtimeError(
       "Unable to read rigd persistent state.",
       "Ensure the v2 runtime state root is readable or repair runtime/rigd-state.json.",
       { stateRoot },
-    ),
-  })
+    )),
+  )
 
 const writeState = (
   stateRoot: string,
   state: V2RigdPersistentState,
 ): Effect.Effect<void, V2RuntimeError> =>
-  Effect.tryPromise({
-    try: async () => {
-      await mkdir(join(stateRoot, "runtime"), { recursive: true })
-      await writeFile(rigdStatePath(stateRoot), `${JSON.stringify(state, null, 2)}\n`, "utf8")
-    },
-    catch: runtimeError(
+  Effect.gen(function* () {
+    yield* platformMakeDirectory(join(stateRoot, "runtime"))
+    yield* platformWriteFileString(rigdStatePath(stateRoot), `${JSON.stringify(state, null, 2)}\n`)
+  }).pipe(
+    Effect.mapError(runtimeError(
       "Unable to write rigd persistent state.",
       "Ensure the v2 runtime state root is writable and retry.",
       { stateRoot },
-    ),
-  })
+    )),
+  )
 
 const updateState = (
   stateRoot: string,

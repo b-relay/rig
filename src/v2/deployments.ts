@@ -1,4 +1,3 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Context, Effect, Layer } from "effect"
 
@@ -7,6 +6,13 @@ import {
   type ResolvedV2Lane,
   type V2ProjectConfig,
 } from "./config.js"
+import {
+  isPlatformNotFound,
+  platformMakeDirectory,
+  platformReadFileString,
+  platformRemove,
+  platformWriteFileString,
+} from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 
 export type V2DeploymentKind = "local" | "live" | "generated"
@@ -295,64 +301,59 @@ const runtimeError = (
 
 export const V2FileDeploymentStoreLive = Layer.succeed(V2DeploymentStore, {
   read: (project, stateRoot) =>
-    Effect.tryPromise({
-      try: async () => {
-        const path = deploymentInventoryPath(stateRoot, project)
-        try {
-          const raw = await readFile(path, "utf8")
-          const parsed = JSON.parse(raw) as unknown
-          return Array.isArray(parsed) ? parsed as V2DeploymentRecord[] : []
-        } catch (cause) {
-          if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT") {
-            return []
-          }
-          throw cause
-        }
-      },
-      catch: runtimeError(
+    platformReadFileString(deploymentInventoryPath(stateRoot, project)).pipe(
+      Effect.matchEffect({
+        onSuccess: (raw) =>
+          Effect.try({
+            try: () => {
+              const parsed = JSON.parse(raw) as unknown
+              return Array.isArray(parsed) ? parsed as V2DeploymentRecord[] : []
+            },
+            catch: (cause) => cause,
+          }),
+        onFailure: (cause) => isPlatformNotFound(cause) ? Effect.succeed([]) : Effect.fail(cause),
+      }),
+      Effect.mapError(runtimeError(
         `Unable to read v2 deployment inventory for '${project}'.`,
         "Ensure the v2 state root is readable or repair the deployment inventory file.",
         { project, stateRoot },
-      ),
-    }),
+      )),
+    ),
   write: (project, stateRoot, records) =>
-    Effect.tryPromise({
-      try: async () => {
-        const path = deploymentInventoryPath(stateRoot, project)
-        await mkdir(join(stateRoot, "runtime", project), { recursive: true })
-        await writeFile(path, `${JSON.stringify(records, null, 2)}\n`, "utf8")
-      },
-      catch: runtimeError(
+    Effect.gen(function* () {
+      const path = deploymentInventoryPath(stateRoot, project)
+      yield* platformMakeDirectory(join(stateRoot, "runtime", project))
+      yield* platformWriteFileString(path, `${JSON.stringify(records, null, 2)}\n`)
+    }).pipe(
+      Effect.mapError(runtimeError(
         `Unable to write v2 deployment inventory for '${project}'.`,
         "Ensure the v2 state root is writable and retry.",
         { project, stateRoot },
-      ),
-    }),
+      )),
+    ),
   ensureState: (record) =>
-    Effect.tryPromise({
-      try: async () => {
-        await mkdir(record.workspacePath, { recursive: true })
-        await mkdir(record.logRoot, { recursive: true })
-        await mkdir(record.runtimeRoot, { recursive: true })
-        await writeFile(record.runtimeStatePath, `${JSON.stringify(record, null, 2)}\n`, "utf8")
-      },
-      catch: runtimeError(
+    Effect.gen(function* () {
+      yield* platformMakeDirectory(record.workspacePath)
+      yield* platformMakeDirectory(record.logRoot)
+      yield* platformMakeDirectory(record.runtimeRoot)
+      yield* platformWriteFileString(record.runtimeStatePath, `${JSON.stringify(record, null, 2)}\n`)
+    }).pipe(
+      Effect.mapError(runtimeError(
         `Unable to materialize generated deployment state for '${record.name}'.`,
         "Ensure the v2 workspace, log, and runtime roots are writable.",
         { project: record.project, deployment: record.name },
-      ),
-    }),
+      )),
+    ),
   removeState: (record) =>
-    Effect.tryPromise({
-      try: async () => {
-        await rm(record.workspacePath, { recursive: true, force: true })
-        await rm(record.logRoot, { recursive: true, force: true })
-        await rm(record.runtimeRoot, { recursive: true, force: true })
-      },
-      catch: runtimeError(
+    Effect.gen(function* () {
+      yield* platformRemove(record.workspacePath, { recursive: true, force: true })
+      yield* platformRemove(record.logRoot, { recursive: true, force: true })
+      yield* platformRemove(record.runtimeRoot, { recursive: true, force: true })
+    }).pipe(
+      Effect.mapError(runtimeError(
         `Unable to remove generated deployment state for '${record.name}'.`,
         "Ensure the v2 workspace, log, and runtime roots are writable.",
         { project: record.project, deployment: record.name },
-      ),
-    }),
+      )),
+    ),
 })

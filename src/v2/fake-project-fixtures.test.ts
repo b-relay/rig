@@ -78,7 +78,12 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
     const generated = inventory.find((record) => record.kind === "generated")
 
     expect(local?.resolved.environment.services).toEqual([
-      expect.objectContaining({ name: "postgres", port: 55432 }),
+      expect.objectContaining({
+        name: "postgres",
+        port: 55432,
+        command: "sh -c 'test -f \"$1/PG_VERSION\" || initdb -D \"$1\"; exec postgres -D \"$1\" -h 127.0.0.1 -p \"$2\"' -- '/tmp/rig-v2-fixtures/data/fullstack_basic/local/postgres/postgres' 55432",
+        healthCheck: "pg_isready -h 127.0.0.1 -p 55432",
+      }),
       expect.objectContaining({
         name: "convex",
         port: 3210,
@@ -90,7 +95,12 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
       expect.objectContaining({ name: "web", port: 5173, dependsOn: ["api"] }),
     ])
     expect(live?.resolved.environment.services).toEqual([
-      expect.objectContaining({ name: "postgres", port: 55433 }),
+      expect.objectContaining({
+        name: "postgres",
+        port: 55433,
+        command: "sh -c 'test -f \"$1/PG_VERSION\" || initdb -D \"$1\"; exec postgres -D \"$1\" -h 127.0.0.1 -p \"$2\"' -- '/tmp/rig-v2-fixtures/data/fullstack_basic/live/postgres/postgres' 55433",
+        healthCheck: "pg_isready -h 127.0.0.1 -p 55433",
+      }),
       expect.objectContaining({
         name: "convex",
         port: 3220,
@@ -113,7 +123,12 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
       },
     })
     expect(generated?.resolved.environment.services).toEqual([
-      expect.objectContaining({ name: "postgres", port: 45432 }),
+      expect.objectContaining({
+        name: "postgres",
+        port: 45432,
+        command: "sh -c 'test -f \"$1/PG_VERSION\" || initdb -D \"$1\"; exec postgres -D \"$1\" -h 127.0.0.1 -p \"$2\"' -- '/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/postgres/postgres' 45432",
+        healthCheck: "pg_isready -h 127.0.0.1 -p 45432",
+      }),
       expect.objectContaining({
         name: "convex",
         port: 43210,
@@ -172,6 +187,21 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
       name: "db",
       uses: "sqlite",
       path: "/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/sqlite/db.sqlite",
+    })
+    expect(local?.resolved.preparedComponents).toContainEqual({
+      name: "postgres",
+      uses: "postgres",
+      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/local/postgres/postgres",
+    })
+    expect(live?.resolved.preparedComponents).toContainEqual({
+      name: "postgres",
+      uses: "postgres",
+      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/live/postgres/postgres",
+    })
+    expect(generated?.resolved.preparedComponents).toContainEqual({
+      name: "postgres",
+      uses: "postgres",
+      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/postgres/postgres",
     })
     expect(local?.resolved.preparedComponents).toContainEqual({
       name: "convex",

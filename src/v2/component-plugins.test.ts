@@ -76,4 +76,37 @@ describe("GIVEN v2 component plugins WHEN resolving plugin-backed components THE
       },
     })
   })
+
+  test("GIVEN Postgres uses config WHEN resolved THEN it expands to a managed service with defaults", () => {
+    const resolved = resolveV2ComponentPlugin({
+      uses: "postgres",
+      componentName: "postgres",
+      dataRoot: "/tmp/rig-v2/data/pantry/local",
+      port: 55432,
+      interpolate: (value) => value,
+    })
+
+    expect(resolved).toEqual({
+      preparedComponents: [
+        {
+          name: "postgres",
+          uses: "postgres",
+          dataDir: "/tmp/rig-v2/data/pantry/local/postgres/postgres",
+        },
+      ],
+      managedComponents: [
+        {
+          name: "postgres",
+          command: "sh -c 'test -f \"$1/PG_VERSION\" || initdb -D \"$1\"; exec postgres -D \"$1\" -h 127.0.0.1 -p \"$2\"' -- '/tmp/rig-v2/data/pantry/local/postgres/postgres' 55432",
+          port: 55432,
+          health: "pg_isready -h 127.0.0.1 -p 55432",
+          readyTimeout: 60,
+        },
+      ],
+      properties: {
+        dataDir: "/tmp/rig-v2/data/pantry/local/postgres/postgres",
+        port: 55432,
+      },
+    })
+  })
 })

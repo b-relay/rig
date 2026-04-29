@@ -112,6 +112,9 @@ const portAssignmentNames = (config: V2ProjectConfig): readonly string[] =>
     if ("uses" in component && component.uses === "convex") {
       return [name, `${name}.site`]
     }
+    if ("uses" in component && component.uses === "postgres") {
+      return [name]
+    }
     return []
   })
 

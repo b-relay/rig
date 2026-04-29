@@ -409,6 +409,31 @@ The default SQLite path is `${dataRoot}/sqlite/<component>.sqlite`, so
 `db`. `rigd` prepares the parent directory on `up` and deploy before managed
 processes start.
 
+Postgres is process-backed:
+
+```json
+{
+  "components": {
+    "postgres": {
+      "uses": "postgres"
+    },
+    "api": {
+      "mode": "managed",
+      "command": "bun run api -- --postgres ${postgres.port}",
+      "dependsOn": ["postgres"]
+    }
+  }
+}
+```
+
+Postgres defaults to `${dataRoot}/postgres/<component>` for its data directory,
+exposes `${postgres.dataDir}` and `${postgres.port}`, and resolves to a managed
+service bound to `127.0.0.1`. The default command runs `initdb` on first start
+when `PG_VERSION` is missing, then runs `postgres -D <dataDir> -h 127.0.0.1 -p
+<port>`. Rig does not create database users, schemas, migrations, or connection
+strings. Lane overrides can still set `port`, `command`, `health`,
+`readyTimeout`, and `dependsOn`.
+
 Convex Local is process-backed:
 
 ```json

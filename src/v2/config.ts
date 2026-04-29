@@ -173,11 +173,25 @@ export const V2ConvexComponentSchema = Schema.Struct({
   ...CommonComponentFields,
 })
 
+export const V2PostgresComponentSchema = Schema.Struct({
+  uses: fieldDoc(Schema.Literal("postgres"), "Uses the bundled Postgres component plugin."),
+  command: fieldDoc(Schema.optionalKey(CommandString), "Optional command override for the Postgres process."),
+  port: fieldDoc(Schema.optionalKey(Port), "Optional concrete port required by Postgres."),
+  health: fieldDoc(Schema.optionalKey(HealthCheck), "Optional Postgres health check override."),
+  readyTimeout: fieldDoc(Schema.optionalKey(TimeoutSeconds), "Optional readiness timeout in seconds."),
+  dependsOn: fieldDoc(
+    Schema.optionalKey(Schema.Array(ComponentName)),
+    "Component names that must start before Postgres and stop after it.",
+  ),
+  ...CommonComponentFields,
+})
+
 export const V2ComponentSchema = Schema.Union([
   V2ManagedComponentSchema,
   V2InstalledComponentSchema,
   V2SqliteComponentSchema,
   V2ConvexComponentSchema,
+  V2PostgresComponentSchema,
 ])
 
 const LaneComponentOverrideSchema = Schema.Struct({
@@ -239,6 +253,7 @@ export type V2ManagedComponent = Schema.Schema.Type<typeof V2ManagedComponentSch
 export type V2InstalledComponent = Schema.Schema.Type<typeof V2InstalledComponentSchema>
 export type V2SqliteComponent = Schema.Schema.Type<typeof V2SqliteComponentSchema>
 export type V2ConvexComponent = Schema.Schema.Type<typeof V2ConvexComponentSchema>
+export type V2PostgresComponent = Schema.Schema.Type<typeof V2PostgresComponentSchema>
 export type V2Component = Schema.Schema.Type<typeof V2ComponentSchema>
 
 export const V2StatusInputSchema = Schema.Struct({
@@ -331,17 +346,17 @@ const componentKind = (value: Record<string, unknown>): "managed" | "installed" 
   if (value.mode === "managed" || value.mode === "installed") {
     return value.mode
   }
-  if (value.uses === "sqlite" || value.uses === "convex") {
+  if (value.uses === "sqlite" || value.uses === "convex" || value.uses === "postgres") {
     return value.uses
   }
   return undefined
 }
 
 const isRuntimeDependencyKind = (kind: unknown): boolean =>
-  kind === "managed" || kind === "sqlite" || kind === "convex"
+  kind === "managed" || kind === "sqlite" || kind === "convex" || kind === "postgres"
 
 const isManagedRuntimeKind = (kind: unknown): boolean =>
-  kind === "managed" || kind === "convex"
+  kind === "managed" || kind === "convex" || kind === "postgres"
 
 const validateModeFields = (
   value: Record<string, unknown>,
@@ -672,44 +687,63 @@ export const resolveV2Lane = (
       const componentHealth = "health" in component ? component.health : undefined
       const componentReadyTimeout = "readyTimeout" in component ? component.readyTimeout : undefined
       const componentDependsOn = "dependsOn" in component ? component.dependsOn : undefined
-      const port = component.uses === "convex"
+      const port = component.uses === "convex" || component.uses === "postgres"
         ? resolvePort(name, override?.port ?? component.port, interpolation)
         : undefined
       const sitePort = component.uses === "convex" && port !== undefined
         ? resolvePort(`${name}.site`, override?.sitePort ?? component.sitePort, interpolation) ?? port + 1
         : undefined
-      if (component.uses === "convex" && port === undefined) {
+      if ((component.uses === "convex" || component.uses === "postgres") && port === undefined) {
         return yield* Effect.fail(
           validationError(
             "v2 lane resolution",
-            `Convex component '${name}' requires a port or assigned port.`,
-            [issue(["components", name, "port"], "Convex components need a concrete or assigned port.", "missing_port")],
+            `${component.uses} component '${name}' requires a port or assigned port.`,
+            [issue(["components", name, "port"], `${component.uses} components need a concrete or assigned port.`, "missing_port")],
           ),
         )
       }
-      const pluginInterpolation = component.uses === "convex"
-        ? interpolationWithComponentProperty(interpolation, name, {
-          port: port as number,
-          sitePort: sitePort as number,
-          url: `http://127.0.0.1:${port as number}`,
-          siteUrl: `http://127.0.0.1:${sitePort as number}`,
-          stateDir: `${interpolation.workspace}/.convex/local/default`,
+      const resolvedPlugin = component.uses === "sqlite"
+        ? resolveV2ComponentPlugin({
+          uses: "sqlite",
+          componentName: name,
+          dataRoot: interpolation.dataRoot,
+          ...(override?.path ?? componentPath ? { configuredPath: (override?.path ?? componentPath) as string } : {}),
+          interpolate: (value) => interpolateString(value, interpolation),
         })
-        : interpolation
-      const resolvedPlugin = resolveV2ComponentPlugin({
-        uses: component.uses,
-        componentName: name,
-        dataRoot: interpolation.dataRoot,
-        ...(component.uses === "convex" ? { workspacePath: interpolation.workspace } : {}),
-        ...(override?.path ?? componentPath ? { configuredPath: (override?.path ?? componentPath) as string } : {}),
-        ...((override?.command ?? componentCommand) ? { command: (override?.command ?? componentCommand) as string } : {}),
-        ...(port !== undefined ? { port } : {}),
-        ...(sitePort !== undefined ? { sitePort } : {}),
-        ...((override?.health ?? componentHealth) ? { health: (override?.health ?? componentHealth) as string } : {}),
-        readyTimeout: override?.readyTimeout ?? componentReadyTimeout,
-        ...((override?.dependsOn ?? componentDependsOn) ? { dependsOn: override?.dependsOn ?? componentDependsOn } : {}),
-        interpolate: (value) => interpolateString(value, pluginInterpolation),
-      })
+        : component.uses === "convex"
+          ? resolveV2ComponentPlugin({
+            uses: "convex",
+            componentName: name,
+            dataRoot: interpolation.dataRoot,
+            workspacePath: interpolation.workspace,
+            port: port as number,
+            sitePort: sitePort as number,
+            ...((override?.command ?? componentCommand) ? { command: (override?.command ?? componentCommand) as string } : {}),
+            ...((override?.health ?? componentHealth) ? { health: (override?.health ?? componentHealth) as string } : {}),
+            readyTimeout: override?.readyTimeout ?? componentReadyTimeout,
+            ...((override?.dependsOn ?? componentDependsOn) ? { dependsOn: override?.dependsOn ?? componentDependsOn } : {}),
+            interpolate: (value) => interpolateString(value, interpolationWithComponentProperty(interpolation, name, {
+              port: port as number,
+              sitePort: sitePort as number,
+              url: `http://127.0.0.1:${port as number}`,
+              siteUrl: `http://127.0.0.1:${sitePort as number}`,
+              stateDir: `${interpolation.workspace}/.convex/local/default`,
+            })),
+          })
+          : resolveV2ComponentPlugin({
+            uses: "postgres",
+            componentName: name,
+            dataRoot: interpolation.dataRoot,
+            port: port as number,
+            ...((override?.command ?? componentCommand) ? { command: (override?.command ?? componentCommand) as string } : {}),
+            ...((override?.health ?? componentHealth) ? { health: (override?.health ?? componentHealth) as string } : {}),
+            readyTimeout: override?.readyTimeout ?? componentReadyTimeout,
+            ...((override?.dependsOn ?? componentDependsOn) ? { dependsOn: override?.dependsOn ?? componentDependsOn } : {}),
+            interpolate: (value) => interpolateString(value, interpolationWithComponentProperty(interpolation, name, {
+              port: port as number,
+              dataDir: `${interpolation.dataRoot}/postgres/${name}`,
+            })),
+          })
       pluginResults.set(name, resolvedPlugin)
       preparedComponents.push(...resolvedPlugin.preparedComponents)
       interpolation = interpolationWithComponentProperty(interpolation, name, resolvedPlugin.properties)

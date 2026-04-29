@@ -1,4 +1,4 @@
-export type V2ComponentPluginId = "sqlite" | "convex"
+export type V2ComponentPluginId = "sqlite" | "convex" | "postgres"
 
 export type ResolvedV2PreparedComponent =
   | {
@@ -10,6 +10,11 @@ export type ResolvedV2PreparedComponent =
     readonly name: string
     readonly uses: "convex"
     readonly stateDir: string
+  }
+  | {
+    readonly name: string
+    readonly uses: "postgres"
+    readonly dataDir: string
   }
 
 export interface ResolvedV2ManagedComponent {
@@ -48,14 +53,25 @@ export type V2ComponentPluginResolveInput =
     readonly readyTimeout?: number
     readonly dependsOn?: readonly string[]
   })
+  | (V2BaseComponentPluginResolveInput & {
+    readonly uses: "postgres"
+    readonly command?: string
+    readonly port: number
+    readonly health?: string
+    readonly readyTimeout?: number
+    readonly dependsOn?: readonly string[]
+  })
 
 type V2SqliteComponentPluginResolveInput = Extract<V2ComponentPluginResolveInput, { readonly uses: "sqlite" }>
 type V2ConvexComponentPluginResolveInput = Extract<V2ComponentPluginResolveInput, { readonly uses: "convex" }>
+type V2PostgresComponentPluginResolveInput = Extract<V2ComponentPluginResolveInput, { readonly uses: "postgres" }>
 
 interface V2ComponentPluginResolver<Input extends V2ComponentPluginResolveInput> {
   readonly uses: V2ComponentPluginId
   readonly resolve: (input: Input) => V2ResolvedComponentPlugin
 }
+
+const shellArg = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 
 const sqlitePlugin: V2ComponentPluginResolver<V2SqliteComponentPluginResolveInput> = {
   uses: "sqlite",
@@ -119,7 +135,48 @@ const convexPlugin: V2ComponentPluginResolver<V2ConvexComponentPluginResolveInpu
   },
 }
 
+const postgresPlugin: V2ComponentPluginResolver<V2PostgresComponentPluginResolveInput> = {
+  uses: "postgres",
+  resolve: (input) => {
+    const port = input.port
+    const dataDir = input.interpolate(`${input.dataRoot}/postgres/${input.componentName}`)
+    const command = input.interpolate(
+      input.command ??
+        `sh -c 'test -f "$1/PG_VERSION" || initdb -D "$1"; exec postgres -D "$1" -h 127.0.0.1 -p "$2"' -- ${shellArg(dataDir)} ${port}`,
+    )
+    const health = input.interpolate(input.health ?? `pg_isready -h 127.0.0.1 -p ${port}`)
+
+    return {
+      preparedComponents: [
+        {
+          name: input.componentName,
+          uses: "postgres",
+          dataDir,
+        },
+      ],
+      managedComponents: [
+        {
+          name: input.componentName,
+          command,
+          port,
+          health,
+          readyTimeout: input.readyTimeout ?? 60,
+          ...(input.dependsOn && input.dependsOn.length > 0 ? { dependsOn: input.dependsOn } : {}),
+        },
+      ],
+      properties: {
+        dataDir,
+        port,
+      },
+    }
+  },
+}
+
 export const resolveV2ComponentPlugin = (
   input: V2ComponentPluginResolveInput,
 ): V2ResolvedComponentPlugin =>
-  input.uses === "sqlite" ? sqlitePlugin.resolve(input) : convexPlugin.resolve(input)
+  input.uses === "sqlite"
+    ? sqlitePlugin.resolve(input)
+    : input.uses === "convex"
+      ? convexPlugin.resolve(input)
+      : postgresPlugin.resolve(input)

@@ -374,6 +374,31 @@ above resolves `${db.path}` to `${dataRoot}/sqlite/db.sqlite`. `rigd` prepares
 the parent directory on `up` and deploy before starting managed processes; the
 app still decides how to consume the path.
 
+Postgres is a process-backed component:
+
+```json
+{
+  "components": {
+    "postgres": {
+      "uses": "postgres"
+    },
+    "api": {
+      "mode": "managed",
+      "command": "bun run api -- --postgres ${postgres.port}",
+      "dependsOn": ["postgres"]
+    }
+  }
+}
+```
+
+Postgres defaults to `${dataRoot}/postgres/<component>` for its data directory,
+exposes `${postgres.dataDir}` and `${postgres.port}`, and resolves to a managed
+service bound to `127.0.0.1`. The default command runs `initdb` on first start
+when `PG_VERSION` is missing, then runs `postgres -D <dataDir> -h 127.0.0.1 -p
+<port>`. Rig does not create database users, schemas, migrations, or connection
+strings. Lane overrides may still set `port`, `command`, `health`,
+`readyTimeout`, and `dependsOn`.
+
 Convex Local is a process-backed component:
 
 ```json
@@ -405,9 +430,8 @@ directory and passes sqlite/storage paths only to its internal backend binary.
 Rig keeps that behavior instead of relying on unsupported backend flags.
 
 Internally, `uses` components resolve through the first-party component-plugin
-resolver boundary. That keeps SQLite out of the raw lane resolver path and gives
-Postgres a focused place to add defaults later without inventing external plugin
-loading yet.
+resolver boundary. That keeps SQLite, Postgres, and Convex Local out of the raw
+lane resolver path without inventing external plugin loading yet.
 
 Caddy remains the first router provider. Traefik and Pangolin are useful
 research references but are not current defaults: Traefik fits Docker/provider

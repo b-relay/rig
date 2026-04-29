@@ -366,6 +366,53 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
     }
   })
 
+  test("GIVEN a deployment with a Postgres component WHEN lifecycle up runs THEN its data directory is prepared before processes start", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-postgres-prepare-"))
+    const dataDir = join(root, "postgres", "postgres")
+    const calls: string[] = []
+    const input: V2RuntimeLifecycleExecutionInput = {
+      action: "up",
+      deployment: {
+        ...deployment(),
+        dataRoot: root,
+        resolved: {
+          ...deployment().resolved,
+          preparedComponents: [
+            {
+              name: "postgres",
+              uses: "postgres",
+              dataDir,
+            },
+          ],
+          environment: {
+            services: [
+              {
+                name: "postgres",
+                type: "server",
+                command: `postgres -D ${dataDir} -h 127.0.0.1 -p 55432`,
+                port: 55432,
+              },
+            ],
+          },
+        },
+      } as V2DeploymentRecord,
+    }
+
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const executor = yield* V2RuntimeExecutor
+          return yield* executor.lifecycle(input)
+        }).pipe(Effect.provide(Layer.provide(V2RuntimeExecutorLive, captureProviderLayer(calls)))),
+      )
+
+      expect(calls.indexOf("event:append:component.prepare:postgres")).toBeLessThan(calls.indexOf("process:up:postgres"))
+      expect((await stat(dataDir)).isDirectory()).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN lifecycle up starts a watched process WHEN it exits unexpectedly THEN the exit handler receives deployment and component context", async () => {
     let rejectObserved: (cause: unknown) => void = () => undefined
     const observed = new Promise<V2ManagedProcessExitHandlerInput>((resolve, reject) => {

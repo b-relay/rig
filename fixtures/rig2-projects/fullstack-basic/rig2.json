@@ -6,10 +6,7 @@
       "uses": "sqlite"
     },
     "postgres": {
-      "mode": "managed",
-      "command": "postgres -D ${dataRoot}/postgres -h 127.0.0.1 -p ${postgres.port}",
-      "health": "pg_isready -h 127.0.0.1 -p ${postgres.port}",
-      "readyTimeout": 60
+      "uses": "postgres"
     },
     "convex": {
       "uses": "convex",

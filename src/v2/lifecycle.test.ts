@@ -227,13 +227,14 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
         config,
       },
     ])
-    expect(logger.infos[0]?.message).toBe("rig2 runtime status")
-    expect(logger.infos[0]?.details).toMatchObject({
-      rigd: {
-        status: "running",
-      },
-      deployments: [],
-    })
+    expect(logger.infos[0]?.message).toBe([
+      "rig2 runtime status",
+      "rigd: running",
+      "deployments: none",
+      "failures: none",
+    ].join("\n"))
+    expect(logger.infos[0]?.details).toBeUndefined()
+    expect(logger.infos).toHaveLength(1)
   })
 
   test("GIVEN failed managed service status WHEN running THEN crash evidence is summarized for CLI output", async () => {
@@ -255,6 +256,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
           lane: "local",
           stateRoot: "/tmp/rig-v2",
           config,
+          structured: true,
         })
       }),
       (rigd) => {
@@ -279,8 +281,17 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
       },
     )
 
-    expect(logger.infos[0]?.message).toBe("rig2 runtime status")
-    expect(logger.infos[0]?.details).toMatchObject({
+    expect(logger.infos[0]?.message).toBe([
+      "rig2 runtime status",
+      "rigd: running",
+      "deployments:",
+      "  local (local): failed since 2026-04-27T12:02:00.000Z",
+      "failures:",
+      "  local/web: crashed 3 times at 2026-04-27T12:02:00.000Z; exit code 1; stderr: port already in use; logs: rig2 logs --project pantry --lane local",
+    ].join("\n"))
+    expect(logger.infos[0]?.details).toBeUndefined()
+    expect(logger.infos[1]?.message).toBe("rig2 runtime status details")
+    expect(logger.infos[1]?.details).toMatchObject({
       summary: {
         desiredDeployments: [
           "local (local) is failed since 2026-04-27T12:02:00.000Z",

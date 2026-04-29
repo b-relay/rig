@@ -14,7 +14,7 @@ import { V2ProjectConfigLoader } from "./project-config-loader.js"
 import { V2ProjectLocator } from "./project-locator.js"
 import { V2ProviderRegistry } from "./provider-contracts.js"
 import { V2Rigd } from "./rigd.js"
-import { V2Logger, V2Runtime } from "./services.js"
+import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
 const displayText = (text: string) =>
   Effect.gen(function* () {
@@ -61,6 +61,26 @@ interface ProjectScopedInput {
   readonly configPath?: string
 }
 
+const formatFoundationStatus = (state: V2FoundationState & { readonly lane: V2LifecycleLane }) => [
+  "rig2 foundation ready",
+  `project: ${state.project}`,
+  `lane: ${state.lane}`,
+  `state root: ${state.stateRoot}`,
+  `namespace: ${state.namespace}`,
+  `launchd label prefix: ${state.launchdLabelPrefix}`,
+].join("\n")
+
+const formatRigdStatus = (input: {
+  readonly status: string
+  readonly project: string
+  readonly deploymentCount: number
+}) => [
+  "rigd status",
+  `rigd: ${input.status}`,
+  `project: ${input.project}`,
+  `deployments: ${input.deploymentCount}`,
+].join("\n")
+
 const projectFlag = Flag.string("project").pipe(
   Flag.withDefault(""),
   Flag.withDescription("Registered project name. Optional inside a managed repo."),
@@ -74,6 +94,10 @@ const laneFlag = Flag.choice("lane", ["local", "live"]).pipe(
 const stateRootFlag = Flag.string("state-root").pipe(
   Flag.withDefault(rigV2Root()),
   Flag.withDescription("Isolated v2 state root. Defaults to ~/.rig-v2."),
+)
+
+const statusJsonFlag = Flag.boolean("json").pipe(
+  Flag.withDescription("Emit structured status details after the human-readable status output."),
 )
 
 const configFlag = Flag.string("config").pipe(
@@ -240,6 +264,7 @@ const runLifecycleAction = (
     readonly stateRoot: string
     readonly follow?: boolean
     readonly lines?: number
+    readonly structured?: boolean
     readonly configPath?: string
     readonly config?: V2ProjectConfig
   },
@@ -262,6 +287,7 @@ const runLifecycleAction = (
       ...(config ? { config } : {}),
       ...(input.follow !== undefined ? { follow: input.follow } : {}),
       ...(input.lines !== undefined ? { lines: input.lines } : {}),
+      ...(input.structured !== undefined ? { structured: input.structured } : {}),
     })
   })
 
@@ -340,6 +366,7 @@ const statusCommand = Command.make(
     lane: laneFlag,
     stateRoot: stateRootFlag,
     configPath: configFlag,
+    json: statusJsonFlag,
   },
   (input) =>
     Effect.gen(function* () {
@@ -354,10 +381,14 @@ const statusCommand = Command.make(
       const rigd = yield* V2Rigd
       const state = yield* runtime.describeFoundation(decoded)
 
-      yield* logger.info("rig2 foundation ready", {
+      const foundationStatus = {
         ...state,
         lane: scoped.lane,
-      })
+      }
+      yield* logger.info(formatFoundationStatus(foundationStatus))
+      if (input.json) {
+        yield* logger.info("rig2 foundation details", foundationStatus)
+      }
       const health = yield* rigd.health({
         stateRoot: decoded.stateRoot,
       })
@@ -366,16 +397,25 @@ const statusCommand = Command.make(
         stateRoot: decoded.stateRoot,
         ...(config ? { config } : {}),
       })
-      yield* logger.info("rigd status", {
+      const rigdStatus = {
         health,
         inventory: {
           project: inventory.project,
           deploymentCount: inventory.deployments.length,
         },
-      })
+      }
+      yield* logger.info(formatRigdStatus({
+        status: health.status,
+        project: inventory.project,
+        deploymentCount: inventory.deployments.length,
+      }))
+      if (input.json) {
+        yield* logger.info("rigd status details", rigdStatus)
+      }
       yield* runLifecycleAction("status", {
         ...scoped,
         ...(config ? { config } : {}),
+        structured: input.json,
       })
     }),
 ).pipe(

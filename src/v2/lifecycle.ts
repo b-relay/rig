@@ -15,6 +15,7 @@ export interface V2LifecycleRequest {
   readonly config?: V2ProjectConfig
   readonly follow?: boolean
   readonly lines?: number
+  readonly structured?: boolean
 }
 
 export interface V2LifecycleService {
@@ -40,6 +41,44 @@ const summarizeRuntimeStatus = (status: V2RigdHealthState) => ({
     managedServiceFailures: status.managedServiceFailures.map(summarizeFailure),
   },
 })
+
+const pluralize = (count: number, singular: string, plural = `${singular}s`) =>
+  count === 1 ? singular : plural
+
+const formatRuntimeStatus = (project: string, status: V2RigdHealthState): string => {
+  const deploymentLines = status.desiredDeployments.length === 0
+    ? ["deployments: none"]
+    : [
+      "deployments:",
+      ...status.desiredDeployments.map((deployment) =>
+        `  ${deployment.name} (${deployment.kind}): ${deployment.desiredStatus} since ${deployment.updatedAt}`
+      ),
+    ]
+  const failureLines = status.managedServiceFailures.length === 0
+    ? ["failures: none"]
+    : [
+      "failures:",
+      ...status.managedServiceFailures.map((failure) => {
+        const logHint = failure.deployment === "local" || failure.deployment === "live"
+          ? `; logs: rig2 logs --project ${project} --lane ${failure.deployment}`
+          : ""
+        return [
+          `  ${failure.deployment}/${failure.component}: crashed ${failure.recentCrashCount} ${
+            pluralize(failure.recentCrashCount, "time")
+          } at ${failure.occurredAt}`,
+          ...(failure.exitCode === undefined ? [] : [`exit code ${failure.exitCode}`]),
+          ...(failure.stderr ? [`stderr: ${failure.stderr}`] : []),
+        ].join("; ") + logHint
+      }),
+    ]
+
+  return [
+    "rig2 runtime status",
+    `rigd: ${status.rigd.status}`,
+    ...deploymentLines,
+    ...failureLines,
+  ].join("\n")
+}
 
 export const V2LifecycleLive = Layer.effect(
   V2Lifecycle,
@@ -71,7 +110,10 @@ export const V2LifecycleLive = Layer.effect(
               stateRoot: request.stateRoot,
               ...(request.config ? { config: request.config } : {}),
             })
-            yield* logger.info("rig2 runtime status", summarizeRuntimeStatus(status))
+            yield* logger.info(formatRuntimeStatus(request.project, status))
+            if (request.structured) {
+              yield* logger.info("rig2 runtime status details", summarizeRuntimeStatus(status))
+            }
             return
           }
 

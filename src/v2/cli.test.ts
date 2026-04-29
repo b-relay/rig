@@ -29,7 +29,7 @@ import {
   type V2RigdProjectInventoryInput,
   type V2RigdStartInput,
 } from "./rigd.js"
-import { V2Logger, V2RuntimeLive, type V2FoundationState } from "./services.js"
+import { V2Logger, V2RuntimeLive } from "./services.js"
 
 class CaptureV2Logger {
   readonly infos: Array<{ readonly message: string; readonly details?: unknown }> = []
@@ -366,18 +366,63 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
     expect(logger.infos).toHaveLength(2)
-    expect(logger.infos[0]?.message).toBe("rig2 foundation ready")
-    expect(logger.infos[1]?.message).toBe("rigd status")
-
-    const state = logger.infos[0]?.details as unknown as V2FoundationState
-    expect(state.project).toBe("pantry")
-    expect(state.namespace).toBe("rig.v2.pantry")
-    expect(state.stateRoot).toBe("/tmp/rig-v2")
-    expect(state.registryPath).toBe("/tmp/rig-v2/registry.json")
-    expect(state.workspacesRoot).toBe("/tmp/rig-v2/workspaces")
-    expect(state.launchdLabelPrefix).toBe("com.b-relay.rig2")
+    expect(logger.infos[0]?.message).toBe([
+      "rig2 foundation ready",
+      "project: pantry",
+      "lane: local",
+      "state root: /tmp/rig-v2",
+      "namespace: rig.v2.pantry",
+      "launchd label prefix: com.b-relay.rig2",
+    ].join("\n"))
+    expect(logger.infos[0]?.details).toBeUndefined()
+    expect(logger.infos[1]?.message).toBe([
+      "rigd status",
+      "rigd: running",
+      "project: pantry",
+      "deployments: 0",
+    ].join("\n"))
+    expect(logger.infos[1]?.details).toBeUndefined()
     expect(rigd.healthRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
     expect(rigd.inventoryRequests).toEqual([{ project: "pantry", stateRoot: "/tmp/rig-v2" }])
+  })
+
+  test("GIVEN status command with json WHEN running THEN structured details are emitted alongside readable output", async () => {
+    const { exitCode, logger, lifecycle } = await runWithLogger([
+      "status",
+      "--project",
+      "pantry",
+      "--state-root",
+      "/tmp/rig-v2",
+      "--json",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(logger.infos.map((entry) => entry.message)).toEqual([
+      expect.stringContaining("rig2 foundation ready"),
+      "rig2 foundation details",
+      expect.stringContaining("rigd status"),
+      "rigd status details",
+    ])
+    expect(logger.infos[1]?.details).toMatchObject({
+      project: "pantry",
+      stateRoot: "/tmp/rig-v2",
+      namespace: "rig.v2.pantry",
+    })
+    expect(logger.infos[3]?.details).toMatchObject({
+      health: {
+        status: "running",
+      },
+      inventory: {
+        project: "pantry",
+        deploymentCount: 0,
+      },
+    })
+    expect(lifecycle.requests[0]).toMatchObject({
+      action: "status",
+      project: "pantry",
+      structured: true,
+    })
   })
 
   test("GIVEN rigd command WHEN running THEN local API start is requested", async () => {

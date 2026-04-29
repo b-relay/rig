@@ -197,6 +197,13 @@ Use the live lane:
 ./rig2 logs --project pantry --lane live --lines 100
 ```
 
+`rig2 status` defaults to readable terminal output. Add `--json` when you also
+need the structured foundation, `rigd`, inventory, and runtime status details:
+
+```bash
+./rig2 status --project pantry --json
+```
+
 Create deploy intents:
 
 ```bash

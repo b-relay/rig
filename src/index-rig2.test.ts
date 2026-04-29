@@ -44,9 +44,10 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(stderr).toBe("")
       expect(stdout).toContain("[INFO] rig2 foundation ready")
       expect(stdout).toContain("[INFO] rigd status")
-      expect(stdout).toContain(`"stateRoot":"${root}"`)
-      expect(stdout).toContain('"namespace":"rig.v2.pantry"')
-      expect(stdout).toContain('"launchdLabelPrefix":"com.b-relay.rig2"')
+      expect(stdout).toContain(`state root: ${root}`)
+      expect(stdout).toContain("namespace: rig.v2.pantry")
+      expect(stdout).toContain("launchd label prefix: com.b-relay.rig2")
+      expect(stdout).toContain("rigd: running")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

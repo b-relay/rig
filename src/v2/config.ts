@@ -1,6 +1,11 @@
 import { Effect, Schema } from "effect"
 
 import type { DaemonConfig, Environment, RigConfig, ServiceHooks, TopLevelHooks } from "../schema/config.js"
+import {
+  resolveV2ComponentPlugin,
+  type ResolvedV2PreparedComponent,
+  type V2ComponentPluginId,
+} from "./component-plugins.js"
 import { V2ConfigValidationError } from "./errors.js"
 
 const COMPONENT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/
@@ -253,12 +258,6 @@ export interface ResolvedV2Providers {
   readonly processSupervisor: string
 }
 
-export interface ResolvedV2PreparedComponent {
-  readonly name: string
-  readonly uses: "sqlite"
-  readonly path: string
-}
-
 export interface ResolvedV2Lane {
   readonly project: string
   readonly lane: V2LaneName
@@ -311,7 +310,7 @@ const managedOnlyFields = ["command", "port", "health", "readyTimeout", "depends
 const installedOnlyFields = ["entrypoint", "build", "installName"] as const
 const sqliteOnlyFields = ["path"] as const
 
-const componentKind = (value: Record<string, unknown>): "managed" | "installed" | "sqlite" | undefined => {
+const componentKind = (value: Record<string, unknown>): "managed" | "installed" | V2ComponentPluginId | undefined => {
   if (value.mode === "managed" || value.mode === "installed") {
     return value.mode
   }
@@ -385,7 +384,7 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
   }
 
   const issues: ValidationIssue[] = []
-  const componentKinds = new Map<string, "managed" | "installed" | "sqlite" | undefined>()
+  const componentKinds = new Map<string, "managed" | "installed" | V2ComponentPluginId | undefined>()
 
   for (const [name, rawComponent] of Object.entries(components)) {
     if (!isRecord(rawComponent)) {
@@ -629,21 +628,20 @@ export const resolveV2Lane = (
     const services: Environment["services"] = []
 
     for (const [name, component] of Object.entries(config.components)) {
-      if (!("uses" in component) || component.uses !== "sqlite") {
+      if (!("uses" in component)) {
         continue
       }
 
       const override = laneConfig?.components?.[name]
-      const path = interpolateString(
-        override?.path ?? component.path ?? `${interpolation.dataRoot}/sqlite/${name}.sqlite`,
-        interpolation,
-      )
-      preparedComponents.push({
-        name,
-        uses: "sqlite",
-        path,
+      const resolvedPlugin = resolveV2ComponentPlugin({
+        uses: component.uses,
+        componentName: name,
+        dataRoot: interpolation.dataRoot,
+        ...(override?.path ?? component.path ? { configuredPath: (override?.path ?? component.path) as string } : {}),
+        interpolate: (value) => interpolateString(value, interpolation),
       })
-      interpolation = interpolationWithComponentProperty(interpolation, name, { path })
+      preparedComponents.push(...resolvedPlugin.preparedComponents)
+      interpolation = interpolationWithComponentProperty(interpolation, name, resolvedPlugin.properties)
     }
 
     for (const [name, component] of Object.entries(config.components)) {

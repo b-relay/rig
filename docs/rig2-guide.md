@@ -374,6 +374,11 @@ above resolves `${db.path}` to `${dataRoot}/sqlite/db.sqlite`. `rigd` prepares
 the parent directory on `up` and deploy before starting managed processes; the
 app still decides how to consume the path.
 
+Internally, `uses` components resolve through the first-party component-plugin
+resolver boundary. That keeps SQLite out of the raw lane resolver path and gives
+Convex Local/Postgres a focused place to add defaults later without inventing
+external plugin loading yet.
+
 Caddy remains the first router provider. Traefik and Pangolin are useful
 research references but are not current defaults: Traefik fits Docker/provider
 discovery-heavy systems, while Pangolin is better understood as an

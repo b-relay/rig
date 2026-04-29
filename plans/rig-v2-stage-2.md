@@ -409,6 +409,11 @@ The default SQLite path is `${dataRoot}/sqlite/<component>.sqlite`, so
 `db`. `rigd` prepares the parent directory on `up` and deploy before managed
 processes start.
 
+`uses` components now resolve through a first-party component-plugin resolver
+boundary. This is intentionally smaller than external plugin loading: core can
+keep SQLite, Convex Local, and Postgres defaults behind one resolver interface
+before the distribution/install story exists.
+
 Caddy remains the first router provider for Rig v2. Traefik and Pangolin are
 tracked as research references, not immediate defaults: Traefik is attractive
 for Docker/provider-discovery systems, while Pangolin is an identity-aware

@@ -318,21 +318,17 @@ const prepareDeploymentComponents = (
 ) =>
   Effect.forEach(preparedComponents(deployment), (component) =>
     Effect.gen(function* () {
-      if (component.uses !== "sqlite") {
-        return
-      }
-
-      const directory = dirname(component.path)
+      const directory = component.uses === "sqlite" ? dirname(component.path) : component.dataDir
       yield* platformMakeDirectory(directory).pipe(
         Effect.mapError((cause) =>
           new V2RuntimeError(
-            `Unable to prepare SQLite component '${component.name}'.`,
+            `Unable to prepare ${component.uses} component '${component.name}'.`,
             "Ensure the v2 data root is writable and retry the lifecycle action.",
             {
               project: deployment.project,
               deployment: deployment.name,
               component: component.name,
-              path: component.path,
+              ...(component.uses === "sqlite" ? { path: component.path } : { dataDir: component.dataDir }),
               cause: cause instanceof Error ? cause.message : String(cause),
             },
           )
@@ -341,7 +337,7 @@ const prepareDeploymentComponents = (
 
       const event = runtimeEvent(deployment, "component.prepare", component.name, {
         uses: component.uses,
-        path: component.path,
+        ...(component.uses === "sqlite" ? { path: component.path } : { dataDir: component.dataDir }),
         directory,
       })
       yield* appendRuntimeEvent(eventTransport, deployment, events, operations, event)

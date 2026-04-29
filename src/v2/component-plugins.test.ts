@@ -36,4 +36,40 @@ describe("GIVEN v2 component plugins WHEN resolving plugin-backed components THE
 
     expect(resolved.properties.path).toBe("/tmp/rig-v2/data/pantry/live/custom/main.sqlite")
   })
+
+  test("GIVEN Convex uses config WHEN resolved THEN it expands to a managed service with defaults", () => {
+    const resolved = resolveV2ComponentPlugin({
+      uses: "convex",
+      componentName: "convex",
+      dataRoot: "/tmp/rig-v2/data/pantry/local",
+      port: 3210,
+      dependsOn: ["postgres"],
+      interpolate: (value) => value,
+    })
+
+    expect(resolved).toEqual({
+      preparedComponents: [
+        {
+          name: "convex",
+          uses: "convex",
+          dataDir: "/tmp/rig-v2/data/pantry/local/convex/convex",
+        },
+      ],
+      managedComponents: [
+        {
+          name: "convex",
+          command: "bunx convex dev --host 127.0.0.1 --port 3210",
+          port: 3210,
+          health: "http://127.0.0.1:3210/version",
+          readyTimeout: 60,
+          dependsOn: ["postgres"],
+        },
+      ],
+      properties: {
+        dataDir: "/tmp/rig-v2/data/pantry/local/convex/convex",
+        port: 3210,
+        url: "http://127.0.0.1:3210",
+      },
+    })
+  })
 })

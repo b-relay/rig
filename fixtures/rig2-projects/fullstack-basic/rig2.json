@@ -12,10 +12,7 @@
       "readyTimeout": 60
     },
     "convex": {
-      "mode": "managed",
-      "command": "bunx convex dev --host 127.0.0.1 --port ${convex.port}",
-      "health": "http://127.0.0.1:${convex.port}/version",
-      "readyTimeout": 60,
+      "uses": "convex",
       "dependsOn": ["postgres"]
     },
     "api": {

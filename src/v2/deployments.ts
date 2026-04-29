@@ -106,7 +106,10 @@ const hashNumber = (value: string): number => {
 
 const managedComponentNames = (config: V2ProjectConfig): readonly string[] =>
   Object.entries(config.components)
-    .filter(([, component]) => component.mode === "managed")
+    .filter(([, component]) =>
+      ("mode" in component && component.mode === "managed") ||
+      ("uses" in component && component.uses === "convex")
+    )
     .map(([name]) => name)
 
 const assignPorts = (

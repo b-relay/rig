@@ -387,7 +387,7 @@ variable or connection-string management.
 The first component-plugin shape is `uses`, not `type` or another `mode`.
 `mode` stays reserved for raw Rig primitives such as `managed` and `installed`;
 `uses` means the component is supplied by a bundled or future external plugin.
-SQLite now supports:
+SQLite is file-backed:
 
 ```json
 {
@@ -408,6 +408,28 @@ The default SQLite path is `${dataRoot}/sqlite/<component>.sqlite`, so
 `${db.path}` resolves to `${dataRoot}/sqlite/db.sqlite` for a component named
 `db`. `rigd` prepares the parent directory on `up` and deploy before managed
 processes start.
+
+Convex Local is process-backed:
+
+```json
+{
+  "components": {
+    "convex": {
+      "uses": "convex"
+    },
+    "api": {
+      "mode": "managed",
+      "command": "bun run api -- --convex ${convex.url}",
+      "dependsOn": ["convex"]
+    }
+  }
+}
+```
+
+Convex resolves to a managed service using `bunx convex dev --host 127.0.0.1
+--port <port>`, a health check at `${convex.url}/version`, and a prepared data
+directory at `${dataRoot}/convex/<component>`. Lane overrides can still set
+`port`, `command`, `health`, `readyTimeout`, and `dependsOn`.
 
 `uses` components now resolve through a first-party component-plugin resolver
 boundary. This is intentionally smaller than external plugin loading: core can

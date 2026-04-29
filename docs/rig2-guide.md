@@ -351,8 +351,8 @@ Configs can interpolate it as `${dataRoot}`.
 
 Plugin-backed components use `uses` instead of `mode`. `mode` remains reserved
 for raw Rig primitives such as `managed` and `installed`; `uses` means the
-component comes from a bundled or future external component plugin. The first
-supported shape is SQLite:
+component comes from a bundled or future external component plugin. SQLite is a
+file-backed component:
 
 ```json
 {
@@ -374,10 +374,32 @@ above resolves `${db.path}` to `${dataRoot}/sqlite/db.sqlite`. `rigd` prepares
 the parent directory on `up` and deploy before starting managed processes; the
 app still decides how to consume the path.
 
+Convex Local is a process-backed component:
+
+```json
+{
+  "components": {
+    "convex": {
+      "uses": "convex"
+    },
+    "api": {
+      "mode": "managed",
+      "command": "bun run api -- --convex ${convex.url}",
+      "dependsOn": ["convex"]
+    }
+  }
+}
+```
+
+Convex resolves to a managed service using `bunx convex dev --host 127.0.0.1
+--port <port>`, a health check at `${convex.url}/version`, and a data directory
+at `${dataRoot}/convex/<component>`. Lane overrides may still set `port`,
+`command`, `health`, `readyTimeout`, and `dependsOn`.
+
 Internally, `uses` components resolve through the first-party component-plugin
 resolver boundary. That keeps SQLite out of the raw lane resolver path and gives
-Convex Local/Postgres a focused place to add defaults later without inventing
-external plugin loading yet.
+Postgres a focused place to add defaults later without inventing external plugin
+loading yet.
 
 Caddy remains the first router provider. Traefik and Pangolin are useful
 research references but are not current defaults: Traefik fits Docker/provider

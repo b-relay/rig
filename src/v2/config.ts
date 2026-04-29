@@ -159,10 +159,24 @@ export const V2SqliteComponentSchema = Schema.Struct({
   ),
 })
 
+export const V2ConvexComponentSchema = Schema.Struct({
+  uses: fieldDoc(Schema.Literal("convex"), "Uses the bundled Convex Local component plugin."),
+  command: fieldDoc(Schema.optionalKey(CommandString), "Optional command override for the Convex Local process."),
+  port: fieldDoc(Schema.optionalKey(Port), "Optional concrete port required by the Convex Local component."),
+  health: fieldDoc(Schema.optionalKey(HealthCheck), "Optional Convex Local health check override."),
+  readyTimeout: fieldDoc(Schema.optionalKey(TimeoutSeconds), "Optional readiness timeout in seconds."),
+  dependsOn: fieldDoc(
+    Schema.optionalKey(Schema.Array(ComponentName)),
+    "Component names that must start before Convex Local and stop after it.",
+  ),
+  ...CommonComponentFields,
+})
+
 export const V2ComponentSchema = Schema.Union([
   V2ManagedComponentSchema,
   V2InstalledComponentSchema,
   V2SqliteComponentSchema,
+  V2ConvexComponentSchema,
 ])
 
 const LaneComponentOverrideSchema = Schema.Struct({
@@ -222,6 +236,7 @@ export type V2ProjectConfig = Schema.Schema.Type<typeof V2ProjectConfigSchema> &
 export type V2ManagedComponent = Schema.Schema.Type<typeof V2ManagedComponentSchema>
 export type V2InstalledComponent = Schema.Schema.Type<typeof V2InstalledComponentSchema>
 export type V2SqliteComponent = Schema.Schema.Type<typeof V2SqliteComponentSchema>
+export type V2ConvexComponent = Schema.Schema.Type<typeof V2ConvexComponentSchema>
 export type V2Component = Schema.Schema.Type<typeof V2ComponentSchema>
 
 export const V2StatusInputSchema = Schema.Struct({
@@ -314,11 +329,17 @@ const componentKind = (value: Record<string, unknown>): "managed" | "installed" 
   if (value.mode === "managed" || value.mode === "installed") {
     return value.mode
   }
-  if (value.uses === "sqlite") {
-    return "sqlite"
+  if (value.uses === "sqlite" || value.uses === "convex") {
+    return value.uses
   }
   return undefined
 }
+
+const isRuntimeDependencyKind = (kind: unknown): boolean =>
+  kind === "managed" || kind === "sqlite" || kind === "convex"
+
+const isManagedRuntimeKind = (kind: unknown): boolean =>
+  kind === "managed" || kind === "convex"
 
 const validateModeFields = (
   value: Record<string, unknown>,
@@ -344,7 +365,7 @@ const validateModeFields = (
     }
   }
 
-  if (kind === "managed") {
+  if (isManagedRuntimeKind(kind)) {
     for (const key of installedOnlyFields) {
       if (hasOwn(value, key)) {
         issues.push(issue([...path, key], `'${key}' is only valid for installed components.`, "invalid_mode_field"))
@@ -397,17 +418,18 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
   }
 
   for (const [name, rawComponent] of Object.entries(components)) {
-    if (!isRecord(rawComponent) || rawComponent.mode !== "managed" || !Array.isArray(rawComponent.dependsOn)) {
+    const kind = isRecord(rawComponent) ? componentKinds.get(name) : undefined
+    if (!isRecord(rawComponent) || !isManagedRuntimeKind(kind) || !Array.isArray(rawComponent.dependsOn)) {
       continue
     }
 
     for (const dependency of rawComponent.dependsOn) {
       const dependencyKind = typeof dependency === "string" ? componentKinds.get(dependency) : undefined
-      if (dependencyKind !== "managed" && dependencyKind !== "sqlite") {
+      if (!isRuntimeDependencyKind(dependencyKind)) {
         issues.push(
           issue(
             ["components", name, "dependsOn"],
-            `Dependency '${String(dependency)}' must reference a managed or SQLite component.`,
+            `Dependency '${String(dependency)}' must reference a managed or plugin-backed component.`,
             "invalid_dependency",
           ),
         )
@@ -440,14 +462,14 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
 
       issues.push(...validateModeFields(override, kind, [lane, "components", name]))
 
-      if (kind === "managed" && Array.isArray(override.dependsOn)) {
+      if (isManagedRuntimeKind(kind) && Array.isArray(override.dependsOn)) {
         for (const dependency of override.dependsOn) {
           const dependencyKind = typeof dependency === "string" ? componentKinds.get(dependency) : undefined
-          if (dependencyKind !== "managed" && dependencyKind !== "sqlite") {
+          if (!isRuntimeDependencyKind(dependencyKind)) {
             issues.push(
               issue(
                 [lane, "components", name, "dependsOn"],
-                `Dependency '${String(dependency)}' must reference a managed or SQLite component.`,
+                `Dependency '${String(dependency)}' must reference a managed or plugin-backed component.`,
                 "invalid_dependency",
               ),
             )
@@ -524,6 +546,13 @@ const interpolateString = (value: string, interpolation: V2LaneInterpolation): s
     if (key === "deployment") return interpolation.deployment
     if (key === "branchSlug") return interpolation.branchSlug
     if (key === "subdomain") return interpolation.subdomain
+    const [component, property, ...rest] = key.split(".")
+    if (component && property && rest.length === 0) {
+      const componentValue = interpolation.componentProperties[component]?.[property]
+      if (componentValue !== undefined) {
+        return String(componentValue)
+      }
+    }
     if (key.startsWith("ports.")) {
       const component = key.slice("ports.".length)
       return String(interpolation.assignedPorts[component] ?? "")
@@ -535,10 +564,6 @@ const interpolateString = (value: string, interpolation: V2LaneInterpolation): s
     if (key.endsWith(".port")) {
       const component = key.slice(0, -".port".length)
       return String(interpolation.assignedPorts[component] ?? "")
-    }
-    const [component, property, ...rest] = key.split(".")
-    if (component && property && rest.length === 0) {
-      return String(interpolation.componentProperties[component]?.[property] ?? "")
     }
     return ""
   })
@@ -614,6 +639,12 @@ const interpolationWithComponentProperty = (
       ...properties,
     },
   },
+  assignedPorts: typeof properties.port === "number"
+    ? {
+      ...interpolation.assignedPorts,
+      [name]: properties.port,
+    }
+    : interpolation.assignedPorts,
 })
 
 export const resolveV2Lane = (
@@ -625,6 +656,7 @@ export const resolveV2Lane = (
     let interpolation = interpolationFor(config, laneConfig, options)
     const providers = resolveLaneProviders(laneConfig)
     const preparedComponents: ResolvedV2PreparedComponent[] = []
+    const pluginResults = new Map<string, ReturnType<typeof resolveV2ComponentPlugin>>()
     const services: Environment["services"] = []
 
     for (const [name, component] of Object.entries(config.components)) {
@@ -633,15 +665,54 @@ export const resolveV2Lane = (
       }
 
       const override = laneConfig?.components?.[name]
+      const componentPath = "path" in component ? component.path : undefined
+      const componentCommand = "command" in component ? component.command : undefined
+      const componentHealth = "health" in component ? component.health : undefined
+      const componentReadyTimeout = "readyTimeout" in component ? component.readyTimeout : undefined
+      const componentDependsOn = "dependsOn" in component ? component.dependsOn : undefined
+      const port = component.uses === "convex"
+        ? resolvePort(name, override?.port ?? component.port, interpolation)
+        : undefined
+      if (component.uses === "convex" && port === undefined) {
+        return yield* Effect.fail(
+          validationError(
+            "v2 lane resolution",
+            `Convex component '${name}' requires a port or assigned port.`,
+            [issue(["components", name, "port"], "Convex components need a concrete or assigned port.", "missing_port")],
+          ),
+        )
+      }
+      const pluginInterpolation = component.uses === "convex"
+        ? interpolationWithComponentProperty(interpolation, name, {
+          port: port as number,
+          url: `http://127.0.0.1:${port as number}`,
+          dataDir: `${interpolation.dataRoot}/convex/${name}`,
+        })
+        : interpolation
       const resolvedPlugin = resolveV2ComponentPlugin({
         uses: component.uses,
         componentName: name,
         dataRoot: interpolation.dataRoot,
-        ...(override?.path ?? component.path ? { configuredPath: (override?.path ?? component.path) as string } : {}),
-        interpolate: (value) => interpolateString(value, interpolation),
+        ...(override?.path ?? componentPath ? { configuredPath: (override?.path ?? componentPath) as string } : {}),
+        ...((override?.command ?? componentCommand) ? { command: (override?.command ?? componentCommand) as string } : {}),
+        ...(port !== undefined ? { port } : {}),
+        ...((override?.health ?? componentHealth) ? { health: (override?.health ?? componentHealth) as string } : {}),
+        readyTimeout: override?.readyTimeout ?? componentReadyTimeout,
+        ...((override?.dependsOn ?? componentDependsOn) ? { dependsOn: override?.dependsOn ?? componentDependsOn } : {}),
+        interpolate: (value) => interpolateString(value, pluginInterpolation),
       })
+      pluginResults.set(name, resolvedPlugin)
       preparedComponents.push(...resolvedPlugin.preparedComponents)
       interpolation = interpolationWithComponentProperty(interpolation, name, resolvedPlugin.properties)
+    }
+
+    const isManagedServiceDependency = (dependency: string): boolean => {
+      const dependencyComponent = config.components[dependency]
+      return (
+        dependencyComponent !== undefined &&
+        "mode" in dependencyComponent &&
+        dependencyComponent.mode === "managed"
+      ) || (pluginResults.get(dependency)?.managedComponents?.length ?? 0) > 0
     }
 
     for (const [name, component] of Object.entries(config.components)) {
@@ -660,10 +731,7 @@ export const resolveV2Lane = (
         }
         const componentInterpolation = interpolationWithPort(interpolation, name, port)
         const command = interpolateString(override?.command ?? component.command, componentInterpolation)
-        const managedDependencies = (override?.dependsOn ?? component.dependsOn)?.filter((dependency) => {
-          const dependencyComponent = config.components[dependency]
-          return dependencyComponent !== undefined && "mode" in dependencyComponent && dependencyComponent.mode === "managed"
-        })
+        const managedDependencies = (override?.dependsOn ?? component.dependsOn)?.filter(isManagedServiceDependency)
 
         services.push({
           name,
@@ -682,6 +750,29 @@ export const resolveV2Lane = (
             ? { envFile: interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation) }
             : {}),
         })
+        continue
+      }
+
+      if ("uses" in component) {
+        const pluginResult = pluginResults.get(name)
+        for (const managed of pluginResult?.managedComponents ?? []) {
+          const managedDependencies = managed.dependsOn?.filter(isManagedServiceDependency)
+          services.push({
+            name: managed.name,
+            type: "server",
+            command: managed.command,
+            port: managed.port,
+            ...(managed.health ? { healthCheck: managed.health } : {}),
+            readyTimeout: managed.readyTimeout ?? 30,
+            ...(managedDependencies && managedDependencies.length > 0 ? { dependsOn: managedDependencies } : {}),
+            ...("hooks" in component && interpolateHooks(override?.hooks ?? component.hooks, interpolation)
+              ? { hooks: interpolateHooks(override?.hooks ?? component.hooks, interpolation) }
+              : {}),
+            ...("envFile" in component && (override?.envFile ?? component.envFile ?? laneConfig?.envFile)
+              ? { envFile: interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation) }
+              : {}),
+          })
+        }
         continue
       }
 

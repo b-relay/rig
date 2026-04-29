@@ -152,6 +152,21 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
       uses: "sqlite",
       path: "/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/sqlite/db.sqlite",
     })
+    expect(local?.resolved.preparedComponents).toContainEqual({
+      name: "convex",
+      uses: "convex",
+      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/local/convex/convex",
+    })
+    expect(live?.resolved.preparedComponents).toContainEqual({
+      name: "convex",
+      uses: "convex",
+      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/live/convex/convex",
+    })
+    expect(generated?.resolved.preparedComponents).toContainEqual({
+      name: "convex",
+      uses: "convex",
+      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/convex/convex",
+    })
     expect(local?.resolved.environment.services).toContainEqual(expect.objectContaining({
       name: "api",
       command: "bun --watch run api -- --host 127.0.0.1 --port 8081 --sqlite /tmp/rig-v2-fixtures/data/fullstack_basic/local/sqlite/db.sqlite",

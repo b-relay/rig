@@ -319,6 +319,53 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
     }
   })
 
+  test("GIVEN a deployment with a Convex component WHEN lifecycle up runs THEN its data directory is prepared before processes start", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-convex-prepare-"))
+    const dataDir = join(root, "convex", "convex")
+    const calls: string[] = []
+    const input: V2RuntimeLifecycleExecutionInput = {
+      action: "up",
+      deployment: {
+        ...deployment(),
+        dataRoot: root,
+        resolved: {
+          ...deployment().resolved,
+          preparedComponents: [
+            {
+              name: "convex",
+              uses: "convex",
+              dataDir,
+            },
+          ],
+          environment: {
+            services: [
+              {
+                name: "convex",
+                type: "server",
+                command: "bunx convex dev --host 127.0.0.1 --port 3210",
+                port: 3210,
+              },
+            ],
+          },
+        },
+      } as V2DeploymentRecord,
+    }
+
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const executor = yield* V2RuntimeExecutor
+          return yield* executor.lifecycle(input)
+        }).pipe(Effect.provide(Layer.provide(V2RuntimeExecutorLive, captureProviderLayer(calls)))),
+      )
+
+      expect(calls.indexOf("event:append:component.prepare:convex")).toBeLessThan(calls.indexOf("process:up:convex"))
+      expect((await stat(dataDir)).isDirectory()).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN lifecycle up starts a watched process WHEN it exits unexpectedly THEN the exit handler receives deployment and component context", async () => {
     let rejectObserved: (cause: unknown) => void = () => undefined
     const observed = new Promise<V2ManagedProcessExitHandlerInput>((resolve, reject) => {

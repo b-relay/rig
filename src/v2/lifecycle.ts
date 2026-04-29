@@ -4,7 +4,8 @@ import type { V2ProjectConfig } from "./config.js"
 import { V2Rigd, type V2RigdHealthState } from "./rigd.js"
 import { V2Logger } from "./services.js"
 
-export type V2LifecycleAction = "up" | "down" | "logs" | "status"
+export type V2LifecycleWriteAction = "up" | "down"
+export type V2LifecycleAction = V2LifecycleWriteAction | "restart" | "logs" | "status"
 export type V2LifecycleLane = "local" | "live"
 
 export interface V2LifecycleRequest {
@@ -23,6 +24,17 @@ export interface V2LifecycleService {
 }
 
 export const V2Lifecycle = Context.Service<V2LifecycleService>("rig/v2/V2Lifecycle")
+
+const lifecycleWriteInput = (
+  request: V2LifecycleRequest,
+  action: V2LifecycleWriteAction,
+) => ({
+  action,
+  project: request.project,
+  lane: request.lane,
+  stateRoot: request.stateRoot,
+  ...(request.config ? { config: request.config } : {}),
+})
 
 const summarizeFailure = (failure: V2RigdHealthState["managedServiceFailures"][number]): string => [
   `${failure.deployment}/${failure.component} crashed at ${failure.occurredAt} after ${failure.recentCrashCount} recent ${
@@ -117,13 +129,19 @@ export const V2LifecycleLive = Layer.effect(
             return
           }
 
-          const receipt = yield* rigd.lifecycle({
-            action: request.action,
-            project: request.project,
-            lane: request.lane,
-            stateRoot: request.stateRoot,
-            ...(request.config ? { config: request.config } : {}),
-          })
+          if (request.action === "restart") {
+            const stopped = yield* rigd.lifecycle(lifecycleWriteInput(request, "down"))
+            const started = yield* rigd.lifecycle(lifecycleWriteInput(request, "up"))
+            yield* logger.info("rig2 lifecycle restarted", {
+              project: request.project,
+              lane: request.lane,
+              stopped,
+              started,
+            })
+            return
+          }
+
+          const receipt = yield* rigd.lifecycle(lifecycleWriteInput(request, request.action))
           yield* logger.info("rig2 lifecycle accepted", receipt)
         }),
     } satisfies V2LifecycleService

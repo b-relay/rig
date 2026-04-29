@@ -179,6 +179,7 @@ Start or inspect a project from outside the repo:
 
 ```bash
 ./rig2 up --project pantry
+./rig2 restart --project pantry
 ./rig2 status --project pantry
 ```
 
@@ -193,6 +194,7 @@ should use deployment inventory or provider-backed execution:
 Use the live lane:
 
 ```bash
+./rig2 restart --project pantry --lane live
 ./rig2 status --project pantry --lane live
 ./rig2 logs --project pantry --lane live --lines 100
 ```

@@ -331,7 +331,9 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   budget allows it, and marks repeated crashes failed. The core `rigd`
   process-supervisor provider reports real child-process exits into that policy
   entrypoint, and status output includes desired deployment state plus recent
-  managed-service failure evidence. #27 is complete: the launchd
+  managed-service failure evidence. `rig2 restart` now routes through `rigd` as
+  an ordered down then up lifecycle sequence for the selected local/live lane.
+  #27 is complete: the launchd
   process-supervisor provider installs
   v2-namespaced plists, bootstraps them with launchctl, removes them on down,
   and supports injected launchctl/home paths for isolated tests. #30 is

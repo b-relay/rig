@@ -163,6 +163,58 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
     ])
   })
 
+  test("GIVEN restart WHEN running THEN rigd stops then starts the lane with the same config", async () => {
+    const config = {
+      name: "pantry",
+      components: {
+        web: {
+          mode: "managed" as const,
+          command: "bun run start -- --port ${web.port}",
+        },
+      },
+    } satisfies V2ProjectConfig
+    const { rigd, logger } = await runWithLifecycle(
+      Effect.gen(function* () {
+        const lifecycle = yield* V2Lifecycle
+        yield* lifecycle.run({
+          action: "restart",
+          project: "pantry",
+          lane: "local",
+          stateRoot: "/tmp/rig-v2",
+          config,
+        })
+      }),
+    )
+
+    expect(rigd.lifecycleRequests).toEqual([
+      {
+        action: "down",
+        project: "pantry",
+        lane: "local",
+        stateRoot: "/tmp/rig-v2",
+        config,
+      },
+      {
+        action: "up",
+        project: "pantry",
+        lane: "local",
+        stateRoot: "/tmp/rig-v2",
+        config,
+      },
+    ])
+    expect(logger.infos).toEqual([
+      {
+        message: "rig2 lifecycle restarted",
+        details: expect.objectContaining({
+          project: "pantry",
+          lane: "local",
+          stopped: expect.objectContaining({ target: "local" }),
+          started: expect.objectContaining({ target: "local" }),
+        }),
+      },
+    ])
+  })
+
   test("GIVEN logs WHEN running THEN structured rigd logs are returned", async () => {
     const { rigd, logger } = await runWithLifecycle(
       Effect.gen(function* () {

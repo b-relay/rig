@@ -670,6 +670,7 @@ const rig2Command = Command.make("rig2").pipe(
   Command.withDescription("Experimental rig v2 entrypoint."),
   Command.withSubcommands([
     lifecycleCommand("up", "Start a v2 local or live lane."),
+    lifecycleCommand("restart", "Restart a v2 local or live lane."),
     downCommand,
     logsCommand,
     statusCommand,

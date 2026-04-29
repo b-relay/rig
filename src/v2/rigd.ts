@@ -13,7 +13,7 @@ import { V2ControlPlane, type V2ControlPlaneStatus } from "./control-plane.js"
 import { branchSlug, V2DeploymentManager, type V2DeploymentRecord } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
 import { V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
-import type { V2LifecycleAction, V2LifecycleLane } from "./lifecycle.js"
+import type { V2LifecycleLane, V2LifecycleWriteAction } from "./lifecycle.js"
 import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
 import { V2RigdActionPreflight, type V2RigdActionKind } from "./rigd-actions.js"
 import { V2RigdStateStore, type V2DeploymentSnapshot, type V2PortReservation } from "./rigd-state.js"
@@ -170,7 +170,7 @@ export interface V2RigdHealthState {
 }
 
 export interface V2RigdLifecycleInput {
-  readonly action: V2LifecycleAction
+  readonly action: V2LifecycleWriteAction
   readonly project: string
   readonly lane: V2LifecycleLane
   readonly stateRoot: string
@@ -498,7 +498,7 @@ export const V2RigdLive = Layer.effect(
         ? `${input.target}:${input.deploymentName}`
         : input.target
 
-    const isLifecycleWriteAction = (action: V2LifecycleAction): action is "up" | "down" =>
+    const isLifecycleWriteAction = (action: unknown): action is V2LifecycleWriteAction =>
       action === "up" || action === "down"
 
     const deploymentForLane = (

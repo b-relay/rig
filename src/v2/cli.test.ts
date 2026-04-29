@@ -706,6 +706,38 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     ])
   })
 
+  test("GIVEN restart with explicit project WHEN running THEN lifecycle receives restart with config", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
+      "restart",
+      "--project",
+      "pantry",
+      "--config",
+      "/tmp/pantry/rig.json",
+      "--lane",
+      "live",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(configLoader.loads).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/pantry/rig.json",
+      },
+    ])
+    expect(lifecycle.requests).toEqual([
+      {
+        action: "restart",
+        project: "pantry",
+        lane: "live",
+        stateRoot: expect.stringContaining(".rig-v2"),
+        config: expect.objectContaining({
+          name: "pantry",
+        }),
+      },
+    ])
+  })
+
   test("GIVEN status inside managed repo WHEN running THEN inventory and health use config", async () => {
     const { exitCode, rigd, lifecycle, configLoader } = await runWithLogger(["status"], {
       inferredProject: "pantry",

@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect"
 
 import type { V2ProjectConfig } from "./config.js"
-import { V2Rigd } from "./rigd.js"
+import { V2Rigd, type V2RigdHealthState } from "./rigd.js"
 import { V2Logger } from "./services.js"
 
 export type V2LifecycleAction = "up" | "down" | "logs" | "status"
@@ -22,6 +22,24 @@ export interface V2LifecycleService {
 }
 
 export const V2Lifecycle = Context.Service<V2LifecycleService>("rig/v2/V2Lifecycle")
+
+const summarizeFailure = (failure: V2RigdHealthState["managedServiceFailures"][number]): string => [
+  `${failure.deployment}/${failure.component} crashed at ${failure.occurredAt} after ${failure.recentCrashCount} recent ${
+    failure.recentCrashCount === 1 ? "crash" : "crashes"
+  }`,
+  ...(failure.exitCode === undefined ? [] : [`exit code ${failure.exitCode}`]),
+  ...(failure.stderr ? [`stderr: ${failure.stderr}`] : []),
+].join("; ")
+
+const summarizeRuntimeStatus = (status: V2RigdHealthState) => ({
+  ...status,
+  summary: {
+    desiredDeployments: status.desiredDeployments.map((deployment) =>
+      `${deployment.name} (${deployment.kind}) is ${deployment.desiredStatus} since ${deployment.updatedAt}`
+    ),
+    managedServiceFailures: status.managedServiceFailures.map(summarizeFailure),
+  },
+})
 
 export const V2LifecycleLive = Layer.effect(
   V2Lifecycle,
@@ -53,7 +71,7 @@ export const V2LifecycleLive = Layer.effect(
               stateRoot: request.stateRoot,
               ...(request.config ? { config: request.config } : {}),
             })
-            yield* logger.info("rig2 runtime status", status)
+            yield* logger.info("rig2 runtime status", summarizeRuntimeStatus(status))
             return
           }
 

@@ -3,7 +3,13 @@ import { Effect, Layer } from "effect"
 
 import { V2Lifecycle, V2LifecycleLive } from "./lifecycle.js"
 import type { V2ProjectConfig } from "./config.js"
-import { V2Rigd, type V2RigdLifecycleInput, type V2RigdLogInput, type V2RigdHealthStateInput } from "./rigd.js"
+import {
+  V2Rigd,
+  type V2RigdHealthState,
+  type V2RigdHealthStateInput,
+  type V2RigdLifecycleInput,
+  type V2RigdLogInput,
+} from "./rigd.js"
 import { V2Logger, type V2LoggerService } from "./services.js"
 
 class CaptureV2Logger implements V2LoggerService {
@@ -25,6 +31,8 @@ class CaptureV2Rigd {
   readonly lifecycleRequests: V2RigdLifecycleInput[] = []
   readonly logRequests: V2RigdLogInput[] = []
   readonly healthStateRequests: V2RigdHealthStateInput[] = []
+  desiredDeployments: V2RigdHealthState["desiredDeployments"] = []
+  managedServiceFailures: V2RigdHealthState["managedServiceFailures"] = []
 
   start() {
     return Effect.die("unused")
@@ -76,6 +84,8 @@ class CaptureV2Rigd {
         },
       },
       deployments: [],
+      desiredDeployments: this.desiredDeployments,
+      managedServiceFailures: this.managedServiceFailures,
     })
   }
 
@@ -97,9 +107,13 @@ class CaptureV2Rigd {
   }
 }
 
-const runWithLifecycle = async <A>(effect: Effect.Effect<A, unknown, V2Lifecycle>) => {
+const runWithLifecycle = async <A>(
+  effect: Effect.Effect<A, unknown, V2Lifecycle>,
+  setup?: (rigd: CaptureV2Rigd) => void,
+) => {
   const logger = new CaptureV2Logger()
   const rigd = new CaptureV2Rigd()
+  setup?.(rigd)
   const layer = Layer.provide(
     V2LifecycleLive,
     Layer.mergeAll(
@@ -219,6 +233,62 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
         status: "running",
       },
       deployments: [],
+    })
+  })
+
+  test("GIVEN failed managed service status WHEN running THEN crash evidence is summarized for CLI output", async () => {
+    const config = {
+      name: "pantry",
+      components: {
+        web: {
+          mode: "managed" as const,
+          command: "bun run start -- --port ${web.port}",
+        },
+      },
+    } satisfies V2ProjectConfig
+    const { logger } = await runWithLifecycle(
+      Effect.gen(function* () {
+        const lifecycle = yield* V2Lifecycle
+        yield* lifecycle.run({
+          action: "status",
+          project: "pantry",
+          lane: "local",
+          stateRoot: "/tmp/rig-v2",
+          config,
+        })
+      }),
+      (rigd) => {
+        rigd.desiredDeployments = [
+          {
+            name: "local",
+            kind: "local",
+            desiredStatus: "failed",
+            updatedAt: "2026-04-27T12:02:00.000Z",
+          },
+        ]
+        rigd.managedServiceFailures = [
+          {
+            deployment: "local",
+            component: "web",
+            occurredAt: "2026-04-27T12:02:00.000Z",
+            exitCode: 1,
+            stderr: "port already in use",
+            recentCrashCount: 3,
+          },
+        ]
+      },
+    )
+
+    expect(logger.infos[0]?.message).toBe("rig2 runtime status")
+    expect(logger.infos[0]?.details).toMatchObject({
+      summary: {
+        desiredDeployments: [
+          "local (local) is failed since 2026-04-27T12:02:00.000Z",
+        ],
+        managedServiceFailures: [
+          "local/web crashed at 2026-04-27T12:02:00.000Z after 3 recent crashes; exit code 1; stderr: port already in use",
+        ],
+      },
     })
   })
 })

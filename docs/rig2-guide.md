@@ -302,9 +302,9 @@ Outside the repo, pass both project and config path:
 - `rigd.managedProcessExited` records managed process crashes, keeps stdout and
   stderr evidence when provided, restarts the desired-running deployment while
   the retry budget allows it, and marks the deployment failed after repeated
-  crashes inside the backoff window. The remaining integration step is wiring
-  concrete process watchers to call this entrypoint when a supervised child
-  exits unexpectedly.
+  crashes inside the backoff window. The core `rigd` process supervisor wires
+  real child-process exits into this entrypoint, and `rig2 status` exposes
+  desired deployment state plus recent managed-service failure evidence.
 - Pantry cutover readiness is covered by v2 tests for a live
   `pantry.b-relay.com` route and an installed `pantry` CLI under an isolated
   v2 bin root.
@@ -323,19 +323,21 @@ Tracked follow-ups:
 - #23 rename/build `rig2` as `rig` when replacement criteria are met
 - #26 add hosted control-plane transport adapter
 
-Future plugin/preset track:
+Current plugin/preset track:
 
-- Convex Local plugin for per-deployment Convex instances, data roots, ports,
-  and health checks.
-- Next.js plugin for common component/build/health/proxy config scaffolding
-  without requiring users to hand-author the full v2 config.
-- Vite plugin for dev/preview/build component scaffolding and generated
-  deployment proxy defaults.
-- Postgres plugin for a supervised localhost-bound Postgres component with
+- SQLite tracks per-lane/per-deployment database file paths. SQLite is not a
+  long-running supervised process, so this plugin stays focused on path
+  ownership and status metadata.
+- Postgres provides a supervised localhost-bound database component with
   per-lane/per-deployment port and data-root tracking.
-- SQLite plugin for per-lane/per-deployment database file path tracking. SQLite
-  is not a long-running supervised process, so this plugin should stay focused
-  on path ownership and status metadata.
+- Convex Local provides a supervised localhost-bound Convex component with
+  cloud/site ports and project-local state tracking.
+
+Web framework presets such as Vite or Next.js are intentionally not first-class
+plugins yet. Their default value is mostly command scaffolding, and teams can
+write those commands directly with their package manager of choice. A later
+adapter should only exist if Rig needs to safely edit framework config such as
+allowed hosts or CORS.
 
 Keep these plugins simple at first. Rig's job is to keep all parts of a
 website/service in one project lifecycle, supervise daemon components through

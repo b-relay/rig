@@ -328,9 +328,10 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   running/stopped deployment state, and `rigd.start` reconciles desired-running
   records through the runtime executor after process restart.
   `rigd.managedProcessExited` records crash evidence, restarts while the retry
-  budget allows it, and marks repeated crashes failed. The remaining crash
-  integration work is wiring concrete process watchers to report unexpected
-  exits into that policy entrypoint. #27 is complete: the launchd
+  budget allows it, and marks repeated crashes failed. The core `rigd`
+  process-supervisor provider reports real child-process exits into that policy
+  entrypoint, and status output includes desired deployment state plus recent
+  managed-service failure evidence. #27 is complete: the launchd
   process-supervisor provider installs
   v2-namespaced plists, bootstraps them with launchctl, removes them on down,
   and supports injected launchctl/home paths for isolated tests. #30 is

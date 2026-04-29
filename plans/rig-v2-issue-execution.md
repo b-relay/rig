@@ -386,8 +386,10 @@ Config-backed lifecycle and deploy actions now persist desired running/stopped
 deployment state, and `rigd.start` reconciles desired-running records through
 the runtime executor after process restart.
 `rigd.managedProcessExited` now records crash evidence, restarts while the
-retry budget allows it, and marks repeated crashes failed. A later integration
-slice should wire concrete process watchers into that policy entrypoint.
+retry budget allows it, and marks repeated crashes failed. The core `rigd`
+process-supervisor provider now wires concrete child-process exits into that
+policy entrypoint, and status output includes desired deployment state plus
+recent managed-service failure evidence.
 
 After the provider-adapter follow-ups, #23 can prepare the final `rig2` to
 `rig` replacement build path. #24 is complete for the CLI config-edit surface.

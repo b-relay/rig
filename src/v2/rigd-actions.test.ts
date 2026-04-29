@@ -656,8 +656,13 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
             exitCode: 1,
             occurredAt: "2026-04-27T12:02:00.000Z",
           })
+          const healthState = yield* rigd.healthState({
+            project: "pantry",
+            stateRoot,
+            config,
+          })
           const persisted = yield* store.load({ stateRoot })
-          return { exhausted, persisted }
+          return { exhausted, healthState, persisted }
         }),
         { executor },
       )
@@ -681,6 +686,18 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
           desiredStatus: "failed",
         }),
       ])
+      expect(result.healthState.desiredDeployments).toContainEqual(expect.objectContaining({
+        name: "local",
+        kind: "local",
+        desiredStatus: "failed",
+      }))
+      expect(result.healthState.managedServiceFailures).toContainEqual(expect.objectContaining({
+        deployment: "local",
+        component: "web",
+        occurredAt: "2026-04-27T12:02:00.000Z",
+        exitCode: 1,
+        recentCrashCount: 3,
+      }))
       expect(result.persisted.events.map((event) => event.event)).toContain("rigd.process.failed")
       expect(result.persisted.events).toContainEqual(expect.objectContaining({
         event: "rigd.process.failed",

@@ -152,6 +152,21 @@ export interface V2RigdHealthState {
     readonly kind: V2DeploymentRecord["kind"]
     readonly status: "unknown"
   }[]
+  readonly desiredDeployments: readonly {
+    readonly name: string
+    readonly kind: V2DeploymentRecord["kind"]
+    readonly desiredStatus: "running" | "stopped" | "failed"
+    readonly updatedAt: string
+  }[]
+  readonly managedServiceFailures: readonly {
+    readonly deployment: string
+    readonly component: string
+    readonly occurredAt: string
+    readonly exitCode?: number
+    readonly stdout?: string
+    readonly stderr?: string
+    readonly recentCrashCount: number
+  }[]
 }
 
 export interface V2RigdLifecycleInput {
@@ -918,6 +933,17 @@ export const V2RigdLive = Layer.effect(
           if (input.config) {
             yield* persistInventoryEvidence(input.stateRoot, inventory)
           }
+          const state = yield* stateStore.load({ stateRoot: input.stateRoot })
+          const desiredDeployments = state.desiredDeployments
+            .filter((desired) => desired.project === input.project)
+            .map((desired) => ({
+              name: desired.deployment,
+              kind: desired.kind,
+              desiredStatus: desired.desiredStatus,
+              updatedAt: desired.updatedAt,
+            }))
+          const projectFailures = state.managedServiceFailures
+            .filter((failure) => failure.project === input.project)
 
           return {
             rigd: yield* health(input.stateRoot),
@@ -925,6 +951,25 @@ export const V2RigdLive = Layer.effect(
               name: deployment.name,
               kind: deployment.kind,
               status: "unknown" as const,
+            })),
+            desiredDeployments,
+            managedServiceFailures: projectFailures.map((failure) => ({
+              deployment: failure.deployment,
+              component: failure.component,
+              occurredAt: failure.occurredAt,
+              ...(failure.exitCode === undefined ? {} : { exitCode: failure.exitCode }),
+              ...(failure.stdout ? { stdout: failure.stdout } : {}),
+              ...(failure.stderr ? { stderr: failure.stderr } : {}),
+              recentCrashCount: recentFailuresForProcess(
+                projectFailures,
+                {
+                  project: input.project,
+                  deployment: failure.deployment,
+                  component: failure.component,
+                  stateRoot: input.stateRoot,
+                },
+                failure.occurredAt,
+              ).length,
             })),
           }
         }),

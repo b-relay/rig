@@ -104,13 +104,16 @@ const hashNumber = (value: string): number => {
   return hash >>> 0
 }
 
-const managedComponentNames = (config: V2ProjectConfig): readonly string[] =>
-  Object.entries(config.components)
-    .filter(([, component]) =>
-      ("mode" in component && component.mode === "managed") ||
-      ("uses" in component && component.uses === "convex")
-    )
-    .map(([name]) => name)
+const portAssignmentNames = (config: V2ProjectConfig): readonly string[] =>
+  Object.entries(config.components).flatMap(([name, component]) => {
+    if ("mode" in component && component.mode === "managed") {
+      return [name]
+    }
+    if ("uses" in component && component.uses === "convex") {
+      return [name, `${name}.site`]
+    }
+    return []
+  })
 
 const assignPorts = (
   config: V2ProjectConfig,
@@ -120,7 +123,7 @@ const assignPorts = (
   const assigned: Record<string, number> = {}
   const used = new Set<number>()
 
-  for (const name of managedComponentNames(config)) {
+  for (const name of portAssignmentNames(config)) {
     const explicitPort = explicit?.[name]
     if (explicitPort !== undefined) {
       assigned[name] = explicitPort

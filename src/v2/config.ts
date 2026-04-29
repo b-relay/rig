@@ -162,7 +162,8 @@ export const V2SqliteComponentSchema = Schema.Struct({
 export const V2ConvexComponentSchema = Schema.Struct({
   uses: fieldDoc(Schema.Literal("convex"), "Uses the bundled Convex Local component plugin."),
   command: fieldDoc(Schema.optionalKey(CommandString), "Optional command override for the Convex Local process."),
-  port: fieldDoc(Schema.optionalKey(Port), "Optional concrete port required by the Convex Local component."),
+  port: fieldDoc(Schema.optionalKey(Port), "Optional concrete port required by the Convex Local cloud API."),
+  sitePort: fieldDoc(Schema.optionalKey(Port), "Optional concrete port required by the Convex Local site proxy."),
   health: fieldDoc(Schema.optionalKey(HealthCheck), "Optional Convex Local health check override."),
   readyTimeout: fieldDoc(Schema.optionalKey(TimeoutSeconds), "Optional readiness timeout in seconds."),
   dependsOn: fieldDoc(
@@ -182,6 +183,7 @@ export const V2ComponentSchema = Schema.Union([
 const LaneComponentOverrideSchema = Schema.Struct({
   command: fieldDoc(Schema.optionalKey(CommandString), "Lane-specific managed command override."),
   port: fieldDoc(Schema.optionalKey(Port), "Lane-specific managed port override."),
+  sitePort: fieldDoc(Schema.optionalKey(Port), "Lane-specific Convex Local site proxy port override."),
   health: fieldDoc(Schema.optionalKey(HealthCheck), "Lane-specific managed health check override."),
   readyTimeout: fieldDoc(Schema.optionalKey(TimeoutSeconds), "Lane-specific managed readiness timeout override."),
   dependsOn: fieldDoc(Schema.optionalKey(Schema.Array(ComponentName)), "Lane-specific managed dependency override."),
@@ -673,6 +675,9 @@ export const resolveV2Lane = (
       const port = component.uses === "convex"
         ? resolvePort(name, override?.port ?? component.port, interpolation)
         : undefined
+      const sitePort = component.uses === "convex" && port !== undefined
+        ? resolvePort(`${name}.site`, override?.sitePort ?? component.sitePort, interpolation) ?? port + 1
+        : undefined
       if (component.uses === "convex" && port === undefined) {
         return yield* Effect.fail(
           validationError(
@@ -685,17 +690,21 @@ export const resolveV2Lane = (
       const pluginInterpolation = component.uses === "convex"
         ? interpolationWithComponentProperty(interpolation, name, {
           port: port as number,
+          sitePort: sitePort as number,
           url: `http://127.0.0.1:${port as number}`,
-          dataDir: `${interpolation.dataRoot}/convex/${name}`,
+          siteUrl: `http://127.0.0.1:${sitePort as number}`,
+          stateDir: `${interpolation.workspace}/.convex/local/default`,
         })
         : interpolation
       const resolvedPlugin = resolveV2ComponentPlugin({
         uses: component.uses,
         componentName: name,
         dataRoot: interpolation.dataRoot,
+        ...(component.uses === "convex" ? { workspacePath: interpolation.workspace } : {}),
         ...(override?.path ?? componentPath ? { configuredPath: (override?.path ?? componentPath) as string } : {}),
         ...((override?.command ?? componentCommand) ? { command: (override?.command ?? componentCommand) as string } : {}),
         ...(port !== undefined ? { port } : {}),
+        ...(sitePort !== undefined ? { sitePort } : {}),
         ...((override?.health ?? componentHealth) ? { health: (override?.health ?? componentHealth) as string } : {}),
         readyTimeout: override?.readyTimeout ?? componentReadyTimeout,
         ...((override?.dependsOn ?? componentDependsOn) ? { dependsOn: override?.dependsOn ?? componentDependsOn } : {}),

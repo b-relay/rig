@@ -426,10 +426,18 @@ Convex Local is process-backed:
 }
 ```
 
-Convex resolves to a managed service using `bunx convex dev --host 127.0.0.1
---port <port>`, a health check at `${convex.url}/version`, and a prepared data
-directory at `${dataRoot}/convex/<component>`. Lane overrides can still set
-`port`, `command`, `health`, `readyTimeout`, and `dependsOn`.
+Convex resolves to a managed service using `bunx convex dev --local
+--local-cloud-port <port> --local-site-port <sitePort>`, a health check at
+`${convex.url}/instance_name`, and Convex's project-local state directory at
+`${workspace}/.convex/local/default`. Rig exposes `${convex.url}`,
+`${convex.siteUrl}`, `${convex.port}`, `${convex.sitePort}`, and
+`${convex.stateDir}` for interpolation. Lane overrides can still set `port`,
+`sitePort`, `command`, `health`, `readyTimeout`, and `dependsOn`.
+
+Convex CLI 1.36.1 does not expose a supported data-directory flag for
+`convex dev`; it stores local backend state under the workspace `.convex`
+directory and passes sqlite/storage paths only to its internal backend binary.
+Rig keeps that behavior instead of relying on unsupported backend flags.
 
 `uses` components now resolve through a first-party component-plugin resolver
 boundary. This is intentionally smaller than external plugin loading: core can

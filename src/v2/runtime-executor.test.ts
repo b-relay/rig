@@ -319,9 +319,9 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
     }
   })
 
-  test("GIVEN a deployment with a Convex component WHEN lifecycle up runs THEN its data directory is prepared before processes start", async () => {
+  test("GIVEN a deployment with a Convex component WHEN lifecycle up runs THEN its local state directory is prepared before processes start", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-v2-convex-prepare-"))
-    const dataDir = join(root, "convex", "convex")
+    const stateDir = join(root, "workspace", ".convex", "local", "default")
     const calls: string[] = []
     const input: V2RuntimeLifecycleExecutionInput = {
       action: "up",
@@ -334,7 +334,7 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
             {
               name: "convex",
               uses: "convex",
-              dataDir,
+              stateDir,
             },
           ],
           environment: {
@@ -342,7 +342,7 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
               {
                 name: "convex",
                 type: "server",
-                command: "bunx convex dev --host 127.0.0.1 --port 3210",
+                command: "bunx convex dev --local --local-cloud-port 3210 --local-site-port 3211",
                 port: 3210,
               },
             ],
@@ -360,7 +360,7 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
       )
 
       expect(calls.indexOf("event:append:component.prepare:convex")).toBeLessThan(calls.indexOf("process:up:convex"))
-      expect((await stat(dataDir)).isDirectory()).toBe(true)
+      expect((await stat(stateDir)).isDirectory()).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -42,7 +42,9 @@ describe("GIVEN v2 component plugins WHEN resolving plugin-backed components THE
       uses: "convex",
       componentName: "convex",
       dataRoot: "/tmp/rig-v2/data/pantry/local",
+      workspacePath: "/tmp/rig-v2/workspaces/pantry/local",
       port: 3210,
+      sitePort: 3211,
       dependsOn: ["postgres"],
       interpolate: (value) => value,
     })
@@ -52,23 +54,25 @@ describe("GIVEN v2 component plugins WHEN resolving plugin-backed components THE
         {
           name: "convex",
           uses: "convex",
-          dataDir: "/tmp/rig-v2/data/pantry/local/convex/convex",
+          stateDir: "/tmp/rig-v2/workspaces/pantry/local/.convex/local/default",
         },
       ],
       managedComponents: [
         {
           name: "convex",
-          command: "bunx convex dev --host 127.0.0.1 --port 3210",
+          command: "bunx convex dev --local --local-cloud-port 3210 --local-site-port 3211",
           port: 3210,
-          health: "http://127.0.0.1:3210/version",
+          health: "http://127.0.0.1:3210/instance_name",
           readyTimeout: 60,
           dependsOn: ["postgres"],
         },
       ],
       properties: {
-        dataDir: "/tmp/rig-v2/data/pantry/local/convex/convex",
         port: 3210,
+        sitePort: 3211,
+        stateDir: "/tmp/rig-v2/workspaces/pantry/local/.convex/local/default",
         url: "http://127.0.0.1:3210",
+        siteUrl: "http://127.0.0.1:3211",
       },
     })
   })

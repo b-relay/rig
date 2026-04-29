@@ -37,7 +37,8 @@
         "port": 55432
       },
       "convex": {
-        "port": 3210
+        "port": 3210,
+        "sitePort": 3211
       },
       "api": {
         "command": "bun --watch run api -- --host 127.0.0.1 --port ${api.port} --sqlite ${db.path}",
@@ -58,7 +59,8 @@
         "port": 55433
       },
       "convex": {
-        "port": 3211
+        "port": 3220,
+        "sitePort": 3221
       },
       "api": {
         "port": 8080

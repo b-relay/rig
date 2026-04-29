@@ -61,6 +61,7 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
           assignedPorts: {
             postgres: 45432,
             convex: 43210,
+            "convex.site": 43211,
             api: 48080,
             web: 45173,
           },
@@ -78,13 +79,25 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
 
     expect(local?.resolved.environment.services).toEqual([
       expect.objectContaining({ name: "postgres", port: 55432 }),
-      expect.objectContaining({ name: "convex", port: 3210, dependsOn: ["postgres"] }),
+      expect.objectContaining({
+        name: "convex",
+        port: 3210,
+        command: "bunx convex dev --local --local-cloud-port 3210 --local-site-port 3211",
+        healthCheck: "http://127.0.0.1:3210/instance_name",
+        dependsOn: ["postgres"],
+      }),
       expect.objectContaining({ name: "api", port: 8081, dependsOn: ["postgres", "convex"] }),
       expect.objectContaining({ name: "web", port: 5173, dependsOn: ["api"] }),
     ])
     expect(live?.resolved.environment.services).toEqual([
       expect.objectContaining({ name: "postgres", port: 55433 }),
-      expect.objectContaining({ name: "convex", port: 3211, dependsOn: ["postgres"] }),
+      expect.objectContaining({
+        name: "convex",
+        port: 3220,
+        command: "bunx convex dev --local --local-cloud-port 3220 --local-site-port 3221",
+        healthCheck: "http://127.0.0.1:3220/instance_name",
+        dependsOn: ["postgres"],
+      }),
       expect.objectContaining({ name: "api", port: 8080, dependsOn: ["postgres", "convex"] }),
       expect.objectContaining({ name: "web", port: 3070, dependsOn: ["api"] }),
     ])
@@ -94,13 +107,20 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
       assignedPorts: {
         postgres: 45432,
         convex: 43210,
+        "convex.site": 43211,
         api: 48080,
         web: 45173,
       },
     })
     expect(generated?.resolved.environment.services).toEqual([
       expect.objectContaining({ name: "postgres", port: 45432 }),
-      expect.objectContaining({ name: "convex", port: 43210, dependsOn: ["postgres"] }),
+      expect.objectContaining({
+        name: "convex",
+        port: 43210,
+        command: "bunx convex dev --local --local-cloud-port 43210 --local-site-port 43211",
+        healthCheck: "http://127.0.0.1:43210/instance_name",
+        dependsOn: ["postgres"],
+      }),
       expect.objectContaining({ name: "api", port: 48080, dependsOn: ["postgres", "convex"] }),
       expect.objectContaining({ name: "web", port: 45173, dependsOn: ["api"] }),
     ])
@@ -119,6 +139,7 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
           assignedPorts: {
             postgres: 45432,
             convex: 43210,
+            "convex.site": 43211,
             api: 48080,
             web: 45173,
           },
@@ -155,17 +176,17 @@ describe("GIVEN fake rig2 project fixtures WHEN deployment inventory is resolved
     expect(local?.resolved.preparedComponents).toContainEqual({
       name: "convex",
       uses: "convex",
-      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/local/convex/convex",
+      stateDir: "/tmp/rig-v2-fixtures/workspaces/fullstack_basic/local/.convex/local/default",
     })
     expect(live?.resolved.preparedComponents).toContainEqual({
       name: "convex",
       uses: "convex",
-      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/live/convex/convex",
+      stateDir: "/tmp/rig-v2-fixtures/workspaces/fullstack_basic/live/.convex/local/default",
     })
     expect(generated?.resolved.preparedComponents).toContainEqual({
       name: "convex",
       uses: "convex",
-      dataDir: "/tmp/rig-v2-fixtures/data/fullstack_basic/deployments/feature-fake-preview/convex/convex",
+      stateDir: "/tmp/rig-v2-fixtures/workspaces/fullstack_basic/deployments/feature-fake-preview/.convex/local/default",
     })
     expect(local?.resolved.environment.services).toContainEqual(expect.objectContaining({
       name: "api",

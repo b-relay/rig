@@ -13,7 +13,7 @@ import { rigV2Root } from "./paths.js"
 import { V2ProjectConfigLoader } from "./project-config-loader.js"
 import { V2ProjectLocator } from "./project-locator.js"
 import { V2ProviderRegistry } from "./provider-contracts.js"
-import { V2Rigd } from "./rigd.js"
+import { V2Rigd, type V2RigdWebReadModel } from "./rigd.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
 const displayText = (text: string) =>
@@ -80,6 +80,30 @@ const formatRigdStatus = (input: {
   `project: ${input.project}`,
   `deployments: ${input.deploymentCount}`,
 ].join("\n")
+
+const formatProjectList = (model: V2RigdWebReadModel) => {
+  const projectLines = model.projects.length === 0
+    ? ["projects: none"]
+    : [
+      "projects:",
+      ...model.projects.map((project) => `  ${project.name}`),
+    ]
+  const deploymentLines = model.deployments.length === 0
+    ? ["deployments: none"]
+    : [
+      "deployments:",
+      ...model.deployments.map((deployment) =>
+        `  ${deployment.project}/${deployment.name} (${deployment.kind}) profile=${deployment.providerProfile} observed=${deployment.observedAt}`
+      ),
+    ]
+
+  return [
+    "rig2 projects",
+    `rigd: ${model.health.rigd.status}`,
+    ...projectLines,
+    ...deploymentLines,
+  ].join("\n")
+}
 
 const projectFlag = Flag.string("project").pipe(
   Flag.withDefault(""),
@@ -436,6 +460,25 @@ const rigdCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Start the local rigd MVP API and report health."))
 
+const listCommand = Command.make(
+  "list",
+  {
+    stateRoot: stateRootFlag,
+    json: statusJsonFlag,
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const logger = yield* V2Logger
+      const rigd = yield* V2Rigd
+      const model = yield* rigd.webReadModel({ stateRoot: input.stateRoot })
+
+      yield* logger.info(formatProjectList(model))
+      if (input.json) {
+        yield* logger.info("rig2 projects details", model)
+      }
+    }),
+).pipe(Command.withDescription("List v2 projects and deployments from rigd state."))
+
 const deployCommand = Command.make(
   "deploy",
   {
@@ -674,6 +717,7 @@ const rig2Command = Command.make("rig2").pipe(
     downCommand,
     logsCommand,
     statusCommand,
+    listCommand,
     rigdCommand,
     deployCommand,
     bumpCommand,

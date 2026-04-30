@@ -178,6 +178,7 @@ Start the local lane from inside a managed repo:
 Start or inspect a project from outside the repo:
 
 ```bash
+./rig2 list
 ./rig2 up --project pantry
 ./rig2 restart --project pantry
 ./rig2 status --project pantry
@@ -204,6 +205,13 @@ need the structured foundation, `rigd`, inventory, and runtime status details:
 
 ```bash
 ./rig2 status --project pantry --json
+```
+
+`rig2 list` reads the global v2 project/deployment inventory from `rigd` state.
+Add `--json` to emit the structured read model:
+
+```bash
+./rig2 list --json
 ```
 
 Create deploy intents:

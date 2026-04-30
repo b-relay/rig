@@ -28,6 +28,8 @@ import {
   type V2RigdHealthStateInput,
   type V2RigdProjectInventoryInput,
   type V2RigdStartInput,
+  type V2RigdWebReadInput,
+  type V2RigdWebReadModel,
 } from "./rigd.js"
 import { V2Logger, V2RuntimeLive } from "./services.js"
 
@@ -64,6 +66,7 @@ class CaptureV2Rigd {
   readonly healthStateRequests: V2RigdHealthStateInput[] = []
   readonly inventoryRequests: V2RigdProjectInventoryInput[] = []
   readonly startRequests: V2RigdStartInput[] = []
+  readonly webReadModelRequests: V2RigdWebReadInput[] = []
 
   start(input: V2RigdStartInput) {
     this.startRequests.push(input)
@@ -187,6 +190,46 @@ class CaptureV2Rigd {
         },
       ],
     } satisfies V2ConfigReadModel)
+  }
+
+  webReadModel(input: V2RigdWebReadInput) {
+    this.webReadModelRequests.push(input)
+    return Effect.succeed({
+      projects: [
+        { name: "api" },
+        { name: "pantry" },
+      ],
+      deployments: [
+        {
+          project: "api",
+          name: "local",
+          kind: "local" as const,
+          providerProfile: "stub",
+          observedAt: "2026-04-30T12:00:00.000Z",
+        },
+        {
+          project: "pantry",
+          name: "live",
+          kind: "live" as const,
+          providerProfile: "default",
+          observedAt: "2026-04-30T12:01:00.000Z",
+        },
+      ],
+      health: {
+        rigd: {
+          status: "running" as const,
+          checkedAt: "2026-04-30T12:02:00.000Z",
+          providerProfile: "default",
+        },
+        deployments: [],
+        components: [],
+        providers: [],
+      },
+    } satisfies V2RigdWebReadModel)
+  }
+
+  webLogs() {
+    return Effect.die("unused")
   }
 
   configPreview(input: V2ConfigPreviewInput) {
@@ -435,6 +478,68 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
     expect(rigd.startRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
+  })
+
+  test("GIVEN list command WHEN running THEN it renders projects and deployments from rigd", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "list",
+      "--state-root",
+      "/tmp/rig-v2",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(rigd.webReadModelRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
+    expect(logger.infos).toEqual([
+      {
+        message: [
+          "rig2 projects",
+          "rigd: running",
+          "projects:",
+          "  api",
+          "  pantry",
+          "deployments:",
+          "  api/local (local) profile=stub observed=2026-04-30T12:00:00.000Z",
+          "  pantry/live (live) profile=default observed=2026-04-30T12:01:00.000Z",
+        ].join("\n"),
+        details: undefined,
+      },
+    ])
+  })
+
+  test("GIVEN list json command WHEN running THEN it emits the structured rigd read model", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "list",
+      "--state-root",
+      "/tmp/rig-v2",
+      "--json",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(rigd.webReadModelRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
+    expect(logger.infos.map((entry) => entry.message)).toEqual([
+      expect.stringContaining("rig2 projects"),
+      "rig2 projects details",
+    ])
+    expect(logger.infos[1]?.details).toMatchObject({
+      projects: [
+        { name: "api" },
+        { name: "pantry" },
+      ],
+      deployments: expect.arrayContaining([
+        expect.objectContaining({
+          project: "api",
+          name: "local",
+          kind: "local",
+        }),
+      ]),
+      health: {
+        rigd: {
+          status: "running",
+        },
+      },
+    })
   })
 
   test("GIVEN deploy command WHEN running THEN CLI deploy intent targets refs without semver", async () => {

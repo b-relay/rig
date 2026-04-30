@@ -333,6 +333,8 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   entrypoint, and status output includes desired deployment state plus recent
   managed-service failure evidence. `rig2 restart` now routes through `rigd` as
   an ordered down then up lifecycle sequence for the selected local/live lane.
+  `rig2 list` now reads global v2 project/deployment inventory from
+  `rigd.webReadModel`, with `--json` for structured tooling output.
   #27 is complete: the launchd
   process-supervisor provider installs
   v2-namespaced plists, bootstraps them with launchctl, removes them on down,

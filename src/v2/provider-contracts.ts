@@ -21,6 +21,23 @@ import {
 } from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 import { RIG_V2_LAUNCHD_LABEL_PREFIX, rigV2BinRoot, rigV2ProxyRoot } from "./paths.js"
+import {
+  V2ProcessSupervisorProvider,
+  type V2ProcessSupervisorExitResult,
+  type V2ProcessSupervisorOperationResult,
+  type V2ProcessSupervisorProviderService,
+} from "./providers/process-supervisor.js"
+import {
+  stubProcessSupervisorOperation,
+  stubProcessSupervisorProvider,
+} from "./providers/stub-process-supervisor.js"
+
+export {
+  V2ProcessSupervisorProvider,
+  type V2ProcessSupervisorExitResult,
+  type V2ProcessSupervisorOperationResult,
+  type V2ProcessSupervisorProviderService,
+} from "./providers/process-supervisor.js"
 
 export type V2ProviderProfileName = "default" | "stub" | "isolated-e2e"
 
@@ -214,19 +231,6 @@ export interface V2ProviderOutputLine {
   readonly line: string
 }
 
-export interface V2ProcessSupervisorExitResult {
-  readonly expected: boolean
-  readonly exitCode?: number
-  readonly stdout?: string
-  readonly stderr?: string
-}
-
-export interface V2ProcessSupervisorOperationResult {
-  readonly operation: string
-  readonly output?: readonly V2ProviderOutputLine[]
-  readonly exit?: Effect.Effect<V2ProcessSupervisorExitResult, V2RuntimeError>
-}
-
 export interface V2WorkspaceMaterializerProviderService
   extends V2ProviderFamilyService<"workspace-materializer"> {
   readonly resolve: (input: {
@@ -239,22 +243,6 @@ export interface V2WorkspaceMaterializerProviderService
   readonly remove: (input: {
     readonly deployment: V2DeploymentRecord
   }) => Effect.Effect<string, V2RuntimeError>
-}
-
-export interface V2ProcessSupervisorProviderService
-  extends V2ProviderFamilyService<"process-supervisor"> {
-  readonly up: (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly service: V2RuntimeServiceConfig
-  }) => Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError>
-  readonly down: (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly service: V2RuntimeServiceConfig
-  }) => Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError>
-  readonly restart: (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly service: V2RuntimeServiceConfig
-  }) => Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError>
 }
 
 export interface V2HealthCheckerProviderService
@@ -316,9 +304,6 @@ export interface V2ProxyRouterProviderService
 
 export const V2ProviderRegistry =
   Context.Service<V2ProviderRegistryService>("rig/v2/V2ProviderRegistry")
-
-export const V2ProcessSupervisorProvider =
-  Context.Service<V2ProcessSupervisorProviderService>("rig/v2/V2ProcessSupervisorProvider")
 
 export const V2ProxyRouterProvider =
   Context.Service<V2ProxyRouterProviderService>("rig/v2/V2ProxyRouterProvider")
@@ -398,7 +383,7 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
 
 const stubProviders: readonly V2ProviderPlugin[] = [
   rigdProcessSupervisorProvider,
-  plugin("stub-process-supervisor", "process-supervisor", "Stub Process Supervisor", ["process-supervisor-contract-test"]),
+  stubProcessSupervisorProvider,
   plugin("stub-proxy-router", "proxy-router", "Stub Proxy Router", ["proxy-router-contract-test"]),
   plugin("stub-scm", "scm", "Stub SCM", ["scm-contract-test"]),
   plugin("stub-workspace-materializer", "workspace-materializer", "Stub Workspace Materializer", [
@@ -1162,6 +1147,9 @@ const processSupervisorService = (
         if (selected.id === "launchd") {
           return yield* installLaunchdProcess(selected, input)
         }
+        if (selected.id === "stub-process-supervisor") {
+          return yield* stubProcessSupervisorOperation(selected, "up", input.service)
+        }
         return yield* processProviderOperation(selected, `up:${input.service.name}`)
       }),
     down: (input) =>
@@ -1172,6 +1160,9 @@ const processSupervisorService = (
         }
         if (selected.id === "launchd") {
           return yield* removeLaunchdProcess(selected, input)
+        }
+        if (selected.id === "stub-process-supervisor") {
+          return yield* stubProcessSupervisorOperation(selected, "down", input.service)
         }
         return yield* processProviderOperation(selected, `down:${input.service.name}`)
       }),
@@ -1184,6 +1175,9 @@ const processSupervisorService = (
         if (selected.id === "launchd") {
           yield* removeLaunchdProcess(selected, input)
           return yield* installLaunchdProcess(selected, input)
+        }
+        if (selected.id === "stub-process-supervisor") {
+          return yield* stubProcessSupervisorOperation(selected, "restart", input.service)
         }
         return yield* processProviderOperation(selected, `restart:${input.service.name}`)
       }),

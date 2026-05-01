@@ -23,6 +23,7 @@ import {
 } from "./provider-contracts.js"
 import type { V2DeploymentRecord } from "./deployments.js"
 import { V2FileHomeConfigStoreLive } from "./home-config.js"
+import { stubProcessSupervisorProvider } from "./providers/stub-process-supervisor.js"
 import { V2ProviderContractsFromHomeConfigLive } from "./services.js"
 
 const runWithRegistry = <A>(
@@ -139,6 +140,51 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     expect(selected.healthChecker).toMatchObject({
       id: "native-health",
       family: "health-checker",
+    })
+  })
+
+  test("GIVEN stub process supervisor adapter WHEN the stub profile is composed THEN it satisfies the process supervisor contract", async () => {
+    const deployment = {
+      project: "pantry",
+      kind: "generated",
+      name: "feature-a",
+      workspacePath: "/tmp/rig-v2-stub-contract",
+      resolved: {
+        providers: {
+          processSupervisor: "stub-process-supervisor",
+        },
+      },
+    } as V2DeploymentRecord
+    const service = {
+      name: "web",
+      type: "server",
+      command: "bun run start",
+      port: 3070,
+    } as const
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* V2ProviderRegistry
+        const report = yield* registry.current
+        const processSupervisor = yield* V2ProcessSupervisorProvider
+        return {
+          stubPlugin: report.providers.find((provider) => provider.id === "stub-process-supervisor"),
+          up: yield* processSupervisor.up({ deployment, service }),
+          down: yield* processSupervisor.down({ deployment, service }),
+          restart: yield* processSupervisor.restart({ deployment, service }),
+        }
+      }).pipe(Effect.provide(V2ProviderContractsLive("stub"))),
+    )
+
+    expect(result.stubPlugin).toBe(stubProcessSupervisorProvider)
+    expect(result.up).toEqual({
+      operation: "process-supervisor:stub-process-supervisor:up:web",
+    })
+    expect(result.down).toEqual({
+      operation: "process-supervisor:stub-process-supervisor:down:web",
+    })
+    expect(result.restart).toEqual({
+      operation: "process-supervisor:stub-process-supervisor:restart:web",
     })
   })
 

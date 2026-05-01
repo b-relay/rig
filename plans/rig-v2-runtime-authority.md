@@ -268,13 +268,13 @@ the adapter satisfies the same interface.
 
 ### Acceptance Criteria
 
-- [ ] Process supervisor contract is small and separate from concrete adapter
+- [x] Process supervisor contract is small and separate from concrete adapter
       implementation.
-- [ ] Stub process supervisor adapter lives in a focused module.
-- [ ] Stub provider profile composition still works.
-- [ ] Existing process supervisor contract behavior remains externally
+- [x] Stub process supervisor adapter lives in a focused module.
+- [x] Stub provider profile composition still works.
+- [x] Existing process supervisor contract behavior remains externally
       compatible.
-- [ ] Tests prove the stub adapter satisfies the process supervisor contract.
+- [x] Tests prove the stub adapter satisfies the process supervisor contract.
 
 ---
 

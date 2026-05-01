@@ -72,7 +72,7 @@ const formatRuntimeStatus = (project: string, status: V2RigdHealthState): string
       "failures:",
       ...status.managedServiceFailures.map((failure) => {
         const logHint = failure.deployment === "local" || failure.deployment === "live"
-          ? `; logs: rig2 logs --project ${project} --lane ${failure.deployment}`
+          ? `; logs: rig logs --project ${project} --lane ${failure.deployment}`
           : ""
         return [
           `  ${failure.deployment}/${failure.component}: crashed ${failure.recentCrashCount} ${
@@ -85,7 +85,7 @@ const formatRuntimeStatus = (project: string, status: V2RigdHealthState): string
     ]
 
   return [
-    "rig2 runtime status",
+    "rig runtime status",
     `rigd: ${status.rigd.status}`,
     ...deploymentLines,
     ...failureLines,
@@ -107,7 +107,7 @@ export const V2LifecycleLive = Layer.effect(
               stateRoot: request.stateRoot,
               lines: request.lines ?? 50,
             })
-            yield* logger.info("rig2 logs", {
+            yield* logger.info("rig logs", {
               project: request.project,
               lane: request.lane,
               follow: request.follow ?? false,
@@ -124,7 +124,7 @@ export const V2LifecycleLive = Layer.effect(
             })
             yield* logger.info(formatRuntimeStatus(request.project, status))
             if (request.structured) {
-              yield* logger.info("rig2 runtime status details", summarizeRuntimeStatus(status))
+              yield* logger.info("rig runtime status details", summarizeRuntimeStatus(status))
             }
             return
           }
@@ -132,7 +132,7 @@ export const V2LifecycleLive = Layer.effect(
           if (request.action === "restart") {
             const stopped = yield* rigd.lifecycle(lifecycleWriteInput(request, "down"))
             const started = yield* rigd.lifecycle(lifecycleWriteInput(request, "up"))
-            yield* logger.info("rig2 lifecycle restarted", {
+            yield* logger.info("rig lifecycle restarted", {
               project: request.project,
               lane: request.lane,
               stopped,
@@ -142,7 +142,7 @@ export const V2LifecycleLive = Layer.effect(
           }
 
           const receipt = yield* rigd.lifecycle(lifecycleWriteInput(request, request.action))
-          yield* logger.info("rig2 lifecycle accepted", receipt)
+          yield* logger.info("rig lifecycle accepted", receipt)
         }),
     } satisfies V2LifecycleService
   }),

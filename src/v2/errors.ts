@@ -62,8 +62,8 @@ export const unknownToV2CliError = (error: unknown): V2CliArgumentError => {
   }
 
   return new V2CliArgumentError(
-    "Invalid rig2 command arguments.",
-    "Run 'rig2 --help' or 'rig2 status --help' to inspect the v2 command surface.",
+    "Invalid rig command arguments.",
+    "Run 'rig --help' or 'rig status --help' to inspect the v2 command surface.",
     {
       cause: error instanceof Error ? error.message : String(error),
     },

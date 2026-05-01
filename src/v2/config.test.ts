@@ -56,7 +56,7 @@ describe("GIVEN v2 Effect Schema validation WHEN decoding representative inputs 
     expect(String(error.details?.cause)).toContain("0.0.0.0")
   })
 
-  test("GIVEN invalid rig2 status input WHEN decoding THEN project validation fails through Effect Schema", async () => {
+  test("GIVEN invalid rig status input WHEN decoding THEN project validation fails through Effect Schema", async () => {
     const error = await Effect.runPromise(
       decodeV2StatusInput({
         project: "../pantry",
@@ -65,7 +65,7 @@ describe("GIVEN v2 Effect Schema validation WHEN decoding representative inputs 
     )
 
     expect(error._tag).toBe("V2ConfigValidationError")
-    expect(error.message).toBe("Invalid rig2 status input.")
+    expect(error.message).toBe("Invalid rig status input.")
   })
 })
 

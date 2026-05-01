@@ -48,7 +48,12 @@ The new architecture makes provider selection explicit. `rigd` is the core proce
 
 The new backend foundation is Effect-native. V2 targets Effect v4 for backend logic, Effect Schema for config and argument validation, and Effect CLI for command parsing. Legacy Zod schemas and hand-written parser code can remain only as migration scaffolding for v1 compatibility.
 
-The rollout should be incremental and isolated. The current v1 `rig` binary must remain available to manage production apps, especially always-on hosted apps such as `pantry`, while v2 is developed. V2 should have a separate dev binary or entrypoint, such as `rig2`, plus isolated state, labels, workspaces, logs, ports, and proxy entries. After v2 is ready, production apps can cut over deliberately; v1 does not need to remain the long-term user experience.
+The rollout should be incremental and isolated. During development, the v1
+`rig` binary remained available to manage production apps, especially always-on
+hosted apps such as `pantry`, while v2 used a separate entrypoint plus isolated
+state, labels, workspaces, logs, ports, and proxy entries. After v2 readiness,
+production apps can cut over deliberately; v1 does not need to remain the
+long-term user experience.
 
 The current implementation remains supported during migration while new docs, onboarding, provider composition, `rigd`, and the v2 config/CLI model are introduced in phases.
 
@@ -196,7 +201,7 @@ The current implementation remains supported during migration while new docs, on
 
 - V2 should be built as a parallel implementation path during development. The existing `rig` binary remains the v1 production manager until explicit cutover.
 
-- V2 should have a separate dev binary or entrypoint, such as `rig2`, until it is safe to replace the main `rig` binary.
+- V2 should have a separate dev binary or entrypoint until it is safe to replace the main `rig` binary.
 
 - V2 state must be isolated from v1 state during development. This includes state root, launchd labels, workspaces, logs, proxy entries, ports, and runtime metadata.
 
@@ -286,7 +291,7 @@ The current implementation remains supported during migration while new docs, on
 
 - Main-binary E2E tests should run with isolated state and stub providers, proving that the shipped binary can be safely tested without a smoke-only executable.
 
-- During v2 development, `rig2` or the v2 entrypoint should have E2E coverage proving it cannot read or mutate v1 production state by default.
+- During v2 development, the v2 entrypoint should have E2E coverage proving it cannot read or mutate v1 production state by default.
 
 - Recovery tests should cover missing or partial local state, active runtime state, provider state, and cases where reconstruction must fail instead of guessing.
 
@@ -326,14 +331,12 @@ The first implementation milestone should be documentation and onboarding alignm
 
 Keep the Dokploy context visible during future planning sessions. It explains the product feel `rig` is aiming for: simple deployment wrapper, useful interface, strong default workflows, and broad deployment features. The differentiator is that `rig` reaches for those outcomes without making Docker or containers the runtime substrate.
 
-Treat `rig2` as the v2 runway while production still depends on v1. The goal is not to keep two products forever; the goal is to protect always-on apps such as `pantry` until the v2 cutover is intentional.
+The v2 runway is now promoted to the main `rig` entrypoint while legacy runtime state remains isolated. The goal is still to protect always-on apps such as `pantry` by keeping old state untouched until an explicit state migration is designed.
 
-The next milestone should make provider selection explicit enough that the main binary can run in isolated test mode. That unlocks safer end-to-end testing and reduces dependence on the smoke-only binary.
+Provider selection is explicit enough for the main binary to run in isolated test mode. That keeps end-to-end coverage close to the shipped CLI.
 
 The most consequential milestone is `rigd`. It should be treated as the boundary between legacy command-assembled runtime truth and the v2 control-plane model. The CLI can migrate incrementally, but new runtime-facing functionality should be designed around `rigd` ownership.
 
 The initial v2 operating decisions are recorded in `docs/DESIGN_V2.md`. In short: cross-project operations use `--project <name>`, repo-first commands outside a managed repo fail unless explicitly targeted, path-based lifecycle targeting is rejected, simultaneous same-port runtime conflicts fail during preflight, health checks must be tied to rig-owned runtime state, explicit status for undeployed runtime targets fails, and aggregate runtime logs include managed components only.
 
-One migration decision remains intentionally later-stage: whether the smoke binary is removed entirely or kept temporarily as a thin harness. That is handled by the rig-smoke retirement work after main-binary isolated E2E coverage exists.
-
-Smoke-discovered reliability issues around stale release metadata, dirty release deploys, false-positive port health, missing prod versions, and installed-component logs should be handled as v2-aligned reliability work even if they land before the full v2 migration.
+Earlier smoke-discovered reliability issues around stale release metadata, dirty release deploys, false-positive port health, missing prod versions, and installed-component logs should be handled as v2-aligned reliability work.

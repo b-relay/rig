@@ -48,12 +48,12 @@ export const V2ProjectInitializer =
   Context.Service<V2ProjectInitializerService>("rig/v2/V2ProjectInitializer")
 
 const rigPackageScripts = {
-  "rig:up": "rig2 up",
-  "rig:down": "rig2 down",
-  "rig:restart": "rig2 restart",
-  "rig:status": "rig2 status",
-  "rig:logs": "rig2 logs",
-  "rig:list": "rig2 list",
+  "rig:up": "rig up",
+  "rig:down": "rig down",
+  "rig:restart": "rig restart",
+  "rig:status": "rig status",
+  "rig:logs": "rig logs",
+  "rig:list": "rig list",
 } as const
 
 const scaffoldComponents = (
@@ -240,7 +240,7 @@ export const V2ProjectInitializerLive = Layer.effect(
             return yield* Effect.fail(
               new V2RuntimeError(
                 "Cannot initialize over an existing rig.json.",
-                "Move or edit the existing rig.json before running rig2 init.",
+                "Move or edit the existing rig.json before running rig init.",
                 { project: input.project, configPath },
               ),
             )

@@ -28,14 +28,14 @@ const displayText = (text: string) =>
 
 const terminal = Terminal.make({
   columns: Effect.succeed(100),
-  readInput: Effect.die("rig2 foundation CLI does not read terminal input yet."),
+  readInput: Effect.die("rig CLI does not read terminal input yet."),
   readLine: Effect.succeed(""),
   display: displayText,
 })
 
 const childProcessSpawner = ChildProcessSpawner.of({
-  spawn: () => Effect.die("rig2 foundation CLI does not spawn child processes yet."),
-  exitCode: () => Effect.die("rig2 foundation CLI does not spawn child processes yet."),
+  spawn: () => Effect.die("rig CLI does not spawn child processes yet."),
+  exitCode: () => Effect.die("rig CLI does not spawn child processes yet."),
   streamString: () => Stream.empty,
   streamLines: () => Stream.empty,
   lines: () => Effect.succeed([]),
@@ -63,7 +63,7 @@ interface ProjectScopedInput {
 }
 
 const formatFoundationStatus = (state: V2FoundationState & { readonly lane: V2LifecycleLane }) => [
-  "rig2 foundation ready",
+  "rig foundation ready",
   `project: ${state.project}`,
   `lane: ${state.lane}`,
   `state root: ${state.stateRoot}`,
@@ -99,7 +99,7 @@ const formatProjectList = (model: V2RigdWebReadModel) => {
     ]
 
   return [
-    "rig2 projects",
+    "rig projects",
     `rigd: ${model.health.rigd.status}`,
     ...projectLines,
     ...deploymentLines,
@@ -132,7 +132,7 @@ const configFlag = Flag.string("config").pipe(
 
 const initPathFlag = Flag.string("path").pipe(
   Flag.withDefault("."),
-  Flag.withDescription("Project directory where rig2 should write rig.json."),
+  Flag.withDescription("Project directory where rig should write rig.json."),
 )
 
 const providerProfileFlag = Flag.choice("provider-profile", ["default", "stub"]).pipe(
@@ -228,7 +228,7 @@ const requireConfigPath = (
 
   return Effect.fail(
     new V2CliArgumentError(
-      "rig2 config commands require a v2 rig.json path.",
+      "rig config commands require a v2 rig.json path.",
       "Run the command from a managed repo or pass --config <path>.",
       { project: input.project },
     ),
@@ -317,12 +317,12 @@ const runConfigPatch = (input: {
 
     if (input.apply) {
       const result = yield* rigd.configApply(request)
-      yield* logger.info("rig2 config applied", result)
+      yield* logger.info("rig config applied", result)
       return
     }
 
     const preview = yield* rigd.configPreview(request)
-    yield* logger.info("rig2 config preview", preview)
+    yield* logger.info("rig config preview", preview)
   })
 
 const runLifecycleAction = (
@@ -417,7 +417,7 @@ const downCommand = Command.make(
         return yield* Effect.fail(
           new V2CliArgumentError(
             "down --destroy is reserved for generated deployments.",
-            "Use plain 'rig2 down' for local/live lanes until generated deployments are available.",
+            "Use plain 'rig down' for local/live lanes until generated deployments are available.",
             { lane: input.lane },
           ),
         )
@@ -456,7 +456,7 @@ const statusCommand = Command.make(
       }
       yield* logger.info(formatFoundationStatus(foundationStatus))
       if (input.json) {
-        yield* logger.info("rig2 foundation details", foundationStatus)
+        yield* logger.info("rig foundation details", foundationStatus)
       }
       const health = yield* rigd.health({
         stateRoot: decoded.stateRoot,
@@ -525,8 +525,8 @@ const initCommand = Command.make(
       if (project.length === 0) {
         return yield* Effect.fail(
           new V2CliArgumentError(
-            "rig2 init requires --project <name>.",
-            "Pass a stable project name, for example rig2 init --project pantry --path .",
+            "rig init requires --project <name>.",
+            "Pass a stable project name, for example rig init --project pantry --path .",
           ),
         )
       }
@@ -550,7 +550,7 @@ const initCommand = Command.make(
         packageScripts: input.packageScripts,
         componentPlugins,
       })
-      yield* logger.info("rig2 project initialized", result)
+      yield* logger.info("rig project initialized", result)
     }),
 ).pipe(Command.withDescription("Initialize a v2 rig.json without touching v1 state."))
 
@@ -568,7 +568,7 @@ const listCommand = Command.make(
 
       yield* logger.info(formatProjectList(model))
       if (input.json) {
-        yield* logger.info("rig2 projects details", model)
+        yield* logger.info("rig projects details", model)
       }
     }),
 ).pipe(Command.withDescription("List v2 projects and deployments from rigd state."))
@@ -611,7 +611,7 @@ const deployCommand = Command.make(
         ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
       })
 
-      yield* logger.info("rig2 deploy intent", intent)
+      yield* logger.info("rig deploy intent", intent)
       if (config) {
         const receipt = yield* rigd.deploy({
           project: decoded.project,
@@ -621,7 +621,7 @@ const deployCommand = Command.make(
           config,
           ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
         })
-        yield* logger.info("rig2 deploy accepted", receipt)
+        yield* logger.info("rig deploy accepted", receipt)
       }
     }),
 ).pipe(Command.withDescription("Create a v2 deploy intent for a ref and target without requiring semver."))
@@ -660,7 +660,7 @@ const bumpCommand = Command.make(
         ...(input.set.trim().length > 0 ? { set: input.set.trim() } : { bump: input.bump }),
       })
 
-      yield* logger.info("rig2 bump metadata", metadata)
+      yield* logger.info("rig bump metadata", metadata)
     }),
 ).pipe(Command.withDescription("Manage optional version metadata and rollback tag anchors."))
 
@@ -703,7 +703,7 @@ const doctorCommand = Command.make(
         })),
       })
 
-      yield* logger.info("rig2 doctor report", report)
+      yield* logger.info("rig doctor report", report)
     }),
 ).pipe(Command.withDescription("Report v2 PATH, binary, health, port, stale-state, and provider checks."))
 
@@ -731,7 +731,7 @@ const configReadCommand = Command.make(
         configPath,
       })
 
-      yield* logger.info("rig2 config read", {
+      yield* logger.info("rig config read", {
         ...model,
         fieldCount: model.fields.length,
       })
@@ -803,8 +803,8 @@ const configCommand = Command.make("config").pipe(
   ]),
 )
 
-const rig2Command = Command.make("rig2").pipe(
-  Command.withDescription("Experimental rig v2 entrypoint."),
+const rigCommand = Command.make("rig").pipe(
+  Command.withDescription("Local Mac deployment manager."),
   Command.withSubcommands([
     initCommand,
     lifecycleCommand("up", "Start a v2 local or live lane."),
@@ -821,8 +821,8 @@ const rig2Command = Command.make("rig2").pipe(
   ]),
 )
 
-export const runRig2Cli = (argv: readonly string[]) =>
-  Command.runWith(rig2Command, { version: "0.0.0-v2" })(argv).pipe(
+export const runRigCli = (argv: readonly string[]) =>
+  Command.runWith(rigCommand, { version: "0.0.0-v2" })(argv).pipe(
     Effect.as(0),
     Effect.catch((error) =>
       Effect.gen(function* () {

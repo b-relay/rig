@@ -1,12 +1,65 @@
 import { Effect, Schema } from "effect"
 
-import type { DaemonConfig, Environment, RigConfig, ServiceHooks, TopLevelHooks } from "../schema/config.js"
 import {
   resolveV2ComponentPlugin,
   type ResolvedV2PreparedComponent,
   type V2ComponentPluginId,
 } from "./component-plugins.js"
 import { V2ConfigValidationError } from "./errors.js"
+
+export interface ServiceHooks {
+  readonly preStart?: string
+  readonly postStart?: string
+  readonly preStop?: string
+  readonly postStop?: string
+}
+
+export interface TopLevelHooks extends ServiceHooks {}
+
+export interface DaemonConfig {
+  readonly enabled: boolean
+  readonly keepAlive?: boolean
+}
+
+export type RuntimeService =
+  | {
+    readonly name: string
+    readonly type: "server"
+    readonly command: string
+    readonly port: number
+    readonly healthCheck?: string
+    readonly readyTimeout?: number
+    readonly dependsOn?: readonly string[]
+    readonly hooks?: ServiceHooks
+    readonly envFile?: string
+  }
+  | {
+    readonly name: string
+    readonly type: "bin"
+    readonly entrypoint: string
+    readonly build?: string
+    readonly hooks?: ServiceHooks
+    readonly envFile?: string
+  }
+
+export interface RuntimeRuntimeEnvironment {
+  readonly deployBranch?: string
+  readonly envFile?: string
+  readonly proxy?: {
+    readonly upstream: string
+  }
+  readonly services: readonly RuntimeService[]
+}
+
+export interface MigrationRuntimeConfig {
+  readonly name: string
+  readonly description?: string
+  readonly version: string
+  readonly domain?: string
+  readonly hooks?: TopLevelHooks
+  readonly environments: Readonly<Record<string, RuntimeRuntimeEnvironment>>
+  readonly daemon?: DaemonConfig
+}
 
 const COMPONENT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/
 const PROJECT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
@@ -257,7 +310,7 @@ export type V2PostgresComponent = Schema.Schema.Type<typeof V2PostgresComponentS
 export type V2Component = Schema.Schema.Type<typeof V2ComponentSchema>
 
 export const V2StatusInputSchema = Schema.Struct({
-  project: fieldDoc(ProjectName, "Project selected with --project for a repo-external rig2 status command."),
+  project: fieldDoc(ProjectName, "Project selected with --project for a repo-external rig status command."),
   stateRoot: NonEmptyString("Isolated v2 state root. Defaults to ~/.rig-v2 and never reuses ~/.rig."),
 })
 
@@ -324,7 +377,7 @@ export interface V2RuntimePlan {
   readonly providers: ResolvedV2Providers
   readonly components: readonly V2RuntimePlanComponent[]
   readonly preparedComponents: readonly ResolvedV2PreparedComponent[]
-  readonly proxy?: Environment["proxy"]
+  readonly proxy?: RuntimeEnvironment["proxy"]
   readonly hooks?: TopLevelHooks
   readonly deployBranch?: string
   readonly envFile?: string
@@ -344,8 +397,8 @@ export interface ResolvedV2Lane {
   readonly providers: ResolvedV2Providers
   readonly preparedComponents: readonly ResolvedV2PreparedComponent[]
   readonly runtimePlan: V2RuntimePlan
-  readonly environment: Environment
-  readonly v1Config: RigConfig
+  readonly environment: RuntimeEnvironment
+  readonly v1Config: MigrationRuntimeConfig
 }
 
 interface ValidationIssue {
@@ -554,7 +607,7 @@ export const decodeV2ProjectConfig = (input: unknown) => {
 
 export const decodeV2StatusInput = (input: unknown) =>
   Schema.decodeUnknownEffect(V2StatusInputSchema)(input).pipe(
-    Effect.mapError((error) => validationError("rig2 status input", error)),
+    Effect.mapError((error) => validationError("rig status input", error)),
   )
 
 const laneConfigFor = (config: V2ProjectConfig, lane: V2LaneName) =>
@@ -717,7 +770,7 @@ export const resolveV2Lane = (
     const providers = resolveLaneProviders(laneConfig)
     const preparedComponents: ResolvedV2PreparedComponent[] = []
     const pluginResults = new Map<string, ReturnType<typeof resolveV2ComponentPlugin>>()
-    const services: Environment["services"] = []
+    const services: RuntimeEnvironment["services"] = []
     const runtimePlanComponents: V2RuntimePlanComponent[] = []
 
     for (const [name, component] of Object.entries(config.components)) {
@@ -926,14 +979,14 @@ export const resolveV2Lane = (
     const hooks = interpolateTopLevelHooks(config.hooks, interpolation)
     const deployBranch = laneConfig?.deployBranch ? interpolateString(laneConfig.deployBranch, interpolation) : undefined
 
-    const environment: Environment = {
+    const environment: RuntimeEnvironment = {
       ...(deployBranch ? { deployBranch } : {}),
       ...(envFile ? { envFile } : {}),
       ...(laneConfig?.proxy ? { proxy: { upstream: laneConfig.proxy.upstream } } : {}),
       services,
     }
 
-    const v1Config: RigConfig = {
+    const v1Config: MigrationRuntimeConfig = {
       name: config.name,
       ...(config.description ? { description: config.description } : {}),
       version: "0.0.0",

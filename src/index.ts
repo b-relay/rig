@@ -1,116 +1,61 @@
-import { Effect } from "effect-v3";
+import { Effect, Layer } from "effect"
 
-import { runCli } from "./cli/index";
-import { Logger } from "./interfaces/logger.js"
-import { buildRigLayer } from "./provider-profiles.js"
-import { runInternalLogCapture } from "./providers/internal-log-capture";
-import type { RigError } from "./schema/errors.js";
+import { runRigCli } from "./v2/cli.js"
+import { V2DeployIntentsLive } from "./v2/deploy-intent.js"
+import { V2DeploymentManagerLive, V2FileDeploymentStoreLive } from "./v2/deployments.js"
+import { V2DoctorLive } from "./v2/doctor.js"
+import { V2RuntimeError } from "./v2/errors.js"
+import { V2FileHomeConfigStoreLive } from "./v2/home-config.js"
+import { V2LifecycleLive } from "./v2/lifecycle.js"
+import { V2RigdLive } from "./v2/rigd.js"
+import { RigLive, V2Logger, V2LoggerLive } from "./v2/services.js"
 
-export { buildLoggerLayer, buildRigLayer, normalizeRigProviderProfile } from "./provider-profiles.js"
+const V2DeploymentLive = Layer.provide(V2DeploymentManagerLive, V2FileDeploymentStoreLive)
+const V2DeployIntentsRuntimeLive = Layer.provide(
+  V2DeployIntentsLive,
+  V2FileHomeConfigStoreLive,
+)
+const V2RigdRuntimeLive = Layer.provide(
+  V2RigdLive,
+  Layer.mergeAll(RigLive, V2DeploymentLive),
+)
 
-const normalizeArgv = (
-  argv: readonly string[],
-): {
-  readonly argv: readonly string[];
-  readonly verbose: boolean;
-  readonly json: boolean;
-} => {
-  const filtered = argv.filter((arg) => arg !== "--verbose" && arg !== "--json");
-  return {
-    argv: filtered,
-    verbose: argv.includes("--verbose"),
-    json: argv.includes("--json"),
-  };
-};
+export const main = (argv: readonly string[]): Promise<number> =>
+  Effect.runPromise(
+    runRigCli(argv).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          RigLive,
+          V2DeploymentLive,
+          V2DeployIntentsRuntimeLive,
+          V2RigdRuntimeLive,
+          V2DoctorLive,
+          Layer.provide(V2LifecycleLive, Layer.mergeAll(RigLive, V2RigdRuntimeLive)),
+        ),
+      ),
+    ),
+  )
 
-export const RigLive = buildRigLayer();
-
-const isRigError = (error: unknown): error is RigError =>
-  typeof error === "object" &&
-  error !== null &&
-  "_tag" in error &&
-  "message" in error &&
-  "hint" in error &&
-  typeof error._tag === "string" &&
-  typeof error.message === "string" &&
-  typeof error.hint === "string";
-
-const isTaggedMessageError = (error: unknown): error is { _tag: string; message: string } =>
-  typeof error === "object" &&
-  error !== null &&
-  "_tag" in error &&
-  "message" in error &&
-  typeof error._tag === "string" &&
-  typeof error.message === "string";
-
-const stringifyUnknown = (value: unknown): string => {
-  try {
-    const serialized = JSON.stringify(value, null, 2);
-    return serialized ?? String(value);
-  } catch {
-    return String(value);
-  }
-};
-
-const renderUnexpectedErrorDetails = (error: unknown): Record<string, unknown> => {
-  if (error instanceof Error) {
-    return {
-      message: error.message,
-      ...(error.stack ? { stack: error.stack } : {}),
-    };
-  }
-
-  if (isTaggedMessageError(error)) {
-    return {
-      tag: error._tag,
-      message: error.message,
-    };
-  }
-
-  return {
-    value: stringifyUnknown(error),
-  };
-};
-
-export const main = (argv: string[]): Promise<number> =>
-  argv[0] === "_capture-logs"
-    ? runInternalLogCapture(argv.slice(1))
-    : Effect.runPromise(
-        (Effect.gen(function* () {
-          const normalized = normalizeArgv(argv)
-
-          return yield* runCli(normalized.argv).pipe(
-            Effect.catchAll((error) =>
-              Effect.gen(function* () {
-                const logger = yield* Logger
-
-                if (isRigError(error)) {
-                  yield* logger.error(error)
-                } else {
-                  yield* logger.warn(
-                    "Unexpected error while running command.",
-                    renderUnexpectedErrorDetails(error),
-                  )
-                }
-
-                return 1
-              }),
-            ),
-            Effect.provide(buildRigLayer(normalized.verbose, normalized.json) as never),
-          )
-        }) as Effect.Effect<number, never, never>),
-      );
+const logSignal = (signal: string) =>
+  Effect.gen(function* () {
+    const logger = yield* V2Logger
+    yield* logger.error(
+      new V2RuntimeError(
+        `Received ${signal}. Shutting down.`,
+        "Restart the interrupted rig command when ready.",
+        { signal },
+      ),
+    )
+  }).pipe(Effect.provide(V2LoggerLive))
 
 const handleSignal = (signal: string) => {
-  // Outside Effect runtime — console.error is the only output available.
-  console.error(`\n✗ Received ${signal}. Shutting down.`);
-  process.exit(130);
-};
+  void Effect.runPromise(logSignal(signal)).finally(() => process.exit(130))
+}
 
-process.on("SIGTERM", () => handleSignal("SIGTERM"));
-process.on("SIGINT", () => handleSignal("SIGINT"));
+process.on("SIGTERM", () => handleSignal("SIGTERM"))
+process.on("SIGINT", () => handleSignal("SIGINT"))
 
 if (import.meta.main) {
-  const exitCode = await main(process.argv.slice(2));
-  process.exitCode = exitCode;
+  const exitCode = await main(process.argv.slice(2))
+  process.exitCode = exitCode
 }

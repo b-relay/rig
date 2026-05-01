@@ -1,6 +1,6 @@
 # Effect v4 + Bun + Codex notes
 
-Last updated: 2026-04-27
+Last updated: 2026-05-01
 
 ## How to use this file
 
@@ -11,7 +11,9 @@ Keep this file current as you learn. When you verify an API, package version con
 ## TL;DR
 
 - **Effect v4 is in beta**. Verified on 2026-04-27: `npm view effect version dist-tags --json` reports `latest` as `3.21.2` and `beta` as `4.0.0-beta.57`. For production, treat APIs as still settling.
-- **Rig uses package-name `effect` for v4 now** so first-party v4 platform packages can resolve their peer dependency correctly. V1 imports use the alias `effect-v3`.
+- **Rig uses package-name `effect` for v4** so first-party v4 platform packages
+  can resolve their peer dependency correctly. The old v1 `effect-v3` alias was
+  removed when Rig 2 became the main CLI.
 - **Effect CLI for v4 currently lives in the beta package** under `effect/unstable/cli`. `@effect/cli@0.75.1` still peers against Effect 3; do not use it for the v2 beta path unless its peer requirements change.
 - **For Bun**, the official docs support Bun directly, and the v4 beta post shows `bun add effect@beta`.
 - **Helpful first-party tooling**:
@@ -46,29 +48,22 @@ The official Effect v4 beta post shows:
 bun add effect@beta
 ```
 
-In Rig during the v1/v2 transition, v2 uses package-name `effect` and v1 uses the `effect-v3` alias:
+Rig uses package-name `effect` for the v4 beta:
 
 ```json
 {
   "dependencies": {
     "effect": "4.0.0-beta.57",
-    "effect-v3": "npm:effect@^3.19.19",
     "@effect/platform-bun": "4.0.0-beta.57"
   }
 }
 ```
 
-Import v2 code from package-name `effect`:
+Import code from package-name `effect`:
 
 ```ts
 import { Effect, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
-```
-
-Import v1 code from the v3 alias:
-
-```ts
-import { Effect } from "effect-v3"
 ```
 
 ## Verified Rig v2 beta APIs
@@ -82,13 +77,9 @@ Verified on 2026-04-20:
 - `@effect/cli@latest` is `0.75.1` and peers against `effect@^3.21.1`
 - `effect@4.0.0-beta.52` exports `./unstable/cli`, so v2 can use unstable CLI without adding `@effect/cli`
 
-Superseded stable upgrade plan:
-
-1. Keep v1 on `effect@3` while `rig2` is incomplete.
-2. Keep v2 imports explicit through `effect-v4`.
-3. When Effect v4 is promoted to `latest` and v1 compatibility is no longer required, migrate imports from `effect-v4` to `effect`, remove the alias, and update package docs.
-
-This was replaced on 2026-04-27 because v4 platform packages require package-name `effect`.
+Superseded stable upgrade plan: keep v1 on an Effect 3 alias while v2 used a
+separate package alias. That was replaced because v4 platform packages require
+package-name `effect`, and v1 was removed at cutover.
 
 Verified again on 2026-04-27:
 
@@ -97,7 +88,8 @@ Verified again on 2026-04-27:
 - `@effect/platform@latest` is `0.96.1` and peers against `effect@^3.21.2`.
 - `@effect/platform-bun@latest` is `0.89.0` and peers against Effect 3-era platform packages.
 - `@effect/platform-bun@beta` is `4.0.0-beta.57` and peers against package name `effect@^4.0.0-beta.57`.
-- Because v4 platform packages peer-import package-name `effect`, Rig now keeps v4 on package-name `effect` and moves v1 to alias `effect-v3`.
+- Because v4 platform packages peer-import package-name `effect`, Rig keeps v4
+  on package-name `effect`.
 - Do not use `@effect/platform-bun@latest` for v2. Use `@effect/platform-bun@beta`, currently pinned as `4.0.0-beta.57`.
 
 ### Effect API renames confirmed in v4 beta
@@ -123,7 +115,9 @@ Verified again on 2026-04-27:
 - Build commands with `Command.make(name, config, handler)`.
 - Execute commands in tests with `Command.runWith(command, { version })(argv)`.
 - `Command.runWith` needs CLI environment services even with explicit argv: `FileSystem.FileSystem`, `Path.Path`, `Terminal.Terminal`, `Stdio.Stdio`, and `ChildProcessSpawner`.
-- For the current `rig2` foundation path, tests provide those with `FileSystem.layerNoop({})`, `Path.layer`, `Terminal.make(...)`, `Stdio.layerTest(...)`, and a no-op `ChildProcessSpawner`.
+- Rig tests provide those with `FileSystem.layerNoop({})`, `Path.layer`,
+  `Terminal.make(...)`, `Stdio.layerTest(...)`, and a no-op
+  `ChildProcessSpawner`.
 
 ### Effect Platform / process APIs checked
 

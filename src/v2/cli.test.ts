@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
-import { runRig2Cli } from "./cli.js"
+import { runRigCli } from "./cli.js"
 import type {
   V2ConfigApplyResult,
   V2ConfigPreviewInput,
@@ -429,12 +429,12 @@ const runWithLogger = async (
         ),
     }),
   )
-  const exitCode = await Effect.runPromise(runRig2Cli(argv).pipe(Effect.provide(layer)))
+  const exitCode = await Effect.runPromise(runRigCli(argv).pipe(Effect.provide(layer)))
 
   return { exitCode, logger, lifecycle, initializer, rigd, deployIntents, doctor, configLoader }
 }
 
-describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
+describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
   test("GIVEN init command WHEN running THEN it initializes a v2 project through the v2 initializer", async () => {
     const { exitCode, logger, initializer } = await runWithLogger([
       "init",
@@ -471,7 +471,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     ])
     expect(logger.infos).toEqual([
       {
-        message: "rig2 project initialized",
+        message: "rig project initialized",
         details: expect.objectContaining({
           project: "pantry",
           repoPath: "/tmp/pantry",
@@ -515,7 +515,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(logger.errors).toEqual([])
     expect(logger.infos).toHaveLength(2)
     expect(logger.infos[0]?.message).toBe([
-      "rig2 foundation ready",
+      "rig foundation ready",
       "project: pantry",
       "lane: local",
       "state root: /tmp/rig-v2",
@@ -547,8 +547,8 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
     expect(logger.infos.map((entry) => entry.message)).toEqual([
-      expect.stringContaining("rig2 foundation ready"),
-      "rig2 foundation details",
+      expect.stringContaining("rig foundation ready"),
+      "rig foundation details",
       expect.stringContaining("rigd status"),
       "rigd status details",
     ])
@@ -598,7 +598,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(logger.infos).toEqual([
       {
         message: [
-          "rig2 projects",
+          "rig projects",
           "rigd: running",
           "projects:",
           "  api",
@@ -624,8 +624,8 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
     expect(logger.errors).toEqual([])
     expect(rigd.webReadModelRequests).toEqual([{ stateRoot: "/tmp/rig-v2" }])
     expect(logger.infos.map((entry) => entry.message)).toEqual([
-      expect.stringContaining("rig2 projects"),
-      "rig2 projects details",
+      expect.stringContaining("rig projects"),
+      "rig projects details",
     ])
     expect(logger.infos[1]?.details).toMatchObject({
       projects: [
@@ -673,7 +673,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         deploymentName: "qa",
       },
     ])
-    expect(logger.infos.at(-1)?.message).toBe("rig2 deploy intent")
+    expect(logger.infos.at(-1)?.message).toBe("rig deploy intent")
   })
 
   test("GIVEN deploy inside managed repo WHEN running THEN config is loaded and accepted by rigd", async () => {
@@ -714,7 +714,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       }),
     ])
     expect(rigd.controlPlaneDeployRequests).toEqual([])
-    expect(logger.infos.map((entry) => entry.message)).toContain("rig2 deploy accepted")
+    expect(logger.infos.map((entry) => entry.message)).toContain("rig deploy accepted")
   })
 
   test("GIVEN explicit project with config path WHEN running up THEN it loads that config", async () => {
@@ -764,7 +764,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         bump: "minor",
       },
     ])
-    expect(logger.infos.at(-1)?.message).toBe("rig2 bump metadata")
+    expect(logger.infos.at(-1)?.message).toBe("rig bump metadata")
   })
 
   test("GIVEN doctor command WHEN running THEN doctor report is emitted", async () => {
@@ -795,7 +795,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         }),
       ]),
     })
-    expect(logger.infos.at(-1)?.message).toBe("rig2 doctor report")
+    expect(logger.infos.at(-1)?.message).toBe("rig doctor report")
   })
 
   test("GIVEN config read inside managed repo WHEN running THEN rigd returns editor-ready config details", async () => {
@@ -812,7 +812,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       },
     ])
     expect(logger.infos.at(-1)).toMatchObject({
-      message: "rig2 config read",
+      message: "rig config read",
       details: expect.objectContaining({
         project: "pantry",
         revision: "rev-1",
@@ -852,7 +852,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       },
     ])
     expect(rigd.configApplyRequests).toEqual([])
-    expect(logger.infos.at(-1)?.message).toBe("rig2 config preview")
+    expect(logger.infos.at(-1)?.message).toBe("rig config preview")
   })
 
   test("GIVEN config unset apply WHEN running THEN rigd applies a remove patch", async () => {
@@ -884,7 +884,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       },
     ])
     expect(logger.infos.at(-1)).toMatchObject({
-      message: "rig2 config applied",
+      message: "rig config applied",
       details: expect.objectContaining({
         backupPath: "/tmp/pantry/rig.json.backup-rev-1.json",
       }),

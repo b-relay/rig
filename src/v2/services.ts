@@ -128,7 +128,7 @@ const V2ConfiguredProviderContractsLive = Layer.provide(
   V2FileHomeConfigStoreLive,
 )
 
-export const Rig2Live = Layer.mergeAll(
+export const RigLive = Layer.mergeAll(
   V2RuntimeLive,
   V2LoggerLive,
   V2ProviderProfileLive(),

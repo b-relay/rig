@@ -158,8 +158,8 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
     expect(rigd.lifecycleRequests.map((request) => request.action)).toEqual(["up", "down"])
     expect(rigd.lifecycleRequests[0]?.config).toEqual(config)
     expect(logger.infos.map((entry) => entry.message)).toEqual([
-      "rig2 lifecycle accepted",
-      "rig2 lifecycle accepted",
+      "rig lifecycle accepted",
+      "rig lifecycle accepted",
     ])
   })
 
@@ -204,7 +204,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
     ])
     expect(logger.infos).toEqual([
       {
-        message: "rig2 lifecycle restarted",
+        message: "rig lifecycle restarted",
         details: expect.objectContaining({
           project: "pantry",
           lane: "local",
@@ -237,7 +237,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
         lines: 25,
       },
     ])
-    expect(logger.infos[0]?.message).toBe("rig2 logs")
+    expect(logger.infos[0]?.message).toBe("rig logs")
     expect(logger.infos[0]?.details).toMatchObject({
       follow: true,
       entries: [
@@ -280,7 +280,7 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
       },
     ])
     expect(logger.infos[0]?.message).toBe([
-      "rig2 runtime status",
+      "rig runtime status",
       "rigd: running",
       "deployments: none",
       "failures: none",
@@ -334,15 +334,15 @@ describe("GIVEN v2 lifecycle live service WHEN runtime-facing actions run THEN r
     )
 
     expect(logger.infos[0]?.message).toBe([
-      "rig2 runtime status",
+      "rig runtime status",
       "rigd: running",
       "deployments:",
       "  local (local): failed since 2026-04-27T12:02:00.000Z",
       "failures:",
-      "  local/web: crashed 3 times at 2026-04-27T12:02:00.000Z; exit code 1; stderr: port already in use; logs: rig2 logs --project pantry --lane local",
+      "  local/web: crashed 3 times at 2026-04-27T12:02:00.000Z; exit code 1; stderr: port already in use; logs: rig logs --project pantry --lane local",
     ].join("\n"))
     expect(logger.infos[0]?.details).toBeUndefined()
-    expect(logger.infos[1]?.message).toBe("rig2 runtime status details")
+    expect(logger.infos[1]?.message).toBe("rig runtime status details")
     expect(logger.infos[1]?.details).toMatchObject({
       summary: {
         desiredDeployments: [

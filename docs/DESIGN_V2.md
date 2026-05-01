@@ -13,20 +13,19 @@ For the currently shipped behavior, see [DESIGN.md](../DESIGN.md).
 
 During the transition, contributors should treat this document as the source of truth for new architecture and UX decisions.
 
-For practical rig2 usage during the transition, see
-[`rig2-guide.md`](./rig2-guide.md). For the current replacement-readiness
+For practical `rig` usage, see
+[`rig-guide.md`](./rig-guide.md). For the current replacement-readiness
 audit, validation, rollback, and remaining HITL decisions, see
 [`rig-v2-cutover-readiness.md`](./rig-v2-cutover-readiness.md).
 
 ## Migration Posture
 
-V2 should be built as a parallel implementation path that can run next to the current v1 `rig`.
+V2 was built as a parallel implementation path and has now been promoted to the
+main `rig` entrypoint.
 
-The current v1 binary can remain available while v2 is being developed and
-tested, but there are no external users to preserve compatibility for. V2 is an
-entirely new CLI model. When `rig2` is good enough, the cutover is a rename:
-`rig2` becomes `rig`, rather than gradually routing selected v2 commands
-through the old CLI.
+There are no external users to preserve compatibility for. V2 is an entirely
+new CLI model. The cutover is replacement: the old CLI was removed rather than
+gradually routing selected v2 commands through it.
 
 The main safety requirement during development is not long-term v1
 compatibility; it is avoiding accidental mutation of the maintainer's current
@@ -34,12 +33,9 @@ machine state until the replacement is ready.
 
 Rules:
 
-- keep the existing `rig` binary available until the replacement CLI is ready
-- introduce a separate v2 dev binary or entrypoint, such as `rig2`, while v2 is incomplete
-- use a separate v2 state root by default, such as `~/.rig-v2`, or require an explicit isolated `RIG_ROOT` during early work
+- use a separate v2 state root by default, `~/.rig-v2`, or an explicit
+  `RIG_V2_ROOT`
 - namespace v2 launchd labels, workspaces, logs, proxy entries, and runtime state so they cannot collide with v1
-- do not let v2 manage current machine state until the replacement cutover is deliberate
-- when v2 is ready, rename/build the `rig2` CLI as `rig` rather than adding a command-by-command compatibility gate
 - copy or reuse proven v1 code patterns where useful, but do not force v2 through v1's env/service/release assumptions
 
 Good candidates to reuse are provider interface ideas, structured logger shape, process-group handling, health checks, worktree mechanics, tagged error style, and behavior-focused tests.
@@ -541,7 +537,7 @@ It is a local daemon/server process and should itself be manageable by `rig` as 
 
 The CLI becomes a client of `rigd` over a local API/socket.
 
-Current MVP: `rig2` uses an in-process local API contract while the daemon boundary is still being built. The API surface already models health, project/deployment inventory, structured logs, health state, lifecycle action receipts, and deploy action receipts so later transport work can preserve the same interface shape.
+Current MVP: `rig` uses an in-process local API contract while the daemon boundary is still being built. The API surface already models health, project/deployment inventory, structured logs, health state, lifecycle action receipts, and deploy action receipts so later transport work can preserve the same interface shape.
 
 Current runtime-facing v2 commands route through the rigd-backed lifecycle service. Any remaining direct command assembly is compatibility scaffolding for v1 or tests, not the v2 source of truth.
 
@@ -619,8 +615,8 @@ operations expressed as path arrays, applies them in memory, validates the
 candidate config with the v2 Effect Schema, and returns field-doc-aware diffs
 without writing. `rigd.configApply` repeats the same validation, rejects stale
 revisions, writes atomically through the config file store interface, and
-returns a backup path for recovery. `rig2 config read`, `rig2 config set`, and
-`rig2 config unset` are the current user-facing project config surface for this
+returns a backup path for recovery. `rig config read`, `rig config set`, and
+`rig config unset` are the current user-facing project config surface for this
 contract; hosted web editing can call the same interface later.
 
 ## Reliability Requirements
@@ -699,7 +695,9 @@ The target architecture is:
 - isolated rig root
 - selected provider composition
 
-During active v2 development, a separate `rig2` binary or v2 entrypoint is allowed and preferred for safety. The long-term target is still one main `rig` binary after cutover, but `rig2` gives v2 a safe runway while v1 keeps production workloads running.
+The long-term target is one main `rig` binary backed by isolated runtime state
+and provider composition. That target is now active; legacy state remains
+separate until an explicit migration plan changes it.
 
 ## `rig init`
 

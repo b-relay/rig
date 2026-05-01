@@ -2,9 +2,9 @@
 
 <!-- AGENTS.md is the source of truth. CLAUDE.md is a symlink to this file. DO NOT rename, delete, or revert this setup. -->
 
-Rig is a local Mac deployment manager. Rig 2 is the replacement CLI runway for
-Rig, built around `rig2`, isolated v2 state, `rigd` as the runtime authority,
-Effect v4, Effect Schema, Effect CLI, and provider-backed modular interfaces.
+Rig is a local Mac deployment manager. Rig 2 is now the main `rig` CLI, built
+around isolated v2 state, `rigd` as the runtime authority, Effect v4, Effect
+Schema, Effect CLI, and provider-backed modular interfaces.
 
 ## Default Workflow
 
@@ -37,9 +37,9 @@ Effect v4, Effect Schema, Effect CLI, and provider-backed modular interfaces.
 - Prefer official Effect docs, `effect-smol`, and migration docs over older
   blog posts or Effect v3 examples.
 - Rig 2 uses:
-  - `effect-v4` for Effect services, layers, errors, and tests.
+  - `effect` for Effect v4 services, layers, errors, and tests.
   - Effect Schema for v2 parsing and validation.
-  - `effect-v4/unstable/cli` for `rig2` command parsing and help.
+  - `effect/unstable/cli` for `rig` command parsing and help.
 
 ## Architecture Rules
 
@@ -54,8 +54,9 @@ Effect v4, Effect Schema, Effect CLI, and provider-backed modular interfaces.
   modules.
 - Keep `rigd` as the v2 runtime authority for lifecycle, deploy, inventory,
   health, logs, receipts, config editing, and control-plane contracts.
-- Keep v2 isolated from v1 until cutover: no accidental writes to `~/.rig`,
-  v1 launchd labels, v1 Caddy entries, or v1 runtime state.
+- Keep v2 runtime state isolated after cutover: no accidental writes to
+  legacy `~/.rig`, legacy launchd labels, legacy Caddy entries, or legacy
+  runtime state.
 - Local development is the working-copy lane. Pushed refs drive live/generated
   deployments; `main` is the production ref unless the PRD says otherwise.
 - Enforce localhost-only bindings in schema validation: use `127.0.0.1` or
@@ -77,7 +78,6 @@ Effect v4, Effect Schema, Effect CLI, and provider-backed modular interfaces.
 - `bun install`
 - `bun test`
 - `bun run build`
-- `bun run build:rig2`
 
 Run focused tests during TDD, then broader validation before committing when the
 change touches shared behavior.

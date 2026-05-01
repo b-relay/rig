@@ -1,10 +1,7 @@
-# Rig2 Guide
+# Rig Guide
 
-`rig2` is the v2 runway for Rig. It is intentionally separate from the current
-`rig` binary while v2 is still being validated.
-
-Use `rig` for current production workflows. Use `rig2` to try the new v2 model
-under isolated state.
+`rig` is the Rig 2 CLI. It uses the new repo-first model while keeping runtime
+state isolated under `~/.rig-v2` or `RIG_V2_ROOT`.
 
 V2 uses two config scopes:
 
@@ -43,9 +40,9 @@ these defaults:
 
 ## What Is Different
 
-| Area | Rig v1 | Rig2 |
+| Area | Legacy Rig | Rig |
 |---|---|---|
-| Binary | `rig` | `rig2` |
+| Binary | removed v1 command surface | `rig` |
 | State root | `~/.rig` or `RIG_ROOT` | `~/.rig-v2` or `RIG_V2_ROOT` |
 | Config shape | `environments.dev` and `environments.prod` | shared `components`, plus `local`, `live`, and `deployments` |
 | Runtime lanes | `dev` and `prod` | `local`, `live`, and generated deployments |
@@ -55,26 +52,13 @@ these defaults:
 | Runtime authority | command-assembled runtime state | `rigd` owns state, receipts, logs, health, and control-plane contracts |
 | Providers | concrete local defaults | provider interfaces and profiles |
 
-## When To Use It
-
-Use `rig2` for:
-
-- testing the v2 config model
-- validating repo-first lifecycle commands
-- exercising `rigd` state, read models, action receipts, and config editing
-- isolated agent or CI work with `RIG_V2_ROOT`
-
-Do not use `rig2` as the default production manager yet. The current production
-manager is still `rig`.
-
 ## Basic Setup
 
-Install dependencies and build both binaries:
+Install dependencies and build the CLI:
 
 ```bash
 bun install
 bun run build
-bun run build:rig2
 ```
 
 For isolated testing, set a temporary v2 state root:
@@ -85,17 +69,17 @@ export RIG_V2_ROOT="$(mktemp -d)"
 
 ## Create A V2 Config
 
-You can scaffold a v2-style `rig.json` with the `rig2` init command:
+You can scaffold a v2-style `rig.json` with the `rig` init command:
 
 ```bash
-./rig2 init --project pantry --path . --provider-profile stub --package-scripts
+./rig init --project pantry --path . --provider-profile stub --package-scripts
 ```
 
 Add bundled component plugins at init time when the project needs Rig-owned
 database/backend components:
 
 ```bash
-./rig2 init --project pantry --path . --provider-profile stub --uses sqlite,postgres,convex
+./rig init --project pantry --path . --provider-profile stub --uses sqlite,postgres,convex
 ```
 
 `--uses` accepts `sqlite`, `postgres`, and `convex`. It only writes component
@@ -105,7 +89,7 @@ components, ports, Vite/Next presets, or package-manager-specific app commands.
 Routing metadata can be scaffolded at the same time:
 
 ```bash
-./rig2 init --project pantry --path . --domain pantry.b-relay.com --proxy web
+./rig init --project pantry --path . --domain pantry.b-relay.com --proxy web
 ```
 
 `--domain` writes the project domain. `--proxy web` writes `proxy.upstream` as
@@ -182,7 +166,7 @@ the system Caddyfile plus reusable snippets can set:
 ```
 
 `extraConfig` lines are inserted inside every Rig-managed site block after the
-`reverse_proxy` line. The default reload mode is `manual`, so `rig2` writes the
+`reverse_proxy` line. The default reload mode is `manual`, so `rig` writes the
 Caddyfile but does not require sudo. If `reload.mode` is `command`, the bundled
 Caddy provider runs the configured command after route upsert/remove. Use that
 only with a command the current user can run non-interactively, such as a
@@ -193,79 +177,79 @@ passwordless narrow helper or an unprivileged Caddy admin reload.
 Start the local `rigd` authority:
 
 ```bash
-./rig2 rigd
+./rig rigd
 ```
 
 Start the local lane from inside a managed repo:
 
 ```bash
-./rig2 up
+./rig up
 ```
 
 Start or inspect a project from outside the repo:
 
 ```bash
-./rig2 list
-./rig2 up --project pantry
-./rig2 restart --project pantry
-./rig2 status --project pantry
+./rig list
+./rig up --project pantry
+./rig restart --project pantry
+./rig status --project pantry
 ```
 
 When running outside the project repo, pass the v2 config path if the command
 should use deployment inventory or provider-backed execution:
 
 ```bash
-./rig2 up --project pantry --config /path/to/pantry/rig.json
-./rig2 status --project pantry --config /path/to/pantry/rig.json
+./rig up --project pantry --config /path/to/pantry/rig.json
+./rig status --project pantry --config /path/to/pantry/rig.json
 ```
 
 Use the live lane:
 
 ```bash
-./rig2 restart --project pantry --lane live
-./rig2 status --project pantry --lane live
-./rig2 logs --project pantry --lane live --lines 100
+./rig restart --project pantry --lane live
+./rig status --project pantry --lane live
+./rig logs --project pantry --lane live --lines 100
 ```
 
-`rig2 status` defaults to readable terminal output. Add `--json` when you also
+`rig status` defaults to readable terminal output. Add `--json` when you also
 need the structured foundation, `rigd`, inventory, and runtime status details:
 
 ```bash
-./rig2 status --project pantry --json
+./rig status --project pantry --json
 ```
 
-`rig2 list` reads the global v2 project/deployment inventory from `rigd` state.
+`rig list` reads the global v2 project/deployment inventory from `rigd` state.
 Add `--json` to emit the structured read model:
 
 ```bash
-./rig2 list --json
+./rig list --json
 ```
 
 Create deploy intents:
 
 ```bash
-./rig2 deploy --project pantry --ref main --target live
-./rig2 deploy --project pantry --ref feature/preview --target generated
-./rig2 deploy --project pantry --ref feature/preview --target generated --deployment preview-a
-./rig2 deploy --project pantry --config /path/to/pantry/rig.json --ref feature/preview --target generated
+./rig deploy --project pantry --ref main --target live
+./rig deploy --project pantry --ref feature/preview --target generated
+./rig deploy --project pantry --ref feature/preview --target generated --deployment preview-a
+./rig deploy --project pantry --config /path/to/pantry/rig.json --ref feature/preview --target generated
 ```
 
 Manage optional version metadata:
 
 ```bash
-./rig2 bump --project pantry --current 1.2.3 --bump patch
-./rig2 bump --project pantry --current 1.2.3 --set 2.0.0
+./rig bump --project pantry --current 1.2.3 --bump patch
+./rig bump --project pantry --current 1.2.3 --set 2.0.0
 ```
 
 Run doctor checks:
 
 ```bash
-./rig2 doctor --project pantry
+./rig doctor --project pantry
 ```
 
 ## Config Editing
 
-The v2 config editor is exposed through `rig2 config` commands backed by
+The v2 config editor is exposed through `rig config` commands backed by
 `rigd` interfaces:
 
 - `configRead`
@@ -290,32 +274,32 @@ validates again, writes atomically, and returns a backup path.
 Read the current project config from inside a managed repo:
 
 ```bash
-./rig2 config read
+./rig config read
 ```
 
 Preview a config edit without writing:
 
 ```bash
-./rig2 config set --path live.deployBranch --json '"stable"'
+./rig config set --path live.deployBranch --json '"stable"'
 ```
 
 Apply the same edit:
 
 ```bash
-./rig2 config set --path live.deployBranch --json '"stable"' --apply
+./rig config set --path live.deployBranch --json '"stable"' --apply
 ```
 
 Remove a field:
 
 ```bash
-./rig2 config unset --path live.deployBranch --apply
+./rig config unset --path live.deployBranch --apply
 ```
 
 Outside the repo, pass both project and config path:
 
 ```bash
-./rig2 config read --project pantry --config /path/to/pantry/rig.json
-./rig2 config set --project pantry --config /path/to/pantry/rig.json --path components.web.port --json 4080
+./rig config read --project pantry --config /path/to/pantry/rig.json
+./rig config set --project pantry --config /path/to/pantry/rig.json --path components.web.port --json 4080
 ```
 
 `--json` must be valid JSON, so strings need quotes, booleans use `true` or
@@ -323,8 +307,7 @@ Outside the repo, pass both project and config path:
 
 ## Current Limits
 
-- `rig2` is not the default `rig` behavior yet.
-- Repo-inferred `rig2 up`, `down`, `status`, `logs`, and `deploy` load the v2
+- Repo-inferred `rig up`, `down`, `status`, `logs`, and `deploy` load the v2
   `rig.json` through the config-loader interface. Outside the repo, use
   `--project` plus `--config` to get the same validated config-backed path.
 - Config-backed `rigd` lifecycle and deploy actions now run through ordered v2
@@ -347,12 +330,12 @@ Outside the repo, pass both project and config path:
   stderr evidence when provided, restarts the desired-running deployment while
   the retry budget allows it, and marks the deployment failed after repeated
   crashes inside the backoff window. The core `rigd` process supervisor wires
-  real child-process exits into this entrypoint, and `rig2 status` exposes
+  real child-process exits into this entrypoint, and `rig status` exposes
   desired deployment state plus recent managed-service failure evidence.
 - Pantry cutover readiness is covered by v2 tests for a live
   `pantry.b-relay.com` route and an installed `pantry` CLI under an isolated
   v2 bin root.
-- `rig2 config read`, `rig2 config set`, and `rig2 config unset` expose
+- `rig config read`, `rig config set`, and `rig config unset` expose
   project config read/preview/apply through `rigd`. Hosted web config editing
   is still future work.
 - Hosted web transport for `rig.b-relay.com` is not implemented yet.
@@ -364,7 +347,7 @@ Outside the repo, pass both project and config path:
 
 Tracked follow-ups:
 
-- #23 rename/build `rig2` as `rig` when replacement criteria are met
+- #23 rename/build `rig` as `rig` when replacement criteria are met
 - #26 add hosted control-plane transport adapter
 
 Current plugin/preset track:
@@ -442,7 +425,7 @@ Postgres defaults to `${dataRoot}/postgres/<component>` for its data directory,
 exposes `${postgres.dataDir}` and `${postgres.port}`, and resolves to a managed
 service bound to `127.0.0.1`. The default command runs `initdb` on first start
 when `PG_VERSION` is missing, then runs `postgres -D <dataDir> -h 127.0.0.1 -p
-<port>`. `rig2 init --uses postgres` writes only the component stub; add a
+<port>`. `rig init --uses postgres` writes only the component stub; add a
 component or lane `port` before running local/live lanes. Rig does not create
 database users, schemas, migrations, or connection strings. Lane overrides may still set `port`, `command`, `health`,
 `readyTimeout`, and `dependsOn`.
@@ -471,7 +454,7 @@ Convex resolves to a managed service using `bunx convex dev --local
 `${convex.url}/instance_name`, and Convex's project-local state directory at
 `${workspace}/.convex/local/default`. Rig exposes `${convex.url}`,
 `${convex.siteUrl}`, `${convex.port}`, `${convex.sitePort}`, and
-`${convex.stateDir}` for interpolation. `rig2 init --uses convex` writes only
+`${convex.stateDir}` for interpolation. `rig init --uses convex` writes only
 the component stub; add `port` and optionally `sitePort` before running
 local/live lanes. Lane overrides may still set `port`,
 `sitePort`, `command`, `health`, `readyTimeout`, and `dependsOn`.

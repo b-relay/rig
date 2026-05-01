@@ -12,7 +12,7 @@ Durable decisions that apply across this stage:
 - **Control-plane shape**: `rigd` is localhost-first on `127.0.0.1`, and the hosted web UI is `https://rig.b-relay.com`. Private remote access can be handled by Tailscale DNS routing to localhost; public internet exposure should be handled by a provider/plugin such as Cloudflare Tunnel.
 - **Read/write split**: web-facing read models and write actions are separate slices. Read models expose project, deployment, health, and log state. Write actions route lifecycle and deploy operations through the same `rigd` authority used by CLI commands.
 - **Config editing**: web-facing config changes use structured patches validated by Effect Schema before atomic apply. Direct arbitrary file writes are not part of the control-plane contract.
-- **Cutover safety**: `rig2` remains isolated until replacement readiness verifies provider safety, docs, validation, and rollback behavior. The final cutover is a deliberate removal of v1 code followed by making v2 the `rig` CLI.
+- **Cutover safety**: the v2 implementation remains isolated from legacy runtime state. The final cutover is a deliberate removal of v1 code followed by making v2 the `rig` CLI.
 
 ---
 
@@ -48,7 +48,7 @@ metadata shape for first-party and future external providers. Default, stub,
 and isolated E2E reports cover process supervision,
 proxy/routing, SCM, workspace materialization, event transport, localhost
 control-plane transport, health checks, package-manager integration, and
-tunnel/exposure. `rigd` health and `rig2 doctor` now report the selected
+tunnel/exposure. `rigd` health and `rig doctor` now report the selected
 provider profile and capability metadata.
 
 ---
@@ -248,7 +248,7 @@ failure recovery.
 
 ---
 
-## Phase 20: Prepare Rig2 To Main Rig Cutover Readiness
+## Phase 20: Prepare V2 To Main Rig Cutover Readiness
 
 **GitHub issue**: #22
 
@@ -260,9 +260,10 @@ failure recovery.
 
 ### What To Build
 
-Create the cutover readiness slice for replacing the current `rig` CLI with
-the isolated `rig2` CLI when it is safe. The long-term goal is that v2 becomes
-`rig`; `rig2` is temporary migration runway, not a permanent second product.
+Create the cutover readiness slice for replacing the legacy `rig` CLI with the
+isolated v2 implementation when it is safe. The long-term goal is that v2
+becomes `rig`; the temporary v2 entrypoint is migration runway, not a permanent
+second product.
 
 There are no external users to preserve compatibility for. The cutover is a
 deliberate v1 removal and v2 promotion, not gradual command routing through v1.
@@ -275,33 +276,32 @@ replacement is deliberate.
 - [x] Legacy v1 command behavior is not a long-term compatibility requirement; v1 remains available only until the deliberate replacement rename.
 - [x] Provider/profile selection prevents accidental launchd, Caddy, or user-state mutation in tests.
 - [x] Release/cutover docs explain how to validate, roll back, and keep production apps safe during migration.
-- [x] The plan explicitly covers deleting v1 and promoting `rig2` behavior as `rig` when v2 becomes default.
+- [x] The plan explicitly covers deleting v1 and promoting v2 behavior as `rig` when v2 becomes default.
 - [x] Remaining post-cutover gaps are filed as follow-up issues instead of hidden in the plan.
 
 ### Current AFK Output
 
 `docs/rig-v2-cutover-readiness.md` records the replacement readiness matrix,
-provider safety requirements, validation checklist, rollback checklist, rename
-plan, and remaining gaps before v2 becomes the default `rig` behavior.
-`docs/rig2-guide.md` gives a short user-facing guide for using `rig2` today
-and understanding the differences from rig v1.
+provider safety requirements, validation checklist, rollback checklist, completed
+promotion, and remaining gaps now that v2 is the default `rig` behavior.
+`docs/rig-guide.md` gives a short user-facing guide for using `rig`.
 
-Remaining follow-up issues capture the final `rig2` to `rig` replacement path,
-hosted control-plane transport for `rig.b-relay.com`, and provider adapter
-parity for proxy routing, SCM checkout, and workspace materialization.
-#24 is complete: `rig2 config read/set/unset` now expose the `rigd` config
+#23 is complete: v1 was removed, v2 was promoted to `rig`, and the build emits
+the final `rig` binary. #26 is complete: hosted control-plane transport has an
+interface, disabled default adapter, pairing-token guard, and envelope send
+path. #24 is complete: `rig config read/set/unset` now expose the `rigd` config
 read, preview, and apply workflow through a user-facing CLI.
 
-Runtime routing from `rig` to v2 remains intentionally unchanged. The approved
-direction is to keep `rig2` isolated until it is ready, then remove v1 and
-promote v2 as the `rig` CLI in a deliberate cutover commit.
+Runtime routing from legacy `rig` to v2 was intentionally avoided. The approved
+direction was to remove v1 and promote v2 as the `rig` CLI in a deliberate
+cutover commit.
 
 ### Follow-Up Progress
 
 - #25 complete: `src/v2/runtime-executor.ts` defines the v2 runtime
   executor interface. Config-backed `rigd` lifecycle, live deploy, generated
   deploy, and generated destroy actions now execute through that provider
-  interface before durable receipts and logs are persisted. `rig2` now loads
+  interface before durable receipts and logs are persisted. `rig` now loads
   validated v2 config for repo-inferred and explicit `--config` command paths,
   then passes that config into lifecycle, status, and deploy calls. Runtime
   provider family services now expose operation methods that
@@ -326,14 +326,14 @@ promote v2 as the `rig` CLI in a deliberate cutover commit.
   policies. Config-backed lifecycle and deploy actions now persist desired
   running/stopped deployment state, and `rigd.start` reconciles desired-running
   records through the runtime executor after process restart.
-  `rig2 init --project <name> --path <path>` now writes a valid lane-wired v2
+  `rig init --project <name> --path <path>` now writes a valid lane-wired v2
   config, can add non-overwriting `rig:` package scripts, and records a
-  project-initialized event in isolated `rigd` state so `rig2 list` can
+  project-initialized event in isolated `rigd` state so `rig list` can
   discover the project. `--uses sqlite,postgres,convex` scaffolds bundled
   component-plugin stubs without adding dependencies, ports, or Vite/Next-style
   app command presets. `--domain` and `--proxy` scaffold neutral routing
   metadata without creating app components. A fake-project CLI flow now starts
-  from `rig2 init`, adds `components.web` through `rig2 config set`, and proves
+  from `rig init`, adds `components.web` through `rig config set`, and proves
   local `up`, live `deploy`, and generated `deploy --ref feature/test` are
   accepted under the isolated stub provider profile without using Pantry as the
   test bed or setting stub providers in home config. The generated path also
@@ -349,9 +349,9 @@ promote v2 as the `rig` CLI in a deliberate cutover commit.
   budget allows it, and marks repeated crashes failed. The core `rigd`
   process-supervisor provider reports real child-process exits into that policy
   entrypoint, and status output includes desired deployment state plus recent
-  managed-service failure evidence. `rig2 restart` now routes through `rigd` as
+  managed-service failure evidence. `rig restart` now routes through `rigd` as
   an ordered down then up lifecycle sequence for the selected local/live lane.
-  `rig2 list` now reads global v2 project/deployment inventory from
+  `rig list` now reads global v2 project/deployment inventory from
   `rigd.webReadModel`, with `--json` for structured tooling output.
   #27 is complete: the launchd
   process-supervisor provider installs

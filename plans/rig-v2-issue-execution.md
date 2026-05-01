@@ -40,7 +40,6 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
               -> #8 Materialize generated deployments
               -> #10 Ship a rigd MVP
               -> #13 Expand init and package-manager integration
-              -> #14 Retire rig-smoke
           -> #4 Align docs and onboarding with v2 vocabulary
 
 #8 Materialize generated deployments
@@ -51,14 +50,13 @@ This plan converts the open v2 GitHub issues into an execution order. It is inte
 #10 Ship a rigd MVP
   -> #11 Move lifecycle, logs, and status behind rigd
       -> #12 Harden deploy reliability and doctor
-      -> #14 Retire rig-smoke
 
 #16 Define v2 provider plugin contracts
   -> #17 Persist rigd runtime state and reconciliation journal
       -> #19 Expose web read models through rigd
           -> #20 Route web lifecycle and deploy actions through rigd
           -> #21 Add safe config edit workflow through rigd
-              -> #22 Prepare rig2 to main rig cutover readiness
+	              -> #22 Prepare rig to main CLI cutover readiness
   -> #18 Add localhost-first control-plane interface
       -> #19 Expose web read models through rigd
       -> #20 Route web lifecycle and deploy actions through rigd
@@ -96,17 +94,17 @@ Exit condition:
 
 Build the isolated v2 foundation before adding feature surface. This is the first real implementation milestone.
 
-Status: complete. `rig2`, isolated v2 paths, Effect v4 aliasing, representative Effect Schema validation, Effect CLI parsing, services/layers, and tagged errors are implemented and covered by focused tests.
+Status: complete. The isolated v2 foundation, Effect v4 setup, representative Effect Schema validation, Effect CLI parsing, services/layers, and tagged errors are implemented and covered by focused tests.
 
 Required outputs:
 
-- Separate `rig2` or equivalent v2 entrypoint.
+- Separate v2 entrypoint, now promoted to the main `rig` entrypoint.
 - Isolated v2 state root and namespaced runtime/provider state.
 - Effect v4 package/version decision.
 - One representative Effect Schema path.
 - One representative Effect CLI command.
 - Service/layer composition and tagged error path proven end to end.
-- V1 binary remains safe for existing production use.
+- Legacy runtime state remains isolated from the promoted `rig` entrypoint.
 
 Exit condition:
 
@@ -157,7 +155,7 @@ Exit condition:
 
 #6 depends on #5 and #15, and should introduce repo-first command aliases through the v2 command path.
 
-Current output: `rig2 up`, `rig2 down`, `rig2 logs`, and `rig2 status` are Effect CLI commands. They infer project identity from the current repo when `--project` is omitted, expose `local`/`live` lanes, reject `down --destroy` for local/live lanes, and delegate through a v2 lifecycle interface.
+Current output: `rig up`, `rig down`, `rig logs`, and `rig status` are Effect CLI commands. They infer project identity from the current repo when `--project` is omitted, expose `local`/`live` lanes, reject `down --destroy` for local/live lanes, and delegate through a v2 lifecycle interface.
 
 #8 depends on #5 and #7, and should materialize generated deployments from the `deployments` template.
 
@@ -165,7 +163,7 @@ Current output: generated deployment materialization now runs behind v2 deployme
 
 #13 depends on #5 and #7, and should expand init once the config resolver and provider profiles exist.
 
-Current output: `rig2 init --project <name> --path <path>` writes a valid lane-wired v2 config, `--provider-profile default|stub` is scriptable, and `--package-scripts` adds non-overwriting `rig:` scripts only when `package.json` already exists. `--uses sqlite,postgres,convex` scaffolds bundled component-plugin stubs without adding dependencies, ports, or Vite/Next-style app command presets. `--domain` and `--proxy` scaffold neutral project domain and lane proxy metadata without creating app components. Init also records a project-initialized event in isolated `rigd` state so `rig2 list` can discover the project. Runtime provider services now select SCM, workspace, proxy, health, hook, package-manager, and process-supervisor providers from the resolved deployment `providerProfile`, falling back to the machine default only when the deployment has no profile. A fake-project CLI flow now initializes from scratch, adds a `web` component through `rig2 config set`, and proves local `up`, live `deploy`, and generated `deploy --ref feature/test` are accepted under the isolated stub provider profile without setting a stub home config. The generated path also proves generated inventory, reserved component ports, and generated SQLite data paths under the isolated v2 state root. A Pantry-like fake app flow now proves a routed web component, SQLite component, and installed CLI component with `installName: "pantry"` can deploy live and generated targets through v2 without touching real Pantry.
+Current output: `rig init --project <name> --path <path>` writes a valid lane-wired v2 config, `--provider-profile default|stub` is scriptable, and `--package-scripts` adds non-overwriting `rig:` scripts only when `package.json` already exists. `--uses sqlite,postgres,convex` scaffolds bundled component-plugin stubs without adding dependencies, ports, or Vite/Next-style app command presets. `--domain` and `--proxy` scaffold neutral project domain and lane proxy metadata without creating app components. Init also records a project-initialized event in isolated `rigd` state so `rig list` can discover the project. Runtime provider services now select SCM, workspace, proxy, health, hook, package-manager, and process-supervisor providers from the resolved deployment `providerProfile`, falling back to the machine default only when the deployment has no profile. A fake-project CLI flow now initializes from scratch, adds a `web` component through `rig config set`, and proves local `up`, live `deploy`, and generated `deploy --ref feature/test` are accepted under the isolated stub provider profile without setting a stub home config. The generated path also proves generated inventory, reserved component ports, and generated SQLite data paths under the isolated v2 state root. A Pantry-like fake app flow now proves a routed web component, SQLite component, and installed CLI component with `installName: "pantry"` can deploy live and generated targets through v2 without touching real Pantry.
 
 Recommended order:
 
@@ -185,11 +183,11 @@ Exit condition:
 
 #9 can start after #8 and turns generated deployment inventory into deploy intent from git pushes and CLI deploy targets.
 
-Current output: deploy intent resolution now classifies git pushes to the configured main ref as `live` updates and other refs as generated deployment updates, materializing generated deployment inventory when config is available. `rig2 deploy` creates ref/target intents without requiring semver, `rig2 bump` emits optional version metadata with rollback tag anchors, and dirty/stale-release edge cases fail with structured v2 runtime errors.
+Current output: deploy intent resolution now classifies git pushes to the configured main ref as `live` updates and other refs as generated deployment updates, materializing generated deployment inventory when config is available. `rig deploy` creates ref/target intents without requiring semver, `rig bump` emits optional version metadata with rollback tag anchors, and dirty/stale-release edge cases fail with structured v2 runtime errors.
 
 #10 depends on #7 and #8 and introduces the `rigd` MVP.
 
-Current output: `rigd` now exists as an Effect v4 service/interface with an in-process MVP local API for health, inventory, logs, health state, lifecycle receipts, and deploy receipts. `rig2 rigd` starts and reports the local API, and `rig2 status` reads rigd health/inventory as the first CLI status path through the runtime authority.
+Current output: `rigd` now exists as an Effect v4 service/interface with an in-process MVP local API for health, inventory, logs, health state, lifecycle receipts, and deploy receipts. `rig rigd` starts and reports the local API, and `rig status` reads rigd health/inventory as the first CLI status path through the runtime authority.
 
 Recommended order:
 
@@ -208,7 +206,7 @@ Exit condition:
 
 Move lifecycle, logs, status, health, and process supervision behind `rigd`.
 
-Current output: `V2LifecycleLive` now delegates `up`, `down`, `logs`, and `status` to the rigd local API. The live `rig2` composition uses the rigd-backed lifecycle implementation, while older direct lifecycle assembly remains a compatibility testing seam rather than the runtime source of truth.
+Current output: `V2LifecycleLive` now delegates `up`, `down`, `logs`, and `status` to the rigd local API. The live `rig` composition uses the rigd-backed lifecycle implementation, while older direct lifecycle assembly remains a compatibility testing path rather than the runtime source of truth.
 
 Exit condition:
 
@@ -221,7 +219,7 @@ Exit condition:
 
 #12 hardens deploy reliability and introduces `doctor`.
 
-Current output: `V2Doctor` exposes deploy preflight, doctor reporting, and bounded reconstruction interfaces. The `rig2 doctor` command now emits PATH, binary/file, health, port, stale-state, and provider categories, while tests cover false-positive health ownership, actionable port conflicts, safe reconstruction plans, and structured unsafe reconstruction failures.
+Current output: `V2Doctor` exposes deploy preflight, doctor reporting, and bounded reconstruction interfaces. The `rig doctor` command now emits PATH, binary/file, health, port, stale-state, and provider categories, while tests cover false-positive health ownership, actionable port conflicts, safe reconstruction plans, and structured unsafe reconstruction failures.
 
 #14 retires the smoke-only binary once main-binary isolated E2E coverage is sufficient.
 
@@ -242,7 +240,7 @@ Current output: `V2ProviderRegistry` reports a shared plugin metadata shape for
 first-party bundled providers and future external providers, with explicit
 Effect service tags for each provider family. Default, stub, and isolated E2E
 compositions satisfy the same provider families, and capability metadata is
-visible through `rigd` health and `rig2 doctor`.
+visible through `rigd` health and `rig doctor`.
 
 #17 makes `rigd` restart-safe by persisting runtime state, receipts, health summaries, port reservations, provider observations, and recovery evidence under the isolated v2 state root.
 
@@ -316,8 +314,8 @@ Current output: `V2ConfigEditor` exposes read, preview, and apply interfaces
 for structured v2 config patches. `rigd` returns editor-ready config with
 field docs and revisions, previews schema-validated diffs without writing, and
 applies validated edits atomically with backup/recovery information while
-rejecting stale revisions. `rig2 config read`, `rig2 config set`, and
-`rig2 config unset` expose that workflow through the CLI, with preview as the
+rejecting stale revisions. `rig config read`, `rig config set`, and
+`rig config unset` expose that workflow through the CLI, with preview as the
 default and `--apply` required for writes.
 
 Exit condition:
@@ -329,26 +327,26 @@ Exit condition:
 
 **Issue**: #22
 
-#22 is the HITL readiness gate for replacing the current `rig` CLI with the isolated `rig2` CLI once v2 is ready.
+#22 is the HITL readiness gate for replacing the legacy `rig` CLI with the isolated v2 implementation once v2 is ready.
 
 Current HITL output: the cutover model is replacement, not gradual routing.
-`rig2` remains isolated while incomplete; when it is good enough, it is renamed
-or built as `rig` as the new CLI. `docs/rig-v2-cutover-readiness.md` records
+The v2 implementation remains isolated while incomplete; when it is good enough,
+it is built as `rig` as the new CLI. `docs/rig-v2-cutover-readiness.md` records
 the replacement readiness criteria, validation, rollback, and remaining gaps.
-`docs/rig2-guide.md` gives the user-facing usage guide and v1/v2 differences.
+`docs/rig-guide.md` gives the user-facing usage guide and v1/v2 differences.
 Follow-up issues #23 through #26 are filed for the remaining implementation
 slices.
 
 Exit condition:
 
-- Replacement readiness, provider safety, validation steps, rollback docs, and remaining follow-up issues are explicit before renaming `rig2` to `rig`.
+- Replacement readiness, provider safety, validation steps, rollback docs, and remaining follow-up issues are explicit before promoting v2 to `rig`.
 
 ## Recommended Next Move
 
 Provider-execution foundation from #25 is in place: config-backed
 `rigd` lifecycle, deploy, and generated-destroy actions now resolve deployment
 records and execute through the v2 runtime executor provider interface before
-receipts/logs persist. The direct `rig2` CLI config-loading slice is also in
+receipts/logs persist. The direct `rig` CLI config-loading slice is also in
 place for repo-inferred commands and explicit `--config` paths; lifecycle,
 status, and deploy calls pass the validated config into the rigd/provider path.
 The provider-method boundary is now in place: process supervisor, workspace,
@@ -391,8 +389,8 @@ process-supervisor provider now wires concrete child-process exits into that
 policy entrypoint, and status output includes desired deployment state plus
 recent managed-service failure evidence.
 
-After the provider-adapter follow-ups, #23 can prepare the final `rig2` to
-`rig` replacement build path. #24 is complete for the CLI config-edit surface.
+After the provider-adapter follow-ups, #23 prepares the final v2 to `rig`
+replacement build path. #24 is complete for the CLI config-edit surface.
 
 ## Suggested First Milestone
 
@@ -427,11 +425,11 @@ Scope:
 - #19 Expose web read models through rigd.
 - #20 Route web lifecycle and deploy actions through rigd.
 - #21 Add safe config edit workflow through rigd.
-- #22 Prepare rig2 to main rig cutover readiness.
+- #22 Prepare v2 to main rig cutover readiness.
 
 Why this milestone:
 
 - It turns the MVP `rigd` into a durable runtime authority.
 - It keeps external systems behind interfaces before transport and web-facing behavior expand.
 - It creates the local contracts the hosted control plane can consume later.
-- It preserves a deliberate HITL replacement decision before `rig2` becomes the main `rig` binary.
+- It preserves a deliberate HITL replacement decision before v2 becomes the main `rig` binary.

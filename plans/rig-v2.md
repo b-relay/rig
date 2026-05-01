@@ -61,7 +61,7 @@ Create the v2 technical foundation around Effect v4, Effect Schema, and Effect C
 - [x] The project targets Effect v4 for v2 backend logic.
 - [x] If Effect v4 is still prerelease, the implementation pins an explicit beta and documents the stable upgrade path.
 - [x] `docs/effect-v4-help-notes.md` is consulted before Effect v4 work and kept updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
-- [x] A separate v2 dev binary or entrypoint, such as `rig2`, exists while v2 is incomplete.
+- [x] A separate v2 dev binary or entrypoint existed while v2 was incomplete.
 - [x] V2 uses an isolated state root by default or requires explicit isolated state during early development.
 - [x] V2 launchd labels, workspaces, logs, proxy entries, ports, and runtime metadata cannot collide with v1 defaults.
 - [x] V1 `rig` can keep managing production apps such as `pantry` while v2 is tested.
@@ -334,17 +334,16 @@ Stage 2 covers:
   `rigd.configRead`, `rigd.configPreview`, and `rigd.configApply` expose
   structured, schema-validated, revision-checked config editing with atomic
   writes and backup recovery information.
-- #24 Expose rigd config editing through rig2 CLI or control-plane transport.
-  Complete: `rig2 config read`, `rig2 config set`, and `rig2 config unset`
+- #24 Expose rigd config editing through rig CLI or control-plane transport.
+  Complete: `rig config read`, `rig config set`, and `rig config unset`
   provide project config read, preview-by-default patching, and explicit
   `--apply` writes through the same revision-checked `rigd` config editor.
-- #22 Prepare rig2 to main rig cutover readiness. In progress: the AFK
-  readiness audit and rig2 user guide are documented in
-  `docs/rig-v2-cutover-readiness.md` and `docs/rig2-guide.md`; HITL decision
-  is to keep `rig2` isolated until it is ready, then remove v1 and promote v2
-  as `rig` in a deliberate cutover commit rather than routing selected commands
-  through v1.
-- #25 Connect rig2 lifecycle and deploy actions to provider-backed execution.
+- #22 Prepare v2 to main rig cutover readiness. Complete: the AFK
+  readiness audit and rig user guide are documented in
+  `docs/rig-v2-cutover-readiness.md` and `docs/rig-guide.md`; HITL decision
+  was to remove v1 and promote v2 as `rig` in a deliberate cutover commit
+  rather than routing selected commands through v1.
+- #25 Connect rig lifecycle and deploy actions to provider-backed execution.
   Complete: config-backed `rigd` lifecycle/deploy/destroy writes now execute
   through `V2RuntimeExecutor` before receipts/logs persist; repo-inferred and
   explicit `--config` CLI paths now load validated v2 config through an

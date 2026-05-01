@@ -114,7 +114,7 @@ describe("GIVEN v2 doctor and deploy preflight WHEN reliability checks run THEN 
         return yield* doctor.report({
           project: "pantry",
           path: { ok: true, entries: ["/usr/local/bin"] },
-          binaries: [{ path: "/usr/local/bin/rig2", ok: true }],
+          binaries: [{ path: "/usr/local/bin/rig", ok: true }],
           health: [{ component: "web", ok: true, ownedByRig: true }],
           ports: [{ component: "web", port: 3070, available: true }],
           staleState: [{ name: "runtime", ok: true }],

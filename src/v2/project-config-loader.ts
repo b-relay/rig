@@ -44,7 +44,7 @@ export const V2ProjectConfigLoaderLive = Layer.effect(
           Effect.mapError((error) =>
             new V2CliArgumentError(
               `Unable to load v2 config for '${input.project}'.`,
-              "Run from a repo with a valid v2 rig.json before using rig2 runtime commands.",
+              "Run from a repo with a valid v2 rig.json before using rig runtime commands.",
               {
                 project: input.project,
                 configPath: input.configPath,

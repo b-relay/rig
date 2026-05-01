@@ -11,7 +11,6 @@ import {
   platformCopyFile,
   platformMakeDirectory,
   platformReadFileBytes,
-  platformRemove,
   platformWriteFileString,
 } from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
@@ -38,6 +37,14 @@ import {
   caddyProxyRouterProvider,
   createCaddyProxyRouterAdapter,
 } from "./providers/caddy-proxy-router.js"
+import {
+  createGitWorktreeMaterializerAdapter,
+  gitWorktreeMaterializerProvider,
+} from "./providers/git-worktree-materializer.js"
+import {
+  createLocalGitScmAdapter,
+  localGitScmProvider,
+} from "./providers/local-git-scm.js"
 
 export {
   V2ProcessSupervisorProvider,
@@ -370,8 +377,8 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
   rigdProcessSupervisorProvider,
   launchdProcessSupervisorProvider,
   caddyProxyRouterProvider,
-  plugin("local-git", "scm", "Local Git", ["ref-resolution", "rollback-anchor"]),
-  plugin("git-worktree", "workspace-materializer", "Git Worktree", ["branch-workspace", "generated-deployment"]),
+  localGitScmProvider,
+  gitWorktreeMaterializerProvider,
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
@@ -403,8 +410,8 @@ const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
     "real-subprocess",
   ]),
   caddyProxyRouterProvider,
-  plugin("local-git", "scm", "Local Git", ["ref-resolution", "rollback-anchor"]),
-  plugin("git-worktree", "workspace-materializer", "Git Worktree", ["branch-workspace", "generated-deployment"]),
+  localGitScmProvider,
+  gitWorktreeMaterializerProvider,
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
@@ -517,171 +524,16 @@ const runtimeError = (
     },
   )
 
-const sourceRepoPath = (
-  deployment: V2DeploymentRecord,
-  provider: V2ProviderPlugin,
-  configured?: string,
-): Effect.Effect<string, V2RuntimeError> => {
-  if (configured && configured.trim().length > 0) {
-    return Effect.succeed(configured)
-  }
-
-  const maybeResolvedRepoPath = (deployment.resolved as { readonly sourceRepoPath?: unknown }).sourceRepoPath
-  if (typeof maybeResolvedRepoPath === "string" && maybeResolvedRepoPath.trim().length > 0) {
-    return Effect.succeed(maybeResolvedRepoPath)
-  }
-
-  const maybeRepoPath = (deployment.resolved.v1Config as { readonly repoPath?: unknown } | undefined)?.repoPath
-  if (typeof maybeRepoPath === "string" && maybeRepoPath.trim().length > 0) {
-    return Effect.succeed(maybeRepoPath)
-  }
-
-  return Effect.fail(
-    new V2RuntimeError(
-      `Unable to resolve source repo for deployment '${deployment.name}'.`,
-      "Run from a managed repo or pass a config path that preserves the source repository before deploying.",
-      {
-        providerId: provider.id,
-        deployment: deployment.name,
-        workspacePath: deployment.workspacePath,
-      },
-    ),
-  )
-}
-
 const workspaceMaterializerService = (
   report: V2ProviderRegistryReport,
   reportForDeployment: V2ProviderReportForDeployment,
   options: V2ProviderContractsOptions,
 ): V2WorkspaceMaterializerProviderService => {
   const base = familyService(report, "workspace-materializer")
-
-  const runGit = options.workspaceMaterializer?.runCommand ?? defaultCommandRunner
-
-  const materializeGitWorktree = (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly ref: string
-  }, selected: V2ProviderPluginForFamily<"workspace-materializer">): Effect.Effect<string, V2RuntimeError> =>
-    Effect.gen(function* () {
-      const repoPath = yield* sourceRepoPath(input.deployment, selected, options.workspaceMaterializer?.sourceRepoPath)
-      const workspacePath = input.deployment.workspacePath
-      yield* Effect.tryPromise({
-        try: async () => {
-          await Effect.runPromise(platformMakeDirectory(dirname(workspacePath)))
-          const removeResult = await runGit(["git", "-C", repoPath, "worktree", "remove", "--force", workspacePath])
-          if (removeResult.exitCode !== 0) {
-            const stderr = removeResult.stderr.toLowerCase()
-            const missing =
-              stderr.includes("is not a working tree") ||
-              stderr.includes("not a working tree") ||
-              stderr.includes("no such file") ||
-              stderr.includes("does not exist")
-            if (!missing) {
-              throw new V2RuntimeError(
-                `Unable to remove existing workspace '${input.deployment.name}'.`,
-                "Inspect the generated deployment workspace and retry the deploy.",
-                {
-                  providerId: selected.id,
-                  repoPath,
-                  workspacePath,
-                  stderr: removeResult.stderr,
-                },
-              )
-            }
-          }
-
-          const addResult = await runGit([
-            "git",
-            "-C",
-            repoPath,
-            "worktree",
-            "add",
-            "--force",
-            "--detach",
-            workspacePath,
-            input.ref,
-          ])
-          if (addResult.exitCode !== 0) {
-            throw new V2RuntimeError(
-              `Unable to materialize workspace '${input.deployment.name}' at ref '${input.ref}'.`,
-              "Ensure the ref exists in the source repository and retry the deploy.",
-              {
-                providerId: selected.id,
-                repoPath,
-                workspacePath,
-                ref: input.ref,
-                stderr: addResult.stderr,
-              },
-            )
-          }
-        },
-        catch: (cause) =>
-          cause instanceof V2RuntimeError
-            ? cause
-            : new V2RuntimeError(
-              `Unable to materialize workspace '${input.deployment.name}'.`,
-              "Ensure the source repository and v2 workspace directory are writable.",
-              {
-                providerId: selected.id,
-                repoPath,
-                workspacePath,
-                ref: input.ref,
-                cause: cause instanceof Error ? cause.message : String(cause),
-              },
-            ),
-      })
-
-      return `${selected.family}:${selected.id}:materialize:${workspacePath}:${input.ref}`
-    })
-
-  const removeGitWorktree = (input: {
-    readonly deployment: V2DeploymentRecord
-  }, selected: V2ProviderPluginForFamily<"workspace-materializer">): Effect.Effect<string, V2RuntimeError> =>
-    Effect.gen(function* () {
-      const repoPath = yield* sourceRepoPath(input.deployment, selected, options.workspaceMaterializer?.sourceRepoPath)
-      const workspacePath = input.deployment.workspacePath
-      yield* Effect.tryPromise({
-        try: async () => {
-          const result = await runGit(["git", "-C", repoPath, "worktree", "remove", "--force", workspacePath])
-          if (result.exitCode !== 0) {
-            const stderr = result.stderr.toLowerCase()
-            const missing =
-              stderr.includes("is not a working tree") ||
-              stderr.includes("not a working tree") ||
-              stderr.includes("no such file") ||
-              stderr.includes("does not exist")
-            if (!missing) {
-              throw new V2RuntimeError(
-                `Unable to remove workspace '${input.deployment.name}'.`,
-                "Inspect the generated deployment workspace and retry teardown.",
-                {
-                  providerId: selected.id,
-                  repoPath,
-                  workspacePath,
-                  stderr: result.stderr,
-                },
-              )
-            }
-          }
-          await Effect.runPromise(platformRemove(workspacePath, { recursive: true, force: true }))
-        },
-        catch: (cause) =>
-          cause instanceof V2RuntimeError
-            ? cause
-            : new V2RuntimeError(
-              `Unable to remove workspace '${input.deployment.name}'.`,
-              "Ensure the v2 workspace path is writable and retry teardown.",
-              {
-                providerId: selected.id,
-                repoPath,
-                workspacePath,
-                cause: cause instanceof Error ? cause.message : String(cause),
-              },
-            ),
-      })
-
-      return `${selected.family}:${selected.id}:remove:${workspacePath}`
-    })
+  const gitWorktreeMaterializer = createGitWorktreeMaterializerAdapter(
+    options.workspaceMaterializer,
+    defaultCommandRunner,
+  )
 
   return {
     ...base,
@@ -693,7 +545,7 @@ const workspaceMaterializerService = (
       providerForDeploymentFamily(reportForDeployment, input.deployment, "workspace-materializer").pipe(
         Effect.flatMap((selected) =>
           selected.id === "git-worktree"
-            ? materializeGitWorktree(input, selected)
+            ? gitWorktreeMaterializer.materialize(input, selected)
             : providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
         ),
       ),
@@ -701,7 +553,7 @@ const workspaceMaterializerService = (
       providerForDeploymentFamily(reportForDeployment, input.deployment, "workspace-materializer").pipe(
         Effect.flatMap((selected) =>
           selected.id === "git-worktree"
-            ? removeGitWorktree(input, selected)
+            ? gitWorktreeMaterializer.remove(input, selected)
             : providerOperation(selected, `remove:${input.deployment.workspacePath}`),
         ),
       ),
@@ -1041,70 +893,7 @@ const scmService = (
   options: V2ProviderContractsOptions,
 ): V2ScmProviderService => {
   const base = familyService(report, "scm")
-  const runGit = options.scm?.runCommand ?? defaultCommandRunner
-
-  const checkoutLocalGit = (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly ref: string
-  }, selected: V2ProviderPluginForFamily<"scm">): Effect.Effect<string, V2RuntimeError> =>
-    Effect.gen(function* () {
-      const repoPath = yield* sourceRepoPath(input.deployment, selected, options.scm?.sourceRepoPath)
-      const commit = yield* Effect.tryPromise({
-        try: async () => {
-          const fetchResult = await runGit(["git", "-C", repoPath, "fetch", "--prune", "origin"])
-          if (fetchResult.exitCode !== 0) {
-            throw new V2RuntimeError(
-              `Unable to fetch refs for '${input.deployment.name}'.`,
-              "Ensure the source repository has an origin remote and network access before retrying deploy.",
-              {
-                providerId: selected.id,
-                repoPath,
-                ref: input.ref,
-                stderr: fetchResult.stderr,
-              },
-            )
-          }
-
-          const verifyResult = await runGit([
-            "git",
-            "-C",
-            repoPath,
-            "rev-parse",
-            "--verify",
-            `${input.ref}^{commit}`,
-          ])
-          if (verifyResult.exitCode !== 0) {
-            throw new V2RuntimeError(
-              `Unable to resolve deploy ref '${input.ref}'.`,
-              "Push or fetch the ref into the source repository before retrying deploy.",
-              {
-                providerId: selected.id,
-                repoPath,
-                ref: input.ref,
-                stderr: verifyResult.stderr,
-              },
-            )
-          }
-
-          return verifyResult.stdout.trim()
-        },
-        catch: (cause) =>
-          cause instanceof V2RuntimeError
-            ? cause
-            : new V2RuntimeError(
-              `Unable to prepare local git checkout for '${input.deployment.name}'.`,
-              "Ensure git is installed and the source repository path is valid.",
-              {
-                providerId: selected.id,
-                repoPath,
-                ref: input.ref,
-                cause: cause instanceof Error ? cause.message : String(cause),
-              },
-            ),
-      })
-
-      return `${selected.family}:${selected.id}:checkout:${input.ref}:${commit}`
-    })
+  const localGitScm = createLocalGitScmAdapter(options.scm, defaultCommandRunner)
 
   return {
     ...base,
@@ -1112,7 +901,7 @@ const scmService = (
       providerForDeploymentFamily(reportForDeployment, input.deployment, "scm").pipe(
         Effect.flatMap((selected) =>
           selected.id === "local-git"
-            ? checkoutLocalGit(input, selected)
+            ? localGitScm.checkout(input, selected)
             : providerOperation(selected, `checkout:${input.ref}`),
         ),
       ),

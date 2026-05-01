@@ -384,13 +384,13 @@ tagged errors.
 
 ### Acceptance Criteria
 
-- [ ] Local git SCM implementation lives in a focused adapter module.
-- [ ] Git worktree materializer implementation lives in a focused adapter
+- [x] Local git SCM implementation lives in a focused adapter module.
+- [x] Git worktree materializer implementation lives in a focused adapter
       module.
-- [ ] Source repo resolution remains externally compatible.
-- [ ] Fetch, ref verification, materialize, and remove behavior remain
+- [x] Source repo resolution remains externally compatible.
+- [x] Fetch, ref verification, materialize, and remove behavior remain
       externally compatible.
-- [ ] Tests cover successful checkout/materialization, missing refs, missing
+- [x] Tests cover successful checkout/materialization, missing refs, missing
       source repo, and remove idempotence.
 
 ---

@@ -278,6 +278,129 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     }
   })
 
+  test("GIVEN local-git SCM provider WHEN ref verification fails THEN a tagged missing ref error is returned", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-scm-missing-ref-"))
+    const sourceRepo = join(stateRoot, "repo")
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "generated",
+        name: "feature-a",
+        workspacePath: join(stateRoot, "workspaces", "pantry", "deployments", "feature-a"),
+        resolved: {
+          sourceRepoPath: sourceRepo,
+        },
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const scm = yield* V2ScmProvider
+          return yield* scm.checkout({ deployment, ref: "feature/missing" })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default", [], {
+            scm: {
+              runCommand: async (args) =>
+                args.includes("rev-parse")
+                  ? { stdout: "", stderr: "unknown revision", exitCode: 1 }
+                  : { stdout: "", stderr: "", exitCode: 0 },
+            },
+          })),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        message: "Unable to resolve deploy ref 'feature/missing'.",
+        details: {
+          providerId: "local-git",
+          repoPath: sourceRepo,
+          ref: "feature/missing",
+          stderr: "unknown revision",
+        },
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN local-git SCM provider WHEN source repo cannot be resolved THEN a tagged source error is returned", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-scm-missing-source-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "generated",
+        name: "feature-a",
+        workspacePath: join(stateRoot, "workspaces", "pantry", "deployments", "feature-a"),
+        resolved: {},
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const scm = yield* V2ScmProvider
+          return yield* scm.checkout({ deployment, ref: "feature/a" })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default")),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        message: "Unable to resolve source repo for deployment 'feature-a'.",
+        details: {
+          providerId: "local-git",
+          deployment: "feature-a",
+          workspacePath: deployment.workspacePath,
+        },
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN git-worktree materializer WHEN workspace is already missing THEN remove remains idempotent", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-worktree-missing-remove-"))
+    const sourceRepo = join(stateRoot, "repo")
+    const workspacePath = join(stateRoot, "workspaces", "pantry", "deployments", "feature-a")
+    const commands: string[][] = []
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "generated",
+        name: "feature-a",
+        workspacePath,
+        resolved: {
+          sourceRepoPath: sourceRepo,
+        },
+      } as V2DeploymentRecord
+
+      const removed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const workspaces = yield* V2WorkspaceMaterializerProvider
+          return yield* workspaces.remove({ deployment })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default", [], {
+          workspaceMaterializer: {
+            runCommand: async (args) => {
+              commands.push([...args])
+              return { stdout: "", stderr: "fatal: not a working tree", exitCode: 128 }
+            },
+          },
+        }))),
+      )
+
+      expect(removed).toBe(`workspace-materializer:git-worktree:remove:${workspacePath}`)
+      expect(commands).toEqual([
+        ["git", "-C", sourceRepo, "worktree", "remove", "--force", workspacePath],
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN caddy proxy router WHEN route is upserted and removed THEN v2-managed Caddy blocks are isolated", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-v2-caddy-"))
     const caddyfilePath = join(root, "Caddyfile")

@@ -392,6 +392,78 @@ describe("GIVEN rig config resolver WHEN resolving lanes THEN behavior is covere
     expect(resolved.v1Config.environments.prod).toBe(resolved.environment)
   })
 
+  test("GIVEN configured live ports and reserved ports WHEN resolving THEN interpolation uses configured ports consistently", async () => {
+    const config = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        components: {
+          convex: {
+            mode: "managed",
+            command: "PANTRY_PROD_CONVEX_PORT=${convex.port} ./scripts/start-convex.sh prod",
+            port: 3210,
+            health: "http://127.0.0.1:${convex.port}/version",
+            hooks: {
+              postStart: "CONVEX_SELF_HOSTED_URL=http://127.0.0.1:${convex.port} bun run convex:push:prod",
+            },
+          },
+          web: {
+            mode: "managed",
+            command: "VITE_CONVEX_URL=http://127.0.0.1:${convex.port} vite --port ${web.port}",
+            port: 5173,
+            dependsOn: ["convex"],
+          },
+          cli: {
+            mode: "installed",
+            entrypoint: "dist/pantry",
+            build: "PANTRY_DEFAULT_CONVEX_URL=http://127.0.0.1:${convex.port} bun build",
+          },
+        },
+        live: {
+          components: {
+            convex: {
+              port: 43290,
+            },
+            web: {
+              port: 43070,
+            },
+          },
+        },
+      }),
+    )
+
+    const resolved = await Effect.runPromise(
+      resolveRigLane(config, {
+        lane: "live",
+        workspacePath: "/tmp/pantry-live",
+        assignedPorts: {
+          convex: 48340,
+          web: 61351,
+        },
+      }),
+    )
+
+    expect(resolved.environment.services[0]).toMatchObject({
+      name: "convex",
+      command: "PANTRY_PROD_CONVEX_PORT=43290 ./scripts/start-convex.sh prod",
+      port: 43290,
+      healthCheck: "http://127.0.0.1:43290/version",
+      hooks: {
+        postStart: "CONVEX_SELF_HOSTED_URL=http://127.0.0.1:43290 bun run convex:push:prod",
+      },
+    })
+    expect(resolved.environment.services[1]).toMatchObject({
+      name: "web",
+      command: "VITE_CONVEX_URL=http://127.0.0.1:43290 vite --port 43070",
+      port: 43070,
+    })
+    expect(resolved.environment.services[2]).toMatchObject({
+      name: "cli",
+      build: "PANTRY_DEFAULT_CONVEX_URL=http://127.0.0.1:43290 bun build",
+    })
+    expect(JSON.stringify(resolved.environment)).not.toContain("48340")
+    expect(JSON.stringify(resolved.environment)).not.toContain("61351")
+  })
+
   test("GIVEN installed component with managed-only field WHEN decoding THEN it fails with structured mode error", async () => {
     const error = await Effect.runPromise(
       decodeRigProjectConfig({

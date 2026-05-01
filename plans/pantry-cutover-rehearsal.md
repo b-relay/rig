@@ -1,7 +1,8 @@
 # Pantry Cutover Rehearsal Plan
 
 Status: active plan, non-destructive. Pantry config migration and
-rehearsal-safe Convex port override patches prepared locally.
+rehearsal-safe Convex port override patches prepared locally. Current `rig`
+CLI smoke tests have been run through tmux with isolated state.
 
 Date: 2026-05-01
 
@@ -73,6 +74,18 @@ Current `rig` compatibility:
   because they cannot connect to Convex. The failure is not in config parsing,
   but it means an isolated Convex-backed rehearsal is still needed before live
   cutover.
+- tmux CLI smoke tests passed for:
+  - a disposable fake app using stub providers
+  - the Pantry-shaped config using stub providers, non-live ports, and a
+    temporary `RIG_ROOT`
+- The first real-provider isolated live-lane rehearsal found and reproduced a
+  Rig resolver bug: configured managed-component ports won for the component
+  command and health check, but hooks and dependent components could still see
+  reserved assigned ports. That is fixed in Rig with a regression test.
+- After the resolver fix, the real-provider isolated live-lane rehearsal still
+  stops at Convex startup because the copied rehearsal workspace does not have a
+  valid `CONVEX_SELF_HOSTED_ADMIN_KEY` for the isolated backend. The failure
+  happens before live ports or live state are touched.
 
 ## Preservation Rules
 
@@ -146,6 +159,7 @@ The current prod values to preserve are:
 5. Run a live-lane rehearsal with isolated state, bin root, workspaces,
    Caddyfile, logs, and non-live ports. This must not use `~/.rig`,
    `/usr/local/etc/Caddyfile`, or live Pantry ports.
+   Started in tmux. Blocked on a valid isolated Convex admin key.
 6. Confirm the isolated rehearsal can:
    - install dependencies
    - build the web app
@@ -180,5 +194,6 @@ Rollback must keep these available:
 
 ## Next Concrete Step
 
-Run the isolated live-lane rehearsal with temporary state, non-live ports, and
-no writes to `~/.rig`, `/usr/local/etc/Caddyfile`, or live Pantry data.
+Resolve the isolated Convex admin-key setup, then rerun the real-provider
+live-lane rehearsal with temporary state, non-live ports, and no writes to
+`~/.rig`, `/usr/local/etc/Caddyfile`, or live Pantry data.

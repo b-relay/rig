@@ -872,9 +872,9 @@ export const resolveRigLane = (
         const componentInterpolation = interpolationWithPort(interpolation, name, port)
         const command = interpolateString(override?.command ?? component.command, componentInterpolation)
         const managedDependencies = (override?.dependsOn ?? component.dependsOn)?.filter(isManagedServiceDependency)
-        const hooks = interpolateHooks(override?.hooks ?? component.hooks, interpolation)
+        const hooks = interpolateHooks(override?.hooks ?? component.hooks, componentInterpolation)
         const envFile = override?.envFile ?? component.envFile ?? laneConfig?.envFile
-          ? interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation)
+          ? interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, componentInterpolation)
           : undefined
         const health = override?.health ?? component.health
           ? interpolateString((override?.health ?? component.health) as string, componentInterpolation)
@@ -903,6 +903,7 @@ export const resolveRigLane = (
           ...(hooks ? { hooks } : {}),
           ...(envFile ? { envFile } : {}),
         })
+        interpolation = componentInterpolation
         continue
       }
 

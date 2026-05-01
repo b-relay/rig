@@ -37,6 +37,9 @@ Remaining work is post-cutover product and provider hardening.
 
 The first real replacement validation target is `pantry`.
 
+The non-destructive Pantry cutover rehearsal is tracked in
+[plans/pantry-cutover-rehearsal.md](../plans/pantry-cutover-rehearsal.md).
+
 Pantry readiness requires:
 
 - live web routing resolves `pantry.b-relay.com` to the configured

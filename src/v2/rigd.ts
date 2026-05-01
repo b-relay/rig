@@ -18,6 +18,7 @@ import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-co
 import { V2RigdActionPreflight, type V2RigdActionKind } from "./rigd-actions.js"
 import { V2RigdStateStore } from "./rigd-state.js"
 import { makeV2RuntimeJournal } from "./runtime-journal.js"
+import { deriveV2RuntimeLogWindow, deriveV2RuntimeWebReadModel } from "./runtime-read-models.js"
 import { V2RuntimeExecutor, type V2RuntimeExecutionResult } from "./runtime-executor.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
@@ -290,17 +291,6 @@ const controlPlaneContract = (runtime: V2ControlPlaneStatus): V2ControlPlaneCont
 const now = (): string => new Date().toISOString()
 const CRASH_BACKOFF_WINDOW_MS = 5 * 60 * 1000
 const MAX_RESTARTS_IN_BACKOFF_WINDOW = 2
-
-const deploymentKindRank = (kind: V2DeploymentRecord["kind"]): number => {
-  switch (kind) {
-    case "local":
-      return 0
-    case "live":
-      return 1
-    case "generated":
-      return 2
-  }
-}
 
 export const V2RigdLive = Layer.effect(
   V2Rigd,
@@ -924,11 +914,19 @@ export const V2RigdLive = Layer.effect(
           const persisted = yield* stateStore.load({
             stateRoot: input.stateRoot,
           })
-          const source = persisted.events.length > 0 ? persisted.events : events
-
-          return source
-            .filter((entry) => entry.project === undefined || entry.project === input.project)
-            .slice(Math.max(0, source.length - input.lines))
+          return deriveV2RuntimeLogWindow(
+            persisted.events.length > 0
+              ? persisted
+              : {
+                ...persisted,
+                events,
+              },
+            {
+              project: input.project,
+              lines: input.lines,
+              includeGlobal: true,
+            },
+          )
         }),
       healthState: (input) =>
         Effect.gen(function* () {
@@ -1073,81 +1071,12 @@ export const V2RigdLive = Layer.effect(
       webReadModel: (input) =>
         Effect.gen(function* () {
           const state = yield* stateStore.load({ stateRoot: input.stateRoot })
-          const latestHealth = state.healthSummaries.at(-1)
-          const projectNames = new Set<string>()
-
-          for (const snapshot of state.deploymentSnapshots) {
-            projectNames.add(snapshot.project)
-          }
-          for (const reservation of state.portReservations) {
-            projectNames.add(reservation.project)
-          }
-          for (const event of state.events) {
-            if (event.project) {
-              projectNames.add(event.project)
-            }
-          }
-
-          const deployments = [...state.deploymentSnapshots]
-            .sort((left, right) =>
-              left.project.localeCompare(right.project) ||
-              deploymentKindRank(left.kind) - deploymentKindRank(right.kind) ||
-              left.deployment.localeCompare(right.deployment)
-            )
-            .map((snapshot) => ({
-              project: snapshot.project,
-              name: snapshot.deployment,
-              kind: snapshot.kind,
-              providerProfile: snapshot.providerProfile,
-              observedAt: snapshot.observedAt,
-            }))
-
-          return {
-            projects: [...projectNames].sort().map((name) => ({ name })),
-            deployments,
-            health: {
-              rigd: latestHealth
-                ? {
-                  status: latestHealth.status,
-                  checkedAt: latestHealth.checkedAt,
-                  providerProfile: latestHealth.providerProfile,
-                }
-                : {
-                  status: "stale" as const,
-                },
-              deployments: state.deploymentSnapshots.map((snapshot) => ({
-                project: snapshot.project,
-                deployment: snapshot.deployment,
-                kind: snapshot.kind,
-                status: "unknown" as const,
-                observedAt: snapshot.observedAt,
-              })),
-              components: state.portReservations.map((reservation) => ({
-                project: reservation.project,
-                deployment: reservation.deployment,
-                component: reservation.component,
-                port: reservation.port,
-                status: reservation.status,
-                observedAt: reservation.observedAt,
-              })),
-              providers: state.providerObservations.map((provider) => ({
-                id: provider.id,
-                family: provider.family,
-                status: provider.status,
-                observedAt: provider.observedAt,
-              })),
-            },
-          }
+          return deriveV2RuntimeWebReadModel(state)
         }),
       webLogs: (input) =>
         Effect.gen(function* () {
           const state = yield* stateStore.load({ stateRoot: input.stateRoot })
-          const filtered = state.events
-            .filter((entry) => input.project === undefined || entry.project === input.project)
-            .filter((entry) => input.lane === undefined || entry.lane === input.lane)
-            .filter((entry) => input.deployment === undefined || entry.deployment === input.deployment)
-            .filter((entry) => input.component === undefined || entry.component === input.component)
-          return filtered.slice(Math.max(0, filtered.length - input.lines))
+          return deriveV2RuntimeLogWindow(state, input)
         }),
     } satisfies V2RigdService
   }),

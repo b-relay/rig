@@ -146,13 +146,13 @@ web/control-plane read paths should consume the same read-model output.
 
 ### Acceptance Criteria
 
-- [ ] Project list read models derive from persisted runtime evidence.
-- [ ] Deployment row read models derive from persisted runtime evidence.
-- [ ] Health snapshot read models derive from persisted runtime evidence.
-- [ ] Log windows derive from persisted runtime events and support existing
+- [x] Project list read models derive from persisted runtime evidence.
+- [x] Deployment row read models derive from persisted runtime evidence.
+- [x] Health snapshot read models derive from persisted runtime evidence.
+- [x] Log windows derive from persisted runtime events and support existing
       filters.
-- [ ] CLI and web/control-plane read paths use the same read-model output.
-- [ ] Tests cover empty state, multiple projects, generated deployments, stale
+- [x] CLI and web/control-plane read paths use the same read-model output.
+- [x] Tests cover empty state, multiple projects, generated deployments, stale
       health, provider observations, and log filtering without full runtime
       execution.
 

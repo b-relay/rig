@@ -290,6 +290,47 @@ export interface ResolvedV2Providers {
   readonly processSupervisor: string
 }
 
+export type V2RuntimePlanComponent =
+  | {
+    readonly name: string
+    readonly kind: "managed"
+    readonly command: string
+    readonly port: number
+    readonly health?: string
+    readonly readyTimeout: number
+    readonly dependsOn?: readonly string[]
+    readonly hooks?: ServiceHooks
+    readonly envFile?: string
+  }
+  | {
+    readonly name: string
+    readonly kind: "installed"
+    readonly entrypoint: string
+    readonly build?: string
+    readonly installName?: string
+    readonly hooks?: ServiceHooks
+    readonly envFile?: string
+  }
+
+export interface V2RuntimePlan {
+  readonly project: string
+  readonly lane: V2LaneName
+  readonly deploymentName: string
+  readonly branchSlug: string
+  readonly subdomain: string
+  readonly workspacePath: string
+  readonly dataRoot: string
+  readonly providerProfile: "default" | "stub"
+  readonly providers: ResolvedV2Providers
+  readonly components: readonly V2RuntimePlanComponent[]
+  readonly preparedComponents: readonly ResolvedV2PreparedComponent[]
+  readonly proxy?: Environment["proxy"]
+  readonly hooks?: TopLevelHooks
+  readonly deployBranch?: string
+  readonly envFile?: string
+  readonly domain?: string
+}
+
 export interface ResolvedV2Lane {
   readonly project: string
   readonly lane: V2LaneName
@@ -302,6 +343,7 @@ export interface ResolvedV2Lane {
   readonly providerProfile: "default" | "stub"
   readonly providers: ResolvedV2Providers
   readonly preparedComponents: readonly ResolvedV2PreparedComponent[]
+  readonly runtimePlan: V2RuntimePlan
   readonly environment: Environment
   readonly v1Config: RigConfig
 }
@@ -676,6 +718,7 @@ export const resolveV2Lane = (
     const preparedComponents: ResolvedV2PreparedComponent[] = []
     const pluginResults = new Map<string, ReturnType<typeof resolveV2ComponentPlugin>>()
     const services: Environment["services"] = []
+    const runtimePlanComponents: V2RuntimePlanComponent[] = []
 
     for (const [name, component] of Object.entries(config.components)) {
       if (!("uses" in component)) {
@@ -776,23 +819,36 @@ export const resolveV2Lane = (
         const componentInterpolation = interpolationWithPort(interpolation, name, port)
         const command = interpolateString(override?.command ?? component.command, componentInterpolation)
         const managedDependencies = (override?.dependsOn ?? component.dependsOn)?.filter(isManagedServiceDependency)
+        const hooks = interpolateHooks(override?.hooks ?? component.hooks, interpolation)
+        const envFile = override?.envFile ?? component.envFile ?? laneConfig?.envFile
+          ? interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation)
+          : undefined
+        const health = override?.health ?? component.health
+          ? interpolateString((override?.health ?? component.health) as string, componentInterpolation)
+          : undefined
+        const readyTimeout = override?.readyTimeout ?? component.readyTimeout ?? 30
 
         services.push({
           name,
           type: "server",
           command,
           port,
-          ...(override?.health ?? component.health
-            ? { healthCheck: interpolateString((override?.health ?? component.health) as string, componentInterpolation) }
-            : {}),
-          readyTimeout: override?.readyTimeout ?? component.readyTimeout ?? 30,
+          ...(health ? { healthCheck: health } : {}),
+          readyTimeout,
           ...(managedDependencies && managedDependencies.length > 0 ? { dependsOn: managedDependencies } : {}),
-          ...(interpolateHooks(override?.hooks ?? component.hooks, interpolation)
-            ? { hooks: interpolateHooks(override?.hooks ?? component.hooks, interpolation) }
-            : {}),
-          ...(override?.envFile ?? component.envFile ?? laneConfig?.envFile
-            ? { envFile: interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation) }
-            : {}),
+          ...(hooks ? { hooks } : {}),
+          ...(envFile ? { envFile } : {}),
+        })
+        runtimePlanComponents.push({
+          name,
+          kind: "managed",
+          command,
+          port,
+          ...(health ? { health } : {}),
+          readyTimeout,
+          ...(managedDependencies && managedDependencies.length > 0 ? { dependsOn: managedDependencies } : {}),
+          ...(hooks ? { hooks } : {}),
+          ...(envFile ? { envFile } : {}),
         })
         continue
       }
@@ -801,20 +857,32 @@ export const resolveV2Lane = (
         const pluginResult = pluginResults.get(name)
         for (const managed of pluginResult?.managedComponents ?? []) {
           const managedDependencies = managed.dependsOn?.filter(isManagedServiceDependency)
+          const hooks = "hooks" in component ? interpolateHooks(override?.hooks ?? component.hooks, interpolation) : undefined
+          const envFile = "envFile" in component && (override?.envFile ?? component.envFile ?? laneConfig?.envFile)
+            ? interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation)
+            : undefined
+          const readyTimeout = managed.readyTimeout ?? 30
           services.push({
             name: managed.name,
             type: "server",
             command: managed.command,
             port: managed.port,
             ...(managed.health ? { healthCheck: managed.health } : {}),
-            readyTimeout: managed.readyTimeout ?? 30,
+            readyTimeout,
             ...(managedDependencies && managedDependencies.length > 0 ? { dependsOn: managedDependencies } : {}),
-            ...("hooks" in component && interpolateHooks(override?.hooks ?? component.hooks, interpolation)
-              ? { hooks: interpolateHooks(override?.hooks ?? component.hooks, interpolation) }
-              : {}),
-            ...("envFile" in component && (override?.envFile ?? component.envFile ?? laneConfig?.envFile)
-              ? { envFile: interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation) }
-              : {}),
+            ...(hooks ? { hooks } : {}),
+            ...(envFile ? { envFile } : {}),
+          })
+          runtimePlanComponents.push({
+            name: managed.name,
+            kind: "managed",
+            command: managed.command,
+            port: managed.port,
+            ...(managed.health ? { health: managed.health } : {}),
+            readyTimeout,
+            ...(managedDependencies && managedDependencies.length > 0 ? { dependsOn: managedDependencies } : {}),
+            ...(hooks ? { hooks } : {}),
+            ...(envFile ? { envFile } : {}),
           })
         }
         continue
@@ -824,23 +892,43 @@ export const resolveV2Lane = (
         continue
       }
 
+      const installName = override?.installName ?? component.installName
+      const entrypoint = interpolateString(override?.entrypoint ?? component.entrypoint, interpolation)
+      const build = override?.build ?? component.build
+        ? interpolateString((override?.build ?? component.build) as string, interpolation)
+        : undefined
+      const hooks = interpolateHooks(override?.hooks ?? component.hooks, interpolation)
+      const envFile = override?.envFile ?? component.envFile ?? laneConfig?.envFile
+        ? interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation)
+        : undefined
+
       services.push({
-        name: override?.installName ?? component.installName ?? name,
+        name: installName ?? name,
         type: "bin",
-        entrypoint: interpolateString(override?.entrypoint ?? component.entrypoint, interpolation),
-        ...(override?.build ?? component.build ? { build: interpolateString((override?.build ?? component.build) as string, interpolation) } : {}),
-        ...(interpolateHooks(override?.hooks ?? component.hooks, interpolation)
-          ? { hooks: interpolateHooks(override?.hooks ?? component.hooks, interpolation) }
-          : {}),
-        ...(override?.envFile ?? component.envFile ?? laneConfig?.envFile
-          ? { envFile: interpolateString((override?.envFile ?? component.envFile ?? laneConfig?.envFile) as string, interpolation) }
-          : {}),
+        entrypoint,
+        ...(build ? { build } : {}),
+        ...(hooks ? { hooks } : {}),
+        ...(envFile ? { envFile } : {}),
+      })
+      runtimePlanComponents.push({
+        name,
+        kind: "installed",
+        entrypoint,
+        ...(build ? { build } : {}),
+        ...(installName ? { installName } : {}),
+        ...(hooks ? { hooks } : {}),
+        ...(envFile ? { envFile } : {}),
       })
     }
 
+    const envFile = laneConfig?.envFile ? interpolateString(laneConfig.envFile, interpolation) : undefined
+    const domain = interpolateOptional(laneConfig?.domain ?? config.domain, interpolation)
+    const hooks = interpolateTopLevelHooks(config.hooks, interpolation)
+    const deployBranch = laneConfig?.deployBranch ? interpolateString(laneConfig.deployBranch, interpolation) : undefined
+
     const environment: Environment = {
-      ...(laneConfig?.deployBranch ? { deployBranch: interpolateString(laneConfig.deployBranch, interpolation) } : {}),
-      ...(laneConfig?.envFile ? { envFile: interpolateString(laneConfig.envFile, interpolation) } : {}),
+      ...(deployBranch ? { deployBranch } : {}),
+      ...(envFile ? { envFile } : {}),
       ...(laneConfig?.proxy ? { proxy: { upstream: laneConfig.proxy.upstream } } : {}),
       services,
     }
@@ -849,18 +937,33 @@ export const resolveV2Lane = (
       name: config.name,
       ...(config.description ? { description: config.description } : {}),
       version: "0.0.0",
-      ...(interpolateOptional(laneConfig?.domain ?? config.domain, interpolation)
-        ? { domain: interpolateOptional(laneConfig?.domain ?? config.domain, interpolation) as string }
-        : {}),
-      ...(interpolateTopLevelHooks(config.hooks, interpolation)
-        ? { hooks: interpolateTopLevelHooks(config.hooks, interpolation) }
-        : {}),
+      ...(domain ? { domain } : {}),
+      ...(hooks ? { hooks } : {}),
       environments: {
         [options.lane === "local" ? "dev" : "prod"]: environment,
       },
       ...(laneConfig?.daemon
         ? { daemon: { enabled: laneConfig.daemon.enabled ?? false, keepAlive: laneConfig.daemon.keepAlive ?? false } satisfies DaemonConfig }
         : {}),
+    }
+
+    const runtimePlan: V2RuntimePlan = {
+      project: config.name,
+      lane: options.lane,
+      deploymentName: interpolation.deployment,
+      branchSlug: interpolation.branchSlug,
+      subdomain: interpolation.subdomain,
+      workspacePath: interpolation.workspace,
+      dataRoot: interpolation.dataRoot,
+      providerProfile: laneConfig?.providerProfile ?? "default",
+      providers,
+      components: runtimePlanComponents,
+      preparedComponents,
+      ...(environment.proxy ? { proxy: environment.proxy } : {}),
+      ...(hooks ? { hooks } : {}),
+      ...(deployBranch ? { deployBranch } : {}),
+      ...(envFile ? { envFile } : {}),
+      ...(domain ? { domain } : {}),
     }
 
     return {
@@ -875,6 +978,7 @@ export const resolveV2Lane = (
       providerProfile: laneConfig?.providerProfile ?? "default",
       providers,
       preparedComponents,
+      runtimePlan,
       environment,
       v1Config,
     }

@@ -70,6 +70,90 @@ describe("GIVEN v2 Effect Schema validation WHEN decoding representative inputs 
 })
 
 describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered", () => {
+  test("GIVEN shared components and local overrides WHEN resolving THEN it returns a first-class runtime plan", async () => {
+    const config = await Effect.runPromise(
+      decodeV2ProjectConfig({
+        name: "pantry",
+        domain: "pantry.b-relay.com",
+        hooks: {
+          preStart: "echo ${lane}:${workspace}",
+        },
+        components: {
+          api: {
+            mode: "managed",
+            command: "bun run start -- --port ${api.port}",
+            port: 3070,
+            health: "http://127.0.0.1:${api.port}/health",
+          },
+          cli: {
+            mode: "installed",
+            entrypoint: "src/index.ts",
+            build: "bun run build",
+          },
+        },
+        local: {
+          envFile: ".env.local",
+          proxy: {
+            upstream: "api",
+          },
+          components: {
+            api: {
+              command: "bun run dev -- --port ${api.port}",
+              port: 5173,
+              health: "http://127.0.0.1:${api.port}",
+            },
+          },
+        },
+      }),
+    )
+
+    const resolved = await Effect.runPromise(
+      resolveV2Lane(config, {
+        lane: "local",
+        workspacePath: "/tmp/pantry",
+      }),
+    )
+
+    expect(resolved.runtimePlan).toMatchObject({
+      project: "pantry",
+      lane: "local",
+      deploymentName: "local",
+      workspacePath: "/tmp/pantry",
+      dataRoot: "/tmp/pantry/.rig-data",
+      providerProfile: "default",
+      providers: {
+        processSupervisor: "rigd",
+      },
+      proxy: {
+        upstream: "api",
+      },
+      hooks: {
+        preStart: "echo local:/tmp/pantry",
+      },
+      components: [
+        {
+          name: "api",
+          kind: "managed",
+          command: "bun run dev -- --port 5173",
+          port: 5173,
+          health: "http://127.0.0.1:5173",
+          envFile: ".env.local",
+        },
+        {
+          name: "cli",
+          kind: "installed",
+          entrypoint: "src/index.ts",
+          build: "bun run build",
+          envFile: ".env.local",
+        },
+      ],
+    })
+    expect(resolved.runtimePlan.components.map((component) => component.kind)).toEqual(["managed", "installed"])
+    expect(JSON.stringify(resolved.runtimePlan)).not.toContain('"server"')
+    expect(JSON.stringify(resolved.runtimePlan)).not.toContain('"bin"')
+    expect(resolved.v1Config.environments.dev).toBe(resolved.environment)
+  })
+
   test("GIVEN shared components and local overrides WHEN resolving THEN it produces v1-compatible lifecycle config", async () => {
     const config = await Effect.runPromise(
       decodeV2ProjectConfig({

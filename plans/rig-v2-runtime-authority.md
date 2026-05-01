@@ -413,11 +413,11 @@ timeouts, hook working directory behavior, output capture, and tagged errors.
 
 ### Acceptance Criteria
 
-- [ ] Native health checker implementation lives in a focused adapter module.
-- [ ] Shell lifecycle hook implementation lives in a focused adapter module.
-- [ ] HTTP and command health behavior remains externally compatible.
-- [ ] Timeout and failed-command errors remain tagged and actionable.
-- [ ] Tests cover healthy/unhealthy HTTP, command success/failure, timeout, and
+- [x] Native health checker implementation lives in a focused adapter module.
+- [x] Shell lifecycle hook implementation lives in a focused adapter module.
+- [x] HTTP and command health behavior remains externally compatible.
+- [x] Timeout and failed-command errors remain tagged and actionable.
+- [x] Tests cover healthy/unhealthy HTTP, command success/failure, timeout, and
       hook failure behavior through provider contracts.
 
 ---

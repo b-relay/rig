@@ -45,6 +45,14 @@ import {
   createLocalGitScmAdapter,
   localGitScmProvider,
 } from "./providers/local-git-scm.js"
+import {
+  createNativeHealthCheckerAdapter,
+  nativeHealthCheckerProvider,
+} from "./providers/native-health-checker.js"
+import {
+  createShellLifecycleHookAdapter,
+  shellLifecycleHookProvider,
+} from "./providers/shell-lifecycle-hook.js"
 
 export {
   V2ProcessSupervisorProvider,
@@ -381,8 +389,8 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
   gitWorktreeMaterializerProvider,
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
-  plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
-  plugin("shell-hook", "lifecycle-hook", "Shell Lifecycle Hooks", ["project-hooks", "component-hooks"]),
+  nativeHealthCheckerProvider,
+  shellLifecycleHookProvider,
   plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
@@ -414,8 +422,8 @@ const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
   gitWorktreeMaterializerProvider,
   plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
-  plugin("native-health", "health-checker", "Native Health Checks", ["http-health", "command-health", "ownership-check"]),
-  plugin("shell-hook", "lifecycle-hook", "Shell Lifecycle Hooks", ["project-hooks", "component-hooks"]),
+  nativeHealthCheckerProvider,
+  shellLifecycleHookProvider,
   plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
@@ -631,125 +639,7 @@ const healthCheckerService = (
   reportForDeployment: V2ProviderReportForDeployment,
 ): V2HealthCheckerProviderService => {
   const base = familyService(report, "health-checker")
-
-  const checkNativeHealth = (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly service: V2RuntimeServiceConfig
-    readonly timeoutSeconds?: number
-  }, selected: V2ProviderPluginForFamily<"health-checker">): Effect.Effect<string, V2RuntimeError> => {
-    const target = "healthCheck" in input.service ? input.service.healthCheck : undefined
-    if (!target) {
-      return Effect.fail(
-        new V2RuntimeError(
-          `Component '${input.service.name}' does not define a health check.`,
-          "Add a health check to the managed component before asking native-health to verify it.",
-          {
-            providerId: selected.id,
-            component: input.service.name,
-            deployment: input.deployment.name,
-          },
-        ),
-      )
-    }
-
-    const timeoutSeconds = input.timeoutSeconds
-      ?? ("readyTimeout" in input.service ? input.service.readyTimeout : undefined)
-      ?? 30
-
-    const check = !target.startsWith("http://") && !target.startsWith("https://")
-      ? Effect.gen(function* () {
-        const { exitCode, stdout, stderr } = yield* runPlatformCommand(
-          ["sh", "-lc", target],
-          { cwd: input.deployment.workspacePath },
-        )
-
-        if (exitCode !== 0) {
-          return yield* Effect.fail(new V2RuntimeError(
-            `Command health check failed for '${input.service.name}' with exit code ${exitCode}.`,
-            "Fix the component health command before retrying the runtime action.",
-            {
-              providerId: selected.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              target,
-              exitCode,
-              stdout,
-              stderr,
-            },
-          ))
-        }
-
-        return `${selected.family}:${selected.id}:check:${input.service.name}:command:healthy:${exitCode}`
-      })
-      : Effect.tryPromise({
-        try: async () => {
-          const response = await fetch(target)
-          if (response.status < 200 || response.status >= 300) {
-            throw new V2RuntimeError(
-              `Health check failed for '${input.service.name}' with HTTP ${response.status}.`,
-              "Fix the component startup or health endpoint before retrying the runtime action.",
-              {
-                providerId: selected.id,
-                component: input.service.name,
-                deployment: input.deployment.name,
-                target,
-                statusCode: response.status,
-              },
-            )
-          }
-
-          return `${selected.family}:${selected.id}:check:${input.service.name}:healthy:${response.status}`
-        },
-        catch: (cause) =>
-          cause instanceof V2RuntimeError
-            ? cause
-            : new V2RuntimeError(
-              `Unable to run health check for '${input.service.name}'.`,
-              "Ensure the health endpoint is reachable from localhost and retry.",
-              {
-                providerId: selected.id,
-                component: input.service.name,
-                deployment: input.deployment.name,
-                target,
-                cause: cause instanceof Error ? cause.message : String(cause),
-              },
-            ),
-      })
-
-    return check.pipe(
-      Effect.timeoutOrElse({
-        duration: `${timeoutSeconds} seconds`,
-        orElse: () =>
-          Effect.fail(new V2RuntimeError(
-            `Health check timed out for '${input.service.name}' after ${timeoutSeconds} seconds.`,
-            "Increase readyTimeout or fix the component so its health check completes in time.",
-            {
-              providerId: selected.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              target,
-              timeoutSeconds,
-            },
-          )),
-      }),
-      Effect.mapError((cause) => {
-        if (cause instanceof V2RuntimeError) {
-          return cause
-        }
-        return new V2RuntimeError(
-          `Unable to run health check for '${input.service.name}'.`,
-          "Ensure the health endpoint is reachable from localhost and retry.",
-          {
-            providerId: selected.id,
-            component: input.service.name,
-            deployment: input.deployment.name,
-            target,
-            cause: cause instanceof Error ? cause.message : String(cause),
-          },
-        )
-      }),
-    )
-  }
+  const nativeHealth = createNativeHealthCheckerAdapter(runPlatformCommand)
 
   return {
     ...base,
@@ -757,7 +647,7 @@ const healthCheckerService = (
       providerForDeploymentFamily(reportForDeployment, input.deployment, "health-checker").pipe(
         Effect.flatMap((selected) =>
           selected.id === "native-health"
-            ? checkNativeHealth(input, selected)
+            ? nativeHealth.check(input, selected)
             : providerOperation(selected, `check:${input.service.name}`),
         ),
       ),
@@ -769,56 +659,7 @@ const lifecycleHookService = (
   reportForDeployment: V2ProviderReportForDeployment,
 ): V2LifecycleHookProviderService => {
   const base = familyService(report, "lifecycle-hook")
-
-  const shellHook = (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly hook: "preStart" | "postStart" | "preStop" | "postStop"
-    readonly command: string
-    readonly service?: V2RuntimeServiceConfig
-  }, selected: V2ProviderPluginForFamily<"lifecycle-hook">): Effect.Effect<string, V2RuntimeError> =>
-    Effect.gen(function* () {
-      const { exitCode, stdout, stderr } = yield* runPlatformCommand(
-        ["sh", "-lc", input.command],
-        { cwd: input.deployment.workspacePath },
-      )
-
-      if (exitCode !== 0) {
-        return yield* Effect.fail(new V2RuntimeError(
-          `Lifecycle hook '${input.hook}' failed${input.service ? ` for '${input.service.name}'` : ""} with exit code ${exitCode}.`,
-          "Fix the hook command before retrying the runtime action.",
-          {
-            providerId: selected.id,
-            hook: input.hook,
-            command: input.command,
-            project: input.deployment.project,
-            deployment: input.deployment.name,
-            ...(input.service ? { component: input.service.name } : {}),
-            exitCode,
-            stdout,
-            stderr,
-          },
-        ))
-      }
-
-      return `${selected.family}:${selected.id}:run:${input.hook}:${input.service?.name ?? "project"}:${exitCode}`
-    }).pipe(
-      Effect.mapError((cause) =>
-        cause instanceof V2RuntimeError
-          ? cause
-          : new V2RuntimeError(
-            `Unable to run lifecycle hook '${input.hook}'${input.service ? ` for '${input.service.name}'` : ""}.`,
-            "Ensure the hook command can run from the deployment workspace and retry.",
-            {
-              providerId: selected.id,
-              hook: input.hook,
-              command: input.command,
-              project: input.deployment.project,
-              deployment: input.deployment.name,
-              ...(input.service ? { component: input.service.name } : {}),
-              cause: cause instanceof Error ? cause.message : String(cause),
-            },
-          )),
-    )
+  const shellHook = createShellLifecycleHookAdapter(runPlatformCommand)
 
   return {
     ...base,
@@ -826,7 +667,7 @@ const lifecycleHookService = (
       providerForDeploymentFamily(reportForDeployment, input.deployment, "lifecycle-hook").pipe(
         Effect.flatMap((selected) =>
           selected.id === "shell-hook"
-            ? shellHook(input, selected)
+            ? shellHook.run(input, selected)
             : providerOperation(selected, `run:${input.hook}:${input.service?.name ?? "project"}`),
         ),
       ),

@@ -1480,6 +1480,57 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     }
   })
 
+  test("GIVEN shell lifecycle hook provider WHEN a hook command fails THEN it returns a tagged runtime error", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-shell-hook-fail-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+      const service = {
+        name: "web",
+        type: "server",
+        command: "bun run start",
+        port: 3070,
+      } as const
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const hooks = yield* V2LifecycleHookProvider
+          return yield* hooks.run({
+            deployment,
+            hook: "preStart",
+            command: "printf broken >&2; exit 9",
+            service,
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default")),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        message: "Lifecycle hook 'preStart' failed for 'web' with exit code 9.",
+        details: {
+          providerId: "shell-hook",
+          hook: "preStart",
+          command: "printf broken >&2; exit 9",
+          project: "pantry",
+          deployment: "live",
+          component: "web",
+          exitCode: 9,
+          stderr: "broken",
+        },
+      })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN package-json-scripts provider WHEN installed component has build command THEN it runs in the deployment workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-v2-package-install-"))
     const workspace = join(root, "workspace")

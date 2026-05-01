@@ -30,6 +30,7 @@ import { V2ProviderRegistryLive } from "./provider-contracts.js"
 import {
   V2Rigd,
   type V2RigdControlPlaneDeployInput,
+  type V2RigdDeployInput,
   type V2RigdHealthStateInput,
   type V2RigdProjectInventoryInput,
   type V2RigdStartInput,
@@ -87,6 +88,7 @@ class CaptureV2Rigd {
   readonly configPreviewRequests: V2ConfigPreviewInput[] = []
   readonly configReadRequests: V2ConfigReadInput[] = []
   readonly controlPlaneDeployRequests: V2RigdControlPlaneDeployInput[] = []
+  readonly deployRequests: V2RigdDeployInput[] = []
   readonly healthRequests: V2RigdStartInput[] = []
   readonly healthStateRequests: V2RigdHealthStateInput[] = []
   readonly inventoryRequests: V2RigdProjectInventoryInput[] = []
@@ -179,8 +181,17 @@ class CaptureV2Rigd {
     return Effect.die("unused")
   }
 
-  deploy() {
-    return Effect.die("unused")
+  deploy(input: V2RigdDeployInput) {
+    this.deployRequests.push(input)
+    return Effect.succeed({
+      id: "rigd-1",
+      kind: "deploy" as const,
+      accepted: true as const,
+      project: input.project,
+      stateRoot: input.stateRoot,
+      target: input.target,
+      receivedAt: "2026-04-24T00:00:00.000Z",
+    })
   }
 
   controlPlaneDeploy(input: V2RigdControlPlaneDeployInput) {
@@ -692,7 +703,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         name: "pantry",
       }),
     })
-    expect(rigd.controlPlaneDeployRequests).toEqual([
+    expect(rigd.deployRequests).toEqual([
       expect.objectContaining({
         project: "pantry",
         ref: "feature/preview",
@@ -702,6 +713,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         }),
       }),
     ])
+    expect(rigd.controlPlaneDeployRequests).toEqual([])
     expect(logger.infos.map((entry) => entry.message)).toContain("rig2 deploy accepted")
   })
 

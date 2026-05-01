@@ -191,6 +191,7 @@ export interface V2RigdDeployInput {
   readonly ref: string
   readonly stateRoot: string
   readonly deploymentName?: string
+  readonly config?: V2ProjectConfig
 }
 
 export interface V2RigdControlPlaneDeployInput extends V2RigdDeployInput {
@@ -871,6 +872,80 @@ export const V2RigdLive = Layer.effect(
         })
       })
 
+    const runDeployAction = (
+      input: V2RigdControlPlaneDeployInput,
+      source: "cli" | "control-plane",
+    ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
+      Effect.gen(function* () {
+        if (input.target !== "live" && input.target !== "generated") {
+          return yield* Effect.fail(
+            new V2RuntimeError(
+              source === "control-plane"
+                ? "Control-plane deploy action target must be live or generated."
+                : "Deploy action target must be live or generated.",
+              "Choose live or a generated deployment target before requesting deploy.",
+              {
+                reason: "invalid-deploy-target",
+                project: input.project,
+                target: input.target,
+              },
+            ),
+          )
+        }
+        let target = generatedDeployTarget(input)
+        const generatedConfig = input.target === "generated" ? input.config : undefined
+        if (input.target === "generated") {
+          if (!generatedConfig) {
+            return yield* Effect.fail(
+              new V2RuntimeError(
+                source === "control-plane"
+                  ? "Generated deployment control-plane action requires project config."
+                  : "Generated deployment action requires project config.",
+                "Load and validate the v2 project config before requesting a generated deployment action.",
+                {
+                  reason: "missing-generated-config",
+                  project: input.project,
+                  target: input.target,
+                },
+              ),
+            )
+          }
+          target = `generated:${branchSlug(input.deploymentName ?? input.ref)}`
+        }
+
+        yield* actionPreflight.verify({
+          kind: "deploy",
+          project: input.project,
+          stateRoot: input.stateRoot,
+          target,
+        })
+
+        let materialized: V2DeploymentRecord | undefined
+        if (input.target === "generated") {
+          const homeConfigStore = yield* V2HomeConfigStore
+          const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
+          yield* enforceGeneratedDeploymentCap(input, homeConfig)
+          materialized = yield* deployments.materializeGenerated({
+            config: generatedConfig,
+            stateRoot: input.stateRoot,
+            branch: input.ref,
+            name: input.deploymentName,
+          })
+          target = `generated:${materialized.name}`
+          const inventory = yield* deployments.list({
+            config: generatedConfig,
+            stateRoot: input.stateRoot,
+          })
+          yield* persistInventoryEvidence(input.stateRoot, inventory)
+        }
+
+        const runtimeResult = yield* deployExecution(input, materialized)
+        if (runtimeResult) {
+          yield* persistDesiredDeployment(input.stateRoot, runtimeResult.deployment, "running")
+        }
+        return yield* deployAccepted(input, target, source, runtimeResult?.execution)
+      })
+
     return {
       start: (input) =>
         Effect.gen(function* () {
@@ -980,9 +1055,7 @@ export const V2RigdLive = Layer.effect(
           return yield* lifecycleAccepted(input, "cli", runtimeResult?.execution)
         }),
       deploy: (input) =>
-        Effect.gen(function* () {
-          return yield* deployAccepted(input, generatedDeployTarget(input), "cli")
-        }),
+        runDeployAction(input, "cli"),
       controlPlaneLifecycle: (input) =>
         Effect.gen(function* () {
           if (!isLifecycleWriteAction(input.action)) {
@@ -1009,71 +1082,7 @@ export const V2RigdLive = Layer.effect(
           return yield* lifecycleAccepted(input, "control-plane", runtimeResult?.execution)
         }),
       controlPlaneDeploy: (input) =>
-        Effect.gen(function* () {
-          if (input.target !== "live" && input.target !== "generated") {
-            return yield* Effect.fail(
-              new V2RuntimeError(
-                "Control-plane deploy action target must be live or generated.",
-                "Choose live or a generated deployment target before requesting deploy.",
-                {
-                  reason: "invalid-deploy-target",
-                  project: input.project,
-                  target: input.target,
-                },
-              ),
-            )
-          }
-          let target = generatedDeployTarget(input)
-          const generatedConfig = input.target === "generated" ? input.config : undefined
-          if (input.target === "generated") {
-            if (!generatedConfig) {
-              return yield* Effect.fail(
-                new V2RuntimeError(
-                  "Generated deployment control-plane action requires project config.",
-                  "Load and validate the v2 project config before requesting a generated deployment action.",
-                  {
-                    reason: "missing-generated-config",
-                    project: input.project,
-                    target: input.target,
-                  },
-                ),
-              )
-            }
-            target = `generated:${branchSlug(input.deploymentName ?? input.ref)}`
-          }
-
-          yield* actionPreflight.verify({
-            kind: "deploy",
-            project: input.project,
-            stateRoot: input.stateRoot,
-            target,
-          })
-
-          let materialized: V2DeploymentRecord | undefined
-          if (input.target === "generated") {
-            const homeConfigStore = yield* V2HomeConfigStore
-            const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
-            yield* enforceGeneratedDeploymentCap(input, homeConfig)
-            materialized = yield* deployments.materializeGenerated({
-              config: generatedConfig,
-              stateRoot: input.stateRoot,
-              branch: input.ref,
-              name: input.deploymentName,
-            })
-            target = `generated:${materialized.name}`
-            const inventory = yield* deployments.list({
-              config: generatedConfig,
-              stateRoot: input.stateRoot,
-            })
-            yield* persistInventoryEvidence(input.stateRoot, inventory)
-          }
-
-          const runtimeResult = yield* deployExecution(input, materialized)
-          if (runtimeResult) {
-            yield* persistDesiredDeployment(input.stateRoot, runtimeResult.deployment, "running")
-          }
-          return yield* deployAccepted(input, target, "control-plane", runtimeResult?.execution)
-        }),
+        runDeployAction(input, "control-plane"),
       controlPlaneDestroyGenerated: (input) =>
         Effect.gen(function* () {
           if (input.target !== "generated") {

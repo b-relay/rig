@@ -878,6 +878,75 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN CLI and control-plane generated deploys WHEN cap is reached THEN both use the same rigd replacement path", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const cliAccepted = yield* rigd.deploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/cli",
+            stateRoot,
+            config,
+          })
+          const controlPlaneAccepted = yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/web",
+            stateRoot,
+            config,
+          })
+          const model = yield* rigd.webReadModel({ stateRoot })
+          const logs = yield* rigd.webLogs({ stateRoot, project: "pantry", lines: 20 })
+          return { cliAccepted, controlPlaneAccepted, model, logs }
+        }),
+        {
+          homeConfig: {
+            ...v2HomeConfigDefaults,
+            deploy: {
+              ...v2HomeConfigDefaults.deploy,
+              generated: {
+                maxActive: 1,
+                replacePolicy: "oldest",
+              },
+            },
+          },
+        },
+      )
+
+      expect(result.cliAccepted).toMatchObject({
+        kind: "deploy",
+        target: "generated:feature-cli",
+        accepted: true,
+      })
+      expect(result.controlPlaneAccepted).toMatchObject({
+        kind: "deploy",
+        target: "generated:feature-web",
+        accepted: true,
+      })
+      expect(result.model.deployments.map((deployment) => `${deployment.kind}:${deployment.name}`).sort()).toEqual([
+        "generated:feature-web",
+        "live:live",
+        "local:local",
+      ])
+      expect(result.logs).toContainEqual(expect.objectContaining({
+        event: "rigd.generated.cap-replaced",
+        deployment: "feature-cli",
+        details: expect.objectContaining({
+          requestedDeployment: "feature-web",
+          replacedDeployment: "feature-cli",
+        }),
+      }))
+      expect(result.logs.map((entry) => entry.event).filter((event) => event === "rigd.deploy.accepted")).toHaveLength(2)
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN a generated deployment WHEN destroy is accepted THEN generated state is removed and local or live cannot be targeted", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
 

@@ -613,7 +613,7 @@ const deployCommand = Command.make(
 
       yield* logger.info("rig2 deploy intent", intent)
       if (config) {
-        const receipt = yield* rigd.controlPlaneDeploy({
+        const receipt = yield* rigd.deploy({
           project: decoded.project,
           stateRoot: decoded.stateRoot,
           ref: input.ref,

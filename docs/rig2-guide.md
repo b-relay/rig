@@ -91,6 +91,19 @@ You can scaffold a v2-style `rig.json` with the `rig2` init command:
 ./rig2 init --project pantry --path . --provider-profile stub --package-scripts
 ```
 
+Add bundled component plugins at init time when the project needs Rig-owned
+database/backend components:
+
+```bash
+./rig2 init --project pantry --path . --provider-profile stub --sqlite --postgres --convex
+```
+
+`--sqlite` scaffolds a file-backed `db` component, `--postgres` scaffolds a
+supervised localhost-bound `postgres` component, and `--convex` scaffolds a
+supervised localhost-bound `convex` component. These flags write `uses`
+components only; they do not generate Vite, Next.js, or package-manager
+specific app commands.
+
 Use `stub` for isolated tests and agent runs. Use `default` only when you are
 ready for real local providers. The process supervisor is selected per lane
 with `providers.processSupervisor`; it defaults to the core `rigd` supervisor.
@@ -399,7 +412,8 @@ Postgres is a process-backed component:
 {
   "components": {
     "postgres": {
-      "uses": "postgres"
+      "uses": "postgres",
+      "port": 55432
     },
     "api": {
       "mode": "managed",
@@ -424,7 +438,9 @@ Convex Local is a process-backed component:
 {
   "components": {
     "convex": {
-      "uses": "convex"
+      "uses": "convex",
+      "port": 3210,
+      "sitePort": 3211
     },
     "api": {
       "mode": "managed",

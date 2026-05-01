@@ -77,6 +77,7 @@ class CaptureV2ProjectInitializer {
         packageJsonPath: `${input.path === "." ? "/tmp/repo" : input.path}/package.json`,
         addedScripts: input.packageScripts ? ["rig:up", "rig:down"] : [],
       },
+      scaffoldedComponents: (input.componentPlugins ?? []).map((plugin) => plugin === "sqlite" ? "db" : plugin),
     } satisfies V2ProjectInitResult)
   }
 }
@@ -435,6 +436,9 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       "--provider-profile",
       "stub",
       "--package-scripts",
+      "--sqlite",
+      "--postgres",
+      "--convex",
     ])
 
     expect(exitCode).toBe(0)
@@ -446,6 +450,7 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         stateRoot: "/tmp/rig-v2",
         providerProfile: "stub",
         packageScripts: true,
+        componentPlugins: ["sqlite", "postgres", "convex"],
       },
     ])
     expect(logger.infos).toEqual([

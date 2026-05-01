@@ -140,6 +140,18 @@ const providerProfileFlag = Flag.choice("provider-profile", ["default", "stub"])
   Flag.withDescription("Provider profile to scaffold into the local, live, and generated lanes."),
 )
 
+const sqliteFlag = Flag.boolean("sqlite").pipe(
+  Flag.withDescription("Scaffold a SQLite file-backed component named db."),
+)
+
+const postgresFlag = Flag.boolean("postgres").pipe(
+  Flag.withDescription("Scaffold a supervised Postgres component named postgres."),
+)
+
+const convexFlag = Flag.boolean("convex").pipe(
+  Flag.withDescription("Scaffold a supervised Convex Local component named convex."),
+)
+
 const deployRefFlag = Flag.string("ref").pipe(
   Flag.withDefault("HEAD"),
   Flag.withDescription("Git ref to deploy. Semver is optional metadata, not required."),
@@ -481,6 +493,9 @@ const initCommand = Command.make(
     packageScripts: Flag.boolean("package-scripts").pipe(
       Flag.withDescription("Add rig package scripts to package.json when it exists."),
     ),
+    sqlite: sqliteFlag,
+    postgres: postgresFlag,
+    convex: convexFlag,
   },
   (input) =>
     Effect.gen(function* () {
@@ -500,12 +515,18 @@ const initCommand = Command.make(
       })
       const initializer = yield* V2ProjectInitializer
       const logger = yield* V2Logger
+      const componentPlugins = [
+        ...(input.sqlite ? ["sqlite" as const] : []),
+        ...(input.postgres ? ["postgres" as const] : []),
+        ...(input.convex ? ["convex" as const] : []),
+      ]
       const result = yield* initializer.init({
         project: decoded.project,
         path: input.path,
         stateRoot: decoded.stateRoot,
         providerProfile: input.providerProfile,
         packageScripts: input.packageScripts,
+        componentPlugins,
       })
       yield* logger.info("rig2 project initialized", result)
     }),

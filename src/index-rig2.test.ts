@@ -59,6 +59,9 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
           "--provider-profile",
           "stub",
           "--package-scripts",
+          "--sqlite",
+          "--postgres",
+          "--convex",
         ],
         { RIG_V2_ROOT: root },
       )
@@ -70,7 +73,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
 
       const rigConfig = JSON.parse(await readFile(join(repo, "rig.json"), "utf8")) as {
         readonly name?: string
-        readonly components?: unknown
+        readonly components?: Record<string, unknown>
         readonly local?: { readonly providerProfile?: string }
         readonly live?: { readonly providerProfile?: string }
         readonly deployments?: {
@@ -80,7 +83,16 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       }
       expect(rigConfig).toMatchObject({
         name: "pantry",
-        components: {},
+        components: {
+          db: { uses: "sqlite" },
+          postgres: { uses: "postgres", port: 55432 },
+          convex: {
+            uses: "convex",
+            port: 3210,
+            sitePort: 3211,
+            dependsOn: ["postgres"],
+          },
+        },
         local: { providerProfile: "stub" },
         live: { providerProfile: "stub" },
         deployments: {

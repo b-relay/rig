@@ -330,7 +330,9 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   `rig2 init --project <name> --path <path>` now writes a valid lane-wired v2
   config, can add non-overwriting `rig:` package scripts, and records a
   project-initialized event in isolated `rigd` state so `rig2 list` can
-  discover the project.
+  discover the project. `--sqlite`, `--postgres`, and `--convex` scaffold
+  bundled component-plugin `uses` components without adding Vite/Next-style
+  app command presets.
   `rigd.managedProcessExited` records crash evidence, restarts while the retry
   budget allows it, and marks repeated crashes failed. The core `rigd`
   process-supervisor provider reports real child-process exits into that policy
@@ -423,7 +425,8 @@ Postgres is process-backed:
 {
   "components": {
     "postgres": {
-      "uses": "postgres"
+      "uses": "postgres",
+      "port": 55432
     },
     "api": {
       "mode": "managed",
@@ -448,7 +451,9 @@ Convex Local is process-backed:
 {
   "components": {
     "convex": {
-      "uses": "convex"
+      "uses": "convex",
+      "port": 3210,
+      "sitePort": 3211
     },
     "api": {
       "mode": "managed",

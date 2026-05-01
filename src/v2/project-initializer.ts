@@ -9,6 +9,9 @@ import {
 } from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 import { V2RigdStateStore } from "./rigd-state.js"
+import type { V2ComponentPluginId } from "./component-plugins.js"
+
+export type V2InitComponentPluginId = Extract<V2ComponentPluginId, "sqlite" | "postgres" | "convex">
 
 export interface V2ProjectInitInput {
   readonly project: string
@@ -16,6 +19,7 @@ export interface V2ProjectInitInput {
   readonly stateRoot: string
   readonly providerProfile: "default" | "stub"
   readonly packageScripts?: boolean
+  readonly componentPlugins?: readonly V2InitComponentPluginId[]
 }
 
 export interface V2ProjectInitResult {
@@ -29,6 +33,7 @@ export interface V2ProjectInitResult {
     readonly addedScripts: readonly string[]
     readonly skippedReason?: "package-json-missing"
   }
+  readonly scaffoldedComponents: readonly string[]
 }
 
 export interface V2ProjectInitializerService {
@@ -47,10 +52,48 @@ const rigPackageScripts = {
   "rig:list": "rig2 list",
 } as const
 
-const projectConfig = (project: string, providerProfile: "default" | "stub") => ({
+const scaffoldComponents = (
+  plugins: readonly V2InitComponentPluginId[],
+): Record<string, unknown> => {
+  const selected = new Set(plugins)
+
+  return {
+    ...(selected.has("sqlite")
+      ? {
+        db: {
+          uses: "sqlite",
+        },
+      }
+      : {}),
+    ...(selected.has("postgres")
+      ? {
+        postgres: {
+          uses: "postgres",
+          port: 55432,
+        },
+      }
+      : {}),
+    ...(selected.has("convex")
+      ? {
+        convex: {
+          uses: "convex",
+          port: 3210,
+          sitePort: 3211,
+          ...(selected.has("postgres") ? { dependsOn: ["postgres"] } : {}),
+        },
+      }
+      : {}),
+  }
+}
+
+const projectConfig = (
+  project: string,
+  providerProfile: "default" | "stub",
+  plugins: readonly V2InitComponentPluginId[],
+) => ({
   name: project,
   description: `Rig v2 project for ${project}.`,
-  components: {},
+  components: scaffoldComponents(plugins),
   local: {
     providerProfile,
   },
@@ -191,9 +234,12 @@ export const V2ProjectInitializerLive = Layer.effect(
             )
           }
 
+          const selectedPlugins = input.componentPlugins ?? []
+          const scaffoldedComponents = Object.keys(scaffoldComponents(selectedPlugins))
+
           yield* platformWriteFileString(
             configPath,
-            `${JSON.stringify(projectConfig(input.project, input.providerProfile), null, 2)}\n`,
+            `${JSON.stringify(projectConfig(input.project, input.providerProfile, selectedPlugins), null, 2)}\n`,
           ).pipe(
             Effect.mapError(runtimeError(
               `Unable to write v2 rig.json for '${input.project}'.`,
@@ -226,6 +272,7 @@ export const V2ProjectInitializerLive = Layer.effect(
             configPath,
             providerProfile: input.providerProfile,
             packageScripts,
+            scaffoldedComponents,
           }
         }),
     } satisfies V2ProjectInitializerService

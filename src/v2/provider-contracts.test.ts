@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
@@ -353,6 +353,7 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
       expect(removed).toBe("proxy-router:caddy:remove:pantry:feature-a:web")
       expect(contentAfterRemove).toContain("manual.example.com")
       expect(contentAfterRemove).not.toContain("[rig2:pantry:feature-a:web]")
+      expect((await readdir(root)).filter((file) => file.startsWith("Caddyfile.backup-")).length).toBeGreaterThanOrEqual(2)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -590,6 +591,76 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
       )
 
       expect(commands).toEqual([["sh", "-lc", "caddy reload --config /usr/local/etc/Caddyfile"]])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN caddy proxy router config WHEN reload command fails THEN the error stays tagged with route context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-caddy-reload-error-"))
+    const caddyfilePath = join(root, "Caddyfile")
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: "/tmp/rig-v2/workspaces/pantry/live",
+        resolved: {
+          v1Config: {
+            domain: "pantry.b-relay.com",
+          },
+          environment: {
+            services: [
+              {
+                name: "web",
+                type: "server",
+                command: "bun run start",
+                port: 3070,
+              },
+            ],
+          },
+        },
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const proxy = yield* V2ProxyRouterProvider
+          return yield* proxy.upsert({
+            deployment,
+            proxy: {
+              upstream: "web",
+            },
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default", [], {
+            proxyRouter: {
+              caddyfilePath,
+              reload: {
+                mode: "command",
+                command: "caddy reload --config /usr/local/etc/Caddyfile",
+              },
+              runCommand: async () => ({ stdout: "out", stderr: "bad caddyfile", exitCode: 1 }),
+            },
+          })),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        message: "Unable to upsert Caddy route for deployment 'live'.",
+        details: {
+          providerId: "caddy",
+          caddyfilePath,
+          project: "pantry",
+          deployment: "live",
+          upstream: "web",
+          domain: "pantry.b-relay.com",
+          port: 3070,
+          cause: "Caddy reload command failed.",
+        },
+      })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

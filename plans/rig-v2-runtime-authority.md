@@ -356,11 +356,11 @@ configuration, and tagged errors.
 
 ### Acceptance Criteria
 
-- [ ] Caddy proxy router implementation lives in a focused adapter module.
-- [ ] V2-managed block parsing and rendering remain externally compatible.
-- [ ] Route upsert and remove preserve non-rig Caddyfile content.
-- [ ] Backup and reload behavior remain externally compatible.
-- [ ] Tests cover upsert, remove, v1 marker migration behavior, conflict
+- [x] Caddy proxy router implementation lives in a focused adapter module.
+- [x] V2-managed block parsing and rendering remain externally compatible.
+- [x] Route upsert and remove preserve non-rig Caddyfile content.
+- [x] Backup and reload behavior remain externally compatible.
+- [x] Tests cover upsert, remove, v1 marker migration behavior, conflict
       handling, backup, and reload errors.
 
 ---

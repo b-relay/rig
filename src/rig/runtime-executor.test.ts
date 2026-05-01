@@ -46,6 +46,7 @@ import {
   type RigManagedProcessExitHandlerInput,
   type RigRuntimeLifecycleExecutionInput,
 } from "./runtime-executor.js"
+import { RigRuntimeError } from "./errors.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -179,6 +180,7 @@ const runWithExecutor = <A>(effect: Effect.Effect<A, unknown, RigRuntimeExecutor
 const captureProviderLayer = (
   calls: string[],
   options: {
+    readonly failProcess?: readonly string[]
     readonly processOutput?: Readonly<Record<string, readonly { readonly stream: "stdout" | "stderr"; readonly line: string }[]>>
     readonly processExits?: Readonly<Record<string, {
       readonly expected: boolean
@@ -222,6 +224,15 @@ const captureProviderLayer = (
   }
   const recordProcess = (operation: string) => {
     calls.push(operation)
+    if (options.failProcess?.includes(operation)) {
+      return Effect.fail(
+        new RigRuntimeError(
+          `Captured process operation '${operation}' failed.`,
+          "Fix the captured process provider before retrying.",
+          { reason: "captured-process-failed", operation },
+        ),
+      )
+    }
     const exit = options.processExits?.[operation]
     return Effect.succeed({
       operation: `capture:${operation}`,
@@ -706,6 +717,39 @@ describe("GIVEN rig runtime executor WHEN provider-backed operations run THEN pr
       "capture:process:up:worker",
       "capture:event:append:component.log:worker",
       "capture:event:append:lifecycle:up",
+    ])
+  })
+
+  test("GIVEN lifecycle up fails after starting an earlier service THEN started services are stopped before failing", async () => {
+    const calls: string[] = []
+
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const executor = yield* RigRuntimeExecutor
+        return yield* executor.lifecycle({
+          action: "up",
+          deployment: deployment(),
+        }).pipe(Effect.flip)
+      }).pipe(
+        Effect.provide(Layer.provide(
+          RigRuntimeExecutorLive,
+          captureProviderLayer(calls, { failProcess: ["process:up:worker"] }),
+        )),
+      ),
+    )
+
+    expect(error).toMatchObject({
+      _tag: "RigRuntimeError",
+      details: { reason: "captured-process-failed", operation: "process:up:worker" },
+    })
+    expect(calls).toEqual([
+      "workspace:resolve:live",
+      "process:up:web",
+      "event:append:component.log:web",
+      "health:check:web",
+      "event:append:component.health:web",
+      "process:up:worker",
+      "process:down:web",
     ])
   })
 

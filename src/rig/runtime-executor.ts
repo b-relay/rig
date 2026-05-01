@@ -414,8 +414,10 @@ export const RigRuntimeExecutorLive = Layer.effect(
     const packageManager = yield* RigPackageManagerProvider
 
     return {
-      lifecycle: (input) =>
-        Effect.gen(function* () {
+      lifecycle: (input) => {
+        const started: RigRuntimeServiceConfig[] = []
+
+        return Effect.gen(function* () {
           const services = yield* orderedManagedServices(input.deployment)
           const ordered = input.action === "down" ? [...services].reverse() : services
           const operations: string[] = []
@@ -442,6 +444,9 @@ export const RigRuntimeExecutorLive = Layer.effect(
               ? processSupervisor.up({ deployment: input.deployment, service })
               : processSupervisor.down({ deployment: input.deployment, service }))
             operations.push(operation.operation)
+            if (input.action === "up") {
+              started.push(service)
+            }
             yield* appendProcessEvents(
               eventTransport,
               input.deployment,
@@ -495,7 +500,19 @@ export const RigRuntimeExecutorLive = Layer.effect(
           }))
 
           return executionResult(input.deployment, operations, events)
-        }),
+        }).pipe(
+          Effect.catch((error) =>
+            input.action === "up" && started.length > 0
+              ? Effect.gen(function* () {
+                for (const service of [...started].reverse()) {
+                  yield* processSupervisor.down({ deployment: input.deployment, service })
+                }
+                return yield* Effect.fail(error)
+              })
+              : Effect.fail(error)
+          ),
+        )
+      },
       deploy: (input) =>
         Effect.gen(function* () {
           const managed = yield* orderedManagedServices(input.deployment)

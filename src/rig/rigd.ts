@@ -746,13 +746,64 @@ export const RigdLive = Layer.effect(
         return { deployment, execution }
       })
 
+    const rollbackGeneratedDeployFailure = (
+      input: RigdControlPlaneDeployInput,
+      deployment: RigDeploymentRecord,
+      deployError: RigRuntimeError,
+    ): Effect.Effect<never, RigRuntimeError> =>
+      Effect.gen(function* () {
+        if (!input.config) {
+          return yield* Effect.fail(deployError)
+        }
+
+        const cleanupError = yield* runtimeExecutor.destroyGenerated({ deployment }).pipe(
+          Effect.as(undefined),
+          Effect.catch((error) => Effect.succeed(error)),
+        )
+        const inventoryError = yield* deployments.destroyGenerated({
+          config: input.config,
+          stateRoot: input.stateRoot,
+          name: deployment.name,
+        }).pipe(
+          Effect.as(undefined),
+          Effect.catch((error) => Effect.succeed(error)),
+        )
+
+        if (!inventoryError) {
+          const inventory = yield* deployments.list({
+            config: input.config,
+            stateRoot: input.stateRoot,
+          })
+          yield* persistInventoryEvidence(input.stateRoot, inventory)
+        }
+
+        if (cleanupError || inventoryError) {
+          return yield* Effect.fail(
+            new RigRuntimeError(
+              `Generated deploy '${deployment.name}' failed and rollback was incomplete.`,
+              "Inspect the generated deployment workspace, process supervisor, and runtime inventory before retrying.",
+              {
+                reason: "generated-deploy-rollback-failed",
+                project: deployment.project,
+                deployment: deployment.name,
+                deployError: deployError.message,
+                ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
+                ...(inventoryError ? { inventoryError: inventoryError.message } : {}),
+              },
+            ),
+          )
+        }
+
+        return yield* Effect.fail(deployError)
+      })
+
     const enforceGeneratedDeploymentCap = (
       input: RigdControlPlaneDeployInput,
       homeConfig: RigHomeConfig,
-    ): Effect.Effect<void, RigRuntimeError> =>
+    ): Effect.Effect<RigDeploymentRecord | undefined, RigRuntimeError> =>
       Effect.gen(function* () {
         if (input.target !== "generated" || !input.config) {
-          return
+          return undefined
         }
 
         const requestedDeployment = branchSlug(input.deploymentName ?? input.ref)
@@ -764,7 +815,7 @@ export const RigdLive = Layer.effect(
         const existing = generated.find((deployment) => deployment.name === requestedDeployment)
 
         if (existing || generated.length < homeConfig.deploy.generated.maxActive) {
-          return
+          return undefined
         }
 
         if (homeConfig.deploy.generated.replacePolicy === "reject") {
@@ -786,27 +837,41 @@ export const RigdLive = Layer.effect(
 
         const oldest = generated[0]
         if (!oldest) {
+          return undefined
+        }
+
+        return oldest
+      })
+
+    const replaceGeneratedAfterSuccessfulDeploy = (
+      input: RigdControlPlaneDeployInput,
+      replaced: RigDeploymentRecord,
+      requestedDeployment: string,
+      homeConfig: RigHomeConfig,
+    ): Effect.Effect<void, RigRuntimeError> =>
+      Effect.gen(function* () {
+        if (!input.config) {
           return
         }
 
-        const execution = yield* runtimeExecutor.destroyGenerated({ deployment: oldest })
+        const execution = yield* runtimeExecutor.destroyGenerated({ deployment: replaced })
         yield* persistExecutionEvents(input.stateRoot, execution)
-        yield* persistDesiredDeployment(input.stateRoot, oldest, "stopped")
+        yield* persistDesiredDeployment(input.stateRoot, replaced, "stopped")
         yield* deployments.destroyGenerated({
           config: input.config,
           stateRoot: input.stateRoot,
-          name: oldest.name,
+          name: replaced.name,
         })
         yield* appendEvent(input.stateRoot, {
           event: "rigd.generated.cap-replaced",
           project: input.project,
-          deployment: oldest.name,
+          deployment: replaced.name,
           details: {
             reason: "generated-deployment-cap-reached",
             maxActive: homeConfig.deploy.generated.maxActive,
             replacePolicy: homeConfig.deploy.generated.replacePolicy,
             requestedDeployment,
-            replacedDeployment: oldest.name,
+            replacedDeployment: replaced.name,
             execution,
           },
         })
@@ -864,10 +929,12 @@ export const RigdLive = Layer.effect(
         })
 
         let materialized: RigDeploymentRecord | undefined
+        let replacedGenerated: RigDeploymentRecord | undefined
+        let homeConfig: RigHomeConfig | undefined
         if (input.target === "generated") {
           const homeConfigStore = yield* RigHomeConfigStore
-          const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
-          yield* enforceGeneratedDeploymentCap(input, homeConfig)
+          homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
+          replacedGenerated = yield* enforceGeneratedDeploymentCap(input, homeConfig)
           materialized = yield* deployments.materializeGenerated({
             config: generatedConfig,
             stateRoot: input.stateRoot,
@@ -882,9 +949,28 @@ export const RigdLive = Layer.effect(
           yield* persistInventoryEvidence(input.stateRoot, inventory)
         }
 
-        const runtimeResult = yield* deployExecution(input, materialized)
+        const runtimeResult = yield* deployExecution(input, materialized).pipe(
+          Effect.catch((error) =>
+            materialized
+              ? rollbackGeneratedDeployFailure(input, materialized, error)
+              : Effect.fail(error)
+          ),
+        )
         if (runtimeResult) {
           yield* persistDesiredDeployment(input.stateRoot, runtimeResult.deployment, "running")
+        }
+        if (input.target === "generated" && replacedGenerated && homeConfig) {
+          yield* replaceGeneratedAfterSuccessfulDeploy(
+            input,
+            replacedGenerated,
+            materialized?.name ?? branchSlug(input.deploymentName ?? input.ref),
+            homeConfig,
+          )
+          const inventory = yield* deployments.list({
+            config: generatedConfig as RigProjectConfig,
+            stateRoot: input.stateRoot,
+          })
+          yield* persistInventoryEvidence(input.stateRoot, inventory)
         }
         return yield* deployAccepted(input, target, source, runtimeResult?.execution)
       })

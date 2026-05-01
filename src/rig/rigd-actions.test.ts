@@ -67,11 +67,13 @@ class CaptureRuntimeExecutor {
   readonly deployCalls: RigRuntimeDeployExecutionInput[] = []
   readonly destroyGeneratedCalls: RigRuntimeDestroyGeneratedExecutionInput[] = []
 
-  constructor(private readonly fail?: "lifecycle" | "deploy" | "destroy") {}
+  constructor(
+    private readonly fail?: "lifecycle" | "deploy" | "destroy" | ((kind: "lifecycle" | "deploy" | "destroy", deployment: string) => boolean),
+  ) {}
 
   lifecycle(input: RigRuntimeLifecycleExecutionInput) {
     this.lifecycleCalls.push(input)
-    if (this.fail === "lifecycle") {
+    if (this.shouldFail("lifecycle", input.deployment.name)) {
       return Effect.fail(this.failure("lifecycle", input.deployment.name))
     }
     return Effect.succeed(this.result(input.deployment, [`provider:lifecycle:${input.action}`]))
@@ -79,7 +81,7 @@ class CaptureRuntimeExecutor {
 
   deploy(input: RigRuntimeDeployExecutionInput) {
     this.deployCalls.push(input)
-    if (this.fail === "deploy") {
+    if (this.shouldFail("deploy", input.deployment.name)) {
       return Effect.fail(this.failure("deploy", input.deployment.name))
     }
     return Effect.succeed(this.result(input.deployment, [`provider:deploy:${input.ref}`]))
@@ -87,10 +89,14 @@ class CaptureRuntimeExecutor {
 
   destroyGenerated(input: RigRuntimeDestroyGeneratedExecutionInput) {
     this.destroyGeneratedCalls.push(input)
-    if (this.fail === "destroy") {
+    if (this.shouldFail("destroy", input.deployment.name)) {
       return Effect.fail(this.failure("destroy", input.deployment.name))
     }
     return Effect.succeed(this.result(input.deployment, [`provider:destroy:${input.deployment.name}`]))
+  }
+
+  private shouldFail(kind: "lifecycle" | "deploy" | "destroy", deployment: string): boolean {
+    return typeof this.fail === "function" ? this.fail(kind, deployment) : this.fail === kind
   }
 
   private result(
@@ -859,6 +865,117 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
       })
       expect(result.persisted.receipts).toEqual([])
       expect(result.persisted.events).toEqual([])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN generated deploy execution fails WHEN state was materialized THEN generated inventory is rolled back", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor((kind, deployment) =>
+        kind === "deploy" && deployment === "feature-fails"
+      )
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const deployments = yield* RigDeploymentManager
+          const store = yield* RigdStateStore
+          const error = yield* Effect.flip(
+            rigd.controlPlaneDeploy({
+              project: "pantry",
+              target: "generated",
+              ref: "feature/fails",
+              stateRoot,
+              config,
+            }),
+          )
+          const inventory = yield* deployments.list({ config, stateRoot })
+          const persisted = yield* store.load({ stateRoot })
+          return { error, inventory, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "RigRuntimeError",
+        details: { reason: "runtime-execution-failed", kind: "deploy", deployment: "feature-fails" },
+      })
+      expect(executor.deployCalls.map((call) => call.deployment.name)).toEqual(["feature-fails"])
+      expect(executor.destroyGeneratedCalls.map((call) => call.deployment.name)).toEqual(["feature-fails"])
+      expect(result.inventory.map((deployment) => `${deployment.kind}:${deployment.name}`)).toEqual([
+        "local:local",
+        "live:live",
+      ])
+      expect(result.persisted.receipts).toEqual([])
+      expect(result.persisted.events).toEqual([])
+      expect(result.persisted.deploymentSnapshots.map((snapshot) => `${snapshot.kind}:${snapshot.deployment}`)).toEqual([
+        "local:local",
+        "live:live",
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN generated replacement deploy fails WHEN oldest policy is active THEN existing generated deployment remains", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor((kind, deployment) =>
+        kind === "deploy" && deployment === "feature-fails"
+      )
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const deployments = yield* RigDeploymentManager
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/old",
+            stateRoot,
+            config,
+          })
+          const error = yield* Effect.flip(
+            rigd.controlPlaneDeploy({
+              project: "pantry",
+              target: "generated",
+              ref: "feature/fails",
+              stateRoot,
+              config,
+            }),
+          )
+          const inventory = yield* deployments.list({ config, stateRoot })
+          return { error, inventory }
+        }),
+        {
+          executor,
+          homeConfig: {
+            ...rigHomeConfigDefaults,
+            deploy: {
+              ...rigHomeConfigDefaults.deploy,
+              generated: {
+                maxActive: 1,
+                replacePolicy: "oldest",
+              },
+            },
+          },
+        },
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "RigRuntimeError",
+        details: { reason: "runtime-execution-failed", kind: "deploy", deployment: "feature-fails" },
+      })
+      expect(executor.destroyGeneratedCalls.map((call) => call.deployment.name)).toEqual(["feature-fails"])
+      expect(result.inventory.map((deployment) => `${deployment.kind}:${deployment.name}`)).toEqual([
+        "local:local",
+        "live:live",
+        "generated:feature-old",
+      ])
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }

@@ -327,6 +327,10 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   policies. Config-backed lifecycle and deploy actions now persist desired
   running/stopped deployment state, and `rigd.start` reconciles desired-running
   records through the runtime executor after process restart.
+  `rig2 init --project <name> --path <path>` now writes a valid lane-wired v2
+  config, can add non-overwriting `rig:` package scripts, and records a
+  project-initialized event in isolated `rigd` state so `rig2 list` can
+  discover the project.
   `rigd.managedProcessExited` records crash evidence, restarts while the retry
   budget allows it, and marks repeated crashes failed. The core `rigd`
   process-supervisor provider reports real child-process exits into that policy
@@ -354,26 +358,25 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
 ### Future Plugin Preset Track
 
 After the core provider-adapter parity work, add a separate product/design
-track for ecosystem plugins and presets. The first useful set is:
+track for ecosystem component plugins. The first useful set is:
 
 - **Convex Local plugin**: manages a per-deployment Convex Local instance,
   database/data root, ports, and health checks for each `local`, `live`, or
   generated deployment.
-- **Next.js plugin**: scaffolds common managed/installed components, build
-  commands, health checks, and proxy defaults for Next.js apps without
-  requiring users to hand-author the full v2 config.
-- **Vite plugin**: scaffolds Vite dev/preview/build components, port/health
-  defaults, and proxy wiring for local and generated deployments.
 - **Postgres plugin**: adds a supervised localhost-bound database component
   with per-lane/per-deployment port and data-root tracking.
 - **SQLite plugin**: adds per-lane/per-deployment database file path tracking.
   SQLite is a file-backed dependency rather than a supervised daemon, so the
   first plugin should not pretend it has a process to supervise.
 
-These should not be hard-coded app presets in core. They should exercise the
-same plugin/provider boundaries as first-party adapters, with the Convex Local
-case treated as a component-owning environment plugin that can allocate and
-persist per-deployment state.
+These should not become generic web framework presets in core. Vite and
+Next.js commands are usually project-specific and package-manager-specific, so
+users can write those managed/installed commands directly until Rig has a
+concrete reason to edit framework config such as allowed hosts or CORS. The
+database/backend plugins should exercise the same plugin/provider boundaries
+as first-party adapters, with the Convex Local case treated as a
+component-owning environment plugin that can allocate and persist
+per-deployment state.
 
 Rig should own local service supervision plus the deployment metadata needed to
 keep all parts of a website/service in one project lifecycle: assigned

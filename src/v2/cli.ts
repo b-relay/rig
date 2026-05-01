@@ -11,6 +11,7 @@ import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleAction, type V2LifecycleLane } from "./lifecycle.js"
 import { rigV2Root } from "./paths.js"
 import { V2ProjectConfigLoader } from "./project-config-loader.js"
+import { V2ProjectInitializer } from "./project-initializer.js"
 import { V2ProjectLocator } from "./project-locator.js"
 import { V2ProviderRegistry } from "./provider-contracts.js"
 import { V2Rigd, type V2RigdWebReadModel } from "./rigd.js"
@@ -127,6 +128,16 @@ const statusJsonFlag = Flag.boolean("json").pipe(
 const configFlag = Flag.string("config").pipe(
   Flag.withDefault(""),
   Flag.withDescription("Path to a v2 rig.json. Optional inside a managed repo."),
+)
+
+const initPathFlag = Flag.string("path").pipe(
+  Flag.withDefault("."),
+  Flag.withDescription("Project directory where rig2 should write rig.json."),
+)
+
+const providerProfileFlag = Flag.choice("provider-profile", ["default", "stub"]).pipe(
+  Flag.withDefault("default" as const),
+  Flag.withDescription("Provider profile to scaffold into the local, live, and generated lanes."),
 )
 
 const deployRefFlag = Flag.string("ref").pipe(
@@ -460,6 +471,46 @@ const rigdCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Start the local rigd MVP API and report health."))
 
+const initCommand = Command.make(
+  "init",
+  {
+    project: projectFlag,
+    path: initPathFlag,
+    stateRoot: stateRootFlag,
+    providerProfile: providerProfileFlag,
+    packageScripts: Flag.boolean("package-scripts").pipe(
+      Flag.withDescription("Add rig package scripts to package.json when it exists."),
+    ),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const project = input.project.trim()
+      if (project.length === 0) {
+        return yield* Effect.fail(
+          new V2CliArgumentError(
+            "rig2 init requires --project <name>.",
+            "Pass a stable project name, for example rig2 init --project pantry --path .",
+          ),
+        )
+      }
+
+      const decoded = yield* decodeV2StatusInput({
+        project,
+        stateRoot: input.stateRoot,
+      })
+      const initializer = yield* V2ProjectInitializer
+      const logger = yield* V2Logger
+      const result = yield* initializer.init({
+        project: decoded.project,
+        path: input.path,
+        stateRoot: decoded.stateRoot,
+        providerProfile: input.providerProfile,
+        packageScripts: input.packageScripts,
+      })
+      yield* logger.info("rig2 project initialized", result)
+    }),
+).pipe(Command.withDescription("Initialize a v2 rig.json without touching v1 state."))
+
 const listCommand = Command.make(
   "list",
   {
@@ -712,6 +763,7 @@ const configCommand = Command.make("config").pipe(
 const rig2Command = Command.make("rig2").pipe(
   Command.withDescription("Experimental rig v2 entrypoint."),
   Command.withSubcommands([
+    initCommand,
     lifecycleCommand("up", "Start a v2 local or live lane."),
     lifecycleCommand("restart", "Restart a v2 local or live lane."),
     downCommand,

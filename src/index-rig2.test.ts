@@ -31,6 +31,84 @@ const runRig2Command = async (
 }
 
 describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered", () => {
+  test("GIVEN init command WHEN run directly THEN it writes v2 project files and registers the project", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig2-repo-"))
+
+    try {
+      await writeFile(
+        join(repo, "package.json"),
+        `${JSON.stringify({
+          name: "pantry",
+          scripts: {
+            test: "bun test",
+          },
+        }, null, 2)}\n`,
+        "utf8",
+      )
+
+      const init = await runRig2Command(
+        [
+          "init",
+          "--project",
+          "pantry",
+          "--path",
+          repo,
+          "--state-root",
+          root,
+          "--provider-profile",
+          "stub",
+          "--package-scripts",
+        ],
+        { RIG_V2_ROOT: root },
+      )
+
+      expect(init.exitCode).toBe(0)
+      expect(init.stderr).toBe("")
+      expect(init.stdout).toContain("[INFO] rig2 project initialized")
+      expect(init.stdout).toContain('"project":"pantry"')
+
+      const rigConfig = JSON.parse(await readFile(join(repo, "rig.json"), "utf8")) as {
+        readonly name?: string
+        readonly components?: unknown
+        readonly local?: { readonly providerProfile?: string }
+        readonly live?: { readonly providerProfile?: string }
+        readonly deployments?: {
+          readonly subdomain?: string
+          readonly providerProfile?: string
+        }
+      }
+      expect(rigConfig).toMatchObject({
+        name: "pantry",
+        components: {},
+        local: { providerProfile: "stub" },
+        live: { providerProfile: "stub" },
+        deployments: {
+          subdomain: "${branchSlug}",
+          providerProfile: "stub",
+        },
+      })
+
+      const packageJson = JSON.parse(await readFile(join(repo, "package.json"), "utf8")) as {
+        readonly scripts?: Record<string, string>
+      }
+      expect(packageJson.scripts?.test).toBe("bun test")
+      expect(packageJson.scripts?.["rig:up"]).toBe("rig2 up")
+      expect(packageJson.scripts?.["rig:restart"]).toBe("rig2 restart")
+      expect(packageJson.scripts?.["rig:list"]).toBe("rig2 list")
+
+      const list = await runRig2Command(["list", "--state-root", root], { RIG_V2_ROOT: root })
+
+      expect(list.exitCode).toBe(0)
+      expect(list.stderr).toBe("")
+      expect(list.stdout).toContain("[INFO] rig2 projects")
+      expect(list.stdout).toContain("projects:\n  pantry")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN status command WHEN run through src/index-rig2.ts THEN it uses the isolated v2 root", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
 

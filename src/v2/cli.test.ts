@@ -20,6 +20,11 @@ import { V2Doctor, type V2DoctorReportInput } from "./doctor.js"
 import { V2CliArgumentError, type V2TaggedError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleRequest } from "./lifecycle.js"
 import { V2ProjectConfigLoader, type V2ProjectConfigLoadInput } from "./project-config-loader.js"
+import {
+  V2ProjectInitializer,
+  type V2ProjectInitInput,
+  type V2ProjectInitResult,
+} from "./project-initializer.js"
 import { V2ProjectLocator } from "./project-locator.js"
 import { V2ProviderRegistryLive } from "./provider-contracts.js"
 import {
@@ -54,6 +59,25 @@ class CaptureV2Lifecycle {
   run(request: V2LifecycleRequest) {
     this.requests.push(request)
     return Effect.void
+  }
+}
+
+class CaptureV2ProjectInitializer {
+  readonly requests: V2ProjectInitInput[] = []
+
+  init(input: V2ProjectInitInput) {
+    this.requests.push(input)
+    return Effect.succeed({
+      project: input.project,
+      repoPath: input.path === "." ? "/tmp/repo" : input.path,
+      configPath: `${input.path === "." ? "/tmp/repo" : input.path}/rig.json`,
+      providerProfile: input.providerProfile,
+      packageScripts: {
+        requested: input.packageScripts ?? false,
+        packageJsonPath: `${input.path === "." ? "/tmp/repo" : input.path}/package.json`,
+        addedScripts: input.packageScripts ? ["rig:up", "rig:down"] : [],
+      },
+    } satisfies V2ProjectInitResult)
   }
 }
 
@@ -363,6 +387,7 @@ const runWithLogger = async (
 ) => {
   const logger = new CaptureV2Logger()
   const lifecycle = new CaptureV2Lifecycle()
+  const initializer = new CaptureV2ProjectInitializer()
   const rigd = new CaptureV2Rigd()
   const deployIntents = new CaptureV2DeployIntents()
   const doctor = new CaptureV2Doctor()
@@ -371,6 +396,7 @@ const runWithLogger = async (
     V2RuntimeLive,
     Layer.succeed(V2Logger, logger),
     Layer.succeed(V2Lifecycle, lifecycle),
+    Layer.succeed(V2ProjectInitializer, initializer),
     Layer.succeed(V2Rigd, rigd),
     Layer.succeed(V2DeployIntents, deployIntents),
     Layer.succeed(V2Doctor, doctor),
@@ -393,10 +419,48 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRig2Cli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle, rigd, deployIntents, doctor, configLoader }
+  return { exitCode, logger, lifecycle, initializer, rigd, deployIntents, doctor, configLoader }
 }
 
 describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
+  test("GIVEN init command WHEN running THEN it initializes a v2 project through the v2 initializer", async () => {
+    const { exitCode, logger, initializer } = await runWithLogger([
+      "init",
+      "--project",
+      "pantry",
+      "--path",
+      "/tmp/pantry",
+      "--state-root",
+      "/tmp/rig-v2",
+      "--provider-profile",
+      "stub",
+      "--package-scripts",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(initializer.requests).toEqual([
+      {
+        project: "pantry",
+        path: "/tmp/pantry",
+        stateRoot: "/tmp/rig-v2",
+        providerProfile: "stub",
+        packageScripts: true,
+      },
+    ])
+    expect(logger.infos).toEqual([
+      {
+        message: "rig2 project initialized",
+        details: expect.objectContaining({
+          project: "pantry",
+          repoPath: "/tmp/pantry",
+          configPath: "/tmp/pantry/rig.json",
+          providerProfile: "stub",
+        }),
+      },
+    ])
+  })
+
   test("GIVEN status command with project and state root WHEN running THEN it reports isolated v2 state", async () => {
     const { exitCode, logger, rigd } = await runWithLogger([
       "status",

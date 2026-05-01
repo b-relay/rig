@@ -163,9 +163,9 @@ Current output: `rig2 up`, `rig2 down`, `rig2 logs`, and `rig2 status` are Effec
 
 Current output: generated deployment materialization now runs behind v2 deployment manager/store interfaces. Branch and named deployments resolve isolated workspace/log/runtime state, generated subdomains, deterministic assigned ports, persisted inventory, and generated-only teardown semantics.
 
-#13 depends on #5 and #7, and should expand `rig init` once the config resolver and provider profiles exist.
+#13 depends on #5 and #7, and should expand init once the config resolver and provider profiles exist.
 
-Current output: `rig init` now has an opt-in v2 scaffold path. `--v2` writes a valid lane-wired v2 config, `--provider-profile default|stub` is scriptable, and `--package-scripts` adds non-overwriting `rig:` scripts only when `package.json` already exists.
+Current output: `rig2 init --project <name> --path <path>` writes a valid lane-wired v2 config, `--provider-profile default|stub` is scriptable, and `--package-scripts` adds non-overwriting `rig:` scripts only when `package.json` already exists. It also records a project-initialized event in isolated `rigd` state so `rig2 list` can discover the project.
 
 Recommended order:
 

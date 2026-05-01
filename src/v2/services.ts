@@ -9,6 +9,7 @@ import { V2FileHomeConfigStoreLive, V2HomeConfigStore, type V2HomeConfig } from 
 import { V2ProviderContractsLive, type V2ProviderContractsOptions } from "./provider-contracts.js"
 import { V2ProviderProfileLive } from "./provider-profiles.js"
 import { V2ProjectConfigLoaderLive } from "./project-config-loader.js"
+import { V2ProjectInitializerLive } from "./project-initializer.js"
 import { V2ProjectLocatorLive } from "./project-locator.js"
 import { V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2FileRigdStateStoreLive } from "./rigd-state.js"
@@ -139,6 +140,7 @@ export const Rig2Live = Layer.mergeAll(
   Layer.provide(V2RuntimeExecutorLive, V2ConfiguredProviderContractsLive),
   Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive),
   Layer.provide(V2ProjectConfigLoaderLive, Layer.provide(V2ConfigEditorLive, V2ConfigFileStoreLive)),
+  Layer.provide(V2ProjectInitializerLive, V2FileRigdStateStoreLive),
   V2ProjectLocatorLive,
 )
 

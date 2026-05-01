@@ -85,10 +85,10 @@ export RIG_V2_ROOT="$(mktemp -d)"
 
 ## Create A V2 Config
 
-You can scaffold a v2-style `rig.json` with the current `rig` init command:
+You can scaffold a v2-style `rig.json` with the `rig2` init command:
 
 ```bash
-./rig init pantry --path . --v2 --provider-profile stub --package-scripts
+./rig2 init --project pantry --path . --provider-profile stub --package-scripts
 ```
 
 Use `stub` for isolated tests and agent runs. Use `default` only when you are

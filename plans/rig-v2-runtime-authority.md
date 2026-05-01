@@ -208,14 +208,14 @@ components, hooks, env, health, ports, and dependencies.
 
 ### Acceptance Criteria
 
-- [ ] Config resolution returns a v2 runtime plan for at least one lifecycle
+- [x] Config resolution returns a v2 runtime plan for at least one lifecycle
       path.
-- [ ] Managed components are represented without v1 `server` terminology.
-- [ ] Installed components are represented without v1 `bin` terminology.
-- [ ] Runtime execution can consume the runtime plan for one local/live
+- [x] Managed components are represented without v1 `server` terminology.
+- [x] Installed components are represented without v1 `bin` terminology.
+- [x] Runtime execution can consume the runtime plan for one local/live
       lifecycle path.
-- [ ] V1-shaped output is clearly isolated as temporary migration code.
-- [ ] Tests assert runtime-plan behavior directly.
+- [x] V1-shaped output is clearly isolated as temporary migration code.
+- [x] Tests assert runtime-plan behavior directly.
 
 ---
 
@@ -238,14 +238,14 @@ interface.
 
 ### Acceptance Criteria
 
-- [ ] Deploy execution can consume the v2 runtime plan for at least one
+- [x] Deploy execution can consume the v2 runtime plan for at least one
       complete path.
-- [ ] Preflight can consume the v2 runtime plan for at least one complete check
+- [x] Preflight can consume the v2 runtime plan for at least one complete check
       path.
-- [ ] Managed and installed component behavior remains externally compatible.
-- [ ] V1-shaped output remains isolated as temporary migration code only where
+- [x] Managed and installed component behavior remains externally compatible.
+- [x] V1-shaped output remains isolated as temporary migration code only where
       still needed.
-- [ ] Tests cover runtime-plan deploy and preflight behavior directly.
+- [x] Tests cover runtime-plan deploy and preflight behavior directly.
 
 ---
 

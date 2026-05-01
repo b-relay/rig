@@ -7,6 +7,7 @@ import { Effect, Layer } from "effect"
 import { decodeV2ProjectConfig, type V2ProjectConfig } from "./config.js"
 import { V2ConfigEditorLive, V2ConfigFileStoreLive } from "./config-editor.js"
 import { V2ControlPlane, V2DefaultControlPlaneLive } from "./control-plane.js"
+import { evaluateV2Preflight } from "./doctor.js"
 import {
   V2DeploymentManager,
   V2DeploymentManagerLive,
@@ -17,7 +18,7 @@ import {
 import { V2RuntimeError } from "./errors.js"
 import { V2HomeConfigStore, v2HomeConfigDefaults, type V2HomeConfig } from "./home-config.js"
 import { V2ProviderContractsLive, V2ProviderRegistryLive } from "./provider-contracts.js"
-import { V2RigdActionPreflight, V2RigdActionPreflightLive } from "./rigd-actions.js"
+import { deriveV2RigdActionPreflightChecks, V2RigdActionPreflight, V2RigdActionPreflightLive } from "./rigd-actions.js"
 import { V2Rigd, V2RigdLive, type V2RigdService } from "./rigd.js"
 import { V2FileRigdStateStoreLive, V2RigdStateStore } from "./rigd-state.js"
 import {
@@ -1315,6 +1316,129 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }
+  })
+
+  test("GIVEN runtime plan managed component WHEN preflight derives port evidence THEN legacy environment services are not required", async () => {
+    const deployment = {
+      project: "pantry",
+      kind: "live",
+      name: "live",
+      providerProfile: "stub",
+      assignedPorts: {},
+      resolved: {
+        providers: {
+          processSupervisor: "stub-process-supervisor",
+        },
+        environment: {
+          services: [],
+        },
+        runtimePlan: {
+          components: [
+            {
+              name: "web",
+              kind: "managed",
+              command: "bun run start -- --port 3070",
+              port: 3070,
+              readyTimeout: 30,
+            },
+          ],
+          preparedComponents: [],
+        },
+      },
+    } as unknown as V2DeploymentRecord
+    const checks = await Effect.runPromise(
+      deriveV2RigdActionPreflightChecks(
+        {
+          kind: "deploy",
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          target: "live",
+          config: {} as V2ProjectConfig,
+        },
+        {
+          deployments: {
+            list: () => Effect.succeed([deployment]),
+            materializeGenerated: () => Effect.die("unused"),
+            destroyGenerated: () => Effect.die("unused"),
+          },
+          stateStore: {
+            load: () =>
+              Effect.succeed({
+                version: 1,
+                events: [],
+                receipts: [],
+                healthSummaries: [],
+                providerObservations: [],
+                portReservations: [
+                  {
+                    project: "other",
+                    deployment: "live",
+                    component: "web",
+                    port: 3070,
+                    owner: "rigd" as const,
+                    status: "reserved" as const,
+                    observedAt: "2026-05-01T00:00:00.000Z",
+                  },
+                ],
+                deploymentSnapshots: [],
+                desiredDeployments: [],
+                managedServiceFailures: [],
+              }),
+            appendEvent: () => Effect.die("unused"),
+            appendReceipt: () => Effect.die("unused"),
+            writeHealthSummary: () => Effect.die("unused"),
+            writeProviderObservations: () => Effect.die("unused"),
+            writePortReservations: () => Effect.die("unused"),
+            writeDeploymentSnapshot: () => Effect.die("unused"),
+            writeDesiredDeployment: () => Effect.die("unused"),
+            appendManagedServiceFailure: () => Effect.die("unused"),
+            reconstructMinimum: () => Effect.die("unused"),
+          },
+          providerRegistry: {
+            current: Effect.succeed({
+              profile: "stub" as const,
+              families: ["process-supervisor"],
+              providers: [
+                {
+                  id: "stub-process-supervisor",
+                  family: "process-supervisor",
+                  source: "core" as const,
+                  displayName: "Stub",
+                  capabilities: ["test"],
+                },
+              ],
+            }),
+            forProfile: () =>
+              Effect.succeed({
+                profile: "stub" as const,
+                families: ["process-supervisor"],
+                providers: [
+                  {
+                    id: "stub-process-supervisor",
+                    family: "process-supervisor",
+                    source: "core" as const,
+                    displayName: "Stub",
+                    capabilities: ["test"],
+                  },
+                ],
+              }),
+          },
+        },
+      ),
+    )
+
+    expect(checks.ports).toEqual([
+      expect.objectContaining({
+        component: "web",
+        port: 3070,
+        available: false,
+      }),
+    ])
+    expect(evaluateV2Preflight(checks).failures).toContainEqual(expect.objectContaining({
+      category: "ports",
+      component: "web",
+      reason: "port-conflict",
+    }))
   })
 
   test("GIVEN generated deploy preflight fails WHEN routed through rigd THEN generated inventory is not materialized", async () => {

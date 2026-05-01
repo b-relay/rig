@@ -1,6 +1,7 @@
 import { dirname } from "node:path"
 import { Context, Effect, Layer } from "effect"
 
+import type { V2RuntimePlan, V2RuntimePlanComponent } from "./config.js"
 import type { V2DeploymentRecord } from "./deployments.js"
 import { platformMakeDirectory } from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
@@ -87,14 +88,58 @@ interface V2LifecycleHooks {
   readonly postStop?: string | null
 }
 
+const runtimePlan = (deployment: V2DeploymentRecord): V2RuntimePlan | undefined =>
+  (deployment.resolved as { readonly runtimePlan?: V2RuntimePlan }).runtimePlan
+
+const managedServiceFromPlan = (
+  component: Extract<V2RuntimePlanComponent, { readonly kind: "managed" }>,
+): V2RuntimeServiceConfig => ({
+  name: component.name,
+  type: "server",
+  command: component.command,
+  port: component.port,
+  ...(component.health ? { healthCheck: component.health } : {}),
+  readyTimeout: component.readyTimeout,
+  ...(component.dependsOn && component.dependsOn.length > 0 ? { dependsOn: component.dependsOn } : {}),
+  ...(component.hooks ? { hooks: component.hooks } : {}),
+  ...(component.envFile ? { envFile: component.envFile } : {}),
+})
+
+const installedServiceFromPlan = (
+  component: Extract<V2RuntimePlanComponent, { readonly kind: "installed" }>,
+): V2RuntimeServiceConfig => ({
+  name: component.installName ?? component.name,
+  type: "bin",
+  entrypoint: component.entrypoint,
+  ...(component.build ? { build: component.build } : {}),
+  ...(component.hooks ? { hooks: component.hooks } : {}),
+  ...(component.envFile ? { envFile: component.envFile } : {}),
+})
+
 const managedServices = (deployment: V2DeploymentRecord) =>
-  deployment.resolved.environment.services.filter((service) => service.type === "server")
+  runtimePlan(deployment)?.components
+    .filter((component): component is Extract<V2RuntimePlanComponent, { readonly kind: "managed" }> =>
+      component.kind === "managed"
+    )
+    .map(managedServiceFromPlan) ??
+      deployment.resolved.environment.services.filter((service) => service.type === "server")
 
 const installedServices = (deployment: V2DeploymentRecord) =>
-  deployment.resolved.environment.services.filter((service) => service.type === "bin")
+  runtimePlan(deployment)?.components
+    .filter((component): component is Extract<V2RuntimePlanComponent, { readonly kind: "installed" }> =>
+      component.kind === "installed"
+    )
+    .map(installedServiceFromPlan) ??
+      deployment.resolved.environment.services.filter((service) => service.type === "bin")
 
 const preparedComponents = (deployment: V2DeploymentRecord) =>
-  deployment.resolved.preparedComponents ?? []
+  runtimePlan(deployment)?.preparedComponents ?? deployment.resolved.preparedComponents ?? []
+
+const projectHooks = (deployment: V2DeploymentRecord): V2LifecycleHooks | undefined =>
+  runtimePlan(deployment)?.hooks ?? deployment.resolved.v1Config?.hooks
+
+const proxyConfig = (deployment: V2DeploymentRecord) =>
+  runtimePlan(deployment)?.proxy ?? deployment.resolved.environment.proxy
 
 const hookCommand = (
   hooks: V2LifecycleHooks | undefined,
@@ -375,13 +420,13 @@ export const V2RuntimeExecutorLive = Layer.effect(
           const ordered = input.action === "down" ? [...services].reverse() : services
           const operations: string[] = []
           const events: V2RuntimeExecutionEvent[] = []
-          const projectHooks = input.deployment.resolved.v1Config?.hooks
+          const deploymentHooks = projectHooks(input.deployment)
 
           operations.push(yield* workspaceMaterializer.resolve({ deployment: input.deployment }))
           yield* appendHookOperation(lifecycleHook, operations, {
             deployment: input.deployment,
             hook: input.action === "up" ? "preStart" : "preStop",
-            command: hookCommand(projectHooks, input.action === "up" ? "preStart" : "preStop"),
+            command: hookCommand(deploymentHooks, input.action === "up" ? "preStart" : "preStop"),
           })
           if (input.action === "up") {
             yield* prepareDeploymentComponents(eventTransport, input.deployment, events, operations)
@@ -442,7 +487,7 @@ export const V2RuntimeExecutorLive = Layer.effect(
           yield* appendHookOperation(lifecycleHook, operations, {
             deployment: input.deployment,
             hook: input.action === "up" ? "postStart" : "postStop",
-            command: hookCommand(projectHooks, input.action === "up" ? "postStart" : "postStop"),
+            command: hookCommand(deploymentHooks, input.action === "up" ? "postStart" : "postStop"),
           })
           operations.push(yield* eventTransport.append({
             deployment: input.deployment,
@@ -455,7 +500,7 @@ export const V2RuntimeExecutorLive = Layer.effect(
         Effect.gen(function* () {
           const managed = yield* orderedManagedServices(input.deployment)
           const installed = installedServices(input.deployment)
-          const proxy = input.deployment.resolved.environment.proxy
+          const proxy = proxyConfig(input.deployment)
           const operations: string[] = []
           const events: V2RuntimeExecutionEvent[] = []
 
@@ -530,7 +575,7 @@ export const V2RuntimeExecutorLive = Layer.effect(
       destroyGenerated: (input) =>
         Effect.gen(function* () {
           const services = [...(yield* orderedManagedServices(input.deployment))].reverse()
-          const proxy = input.deployment.resolved.environment.proxy
+          const proxy = proxyConfig(input.deployment)
           const operations: string[] = []
           const events: V2RuntimeExecutionEvent[] = []
 

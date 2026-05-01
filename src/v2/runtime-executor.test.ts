@@ -706,6 +706,85 @@ describe("GIVEN v2 runtime executor WHEN provider-backed operations run THEN pro
     ])
   })
 
+  test("GIVEN runtime plan components WHEN deploy runs THEN managed installed health and proxy behavior do not require legacy environment services", async () => {
+    const calls: string[] = []
+    const runtimePlanDeployment = {
+      ...deployment(),
+      resolved: {
+        ...deployment().resolved,
+        environment: {
+          services: [],
+        },
+        v1Config: {
+          name: "pantry",
+          version: "0.0.0",
+          environments: {
+            prod: {
+              services: [],
+            },
+          },
+        },
+        runtimePlan: {
+          project: "pantry",
+          lane: "live",
+          deploymentName: "live",
+          branchSlug: "live",
+          subdomain: "live",
+          workspacePath: "/tmp/rig-v2/workspaces/pantry/live",
+          dataRoot: "/tmp/rig-v2/data/pantry/live",
+          providerProfile: "stub",
+          providers: {
+            processSupervisor: "stub-process-supervisor",
+          },
+          proxy: {
+            upstream: "web",
+          },
+          components: [
+            {
+              name: "web",
+              kind: "managed",
+              command: "bun run start -- --port 3070",
+              port: 3070,
+              health: "http://127.0.0.1:3070/health",
+              readyTimeout: 9,
+            },
+            {
+              name: "tool",
+              kind: "installed",
+              entrypoint: "src/cli.ts",
+            },
+          ],
+          preparedComponents: [],
+        },
+      },
+    } as V2DeploymentRecord
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const executor = yield* V2RuntimeExecutor
+        return yield* executor.deploy({
+          deployment: runtimePlanDeployment,
+          ref: "feature/runtime-plan",
+        })
+      }).pipe(
+        Effect.provide(Layer.provide(V2RuntimeExecutorLive, captureProviderLayer(calls))),
+      ),
+    )
+
+    expect(calls).toEqual([
+      "scm:checkout:feature/runtime-plan",
+      "workspace:materialize:live:feature/runtime-plan",
+      "package:install:tool",
+      "event:append:component.install:tool",
+      "process:restart:web",
+      "event:append:component.log:web",
+      "health:check:web:9",
+      "event:append:component.health:web",
+      "proxy:upsert:web",
+      "event:append:deploy:feature/runtime-plan",
+    ])
+  })
+
   test("GIVEN capture providers WHEN generated destroy runs THEN process proxy workspace and event methods run", async () => {
     const calls: string[] = []
     const generated = {

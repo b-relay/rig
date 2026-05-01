@@ -1,6 +1,9 @@
 # Plan: rig
 
 > Source PRD: `docs/PRD.md`
+> Status: historical execution record. The replacement runway is complete and
+> current product guidance lives in `README.md`, `DESIGN.md`,
+> `docs/PRD.md`, and `docs/rig-guide.md`.
 
 ## Architectural Decisions
 

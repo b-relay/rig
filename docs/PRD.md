@@ -1,14 +1,24 @@
 # rig PRD
 
+## Status
+
+This PRD is the active product contract for the current `rig` CLI. The
+replacement runway has already completed: legacy implementation code was
+removed, the main entrypoint is `rig`, and remaining work is post-cutover
+product/provider hardening.
+
 ## Problem Statement
 
-`rig` is already useful as a local Mac deployment manager, but the current product model makes the common workflow harder than it needs to be for humans and AI agents.
+`rig` is a local Mac deployment manager for humans and AI agents. The current
+product direction is to make one-machine app operations feel obvious: run the
+current repo, inspect runtime state, deploy a ref, route traffic, and recover
+from local-machine drift without carrying a large operational checklist.
 
-Users must think in terms of duplicated `dev` and `prod` environment definitions, repeatedly pass explicit project names even when they are already inside a managed repo, and rely on a release/tag-oriented production flow for deploys that should usually be driven by git pushes. Runtime state is also assembled directly by commands from local files and provider state, which makes reliability, recovery, and future web visibility harder.
-
-The current architecture has good interface boundaries, but provider selection and test-safe provider composition are not first-class enough. The separate smoke binary is a symptom of that gap: end-to-end tests need isolation from launchd, Caddy, git state, workspaces, and user machine state, but the main binary cannot yet be composed safely enough for that purpose.
-
-The current implementation also mixes Effect with separate validation and CLI parsing libraries. That was a practical v1 choice, but rig should consolidate backend logic around the Effect ecosystem so command execution, schemas, parsing, services, layers, and errors share one model.
+The hard parts are provider safety and runtime authority. Real providers can
+touch launchd, Caddy, git worktrees, process trees, logs, and local state, so
+the shipped binary must be testable under isolated state and swappable provider
+profiles. Runtime truth must come from `rigd`, not from each command
+reconstructing state differently.
 
 The result is a system that works, but asks users and agents to carry too much operational context:
 
@@ -19,17 +29,24 @@ The result is a system that works, but asks users and agents to carry too much o
 - Can the CLI and future web UI trust the same runtime state?
 - Can tests use the real binary without touching real machine integrations?
 
-`rig` rig should collapse those decisions into one obvious repo-first, lifecycle-first workflow while preserving the strict architectural boundary that keeps external concerns testable and swappable.
+`rig` should collapse those decisions into one obvious repo-first,
+lifecycle-first workflow while preserving the strict architectural boundary that
+keeps external concerns testable and swappable.
 
 ## Solution
 
-`rig` rig will redesign the product around projects, components, lanes, generated deployments, provider plugins, and a local runtime authority.
+`rig` is organized around projects, components, lanes, generated deployments,
+provider plugins, and a local runtime authority.
 
 Dokploy, sometimes written informally as Docploy in project notes, is a useful product reference point for the rig experience. The goal is not to copy Dokploy one-for-one. The goal is to capture the same sense of simplicity: a wrapper that makes deployment approachable through practical defaults, a clear operational model, and a polished interface. The major distinction is architectural. Dokploy is Docker-first; `rig` is intentionally non-Docker and follows the native local-machine design in the rig spec.
 
-The new configuration model defines components once at the top level. Each component declares whether it is a supervised runtime or an installed executable. Lanes then override only the fields that actually differ between the working-copy runtime, the stable built deployment, and generated deployments.
+The configuration model defines components once at the top level. Each
+component declares whether it is a supervised runtime or an installed
+executable. Lanes then override only the fields that actually differ between
+the working-copy runtime, the stable built deployment, and generated
+deployments.
 
-The new operational model uses:
+The operational model uses:
 
 - `local` for the working-copy runtime.
 - `live` for the stable built deployment.
@@ -40,22 +57,34 @@ machine/user defaults such as the preferred production branch, generated
 deployment caps, replacement policy, and provider defaults. Project config can
 override those defaults when a project needs different behavior.
 
-The new deployment model is git-push-first. A push to the configured main ref updates `live`; a push to another ref creates or updates a generated deployment. CLI deploy commands remain available, but they target refs and lanes rather than the old environment model. Semver and tags become optional metadata for labeling and rollback anchors, not a requirement for routine deploys.
+The deployment model is git-push-first. A push to the configured main ref
+updates `live`; a push to another ref creates or updates a generated
+deployment. CLI deploy commands remain available, but they target refs and
+lanes rather than the old environment model. Semver and tags become optional
+metadata for labeling and rollback anchors, not a requirement for routine
+deploys.
 
-The new runtime model introduces `rigd` as the local control plane. `rigd` owns deployment inventory, process supervision, structured logs, health state, port allocation, deploy actions, provider coordination, and local state reconciliation. The CLI becomes a client of `rigd`, and `rigd` provides the authenticated connection that allows the web UI at `rig.b-relay.com` to inspect and control the local machine.
+The runtime model uses `rigd` as the local control plane. `rigd` owns
+deployment inventory, process supervision, structured logs, health state, port
+allocation, deploy actions, provider coordination, and local state
+reconciliation. The CLI is a client of `rigd`, and `rigd` provides the
+connection boundary for hosted control-plane inspection and actions.
 
-The new architecture makes provider selection explicit. `rigd` is the core process supervisor, launchd is a bundled first-party process-supervisor plugin, and Caddy/local git remain provider-backed defaults rather than assumptions embedded in core logic. Stub providers become first-class composition options, which allows the main `rig` binary to run end-to-end tests under isolated state without needing a separate smoke-only binary.
+The architecture makes provider selection explicit. `rigd` is the core process
+supervisor, launchd is a bundled first-party process-supervisor plugin, and
+Caddy/local git remain provider-backed defaults rather than assumptions
+embedded in core logic. Stub providers are first-class composition options, so
+the main `rig` binary can run end-to-end tests under isolated state.
 
-The new backend foundation is Effect-native. Rig targets Effect v4 for backend logic, Effect Schema for config and argument validation, and Effect CLI for command parsing. Legacy Zod schemas and hand-written parser code can remain only as migration scaffolding for v1 compatibility.
+The backend foundation is Effect-native. Rig targets Effect v4 for backend
+logic, Effect Schema for config and argument validation, and Effect CLI for
+command parsing. Older Zod and hand-parser assumptions are historical context,
+not active architecture.
 
-The rollout should be incremental and isolated. During development, the v1
-`rig` binary remained available to manage production apps, especially always-on
-hosted apps such as `pantry`, while rig used a separate entrypoint plus isolated
-state, labels, workspaces, logs, ports, and proxy entries. After rig readiness,
-production apps can cut over deliberately; v1 does not need to remain the
-long-term user experience.
-
-The current implementation remains supported during migration while new docs, onboarding, provider composition, `rigd`, and the rig config/CLI model are introduced in phases.
+The completed cutover removed the old implementation. Remaining rollout work
+is about validating real providers, hardening Pantry-style deployment flows,
+improving setup ergonomics, and documenting explicit state preservation or
+migration steps before touching old runtime state.
 
 ## User Stories
 
@@ -163,7 +192,7 @@ The current implementation remains supported during migration while new docs, on
 
 52. As a test author, I want stub providers for process supervision, proxy management, SCM, and other external concerns, so that tests cannot mutate real machine state.
 
-53. As a test author, I want to retire the separate smoke-only binary, so that there is less duplicate test surface.
+53. As a test author, I want the separate smoke-only binary to stay retired, so that end-to-end coverage exercises the shipped `rig` binary.
 
 54. As a contributor, I want external concerns to remain behind interfaces, so that the plugin architecture is enforceable.
 
@@ -177,7 +206,7 @@ The current implementation remains supported during migration while new docs, on
 
 59. As a new user, I want `rig init` to support provider selection, lane wiring, and optional package-manager integration, so that a project can be initialized into the rig model in one explicit flow.
 
-60. As a maintainer, I want rig to be isolated while it is incomplete, so that the replacement CLI can be built quickly without mutating current machine state.
+60. As a maintainer, I want tests and agent runs to use isolated state, so that development cannot mutate real machine state.
 
 61. As a maintainer, I want clear non-goals, so that rig does not expand into app presets, broad tool dependency modeling, or a separate rig website.
 
@@ -187,31 +216,31 @@ The current implementation remains supported during migration while new docs, on
 
 64. As a contributor, I want CLI parsing to use Effect CLI, so that command parsing, help output, and execution compose with Effect services and errors.
 
-65. As an operator, I want v1 `rig` to remain available while rig is in development, so that current local workflows stay available until the replacement rename is deliberate.
+65. As an operator, I want old runtime state to remain preserved until there is an explicit migration or deletion decision, so that cutover does not accidentally destroy recoverable state.
 
-66. As a contributor, I want a separate rig dev binary or entrypoint, so that I can test rig behavior without affecting the production v1 binary.
+66. As a contributor, I want the shipped `rig` binary to be testable with `RIG_ROOT` and stub providers, so that end-to-end coverage exercises the real entrypoint safely.
 
-67. As a contributor, I want rig to use isolated state, labels, workspaces, logs, ports, and proxy entries, so that rig cannot accidentally collide with v1-managed production state.
+67. As a contributor, I want rig to use isolated state, labels, workspaces, logs, ports, and proxy entries in tests, so that development cannot collide with real machine state.
 
-68. As a maintainer, I want rig to reuse proven v1 patterns selectively, so that we keep working process, provider, logger, health, and test ideas without preserving v1 product assumptions.
+68. As a maintainer, I want rig to keep proven process, provider, logger, health, and test ideas without preserving old product assumptions.
 
 ## Implementation Decisions
 
 - The rig product model is repo-first. Commands should infer the current project when run inside a managed repo, and cross-project targeting should require an explicit selector.
 
-- Rig should be built as a parallel implementation path during development. The existing `rig` binary remains the v1 production manager until explicit cutover.
+- Rig is the main implementation. The historical parallel runway is complete.
 
-- Rig should have a separate dev binary or entrypoint until it is safe to replace the main `rig` binary.
+- Test and agent state must be isolated with `RIG_ROOT`. This includes state
+  root, launchd labels, workspaces, logs, proxy entries, ports, and runtime
+  metadata.
 
-- Rig state must be isolated from v1 state during development. This includes state root, launchd labels, workspaces, logs, proxy entries, ports, and runtime metadata.
+- Rig may reuse proven older implementation patterns where they fit the current model. It should not preserve old `dev`/`prod`, `server`/`bin`, semver-first deploy, Zod, or hand-parser assumptions where those conflict with rig.
 
-- Rig may copy or reuse proven v1 code patterns where they fit the new model. It should not preserve v1's `dev`/`prod`, `server`/`bin`, semver-first deploy, Zod, or hand-parser assumptions where those conflict with rig.
-
-- Rig backend logic targets Effect v4. If Effect v4 is still prerelease when implementation starts, the project should pin an explicit v4 beta and document the later stable upgrade path.
+- Rig backend logic targets Effect v4. Package constraints and verified API details live in `docs/effect-v4-help-notes.md`.
 
 - Contributors should consult `docs/effect-v4-help-notes.md` before Effect v4 implementation or review work, and keep it updated with verified APIs, migration details, Bun integration patterns, package constraints, and useful source links.
 
-- Rig config validation and argument validation should use Effect Schema instead of Zod. Legacy Zod schemas may remain only where needed for v1 compatibility during migration.
+- Rig config validation and argument validation should use Effect Schema instead of Zod.
 
 - Rig CLI parsing should use Effect CLI instead of hand-written `node:util` parsing. Help output and parse failures should still map to the existing structured logger/error behavior.
 
@@ -249,7 +278,7 @@ The current implementation remains supported during migration while new docs, on
 
 - Stub providers must be first-class provider choices, not smoke-test-only hacks.
 
-- The main binary should become testable with isolated state and stub providers. The separate smoke binary is transitional, not the target.
+- The main binary must stay testable with isolated state and stub providers.
 
 - Deploy reliability requires preflight before cutover for dependency installation, binary availability, env resolution, health check validity, hook availability, and port reservation.
 
@@ -267,7 +296,8 @@ The current implementation remains supported during migration while new docs, on
 
 - Package-manager integration is optional and setup-time only. It may add `rig:` scripts, but it must not overwrite conventional scripts by default.
 
-- The migration should be phased: docs and onboarding first, then provider selection and stub composition, then `rigd`, then rig CLI/config semantics, then retirement of the smoke binary.
+- Post-cutover work should be thin vertical slices: prove one real behavior end
+  to end, keep docs/issues current, then broaden.
 
 ## Testing Decisions
 
@@ -277,7 +307,7 @@ The current implementation remains supported during migration while new docs, on
 
 - Config resolution tests should cover component inheritance, lane override application, generated deployment interpolation, and invalid override failures.
 
-- Effect CLI parser tests should cover repo-first project inference, explicit project selection, help output for every subcommand, invalid cross-project usage, and backwards-compatible transitional command behavior.
+- Effect CLI parser tests should cover repo-first project inference, explicit project selection, help output for every subcommand, and invalid cross-project usage.
 
 - Effect v4 migration tests should cover representative service/layer wiring, tagged errors, config validation, CLI parsing, and command execution paths before broader rig work depends on the new stack.
 
@@ -291,7 +321,8 @@ The current implementation remains supported during migration while new docs, on
 
 - Main-binary E2E tests should run with isolated state and stub providers, proving that the shipped binary can be safely tested without a smoke-only executable.
 
-- During rig development, the rig entrypoint should have E2E coverage proving it cannot read or mutate v1 production state by default.
+- The rig entrypoint should keep E2E coverage proving it can run under isolated
+  state without mutating real machine state.
 
 - Recovery tests should cover missing or partial local state, active runtime state, provider state, and cases where reconstruction must fail instead of guessing.
 
@@ -323,20 +354,27 @@ The current implementation remains supported during migration while new docs, on
 
 - Silent reconstruction of all lost state is not a goal. Recovery should happen only where the system has enough evidence to do it safely.
 
-- Automatic migration of v1-managed production apps to rig is not part of this PRD. Cutover should be explicit.
+- Automatic migration of historical runtime state is not part of this PRD.
+  State migration or deletion should be explicit.
 
 ## Further Notes
 
-The first implementation milestone should be documentation and onboarding alignment. Users and contributors need to see the rig vocabulary before the deeper architecture changes land.
+Documentation and onboarding should describe the current rig vocabulary before
+historical context.
 
 Keep the Dokploy context visible during future planning sessions. It explains the product feel `rig` is aiming for: simple deployment wrapper, useful interface, strong default workflows, and broad deployment features. The differentiator is that `rig` reaches for those outcomes without making Docker or containers the runtime substrate.
 
-The rig runway is now promoted to the main `rig` entrypoint while legacy runtime state remains isolated. The goal is still to protect always-on apps such as `pantry` by keeping old state untouched until an explicit state migration is designed.
+Rig is now promoted to the main `rig` entrypoint. The goal is still to protect
+always-on apps such as `pantry` by keeping historical state untouched until an
+explicit state migration or deletion decision exists.
 
 Provider selection is explicit enough for the main binary to run in isolated test mode. That keeps end-to-end coverage close to the shipped CLI.
 
-The most consequential milestone is `rigd`. It should be treated as the boundary between legacy command-assembled runtime truth and the rig control-plane model. The CLI can migrate incrementally, but new runtime-facing functionality should be designed around `rigd` ownership.
+The most consequential boundary is `rigd`. New runtime-facing functionality
+should be designed around `rigd` ownership.
 
 The initial rig operating decisions are recorded in `DESIGN.md`. In short: cross-project operations use `--project <name>`, repo-first commands outside a managed repo fail unless explicitly targeted, path-based lifecycle targeting is rejected, simultaneous same-port runtime conflicts fail during preflight, health checks must be tied to rig-owned runtime state, explicit status for undeployed runtime targets fails, and aggregate runtime logs include managed components only.
 
-Earlier smoke-discovered reliability issues around stale release metadata, dirty release deploys, false-positive port health, missing prod versions, and installed-component logs should be handled as rig-aligned reliability work.
+Earlier reliability issues around stale release metadata, dirty release deploys,
+false-positive port health, missing runtime versions, and installed-component
+logs should be handled as rig-aligned reliability work.

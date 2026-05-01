@@ -4,10 +4,9 @@
 
 ### Rig
 
-The replacement CLI and runtime model for Rig. Rig is currently developed
-beside v1 in the same repo, but v1 is temporary and will be deleted at cutover.
-Rig should not preserve v1-shaped interfaces unless they buy a short migration
-step.
+The current CLI and runtime model. Rig is repo-first, lifecycle-first, and
+provider-backed. It should not preserve older env/service/release assumptions
+unless that compatibility has a clear, short-lived operational purpose.
 
 ### rigd
 
@@ -57,8 +56,8 @@ The resolved Rig shape that runtime execution, preflight, and provider
 adapters consume. The runtime plan uses Rig concepts: deployments, lanes,
 managed components, installed components, workspace roots, data roots, log
 roots, runtime roots, proxy config, provider selections, hooks, env, health,
-and dependencies. V1-shaped `Environment`, `RigConfig`, `server`, `bin`, `dev`,
-and `prod` shapes are temporary migration code only.
+and dependencies. Older `Environment`, `server`, `bin`, `dev`, and `prod`
+language is historical context, not the active product model.
 
 ### Provider contract
 

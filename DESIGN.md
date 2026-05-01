@@ -10,8 +10,8 @@ Contributors should treat this document as the source of truth for architecture
 and UX decisions.
 
 For practical `rig` usage, see
-[`rig-guide.md`](./docs/rig-guide.md). For the replacement-readiness
-audit, validation, rollback, and remaining HITL decisions, see
+[`rig-guide.md`](./docs/rig-guide.md). For the post-cutover validation record,
+rollback notes, and remaining HITL decisions, see
 [`rig-cutover-readiness.md`](./docs/rig-cutover-readiness.md).
 
 ## Migration Posture
@@ -82,7 +82,7 @@ Future contributors should understand this as product context: match the ease an
 6. `rig` is reconstructable.
    Persisted `.rig` state matters, but loss of that state should be survivable where possible.
 
-7. `rig` rig is Effect-native.
+7. `rig` is Effect-native.
    Backend logic, schema validation, CLI parsing, services, layers, and structured errors should use the Effect ecosystem rather than a mix of Effect plus one-off parser/validator libraries.
 
 ## Operating Decisions
@@ -144,18 +144,17 @@ Aggregate runtime logs include `managed` components only.
 
 `installed` components do not have long-running runtime logs by default. They can appear in status as installed/build surfaces, and build/install events may be visible through structured event history, but `rig logs` does not mix installed-component build output into runtime logs. If a user explicitly asks for logs for an installed component with no event log support, the command returns a tagged error with a hint that installed components do not produce runtime logs.
 
-## Current vs Target
+## Replaced Model vs Current Model
 
-### Current model
+### Replaced model
 
 - Top-level `environments.dev` and `environments.prod`
 - Per-environment duplicated `services[]`
 - `type: "server" | "bin"`
 - Release/tag driven prod deploy flow
 - File-oriented runtime state assembled directly by commands
-- Main-binary E2E coverage now uses isolated state and safe provider composition
 
-### Target model
+### Current model
 
 - Top-level `components`
 - `mode: "managed" | "installed"`
@@ -188,7 +187,7 @@ Each component has a `mode`:
 
 ### Lanes
 
-`rig` rig uses three deployment/runtime lanes:
+`rig` uses three deployment/runtime lanes:
 
 - `live`
   The stable built deployment lane.
@@ -205,7 +204,7 @@ A built deployment instance materialized from `deployments`, typically keyed by 
 
 ### Home config
 
-`rig` rig has two config scopes:
+`rig` has two config scopes:
 
 - Project config (`rig.json`)
   Defines components, lane overrides, project-specific production branch behavior,
@@ -366,20 +365,19 @@ Generated deployment subdomains default from branch slugs, but must be overridea
 
 ### Effect-native validation
 
-`rig` rig should migrate validation from Zod to Effect Schema.
+`rig` uses Effect Schema for validation.
 
 Rules:
 
-- new rig schemas use Effect Schema
+- schemas use Effect Schema
 - schemas remain the source of runtime validation and TypeScript types
 - every config field must keep clear user-facing documentation
 - validation errors must map into tagged `rig` errors with structured context and hints
 - localhost-only validation remains mandatory
-- legacy Zod schemas may remain during the transition only where needed for v1 compatibility
 
 ## Effect Stack
 
-`rig` rig targets Effect v4 as the backend foundation.
+`rig` targets Effect v4 as the backend foundation.
 
 This applies to:
 
@@ -536,7 +534,7 @@ The CLI becomes a client of `rigd` over a local API/socket.
 
 Current MVP: `rig` uses an in-process local API contract while the daemon boundary is still being built. The API surface already models health, project/deployment inventory, structured logs, health state, lifecycle action receipts, and deploy action receipts so later transport work can preserve the same interface shape.
 
-Current runtime-facing rig commands route through the rigd-backed lifecycle service. Any remaining direct command assembly is compatibility scaffolding for v1 or tests, not the rig source of truth.
+Current runtime-facing rig commands route through the rigd-backed lifecycle service. Any remaining direct command assembly is test scaffolding, not the rig source of truth.
 
 ### Persistent state
 
@@ -654,7 +652,7 @@ Generated deployments must support automatic port assignment.
 - stale runtime state
 - provider misconfiguration
 
-The rig runway exposes this as a `RigDoctor` interface so deploy preflight,
+Rig exposes this as a `RigDoctor` interface so deploy preflight,
 doctor output, and recovery checks can share the same structured failure model
 without binding core logic to concrete process or provider implementations.
 

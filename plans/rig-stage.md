@@ -2,6 +2,8 @@
 
 > Source PRD: GitHub issue #2
 > Source issue set: GitHub issues #16 through #22
+> Status: historical execution record. The cutover is complete; use
+> `docs/rig-cutover-readiness.md` for post-cutover validation.
 
 ## Architectural Decisions
 

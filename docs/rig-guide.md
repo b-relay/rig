@@ -1,7 +1,7 @@
 # Rig Guide
 
-`rig` is the Rig CLI. It uses the new repo-first model while keeping runtime
-state isolated under `~/.rig` or `RIG_ROOT`.
+`rig` is the repo-first local deployment CLI. Normal runtime state lives under
+`~/.rig`; tests, CI, and agent runs should set `RIG_ROOT`.
 
 Rig uses two config scopes:
 
@@ -38,19 +38,19 @@ these defaults:
 }
 ```
 
-## What Is Different
+## Concept Map
 
-| Area | Legacy Rig | Rig |
-|---|---|---|
-| Binary | removed v1 command surface | `rig` |
-| State root | `~/.rig` or `RIG_ROOT` | `~/.rig` or `RIG_ROOT` |
-| Config shape | `environments.dev` and `environments.prod` | shared `components`, plus `local`, `live`, and `deployments` |
-| Runtime lanes | `dev` and `prod` | `local`, `live`, and generated deployments |
-| Components | v1 `services` with `server` or `bin` type | rig `components` with `managed` or `installed` mode |
-| CLI style | project/env positional commands | repo-first commands, with `--project` and `--config` for cross-project use |
-| Deploy model | prod release/version oriented | git ref oriented; semver is optional metadata |
-| Runtime authority | command-assembled runtime state | `rigd` owns state, receipts, logs, health, and control-plane contracts |
-| Providers | concrete local defaults | provider interfaces and profiles |
+| Area | Rig |
+|---|---|
+| Binary | `rig` |
+| State root | `~/.rig` or `RIG_ROOT` |
+| Config shape | shared `components`, plus `local`, `live`, and `deployments` |
+| Runtime lanes | `local`, `live`, and generated deployments |
+| Components | `managed` or `installed` |
+| CLI style | repo-first commands, with `--project` and `--config` for cross-project use |
+| Deploy model | git ref oriented; semver is optional metadata |
+| Runtime authority | `rigd` owns state, receipts, logs, health, and control-plane contracts |
+| Providers | provider interfaces and profiles |
 
 ## Basic Setup
 
@@ -172,12 +172,17 @@ Caddy provider runs the configured command after route upsert/remove. Use that
 only with a command the current user can run non-interactively, such as a
 passwordless narrow helper or an unprivileged Caddy admin reload.
 
+The isolated real-Caddy E2E runs Caddy with a temporary home and a temporary
+Caddyfile on a high localhost port. For that shape, the test uses an explicit
+HTTP site address such as `http://pantry.test`; a bare hostname makes Caddy use
+its HTTPS listener instead of the configured high HTTP port.
+
 ## Common Commands
 
 Start the local `rigd` authority:
 
 ```bash
-./rigd
+./rig rigd
 ```
 
 Start the local lane from inside a managed repo:

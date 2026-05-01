@@ -1,7 +1,11 @@
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createServer, type Server } from "node:http"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { setTimeout as sleep } from "node:timers/promises"
+import { promisify } from "node:util"
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 
@@ -31,6 +35,70 @@ const runWithRegistry = <A>(
   profile: "default" | "stub" | "isolated-e2e",
   externalProviders: readonly RigProviderPlugin[] = [],
 ) => Effect.runPromise(effect.pipe(Effect.provide(RigProviderRegistryLive(profile, externalProviders))))
+
+const execFileAsync = promisify(execFile)
+
+const resolveCaddyPath = async (): Promise<string | undefined> => {
+  try {
+    const { stdout } = await execFileAsync("sh", ["-lc", "command -v caddy"])
+    const resolved = stdout.trim()
+    return resolved.length > 0 ? resolved : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const listenOnRandomPort = (server: Server): Promise<number> =>
+  new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject)
+      resolve((server.address() as AddressInfo).port)
+    })
+  })
+
+const reserveFreePort = async (): Promise<number> => {
+  const server = createServer()
+  const port = await listenOnRandomPort(server)
+  await closeServer(server)
+  return port
+}
+
+const waitForCaddyRoute = async (input: {
+  readonly port: number
+  readonly host: string
+  readonly expected: string
+}): Promise<string> => {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${input.port}/health`, {
+        headers: {
+          host: input.host,
+        },
+      })
+      const body = await response.text()
+      if (response.ok && body === input.expected) {
+        return body
+      }
+      lastError = new Error(`Unexpected Caddy response ${response.status}: ${body}`)
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(100)
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
+const waitForProcessExit = (process: ChildProcessWithoutNullStreams): Promise<void> =>
+  process.exitCode !== null || process.signalCode !== null
+    ? Promise.resolve()
+    : new Promise((resolve) => {
+      process.once("exit", () => resolve())
+    })
+
+const caddyPath = await resolveCaddyPath()
+const testWithCaddy = caddyPath ? test : test.skip
 
 describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THEN provider composition is explicit", () => {
   test("GIVEN built-in profiles WHEN reported THEN every profile satisfies the same provider family contract", async () => {
@@ -600,6 +668,104 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
       expect(caddyfile).not.toContain("import cloudflare")
       expect(caddyfile).not.toContain("import backend_errors")
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  testWithCaddy("GIVEN caddy proxy router WHEN real Caddy runs with an isolated Caddyfile THEN the routed app is reachable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-caddy-reachability-"))
+    const caddyfilePath = join(root, "Caddyfile")
+    const appServer = createServer((request, response) => {
+      if (request.url === "/health") {
+        response.writeHead(200, { "content-type": "text/plain" })
+        response.end("rig-caddy-ok")
+        return
+      }
+      response.writeHead(404, { "content-type": "text/plain" })
+      response.end("not found")
+    })
+    let caddyProcess: ChildProcessWithoutNullStreams | undefined
+
+    try {
+      const appPort = await listenOnRandomPort(appServer)
+      const caddyPort = await reserveFreePort()
+      await writeFile(caddyfilePath, [
+        "{",
+        "\tadmin off",
+        "\tauto_https off",
+        `\thttp_port ${caddyPort}`,
+        "}",
+        "",
+      ].join("\n"))
+
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        resolved: {
+          v1Config: {
+            domain: "http://pantry.test",
+          },
+          environment: {
+            services: [
+              {
+                name: "web",
+                type: "server",
+                command: `bun run start -- --host 127.0.0.1 --port ${appPort}`,
+                port: appPort,
+              },
+            ],
+          },
+        },
+      } as RigDeploymentRecord
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const proxy = yield* RigProxyRouterProvider
+          return yield* proxy.upsert({
+            deployment,
+            proxy: {
+              upstream: "web",
+            },
+          })
+        }).pipe(Effect.provide(RigProviderContractsLive("default", [], {
+          proxyRouter: {
+            caddyfilePath,
+          },
+        }))),
+      )
+
+      caddyProcess = spawn(caddyPath!, [
+        "run",
+        "--config",
+        caddyfilePath,
+        "--adapter",
+        "caddyfile",
+      ], {
+        env: {
+          ...process.env,
+          HOME: root,
+          XDG_CONFIG_HOME: join(root, "config"),
+          XDG_DATA_HOME: join(root, "data"),
+        },
+      })
+
+      const body = await waitForCaddyRoute({
+        port: caddyPort,
+        host: "pantry.test",
+        expected: "rig-caddy-ok",
+      })
+
+      expect(body).toBe("rig-caddy-ok")
+    } finally {
+      if (caddyProcess) {
+        if (caddyProcess.exitCode === null && caddyProcess.signalCode === null) {
+          const exited = waitForProcessExit(caddyProcess)
+          caddyProcess.kill()
+          await exited
+        }
+      }
+      await closeServer(appServer).catch(() => undefined)
       await rm(root, { recursive: true, force: true })
     }
   })

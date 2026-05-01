@@ -2,6 +2,8 @@
 
 > Source PRD: GitHub issue #31
 > Source issue set: GitHub issues #32 through #47
+> Status: historical execution record. Runtime-authority deepening has landed;
+> use this as background, not as the active queue.
 
 ## Architectural Decisions
 

@@ -2,6 +2,8 @@
 
 > Source PRD: GitHub issue #2 and local `docs/PRD.md`
 > Source issue set: GitHub issues #3 through #22
+> Status: historical execution record. The listed issues are complete/closed;
+> current post-cutover work should be tracked in fresh GitHub issues.
 
 This plan converts the open rig GitHub issues into an execution order. It is intentionally more operational than `plans/rig.md`: it answers what to pick up next, what is blocked, and which issues should move together.
 

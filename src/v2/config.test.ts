@@ -183,6 +183,36 @@ describe("GIVEN v2 config resolver WHEN resolving lanes THEN behavior is covered
     })
   })
 
+  test("GIVEN stub provider profile WHEN resolving THEN stub process supervision is the lane default", async () => {
+    const config = await Effect.runPromise(
+      decodeV2ProjectConfig({
+        name: "pantry",
+        components: {
+          web: {
+            mode: "managed",
+            command: "bun run start",
+            port: 3070,
+          },
+        },
+        live: {
+          providerProfile: "stub",
+        },
+      }),
+    )
+
+    const resolved = await Effect.runPromise(
+      resolveV2Lane(config, {
+        lane: "live",
+        workspacePath: "/tmp/pantry-live",
+      }),
+    )
+
+    expect(resolved.providerProfile).toBe("stub")
+    expect(resolved.providers).toEqual({
+      processSupervisor: "stub-process-supervisor",
+    })
+  })
+
   test("GIVEN pantry live config WHEN resolving THEN the domain proxy and CLI install name are ready for cutover", async () => {
     const config = await Effect.runPromise(
       decodeV2ProjectConfig({

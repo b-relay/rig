@@ -336,7 +336,11 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   metadata without creating app components. A fake-project CLI flow now starts
   from `rig2 init`, adds `components.web` through `rig2 config set`, and proves
   local `up` plus live `deploy` are accepted under the isolated stub provider
-  profile without using Pantry as the test bed.
+  profile without using Pantry as the test bed or setting stub providers in
+  home config. Runtime provider services now select SCM, workspace, proxy,
+  health, hook, package-manager, and process-supervisor providers from the
+  resolved deployment `providerProfile`, with the machine default only used as
+  a fallback.
   `rigd.managedProcessExited` records crash evidence, restarts while the retry
   budget allows it, and marks repeated crashes failed. The core `rigd`
   process-supervisor provider reports real child-process exits into that policy

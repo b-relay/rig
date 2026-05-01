@@ -491,6 +491,16 @@ const providerForFamily = <Family extends V2ProviderFamily>(
   return selected ? Effect.succeed(selected) : Effect.fail(missingProviderError(family, providerId))
 }
 
+type V2ProviderReportForDeployment = (deployment: V2DeploymentRecord) => V2ProviderRegistryReport
+
+const providerForDeploymentFamily = <Family extends V2ProviderFamily>(
+  reportForDeployment: V2ProviderReportForDeployment,
+  deployment: V2DeploymentRecord,
+  family: Family,
+  providerId?: string,
+): Effect.Effect<V2ProviderPluginForFamily<Family>, V2RuntimeError> =>
+  providerForFamily(reportForDeployment(deployment), family, providerId)
+
 const providerOperation = (provider: V2ProviderPlugin, operation: string): Effect.Effect<string, V2RuntimeError> =>
   Effect.succeed(`${provider.family}:${provider.id}:${operation}`)
 
@@ -557,20 +567,17 @@ const sourceRepoPath = (
 
 const workspaceMaterializerService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
   options: V2ProviderContractsOptions,
 ): V2WorkspaceMaterializerProviderService => {
   const base = familyService(report, "workspace-materializer")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"workspace-materializer"> =>
-      provider.family === "workspace-materializer",
-  ) as V2ProviderPluginForFamily<"workspace-materializer">
 
   const runGit = options.workspaceMaterializer?.runCommand ?? defaultCommandRunner
 
   const materializeGitWorktree = (input: {
     readonly deployment: V2DeploymentRecord
     readonly ref: string
-  }): Effect.Effect<string, V2RuntimeError> =>
+  }, selected: V2ProviderPluginForFamily<"workspace-materializer">): Effect.Effect<string, V2RuntimeError> =>
     Effect.gen(function* () {
       const repoPath = yield* sourceRepoPath(input.deployment, selected, options.workspaceMaterializer?.sourceRepoPath)
       const workspacePath = input.deployment.workspacePath
@@ -645,7 +652,7 @@ const workspaceMaterializerService = (
 
   const removeGitWorktree = (input: {
     readonly deployment: V2DeploymentRecord
-  }): Effect.Effect<string, V2RuntimeError> =>
+  }, selected: V2ProviderPluginForFamily<"workspace-materializer">): Effect.Effect<string, V2RuntimeError> =>
     Effect.gen(function* () {
       const repoPath = yield* sourceRepoPath(input.deployment, selected, options.workspaceMaterializer?.sourceRepoPath)
       const workspacePath = input.deployment.workspacePath
@@ -694,15 +701,26 @@ const workspaceMaterializerService = (
 
   return {
     ...base,
-    resolve: (input) => providerOperation(selected, `resolve:${input.deployment.workspacePath}`),
+    resolve: (input) =>
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "workspace-materializer").pipe(
+        Effect.flatMap((selected) => providerOperation(selected, `resolve:${input.deployment.workspacePath}`)),
+      ),
     materialize: (input) =>
-      selected.id === "git-worktree"
-        ? materializeGitWorktree(input)
-        : providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "workspace-materializer").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "git-worktree"
+            ? materializeGitWorktree(input, selected)
+            : providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
+        ),
+      ),
     remove: (input) =>
-      selected.id === "git-worktree"
-        ? removeGitWorktree(input)
-        : providerOperation(selected, `remove:${input.deployment.workspacePath}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "workspace-materializer").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "git-worktree"
+            ? removeGitWorktree(input, selected)
+            : providerOperation(selected, `remove:${input.deployment.workspacePath}`),
+        ),
+      ),
   }
 }
 
@@ -765,11 +783,17 @@ const launchdPlist = (input: {
 
 const processSupervisorService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
   options: V2ProviderContractsOptions,
 ): V2ProcessSupervisorProviderService => {
   const base = familyService(report, "process-supervisor")
   const selectedForDeployment = (deployment: V2DeploymentRecord) =>
-    providerForFamily(report, "process-supervisor", deployment.resolved.providers.processSupervisor)
+    providerForDeploymentFamily(
+      reportForDeployment,
+      deployment,
+      "process-supervisor",
+      deployment.resolved.providers.processSupervisor,
+    )
   interface RigdManagedProcess {
     readonly handle: ChildProcessHandle
     readonly scope: Scope.Closeable
@@ -1168,18 +1192,15 @@ const processSupervisorService = (
 
 const healthCheckerService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
 ): V2HealthCheckerProviderService => {
   const base = familyService(report, "health-checker")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"health-checker"> =>
-      provider.family === "health-checker",
-  ) as V2ProviderPluginForFamily<"health-checker">
 
   const checkNativeHealth = (input: {
     readonly deployment: V2DeploymentRecord
     readonly service: V2RuntimeServiceConfig
     readonly timeoutSeconds?: number
-  }): Effect.Effect<string, V2RuntimeError> => {
+  }, selected: V2ProviderPluginForFamily<"health-checker">): Effect.Effect<string, V2RuntimeError> => {
     const target = "healthCheck" in input.service ? input.service.healthCheck : undefined
     if (!target) {
       return Effect.fail(
@@ -1297,27 +1318,28 @@ const healthCheckerService = (
   return {
     ...base,
     check: (input) =>
-      selected.id === "native-health"
-        ? checkNativeHealth(input)
-        : providerOperation(selected, `check:${input.service.name}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "health-checker").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "native-health"
+            ? checkNativeHealth(input, selected)
+            : providerOperation(selected, `check:${input.service.name}`),
+        ),
+      ),
   }
 }
 
 const lifecycleHookService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
 ): V2LifecycleHookProviderService => {
   const base = familyService(report, "lifecycle-hook")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"lifecycle-hook"> =>
-      provider.family === "lifecycle-hook",
-  ) as V2ProviderPluginForFamily<"lifecycle-hook">
 
   const shellHook = (input: {
     readonly deployment: V2DeploymentRecord
     readonly hook: "preStart" | "postStart" | "preStop" | "postStop"
     readonly command: string
     readonly service?: V2RuntimeServiceConfig
-  }): Effect.Effect<string, V2RuntimeError> =>
+  }, selected: V2ProviderPluginForFamily<"lifecycle-hook">): Effect.Effect<string, V2RuntimeError> =>
     Effect.gen(function* () {
       const { exitCode, stdout, stderr } = yield* runPlatformCommand(
         ["sh", "-lc", input.command],
@@ -1365,27 +1387,28 @@ const lifecycleHookService = (
   return {
     ...base,
     run: (input) =>
-      selected.id === "shell-hook"
-        ? shellHook(input)
-        : providerOperation(selected, `run:${input.hook}:${input.service?.name ?? "project"}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "lifecycle-hook").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "shell-hook"
+            ? shellHook(input, selected)
+            : providerOperation(selected, `run:${input.hook}:${input.service?.name ?? "project"}`),
+        ),
+      ),
   }
 }
 
 const eventTransportService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
 ): V2EventTransportProviderService => {
   const base = familyService(report, "event-transport")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"event-transport"> =>
-      provider.family === "event-transport",
-  ) as V2ProviderPluginForFamily<"event-transport">
 
   const appendStructuredLogFile = (input: {
     readonly deployment: V2DeploymentRecord
     readonly event: string
     readonly component?: string
     readonly details?: Readonly<Record<string, unknown>>
-  }): Effect.Effect<string, V2RuntimeError> => {
+  }, selected: V2ProviderPluginForFamily<"event-transport">): Effect.Effect<string, V2RuntimeError> => {
     const logPath = join(input.deployment.logRoot, "events.jsonl")
     const entry = {
       timestamp: new Date().toISOString(),
@@ -1418,26 +1441,28 @@ const eventTransportService = (
   return {
     ...base,
     append: (input) =>
-      selected.id === "structured-log-file"
-        ? appendStructuredLogFile(input)
-        : providerOperation(selected, `append:${input.event}${input.component ? `:${input.component}` : ""}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "event-transport").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "structured-log-file"
+            ? appendStructuredLogFile(input, selected)
+            : providerOperation(selected, `append:${input.event}${input.component ? `:${input.component}` : ""}`),
+        ),
+      ),
   }
 }
 
 const scmService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
   options: V2ProviderContractsOptions,
 ): V2ScmProviderService => {
   const base = familyService(report, "scm")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"scm"> => provider.family === "scm",
-  ) as V2ProviderPluginForFamily<"scm">
   const runGit = options.scm?.runCommand ?? defaultCommandRunner
 
   const checkoutLocalGit = (input: {
     readonly deployment: V2DeploymentRecord
     readonly ref: string
-  }): Effect.Effect<string, V2RuntimeError> =>
+  }, selected: V2ProviderPluginForFamily<"scm">): Effect.Effect<string, V2RuntimeError> =>
     Effect.gen(function* () {
       const repoPath = yield* sourceRepoPath(input.deployment, selected, options.scm?.sourceRepoPath)
       const commit = yield* Effect.tryPromise({
@@ -1500,21 +1525,22 @@ const scmService = (
   return {
     ...base,
     checkout: (input) =>
-      selected.id === "local-git"
-        ? checkoutLocalGit(input)
-        : providerOperation(selected, `checkout:${input.ref}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "scm").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "local-git"
+            ? checkoutLocalGit(input, selected)
+            : providerOperation(selected, `checkout:${input.ref}`),
+        ),
+      ),
   }
 }
 
 const packageManagerService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
   options: V2ProviderContractsOptions = {},
 ): V2PackageManagerProviderService => {
   const base = familyService(report, "package-manager")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"package-manager"> =>
-      provider.family === "package-manager",
-  ) as V2ProviderPluginForFamily<"package-manager">
 
   const binRoot = options.packageManager?.binRoot ?? rigV2BinRoot()
 
@@ -1551,6 +1577,7 @@ const packageManagerService = (
   const installEntrypoint = (
     deployment: V2DeploymentRecord,
     service: Extract<V2RuntimeServiceConfig, { readonly type: "bin" }>,
+    selected: V2ProviderPluginForFamily<"package-manager">,
   ): Effect.Effect<string, V2RuntimeError> => Effect.gen(function* () {
     const destination = installPath(deployment, service.name)
     yield* platformMakeDirectory(dirname(destination))
@@ -1605,7 +1632,7 @@ const packageManagerService = (
   const installPackageJsonScript = (input: {
     readonly deployment: V2DeploymentRecord
     readonly service: V2RuntimeServiceConfig
-  }): Effect.Effect<string, V2RuntimeError> => {
+  }, selected: V2ProviderPluginForFamily<"package-manager">): Effect.Effect<string, V2RuntimeError> => {
     if (input.service.type !== "bin") {
       return providerOperation(selected, `install:${input.service.name}`)
     }
@@ -1634,7 +1661,7 @@ const packageManagerService = (
           }
         }
 
-        const destination = yield* installEntrypoint(input.deployment, input.service)
+        const destination = yield* installEntrypoint(input.deployment, input.service, selected)
         return `${selected.family}:${selected.id}:install:${input.service.name}:installed:${destination}`
     }).pipe(
       Effect.mapError((cause) =>
@@ -1660,9 +1687,13 @@ const packageManagerService = (
   return {
     ...base,
     install: (input) =>
-      selected.id === "package-json-scripts"
-        ? installPackageJsonScript(input)
-        : providerOperation(selected, `install:${input.service.name}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "package-manager").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "package-json-scripts"
+            ? installPackageJsonScript(input, selected)
+            : providerOperation(selected, `install:${input.service.name}`),
+        ),
+      ),
   }
 }
 
@@ -1869,19 +1900,19 @@ const upstreamPort = (
 
 const proxyRouterService = (
   report: V2ProviderRegistryReport,
+  reportForDeployment: V2ProviderReportForDeployment,
   options: V2ProviderContractsOptions,
 ): V2ProxyRouterProviderService => {
   const base = familyService(report, "proxy-router")
-  const selected = report.providers.find(
-    (provider): provider is V2ProviderPluginForFamily<"proxy-router"> =>
-      provider.family === "proxy-router",
-  ) as V2ProviderPluginForFamily<"proxy-router">
   const caddyfilePath = options.proxyRouter?.caddyfilePath ?? options.proxyRouter?.caddyfile ?? join(rigV2ProxyRoot(), "Caddyfile")
   const extraConfig = options.proxyRouter?.extraConfig ?? []
   const reloadConfig = options.proxyRouter?.reload ?? { mode: "manual" as const }
   const runReload = options.proxyRouter?.runCommand ?? defaultCommandRunner
 
-  const reloadCaddyAfterWrite = (details: Readonly<Record<string, unknown>>): Promise<void> => {
+  const reloadCaddyAfterWrite = (
+    selected: V2ProviderPluginForFamily<"proxy-router">,
+    details: Readonly<Record<string, unknown>>,
+  ): Promise<void> => {
     if (reloadConfig.mode !== "command") {
       return Promise.resolve()
     }
@@ -1920,7 +1951,7 @@ const proxyRouterService = (
   const upsertCaddyRoute = (input: {
     readonly deployment: V2DeploymentRecord
     readonly proxy: V2RuntimeProxyConfig
-  }): Effect.Effect<string, V2RuntimeError> =>
+  }, selected: V2ProviderPluginForFamily<"proxy-router">): Effect.Effect<string, V2RuntimeError> =>
     Effect.gen(function* () {
       const domain = yield* deploymentDomain(input.deployment, selected)
       const port = yield* upstreamPort(input.deployment, input.proxy.upstream, selected)
@@ -1953,7 +1984,7 @@ const proxyRouterService = (
         yield* backupIfExists(caddyfilePath)
         yield* writeText(caddyfilePath, next)
         yield* Effect.tryPromise({
-          try: () => reloadCaddyAfterWrite({
+          try: () => reloadCaddyAfterWrite(selected, {
             project: input.deployment.project,
             deployment: input.deployment.name,
             upstream: input.proxy.upstream,
@@ -1984,7 +2015,7 @@ const proxyRouterService = (
   const removeCaddyRoute = (input: {
     readonly deployment: V2DeploymentRecord
     readonly proxy: V2RuntimeProxyConfig
-  }): Effect.Effect<string, V2RuntimeError> =>
+  }, selected: V2ProviderPluginForFamily<"proxy-router">): Effect.Effect<string, V2RuntimeError> =>
     Effect.gen(function* () {
         const text = yield* readTextIfExists(caddyfilePath)
         const lines = text.split("\n")
@@ -2006,10 +2037,10 @@ const proxyRouterService = (
           yield* backupIfExists(caddyfilePath)
           yield* writeText(caddyfilePath, next)
           yield* Effect.tryPromise({
-            try: () => reloadCaddyAfterWrite({
-            project: input.deployment.project,
-            deployment: input.deployment.name,
-            upstream: input.proxy.upstream,
+            try: () => reloadCaddyAfterWrite(selected, {
+              project: input.deployment.project,
+              deployment: input.deployment.name,
+              upstream: input.proxy.upstream,
             }),
             catch: (cause) => cause,
           })
@@ -2032,13 +2063,21 @@ const proxyRouterService = (
   return {
     ...base,
     upsert: (input) =>
-      selected.id === "caddy"
-        ? upsertCaddyRoute(input)
-        : providerOperation(selected, `upsert:${input.proxy.upstream}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "proxy-router").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "caddy"
+            ? upsertCaddyRoute(input, selected)
+            : providerOperation(selected, `upsert:${input.proxy.upstream}`),
+        ),
+      ),
     remove: (input) =>
-      selected.id === "caddy"
-        ? removeCaddyRoute(input)
-        : providerOperation(selected, `remove:${input.proxy.upstream}`),
+      providerForDeploymentFamily(reportForDeployment, input.deployment, "proxy-router").pipe(
+        Effect.flatMap((selected) =>
+          selected.id === "caddy"
+            ? removeCaddyRoute(input, selected)
+            : providerOperation(selected, `remove:${input.proxy.upstream}`),
+        ),
+      ),
   }
 }
 
@@ -2057,18 +2096,20 @@ export const V2ProviderContractsLive = (
   options: V2ProviderContractsOptions = {},
 ) => {
   const report = reportForProfile(profile, externalProviders)
+  const reportForDeployment = (deployment: V2DeploymentRecord) =>
+    reportForProfile(deployment.providerProfile ?? profile, externalProviders)
 
   return Layer.mergeAll(
     V2ProviderRegistryLive(profile, externalProviders),
-    Layer.succeed(V2ProcessSupervisorProvider, processSupervisorService(report, options)),
-    Layer.succeed(V2ProxyRouterProvider, proxyRouterService(report, options)),
-    Layer.succeed(V2ScmProvider, scmService(report, options)),
-    Layer.succeed(V2WorkspaceMaterializerProvider, workspaceMaterializerService(report, options)),
-    Layer.succeed(V2EventTransportProvider, eventTransportService(report)),
+    Layer.succeed(V2ProcessSupervisorProvider, processSupervisorService(report, reportForDeployment, options)),
+    Layer.succeed(V2ProxyRouterProvider, proxyRouterService(report, reportForDeployment, options)),
+    Layer.succeed(V2ScmProvider, scmService(report, reportForDeployment, options)),
+    Layer.succeed(V2WorkspaceMaterializerProvider, workspaceMaterializerService(report, reportForDeployment, options)),
+    Layer.succeed(V2EventTransportProvider, eventTransportService(report, reportForDeployment)),
     Layer.succeed(V2ControlPlaneTransportProvider, familyService(report, "control-plane-transport")),
-    Layer.succeed(V2HealthCheckerProvider, healthCheckerService(report)),
-    Layer.succeed(V2LifecycleHookProvider, lifecycleHookService(report)),
-    Layer.succeed(V2PackageManagerProvider, packageManagerService(report, options)),
+    Layer.succeed(V2HealthCheckerProvider, healthCheckerService(report, reportForDeployment)),
+    Layer.succeed(V2LifecycleHookProvider, lifecycleHookService(report, reportForDeployment)),
+    Layer.succeed(V2PackageManagerProvider, packageManagerService(report, reportForDeployment, options)),
     Layer.succeed(V2TunnelProvider, familyService(report, "tunnel")),
   )
 }

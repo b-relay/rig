@@ -518,15 +518,16 @@ export const decodeV2StatusInput = (input: unknown) =>
 const laneConfigFor = (config: V2ProjectConfig, lane: V2LaneName) =>
   lane === "local" ? config.local : lane === "live" ? config.live : config.deployments
 
-const defaultV2Providers: ResolvedV2Providers = {
-  processSupervisor: "rigd",
-}
-
 const resolveLaneProviders = (
   laneConfig: ReturnType<typeof laneConfigFor>,
-): ResolvedV2Providers => ({
-  processSupervisor: laneConfig?.providers?.processSupervisor ?? defaultV2Providers.processSupervisor,
-})
+): ResolvedV2Providers => {
+  const providerProfile = laneConfig?.providerProfile ?? "default"
+  const defaultProcessSupervisor = providerProfile === "stub" ? "stub-process-supervisor" : "rigd"
+
+  return {
+    processSupervisor: laneConfig?.providers?.processSupervisor ?? defaultProcessSupervisor,
+  }
+}
 
 const interpolationFor = (
   config: V2ProjectConfig,

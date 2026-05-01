@@ -114,9 +114,14 @@ Routing metadata can be scaffolded at the same time:
 and port your project actually uses.
 
 Use `stub` for isolated tests and agent runs. Use `default` only when you are
-ready for real local providers. The process supervisor is selected per lane
-with `providers.processSupervisor`; it defaults to the core `rigd` supervisor.
-Use `"launchd"` there only for lanes that should use the bundled launchd plugin.
+ready for real local providers. A lane `providerProfile` overrides the machine
+home-config default for runtime execution, so a stub lane uses stub SCM,
+workspace, proxy, health, hook, package-manager, and process-supervisor
+providers even when the machine default profile is real. The process supervisor
+is selected per lane with `providers.processSupervisor`; it defaults to
+`stub-process-supervisor` for stub lanes and the core `rigd` supervisor for
+default lanes. Use `"launchd"` there only for lanes that should use the bundled
+launchd plugin.
 
 Minimal v2 shape:
 

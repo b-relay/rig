@@ -192,12 +192,6 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
     const configPath = join(repo, "rig.json")
 
     try {
-      await writeFile(
-        join(root, "config.json"),
-        `${JSON.stringify({ providers: { defaultProfile: "stub" } }, null, 2)}\n`,
-        "utf8",
-      )
-
       const init = await runRig2Command(
         [
           "init",

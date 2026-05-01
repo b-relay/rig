@@ -188,6 +188,74 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     })
   })
 
+  test("GIVEN remaining stub adapters WHEN the stub profile is composed THEN operation strings stay compatible", async () => {
+    const deployment = {
+      project: "pantry",
+      kind: "generated",
+      name: "feature-a",
+      workspacePath: "/tmp/rig-v2-stub-contract",
+      logRoot: "/tmp/rig-v2-stub-contract/logs",
+      resolved: {
+        providers: {
+          processSupervisor: "stub-process-supervisor",
+        },
+      },
+    } as V2DeploymentRecord
+    const service = {
+      name: "web",
+      type: "server",
+      command: "bun run start",
+      port: 3070,
+    } as const
+    const binService = {
+      name: "tool",
+      type: "bin",
+      entrypoint: "bin/tool",
+    } as const
+    const proxy = {
+      domain: "feature-a.preview.b-relay.com",
+      upstream: "web",
+    } as const
+
+    const operations = await Effect.runPromise(
+      Effect.gen(function* () {
+        const workspaces = yield* V2WorkspaceMaterializerProvider
+        const scm = yield* V2ScmProvider
+        const events = yield* V2EventTransportProvider
+        const health = yield* V2HealthCheckerProvider
+        const hooks = yield* V2LifecycleHookProvider
+        const packages = yield* V2PackageManagerProvider
+        const proxyRouter = yield* V2ProxyRouterProvider
+
+        return [
+          yield* workspaces.resolve({ deployment }),
+          yield* workspaces.materialize({ deployment, ref: "feature/a" }),
+          yield* workspaces.remove({ deployment }),
+          yield* scm.checkout({ deployment, ref: "feature/a" }),
+          yield* events.append({ deployment, event: "component.log", component: "web" }),
+          yield* health.check({ deployment, service }),
+          yield* hooks.run({ deployment, hook: "preStart", command: "echo ready", service }),
+          yield* packages.install({ deployment, service: binService }),
+          yield* proxyRouter.upsert({ deployment, proxy }),
+          yield* proxyRouter.remove({ deployment, proxy }),
+        ] as const
+      }).pipe(Effect.provide(V2ProviderContractsLive("stub"))),
+    )
+
+    expect(operations).toEqual([
+      "workspace-materializer:stub-workspace-materializer:resolve:/tmp/rig-v2-stub-contract",
+      "workspace-materializer:stub-workspace-materializer:materialize:/tmp/rig-v2-stub-contract",
+      "workspace-materializer:stub-workspace-materializer:remove:/tmp/rig-v2-stub-contract",
+      "scm:stub-scm:checkout:feature/a",
+      "event-transport:stub-event-transport:append:component.log:web",
+      "health-checker:stub-health-checker:check:web",
+      "lifecycle-hook:stub-lifecycle-hook:run:preStart:web",
+      "package-manager:stub-package-manager:install:tool",
+      "proxy-router:stub-proxy-router:upsert:web",
+      "proxy-router:stub-proxy-router:remove:web",
+    ])
+  })
+
   test("GIVEN git-worktree materializer WHEN deployment is materialized THEN workspace commands run in isolated v2 paths", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-worktree-"))
     const sourceRepo = join(stateRoot, "repo")

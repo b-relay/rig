@@ -468,13 +468,13 @@ provider profile behavior, and test-safe composition.
 
 ### Acceptance Criteria
 
-- [ ] Structured event transport implementation lives in a focused adapter
+- [x] Structured event transport implementation lives in a focused adapter
       module.
-- [ ] Remaining stub adapters live in focused modules.
-- [ ] JSONL event write behavior remains externally compatible.
-- [ ] Stub provider operation strings remain externally compatible where tests
+- [x] Remaining stub adapters live in focused modules.
+- [x] JSONL event write behavior remains externally compatible.
+- [x] Stub provider operation strings remain externally compatible where tests
       depend on them.
-- [ ] Stub and isolated provider profile composition remains test-safe.
+- [x] Stub and isolated provider profile composition remains test-safe.
 
 ---
 

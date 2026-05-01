@@ -1,15 +1,9 @@
-import { join } from "node:path"
 import { Context, Effect, Exit, Layer, Scope, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
 import { BunChildProcessSpawner, BunFileSystem, BunPath } from "@effect/platform-bun"
 
 import type { V2DeploymentRecord } from "./deployments.js"
-import {
-  platformAppendFileString,
-  platformMakeDirectory,
-  platformWriteFileString,
-} from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
 import {
   V2ProcessSupervisorProvider,
@@ -53,6 +47,40 @@ import {
   createPackageJsonScriptsAdapter,
   packageJsonScriptsProvider,
 } from "./providers/package-json-scripts.js"
+import {
+  createStructuredLogEventTransportAdapter,
+  structuredLogEventTransportProvider,
+} from "./providers/structured-log-event-transport.js"
+import {
+  createStubProxyRouterAdapter,
+  stubProxyRouterProvider,
+} from "./providers/stub-proxy-router.js"
+import {
+  createStubScmAdapter,
+  stubScmProvider,
+} from "./providers/stub-scm.js"
+import {
+  createStubWorkspaceMaterializerAdapter,
+  stubWorkspaceMaterializerProvider,
+} from "./providers/stub-workspace-materializer.js"
+import {
+  createStubEventTransportAdapter,
+  stubEventTransportProvider,
+} from "./providers/stub-event-transport.js"
+import {
+  createStubHealthCheckerAdapter,
+  stubHealthCheckerProvider,
+} from "./providers/stub-health-checker.js"
+import {
+  createStubLifecycleHookAdapter,
+  stubLifecycleHookProvider,
+} from "./providers/stub-lifecycle-hook.js"
+import {
+  createStubPackageManagerAdapter,
+  stubPackageManagerProvider,
+} from "./providers/stub-package-manager.js"
+import { stubControlPlaneProvider } from "./providers/stub-control-plane.js"
+import { stubTunnelProvider } from "./providers/stub-tunnel.js"
 
 export {
   V2ProcessSupervisorProvider,
@@ -387,7 +415,7 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
   caddyProxyRouterProvider,
   localGitScmProvider,
   gitWorktreeMaterializerProvider,
-  plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
+  structuredLogEventTransportProvider,
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   nativeHealthCheckerProvider,
   shellLifecycleHookProvider,
@@ -398,17 +426,15 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
 const stubProviders: readonly V2ProviderPlugin[] = [
   rigdProcessSupervisorProvider,
   stubProcessSupervisorProvider,
-  plugin("stub-proxy-router", "proxy-router", "Stub Proxy Router", ["proxy-router-contract-test"]),
-  plugin("stub-scm", "scm", "Stub SCM", ["scm-contract-test"]),
-  plugin("stub-workspace-materializer", "workspace-materializer", "Stub Workspace Materializer", [
-    "workspace-materializer-contract-test",
-  ]),
-  plugin("stub-event-transport", "event-transport", "Stub Event Transport", ["event-transport-contract-test"]),
-  plugin("stub-control-plane", "control-plane-transport", "Stub Control Plane", ["localhost-contract-test"]),
-  plugin("stub-health-checker", "health-checker", "Stub Health Checker", ["health-checker-contract-test"]),
-  plugin("stub-lifecycle-hook", "lifecycle-hook", "Stub Lifecycle Hook", ["lifecycle-hook-contract-test"]),
-  plugin("stub-package-manager", "package-manager", "Stub Package Manager", ["package-manager-contract-test"]),
-  plugin("stub-tunnel", "tunnel", "Stub Tunnel", ["tunnel-contract-test"]),
+  stubProxyRouterProvider,
+  stubScmProvider,
+  stubWorkspaceMaterializerProvider,
+  stubEventTransportProvider,
+  stubControlPlaneProvider,
+  stubHealthCheckerProvider,
+  stubLifecycleHookProvider,
+  stubPackageManagerProvider,
+  stubTunnelProvider,
 ]
 
 const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
@@ -420,7 +446,7 @@ const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
   caddyProxyRouterProvider,
   localGitScmProvider,
   gitWorktreeMaterializerProvider,
-  plugin("structured-log-file", "event-transport", "Structured Log File", ["append-only-events", "doctor-readable"]),
+  structuredLogEventTransportProvider,
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   nativeHealthCheckerProvider,
   shellLifecycleHookProvider,
@@ -518,20 +544,6 @@ const outputLines = (
     .filter((line) => line.length > 0)
     .map((line) => ({ stream, line }))
 
-const runtimeError = (
-  message: string,
-  hint: string,
-  details?: Readonly<Record<string, unknown>>,
-) => (cause: unknown) =>
-  new V2RuntimeError(
-    message,
-    hint,
-    {
-      cause: cause instanceof Error ? cause.message : String(cause),
-      ...(details ?? {}),
-    },
-  )
-
 const workspaceMaterializerService = (
   report: V2ProviderRegistryReport,
   reportForDeployment: V2ProviderReportForDeployment,
@@ -542,19 +554,26 @@ const workspaceMaterializerService = (
     options.workspaceMaterializer,
     defaultCommandRunner,
   )
+  const stubWorkspaceMaterializer = createStubWorkspaceMaterializerAdapter()
 
   return {
     ...base,
     resolve: (input) =>
       providerForDeploymentFamily(reportForDeployment, input.deployment, "workspace-materializer").pipe(
-        Effect.flatMap((selected) => providerOperation(selected, `resolve:${input.deployment.workspacePath}`)),
+        Effect.flatMap((selected) =>
+          selected.id === "stub-workspace-materializer"
+            ? stubWorkspaceMaterializer.resolve(input, selected)
+            : providerOperation(selected, `resolve:${input.deployment.workspacePath}`),
+        ),
       ),
     materialize: (input) =>
       providerForDeploymentFamily(reportForDeployment, input.deployment, "workspace-materializer").pipe(
         Effect.flatMap((selected) =>
           selected.id === "git-worktree"
             ? gitWorktreeMaterializer.materialize(input, selected)
-            : providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
+            : selected.id === "stub-workspace-materializer"
+              ? stubWorkspaceMaterializer.materialize(input, selected)
+              : providerOperation(selected, `materialize:${input.deployment.workspacePath}`),
         ),
       ),
     remove: (input) =>
@@ -562,7 +581,9 @@ const workspaceMaterializerService = (
         Effect.flatMap((selected) =>
           selected.id === "git-worktree"
             ? gitWorktreeMaterializer.remove(input, selected)
-            : providerOperation(selected, `remove:${input.deployment.workspacePath}`),
+            : selected.id === "stub-workspace-materializer"
+              ? stubWorkspaceMaterializer.remove(input, selected)
+              : providerOperation(selected, `remove:${input.deployment.workspacePath}`),
         ),
       ),
   }
@@ -640,6 +661,7 @@ const healthCheckerService = (
 ): V2HealthCheckerProviderService => {
   const base = familyService(report, "health-checker")
   const nativeHealth = createNativeHealthCheckerAdapter(runPlatformCommand)
+  const stubHealthChecker = createStubHealthCheckerAdapter()
 
   return {
     ...base,
@@ -648,7 +670,9 @@ const healthCheckerService = (
         Effect.flatMap((selected) =>
           selected.id === "native-health"
             ? nativeHealth.check(input, selected)
-            : providerOperation(selected, `check:${input.service.name}`),
+            : selected.id === "stub-health-checker"
+              ? stubHealthChecker.check(input, selected)
+              : providerOperation(selected, `check:${input.service.name}`),
         ),
       ),
   }
@@ -660,6 +684,7 @@ const lifecycleHookService = (
 ): V2LifecycleHookProviderService => {
   const base = familyService(report, "lifecycle-hook")
   const shellHook = createShellLifecycleHookAdapter(runPlatformCommand)
+  const stubLifecycleHook = createStubLifecycleHookAdapter()
 
   return {
     ...base,
@@ -668,7 +693,9 @@ const lifecycleHookService = (
         Effect.flatMap((selected) =>
           selected.id === "shell-hook"
             ? shellHook.run(input, selected)
-            : providerOperation(selected, `run:${input.hook}:${input.service?.name ?? "project"}`),
+            : selected.id === "stub-lifecycle-hook"
+              ? stubLifecycleHook.run(input, selected)
+              : providerOperation(selected, `run:${input.hook}:${input.service?.name ?? "project"}`),
         ),
       ),
   }
@@ -679,41 +706,8 @@ const eventTransportService = (
   reportForDeployment: V2ProviderReportForDeployment,
 ): V2EventTransportProviderService => {
   const base = familyService(report, "event-transport")
-
-  const appendStructuredLogFile = (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly event: string
-    readonly component?: string
-    readonly details?: Readonly<Record<string, unknown>>
-  }, selected: V2ProviderPluginForFamily<"event-transport">): Effect.Effect<string, V2RuntimeError> => {
-    const logPath = join(input.deployment.logRoot, "events.jsonl")
-    const entry = {
-      timestamp: new Date().toISOString(),
-      event: input.event,
-      project: input.deployment.project,
-      kind: input.deployment.kind,
-      deployment: input.deployment.name,
-      ...(input.component ? { component: input.component } : {}),
-      ...(input.details ? { details: input.details } : {}),
-    }
-
-    return Effect.gen(function* () {
-        yield* platformMakeDirectory(input.deployment.logRoot)
-        yield* platformAppendFileString(logPath, `${JSON.stringify(entry)}\n`)
-        return `${selected.family}:${selected.id}:append:${input.event}${input.component ? `:${input.component}` : ""}`
-      }).pipe(
-        Effect.mapError(runtimeError(
-        "Unable to append v2 runtime event.",
-        "Ensure the deployment log root is writable before retrying the runtime action.",
-        {
-          providerId: selected.id,
-          logPath,
-          event: input.event,
-          ...(input.component ? { component: input.component } : {}),
-        },
-        )),
-      )
-  }
+  const structuredLogFile = createStructuredLogEventTransportAdapter()
+  const stubEventTransport = createStubEventTransportAdapter()
 
   return {
     ...base,
@@ -721,8 +715,10 @@ const eventTransportService = (
       providerForDeploymentFamily(reportForDeployment, input.deployment, "event-transport").pipe(
         Effect.flatMap((selected) =>
           selected.id === "structured-log-file"
-            ? appendStructuredLogFile(input, selected)
-            : providerOperation(selected, `append:${input.event}${input.component ? `:${input.component}` : ""}`),
+            ? structuredLogFile.append(input, selected)
+            : selected.id === "stub-event-transport"
+              ? stubEventTransport.append(input, selected)
+              : providerOperation(selected, `append:${input.event}${input.component ? `:${input.component}` : ""}`),
         ),
       ),
   }
@@ -735,6 +731,7 @@ const scmService = (
 ): V2ScmProviderService => {
   const base = familyService(report, "scm")
   const localGitScm = createLocalGitScmAdapter(options.scm, defaultCommandRunner)
+  const stubScm = createStubScmAdapter()
 
   return {
     ...base,
@@ -743,7 +740,9 @@ const scmService = (
         Effect.flatMap((selected) =>
           selected.id === "local-git"
             ? localGitScm.checkout(input, selected)
-            : providerOperation(selected, `checkout:${input.ref}`),
+            : selected.id === "stub-scm"
+              ? stubScm.checkout(input, selected)
+              : providerOperation(selected, `checkout:${input.ref}`),
         ),
       ),
   }
@@ -756,6 +755,7 @@ const packageManagerService = (
 ): V2PackageManagerProviderService => {
   const base = familyService(report, "package-manager")
   const packageJsonScripts = createPackageJsonScriptsAdapter(options.packageManager, runPlatformCommand)
+  const stubPackageManager = createStubPackageManagerAdapter()
 
   return {
     ...base,
@@ -764,7 +764,9 @@ const packageManagerService = (
         Effect.flatMap((selected) =>
           selected.id === "package-json-scripts"
             ? packageJsonScripts.install(input, selected)
-            : providerOperation(selected, `install:${input.service.name}`),
+            : selected.id === "stub-package-manager"
+              ? stubPackageManager.install(input, selected)
+              : providerOperation(selected, `install:${input.service.name}`),
         ),
       ),
   }
@@ -777,6 +779,7 @@ const proxyRouterService = (
 ): V2ProxyRouterProviderService => {
   const base = familyService(report, "proxy-router")
   const caddyProxyRouter = createCaddyProxyRouterAdapter(options.proxyRouter, defaultCommandRunner)
+  const stubProxyRouter = createStubProxyRouterAdapter()
 
   return {
     ...base,
@@ -785,7 +788,9 @@ const proxyRouterService = (
         Effect.flatMap((selected) =>
           selected.id === "caddy"
             ? caddyProxyRouter.upsert(input, selected)
-            : providerOperation(selected, `upsert:${input.proxy.upstream}`),
+            : selected.id === "stub-proxy-router"
+              ? stubProxyRouter.upsert(input, selected)
+              : providerOperation(selected, `upsert:${input.proxy.upstream}`),
         ),
       ),
     remove: (input) =>
@@ -793,7 +798,9 @@ const proxyRouterService = (
         Effect.flatMap((selected) =>
           selected.id === "caddy"
             ? caddyProxyRouter.remove(input, selected)
-            : providerOperation(selected, `remove:${input.proxy.upstream}`),
+            : selected.id === "stub-proxy-router"
+              ? stubProxyRouter.remove(input, selected)
+              : providerOperation(selected, `remove:${input.proxy.upstream}`),
         ),
       ),
   }

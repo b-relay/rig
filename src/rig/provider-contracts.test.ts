@@ -956,8 +956,10 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
   test("GIVEN caddy proxy router config WHEN reload command fails THEN the error stays tagged with route context", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-caddy-reload-error-"))
     const caddyfilePath = join(root, "Caddyfile")
+    const original = "example.test {\n\trespond \"stable\"\n}\n"
 
     try {
+      await writeFile(caddyfilePath, original)
       const deployment = {
         project: "pantry",
         kind: "live",
@@ -1018,6 +1020,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
           cause: "Caddy reload command failed.",
         },
       })
+      expect(await readFile(caddyfilePath, "utf8")).toBe(original)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

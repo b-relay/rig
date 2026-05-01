@@ -1,7 +1,7 @@
-import { join } from "node:path"
+import { dirname, join, parse } from "node:path"
 import { Context, Effect, Layer } from "effect"
 
-import { platformReadFileString } from "./effect-platform.js"
+import { isPlatformNotFound, platformReadFileString } from "./effect-platform.js"
 import { RigCliArgumentError } from "./errors.js"
 
 export interface RigLocatedProject {
@@ -26,20 +26,47 @@ const invalidCurrentRepo = (message: string, details?: Readonly<Record<string, u
 
 export const RigProjectLocatorLive = Layer.succeed(RigProjectLocator, {
   inferCurrentProject: Effect.gen(function* () {
-    const repoPath = process.cwd()
-    const configPath = join(repoPath, "rig.json")
-    const raw = yield* platformReadFileString(configPath).pipe(
-      Effect.mapError((cause) =>
-        invalidCurrentRepo("No rig.json found in the current directory.", {
-          repoPath,
-          configPath,
-          cause: cause instanceof Error ? cause.message : String(cause),
+    const startPath = process.cwd()
+    const rootPath = parse(startPath).root
+    let repoPath = startPath
+    let configPath = join(repoPath, "rig.json")
+    let raw: string | undefined
+
+    while (true) {
+      const attemptPath = join(repoPath, "rig.json")
+      const attempt = yield* platformReadFileString(attemptPath).pipe(
+        Effect.matchEffect({
+          onSuccess: (content) => Effect.succeed({ ok: true as const, content }),
+          onFailure: (error) => Effect.succeed({ ok: false as const, error }),
         }),
-      ),
-    )
+      )
+      if (attempt.ok) {
+        configPath = attemptPath
+        raw = attempt.content
+        break
+      }
+      if (!isPlatformNotFound(attempt.error)) {
+        return yield* Effect.fail(
+          invalidCurrentRepo("Unable to read rig.json from the current repo.", {
+            repoPath,
+            configPath: attemptPath,
+            cause: attempt.error instanceof Error ? attempt.error.message : String(attempt.error),
+          }),
+        )
+      }
+      if (repoPath === rootPath) {
+        return yield* Effect.fail(
+          invalidCurrentRepo("No rig.json found in the current directory or its ancestors.", {
+            repoPath: startPath,
+            configPath: join(startPath, "rig.json"),
+          }),
+        )
+      }
+      repoPath = dirname(repoPath)
+    }
 
     const parsed = yield* Effect.try({
-      try: () => JSON.parse(raw) as unknown,
+      try: () => JSON.parse(raw as string) as unknown,
       catch: (cause) =>
         invalidCurrentRepo("rig.json is not valid JSON.", {
           repoPath,

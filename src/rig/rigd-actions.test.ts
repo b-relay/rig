@@ -920,6 +920,69 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN same-name generated redeploy fails WHEN previous deployment exists THEN previous generated state remains", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      let previewDeploys = 0
+      const executor = new CaptureRuntimeExecutor((kind, deployment) =>
+        kind === "deploy" && deployment === "preview" && ++previewDeploys > 1
+      )
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const deployments = yield* RigDeploymentManager
+          const store = yield* RigdStateStore
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/working",
+            deploymentName: "preview",
+            stateRoot,
+            config,
+          })
+          const before = yield* deployments.resolveGenerated({ config, stateRoot, name: "preview" })
+          const error = yield* Effect.flip(
+            rigd.controlPlaneDeploy({
+              project: "pantry",
+              target: "generated",
+              ref: "feature/broken",
+              deploymentName: "preview",
+              stateRoot,
+              config,
+            }),
+          )
+          const after = yield* deployments.resolveGenerated({ config, stateRoot, name: "preview" })
+          const persisted = yield* store.load({ stateRoot })
+          return { before, error, after, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "RigRuntimeError",
+        details: { reason: "runtime-execution-failed", kind: "deploy", deployment: "preview" },
+      })
+      expect(executor.destroyGeneratedCalls.map((call) => call.deployment.name)).toEqual([])
+      expect(result.after.branchSlug).toBe(result.before.branchSlug)
+      expect(result.after.assignedPorts).toEqual(result.before.assignedPorts)
+      expect(result.persisted.desiredDeployments).toContainEqual(expect.objectContaining({
+        deployment: "preview",
+        desiredStatus: "running",
+        record: expect.objectContaining({
+          branchSlug: "feature-working",
+        }),
+      }))
+      expect(result.persisted.deploymentSnapshots).toContainEqual(expect.objectContaining({
+        kind: "generated",
+        deployment: "preview",
+      }))
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN generated replacement deploy fails WHEN oldest policy is active THEN existing generated deployment remains", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
 
@@ -1164,6 +1227,57 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         "component.log",
         "rigd.generated.destroy.accepted",
       ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN generated destroy cleanup fails WHEN requested THEN generated inventory remains", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor("destroy")
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const deployments = yield* RigDeploymentManager
+          const store = yield* RigdStateStore
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/remove-fails",
+            stateRoot,
+            config,
+          })
+          const error = yield* Effect.flip(
+            rigd.controlPlaneDestroyGenerated({
+              project: "pantry",
+              target: "generated",
+              deploymentName: "feature-remove-fails",
+              stateRoot,
+              config,
+            }),
+          )
+          const inventory = yield* deployments.list({ config, stateRoot })
+          const persisted = yield* store.load({ stateRoot })
+          return { error, inventory, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "RigRuntimeError",
+        details: { reason: "runtime-execution-failed", kind: "destroy", deployment: "feature-remove-fails" },
+      })
+      expect(executor.destroyGeneratedCalls.map((call) => call.deployment.name)).toEqual(["feature-remove-fails"])
+      expect(result.inventory.map((deployment) => `${deployment.kind}:${deployment.name}`)).toEqual([
+        "local:local",
+        "live:live",
+        "generated:feature-remove-fails",
+      ])
+      expect(result.persisted.receipts.map((receipt) => receipt.kind)).toEqual(["deploy"])
+      expect(result.persisted.events.map((event) => event.event)).not.toContain("rigd.generated.destroy.accepted")
     } finally {
       await rm(stateRoot, { recursive: true, force: true })
     }
@@ -1695,6 +1809,8 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
             list: () => Effect.succeed([deployment]),
             previewGenerated: () => Effect.die("unused"),
             materializeGenerated: () => Effect.die("unused"),
+            resolveGenerated: () => Effect.die("unused"),
+            restoreGenerated: () => Effect.die("unused"),
             destroyGenerated: () => Effect.die("unused"),
           },
           stateStore: {

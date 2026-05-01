@@ -53,7 +53,56 @@ describe("GIVEN rig Effect Schema validation WHEN decoding representative inputs
 
     expect(error._tag).toBe("RigConfigValidationError")
     expect(error.message).toBe("Invalid rig project config.")
-    expect(String(error.details?.cause)).toContain("0.0.0.0")
+    expect(String(error.details?.cause)).toContain("localhost")
+  })
+
+  test("GIVEN non-integer runtime ports WHEN decoding THEN schema validation rejects them", async () => {
+    const error = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        components: {
+          web: {
+            mode: "managed",
+            command: "bun run start",
+            port: 3070.5,
+          },
+        },
+      }).pipe(Effect.flip),
+    )
+
+    expect(error._tag).toBe("RigConfigValidationError")
+    expect(String(error.details?.cause)).toContain("integer")
+  })
+
+  test("GIVEN explicit non-localhost host bindings WHEN decoding THEN schema validation rejects them", async () => {
+    const commandError = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        components: {
+          web: {
+            mode: "managed",
+            command: "bun run dev -- --host 192.168.1.20 --port 3070",
+          },
+        },
+      }).pipe(Effect.flip),
+    )
+    const healthError = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        components: {
+          web: {
+            mode: "managed",
+            command: "bun run dev -- --host=127.0.0.1 --port 3070",
+            health: "http://[::]:3070/health",
+          },
+        },
+      }).pipe(Effect.flip),
+    )
+
+    expect(commandError._tag).toBe("RigConfigValidationError")
+    expect(String(commandError.details?.cause)).toContain("localhost")
+    expect(healthError._tag).toBe("RigConfigValidationError")
+    expect(String(healthError.details?.cause)).toContain("localhost")
   })
 
   test("GIVEN invalid rig status input WHEN decoding THEN project validation fails through Effect Schema", async () => {

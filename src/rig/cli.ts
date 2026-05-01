@@ -235,20 +235,41 @@ const resolveProjectScopedInput = (input: {
   Effect.gen(function* () {
     const explicitProject = input.project.trim()
     const explicitConfigPath = input.configPath?.trim()
-    if (explicitProject.length > 0) {
+    if (explicitProject.length > 0 && explicitConfigPath) {
       return {
         ...input,
         project: explicitProject,
-        ...(explicitConfigPath ? { configPath: explicitConfigPath } : {}),
+        configPath: explicitConfigPath,
       }
     }
 
     const locator = yield* RigProjectLocator
-    const located = yield* locator.inferCurrentProject
+    const locatedResult = yield* locator.inferCurrentProject.pipe(
+      Effect.matchEffect({
+        onSuccess: (located) => Effect.succeed({ ok: true as const, located }),
+        onFailure: (error) => Effect.succeed({ ok: false as const, error }),
+      }),
+    )
+    if (!locatedResult.ok) {
+      if (explicitProject.length > 0) {
+        return {
+          ...input,
+          project: explicitProject,
+        }
+      }
+      return yield* Effect.fail(locatedResult.error)
+    }
+    const located = locatedResult.located
+    if (explicitProject.length > 0 && located.name !== explicitProject) {
+      return {
+        ...input,
+        project: explicitProject,
+      }
+    }
 
     return {
       ...input,
-      project: located.name,
+      project: explicitProject || located.name,
       configPath: explicitConfigPath || located.configPath,
     }
   })

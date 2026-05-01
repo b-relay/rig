@@ -749,11 +749,46 @@ export const RigdLive = Layer.effect(
     const rollbackGeneratedDeployFailure = (
       input: RigdControlPlaneDeployInput,
       deployment: RigDeploymentRecord,
+      previous: RigDeploymentRecord | undefined,
       deployError: RigRuntimeError,
     ): Effect.Effect<never, RigRuntimeError> =>
       Effect.gen(function* () {
         if (!input.config) {
           return yield* Effect.fail(deployError)
+        }
+
+        if (previous) {
+          const restoreError = yield* deployments.restoreGenerated({
+            config: input.config,
+            stateRoot: input.stateRoot,
+            record: previous,
+          }).pipe(
+            Effect.as(undefined),
+            Effect.catch((error) => Effect.succeed(error)),
+          )
+
+          if (!restoreError) {
+            const inventory = yield* deployments.list({
+              config: input.config,
+              stateRoot: input.stateRoot,
+            })
+            yield* persistInventoryEvidence(input.stateRoot, inventory)
+            return yield* Effect.fail(deployError)
+          }
+
+          return yield* Effect.fail(
+            new RigRuntimeError(
+              `Generated deploy '${deployment.name}' failed and previous deployment restore failed.`,
+              "Inspect the generated deployment inventory and restore or destroy the deployment before retrying.",
+              {
+                reason: "generated-deploy-restore-failed",
+                project: deployment.project,
+                deployment: deployment.name,
+                deployError: deployError.message,
+                restoreError: restoreError.message,
+              },
+            ),
+          )
         }
 
         const cleanupError = yield* runtimeExecutor.destroyGenerated({ deployment }).pipe(
@@ -929,12 +964,24 @@ export const RigdLive = Layer.effect(
         })
 
         let materialized: RigDeploymentRecord | undefined
+        let previousGenerated: RigDeploymentRecord | undefined
         let replacedGenerated: RigDeploymentRecord | undefined
         let homeConfig: RigHomeConfig | undefined
         if (input.target === "generated") {
           const homeConfigStore = yield* RigHomeConfigStore
           homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
           replacedGenerated = yield* enforceGeneratedDeploymentCap(input, homeConfig)
+          const requestedDeployment = branchSlug(input.deploymentName ?? input.ref)
+          previousGenerated = yield* deployments.resolveGenerated({
+            config: generatedConfig,
+            stateRoot: input.stateRoot,
+            name: requestedDeployment,
+          }).pipe(
+            Effect.matchEffect({
+              onSuccess: (deployment) => Effect.succeed(deployment),
+              onFailure: () => Effect.succeed(undefined),
+            }),
+          )
           materialized = yield* deployments.materializeGenerated({
             config: generatedConfig,
             stateRoot: input.stateRoot,
@@ -952,7 +999,7 @@ export const RigdLive = Layer.effect(
         const runtimeResult = yield* deployExecution(input, materialized).pipe(
           Effect.catch((error) =>
             materialized
-              ? rollbackGeneratedDeployFailure(input, materialized, error)
+              ? rollbackGeneratedDeployFailure(input, materialized, previousGenerated, error)
               : Effect.fail(error)
           ),
         )
@@ -1155,13 +1202,18 @@ export const RigdLive = Layer.effect(
             deploymentName,
             config: input.config,
           })
-          const destroyed = yield* deployments.destroyGenerated({
+          const destroyed = yield* deployments.resolveGenerated({
             config: input.config,
             stateRoot: input.stateRoot,
             name: deploymentName,
           })
           const execution = yield* runtimeExecutor.destroyGenerated({ deployment: destroyed })
           yield* persistDesiredDeployment(input.stateRoot, destroyed, "stopped")
+          yield* deployments.destroyGenerated({
+            config: input.config,
+            stateRoot: input.stateRoot,
+            name: deploymentName,
+          })
           const inventory = yield* deployments.list({
             config: input.config,
             stateRoot: input.stateRoot,

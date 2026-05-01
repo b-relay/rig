@@ -53,6 +53,12 @@ export interface RigDestroyGeneratedInput {
   readonly name: string
 }
 
+export interface RigRestoreGeneratedInput {
+  readonly config: RigProjectConfig
+  readonly stateRoot: string
+  readonly record: RigDeploymentRecord
+}
+
 export interface RigDeploymentStoreService {
   readonly read: (
     project: string,
@@ -77,6 +83,12 @@ export interface RigDeploymentManagerService {
   readonly list: (
     input: RigListDeploymentsInput,
   ) => Effect.Effect<readonly RigDeploymentRecord[], RigRuntimeError>
+  readonly resolveGenerated: (
+    input: RigDestroyGeneratedInput,
+  ) => Effect.Effect<RigDeploymentRecord, RigRuntimeError>
+  readonly restoreGenerated: (
+    input: RigRestoreGeneratedInput,
+  ) => Effect.Effect<RigDeploymentRecord, RigRuntimeError>
   readonly destroyGenerated: (
     input: RigDestroyGeneratedInput,
   ) => Effect.Effect<RigDeploymentRecord, RigRuntimeError>
@@ -270,6 +282,23 @@ export const RigDeploymentManagerLive = Layer.effect(
   RigDeploymentManager,
   Effect.gen(function* () {
     const store = yield* RigDeploymentStore
+    const resolveGenerated = (input: RigDestroyGeneratedInput) =>
+      Effect.gen(function* () {
+        const name = branchSlug(input.name)
+        const existing = yield* store.read(input.config.name, input.stateRoot)
+        const found = existing.find((entry) => entry.kind === "generated" && entry.name === name)
+        if (!found) {
+          return yield* Effect.fail(
+            new RigRuntimeError(
+              `Generated deployment '${name}' is not materialized.`,
+              "List generated deployments and choose one that exists before destroying it.",
+              { project: input.config.name, deployment: name, requestedDeployment: input.name },
+            ),
+          )
+        }
+
+        return found
+      })
 
     return {
       previewGenerated: (input) => generatedRecord(input),
@@ -292,26 +321,29 @@ export const RigDeploymentManagerLive = Layer.effect(
           const generated = yield* store.read(input.config.name, input.stateRoot)
           return [local, live, ...generated]
         }),
+      resolveGenerated,
+      restoreGenerated: (input) =>
+        Effect.gen(function* () {
+          const existing = yield* store.read(input.config.name, input.stateRoot)
+          const next = existing.some((entry) => entry.kind === "generated" && entry.name === input.record.name)
+            ? existing.map((entry) =>
+              entry.kind === "generated" && entry.name === input.record.name ? input.record : entry
+            )
+            : [...existing, input.record]
+
+          yield* store.ensureState(input.record)
+          yield* store.write(input.config.name, input.stateRoot, next)
+          return input.record
+        }),
       destroyGenerated: (input) =>
         Effect.gen(function* () {
-          const name = branchSlug(input.name)
+          const found = yield* resolveGenerated(input)
           const existing = yield* store.read(input.config.name, input.stateRoot)
-          const found = existing.find((entry) => entry.kind === "generated" && entry.name === name)
-          if (!found) {
-            return yield* Effect.fail(
-              new RigRuntimeError(
-                `Generated deployment '${name}' is not materialized.`,
-                "List generated deployments and choose one that exists before destroying it.",
-                { project: input.config.name, deployment: name, requestedDeployment: input.name },
-              ),
-            )
-          }
-
           yield* store.removeState(found)
           yield* store.write(
             input.config.name,
             input.stateRoot,
-            existing.filter((entry) => !(entry.kind === "generated" && entry.name === name)),
+            existing.filter((entry) => !(entry.kind === "generated" && entry.name === found.name)),
           )
           return found
         }),

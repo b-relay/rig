@@ -504,10 +504,28 @@ export const RigRuntimeExecutorLive = Layer.effect(
           Effect.catch((error) =>
             input.action === "up" && started.length > 0
               ? Effect.gen(function* () {
+                const rollbackFailures: Array<{ readonly service: string; readonly error: string }> = []
                 for (const service of [...started].reverse()) {
-                  yield* processSupervisor.down({ deployment: input.deployment, service })
+                  const rollbackError = yield* processSupervisor.down({ deployment: input.deployment, service }).pipe(
+                    Effect.as(undefined),
+                    Effect.catch((error) => Effect.succeed(error)),
+                  )
+                  if (rollbackError) {
+                    rollbackFailures.push({
+                      service: service.name,
+                      error: rollbackError.message,
+                    })
+                  }
                 }
-                return yield* Effect.fail(error)
+                if (rollbackFailures.length === 0) {
+                  return yield* Effect.fail(error)
+                }
+                return yield* Effect.fail(
+                  new RigRuntimeError(error.message, error.hint, {
+                    ...(error.details ?? {}),
+                    rollbackFailures,
+                  }),
+                )
               })
               : Effect.fail(error)
           ),

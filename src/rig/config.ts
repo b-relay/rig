@@ -94,15 +94,61 @@ const ComponentName = schemaDoc(
   "Stable component key used for process labels, logs, dependency references, and generated service names.",
 )
 
+const LOCALHOST_NAMES = new Set(["localhost", "127.0.0.1"])
+const HOST_FLAG_RE = /^--(?:host|hostname|bind|bind-host|listen|listen-host|addr|address)(?:=(.+))?$/
+const URL_RE = /\bhttps?:\/\/[^\s'"]+/g
+
+const normalizeHost = (value: string): string => {
+  const trimmed = value.trim().replace(/^\[|\]$/g, "")
+  if (trimmed === "::") {
+    return trimmed
+  }
+  const portSeparator = trimmed.lastIndexOf(":")
+  if (portSeparator > -1 && !trimmed.slice(0, portSeparator).includes(":")) {
+    return trimmed.slice(0, portSeparator)
+  }
+  return trimmed
+}
+
+const isLocalhost = (host: string): boolean =>
+  LOCALHOST_NAMES.has(normalizeHost(host).toLowerCase())
+
+const localhostOnlyFailure = (value: string, options: { readonly checkUrls: boolean }): true | string => {
+  if (options.checkUrls) {
+    for (const match of value.matchAll(URL_RE)) {
+      try {
+        const url = new URL(match[0] as string)
+        if (!isLocalhost(url.hostname)) {
+          return "Use 127.0.0.1 or localhost for local runtime URLs."
+        }
+      } catch {
+        continue
+      }
+    }
+  }
+
+  const tokens = value.match(/"[^"]*"|'[^']*'|\S+/g) ?? []
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]?.replace(/^['"]|['"]$/g, "") ?? ""
+    const flag = HOST_FLAG_RE.exec(token)
+    if (!flag) {
+      continue
+    }
+    const host = flag[1] ?? tokens[index + 1]?.replace(/^['"]|['"]$/g, "")
+    if (host && !isLocalhost(host)) {
+      return "Use 127.0.0.1 or localhost for explicit host/bind flags."
+    }
+  }
+
+  return true
+}
+
 const LocalhostOnlyString = (description: string, identifier: string) =>
   schemaDoc(
     Schema.String.check(
       Schema.isMinLength(1, { message: "Must not be empty." }),
       Schema.makeFilter<string>(
-        (value) =>
-          value.includes("0.0.0.0")
-            ? "Use 127.0.0.1 or localhost, never 0.0.0.0."
-            : true,
+        (value) => localhostOnlyFailure(value, { checkUrls: identifier !== "localhostOnlyCommand" }),
         { identifier },
       ),
     ),
@@ -121,6 +167,10 @@ const HealthCheck = LocalhostOnlyString(
 
 const Port = schemaDoc(
   Schema.Number.check(
+    Schema.makeFilter<number>(
+      (value) => Number.isInteger(value) ? true : "Port must be an integer.",
+      { identifier: "integerPort" },
+    ),
     Schema.isGreaterThanOrEqualTo(1, { message: "Port must be greater than zero." }),
     Schema.isLessThanOrEqualTo(65535, { message: "Port must be at most 65535." }),
   ),

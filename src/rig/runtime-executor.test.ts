@@ -753,6 +753,61 @@ describe("GIVEN rig runtime executor WHEN provider-backed operations run THEN pr
     ])
   })
 
+  test("GIVEN lifecycle rollback down fails WHEN up fails later THEN every started service is still stopped", async () => {
+    const calls: string[] = []
+    const controlledDeployment = {
+      ...deployment(),
+      resolved: {
+        ...deployment().resolved,
+        environment: {
+          services: [
+            { name: "alpha", type: "server", command: "bun run alpha" },
+            { name: "beta", type: "server", command: "bun run beta" },
+            { name: "gamma", type: "server", command: "bun run gamma" },
+          ],
+        },
+      },
+    } as RigDeploymentRecord
+
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const executor = yield* RigRuntimeExecutor
+        return yield* executor.lifecycle({
+          action: "up",
+          deployment: controlledDeployment,
+        }).pipe(Effect.flip)
+      }).pipe(
+        Effect.provide(Layer.provide(
+          RigRuntimeExecutorLive,
+          captureProviderLayer(calls, {
+            failProcess: ["process:up:gamma", "process:down:beta"],
+          }),
+        )),
+      ),
+    )
+
+    expect(error).toMatchObject({
+      _tag: "RigRuntimeError",
+      details: {
+        reason: "captured-process-failed",
+        operation: "process:up:gamma",
+        rollbackFailures: [
+          expect.objectContaining({ service: "beta" }),
+        ],
+      },
+    })
+    expect(calls).toEqual([
+      "workspace:resolve:live",
+      "process:up:alpha",
+      "event:append:component.log:alpha",
+      "process:up:beta",
+      "event:append:component.log:beta",
+      "process:up:gamma",
+      "process:down:beta",
+      "process:down:alpha",
+    ])
+  })
+
   test("GIVEN lifecycle hooks dependencies and health timeouts WHEN up and down run THEN runtime honors the configured lifecycle controls", async () => {
     const calls: string[] = []
     const healthChecks: Array<{ readonly component: string; readonly timeoutSeconds?: number }> = []

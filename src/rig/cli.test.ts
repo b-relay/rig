@@ -971,6 +971,51 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     ])
   })
 
+  test("GIVEN explicit project inside matching repo WHEN config is omitted THEN repo config is still loaded", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
+      "up",
+      "--project",
+      "pantry",
+    ], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(configLoader.loads).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/repo/rig.json",
+      },
+    ])
+    expect(lifecycle.requests[0]).toMatchObject({
+      action: "up",
+      project: "pantry",
+      config: expect.objectContaining({
+        name: "pantry",
+      }),
+    })
+  })
+
+  test("GIVEN explicit project inside different repo WHEN config is omitted THEN command stays cross-project", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
+      "up",
+      "--project",
+      "api",
+    ], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(configLoader.loads).toEqual([])
+    expect(logger.errors).toEqual([])
+    expect(lifecycle.requests[0]).toMatchObject({
+      action: "up",
+      project: "api",
+    })
+    expect(lifecycle.requests[0]).not.toHaveProperty("config")
+  })
+
   test("GIVEN status inside managed repo WHEN running THEN inventory and health use config", async () => {
     const { exitCode, rigd, lifecycle, configLoader } = await runWithLogger(["status"], {
       inferredProject: "pantry",

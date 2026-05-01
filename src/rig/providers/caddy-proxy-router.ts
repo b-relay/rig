@@ -8,6 +8,7 @@ import {
   platformExists,
   platformMakeDirectory,
   platformReadFileString,
+  platformRemove,
   platformWriteFileString,
 } from "../effect-platform.js"
 import { RigRuntimeError } from "../errors.js"
@@ -325,6 +326,29 @@ export const createCaddyProxyRouterAdapter = (
     })
   }
 
+  const applyCaddyfileChange = (input: {
+    readonly previousText: string
+    readonly hadExistingFile: boolean
+    readonly nextText: string
+    readonly reload: Effect.Effect<unknown, unknown>
+  }): Effect.Effect<void, unknown> =>
+    Effect.gen(function* () {
+      yield* backupIfExists(caddyfilePath)
+      yield* writeText(caddyfilePath, input.nextText)
+      yield* input.reload.pipe(Effect.matchEffect({
+        onSuccess: () => Effect.void,
+        onFailure: (error) =>
+          Effect.gen(function* () {
+            if (input.hadExistingFile) {
+              yield* writeText(caddyfilePath, input.previousText)
+            } else {
+              yield* platformRemove(caddyfilePath, { force: true })
+            }
+            return yield* Effect.fail(error)
+          }),
+      }))
+    })
+
   const upsert = (input: {
     readonly deployment: RigDeploymentRecord
     readonly proxy: RigRuntimeProxyConfig
@@ -341,6 +365,7 @@ export const createCaddyProxyRouterAdapter = (
       }
 
       yield* Effect.gen(function* () {
+        const hadExistingFile = yield* platformExists(caddyfilePath)
         const text = yield* readTextIfExists(caddyfilePath)
         const lines = text.split("\n")
         const existing = parseCaddySiteBlocks(text)
@@ -358,17 +383,20 @@ export const createCaddyProxyRouterAdapter = (
             ? `${block}\n`
             : `${text.trimEnd()}\n\n${block}\n`
 
-        yield* backupIfExists(caddyfilePath)
-        yield* writeText(caddyfilePath, next)
-        yield* Effect.tryPromise({
-          try: () => reloadCaddyAfterWrite(selected, {
-            project: input.deployment.project,
-            deployment: input.deployment.name,
-            upstream: input.proxy.upstream,
-            domain,
-            port,
+        yield* applyCaddyfileChange({
+          previousText: text,
+          hadExistingFile,
+          nextText: next,
+          reload: Effect.tryPromise({
+            try: () => reloadCaddyAfterWrite(selected, {
+              project: input.deployment.project,
+              deployment: input.deployment.name,
+              upstream: input.proxy.upstream,
+              domain,
+              port,
+            }),
+            catch: (cause) => cause,
           }),
-          catch: (cause) => cause,
         })
       }).pipe(
         Effect.mapError(runtimeError(
@@ -411,15 +439,18 @@ export const createCaddyProxyRouterAdapter = (
           ...lines.slice(0, target.startLine),
           ...lines.slice(endLine),
         ].join("\n")
-        yield* backupIfExists(caddyfilePath)
-        yield* writeText(caddyfilePath, next)
-        yield* Effect.tryPromise({
-          try: () => reloadCaddyAfterWrite(selected, {
-            project: input.deployment.project,
-            deployment: input.deployment.name,
-            upstream: input.proxy.upstream,
+        yield* applyCaddyfileChange({
+          previousText: text,
+          hadExistingFile: true,
+          nextText: next,
+          reload: Effect.tryPromise({
+            try: () => reloadCaddyAfterWrite(selected, {
+              project: input.deployment.project,
+              deployment: input.deployment.name,
+              upstream: input.proxy.upstream,
+            }),
+            catch: (cause) => cause,
           }),
-          catch: (cause) => cause,
         })
       }
       return `${selected.family}:${selected.id}:remove:${input.deployment.project}:${input.deployment.name}:${input.proxy.upstream}`

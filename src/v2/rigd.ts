@@ -16,7 +16,8 @@ import { V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
 import type { V2LifecycleLane, V2LifecycleWriteAction } from "./lifecycle.js"
 import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
 import { V2RigdActionPreflight, type V2RigdActionKind } from "./rigd-actions.js"
-import { V2RigdStateStore, type V2DeploymentSnapshot, type V2PortReservation } from "./rigd-state.js"
+import { V2RigdStateStore } from "./rigd-state.js"
+import { makeV2RuntimeJournal } from "./runtime-journal.js"
 import { V2RuntimeExecutor, type V2RuntimeExecutionResult } from "./runtime-executor.js"
 import { V2Logger, V2Runtime, type V2FoundationState } from "./services.js"
 
@@ -315,6 +316,13 @@ export const V2RigdLive = Layer.effect(
     const runtimeExecutor = yield* V2RuntimeExecutor
     const startedAt = now()
     const events: V2RigdLogEntry[] = []
+    const journal = makeV2RuntimeJournal({
+      stateStore,
+      now,
+      onEvent: (event) => {
+        events.push(event)
+      },
+    })
 
     const health = (stateRoot: string): Effect.Effect<V2RigdHealth> =>
       Effect.gen(function* () {
@@ -333,22 +341,13 @@ export const V2RigdLive = Layer.effect(
           providers,
         } satisfies V2RigdHealth
 
-        yield* stateStore.writeHealthSummary({
+        yield* journal.recordHealth({
           stateRoot,
-          summary: {
-            service: "rigd",
-            status: "running",
-            checkedAt: now(),
-            providerProfile: providers.profile,
-          },
-        })
-        yield* stateStore.writeProviderObservations({
-          stateRoot,
-          observations: providers.providers.map((provider) => ({
+          providerProfile: providers.profile,
+          providers: providers.providers.map((provider) => ({
             id: provider.id,
             family: provider.family,
             status: "confirmed" as const,
-            observedAt: now(),
             capabilities: provider.capabilities,
           })),
         })
@@ -360,51 +359,18 @@ export const V2RigdLive = Layer.effect(
       stateRoot: string,
       deploymentInventory: readonly V2DeploymentRecord[],
     ): Effect.Effect<void, V2RuntimeError> =>
-      Effect.gen(function* () {
-        const observedAt = now()
-        const snapshots: readonly V2DeploymentSnapshot[] = deploymentInventory.map((deployment) => ({
-          project: deployment.project,
-          deployment: deployment.name,
-          kind: deployment.kind,
-          observedAt,
-          providerProfile: deployment.providerProfile,
-        }))
-        const reservations: readonly V2PortReservation[] = deploymentInventory.flatMap((deployment) =>
-          Object.entries(deployment.assignedPorts).map(([component, port]) => ({
-            project: deployment.project,
-            deployment: deployment.name,
-            component,
-            port,
-            owner: "rigd" as const,
-            status: "reserved" as const,
-            observedAt,
-          })),
-        )
-
-        yield* stateStore.writeDeploymentSnapshot({
-          stateRoot,
-          snapshots,
-        })
-        yield* stateStore.writePortReservations({
-          stateRoot,
-          reservations,
-        })
+      journal.recordDeploymentInventory({
+        stateRoot,
+        deployments: deploymentInventory,
       })
 
     const appendEvent = (
       stateRoot: string,
       entry: Omit<V2RigdLogEntry, "timestamp">,
     ): Effect.Effect<void, V2RuntimeError> =>
-      Effect.gen(function* () {
-        const event = {
-          timestamp: now(),
-          ...entry,
-        }
-        events.push(event)
-        yield* stateStore.appendEvent({
-          stateRoot,
-          event,
-        })
+      journal.recordEvent({
+        stateRoot,
+        event: entry,
       })
 
     const receipt = (
@@ -413,38 +379,20 @@ export const V2RigdLive = Layer.effect(
       stateRoot: string,
       target: string,
     ): Effect.Effect<V2RigdActionReceipt, V2RuntimeError> =>
-      Effect.gen(function* () {
-        const persisted = yield* stateStore.load({ stateRoot })
-        const accepted = {
-          id: `rigd-${persisted.receipts.length + 1}`,
-          kind,
-          accepted: true,
-          project,
-          stateRoot,
-          target,
-          receivedAt: now(),
-        } satisfies V2RigdActionReceipt
-
-        yield* stateStore.appendReceipt({
-          stateRoot,
-          receipt: accepted,
-        })
-
-        return accepted
+      journal.recordReceipt({
+        kind,
+        project,
+        stateRoot,
+        target,
       })
 
     const persistExecutionEvents = (
       stateRoot: string,
       execution: V2RuntimeExecutionResult | undefined,
     ): Effect.Effect<void, V2RuntimeError> =>
-      Effect.gen(function* () {
-        if (!execution) {
-          return
-        }
-
-        for (const event of execution.events) {
-          yield* appendEvent(stateRoot, event)
-        }
+      journal.recordExecutionEvents({
+        stateRoot,
+        ...(execution ? { execution } : {}),
       })
 
     const lifecycleAccepted = (
@@ -544,17 +492,10 @@ export const V2RigdLive = Layer.effect(
       runtimeResult: V2LifecycleRuntimeResult | undefined,
     ): Effect.Effect<void, V2RuntimeError> =>
       runtimeResult
-        ? stateStore.writeDesiredDeployment({
+        ? journal.recordDesiredDeployment({
           stateRoot: input.stateRoot,
-          desired: {
-            project: runtimeResult.deployment.project,
-            deployment: runtimeResult.deployment.name,
-            kind: runtimeResult.deployment.kind,
-            desiredStatus: input.action === "up" ? "running" : "stopped",
-            updatedAt: now(),
-            providerProfile: runtimeResult.deployment.providerProfile,
-            record: runtimeResult.deployment,
-          },
+          deployment: runtimeResult.deployment,
+          desiredStatus: input.action === "up" ? "running" : "stopped",
         })
         : Effect.void
 
@@ -563,17 +504,10 @@ export const V2RigdLive = Layer.effect(
       deployment: V2DeploymentRecord,
       desiredStatus: "running" | "stopped" | "failed",
     ): Effect.Effect<void, V2RuntimeError> =>
-      stateStore.writeDesiredDeployment({
+      journal.recordDesiredDeployment({
         stateRoot,
-        desired: {
-          project: deployment.project,
-          deployment: deployment.name,
-          kind: deployment.kind,
-          desiredStatus,
-          updatedAt: now(),
-          providerProfile: deployment.providerProfile,
-          record: deployment,
-        },
+        deployment,
+        desiredStatus,
       })
 
     const recentFailuresForProcess = (
@@ -679,7 +613,7 @@ export const V2RigdLive = Layer.effect(
           input,
           occurredAt,
         )
-        yield* stateStore.appendManagedServiceFailure({
+        yield* journal.recordManagedServiceFailure({
           stateRoot: input.stateRoot,
           failure,
         })

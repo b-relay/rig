@@ -115,16 +115,16 @@ hand-assembling those writes inline.
 
 ### Acceptance Criteria
 
-- [ ] `rigd` records action receipts through the runtime journal.
-- [ ] `rigd` records runtime events through the runtime journal.
-- [ ] `rigd` records health summaries and provider observations through the
+- [x] `rigd` records action receipts through the runtime journal.
+- [x] `rigd` records runtime events through the runtime journal.
+- [x] `rigd` records health summaries and provider observations through the
       runtime journal.
-- [ ] `rigd` records deployment snapshots and port reservations through the
+- [x] `rigd` records deployment snapshots and port reservations through the
       runtime journal.
-- [ ] `rigd` records desired deployment state and managed process failures
+- [x] `rigd` records desired deployment state and managed process failures
       through the runtime journal.
-- [ ] Existing persisted state remains readable.
-- [ ] Tests cover journal recording without requiring full lifecycle execution.
+- [x] Existing persisted state remains readable.
+- [x] Tests cover journal recording without requiring full lifecycle execution.
 
 ---
 

@@ -118,7 +118,7 @@ describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THE
     expect(result.generatedDeployment).toBeUndefined()
   })
 
-  test("GIVEN git push to feature ref WHEN resolving intent THEN generated deployment is materialized", async () => {
+  test("GIVEN git push to feature ref WHEN resolving intent THEN generated target is classified without materializing", async () => {
     const config = await Effect.runPromise(projectConfig())
     const { result, store } = await runWithDeployIntents(
       Effect.gen(function* () {
@@ -134,12 +134,12 @@ describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THE
     )
 
     expect(result.target).toBe("generated")
-    expect(result.generatedDeployment?.name).toBe("feature-preview")
-    expect(result.generatedDeployment?.subdomain).toBe("feature-preview")
-    expect(store.records.get("pantry")?.map((record) => record.name)).toEqual(["feature-preview"])
+    expect(result.deploymentName).toBe("feature-preview")
+    expect(result).not.toHaveProperty("generatedDeployment")
+    expect(store.records.get("pantry")).toBeUndefined()
   })
 
-  test("GIVEN generated deploy intent cap reject policy WHEN cap is reached THEN materialization is rejected", async () => {
+  test("GIVEN generated deploy intent cap reject policy WHEN cap is reached THEN intent still only classifies", async () => {
     const config = await Effect.runPromise(projectConfig())
     const { result, store } = await runWithDeployIntents(
       Effect.gen(function* () {
@@ -151,15 +151,13 @@ describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THE
           target: "generated",
           config,
         })
-        return yield* Effect.flip(
-          intents.fromCliDeploy({
-            project: "pantry",
-            stateRoot: "/tmp/rig-v2",
-            ref: "feature/two",
-            target: "generated",
-            config,
-          }),
-        )
+        return yield* intents.fromCliDeploy({
+          project: "pantry",
+          stateRoot: "/tmp/rig-v2",
+          ref: "feature/two",
+          target: "generated",
+          config,
+        })
       }),
       {
         homeConfig: {
@@ -176,16 +174,15 @@ describe("GIVEN v2 deploy intent model WHEN resolving pushes and CLI deploys THE
     )
 
     expect(result).toMatchObject({
-      _tag: "V2RuntimeError",
-      details: {
-        reason: "generated-deployment-cap-reached",
-        maxActive: 1,
-        replacePolicy: "reject",
-        requestedDeployment: "feature-two",
-        activeDeployments: ["feature-one"],
-      },
+      source: "cli",
+      project: "pantry",
+      ref: "feature/two",
+      target: "generated",
+      lane: "deployment",
+      deploymentName: "feature-two",
     })
-    expect(store.records.get("pantry")?.map((record) => record.name)).toEqual(["feature-one"])
+    expect(result).not.toHaveProperty("generatedDeployment")
+    expect(store.records.get("pantry")).toBeUndefined()
   })
 
   test("GIVEN git push and no main ref WHEN home production branch matches THEN live is targeted", async () => {

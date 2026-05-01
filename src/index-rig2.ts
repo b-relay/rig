@@ -13,7 +13,7 @@ import { Rig2Live, V2Logger, V2LoggerLive } from "./v2/services.js"
 const V2DeploymentLive = Layer.provide(V2DeploymentManagerLive, V2FileDeploymentStoreLive)
 const V2DeployIntentsRuntimeLive = Layer.provide(
   V2DeployIntentsLive,
-  Layer.mergeAll(V2DeploymentLive, V2FileHomeConfigStoreLive),
+  V2FileHomeConfigStoreLive,
 )
 const V2RigdRuntimeLive = Layer.provide(
   V2RigdLive,

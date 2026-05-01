@@ -1,13 +1,9 @@
 import { Context, Effect, Layer } from "effect"
 
 import type { V2ProjectConfig } from "./config.js"
-import {
-  branchSlug,
-  V2DeploymentManager,
-  type V2DeploymentRecord,
-} from "./deployments.js"
+import { branchSlug } from "./deployments.js"
 import { V2RuntimeError } from "./errors.js"
-import { V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
+import { V2HomeConfigStore } from "./home-config.js"
 
 export type V2DeploySource = "git-push" | "cli"
 export type V2DeployTarget = "live" | "generated"
@@ -21,7 +17,6 @@ export interface V2DeployIntent {
   readonly target: V2DeployTarget
   readonly lane: "live" | "deployment"
   readonly deploymentName?: string
-  readonly generatedDeployment?: V2DeploymentRecord
   readonly version?: string
   readonly rollbackAnchor?: string
 }
@@ -141,88 +136,9 @@ const incrementVersion = (
     }),
   )
 
-const maybeMaterializeGenerated = (
-  deployments: V2DeploymentManager,
-  input: {
-    readonly project: string
-    readonly stateRoot: string
-    readonly ref: string
-    readonly deploymentName?: string
-    readonly config?: V2ProjectConfig
-  },
-): Effect.Effect<V2DeploymentRecord | undefined, V2RuntimeError> => {
-  if (!input.config) {
-    return Effect.succeed(undefined)
-  }
-
-  return deployments.materializeGenerated({
-    config: input.config,
-    stateRoot: input.stateRoot,
-    branch: input.ref,
-    ...(input.deploymentName ? { name: input.deploymentName } : {}),
-  })
-}
-
-const enforceGeneratedDeploymentCap = (
-  deployments: V2DeploymentManager,
-  input: {
-    readonly project: string
-    readonly stateRoot: string
-    readonly ref: string
-    readonly deploymentName?: string
-    readonly config?: V2ProjectConfig
-  },
-  homeConfig: V2HomeConfig,
-): Effect.Effect<void, V2RuntimeError> => {
-  if (!input.config) {
-    return Effect.void
-  }
-
-  return Effect.gen(function* () {
-    const requestedDeployment = branchSlug(input.deploymentName ?? input.ref)
-    const inventory = yield* deployments.list({
-      config: input.config,
-      stateRoot: input.stateRoot,
-    })
-    const generated = inventory.filter((deployment) => deployment.kind === "generated")
-    const existing = generated.find((deployment) => deployment.name === requestedDeployment)
-
-    if (existing || generated.length < homeConfig.deploy.generated.maxActive) {
-      return
-    }
-
-    if (homeConfig.deploy.generated.replacePolicy === "reject") {
-      return yield* Effect.fail(
-        new V2RuntimeError(
-          `Generated deployment cap reached for '${input.project}'.`,
-          "Destroy an existing generated deployment or raise deploy.generated.maxActive in the home rig config.",
-          {
-            reason: "generated-deployment-cap-reached",
-            project: input.project,
-            maxActive: homeConfig.deploy.generated.maxActive,
-            replacePolicy: homeConfig.deploy.generated.replacePolicy,
-            requestedDeployment,
-            activeDeployments: generated.map((deployment) => deployment.name),
-          },
-        ),
-      )
-    }
-
-    const oldest = generated[0]
-    if (oldest) {
-      yield* deployments.destroyGenerated({
-        config: input.config,
-        stateRoot: input.stateRoot,
-        name: oldest.name,
-      })
-    }
-  })
-}
-
 export const V2DeployIntentsLive = Layer.effect(
   V2DeployIntents,
   Effect.gen(function* () {
-    const deployments = yield* V2DeploymentManager
     const homeConfigStore = yield* V2HomeConfigStore
 
     const generatedIntent = (
@@ -235,23 +151,15 @@ export const V2DeployIntentsLive = Layer.effect(
         readonly config?: V2ProjectConfig
       },
     ) =>
-      Effect.gen(function* () {
-        const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
-        yield* enforceGeneratedDeploymentCap(deployments, input, homeConfig)
-        const generatedDeployment = yield* maybeMaterializeGenerated(deployments, input)
-        const deploymentName =
-          input.deploymentName ?? generatedDeployment?.name ?? branchSlug(input.ref)
-        return {
-          source,
-          project: input.project,
-          stateRoot: input.stateRoot,
-          ref: input.ref,
-          target: "generated",
-          lane: "deployment",
-          deploymentName,
-          ...(generatedDeployment ? { generatedDeployment } : {}),
-        } satisfies V2DeployIntent
-      })
+      Effect.succeed({
+        source,
+        project: input.project,
+        stateRoot: input.stateRoot,
+        ref: input.ref,
+        target: "generated",
+        lane: "deployment",
+        deploymentName: branchSlug(input.deploymentName ?? input.ref),
+      } satisfies V2DeployIntent)
 
     return {
       fromGitPush: (input) =>

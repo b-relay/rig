@@ -318,6 +318,151 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
     }
   })
 
+  test("GIVEN a Pantry-like fake app WHEN web sqlite and CLI components are configured THEN v2 deploys the app shape", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig2-pantry-like-"))
+    const configPath = join(repo, "rig.json")
+
+    try {
+      const init = await runRig2Command(
+        [
+          "init",
+          "--project",
+          "pantry-like",
+          "--path",
+          repo,
+          "--state-root",
+          root,
+          "--provider-profile",
+          "stub",
+          "--domain",
+          "pantry-like.example.test",
+          "--proxy",
+          "web",
+          "--uses",
+          "sqlite",
+        ],
+        { RIG_V2_ROOT: root },
+      )
+
+      expect(init.exitCode).toBe(0)
+      expect(init.stderr).toBe("")
+
+      const addWeb = await runRig2Command(
+        [
+          "config",
+          "set",
+          "--path",
+          "components.web",
+          "--json",
+          JSON.stringify({
+            mode: "managed",
+            command: "printf 'pantry-like web on ${web.port} using ${sqlite.path}\\n'",
+          }),
+          "--apply",
+        ],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(addWeb.exitCode).toBe(0)
+      expect(addWeb.stderr).toBe("")
+
+      const addCli = await runRig2Command(
+        [
+          "config",
+          "set",
+          "--path",
+          "components.cli",
+          "--json",
+          JSON.stringify({
+            mode: "installed",
+            entrypoint: "dist/pantry",
+            build: "mkdir -p dist && printf '#!/bin/sh\\necho pantry-like:$1\\n' > dist/pantry",
+            installName: "pantry",
+          }),
+          "--apply",
+        ],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(addCli.exitCode).toBe(0)
+      expect(addCli.stderr).toBe("")
+
+      const liveDeploy = await runRig2Command(
+        ["deploy", "--state-root", root, "--ref", "main"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(liveDeploy.exitCode).toBe(0)
+      expect(liveDeploy.stderr).toBe("")
+      expect(liveDeploy.stdout).toContain("[INFO] rig2 deploy accepted")
+      expect(liveDeploy.stdout).toContain('"project":"pantry-like"')
+      expect(liveDeploy.stdout).toContain('"target":"live"')
+
+      const generatedDeploy = await runRig2Command(
+        ["deploy", "--state-root", root, "--target", "generated", "--ref", "feature/pantry-like-preview"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(generatedDeploy.exitCode).toBe(0)
+      expect(generatedDeploy.stderr).toBe("")
+      expect(generatedDeploy.stdout).toContain('"target":"generated:feature-pantry-like-preview"')
+
+      const list = await runRig2Command(
+        ["list", "--state-root", root, "--json"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(list.exitCode).toBe(0)
+      expect(list.stderr).toBe("")
+      expect(list.stdout).toContain("pantry-like/live (live) profile=stub")
+      expect(list.stdout).toContain("pantry-like/feature-pantry-like-preview (generated) profile=stub")
+      expect(list.stdout).toContain('"component":"web"')
+
+      const logs = await runRig2Command(
+        ["logs", "--state-root", root, "--lines", "200"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(logs.exitCode).toBe(0)
+      expect(logs.stderr).toBe("")
+      expect(logs.stdout).toContain('"component":"sqlite"')
+      expect(logs.stdout).toContain('"component":"pantry"')
+      expect(logs.stdout).toContain('"event":"component.install"')
+      expect(logs.stdout).toContain("/data/pantry-like/live/sqlite/sqlite.sqlite")
+      expect(logs.stdout).toContain("/data/pantry-like/deployments/feature-pantry-like-preview/sqlite/sqlite.sqlite")
+
+      const rigConfig = JSON.parse(await readFile(configPath, "utf8")) as {
+        readonly components?: Record<string, unknown>
+        readonly domain?: string
+        readonly live?: { readonly proxy?: { readonly upstream?: string } }
+      }
+      expect(rigConfig.domain).toBe("pantry-like.example.test")
+      expect(rigConfig.live?.proxy?.upstream).toBe("web")
+      expect(rigConfig.components).toMatchObject({
+        sqlite: { uses: "sqlite" },
+        web: {
+          mode: "managed",
+          command: "printf 'pantry-like web on ${web.port} using ${sqlite.path}\\n'",
+        },
+        cli: {
+          mode: "installed",
+          entrypoint: "dist/pantry",
+          installName: "pantry",
+        },
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN rigd command WHEN run directly THEN it starts the local MVP API", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
 

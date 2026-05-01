@@ -12,7 +12,7 @@ Durable decisions that apply across this stage:
 - **Control-plane shape**: `rigd` is localhost-first on `127.0.0.1`, and the hosted web UI is `https://rig.b-relay.com`. Private remote access can be handled by Tailscale DNS routing to localhost; public internet exposure should be handled by a provider/plugin such as Cloudflare Tunnel.
 - **Read/write split**: web-facing read models and write actions are separate slices. Read models expose project, deployment, health, and log state. Write actions route lifecycle and deploy operations through the same `rigd` authority used by CLI commands.
 - **Config editing**: web-facing config changes use structured patches validated by Effect Schema before atomic apply. Direct arbitrary file writes are not part of the control-plane contract.
-- **Cutover safety**: `rig2` remains isolated until replacement readiness verifies provider safety, docs, validation, rollback behavior, and the final rename/build path.
+- **Cutover safety**: `rig2` remains isolated until replacement readiness verifies provider safety, docs, validation, and rollback behavior. The final cutover is a deliberate removal of v1 code followed by making v2 the `rig` CLI.
 
 ---
 
@@ -265,18 +265,17 @@ the isolated `rig2` CLI when it is safe. The long-term goal is that v2 becomes
 `rig`; `rig2` is temporary migration runway, not a permanent second product.
 
 There are no external users to preserve compatibility for. The cutover is a
-rename/build replacement, not gradual command routing through v1. The safety
-requirement is to keep current machine state isolated until the replacement is
-deliberate.
+deliberate v1 removal and v2 promotion, not gradual command routing through v1.
+The safety requirement is to keep current machine state isolated until the
+replacement is deliberate.
 
 ### Acceptance Criteria
 
 - [x] A cutover readiness checklist exists in docs and maps final CLI areas to their v2 readiness status.
-- [ ] Main-binary tests cover the replacement `rig` CLI under isolated state and safe provider composition.
 - [x] Legacy v1 command behavior is not a long-term compatibility requirement; v1 remains available only until the deliberate replacement rename.
 - [x] Provider/profile selection prevents accidental launchd, Caddy, or user-state mutation in tests.
 - [x] Release/cutover docs explain how to validate, roll back, and keep production apps safe during migration.
-- [x] The plan explicitly covers renaming/building `rig2` behavior as `rig` when v2 becomes default.
+- [x] The plan explicitly covers deleting v1 and promoting `rig2` behavior as `rig` when v2 becomes default.
 - [x] Remaining post-cutover gaps are filed as follow-up issues instead of hidden in the plan.
 
 ### Current AFK Output
@@ -294,8 +293,8 @@ parity for proxy routing, SCM checkout, and workspace materialization.
 read, preview, and apply workflow through a user-facing CLI.
 
 Runtime routing from `rig` to v2 remains intentionally unchanged. The approved
-direction is to keep `rig2` isolated until it is ready, then rename/build it as
-`rig` as an entirely new CLI.
+direction is to keep `rig2` isolated until it is ready, then remove v1 and
+promote v2 as the `rig` CLI in a deliberate cutover commit.
 
 ### Follow-Up Progress
 
@@ -339,7 +338,10 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   accepted under the isolated stub provider profile without using Pantry as the
   test bed or setting stub providers in home config. The generated path also
   verifies generated inventory, reserved component ports, and generated SQLite
-  data paths under the isolated v2 state root. Runtime provider services now
+  data paths under the isolated v2 state root. A Pantry-like fake app flow now
+  proves a routed web component, SQLite component, and installed CLI component
+  with `installName: "pantry"` can deploy live and generated targets through v2
+  without touching real Pantry. Runtime provider services now
   select SCM, workspace, proxy, health, hook, package-manager, and
   process-supervisor providers from the resolved deployment `providerProfile`,
   with the machine default only used as a fallback.

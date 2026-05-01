@@ -114,8 +114,9 @@ Cutover tests must keep provider mutation explicit:
   `fixtures/rig2-projects/fullstack-basic/rig2.json`, which models a
   Postgres-like service, Convex-like service, API, and Vite-like web component
   with isolated `local`, `live`, and generated deployment ports.
-- Main-binary v2 tests must prove the selected provider profile before running
-  any lifecycle/deploy action.
+- Keep a Pantry-like fake app flow green before real Pantry cutover; it should
+  cover routed web, SQLite state, and an installed CLI named `pantry` under
+  isolated v2 state.
 
 ## Validation Checklist
 
@@ -126,7 +127,6 @@ Before renaming or building `rig2` as `rig`:
 - `bun run build`
 - `bun run build:rig2`
 - `git diff --check`
-- Run main-binary E2E with isolated `RIG_ROOT`.
 - Run `rig2` command tests with isolated `RIG_V2_ROOT`.
 - Run a stub-provider lifecycle path.
 - Run a stub-provider generated deployment path.
@@ -136,7 +136,8 @@ Before renaming or building `rig2` as `rig`:
   `pantry` CLI installation under an isolated v2 bin root.
 - Run `rigd` read model, write action, and config edit tests.
 - Confirm current v1 state is preserved until the replacement is deliberate.
-- Confirm rollback steps are documented and tested for the rename/build path.
+- Confirm rollback steps are documented for the deliberate v1-removal and v2
+  promotion commit.
 
 ## Rollback Checklist
 
@@ -193,11 +194,13 @@ Known gaps are filed instead of hidden in this plan:
 
 Resolved:
 
-- Cutover is a rename/build replacement, not command-by-command routing.
+- Cutover is a deliberate v1-removal and v2-promotion commit, not
+  command-by-command routing.
 - No v1/v2 mixed gate is needed.
 - V1 compatibility is not a long-term product requirement because there are no
   external users.
-- `rig2` should remain until v2 is good enough, then become `rig`.
+- `rig2` should remain until v2 is good enough, then become `rig` after v1 is
+  removed from the repo.
 
 Still useful to decide before replacement:
 

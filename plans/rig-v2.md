@@ -341,8 +341,9 @@ Stage 2 covers:
 - #22 Prepare rig2 to main rig cutover readiness. In progress: the AFK
   readiness audit and rig2 user guide are documented in
   `docs/rig-v2-cutover-readiness.md` and `docs/rig2-guide.md`; HITL decision
-  is to keep `rig2` isolated until it is ready, then rename/build it as `rig`
-  as a replacement CLI rather than routing selected commands through v1.
+  is to keep `rig2` isolated until it is ready, then remove v1 and promote v2
+  as `rig` in a deliberate cutover commit rather than routing selected commands
+  through v1.
 - #25 Connect rig2 lifecycle and deploy actions to provider-backed execution.
   Complete: config-backed `rigd` lifecycle/deploy/destroy writes now execute
   through `V2RuntimeExecutor` before receipts/logs persist; repo-inferred and

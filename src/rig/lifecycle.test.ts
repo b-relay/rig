@@ -53,7 +53,7 @@ class CaptureRigd {
         timestamp: "2026-04-24T00:00:00.000Z",
         event: "rigd.lifecycle.accepted",
         project: input.project,
-        lane: "local",
+        lane: input.lane,
       },
     ])
   }
@@ -235,6 +235,7 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
         project: "pantry",
         stateRoot: "/tmp/rig",
         lines: 25,
+        lane: "local",
       },
     ])
     expect(logger.infos[0]?.message).toBe("rig logs")

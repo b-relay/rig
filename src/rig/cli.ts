@@ -122,6 +122,11 @@ const laneFlag = Flag.choice("lane", ["local", "live"]).pipe(
   Flag.withDescription("Rig runtime lane: local working copy or live built deployment."),
 )
 
+const optionalLaneFlag = Flag.string("lane").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Optional rig runtime lane filter: local or live."),
+)
+
 const stateRootFlag = Flag.string("state-root").pipe(
   Flag.withDefault(rigRoot()),
   Flag.withDescription("Isolated rig state root. Defaults to ~/.rig."),
@@ -450,7 +455,7 @@ const runLifecycleAction = (
   action: RigLifecycleAction,
   input: {
     readonly project: string
-    readonly lane: RigLifecycleLane
+    readonly lane?: RigLifecycleLane
     readonly stateRoot: string
     readonly follow?: boolean
     readonly lines?: number
@@ -481,6 +486,23 @@ const runLifecycleAction = (
     })
   })
 
+const parseOptionalLane = (value: string) => {
+  const lane = value.trim()
+  if (lane === "") {
+    return Effect.succeed(undefined)
+  }
+  if (lane === "local" || lane === "live") {
+    return Effect.succeed(lane)
+  }
+  return Effect.fail(
+    new RigCliArgumentError(
+      `Unknown lane '${lane}'.`,
+      "Use --lane local, --lane live, or omit --lane to show all project logs.",
+      { lane },
+    ),
+  )
+}
+
 const lifecycleCommand = (action: RigLifecycleAction, description: string) =>
   Command.make(
     action,
@@ -501,7 +523,7 @@ const logsCommand = Command.make(
   "logs",
   {
     project: projectFlag,
-    lane: laneFlag,
+    lane: optionalLaneFlag,
     stateRoot: stateRootFlag,
     configPath: configFlag,
     follow: Flag.boolean("follow").pipe(Flag.withDescription("Follow log output.")),
@@ -512,9 +534,16 @@ const logsCommand = Command.make(
   },
   (input) =>
     Effect.gen(function* () {
-      const resolved = yield* resolveProjectScopedInput(input)
+      const lane = yield* parseOptionalLane(input.lane)
+      const resolved = yield* resolveProjectScopedInput({
+        ...input,
+        lane: lane ?? "local",
+      })
       yield* runLifecycleAction("logs", {
-        ...resolved,
+        project: resolved.project,
+        stateRoot: resolved.stateRoot,
+        ...(resolved.configPath ? { configPath: resolved.configPath } : {}),
+        ...(lane ? { lane } : {}),
         follow: input.follow,
         lines: input.lines,
       })

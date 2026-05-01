@@ -268,6 +268,37 @@ describe("GIVEN rig generated deployments WHEN materializing inventory THEN beha
     expect(store.removed).toEqual([result.destroyed])
   })
 
+  test("GIVEN generated deployment with display name WHEN destroyed THEN the same unnormalized name resolves", async () => {
+    const config = await Effect.runPromise(projectConfig())
+    const { result } = await runWithStore(
+      Effect.gen(function* () {
+        const manager = yield* RigDeploymentManager
+        yield* manager.materializeGenerated({
+          config,
+          stateRoot: "/tmp/rig",
+          branch: "feature/qa",
+          name: "QA Preview",
+        })
+        const destroyed = yield* manager.destroyGenerated({
+          config,
+          stateRoot: "/tmp/rig",
+          name: "QA Preview",
+        })
+        const inventory = yield* manager.list({
+          config,
+          stateRoot: "/tmp/rig",
+        })
+        return { destroyed, inventory }
+      }),
+    )
+
+    expect(result.destroyed.name).toBe("qa-preview")
+    expect(result.inventory.map((entry) => `${entry.kind}:${entry.name}`)).toEqual([
+      "local:local",
+      "live:live",
+    ])
+  })
+
   test("GIVEN file-backed store WHEN materializing THEN inventory and generated state are persisted", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-deployments-"))
 

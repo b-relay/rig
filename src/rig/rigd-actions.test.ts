@@ -394,6 +394,42 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN local and live runtime logs WHEN lane is requested THEN only matching lane logs are returned", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          yield* rigd.controlPlaneLifecycle({
+            action: "up",
+            project: "pantry",
+            lane: "local",
+            stateRoot,
+            config,
+          })
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            stateRoot,
+            config,
+          })
+          const local = yield* rigd.logs({ project: "pantry", stateRoot, lane: "local", lines: 10 })
+          const live = yield* rigd.logs({ project: "pantry", stateRoot, lane: "live", lines: 10 })
+          return { local, live }
+        }),
+      )
+
+      expect(result.local.map((entry) => entry.lane)).toEqual(["local", "local"])
+      expect(result.live.map((entry) => entry.lane)).toEqual(["live"])
+      expect(result.live.map((entry) => entry.event)).toEqual(["component.log"])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN a config-backed lifecycle up WHEN rigd restarts THEN desired running deployments are reconciled", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-reconcile-"))
 
@@ -1016,6 +1052,48 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN generated deployment display name WHEN destroyed THEN rigd normalizes the requested name", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          yield* rigd.controlPlaneDeploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/qa",
+            deploymentName: "QA Preview",
+            stateRoot,
+            config,
+          })
+          const destroyed = yield* rigd.controlPlaneDestroyGenerated({
+            project: "pantry",
+            target: "generated",
+            deploymentName: "QA Preview",
+            stateRoot,
+            config,
+          })
+          const model = yield* rigd.webReadModel({ stateRoot })
+          return { destroyed, model }
+        }),
+      )
+
+      expect(result.destroyed).toMatchObject({
+        kind: "destroy",
+        target: "generated:qa-preview",
+        accepted: true,
+      })
+      expect(result.model.deployments.map((deployment) => `${deployment.kind}:${deployment.name}`)).toEqual([
+        "local:local",
+        "live:live",
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN generated deployment cap reject policy WHEN cap is reached THEN rigd rejects a new generated deploy", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
 
@@ -1082,9 +1160,11 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
 
     try {
       const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor()
       const result = await runWithRigd(
         Effect.gen(function* () {
           const rigd = yield* Rigd
+          const store = yield* RigdStateStore
           yield* rigd.controlPlaneDeploy({
             project: "pantry",
             target: "generated",
@@ -1108,9 +1188,11 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
           })
           const model = yield* rigd.webReadModel({ stateRoot })
           const logs = yield* rigd.webLogs({ stateRoot, project: "pantry", lines: 20 })
-          return { accepted, model, logs }
+          const persisted = yield* store.load({ stateRoot })
+          return { accepted, model, logs, persisted }
         }),
         {
+          executor,
           homeConfig: {
             ...rigHomeConfigDefaults,
             deploy: {
@@ -1136,12 +1218,21 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         "local:local",
       ])
       expect(result.model.deployments.map((deployment) => deployment.name)).not.toContain("z-old")
+      expect(executor.destroyGeneratedCalls.map((call) => call.deployment.name)).toEqual(["z-old"])
+      expect(result.persisted.desiredDeployments).toContainEqual(expect.objectContaining({
+        project: "pantry",
+        deployment: "z-old",
+        desiredStatus: "stopped",
+      }))
       expect(result.logs).toContainEqual(expect.objectContaining({
         event: "rigd.generated.cap-replaced",
         deployment: "z-old",
         details: expect.objectContaining({
           requestedDeployment: "a-new",
           replacedDeployment: "z-old",
+          execution: expect.objectContaining({
+            operations: ["provider:destroy:z-old"],
+          }),
         }),
       }))
     } finally {

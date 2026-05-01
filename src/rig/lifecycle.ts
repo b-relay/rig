@@ -11,7 +11,7 @@ export type RigLifecycleLane = "local" | "live"
 export interface RigLifecycleRequest {
   readonly action: RigLifecycleAction
   readonly project: string
-  readonly lane: RigLifecycleLane
+  readonly lane?: RigLifecycleLane
   readonly stateRoot: string
   readonly config?: RigProjectConfig
   readonly follow?: boolean
@@ -31,7 +31,7 @@ const lifecycleWriteInput = (
 ) => ({
   action,
   project: request.project,
-  lane: request.lane,
+  lane: request.lane ?? "local",
   stateRoot: request.stateRoot,
   ...(request.config ? { config: request.config } : {}),
 })
@@ -106,10 +106,11 @@ export const RigLifecycleLive = Layer.effect(
               project: request.project,
               stateRoot: request.stateRoot,
               lines: request.lines ?? 50,
+              ...(request.lane ? { lane: request.lane } : {}),
             })
             yield* logger.info("rig logs", {
               project: request.project,
-              lane: request.lane,
+              ...(request.lane ? { lane: request.lane } : {}),
               follow: request.follow ?? false,
               entries,
             })

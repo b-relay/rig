@@ -69,6 +69,7 @@ export interface RigdLogInput {
   readonly project: string
   readonly stateRoot: string
   readonly lines: number
+  readonly lane?: RigLifecycleLane
 }
 
 export interface RigdLogEntry {
@@ -788,6 +789,9 @@ export const RigdLive = Layer.effect(
           return
         }
 
+        const execution = yield* runtimeExecutor.destroyGenerated({ deployment: oldest })
+        yield* persistExecutionEvents(input.stateRoot, execution)
+        yield* persistDesiredDeployment(input.stateRoot, oldest, "stopped")
         yield* deployments.destroyGenerated({
           config: input.config,
           stateRoot: input.stateRoot,
@@ -803,6 +807,7 @@ export const RigdLive = Layer.effect(
             replacePolicy: homeConfig.deploy.generated.replacePolicy,
             requestedDeployment,
             replacedDeployment: oldest.name,
+            execution,
           },
         })
       })
@@ -937,6 +942,7 @@ export const RigdLive = Layer.effect(
               },
             {
               project: input.project,
+              ...(input.lane ? { lane: input.lane } : {}),
               lines: input.lines,
               includeGlobal: true,
             },
@@ -1053,18 +1059,20 @@ export const RigdLive = Layer.effect(
               ),
             )
           }
-          const target = `generated:${input.deploymentName}`
+          const deploymentName = branchSlug(input.deploymentName)
+          const target = `generated:${deploymentName}`
           yield* verifyActionPreflight({
             kind: "destroy",
             project: input.project,
             stateRoot: input.stateRoot,
             target,
+            deploymentName,
             config: input.config,
           })
           const destroyed = yield* deployments.destroyGenerated({
             config: input.config,
             stateRoot: input.stateRoot,
-            name: input.deploymentName,
+            name: deploymentName,
           })
           const execution = yield* runtimeExecutor.destroyGenerated({ deployment: destroyed })
           yield* persistDesiredDeployment(input.stateRoot, destroyed, "stopped")

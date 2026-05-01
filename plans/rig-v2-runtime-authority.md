@@ -296,14 +296,14 @@ managed process failure behavior behind the process supervisor contract.
 
 ### Acceptance Criteria
 
-- [ ] `rigd` process supervisor implementation lives in a focused adapter
+- [x] `rigd` process supervisor implementation lives in a focused adapter
       module.
-- [ ] Startup, restart, stop, output capture, and exit watcher behavior remain
+- [x] Startup, restart, stop, output capture, and exit watcher behavior remain
       externally compatible.
-- [ ] Managed process exit handling still records failures through `rigd`.
-- [ ] Default provider composition still selects `rigd` supervision where
+- [x] Managed process exit handling still records failures through `rigd`.
+- [x] Default provider composition still selects `rigd` supervision where
       configured.
-- [ ] Tests cover quick exits, later exits, output capture, and restart
+- [x] Tests cover quick exits, later exits, output capture, and restart
       behavior through the contract.
 
 ---

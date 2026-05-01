@@ -1,7 +1,7 @@
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { getuid } from "node:process"
-import { Context, Effect, Exit, Layer, Option, Scope, Stream } from "effect"
+import { Context, Effect, Exit, Layer, Scope, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
 import { BunChildProcessSpawner, BunFileSystem, BunPath } from "@effect/platform-bun"
@@ -31,6 +31,10 @@ import {
   stubProcessSupervisorOperation,
   stubProcessSupervisorProvider,
 } from "./providers/stub-process-supervisor.js"
+import {
+  createRigdProcessSupervisorAdapter,
+  rigdProcessSupervisorProvider,
+} from "./providers/rigd-process-supervisor.js"
 
 export {
   V2ProcessSupervisorProvider,
@@ -358,14 +362,6 @@ const plugin = (
   displayName,
   capabilities,
 })
-
-const rigdProcessSupervisorProvider = plugin(
-  "rigd",
-  "process-supervisor",
-  "rigd Core Supervisor",
-  ["core-supervisor", "session-processes", "same-provider-interface"],
-  "core",
-)
 
 const defaultProviders: readonly V2ProviderPlugin[] = [
   rigdProcessSupervisorProvider,
@@ -779,15 +775,7 @@ const processSupervisorService = (
       "process-supervisor",
       deployment.resolved.providers.processSupervisor,
     )
-  interface RigdManagedProcess {
-    readonly handle: ChildProcessHandle
-    readonly scope: Scope.Closeable
-    stopping: boolean
-  }
-
-  const rigdProcesses = new Map<string, RigdManagedProcess>()
-  const processKey = (deployment: V2DeploymentRecord, service: V2RuntimeServiceConfig): string =>
-    `${deployment.project}:${deployment.name}:${service.name}`
+  const rigdProcessSupervisor = createRigdProcessSupervisorAdapter()
   const operationName = (
     provider: V2ProviderPlugin,
     action: "up" | "down" | "restart",
@@ -931,218 +919,13 @@ const processSupervisorService = (
           ),
     })
 
-  const collectProcessOutput = (
-    handle: ChildProcessHandle,
-  ): Effect.Effect<readonly V2ProviderOutputLine[], V2RuntimeError> =>
-    Effect.all(
-      [
-        streamText(handle.stdout),
-        streamText(handle.stderr),
-      ],
-      { concurrency: "unbounded" },
-    ).pipe(
-      Effect.map(([stdout, stderr]) => [
-        ...outputLines("stdout", stdout),
-        ...outputLines("stderr", stderr),
-      ]),
-      Effect.mapError((cause) =>
-        new V2RuntimeError(
-          "Unable to collect v2 process output.",
-          "Inspect the managed process streams and retry the runtime action.",
-          {
-            cause: cause instanceof Error ? cause.message : String(cause),
-          },
-        ),
-      ),
-    )
-
-  const outputText = (
-    output: readonly V2ProviderOutputLine[],
-    stream: "stdout" | "stderr",
-  ): string | undefined => {
-    const text = output.filter((line) => line.stream === stream).map((line) => line.line).join("\n")
-    return text.length > 0 ? text : undefined
-  }
-
-  const watchRigdProcessExit = (
-    key: string,
-    running: RigdManagedProcess,
-  ): Effect.Effect<V2ProcessSupervisorExitResult, V2RuntimeError> =>
-    Effect.gen(function* () {
-      const exitCode = yield* running.handle.exitCode.pipe(
-        Effect.map((code) => Number(code)),
-        Effect.catch(() => Effect.succeed(undefined)),
-      )
-      const output = yield* collectProcessOutput(running.handle)
-      if (rigdProcesses.get(key) === running) {
-        rigdProcesses.delete(key)
-      }
-      yield* Scope.close(running.scope, Exit.void).pipe(Effect.ignore)
-      return {
-        expected: running.stopping,
-        ...(exitCode === undefined ? {} : { exitCode }),
-        ...(outputText(output, "stdout") ? { stdout: outputText(output, "stdout") } : {}),
-        ...(outputText(output, "stderr") ? { stderr: outputText(output, "stderr") } : {}),
-      }
-    })
-
-  const stopRigdProcess = (
-    provider: V2ProviderPlugin,
-    input: {
-      readonly deployment: V2DeploymentRecord
-      readonly service: V2RuntimeServiceConfig
-    },
-  ): Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError> =>
-    Effect.gen(function* () {
-      const key = processKey(input.deployment, input.service)
-      const running = rigdProcesses.get(key)
-      if (!running) {
-        return {
-          operation: operationName(provider, "down", input.service, "not-running"),
-        } satisfies V2ProcessSupervisorOperationResult
-      }
-
-      rigdProcesses.delete(key)
-      running.stopping = true
-      yield* running.handle.kill({ forceKillAfter: "2 seconds" }).pipe(Effect.ignore)
-      const exitCode = yield* running.handle.exitCode.pipe(
-        Effect.map((code) => Number(code)),
-        Effect.catch(() => Effect.succeed(undefined)),
-      )
-      yield* Scope.close(running.scope, Exit.void).pipe(Effect.ignore)
-      return {
-        operation: operationName(provider, "down", input.service, `stopped:${exitCode ?? "unknown"}`),
-      } satisfies V2ProcessSupervisorOperationResult
-    }).pipe(
-      Effect.mapError(runtimeError(
-        `Unable to stop rigd-supervised process '${input.service.name}'.`,
-        "Check the managed process state and retry the lifecycle action.",
-        {
-          providerId: provider.id,
-          component: input.service.name,
-          deployment: input.deployment.name,
-        },
-      )),
-    )
-
-  const startRigdProcess = (
-    provider: V2ProviderPlugin,
-    action: "up" | "restart",
-    input: {
-      readonly deployment: V2DeploymentRecord
-      readonly service: V2RuntimeServiceConfig
-    },
-  ): Effect.Effect<V2ProcessSupervisorOperationResult, V2RuntimeError> => {
-    if (!("command" in input.service)) {
-      return Effect.fail(
-        new V2RuntimeError(
-          `Component '${input.service.name}' cannot be supervised by rigd.`,
-          "Only managed server components with a command can use the rigd process supervisor.",
-          {
-            providerId: provider.id,
-            component: input.service.name,
-            deployment: input.deployment.name,
-          },
-        ),
-      )
-    }
-
-    return Effect.gen(function* () {
-      const key = processKey(input.deployment, input.service)
-      if (action === "up" && rigdProcesses.has(key)) {
-        return {
-          operation: operationName(provider, action, input.service, "already-running"),
-        } satisfies V2ProcessSupervisorOperationResult
-      }
-
-      const existing = rigdProcesses.get(key)
-      if (existing) {
-        rigdProcesses.delete(key)
-        existing.stopping = true
-        yield* existing.handle.kill({ forceKillAfter: "2 seconds" }).pipe(Effect.ignore)
-        yield* existing.handle.exitCode.pipe(Effect.ignore)
-        yield* Scope.close(existing.scope, Exit.void).pipe(Effect.ignore)
-      }
-
-      yield* platformMakeDirectory(input.deployment.workspacePath).pipe(
-        Effect.mapError((cause) =>
-          new V2RuntimeError(
-            `Unable to prepare workspace for '${input.service.name}'.`,
-            "Ensure the deployment workspace is writable before starting the component.",
-            {
-              providerId: provider.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              workspacePath: input.deployment.workspacePath,
-              cause: cause instanceof Error ? cause.message : String(cause),
-            },
-          ),
-        ),
-      )
-      const scope = yield* Scope.make()
-      const handle = yield* spawnPlatformProcess(
-        ["sh", "-lc", input.service.command],
-        { cwd: input.deployment.workspacePath, scope },
-      )
-      const quickExit = yield* handle.exitCode.pipe(Effect.timeoutOption("50 millis"))
-
-      if (Option.isNone(quickExit)) {
-        const running = { handle, scope, stopping: false }
-        rigdProcesses.set(key, running)
-        return {
-          operation: operationName(provider, action, input.service, "started"),
-          exit: watchRigdProcessExit(key, running),
-        } satisfies V2ProcessSupervisorOperationResult
-      }
-
-      const exitCode = Number(quickExit.value)
-      const output = yield* collectProcessOutput(handle)
-      yield* Scope.close(scope, Exit.void).pipe(Effect.ignore)
-      if (exitCode !== 0) {
-        return yield* Effect.fail(new V2RuntimeError(
-          `rigd process supervisor command failed for '${input.service.name}' with exit code ${exitCode}.`,
-          "Fix the managed component command before retrying the lifecycle action.",
-          {
-            providerId: provider.id,
-            component: input.service.name,
-            deployment: input.deployment.name,
-            command: input.service.command,
-            exitCode,
-            stdout: output.filter((line) => line.stream === "stdout").map((line) => line.line).join("\n"),
-            stderr: output.filter((line) => line.stream === "stderr").map((line) => line.line).join("\n"),
-          },
-        ))
-      }
-
-      return {
-        operation: operationName(provider, action, input.service, `exited:${exitCode}`),
-        ...(output.length > 0 ? { output } : {}),
-      } satisfies V2ProcessSupervisorOperationResult
-    }).pipe(
-      Effect.mapError((cause) =>
-        cause instanceof V2RuntimeError
-          ? cause
-          : new V2RuntimeError(
-            `Unable to start rigd-supervised process '${input.service.name}'.`,
-            "Ensure the command can run from the deployment workspace and retry.",
-            {
-              providerId: provider.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              command: input.service.command,
-              cause: cause instanceof Error ? cause.message : String(cause),
-            },
-          )),
-    )
-  }
-
   return {
     ...base,
     up: (input) =>
       Effect.gen(function* () {
         const selected = yield* selectedForDeployment(input.deployment)
         if (selected.id === "rigd") {
-          return yield* startRigdProcess(selected, "up", input)
+          return yield* rigdProcessSupervisor.up(selected, input)
         }
         if (selected.id === "launchd") {
           return yield* installLaunchdProcess(selected, input)
@@ -1156,7 +939,7 @@ const processSupervisorService = (
       Effect.gen(function* () {
         const selected = yield* selectedForDeployment(input.deployment)
         if (selected.id === "rigd") {
-          return yield* stopRigdProcess(selected, input)
+          return yield* rigdProcessSupervisor.down(selected, input)
         }
         if (selected.id === "launchd") {
           return yield* removeLaunchdProcess(selected, input)
@@ -1170,7 +953,7 @@ const processSupervisorService = (
       Effect.gen(function* () {
         const selected = yield* selectedForDeployment(input.deployment)
         if (selected.id === "rigd") {
-          return yield* startRigdProcess(selected, "restart", input)
+          return yield* rigdProcessSupervisor.restart(selected, input)
         }
         if (selected.id === "launchd") {
           yield* removeLaunchdProcess(selected, input)

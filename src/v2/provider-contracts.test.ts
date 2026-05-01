@@ -838,6 +838,68 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     }
   })
 
+  test("GIVEN rigd process supervisor WHEN a running process is restarted THEN the previous process exits expectedly", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-rigd-process-restart-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+        resolved: {
+          providers: {
+            processSupervisor: "rigd",
+          },
+        },
+      } as V2DeploymentRecord
+      const firstService = {
+        name: "web",
+        type: "server",
+        command: "printf first; sleep 10",
+        port: 3070,
+      } as const
+      const replacementService = {
+        ...firstService,
+        command: "printf restarted",
+      }
+
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processSupervisor = yield* V2ProcessSupervisorProvider
+          const started = yield* processSupervisor.up({
+            deployment,
+            service: firstService,
+          })
+          const restarted = yield* processSupervisor.restart({
+            deployment,
+            service: replacementService,
+          })
+          const firstExit = yield* started.exit!
+          const down = yield* processSupervisor.down({
+            deployment,
+            service: replacementService,
+          })
+          return { started, restarted, firstExit, down }
+        }).pipe(Effect.provide(V2ProviderContractsLive("default"))),
+      )
+
+      expect(result.started.operation).toBe("process-supervisor:rigd:up:web:started")
+      expect(result.restarted).toEqual({
+        operation: "process-supervisor:rigd:restart:web:exited:0",
+        output: [
+          { stream: "stdout", line: "restarted" },
+        ],
+      })
+      expect(result.firstExit).toEqual(expect.objectContaining({
+        expected: true,
+      }))
+      expect(result.down.operation).toBe("process-supervisor:rigd:down:web:not-running")
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN rigd process supervisor WHEN a started process exits later THEN its exit effect reports output and code", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rig-v2-rigd-process-watch-"))
 

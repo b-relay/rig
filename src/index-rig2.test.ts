@@ -186,7 +186,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
     }
   })
 
-  test("GIVEN a fake project initialized by rig2 WHEN web component is added THEN local up and live deploy accept the config", async () => {
+  test("GIVEN a fake project initialized by rig2 WHEN web component is added THEN local live and generated deploys accept the config", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
     const repo = await mkdtemp(join(tmpdir(), "rig2-fake-project-"))
     const configPath = join(repo, "rig.json")
@@ -225,8 +225,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
           "--json",
           JSON.stringify({
             mode: "managed",
-            command: "printf 'fake web started\\n'",
-            port: 3180,
+            command: "printf 'fake web started on ${web.port}\\n'",
           }),
           "--apply",
         ],
@@ -262,6 +261,45 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(deploy.stdout).toContain('"project":"fake-fullstack"')
       expect(deploy.stdout).toContain('"target":"live"')
 
+      const generatedDeploy = await runRig2Command(
+        ["deploy", "--state-root", root, "--target", "generated", "--ref", "feature/test"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(generatedDeploy.exitCode).toBe(0)
+      expect(generatedDeploy.stderr).toBe("")
+      expect(generatedDeploy.stdout).toContain("[INFO] rig2 deploy accepted")
+      expect(generatedDeploy.stdout).toContain('"project":"fake-fullstack"')
+      expect(generatedDeploy.stdout).toContain('"target":"generated:feature-test"')
+
+      const list = await runRig2Command(
+        ["list", "--state-root", root, "--json"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(list.exitCode).toBe(0)
+      expect(list.stderr).toBe("")
+      expect(list.stdout).toContain("fake-fullstack/feature-test (generated) profile=stub")
+      expect(list.stdout).toContain('"name":"feature-test"')
+      expect(list.stdout).toContain('"kind":"generated"')
+      expect(list.stdout).toContain('"deployment":"feature-test"')
+      expect(list.stdout).toContain('"component":"web"')
+      expect(list.stdout).toContain('"status":"reserved"')
+
+      const logs = await runRig2Command(
+        ["logs", "--state-root", root, "--lines", "100"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(logs.exitCode).toBe(0)
+      expect(logs.stderr).toBe("")
+      expect(logs.stdout).toContain('"deployment":"feature-test"')
+      expect(logs.stdout).toContain('"component":"sqlite"')
+      expect(logs.stdout).toContain(`/data/fake-fullstack/deployments/feature-test/sqlite/sqlite.sqlite`)
+
       const rigConfig = JSON.parse(await readFile(configPath, "utf8")) as {
         readonly components?: Record<string, unknown>
         readonly local?: { readonly proxy?: { readonly upstream?: string } }
@@ -270,8 +308,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
         sqlite: { uses: "sqlite" },
         web: {
           mode: "managed",
-          command: "printf 'fake web started\\n'",
-          port: 3180,
+          command: "printf 'fake web started on ${web.port}\\n'",
         },
       })
       expect(rigConfig.local?.proxy?.upstream).toBe("web")

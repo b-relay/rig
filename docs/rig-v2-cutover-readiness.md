@@ -130,6 +130,8 @@ Before renaming or building `rig2` as `rig`:
 - Run `rig2` command tests with isolated `RIG_V2_ROOT`.
 - Run a stub-provider lifecycle path.
 - Run a stub-provider generated deployment path.
+- Keep the fake-project CLI flow green for local, live, and generated deploys
+  before testing Pantry itself.
 - Run the Pantry readiness tests proving `pantry.b-relay.com` Caddy routing and
   `pantry` CLI installation under an isolated v2 bin root.
 - Run `rigd` read model, write action, and config edit tests.

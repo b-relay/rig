@@ -83,8 +83,9 @@ not active architecture.
 
 The completed cutover removed the old implementation. Remaining rollout work
 is about validating real providers, hardening Pantry-style deployment flows,
-improving setup ergonomics, and documenting explicit state preservation or
-migration steps before touching old runtime state.
+improving setup ergonomics, and following the documented
+[state preservation policy](./state-preservation-policy.md) before touching old
+runtime state.
 
 ## User Stories
 
@@ -216,7 +217,7 @@ migration steps before touching old runtime state.
 
 64. As a contributor, I want CLI parsing to use Effect CLI, so that command parsing, help output, and execution compose with Effect services and errors.
 
-65. As an operator, I want old runtime state to remain preserved until there is an explicit migration or deletion decision, so that cutover does not accidentally destroy recoverable state.
+65. As an operator, I want old runtime state to follow the documented preservation policy, so that cutover does not accidentally destroy recoverable state.
 
 66. As a contributor, I want the shipped `rig` binary to be testable with `RIG_ROOT` and stub providers, so that end-to-end coverage exercises the real entrypoint safely.
 
@@ -355,7 +356,8 @@ migration steps before touching old runtime state.
 - Silent reconstruction of all lost state is not a goal. Recovery should happen only where the system has enough evidence to do it safely.
 
 - Automatic migration of historical runtime state is not part of this PRD.
-  State migration or deletion should be explicit.
+  State migration or deletion must follow the
+  [state preservation policy](./state-preservation-policy.md).
 
 ## Further Notes
 
@@ -366,7 +368,8 @@ Keep the Dokploy context visible during future planning sessions. It explains th
 
 Rig is now promoted to the main `rig` entrypoint. The goal is still to protect
 always-on apps such as `pantry` by keeping historical state untouched until an
-explicit state migration or deletion decision exists.
+explicit state migration or deletion action is approved through the
+[state preservation policy](./state-preservation-policy.md).
 
 Provider selection is explicit enough for the main binary to run in isolated test mode. That keeps end-to-end coverage close to the shipped CLI.
 

@@ -29,8 +29,9 @@ Remaining work is post-cutover product and provider hardening.
   workspaces, logs, or generated deployment inventory.
 - Keep launchd, Caddy, filesystem, process, SCM, control-plane transport, and
   tunnel/exposure concerns behind provider interfaces.
-- Preserve historical runtime state until there is an explicit migration or
-  deletion decision.
+- Follow the
+  [state preservation policy](./state-preservation-policy.md) before migrating,
+  archiving, or deleting historical runtime state.
 
 ## Pantry Validation Target
 
@@ -98,8 +99,7 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
   real package installation, real Caddy route rendering/reachability, real
   health checks, and real structured event logs with capture providers for SCM,
   workspace materialization, and process restart.
-- Confirm historical runtime state remains preserved until a deliberate state
-  migration or deletion decision exists.
+- Confirm historical runtime state follows the documented preservation policy.
 
 ## Rollback
 
@@ -108,8 +108,8 @@ The replacement should remain reversible:
 - Keep the last known old binary available from git history or a saved artifact
   until the replacement is validated on real projects.
 - Do not migrate historical state in place.
-- Preserve historical state separately from the current rig state root until a
-  deliberate migration plan exists.
+- Preserve historical state according to the
+  [state preservation policy](./state-preservation-policy.md).
 - If the replacement fails, restore the previous `rig` build and continue using
   the preserved state.
 - If config edit apply fails, use the reported `rig.json.backup-*.json` file.
@@ -128,6 +128,6 @@ The replacement should remain reversible:
 - #48 Add isolated real-Caddy reachability E2E.
 - #49 Add isolated Pantry cutover dry run.
 - #50 Improve `rig init` from real project setup friction.
-- #51 Decide historical rig state preservation policy.
+- #51 Keep the historical rig state preservation policy current.
 - #52 Harden hosted control-plane transport lifecycle.
 - #53 Expand doctor real-provider diagnostics.

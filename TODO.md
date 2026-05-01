@@ -7,8 +7,8 @@
 - #48 Keep isolated real-Caddy reachability coverage green.
 - #49 Keep the Pantry dry run green with isolated bin root, Caddyfile,
   workspace, data, log, and rig state paths.
-- #51 Document the exact state preservation or migration decision before deleting
-  historical runtime state.
+- #51 Keep the state preservation policy current before any historical runtime
+  state cleanup.
 
 ### Hosted Control Plane
 

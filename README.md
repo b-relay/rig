@@ -91,6 +91,7 @@ Start the local authority explicitly when needed:
 - [Rig guide](./docs/rig-guide.md)
 - [Rig design](./DESIGN.md)
 - [Post-cutover validation](./docs/rig-cutover-readiness.md)
+- [State preservation policy](./docs/state-preservation-policy.md)
 - [Effect v4 notes](./docs/effect-v4-help-notes.md)
 
 ## Development

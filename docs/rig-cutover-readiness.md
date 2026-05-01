@@ -79,6 +79,7 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
 | Forget/purge | No direct replacement command yet. | Defer unless real use needs it. |
 | Daemon authority | `rig rigd`. | Keep as runtime authority command. |
 | Doctor | `rig doctor`. | Caddy reload-command misconfiguration is reported as an actionable provider diagnostic. |
+| Hosted transport | Hosted identity and pairing token live in home config; transport retry/reconnect and delivery failures are covered without the real hosted service. | Keep disabled unless explicitly configured. |
 
 ## Validation Checklist
 
@@ -131,5 +132,5 @@ The replacement should remain reversible:
 - #49 Add isolated Pantry cutover dry run.
 - #50 Keep `rig init` ergonomics tied to repeated real project setup friction.
 - #51 Keep the historical rig state preservation policy current.
-- #52 Harden hosted control-plane transport lifecycle.
+- #52 Keep hosted control-plane retry, reconnect, and failure evidence behavior covered.
 - #53 Keep doctor real-provider diagnostics actionable as more failures are found.

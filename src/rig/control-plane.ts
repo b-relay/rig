@@ -37,6 +37,7 @@ export interface RigControlPlaneStatus {
   readonly hostedTransport?: RigHostedControlPlaneTransportStatus
   readonly lastHeartbeat?: string
   readonly lastTransportError?: string
+  readonly lastTransportFailure?: RigControlPlaneTransportFailure
   readonly lastTunnelError?: string
 }
 
@@ -69,6 +70,17 @@ export type RigHostedControlPlaneTransportStatus =
     readonly paired: false
     readonly error: string
   }
+
+export interface RigControlPlaneTransportFailure {
+  readonly providerId: "hosted-control-plane"
+  readonly operation: "connect" | "send"
+  readonly endpoint: string
+  readonly machineId: string
+  readonly error: string
+  readonly attempts: number
+  readonly observedAt: string
+  readonly envelopeType?: string
+}
 
 export interface RigHostedControlPlaneConnectInput extends RigHostedControlPlaneStartInput {
   readonly publicInternet: boolean
@@ -219,6 +231,31 @@ const exposureStatus = (
   ...(tunnel.publicUrl ? { tunnelUrl: tunnel.publicUrl } : {}),
 })
 
+const transportFailure = (
+  operation: RigControlPlaneTransportFailure["operation"],
+  status: Extract<RigHostedControlPlaneTransportStatus, { readonly status: "failed" }>,
+  attempts: number,
+  envelopeType?: string,
+): RigControlPlaneTransportFailure => ({
+  providerId: "hosted-control-plane",
+  operation,
+  endpoint: status.endpoint,
+  machineId: status.machineId,
+  error: status.error,
+  attempts,
+  observedAt: now(),
+  ...(envelopeType ? { envelopeType } : {}),
+})
+
+const clearTransportFailure = (status: RigControlPlaneStatus): RigControlPlaneStatus => {
+  const {
+    lastTransportError: _lastTransportError,
+    lastTransportFailure: _lastTransportFailure,
+    ...rest
+  } = status
+  return rest
+}
+
 export const RigControlPlaneLive = Layer.effect(
   RigControlPlane,
   Effect.gen(function* () {
@@ -228,6 +265,74 @@ export const RigControlPlaneLive = Layer.effect(
     const hostedTransport = yield* RigHostedControlPlaneTransport
     let current = stoppedStatus
     let currentHosted: RigHostedControlPlaneStartInput | undefined
+    let currentStartInput: RigControlPlaneStartInput | undefined
+
+    const connectHostedTransport = (
+      input: RigHostedControlPlaneConnectInput,
+      maxAttempts: number,
+    ): Effect.Effect<{
+      readonly status: RigHostedControlPlaneTransportStatus
+      readonly failure?: RigControlPlaneTransportFailure
+    }> =>
+      Effect.gen(function* () {
+        let lastFailure: Extract<RigHostedControlPlaneTransportStatus, { readonly status: "failed" }> | undefined
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          const status = yield* hostedTransport.connect(input)
+          if (status.status !== "failed") {
+            return { status }
+          }
+          lastFailure = status
+        }
+
+        const status = lastFailure ?? {
+          status: "failed" as const,
+          endpoint: input.endpoint,
+          machineId: input.machineId,
+          paired: false,
+          error: "Hosted control-plane connect failed without provider details.",
+        }
+        return {
+          status,
+          failure: transportFailure("connect", status, maxAttempts),
+        }
+      })
+
+    const sendHostedEnvelope = (
+      input: RigHostedControlPlaneSendInput,
+      maxAttempts: number,
+    ): Effect.Effect<RigHostedControlPlaneTransportStatus> =>
+      Effect.gen(function* () {
+        let lastFailure: Extract<RigHostedControlPlaneTransportStatus, { readonly status: "failed" }> | undefined
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          const status = yield* hostedTransport.send(input)
+          if (status.status !== "failed") {
+            current = clearTransportFailure({
+              ...current,
+              hostedTransport: status,
+              lastHeartbeat: now(),
+            })
+            return status
+          }
+          lastFailure = status
+        }
+
+        const status = lastFailure ?? {
+          status: "failed" as const,
+          endpoint: input.endpoint,
+          machineId: input.machineId,
+          paired: false,
+          error: "Hosted control-plane send failed without provider details.",
+        }
+        const failure = transportFailure("send", status, maxAttempts, input.envelope.type)
+        current = {
+          ...current,
+          hostedTransport: status,
+          lastTransportError: status.error,
+          lastTransportFailure: failure,
+          lastHeartbeat: now(),
+        }
+        return status
+      })
 
     const buildStatus = (
       input: RigControlPlaneStartInput,
@@ -236,49 +341,67 @@ export const RigControlPlaneLive = Layer.effect(
     ): Effect.Effect<RigControlPlaneStatus> =>
       Effect.gen(function* () {
         const authStatus = yield* auth.resolve(input)
-        const hostedStatus = yield* resolveHostedTransport(input, authStatus, exposureStatus(input, tunnel))
-        return {
+        const hostedResult = yield* resolveHostedTransport(input, authStatus, exposureStatus(input, tunnel), 2)
+        const base = {
           localServer: local,
           exposure: exposureStatus(input, tunnel),
           auth: authStatus,
-          ...(hostedStatus ? { hostedTransport: hostedStatus } : {}),
+          ...(hostedResult?.status ? { hostedTransport: hostedResult.status } : {}),
           lastHeartbeat: now(),
-          ...(hostedStatus?.status === "failed" ? { lastTransportError: hostedStatus.error } : {}),
+          ...(hostedResult?.failure
+            ? {
+              lastTransportError: hostedResult.failure.error,
+              lastTransportFailure: hostedResult.failure,
+            }
+            : {}),
           ...(tunnel.status === "failed" && tunnel.error ? { lastTunnelError: tunnel.error } : {}),
         }
+        return hostedResult?.failure ? base : clearTransportFailure(base)
       })
 
     const resolveHostedTransport = (
       input: RigControlPlaneStartInput,
       authStatus: RigControlPlaneAuthStatus,
       exposure: RigControlPlaneExposureStatus,
-    ): Effect.Effect<RigHostedControlPlaneTransportStatus | undefined> => {
+      maxAttempts: number,
+    ): Effect.Effect<{
+      readonly status: RigHostedControlPlaneTransportStatus
+      readonly failure?: RigControlPlaneTransportFailure
+    } | undefined> => {
       if (!input.hosted) {
         currentHosted = undefined
+        currentStartInput = undefined
         return Effect.succeed(undefined)
       }
 
       if (authStatus.mode === "token-pairing" && !input.hosted.pairingToken) {
         currentHosted = undefined
-        return Effect.succeed({
+        currentStartInput = undefined
+        const status = {
           status: "failed",
           endpoint: input.hosted.endpoint,
           machineId: input.hosted.machineId,
           paired: false,
           error: "Hosted public control-plane transport requires a pairing token.",
+        } as const
+        return Effect.succeed({
+          status,
+          failure: transportFailure("connect", status, 0),
         })
       }
 
       return Effect.gen(function* () {
-        const transportStatus = yield* hostedTransport.connect({
+        currentStartInput = input
+        const transportResult = yield* connectHostedTransport({
           ...input.hosted,
           publicInternet: exposure.publicInternet,
           ...(exposure.tunnelUrl ? { tunnelUrl: exposure.tunnelUrl } : {}),
-        })
+        }, maxAttempts)
+        const transportStatus = transportResult.status
         currentHosted = transportStatus.status === "connected" || transportStatus.status === "sent"
           ? input.hosted
           : undefined
-        return transportStatus
+        return transportResult
       })
     }
 
@@ -294,7 +417,33 @@ export const RigControlPlaneLive = Layer.effect(
         }),
       status: Effect.sync(() => current),
       heartbeat: () =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          if (currentStartInput?.hosted) {
+            const authStatus = yield* auth.resolve(currentStartInput)
+            const hostedResult = yield* resolveHostedTransport(
+              currentStartInput,
+              authStatus,
+              current.exposure,
+              1,
+            )
+            current = hostedResult?.failure
+              ? {
+                ...current,
+                auth: authStatus,
+                hostedTransport: hostedResult.status,
+                lastHeartbeat: now(),
+                lastTransportError: hostedResult.failure.error,
+                lastTransportFailure: hostedResult.failure,
+              }
+              : clearTransportFailure({
+                ...current,
+                auth: authStatus,
+                ...(hostedResult?.status ? { hostedTransport: hostedResult.status } : {}),
+                lastHeartbeat: now(),
+              })
+            return current
+          }
+
           current = {
             ...current,
             lastHeartbeat: now(),
@@ -321,11 +470,11 @@ export const RigControlPlaneLive = Layer.effect(
         }),
       sendEnvelope: (envelope) =>
         currentHosted
-          ? hostedTransport.send({
+          ? sendHostedEnvelope({
             endpoint: currentHosted.endpoint,
             machineId: currentHosted.machineId,
             envelope,
-          })
+          }, 2)
           : Effect.succeed({ status: "disabled" }),
     } satisfies RigControlPlaneService
   }),

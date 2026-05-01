@@ -15,9 +15,9 @@ describe("GIVEN rig home config WHEN defaults and files are used THEN behavior i
   test("GIVEN empty home config WHEN decoded THEN machine defaults are explicit", async () => {
     const config = await Effect.runPromise(decodeRigHomeConfig({}))
 
-    expect(config).toEqual({
-      deploy: {
-        productionBranch: "main",
+      expect(config).toEqual({
+        deploy: {
+          productionBranch: "main",
         generated: {
           maxActive: 5,
           replacePolicy: "oldest",
@@ -31,11 +31,14 @@ describe("GIVEN rig home config WHEN defaults and files are used THEN behavior i
             mode: "manual",
           },
         },
-      },
-      web: {
-        controlPlane: "localhost",
-      },
-    })
+        },
+        web: {
+          controlPlane: "localhost",
+          hosted: {
+            enabled: false,
+          },
+        },
+      })
   })
 
   test("GIVEN missing home config file WHEN read THEN defaults are returned", async () => {
@@ -87,6 +90,12 @@ describe("GIVEN rig home config WHEN defaults and files are used THEN behavior i
               },
               web: {
                 controlPlane: "disabled",
+                hosted: {
+                  enabled: true,
+                  endpoint: "https://rig.b-relay.com",
+                  machineId: "macbook-pro",
+                  pairingToken: "pair-123",
+                },
               },
             },
           })
@@ -106,6 +115,12 @@ describe("GIVEN rig home config WHEN defaults and files are used THEN behavior i
           mode: "manual",
           command: "sudo launchctl kickstart -k system/com.caddyserver.caddy",
         },
+      })
+      expect(config.web.hosted).toEqual({
+        enabled: true,
+        endpoint: "https://rig.b-relay.com",
+        machineId: "macbook-pro",
+        pairingToken: "pair-123",
       })
       expect(await readFile(rigHomeConfigPath(stateRoot), "utf8")).toContain("\"productionBranch\": \"stable\"")
     } finally {

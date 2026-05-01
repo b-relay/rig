@@ -102,6 +102,27 @@ export const RigHomeConfigSchema = Schema.Struct({
         ])),
         "Preferred control-plane exposure mode for rig.b-relay.com integration.",
       ),
+      hosted: fieldDoc(
+        Schema.optionalKey(Schema.Struct({
+          enabled: fieldDoc(
+            Schema.optionalKey(Schema.Boolean),
+            "Whether rigd should connect outbound to the hosted control plane.",
+          ),
+          endpoint: fieldDoc(
+            Schema.optionalKey(NonEmptyString),
+            "Hosted control-plane endpoint.",
+          ),
+          machineId: fieldDoc(
+            Schema.optionalKey(NonEmptyString),
+            "Stable machine identity used by the hosted control-plane transport.",
+          ),
+          pairingToken: fieldDoc(
+            Schema.optionalKey(NonEmptyString),
+            "Pairing token used when hosted transport crosses the public internet.",
+          ),
+        })),
+        "Hosted control-plane identity and pairing settings.",
+      ),
     })),
     "Machine/user web-control defaults.",
   ),
@@ -130,6 +151,12 @@ export interface RigHomeConfig {
   }
   readonly web: {
     readonly controlPlane: "localhost" | "tailscale" | "cloudflare" | "disabled"
+    readonly hosted: {
+      readonly enabled: boolean
+      readonly endpoint?: string
+      readonly machineId?: string
+      readonly pairingToken?: string
+    }
   }
 }
 
@@ -169,6 +196,9 @@ export const rigHomeConfigDefaults: RigHomeConfig = {
   },
   web: {
     controlPlane: "localhost",
+    hosted: {
+      enabled: false,
+    },
   },
 }
 
@@ -196,6 +226,12 @@ const normalizeRigHomeConfig = (config: RigHomeConfigInput): RigHomeConfig => ({
   },
   web: {
     controlPlane: config.web?.controlPlane ?? rigHomeConfigDefaults.web.controlPlane,
+    hosted: {
+      enabled: config.web?.hosted?.enabled ?? rigHomeConfigDefaults.web.hosted.enabled,
+      ...(config.web?.hosted?.endpoint ? { endpoint: config.web.hosted.endpoint } : {}),
+      ...(config.web?.hosted?.machineId ? { machineId: config.web.hosted.machineId } : {}),
+      ...(config.web?.hosted?.pairingToken ? { pairingToken: config.web.hosted.pairingToken } : {}),
+    },
   },
 })
 

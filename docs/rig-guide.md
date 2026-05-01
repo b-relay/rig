@@ -33,7 +33,10 @@ these defaults:
     }
   },
   "web": {
-    "controlPlane": "localhost"
+    "controlPlane": "localhost",
+    "hosted": {
+      "enabled": false
+    }
   }
 }
 ```
@@ -372,7 +375,11 @@ Outside the repo, pass both project and config path:
 - `rig config read`, `rig config set`, and `rig config unset` expose
   project config read/preview/apply through `rigd`. Hosted web config editing
   is still future work.
-- Hosted web transport for `rig.b-relay.com` is not implemented yet.
+- Hosted web transport for `rig.b-relay.com` stays disabled unless home config
+  explicitly enables it with a hosted endpoint and machine identity. Public
+  tunnel exposure still requires token pairing. Transport connect/send failures
+  are retained as structured control-plane status with provider id, operation,
+  endpoint, machine id, error, and attempt count.
 - Home config is schema-validated and file-backed. Deploy intent now uses
   project `live.deployBranch` first, then home `deploy.productionBranch`, then
   the built-in `main` default. Generated deployment caps from home config are

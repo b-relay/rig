@@ -12,9 +12,8 @@
 
 ### Hosted Control Plane
 
-- #52 Add the real hosted transport implementation behind `RigHostedControlPlaneTransport`.
-- #52 Store machine identity and pairing tokens in home config or another rigd-owned local secret store.
-- #52 Add integration coverage for reconnect, retry, and envelope delivery failure behavior.
+- #52 Keep hosted transport disabled-by-default and covered for retry,
+  reconnect, and delivery failure evidence.
 
 ### Product Polish
 

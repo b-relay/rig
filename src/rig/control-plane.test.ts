@@ -269,4 +269,102 @@ describe("GIVEN localhost-first control-plane services WHEN status is requested 
     expect(result.send).toEqual({ status: "disabled" })
     expect(connected).toEqual([])
   })
+
+  test("GIVEN hosted transport failures WHEN retrying and reconnecting THEN structured evidence is retained", async () => {
+    let connectAttempts = 0
+    let sendAttempts = 0
+    const captureHostedTransport = Layer.succeed(RigHostedControlPlaneTransport, {
+      connect: (input) =>
+        Effect.sync(() => {
+          connectAttempts += 1
+          if (connectAttempts === 1 || connectAttempts === 3) {
+            return {
+              status: "failed" as const,
+              endpoint: input.endpoint,
+              machineId: input.machineId,
+              paired: false,
+              error: `connect failed ${connectAttempts}`,
+            }
+          }
+          return {
+            status: "connected" as const,
+            endpoint: input.endpoint,
+            machineId: input.machineId,
+            paired: true,
+          }
+        }),
+      send: (input) =>
+        Effect.sync(() => {
+          sendAttempts += 1
+          return {
+            status: "failed" as const,
+            endpoint: input.endpoint,
+            machineId: input.machineId,
+            paired: false,
+            error: `send failed ${sendAttempts}`,
+          }
+        }),
+    })
+    const activeTunnel = Layer.succeed(RigTunnelExposure, {
+      expose: () => Effect.succeed({ status: "active" as const, publicUrl: "https://preview.rig.b-relay.com" }),
+      status: Effect.succeed({ status: "active" as const, publicUrl: "https://preview.rig.b-relay.com" }),
+    })
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const controlPlane = yield* RigControlPlane
+        const connected = yield* controlPlane.start({
+          exposure: "public-tunnel",
+          hosted: {
+            endpoint: "https://rig.b-relay.com",
+            machineId: "macbook-pro",
+            pairingToken: "pair-123",
+          },
+        })
+        const envelope = yield* controlPlane.serializeReadModel({ project: "pantry" })
+        const send = yield* controlPlane.sendEnvelope(envelope)
+        const afterSend = yield* controlPlane.status
+        const failedReconnect = yield* controlPlane.heartbeat()
+        const reconnected = yield* controlPlane.heartbeat()
+        return { connected, send, afterSend, failedReconnect, reconnected }
+      }).pipe(
+        Effect.provide(RigControlPlaneLive),
+        Effect.provide(RigDefaultControlPlaneLocalServerLive),
+        Effect.provide(RigDefaultControlPlaneAuthLive),
+        Effect.provide(activeTunnel),
+        Effect.provide(captureHostedTransport),
+      ),
+    )
+
+    expect(connectAttempts).toBe(4)
+    expect(result.connected.hostedTransport).toMatchObject({
+      status: "connected",
+      endpoint: "https://rig.b-relay.com",
+      machineId: "macbook-pro",
+    })
+    expect(result.send).toMatchObject({
+      status: "failed",
+      error: "send failed 2",
+    })
+    expect(result.afterSend.lastTransportFailure).toMatchObject({
+      providerId: "hosted-control-plane",
+      operation: "send",
+      endpoint: "https://rig.b-relay.com",
+      machineId: "macbook-pro",
+      error: "send failed 2",
+      attempts: 2,
+      envelopeType: "read-model",
+    })
+    expect(result.failedReconnect.lastTransportFailure).toMatchObject({
+      providerId: "hosted-control-plane",
+      operation: "connect",
+      endpoint: "https://rig.b-relay.com",
+      machineId: "macbook-pro",
+      error: "connect failed 3",
+      attempts: 1,
+    })
+    expect(result.reconnected.hostedTransport).toMatchObject({
+      status: "connected",
+    })
+  })
 })

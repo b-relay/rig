@@ -332,7 +332,8 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   project-initialized event in isolated `rigd` state so `rig2 list` can
   discover the project. `--uses sqlite,postgres,convex` scaffolds bundled
   component-plugin stubs without adding dependencies, ports, or Vite/Next-style
-  app command presets.
+  app command presets. `--domain` and `--proxy` scaffold neutral routing
+  metadata without creating app components.
   `rigd.managedProcessExited` records crash evidence, restarts while the retry
   budget allows it, and marks repeated crashes failed. The core `rigd`
   process-supervisor provider reports real child-process exits into that policy

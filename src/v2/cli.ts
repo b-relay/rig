@@ -140,6 +140,16 @@ const providerProfileFlag = Flag.choice("provider-profile", ["default", "stub"])
   Flag.withDescription("Provider profile to scaffold into the local, live, and generated lanes."),
 )
 
+const initDomainFlag = Flag.string("domain").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Base domain to scaffold into the project config, for example pantry.b-relay.com."),
+)
+
+const initProxyFlag = Flag.string("proxy").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Component name to scaffold as the lane proxy upstream, for example web."),
+)
+
 const usesFlag = Flag.string("uses").pipe(
   Flag.withDefault(""),
   Flag.withDescription("Comma-separated bundled component plugins to scaffold, for example sqlite,postgres,convex."),
@@ -502,6 +512,8 @@ const initCommand = Command.make(
     path: initPathFlag,
     stateRoot: stateRootFlag,
     providerProfile: providerProfileFlag,
+    domain: initDomainFlag,
+    proxy: initProxyFlag,
     packageScripts: Flag.boolean("package-scripts").pipe(
       Flag.withDescription("Add rig package scripts to package.json when it exists."),
     ),
@@ -526,11 +538,15 @@ const initCommand = Command.make(
       const initializer = yield* V2ProjectInitializer
       const logger = yield* V2Logger
       const componentPlugins = yield* parseInitUses(input.uses)
+      const domain = input.domain.trim()
+      const proxy = input.proxy.trim()
       const result = yield* initializer.init({
         project: decoded.project,
         path: input.path,
         stateRoot: decoded.stateRoot,
         providerProfile: input.providerProfile,
+        ...(domain ? { domain } : {}),
+        ...(proxy ? { proxy } : {}),
         packageScripts: input.packageScripts,
         componentPlugins,
       })

@@ -58,6 +58,10 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
           root,
           "--provider-profile",
           "stub",
+          "--domain",
+          "pantry.b-relay.com",
+          "--proxy",
+          "web",
           "--package-scripts",
           "--uses",
           "sqlite,postgres,convex",
@@ -72,26 +76,30 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
 
       const rigConfig = JSON.parse(await readFile(join(repo, "rig.json"), "utf8")) as {
         readonly name?: string
+        readonly domain?: string
         readonly components?: Record<string, unknown>
-        readonly local?: { readonly providerProfile?: string }
-        readonly live?: { readonly providerProfile?: string }
+        readonly local?: { readonly providerProfile?: string; readonly proxy?: { readonly upstream?: string } }
+        readonly live?: { readonly providerProfile?: string; readonly proxy?: { readonly upstream?: string } }
         readonly deployments?: {
           readonly subdomain?: string
           readonly providerProfile?: string
+          readonly proxy?: { readonly upstream?: string }
         }
       }
       expect(rigConfig).toMatchObject({
         name: "pantry",
+        domain: "pantry.b-relay.com",
         components: {
           sqlite: { uses: "sqlite" },
           postgres: { uses: "postgres" },
           convex: { uses: "convex" },
         },
-        local: { providerProfile: "stub" },
-        live: { providerProfile: "stub" },
+        local: { providerProfile: "stub", proxy: { upstream: "web" } },
+        live: { providerProfile: "stub", proxy: { upstream: "web" } },
         deployments: {
           subdomain: "${branchSlug}",
           providerProfile: "stub",
+          proxy: { upstream: "web" },
         },
       })
 

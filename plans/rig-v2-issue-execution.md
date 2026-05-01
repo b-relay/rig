@@ -165,7 +165,7 @@ Current output: generated deployment materialization now runs behind v2 deployme
 
 #13 depends on #5 and #7, and should expand init once the config resolver and provider profiles exist.
 
-Current output: `rig2 init --project <name> --path <path>` writes a valid lane-wired v2 config, `--provider-profile default|stub` is scriptable, and `--package-scripts` adds non-overwriting `rig:` scripts only when `package.json` already exists. `--uses sqlite,postgres,convex` scaffolds bundled component-plugin stubs without adding dependencies, ports, or Vite/Next-style app command presets. Init also records a project-initialized event in isolated `rigd` state so `rig2 list` can discover the project.
+Current output: `rig2 init --project <name> --path <path>` writes a valid lane-wired v2 config, `--provider-profile default|stub` is scriptable, and `--package-scripts` adds non-overwriting `rig:` scripts only when `package.json` already exists. `--uses sqlite,postgres,convex` scaffolds bundled component-plugin stubs without adding dependencies, ports, or Vite/Next-style app command presets. `--domain` and `--proxy` scaffold neutral project domain and lane proxy metadata without creating app components. Init also records a project-initialized event in isolated `rigd` state so `rig2 list` can discover the project.
 
 Recommended order:
 

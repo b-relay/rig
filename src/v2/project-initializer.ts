@@ -18,6 +18,8 @@ export interface V2ProjectInitInput {
   readonly path: string
   readonly stateRoot: string
   readonly providerProfile: "default" | "stub"
+  readonly domain?: string
+  readonly proxy?: string
   readonly packageScripts?: boolean
   readonly componentPlugins?: readonly V2InitComponentPluginId[]
 }
@@ -27,6 +29,8 @@ export interface V2ProjectInitResult {
   readonly repoPath: string
   readonly configPath: string
   readonly providerProfile: "default" | "stub"
+  readonly domain?: string
+  readonly proxy?: string
   readonly packageScripts: {
     readonly requested: boolean
     readonly packageJsonPath?: string
@@ -86,21 +90,33 @@ const projectConfig = (
   project: string,
   providerProfile: "default" | "stub",
   plugins: readonly V2InitComponentPluginId[],
-) => ({
-  name: project,
-  description: `Rig v2 project for ${project}.`,
-  components: scaffoldComponents(plugins),
-  local: {
-    providerProfile,
+  routing: {
+    readonly domain?: string
+    readonly proxy?: string
   },
-  live: {
-    providerProfile,
-  },
-  deployments: {
-    subdomain: "${branchSlug}",
-    providerProfile,
-  },
-})
+) => {
+  const proxyConfig = routing.proxy ? { proxy: { upstream: routing.proxy } } : {}
+
+  return {
+    name: project,
+    ...(routing.domain ? { domain: routing.domain } : {}),
+    description: `Rig v2 project for ${project}.`,
+    components: scaffoldComponents(plugins),
+    local: {
+      providerProfile,
+      ...proxyConfig,
+    },
+    live: {
+      providerProfile,
+      ...proxyConfig,
+    },
+    deployments: {
+      subdomain: "${branchSlug}",
+      providerProfile,
+      ...proxyConfig,
+    },
+  }
+}
 
 const runtimeError = (
   message: string,
@@ -235,7 +251,16 @@ export const V2ProjectInitializerLive = Layer.effect(
 
           yield* platformWriteFileString(
             configPath,
-            `${JSON.stringify(projectConfig(input.project, input.providerProfile, selectedPlugins), null, 2)}\n`,
+            `${
+              JSON.stringify(
+                projectConfig(input.project, input.providerProfile, selectedPlugins, {
+                  ...(input.domain ? { domain: input.domain } : {}),
+                  ...(input.proxy ? { proxy: input.proxy } : {}),
+                }),
+                null,
+                2,
+              )
+            }\n`,
           ).pipe(
             Effect.mapError(runtimeError(
               `Unable to write v2 rig.json for '${input.project}'.`,
@@ -258,6 +283,8 @@ export const V2ProjectInitializerLive = Layer.effect(
                 repoPath,
                 configPath,
                 providerProfile: input.providerProfile,
+                ...(input.domain ? { domain: input.domain } : {}),
+                ...(input.proxy ? { proxy: input.proxy } : {}),
               },
             },
           })
@@ -267,6 +294,8 @@ export const V2ProjectInitializerLive = Layer.effect(
             repoPath,
             configPath,
             providerProfile: input.providerProfile,
+            ...(input.domain ? { domain: input.domain } : {}),
+            ...(input.proxy ? { proxy: input.proxy } : {}),
             packageScripts,
             scaffoldedComponents,
           }

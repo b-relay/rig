@@ -102,6 +102,17 @@ database/backend components:
 stubs such as `{ "uses": "postgres" }`; it does not add dependencies between
 components, ports, Vite/Next presets, or package-manager-specific app commands.
 
+Routing metadata can be scaffolded at the same time:
+
+```bash
+./rig2 init --project pantry --path . --domain pantry.b-relay.com --proxy web
+```
+
+`--domain` writes the project domain. `--proxy web` writes `proxy.upstream` as
+`"web"` in the local, live, and generated deployment lanes. It does not create a
+`web` component; add that component explicitly with the command, package manager,
+and port your project actually uses.
+
 Use `stub` for isolated tests and agent runs. Use `default` only when you are
 ready for real local providers. The process supervisor is selected per lane
 with `providers.processSupervisor`; it defaults to the core `rigd` supervisor.

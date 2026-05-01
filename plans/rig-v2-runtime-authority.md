@@ -497,13 +497,13 @@ modules.
 
 ### Acceptance Criteria
 
-- [ ] Provider contract modules contain small interfaces and shared metadata,
+- [x] Provider contract modules contain small interfaces and shared metadata,
       not concrete adapter implementations.
-- [ ] Provider composition selects extracted adapters for default, stub, and
+- [x] Provider composition selects extracted adapters for default, stub, and
       isolated profiles.
-- [ ] Default, stub, isolated, and first-party adapters satisfy the same
+- [x] Default, stub, isolated, and first-party adapters satisfy the same
       provider contracts.
-- [ ] Provider contract tests continue to prove swappability across provider
+- [x] Provider contract tests continue to prove swappability across provider
       profiles.
-- [ ] The large provider contract module is reduced to contract and composition
+- [x] The large provider contract module is reduced to contract and composition
       responsibilities.

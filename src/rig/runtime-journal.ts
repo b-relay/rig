@@ -25,6 +25,7 @@ export interface RigRuntimeJournalProviderObservationInput {
 export interface RigRuntimeJournalOptions {
   readonly stateStore: RigdStateStoreService
   readonly now: () => string
+  readonly receiptId?: () => string
   readonly onEvent?: (event: RigPersistedRigdEvent) => void
 }
 
@@ -66,6 +67,7 @@ export interface RigRuntimeJournal {
 export const makeRigRuntimeJournal = ({
   stateStore,
   now,
+  receiptId = () => `rigd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   onEvent,
 }: RigRuntimeJournalOptions): RigRuntimeJournal => {
   const recordEvent = (input: {
@@ -142,9 +144,8 @@ export const makeRigRuntimeJournal = ({
     },
     recordReceipt: (input) =>
       Effect.gen(function* () {
-        const persisted = yield* stateStore.load({ stateRoot: input.stateRoot })
         const accepted = {
-          id: `rigd-${persisted.receipts.length + 1}`,
+          id: receiptId(),
           kind: input.kind,
           accepted: true,
           project: input.project,

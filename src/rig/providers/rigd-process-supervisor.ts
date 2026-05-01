@@ -314,26 +314,23 @@ export const createRigdProcessSupervisorAdapter = (): RigdProcessSupervisorAdapt
       const exitCode = Number(quickExit.value)
       const output = yield* collectProcessOutput(handle)
       yield* Scope.close(scope, Exit.void).pipe(Effect.ignore)
-      if (exitCode !== 0) {
-        return yield* Effect.fail(new RigRuntimeError(
-          `rigd process supervisor command failed for '${input.service.name}' with exit code ${exitCode}.`,
-          "Fix the managed component command before retrying the lifecycle action.",
-          {
-            providerId: provider.id,
-            component: input.service.name,
-            deployment: input.deployment.name,
-            command: input.service.command,
-            exitCode,
-            stdout: output.filter((line) => line.stream === "stdout").map((line) => line.line).join("\n"),
-            stderr: output.filter((line) => line.stream === "stderr").map((line) => line.line).join("\n"),
-          },
-        ))
-      }
-
-      return {
-        operation: operationName(provider, action, input.service, `exited:${exitCode}`),
-        ...(output.length > 0 ? { output } : {}),
-      } satisfies RigProcessSupervisorOperationResult
+      return yield* Effect.fail(new RigRuntimeError(
+        exitCode === 0
+          ? `rigd process supervisor command exited immediately for '${input.service.name}'.`
+          : `rigd process supervisor command failed for '${input.service.name}' with exit code ${exitCode}.`,
+        exitCode === 0
+          ? "Managed server commands must keep running; use an installed component for one-shot commands."
+          : "Fix the managed component command before retrying the lifecycle action.",
+        {
+          providerId: provider.id,
+          component: input.service.name,
+          deployment: input.deployment.name,
+          command: input.service.command,
+          exitCode,
+          stdout: output.filter((line) => line.stream === "stdout").map((line) => line.line).join("\n"),
+          stderr: output.filter((line) => line.stream === "stderr").map((line) => line.line).join("\n"),
+        },
+      ))
     }).pipe(
       Effect.mapError((cause) =>
         cause instanceof RigRuntimeError

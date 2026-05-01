@@ -94,6 +94,17 @@ const ComponentName = schemaDoc(
   "Stable component key used for process labels, logs, dependency references, and generated service names.",
 )
 
+const RouteString = (description: string) =>
+  fieldDoc(
+    Schema.String.check(
+      Schema.isMinLength(1, { message: "Must not be empty." }),
+      Schema.isPattern(/^[^\s;"`]+$/, {
+        message: "Use a single route token without whitespace, quotes, semicolons, or Caddy directives.",
+      }),
+    ),
+    description,
+  )
+
 const LOCALHOST_NAMES = new Set(["localhost", "127.0.0.1"])
 const HOST_FLAG_RE = /^--(?:host|hostname|bind|bind-host|listen|listen-host|addr|address)(?:=(.+))?$/
 const URL_RE = /\bhttps?:\/\/[^\s'"]+/g
@@ -326,9 +337,9 @@ const LaneConfigSchema = Schema.Struct({
     Schema.optionalKey(LaneProvidersSchema),
     "Provider ids selected for this lane by provider family.",
   ),
-  domain: fieldDoc(Schema.optionalKey(Schema.String), "Domain override for this lane."),
-  subdomain: fieldDoc(Schema.optionalKey(Schema.String), "Generated deployment subdomain override."),
-  deployBranch: fieldDoc(Schema.optionalKey(Schema.String), "Branch allowed to update this lane when applicable."),
+  domain: fieldDoc(Schema.optionalKey(RouteString("Domain override for this lane.")), "Domain override for this lane."),
+  subdomain: fieldDoc(Schema.optionalKey(RouteString("Generated deployment subdomain override.")), "Generated deployment subdomain override."),
+  deployBranch: fieldDoc(Schema.optionalKey(NonEmptyString("Branch allowed to update this lane when applicable.")), "Branch allowed to update this lane when applicable."),
   providerProfile: fieldDoc(
     Schema.optionalKey(Schema.Union([Schema.Literal("default"), Schema.Literal("stub")])),
     "Provider profile requested for this lane.",
@@ -338,7 +349,7 @@ const LaneConfigSchema = Schema.Struct({
 export const RigProjectConfigSchema = Schema.Struct({
   name: fieldDoc(ProjectName, "Stable registered project name."),
   description: fieldDoc(Schema.optionalKey(Schema.String), "Human-readable project description."),
-  domain: fieldDoc(Schema.optionalKey(Schema.String), "Base domain used by live and generated deployment lanes."),
+  domain: fieldDoc(Schema.optionalKey(RouteString("Base domain used by live and generated deployment lanes.")), "Base domain used by live and generated deployment lanes."),
   hooks: fieldDoc(Schema.optionalKey(TopLevelHooksSchema), "Project-level lifecycle hooks shared by lanes."),
   components: fieldDoc(
     Schema.Record(ComponentName, RigComponentSchema),
@@ -601,7 +612,25 @@ const rawConfigIssues = (input: unknown): readonly ValidationIssue[] => {
 
   for (const lane of ["local", "live", "deployments"] as const) {
     const rawLane = input[lane]
-    if (!isRecord(rawLane) || !isRecord(rawLane.components)) {
+    if (!isRecord(rawLane)) {
+      continue
+    }
+
+    const proxy = rawLane.proxy
+    if (isRecord(proxy) && typeof proxy.upstream === "string") {
+      const upstreamKind = componentKinds.get(proxy.upstream)
+      if (!isManagedRuntimeKind(upstreamKind)) {
+        issues.push(
+          issue(
+            [lane, "proxy", "upstream"],
+            `Proxy upstream '${proxy.upstream}' must reference a managed or server-backed plugin component.`,
+            "invalid_proxy_upstream",
+          ),
+        )
+      }
+    }
+
+    if (!isRecord(rawLane.components)) {
       continue
     }
 

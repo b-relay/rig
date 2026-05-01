@@ -161,6 +161,7 @@ describe("GIVEN rig runtime journal WHEN recording rigd evidence THEN state writ
     const journal = makeRigRuntimeJournal({
       stateStore: store,
       now: () => "2026-05-01T00:00:00.000Z",
+      receiptId: () => "rigd-fixed-receipt",
       onEvent: (event) => mirroredEvents.push(event),
     })
 
@@ -217,7 +218,7 @@ describe("GIVEN rig runtime journal WHEN recording rigd evidence THEN state writ
     )
 
     expect(receipt).toMatchObject({
-      id: "rigd-1",
+      id: "rigd-fixed-receipt",
       kind: "lifecycle",
       accepted: true,
       project: "pantry",
@@ -238,13 +239,12 @@ describe("GIVEN rig runtime journal WHEN recording rigd evidence THEN state writ
       "writePortReservations",
       "writeDesiredDeployment",
       "appendManagedServiceFailure",
-      "load",
       "appendReceipt",
       "appendEvent",
     ])
     const state = await Effect.runPromise(store.load({ stateRoot: "/tmp/rig" }))
     expect(state).toMatchObject({
-      receipts: [expect.objectContaining({ id: "rigd-1" })],
+      receipts: [expect.objectContaining({ id: "rigd-fixed-receipt" })],
       events: [expect.objectContaining({ event: "rigd.lifecycle.accepted" })],
       healthSummaries: [expect.objectContaining({ providerProfile: "stub" })],
       providerObservations: [expect.objectContaining({ id: "rigd" })],

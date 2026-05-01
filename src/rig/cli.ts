@@ -291,6 +291,25 @@ const loadProjectConfig = (input: {
     return loaded.config
   })
 
+const requireProjectConfig = (input: {
+  readonly project: string
+  readonly configPath?: string
+  readonly command: string
+}): Effect.Effect<RigProjectConfig, RigCliArgumentError, RigProjectConfigLoader> =>
+  Effect.gen(function* () {
+    const config = yield* loadProjectConfig(input)
+    if (config) {
+      return config
+    }
+    return yield* Effect.fail(
+      new RigCliArgumentError(
+        `rig ${input.command} requires a rig.json for runtime changes.`,
+        "Run the command from a managed repo or pass --config <path>.",
+        { project: input.project, command: input.command },
+      ),
+    )
+  })
+
 const requireConfigPath = (
   input: ProjectScopedInput,
 ): Effect.Effect<string, RigCliArgumentError> => {
@@ -494,6 +513,15 @@ const runLifecycleAction = (
       project: decoded.project,
       configPath: input.configPath,
     }))
+    if ((action === "up" || action === "down" || action === "restart") && !config) {
+      return yield* Effect.fail(
+        new RigCliArgumentError(
+          `rig ${action} requires a rig.json for runtime changes.`,
+          "Run the command from a managed repo or pass --config <path>.",
+          { project: decoded.project, action },
+        ),
+      )
+    }
     const lifecycle = yield* RigLifecycle
     yield* lifecycle.run({
       action,
@@ -787,9 +815,10 @@ const deployCommand = Command.make(
         configPath: input.configPath,
       })
       const decoded = yield* decodeRigStatusInput(scoped)
-      const config = yield* loadProjectConfig({
+      const config = yield* requireProjectConfig({
         project: decoded.project,
         configPath: scoped.configPath,
+        command: "deploy",
       })
       const intents = yield* RigDeployIntents
       const logger = yield* RigLogger
@@ -799,22 +828,20 @@ const deployCommand = Command.make(
         stateRoot: decoded.stateRoot,
         ref: input.ref,
         target: input.target,
-        ...(config ? { config } : {}),
+        config,
         ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
       })
 
       yield* logger.info("rig deploy intent", intent)
-      if (config) {
-        const receipt = yield* rigd.deploy({
-          project: decoded.project,
-          stateRoot: decoded.stateRoot,
-          ref: input.ref,
-          target: input.target,
-          config,
-          ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
-        })
-        yield* logger.info("rig deploy accepted", receipt)
-      }
+      const receipt = yield* rigd.deploy({
+        project: decoded.project,
+        stateRoot: decoded.stateRoot,
+        ref: input.ref,
+        target: input.target,
+        config,
+        ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
+      })
+      yield* logger.info("rig deploy accepted", receipt)
     }),
 ).pipe(Command.withDescription("Create a rig deploy intent for a ref and target without requiring semver."))
 

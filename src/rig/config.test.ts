@@ -554,4 +554,50 @@ describe("GIVEN rig config resolver WHEN resolving lanes THEN behavior is covere
     expect(error._tag).toBe("RigConfigValidationError")
     expect(JSON.stringify(error.details?.issues)).toContain("invalid_dependency")
   })
+
+  test("GIVEN proxy upstream pointing at installed component WHEN decoding THEN proxy validation fails", async () => {
+    const error = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        components: {
+          web: {
+            mode: "installed",
+            entrypoint: "dist/web",
+          },
+        },
+        live: {
+          proxy: {
+            upstream: "web",
+          },
+        },
+      }).pipe(Effect.flip),
+    )
+
+    expect(error._tag).toBe("RigConfigValidationError")
+    expect(JSON.stringify(error.details?.issues)).toContain("invalid_proxy_upstream")
+  })
+
+  test("GIVEN empty deploy branch or route directive characters WHEN decoding THEN schema validation fails", async () => {
+    const emptyBranch = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        components: {},
+        live: {
+          deployBranch: "",
+        },
+      }).pipe(Effect.flip),
+    )
+    const route = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        domain: "pantry.test;respond",
+        components: {},
+      }).pipe(Effect.flip),
+    )
+
+    expect(emptyBranch._tag).toBe("RigConfigValidationError")
+    expect(String(emptyBranch.details?.cause)).toContain("Must not be empty")
+    expect(route._tag).toBe("RigConfigValidationError")
+    expect(String(route.details?.cause)).toContain("route token")
+  })
 })

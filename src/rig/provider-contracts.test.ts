@@ -1287,7 +1287,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
     }
   })
 
-  test("GIVEN rigd process supervisor WHEN command exits quickly THEN stdout and stderr are returned as provider output", async () => {
+  test("GIVEN rigd process supervisor WHEN managed command exits quickly THEN start fails with command output", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rig-rigd-process-"))
 
     try {
@@ -1303,7 +1303,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
         },
       } as RigDeploymentRecord
 
-      const result = await Effect.runPromise(
+      const error = await Effect.runPromise(
         Effect.gen(function* () {
           const processSupervisor = yield* RigProcessSupervisorProvider
           return yield* processSupervisor.up({
@@ -1315,15 +1315,22 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
               port: 3070,
             },
           })
-        }).pipe(Effect.provide(RigProviderContractsLive("default"))),
+        }).pipe(
+          Effect.provide(RigProviderContractsLive("default")),
+          Effect.flip,
+        ),
       )
 
-      expect(result).toEqual({
-        operation: "process-supervisor:rigd:up:web:exited:0",
-        output: [
-          { stream: "stdout", line: "ready" },
-          { stream: "stderr", line: "warn" },
-        ],
+      expect(error).toMatchObject({
+        _tag: "RigRuntimeError",
+        details: {
+          providerId: "rigd",
+          component: "web",
+          deployment: "live",
+          exitCode: 0,
+          stdout: "ready",
+          stderr: "warn",
+        },
       })
     } finally {
       await rm(workspace, { recursive: true, force: true })
@@ -1353,7 +1360,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
       } as const
       const replacementService = {
         ...firstService,
-        command: "printf restarted",
+        command: "printf restarted; sleep 10",
       }
 
       const result = await Effect.runPromise(
@@ -1377,16 +1384,11 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
       )
 
       expect(result.started.operation).toBe("process-supervisor:rigd:up:web:started")
-      expect(result.restarted).toEqual({
-        operation: "process-supervisor:rigd:restart:web:exited:0",
-        output: [
-          { stream: "stdout", line: "restarted" },
-        ],
-      })
+      expect(result.restarted.operation).toBe("process-supervisor:rigd:restart:web:started")
       expect(result.firstExit).toEqual(expect.objectContaining({
         expected: true,
       }))
-      expect(result.down.operation).toBe("process-supervisor:rigd:down:web:not-running")
+      expect(result.down.operation).toContain("process-supervisor:rigd:down:web:stopped")
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }
@@ -1502,6 +1504,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
           const health = yield* RigHealthCheckerProvider
           return yield* health.check({
             deployment,
+            timeoutSeconds: 0.05,
             service: {
               name: "web",
               type: "server",
@@ -1514,6 +1517,50 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
       )
 
       expect(operation).toBe("health-checker:native-health:check:web:healthy:204")
+    } finally {
+      await closeServer(server.instance)
+    }
+  })
+
+  test("GIVEN native-health provider WHEN HTTP endpoint becomes ready before timeout THEN it polls until healthy", async () => {
+    let attempts = 0
+    const server = await listen((_, response) => {
+      attempts += 1
+      if (attempts < 2) {
+        response.writeHead(503)
+        response.end("not ready")
+        return
+      }
+      response.writeHead(204)
+      response.end()
+    })
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+      } as RigDeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const health = yield* RigHealthCheckerProvider
+          return yield* health.check({
+            deployment,
+            timeoutSeconds: 1,
+            service: {
+              name: "web",
+              type: "server",
+              command: "bun run start",
+              port: server.port,
+              healthCheck: `http://127.0.0.1:${server.port}/health`,
+            },
+          })
+        }).pipe(Effect.provide(RigProviderContractsLive("default"))),
+      )
+
+      expect(operation).toBe("health-checker:native-health:check:web:healthy:204")
+      expect(attempts).toBeGreaterThanOrEqual(2)
     } finally {
       await closeServer(server.instance)
     }
@@ -1537,6 +1584,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
           const health = yield* RigHealthCheckerProvider
           return yield* health.check({
             deployment,
+            timeoutSeconds: 0.05,
             service: {
               name: "web",
               type: "server",

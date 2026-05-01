@@ -21,6 +21,7 @@ export interface RigDeploymentRecord {
   readonly project: string
   readonly kind: RigDeploymentKind
   readonly name: string
+  readonly sourceRef?: string
   readonly branchSlug: string
   readonly subdomain: string
   readonly workspacePath: string
@@ -118,6 +119,9 @@ const hashNumber = (value: string): number => {
   }
   return hash >>> 0
 }
+
+const shortHash = (value: string): string =>
+  hashNumber(value).toString(36).slice(0, 6)
 
 const portAssignmentNames = (config: RigProjectConfig): readonly string[] =>
   Object.entries(config.components).flatMap(([name, component]) => {
@@ -232,6 +236,11 @@ const laneRecord = (
 
 const generatedRecord = (
   input: RigMaterializeGeneratedInput,
+  identity: {
+    readonly name: string
+    readonly sourceRef?: string
+    readonly subdomain?: string
+  },
 ): Effect.Effect<RigDeploymentRecord, RigRuntimeError> => {
   const rawIdentity = input.name ?? input.branch
   if (!rawIdentity) {
@@ -243,7 +252,7 @@ const generatedRecord = (
     )
   }
 
-  const name = input.name ? branchSlug(input.name) : branchSlug(input.branch as string)
+  const name = identity.name
   const slug = branchSlug(input.branch ?? name)
   const paths = generatedPaths(input.stateRoot, input.config.name, name)
   const assignedPorts = assignPorts(input.config, name, input.assignedPorts)
@@ -254,7 +263,7 @@ const generatedRecord = (
     dataRoot: paths.dataRoot,
     deploymentName: name,
     branchSlug: slug,
-    subdomain: input.subdomain,
+    subdomain: identity.subdomain ?? input.subdomain,
     assignedPorts,
   }).pipe(
     Effect.mapError((error) =>
@@ -268,6 +277,7 @@ const generatedRecord = (
       project: input.config.name,
       kind: "generated",
       name,
+      ...(identity.sourceRef ? { sourceRef: identity.sourceRef } : {}),
       branchSlug: slug,
       subdomain: resolved.subdomain,
       ...paths,
@@ -276,6 +286,52 @@ const generatedRecord = (
       resolved,
     })),
   )
+}
+
+const generatedIdentity = (
+  input: RigMaterializeGeneratedInput,
+  existing: readonly RigDeploymentRecord[],
+) => {
+  if (input.name) {
+    return {
+      name: branchSlug(input.name),
+      ...(input.subdomain ? { subdomain: input.subdomain } : {}),
+    }
+  }
+
+  const sourceRef = input.branch
+  if (!sourceRef) {
+    return {
+      name: "deployment",
+      ...(input.subdomain ? { subdomain: input.subdomain } : {}),
+    }
+  }
+
+  const baseName = branchSlug(sourceRef)
+  const branch = branchSlug(sourceRef)
+  const baseRecord = existing.find((entry) => entry.kind === "generated" && entry.name === baseName)
+  if (!baseRecord || baseRecord.sourceRef === sourceRef || (!baseRecord.sourceRef && baseRecord.branchSlug === branch)) {
+    return {
+      name: baseName,
+      sourceRef,
+      ...(input.subdomain ? { subdomain: input.subdomain } : {}),
+    }
+  }
+
+  let name = `${baseName}-${shortHash(sourceRef)}`
+  for (let attempt = 1; existing.some((entry) =>
+    entry.kind === "generated" &&
+    entry.name === name &&
+    entry.sourceRef !== sourceRef
+  ); attempt += 1) {
+    name = `${baseName}-${shortHash(`${sourceRef}:${attempt}`)}`
+  }
+
+  return {
+    name,
+    sourceRef,
+    subdomain: input.subdomain ?? name,
+  }
 }
 
 export const RigDeploymentManagerLive = Layer.effect(
@@ -301,11 +357,15 @@ export const RigDeploymentManagerLive = Layer.effect(
       })
 
     return {
-      previewGenerated: (input) => generatedRecord(input),
+      previewGenerated: (input) =>
+        Effect.gen(function* () {
+          const existing = yield* store.read(input.config.name, input.stateRoot)
+          return yield* generatedRecord(input, generatedIdentity(input, existing))
+        }),
       materializeGenerated: (input) =>
         Effect.gen(function* () {
-          const record = yield* generatedRecord(input)
           const existing = yield* store.read(input.config.name, input.stateRoot)
+          const record = yield* generatedRecord(input, generatedIdentity(input, existing))
           const next = existing.some((entry) => entry.kind === "generated" && entry.name === record.name)
             ? existing.map((entry) => entry.kind === "generated" && entry.name === record.name ? record : entry)
             : [...existing, record]

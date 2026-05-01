@@ -835,13 +835,13 @@ export const RigdLive = Layer.effect(
     const enforceGeneratedDeploymentCap = (
       input: RigdControlPlaneDeployInput,
       homeConfig: RigHomeConfig,
+      requestedDeployment: string,
     ): Effect.Effect<RigDeploymentRecord | undefined, RigRuntimeError> =>
       Effect.gen(function* () {
         if (input.target !== "generated" || !input.config) {
           return undefined
         }
 
-        const requestedDeployment = branchSlug(input.deploymentName ?? input.ref)
         const inventory = yield* deployments.list({
           config: input.config,
           stateRoot: input.stateRoot,
@@ -934,6 +934,7 @@ export const RigdLive = Layer.effect(
         }
         let target = generatedDeployTarget(input)
         const generatedConfig = input.target === "generated" ? input.config : undefined
+        let plannedGenerated: RigDeploymentRecord | undefined
         if (input.target === "generated") {
           if (!generatedConfig) {
             return yield* Effect.fail(
@@ -950,7 +951,13 @@ export const RigdLive = Layer.effect(
               ),
             )
           }
-          target = `generated:${branchSlug(input.deploymentName ?? input.ref)}`
+          plannedGenerated = yield* deployments.previewGenerated({
+            config: generatedConfig,
+            stateRoot: input.stateRoot,
+            branch: input.ref,
+            ...(input.deploymentName ? { name: input.deploymentName } : {}),
+          })
+          target = `generated:${plannedGenerated.name}`
         }
 
         yield* verifyActionPreflight({
@@ -970,8 +977,8 @@ export const RigdLive = Layer.effect(
         if (input.target === "generated") {
           const homeConfigStore = yield* RigHomeConfigStore
           homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
-          replacedGenerated = yield* enforceGeneratedDeploymentCap(input, homeConfig)
-          const requestedDeployment = branchSlug(input.deploymentName ?? input.ref)
+          const requestedDeployment = plannedGenerated?.name ?? branchSlug(input.deploymentName ?? input.ref)
+          replacedGenerated = yield* enforceGeneratedDeploymentCap(input, homeConfig, requestedDeployment)
           previousGenerated = yield* deployments.resolveGenerated({
             config: generatedConfig,
             stateRoot: input.stateRoot,

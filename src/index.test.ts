@@ -240,6 +240,9 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
               port: 3070,
             },
           },
+          local: {
+            providerProfile: "stub",
+          },
           deployments: {
             providerProfile: "stub",
           },
@@ -286,6 +289,10 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           "fake-fullstack.example.test",
           "--proxy",
           "web",
+          "--managed",
+          "web",
+          "--managed-command",
+          "printf 'fake web started\\n'",
           "--uses",
           "sqlite",
         ],
@@ -418,6 +425,10 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           "pantry-like.example.test",
           "--proxy",
           "web",
+          "--managed",
+          "web",
+          "--managed-command",
+          "printf 'pantry-like web started\\n'",
           "--uses",
           "sqlite",
         ],
@@ -561,7 +572,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     }
   })
 
-  test("GIVEN deploy command WHEN run directly THEN it emits a ref-based deploy intent", async () => {
+  test("GIVEN deploy command without config WHEN run directly THEN it rejects runtime changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
@@ -570,11 +581,10 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
         { RIG_ROOT: root },
       )
 
-      expect(exitCode).toBe(0)
-      expect(stderr).toBe("")
-      expect(stdout).toContain("[INFO] rig deploy intent")
-      expect(stdout).toContain('"ref":"feature/preview"')
-      expect(stdout).toContain('"target":"generated"')
+      expect(exitCode).toBe(1)
+      expect(stdout).toBe("")
+      expect(stderr).toContain("[ERROR] rig deploy requires a rig.json for runtime changes.")
+      expect(stderr).toContain("Run the command from a managed repo or pass --config <path>.")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

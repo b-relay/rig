@@ -47,6 +47,12 @@ export const platformMakeDirectory = (path: string) =>
     yield* fs.makeDirectory(path, { recursive: true })
   }))
 
+export const platformMakeDirectoryExclusive = (path: string) =>
+  withBunFileSystem(Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    yield* fs.makeDirectory(path)
+  }))
+
 export const platformRemove = (
   path: string,
   options: {

@@ -154,6 +154,39 @@ describe("GIVEN rig generated deployments WHEN materializing inventory THEN beha
     expect(record.resolved.v1Config.domain).toBe("qa.preview.b-relay.com")
   })
 
+  test("GIVEN branch slugs collide WHEN materializing THEN generated deployments keep distinct identities", async () => {
+    const config = await Effect.runPromise(projectConfig())
+    const { result } = await runWithStore(
+      Effect.gen(function* () {
+        const manager = yield* RigDeploymentManager
+        const first = yield* manager.materializeGenerated({
+          config,
+          stateRoot: "/tmp/rig",
+          branch: "feature/foo",
+        })
+        const secondPreview = yield* manager.previewGenerated({
+          config,
+          stateRoot: "/tmp/rig",
+          branch: "feature_foo",
+        })
+        const second = yield* manager.materializeGenerated({
+          config,
+          stateRoot: "/tmp/rig",
+          branch: "feature_foo",
+        })
+        return { first, secondPreview, second }
+      }),
+    )
+
+    expect(result.first.name).toBe("feature-foo")
+    expect(result.first.sourceRef).toBe("feature/foo")
+    expect(result.second.name).toMatch(/^feature-foo-[a-z0-9]+$/)
+    expect(result.second.sourceRef).toBe("feature_foo")
+    expect(result.second.name).toBe(result.secondPreview.name)
+    expect(result.second.subdomain).toBe(result.second.name)
+    expect(result.second.resolved.v1Config.domain).toBe(`${result.second.name}.preview.b-relay.com`)
+  })
+
   test("GIVEN generated deployment inventory WHEN listing THEN local live and generated rows are returned consistently", async () => {
     const config = await Effect.runPromise(projectConfig())
     const { result: inventory } = await runWithStore(

@@ -1903,6 +1903,110 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }))
   })
 
+  test("GIVEN one deployment assigns the same port twice WHEN preflight runs THEN duplicate port is rejected", async () => {
+    const deployment = {
+      project: "pantry",
+      kind: "live",
+      name: "live",
+      providerProfile: "stub",
+      assignedPorts: {},
+      resolved: {
+        providers: {
+          processSupervisor: "stub-process-supervisor",
+        },
+        runtimePlan: {
+          components: [
+            {
+              name: "web",
+              kind: "managed",
+              command: "bun run web",
+              port: 3070,
+              readyTimeout: 30,
+            },
+            {
+              name: "api",
+              kind: "managed",
+              command: "bun run api",
+              port: 3070,
+              readyTimeout: 30,
+            },
+          ],
+          preparedComponents: [],
+        },
+      },
+    } as unknown as RigDeploymentRecord
+
+    const checks = await Effect.runPromise(
+      deriveRigdActionPreflightChecks(
+        {
+          kind: "deploy",
+          project: "pantry",
+          stateRoot: "/tmp/rig",
+          target: "live",
+          config: {} as RigProjectConfig,
+        },
+        {
+          deployments: {
+            list: () => Effect.succeed([deployment]),
+            previewGenerated: () => Effect.die("unused"),
+            materializeGenerated: () => Effect.die("unused"),
+            resolveGenerated: () => Effect.die("unused"),
+            restoreGenerated: () => Effect.die("unused"),
+            destroyGenerated: () => Effect.die("unused"),
+          },
+          stateStore: {
+            load: () =>
+              Effect.succeed({
+                version: 1,
+                events: [],
+                receipts: [],
+                healthSummaries: [],
+                providerObservations: [],
+                portReservations: [],
+                deploymentSnapshots: [],
+                desiredDeployments: [],
+                managedServiceFailures: [],
+              }),
+            appendEvent: () => Effect.die("unused"),
+            appendReceipt: () => Effect.die("unused"),
+            writeHealthSummary: () => Effect.die("unused"),
+            writeProviderObservations: () => Effect.die("unused"),
+            writePortReservations: () => Effect.die("unused"),
+            writeDeploymentSnapshot: () => Effect.die("unused"),
+            writeDesiredDeployment: () => Effect.die("unused"),
+            appendManagedServiceFailure: () => Effect.die("unused"),
+            reconstructMinimum: () => Effect.die("unused"),
+          },
+          providerRegistry: {
+            current: Effect.die("unused"),
+            forProfile: () =>
+              Effect.succeed({
+                profile: "stub" as const,
+                families: ["process-supervisor"],
+                providers: [
+                  {
+                    id: "stub-process-supervisor",
+                    family: "process-supervisor",
+                    source: "core" as const,
+                    displayName: "Stub",
+                    capabilities: ["test"],
+                  },
+                ],
+              }),
+          },
+        },
+      ),
+    )
+
+    expect(evaluateRigPreflight(checks).failures).toContainEqual(expect.objectContaining({
+      category: "ports",
+      reason: "port-conflict",
+      details: expect.objectContaining({
+        reason: "duplicate-deployment-port",
+      }),
+    }))
+  })
+
   test("GIVEN generated deploy preflight fails WHEN routed through rigd THEN generated inventory is not materialized", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
 

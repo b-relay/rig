@@ -98,6 +98,90 @@ describe("GIVEN rigd persistent state WHEN written under the rig root THEN resta
     }
   })
 
+  test("GIVEN concurrent state appends WHEN persisted THEN no event is lost", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-rigd-state-concurrent-"))
+
+    try {
+      const loaded = await runWithFileStore(
+        Effect.gen(function* () {
+          const store = yield* RigdStateStore
+          yield* Effect.all(
+            Array.from({ length: 25 }, (_, index) =>
+              store.appendEvent({
+                stateRoot,
+                event: {
+                  timestamp: `2026-04-25T00:00:${String(index).padStart(2, "0")}.000Z`,
+                  event: `rigd.concurrent.${index}`,
+                },
+              })
+            ),
+            { concurrency: "unbounded" },
+          )
+          return yield* store.load({ stateRoot })
+        }),
+      )
+
+      expect(loaded.events).toHaveLength(25)
+      expect(new Set(loaded.events.map((entry) => entry.event)).size).toBe(25)
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN duplicate receipt id WHEN persisted THEN existing receipt is not overwritten", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-rigd-state-receipt-"))
+
+    try {
+      const result = await runWithFileStore(
+        Effect.gen(function* () {
+          const store = yield* RigdStateStore
+          yield* store.appendReceipt({
+            stateRoot,
+            receipt: {
+              id: "rigd-duplicate",
+              kind: "lifecycle",
+              accepted: true,
+              project: "pantry",
+              stateRoot,
+              target: "local",
+              receivedAt: "2026-04-25T00:00:01.000Z",
+            },
+          })
+          const error = yield* store.appendReceipt({
+            stateRoot,
+            receipt: {
+              id: "rigd-duplicate",
+              kind: "deploy",
+              accepted: true,
+              project: "pantry",
+              stateRoot,
+              target: "live",
+              receivedAt: "2026-04-25T00:00:02.000Z",
+            },
+          }).pipe(Effect.flip)
+          const loaded = yield* store.load({ stateRoot })
+          return { error, loaded }
+        }),
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "RigRuntimeError",
+        details: {
+          receiptId: "rigd-duplicate",
+        },
+      })
+      expect(result.loaded.receipts).toEqual([
+        expect.objectContaining({
+          id: "rigd-duplicate",
+          kind: "lifecycle",
+          target: "local",
+        }),
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN provider observations WHEN persisted THEN reconstruction separates confirmed and missing evidence", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-rigd-state-"))
 

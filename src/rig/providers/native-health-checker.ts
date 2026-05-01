@@ -92,22 +92,54 @@ export const createNativeHealthCheckerAdapter = (
       })
       : Effect.tryPromise({
         try: async () => {
-          const response = await fetch(target)
-          if (response.status < 200 || response.status >= 300) {
-            throw new RigRuntimeError(
-              `Health check failed for '${input.service.name}' with HTTP ${response.status}.`,
-              "Fix the component startup or health endpoint before retrying the runtime action.",
-              {
-                providerId: selected.id,
-                component: input.service.name,
-                deployment: input.deployment.name,
-                target,
-                statusCode: response.status,
-              },
-            )
+          const deadline = Date.now() + timeoutSeconds * 1000
+          let lastError: unknown
+
+          while (Date.now() <= deadline) {
+            try {
+              const controller = new AbortController()
+              const timeout = setTimeout(
+                () => controller.abort(),
+                Math.max(1, deadline - Date.now()),
+              )
+              const response = await fetch(target, { signal: controller.signal }).finally(() => {
+                clearTimeout(timeout)
+              })
+              if (response.status >= 200 && response.status < 300) {
+                return `${selected.family}:${selected.id}:check:${input.service.name}:healthy:${response.status}`
+              }
+              lastError = new RigRuntimeError(
+                `Health check failed for '${input.service.name}' with HTTP ${response.status}.`,
+                "Fix the component startup or health endpoint before retrying the runtime action.",
+                {
+                  providerId: selected.id,
+                  component: input.service.name,
+                  deployment: input.deployment.name,
+                  target,
+                  statusCode: response.status,
+                },
+              )
+            } catch (cause) {
+              lastError = cause
+            }
+
+            if (Date.now() >= deadline) {
+              break
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100))
           }
 
-          return `${selected.family}:${selected.id}:check:${input.service.name}:healthy:${response.status}`
+          throw lastError ?? new RigRuntimeError(
+            `Health check timed out for '${input.service.name}' after ${timeoutSeconds} seconds.`,
+            "Increase readyTimeout or fix the component so its health check completes in time.",
+            {
+              providerId: selected.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              target,
+              timeoutSeconds,
+            },
+          )
         },
         catch: (cause) =>
           cause instanceof RigRuntimeError
@@ -125,22 +157,7 @@ export const createNativeHealthCheckerAdapter = (
             ),
       })
 
-    return healthCheck.pipe(
-      Effect.timeoutOrElse({
-        duration: `${timeoutSeconds} seconds`,
-        orElse: () =>
-          Effect.fail(new RigRuntimeError(
-            `Health check timed out for '${input.service.name}' after ${timeoutSeconds} seconds.`,
-            "Increase readyTimeout or fix the component so its health check completes in time.",
-            {
-              providerId: selected.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              target,
-              timeoutSeconds,
-            },
-          )),
-      }),
+    const normalizedHealthCheck = healthCheck.pipe(
       Effect.mapError((cause) => {
         if (cause instanceof RigRuntimeError) {
           return cause
@@ -156,6 +173,28 @@ export const createNativeHealthCheckerAdapter = (
             cause: cause instanceof Error ? cause.message : String(cause),
           },
         )
+      }),
+    )
+
+    if (target.startsWith("http://") || target.startsWith("https://")) {
+      return normalizedHealthCheck
+    }
+
+    return normalizedHealthCheck.pipe(
+      Effect.timeoutOrElse({
+        duration: `${timeoutSeconds} seconds`,
+        orElse: () =>
+          Effect.fail(new RigRuntimeError(
+            `Health check timed out for '${input.service.name}' after ${timeoutSeconds} seconds.`,
+            "Increase readyTimeout or fix the component so its health check completes in time.",
+            {
+              providerId: selected.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              target,
+              timeoutSeconds,
+            },
+          )),
       }),
     )
   }

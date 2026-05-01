@@ -670,12 +670,14 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
   })
 
   test("GIVEN deploy command WHEN running THEN CLI deploy intent targets refs without semver", async () => {
-    const { exitCode, logger, deployIntents } = await runWithLogger([
+    const { exitCode, logger, deployIntents, rigd } = await runWithLogger([
       "deploy",
       "--project",
       "pantry",
       "--state-root",
       "/tmp/rig",
+      "--config",
+      "/tmp/pantry/rig.json",
       "--ref",
       "feature/preview",
       "--target",
@@ -692,10 +694,28 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
         stateRoot: "/tmp/rig",
         ref: "feature/preview",
         target: "generated",
+        config: expect.objectContaining({
+          name: "pantry",
+        }),
         deploymentName: "qa",
       },
     ])
-    expect(logger.infos.at(-1)?.message).toBe("rig deploy intent")
+    expect(rigd.deployRequests).toEqual([
+      expect.objectContaining({
+        project: "pantry",
+        stateRoot: "/tmp/rig",
+        ref: "feature/preview",
+        target: "generated",
+        config: expect.objectContaining({
+          name: "pantry",
+        }),
+        deploymentName: "qa",
+      }),
+    ])
+    expect(logger.infos.map((entry) => entry.message)).toEqual([
+      "rig deploy intent",
+      "rig deploy accepted",
+    ])
   })
 
   test("GIVEN deploy inside managed repo WHEN running THEN config is loaded and accepted by rigd", async () => {
@@ -997,7 +1017,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     })
   })
 
-  test("GIVEN explicit project inside different repo WHEN config is omitted THEN command stays cross-project", async () => {
+  test("GIVEN explicit project inside different repo WHEN config is omitted THEN runtime change is rejected", async () => {
     const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
       "up",
       "--project",
@@ -1006,14 +1026,15 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       inferredProject: "pantry",
     })
 
-    expect(exitCode).toBe(0)
+    expect(exitCode).toBe(1)
     expect(configLoader.loads).toEqual([])
-    expect(logger.errors).toEqual([])
-    expect(lifecycle.requests[0]).toMatchObject({
-      action: "up",
-      project: "api",
-    })
-    expect(lifecycle.requests[0]).not.toHaveProperty("config")
+    expect(logger.errors).toEqual([
+      expect.objectContaining({
+        _tag: "RigCliArgumentError",
+        message: "rig up requires a rig.json for runtime changes.",
+      }),
+    ])
+    expect(lifecycle.requests).toEqual([])
   })
 
   test("GIVEN status inside managed repo WHEN running THEN inventory and health use config", async () => {

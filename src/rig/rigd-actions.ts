@@ -71,6 +71,22 @@ const dependencyChecks = (components: readonly RigRuntimePlanComponent[]) => {
   )
 }
 
+const proxyChecks = (deployment: RigDeploymentRecord | undefined) => {
+  const upstream = deployment?.resolved.runtimePlan.proxy?.upstream
+  if (!upstream) {
+    return []
+  }
+  const upstreamComponent = deployment?.resolved.runtimePlan.components.find((component) => component.name === upstream)
+  return [{
+    name: `proxy:${upstream}`,
+    ok: upstreamComponent?.kind === "managed",
+    details: {
+      upstream,
+      ...(upstreamComponent ? { kind: upstreamComponent.kind } : { reason: "missing-upstream" }),
+    },
+  }]
+}
+
 const binaryChecks = (components: readonly RigRuntimePlanComponent[]) =>
   components.flatMap((component) =>
     component.kind === "installed"
@@ -149,7 +165,10 @@ const portChecks = (
     runtimeComponent.kind === "managed"
       ? [{ component: runtimeComponent.name, port: runtimeComponent.port }]
       : [],
-  ).map(({ component, port }) => {
+  ).map(({ component, port }, _index, requestedPorts) => {
+    const duplicate = requestedPorts.find((candidate) =>
+      candidate.component !== component && candidate.port === port
+    )
     const conflict = reservations.find((reservation) =>
       reservation.status === "reserved" &&
       reservation.port === port &&
@@ -162,13 +181,20 @@ const portChecks = (
     return {
       component,
       port,
-      available: conflict === undefined,
+      available: duplicate === undefined && conflict === undefined,
       details: conflict
         ? {
           conflictingProject: conflict.project,
           conflictingDeployment: conflict.deployment,
           conflictingComponent: conflict.component,
         }
+        : duplicate
+          ? {
+            conflictingProject: deployment?.project,
+            conflictingDeployment: deployment?.name,
+            conflictingComponent: duplicate.component,
+            reason: "duplicate-deployment-port",
+          }
         : undefined,
     }
   })
@@ -248,7 +274,7 @@ const deploymentForPreflight = (
       config: input.config,
       stateRoot: input.stateRoot,
       branch: input.ref ?? name,
-      name: input.deploymentName ?? name,
+      ...(input.deploymentName ? { name: input.deploymentName } : {}),
     })
   })
 
@@ -285,7 +311,10 @@ export const deriveRigdActionPreflightChecks = (
     return {
       project: input.project,
       deployment: targetDeploymentName(input.target),
-      dependencies: dependencyChecks(components),
+      dependencies: [
+        ...dependencyChecks(components),
+        ...proxyChecks(deployment),
+      ],
       binaries: binaryChecks(components),
       env: envChecks(deployment, components),
       hooks: [

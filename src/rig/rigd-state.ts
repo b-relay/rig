@@ -5,7 +5,10 @@ import type { RigDeploymentKind, RigDeploymentRecord } from "./deployments.js"
 import {
   isPlatformNotFound,
   platformMakeDirectory,
+  platformMakeDirectoryExclusive,
   platformReadFileString,
+  platformRemove,
+  platformRename,
   platformWriteFileString,
 } from "./effect-platform.js"
 import { RigRuntimeError } from "./errors.js"
@@ -155,6 +158,16 @@ const emptyState = (): RigdPersistentState => ({
 const rigdStatePath = (stateRoot: string): string =>
   join(stateRoot, "runtime", "rigd-state.json")
 
+const rigdStateLockPath = (stateRoot: string): string =>
+  join(stateRoot, "runtime", "rigd-state.lock")
+
+const rigdStateTempPath = (stateRoot: string): string =>
+  join(
+    stateRoot,
+    "runtime",
+    `rigd-state.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`,
+  )
+
 const runtimeError = (
   message: string,
   hint: string,
@@ -219,7 +232,12 @@ const writeState = (
 ): Effect.Effect<void, RigRuntimeError> =>
   Effect.gen(function* () {
     yield* platformMakeDirectory(join(stateRoot, "runtime"))
-    yield* platformWriteFileString(rigdStatePath(stateRoot), `${JSON.stringify(state, null, 2)}\n`)
+    const target = rigdStatePath(stateRoot)
+    const temp = rigdStateTempPath(stateRoot)
+    yield* platformWriteFileString(temp, `${JSON.stringify(state, null, 2)}\n`)
+    yield* platformRename(temp, target).pipe(
+      Effect.tapError(() => platformRemove(temp, { force: true }).pipe(Effect.ignore)),
+    )
   }).pipe(
     Effect.mapError(runtimeError(
       "Unable to write rigd persistent state.",
@@ -228,13 +246,71 @@ const writeState = (
     )),
   )
 
+const acquireStateLock = (stateRoot: string): Effect.Effect<void, RigRuntimeError> =>
+  Effect.gen(function* () {
+    yield* platformMakeDirectory(join(stateRoot, "runtime"))
+    const lockPath = rigdStateLockPath(stateRoot)
+
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      const acquired = yield* platformMakeDirectoryExclusive(lockPath).pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false)),
+      )
+      if (acquired) {
+        return
+      }
+      yield* Effect.sleep("10 millis")
+    }
+
+    return yield* Effect.fail(
+      new RigRuntimeError(
+        "Timed out waiting for rigd persistent state lock.",
+        "Ensure no stuck rig process is holding runtime/rigd-state.lock, then retry.",
+        { stateRoot, lockPath },
+      ),
+    )
+  }).pipe(
+    Effect.mapError((cause) =>
+      cause instanceof RigRuntimeError
+        ? cause
+        : new RigRuntimeError(
+          "Unable to acquire rigd persistent state lock.",
+          "Ensure the rig runtime state root is writable and retry.",
+          {
+            stateRoot,
+            cause: cause instanceof Error ? cause.message : String(cause),
+          },
+        )
+    ),
+  )
+
+const releaseStateLock = (stateRoot: string): Effect.Effect<void, never> =>
+  platformRemove(rigdStateLockPath(stateRoot), { recursive: true, force: true }).pipe(Effect.ignore)
+
 const updateState = (
   stateRoot: string,
   update: (state: RigdPersistentState) => RigdPersistentState,
 ): Effect.Effect<void, RigRuntimeError> =>
   Effect.gen(function* () {
-    const current = yield* readState(stateRoot)
-    yield* writeState(stateRoot, update(current))
+    yield* acquireStateLock(stateRoot)
+    return yield* Effect.gen(function* () {
+      const current = yield* readState(stateRoot)
+      const next = yield* Effect.try({
+        try: () => update(current),
+        catch: (cause) =>
+          cause instanceof RigRuntimeError
+            ? cause
+            : new RigRuntimeError(
+              "Unable to update rigd persistent state.",
+              "Inspect the requested state mutation and retry.",
+              {
+                stateRoot,
+                cause: cause instanceof Error ? cause.message : String(cause),
+              },
+            ),
+      })
+      yield* writeState(stateRoot, next)
+    }).pipe(Effect.ensuring(releaseStateLock(stateRoot)))
   })
 
 const mergeDeploymentSnapshots = (
@@ -301,10 +377,22 @@ export const RigFileRigdStateStoreLive = Layer.succeed(RigdStateStore, {
       events: [...state.events, input.event],
     })),
   appendReceipt: (input) =>
-    updateState(input.stateRoot, (state) => ({
-      ...state,
-      receipts: [...state.receipts.filter((receipt) => receipt.id !== input.receipt.id), input.receipt],
-    })),
+    updateState(input.stateRoot, (state) => {
+      if (state.receipts.some((receipt) => receipt.id === input.receipt.id)) {
+        throw new RigRuntimeError(
+          `Duplicate rigd receipt id '${input.receipt.id}'.`,
+          "Retry the action so rigd can allocate a fresh receipt id.",
+          {
+            stateRoot: input.stateRoot,
+            receiptId: input.receipt.id,
+          },
+        )
+      }
+      return {
+        ...state,
+        receipts: [...state.receipts, input.receipt],
+      }
+    }),
   writeHealthSummary: (input) =>
     updateState(input.stateRoot, (state) => ({
       ...state,
@@ -351,9 +439,22 @@ export const RigMemoryRigdStateStoreLive = () => {
   const update = (
     stateRoot: string,
     apply: (state: RigdPersistentState) => RigdPersistentState,
-  ): Effect.Effect<void> =>
-    Effect.sync(() => {
-      save(stateRoot, apply(load(stateRoot)))
+  ): Effect.Effect<void, RigRuntimeError> =>
+    Effect.try({
+      try: () => {
+        save(stateRoot, apply(load(stateRoot)))
+      },
+      catch: (cause) =>
+        cause instanceof RigRuntimeError
+          ? cause
+          : new RigRuntimeError(
+            "Unable to update rigd in-memory state.",
+            "Inspect the requested state mutation and retry.",
+            {
+              stateRoot,
+              cause: cause instanceof Error ? cause.message : String(cause),
+            },
+          ),
     })
 
   return Layer.succeed(RigdStateStore, {
@@ -364,10 +465,22 @@ export const RigMemoryRigdStateStoreLive = () => {
         events: [...state.events, input.event],
       })),
     appendReceipt: (input) =>
-      update(input.stateRoot, (state) => ({
-        ...state,
-        receipts: [...state.receipts.filter((receipt) => receipt.id !== input.receipt.id), input.receipt],
-      })),
+      update(input.stateRoot, (state) => {
+        if (state.receipts.some((receipt) => receipt.id === input.receipt.id)) {
+          throw new RigRuntimeError(
+            `Duplicate rigd receipt id '${input.receipt.id}'.`,
+            "Retry the action so rigd can allocate a fresh receipt id.",
+            {
+              stateRoot: input.stateRoot,
+              receiptId: input.receipt.id,
+            },
+          )
+        }
+        return {
+          ...state,
+          receipts: [...state.receipts, input.receipt],
+        }
+      }),
     writeHealthSummary: (input) =>
       update(input.stateRoot, (state) => ({
         ...state,

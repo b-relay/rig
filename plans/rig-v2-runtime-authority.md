@@ -177,14 +177,14 @@ instead of owning separate safety logic.
 
 ### Acceptance Criteria
 
-- [ ] Lifecycle actions run preflight before runtime mutation.
-- [ ] Deploy actions run preflight before checkout, materialization, process
+- [x] Lifecycle actions run preflight before runtime mutation.
+- [x] Deploy actions run preflight before checkout, materialization, process
       restart, proxy update, or cutover.
-- [ ] Preflight can report dependency, binary, env, hook, health ownership,
+- [x] Preflight can report dependency, binary, env, hook, health ownership,
       port, provider, and stale-state evidence.
-- [ ] Preflight failures return tagged structured errors with actionable hints.
-- [ ] Doctor reports the same preflight evidence used by `rigd`.
-- [ ] Tests prove failed preflight prevents runtime execution and avoids
+- [x] Preflight failures return tagged structured errors with actionable hints.
+- [x] Doctor reports the same preflight evidence used by `rigd`.
+- [x] Tests prove failed preflight prevents runtime execution and avoids
       partial inventory mutation where applicable.
 
 ---

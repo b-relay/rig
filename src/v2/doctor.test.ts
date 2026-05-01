@@ -15,6 +15,8 @@ const passingInput = (): V2DoctorCheckInput => ({
   hooks: [{ name: "preStart", ok: true }],
   healthChecks: [{ component: "web", target: "http://127.0.0.1:3070/health", ok: true, ownedByRig: true }],
   ports: [{ component: "web", port: 3070, available: true }],
+  staleState: [{ name: "runtime-journal", ok: true }],
+  providers: [{ name: "process-supervisor:rigd", ok: true, profile: "stub" }],
 })
 
 describe("GIVEN v2 doctor and deploy preflight WHEN reliability checks run THEN behavior is covered", () => {
@@ -34,6 +36,8 @@ describe("GIVEN v2 doctor and deploy preflight WHEN reliability checks run THEN 
       "hooks",
       "health",
       "ports",
+      "stale-state",
+      "providers",
     ])
     expect(result.failures).toEqual([])
   })

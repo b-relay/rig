@@ -1248,6 +1248,75 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN persisted port conflict WHEN deploy is requested THEN real preflight blocks before runtime mutation", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor()
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* V2Rigd
+          const store = yield* V2RigdStateStore
+          yield* store.writePortReservations({
+            stateRoot,
+            reservations: [
+              {
+                project: "other",
+                deployment: "live",
+                component: "web",
+                port: 3070,
+                owner: "rigd",
+                status: "reserved",
+                observedAt: "2026-05-01T00:00:00.000Z",
+              },
+            ],
+          })
+          const error = yield* Effect.flip(
+            rigd.controlPlaneDeploy({
+              project: "pantry",
+              target: "live",
+              ref: "main",
+              stateRoot,
+              config,
+            }),
+          )
+          const persisted = yield* store.load({ stateRoot })
+          return { error, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "V2RuntimeError",
+        message: "Preflight failed for deploy action 'live'.",
+        hint: "Resolve the reported preflight failures before retrying the runtime action.",
+        details: {
+          reason: "preflight-failed",
+          kind: "deploy",
+          target: "live",
+          failures: [
+            expect.objectContaining({
+              category: "ports",
+              component: "web",
+              reason: "port-conflict",
+              details: expect.objectContaining({
+                port: 3070,
+                conflictingProject: "other",
+                conflictingDeployment: "live",
+              }),
+            }),
+          ],
+        },
+      })
+      expect(executor.deployCalls).toEqual([])
+      expect(result.persisted.receipts).toEqual([])
+      expect(result.persisted.events).toEqual([])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN generated deploy preflight fails WHEN routed through rigd THEN generated inventory is not materialized", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-v2-actions-"))
 

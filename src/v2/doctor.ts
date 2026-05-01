@@ -58,6 +58,8 @@ export interface V2DoctorCheckInput {
   readonly hooks: readonly V2HookCheck[]
   readonly healthChecks: readonly V2HealthOwnershipCheck[]
   readonly ports: readonly V2PortReservationCheck[]
+  readonly staleState: readonly V2NamedCheck[]
+  readonly providers: readonly (V2NamedCheck & { readonly profile?: string })[]
 }
 
 export interface V2DoctorFailure {
@@ -178,6 +180,8 @@ const collectPreflightFailures = (input: V2DoctorCheckInput): readonly V2DoctorF
   ...input.hooks.filter((check) => !check.ok).map((check) => genericFailure("hooks", check.name, check.details)),
   ...input.healthChecks.filter((check) => !check.ok || !check.ownedByRig).map(healthFailure),
   ...input.ports.filter((check) => !check.available).map(portFailure),
+  ...input.staleState.filter((check) => !check.ok).map((check) => genericFailure("stale-state", check.name, check.details)),
+  ...input.providers.filter((check) => !check.ok).map((check) => genericFailure("providers", check.name, check.details)),
 ]
 
 const category = (
@@ -190,17 +194,19 @@ const category = (
   details,
 })
 
+export const evaluateV2Preflight = (input: V2DoctorCheckInput): V2PreflightResult => {
+  const failures = collectPreflightFailures(input)
+  return {
+    ok: failures.length === 0,
+    project: input.project,
+    deployment: input.deployment,
+    checkedCategories: ["dependencies", "binaries", "env", "hooks", "health", "ports", "stale-state", "providers"],
+    failures,
+  }
+}
+
 export const V2DoctorLive = Layer.succeed(V2Doctor, {
-  preflight: (input) => {
-    const failures = collectPreflightFailures(input)
-    return Effect.succeed({
-      ok: failures.length === 0,
-      project: input.project,
-      deployment: input.deployment,
-      checkedCategories: ["dependencies", "binaries", "env", "hooks", "health", "ports"],
-      failures,
-    })
-  },
+  preflight: (input) => Effect.succeed(evaluateV2Preflight(input)),
   report: (input) => {
     const categories = [
       category("path", input.path.ok, input.path),

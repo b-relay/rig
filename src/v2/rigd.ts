@@ -15,7 +15,7 @@ import { V2RuntimeError } from "./errors.js"
 import { V2HomeConfigStore, type V2HomeConfig } from "./home-config.js"
 import type { V2LifecycleLane, V2LifecycleWriteAction } from "./lifecycle.js"
 import { V2ProviderRegistry, type V2ProviderRegistryReport } from "./provider-contracts.js"
-import { V2RigdActionPreflight, type V2RigdActionKind } from "./rigd-actions.js"
+import { verifyV2RigdActionPreflight, V2RigdActionPreflight, type V2RigdActionKind, type V2RigdActionPreflightInput } from "./rigd-actions.js"
 import { V2RigdStateStore } from "./rigd-state.js"
 import { makeV2RuntimeJournal } from "./runtime-journal.js"
 import { deriveV2RuntimeLogWindow, deriveV2RuntimeWebReadModel } from "./runtime-read-models.js"
@@ -313,6 +313,17 @@ export const V2RigdLive = Layer.effect(
         events.push(event)
       },
     })
+    const verifyActionPreflight = (
+      input: V2RigdActionPreflightInput,
+    ): Effect.Effect<void, V2RuntimeError> =>
+      Effect.gen(function* () {
+        yield* verifyV2RigdActionPreflight(input, {
+          deployments,
+          stateStore,
+          providerRegistry,
+        })
+        yield* actionPreflight.verify(input)
+      })
 
     const health = (stateRoot: string): Effect.Effect<V2RigdHealth> =>
       Effect.gen(function* () {
@@ -837,11 +848,12 @@ export const V2RigdLive = Layer.effect(
           target = `generated:${branchSlug(input.deploymentName ?? input.ref)}`
         }
 
-        yield* actionPreflight.verify({
+        yield* verifyActionPreflight({
           kind: "deploy",
           project: input.project,
           stateRoot: input.stateRoot,
           target,
+          ...(input.config ? { config: input.config } : {}),
         })
 
         let materialized: V2DeploymentRecord | undefined
@@ -982,6 +994,13 @@ export const V2RigdLive = Layer.effect(
         }),
       lifecycle: (input) =>
         Effect.gen(function* () {
+          yield* verifyActionPreflight({
+            kind: "lifecycle",
+            project: input.project,
+            stateRoot: input.stateRoot,
+            target: input.lane,
+            ...(input.config ? { config: input.config } : {}),
+          })
           const runtimeResult = yield* lifecycleExecution(input)
           yield* persistDesiredLifecycle(input, runtimeResult)
           return yield* lifecycleAccepted(input, "cli", runtimeResult?.execution)
@@ -1003,11 +1022,12 @@ export const V2RigdLive = Layer.effect(
               ),
             )
           }
-          yield* actionPreflight.verify({
+          yield* verifyActionPreflight({
             kind: "lifecycle",
             project: input.project,
             stateRoot: input.stateRoot,
             target: input.lane,
+            ...(input.config ? { config: input.config } : {}),
           })
           const runtimeResult = yield* lifecycleExecution(input)
           yield* persistDesiredLifecycle(input, runtimeResult)
@@ -1032,11 +1052,12 @@ export const V2RigdLive = Layer.effect(
             )
           }
           const target = `generated:${input.deploymentName}`
-          yield* actionPreflight.verify({
+          yield* verifyActionPreflight({
             kind: "destroy",
             project: input.project,
             stateRoot: input.stateRoot,
             target,
+            config: input.config,
           })
           const destroyed = yield* deployments.destroyGenerated({
             config: input.config,

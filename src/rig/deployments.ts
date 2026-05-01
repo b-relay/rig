@@ -145,6 +145,21 @@ const assignPorts = (
   return assigned
 }
 
+const resolvedManagedPorts = (
+  resolved: ResolvedRigLane,
+  assignedPorts: Readonly<Record<string, number>>,
+): Readonly<Record<string, number>> => {
+  const managedPorts = Object.fromEntries(
+    resolved.runtimePlan.components.flatMap((component) =>
+      component.kind === "managed" ? [[component.name, component.port] as const] : []
+    ),
+  )
+  return {
+    ...assignedPorts,
+    ...managedPorts,
+  }
+}
+
 const generatedPaths = (
   stateRoot: string,
   project: string,
@@ -161,15 +176,17 @@ const laneRecord = (
   config: RigProjectConfig,
   stateRoot: string,
   kind: "local" | "live",
-): Effect.Effect<RigDeploymentRecord, RigRuntimeError> =>
-  resolveRigLane(config, {
+): Effect.Effect<RigDeploymentRecord, RigRuntimeError> => {
+  const assignedPorts = assignPorts(config, kind, undefined)
+
+  return resolveRigLane(config, {
     lane: kind,
     workspacePath: join(stateRoot, "workspaces", config.name, kind),
     dataRoot: join(stateRoot, "data", config.name, kind),
     deploymentName: kind,
     branchSlug: kind,
     subdomain: kind,
-    assignedPorts: assignPorts(config, kind, undefined),
+    assignedPorts,
   }).pipe(
     Effect.mapError((error) =>
       new RigRuntimeError(
@@ -190,12 +207,13 @@ const laneRecord = (
         logRoot: join(stateRoot, "logs", config.name, kind),
         runtimeRoot: join(stateRoot, "runtime", config.name, kind),
         runtimeStatePath: join(stateRoot, "runtime", config.name, kind, "runtime.json"),
-        assignedPorts: assignPorts(config, kind, undefined),
+        assignedPorts: resolvedManagedPorts(resolved, assignedPorts),
         providerProfile: resolved.providerProfile,
         resolved,
       } satisfies RigDeploymentRecord
     }),
   )
+}
 
 const generatedRecord = (
   input: RigMaterializeGeneratedInput,
@@ -238,7 +256,7 @@ const generatedRecord = (
       branchSlug: slug,
       subdomain: resolved.subdomain,
       ...paths,
-      assignedPorts,
+      assignedPorts: resolvedManagedPorts(resolved, assignedPorts),
       providerProfile: resolved.providerProfile,
       resolved,
     })),

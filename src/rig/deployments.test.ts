@@ -178,6 +178,65 @@ describe("GIVEN rig generated deployments WHEN materializing inventory THEN beha
     ])
   })
 
+  test("GIVEN local and live components with configured ports WHEN listing THEN recorded ports match the runtime plan", async () => {
+    const config = await Effect.runPromise(
+      decodeRigProjectConfig({
+        name: "pantry",
+        components: {
+          api: {
+            mode: "managed",
+            command: "bun run start -- --port ${api.port}",
+            port: 3210,
+          },
+          web: {
+            mode: "managed",
+            command: "VITE_API=http://127.0.0.1:${api.port} bun run start -- --port ${web.port}",
+            port: 5173,
+            dependsOn: ["api"],
+          },
+        },
+        live: {
+          components: {
+            api: {
+              port: 43290,
+            },
+            web: {
+              port: 43070,
+            },
+          },
+        },
+      }),
+    )
+
+    const { result: inventory } = await runWithStore(
+      Effect.gen(function* () {
+        const manager = yield* RigDeploymentManager
+        return yield* manager.list({
+          config,
+          stateRoot: "/tmp/rig",
+        })
+      }),
+    )
+
+    const local = inventory.find((entry) => entry.kind === "local")
+    const live = inventory.find((entry) => entry.kind === "live")
+
+    expect(local?.assignedPorts).toMatchObject({
+      api: 3210,
+      web: 5173,
+    })
+    expect(live?.assignedPorts).toMatchObject({
+      api: 43290,
+      web: 43070,
+    })
+    expect(live?.resolved.runtimePlan.components).toContainEqual(expect.objectContaining({
+      name: "web",
+      command: "VITE_API=http://127.0.0.1:43290 bun run start -- --port 43070",
+      port: 43070,
+    }))
+    expect(JSON.stringify(live?.assignedPorts)).not.toContain("42000")
+  })
+
   test("GIVEN generated deployment WHEN destroyed THEN only generated state is removed", async () => {
     const config = await Effect.runPromise(projectConfig())
     const { result, store } = await runWithStore(

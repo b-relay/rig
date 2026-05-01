@@ -171,6 +171,33 @@ const portChecks = (
     }
   })
 
+const runningPortReservations = (
+  state: {
+    readonly portReservations: readonly {
+      readonly project: string
+      readonly deployment: string
+      readonly component: string
+      readonly port: number
+      readonly status: "reserved" | "stale"
+    }[]
+    readonly desiredDeployments: readonly {
+      readonly project: string
+      readonly deployment: string
+      readonly desiredStatus: "running" | "stopped" | "failed"
+    }[]
+  },
+) => {
+  const runningDeployments = new Set(
+    state.desiredDeployments
+      .filter((desired) => desired.desiredStatus === "running")
+      .map((desired) => `${desired.project}:${desired.deployment}`),
+  )
+
+  return state.portReservations.filter((reservation) =>
+    runningDeployments.has(`${reservation.project}:${reservation.deployment}`)
+  )
+}
+
 const providerChecks = (
   deployment: RigDeploymentRecord | undefined,
   providers: readonly { readonly id: string; readonly family: string }[],
@@ -255,7 +282,7 @@ export const deriveRigdActionPreflightChecks = (
         ...components.flatMap((component) => hookChecks(component.name, component.hooks)),
       ],
       healthChecks: healthChecks(components),
-          ports: portChecks(deployment, components, state.portReservations),
+      ports: portChecks(deployment, components, runningPortReservations(state)),
       staleState: [
         {
           name: "runtime-journal",

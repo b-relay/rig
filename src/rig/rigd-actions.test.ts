@@ -146,6 +146,13 @@ const projectConfig = (): Effect.Effect<RigProjectConfig> =>
         health: "http://127.0.0.1:${web.port}/health",
       },
     },
+    local: {
+      components: {
+        web: {
+          port: 5173,
+        },
+      },
+    },
     deployments: {
       subdomain: "${branchSlug}",
       providerProfile: "stub",
@@ -1273,6 +1280,18 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
               },
             ],
           })
+          yield* store.writeDesiredDeployment({
+            stateRoot,
+            desired: {
+              project: "other",
+              deployment: "live",
+              kind: "live",
+              desiredStatus: "running",
+              updatedAt: "2026-05-01T00:00:00.000Z",
+              providerProfile: "stub",
+              record: {} as RigDeploymentRecord,
+            },
+          })
           const error = yield* Effect.flip(
             rigd.controlPlaneDeploy({
               project: "pantry",
@@ -1381,7 +1400,17 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
                   },
                 ],
                 deploymentSnapshots: [],
-                desiredDeployments: [],
+                desiredDeployments: [
+                  {
+                    project: "other",
+                    deployment: "live",
+                    kind: "live",
+                    desiredStatus: "running",
+                    updatedAt: "2026-05-01T00:00:00.000Z",
+                    providerProfile: "stub",
+                    record: {} as RigDeploymentRecord,
+                  },
+                ],
                 managedServiceFailures: [],
               }),
             appendEvent: () => Effect.die("unused"),

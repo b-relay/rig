@@ -250,7 +250,13 @@ Run doctor checks:
 
 ```bash
 ./rig doctor --project pantry
+./rig doctor --project pantry --config /path/to/pantry/rig.json
 ```
+
+Doctor reads provider config without mutating provider state. For real Caddy
+profiles, command-mode reload without a configured command is reported as a
+provider diagnostic with the `caddy` provider id, project, live deployment,
+proxy component when known, and a hint for fixing home config.
 
 ## Config Editing
 

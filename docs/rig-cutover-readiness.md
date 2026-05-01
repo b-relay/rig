@@ -78,7 +78,7 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
 | Version metadata | `rig bump` carries optional semver/rollback metadata. | Decide whether `bump` remains final. |
 | Forget/purge | No direct replacement command yet. | Defer unless real use needs it. |
 | Daemon authority | `rig rigd`. | Keep as runtime authority command. |
-| Doctor | `rig doctor`. | Expand real-provider diagnostics. |
+| Doctor | `rig doctor`. | Caddy reload-command misconfiguration is reported as an actionable provider diagnostic. |
 
 ## Validation Checklist
 
@@ -130,4 +130,4 @@ The replacement should remain reversible:
 - #50 Improve `rig init` from real project setup friction.
 - #51 Keep the historical rig state preservation policy current.
 - #52 Harden hosted control-plane transport lifecycle.
-- #53 Expand doctor real-provider diagnostics.
+- #53 Keep doctor real-provider diagnostics actionable as more failures are found.

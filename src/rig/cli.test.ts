@@ -18,6 +18,12 @@ import {
 } from "./deploy-intent.js"
 import { RigDoctor, type RigDoctorReportInput } from "./doctor.js"
 import { RigCliArgumentError, type RigTaggedError } from "./errors.js"
+import {
+  RigHomeConfigStore,
+  rigHomeConfigDefaults,
+  type RigHomeConfigReadInput,
+  type RigHomeConfigWriteInput,
+} from "./home-config.js"
 import { RigLifecycle, type RigLifecycleRequest } from "./lifecycle.js"
 import { RigProjectConfigLoader, type RigProjectConfigLoadInput } from "./project-config-loader.js"
 import {
@@ -357,10 +363,24 @@ class CaptureRigDoctor {
         { category: "stale-state" as const, ok: true, details: input.staleState },
         { category: "providers" as const, ok: true, details: input.providers },
       ],
+      diagnostics: [],
     })
   }
 
   reconstruct() {
+    return Effect.die("unused")
+  }
+}
+
+class CaptureRigHomeConfigStore {
+  readonly reads: RigHomeConfigReadInput[] = []
+
+  read(input: RigHomeConfigReadInput) {
+    this.reads.push(input)
+    return Effect.succeed(rigHomeConfigDefaults)
+  }
+
+  write(_input: RigHomeConfigWriteInput) {
     return Effect.die("unused")
   }
 }
@@ -403,6 +423,7 @@ const runWithLogger = async (
   const rigd = new CaptureRigd()
   const deployIntents = new CaptureRigDeployIntents()
   const doctor = new CaptureRigDoctor()
+  const homeConfigStore = new CaptureRigHomeConfigStore()
   const configLoader = new CaptureRigProjectConfigLoader()
   const layer = Layer.mergeAll(
     RigRuntimeLive,
@@ -412,6 +433,7 @@ const runWithLogger = async (
     Layer.succeed(Rigd, rigd),
     Layer.succeed(RigDeployIntents, deployIntents),
     Layer.succeed(RigDoctor, doctor),
+    Layer.succeed(RigHomeConfigStore, homeConfigStore),
     Layer.succeed(RigProjectConfigLoader, configLoader),
     RigProviderRegistryLive("default"),
     Layer.succeed(RigProjectLocator, {
@@ -431,7 +453,7 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRigCli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle, initializer, rigd, deployIntents, doctor, configLoader }
+  return { exitCode, logger, lifecycle, initializer, rigd, deployIntents, doctor, homeConfigStore, configLoader }
 }
 
 describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is covered", () => {

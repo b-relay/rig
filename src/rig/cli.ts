@@ -8,6 +8,7 @@ import type { RigConfigPatchOperation } from "./config-editor.js"
 import { RigDeployIntents, type RigDeployTarget } from "./deploy-intent.js"
 import { RigDoctor } from "./doctor.js"
 import { RigCliArgumentError, unknownToRigCliError } from "./errors.js"
+import { RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
 import { RigLifecycle, type RigLifecycleAction, type RigLifecycleLane } from "./lifecycle.js"
 import { rigRoot } from "./paths.js"
 import { RigProjectConfigLoader } from "./project-config-loader.js"
@@ -664,11 +665,50 @@ const bumpCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Manage optional version metadata and rollback tag anchors."))
 
+const caddyDoctorChecks = (input: {
+  readonly project: string
+  readonly providerProfile: string
+  readonly providerIds: readonly string[]
+  readonly homeConfig: RigHomeConfig
+  readonly config?: RigProjectConfig
+}) => {
+  if (!input.providerIds.includes("caddy")) {
+    return []
+  }
+
+  const reload = input.homeConfig.providers.caddy.reload
+  if (reload.mode !== "command" || reload.command?.trim()) {
+    return []
+  }
+
+  const component = input.config?.live?.proxy?.upstream
+  const caddyfile = input.homeConfig.providers.caddy.caddyfile
+
+  return [{
+    name: "caddy",
+    providerId: "caddy",
+    ok: false,
+    profile: input.providerProfile,
+    project: input.project,
+    deployment: "live",
+    ...(component ? { component } : {}),
+    reason: "caddy-reload-command-missing",
+    message: "Caddy reload is configured for command mode but no command is set.",
+    hint: "Set providers.caddy.reload.command in rig home config or switch providers.caddy.reload.mode to manual.",
+    details: {
+      family: "proxy-router",
+      reloadMode: reload.mode,
+      ...(caddyfile ? { caddyfile } : {}),
+    },
+  }]
+}
+
 const doctorCommand = Command.make(
   "doctor",
   {
     project: projectFlag,
     stateRoot: stateRootFlag,
+    configPath: configFlag,
   },
   (input) =>
     Effect.gen(function* () {
@@ -676,12 +716,20 @@ const doctorCommand = Command.make(
         project: input.project,
         lane: "live",
         stateRoot: input.stateRoot,
+        configPath: input.configPath,
       })
       const decoded = yield* decodeRigStatusInput(scoped)
+      const config = yield* loadProjectConfig({
+        project: decoded.project,
+        configPath: scoped.configPath,
+      })
       const doctor = yield* RigDoctor
       const logger = yield* RigLogger
       const providerRegistry = yield* RigProviderRegistry
+      const homeConfigStore = yield* RigHomeConfigStore
       const providerReport = yield* providerRegistry.current
+      const homeConfig = yield* homeConfigStore.read({ stateRoot: decoded.stateRoot })
+      const providerIds = providerReport.providers.map((provider) => provider.id)
       const report = yield* doctor.report({
         project: decoded.project,
         path: { ok: true, entries: [decoded.stateRoot] },
@@ -689,18 +737,28 @@ const doctorCommand = Command.make(
         health: [],
         ports: [],
         staleState: [],
-        providers: providerReport.providers.map((provider) => ({
-          name: provider.id,
-          ok: true,
-          profile: providerReport.profile,
-          details: {
-            displayName: provider.displayName,
-            family: provider.family,
-            source: provider.source,
-            capabilities: provider.capabilities,
-            ...(provider.packageName ? { packageName: provider.packageName } : {}),
-          },
-        })),
+        providers: [
+          ...providerReport.providers.map((provider) => ({
+            name: provider.id,
+            providerId: provider.id,
+            ok: true,
+            profile: providerReport.profile,
+            details: {
+              displayName: provider.displayName,
+              family: provider.family,
+              source: provider.source,
+              capabilities: provider.capabilities,
+              ...(provider.packageName ? { packageName: provider.packageName } : {}),
+            },
+          })),
+          ...caddyDoctorChecks({
+            project: decoded.project,
+            providerProfile: providerReport.profile,
+            providerIds,
+            homeConfig,
+            ...(config ? { config } : {}),
+          }),
+        ],
       })
 
       yield* logger.info("rig doctor report", report)

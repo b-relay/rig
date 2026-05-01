@@ -49,6 +49,17 @@ export interface RigPortReservationCheck {
   readonly details?: Readonly<Record<string, unknown>>
 }
 
+export interface RigDoctorProviderCheck extends RigNamedCheck {
+  readonly profile?: string
+  readonly providerId?: string
+  readonly project?: string
+  readonly deployment?: string
+  readonly component?: string
+  readonly reason?: string
+  readonly message?: string
+  readonly hint?: string
+}
+
 export interface RigDoctorCheckInput {
   readonly project: string
   readonly deployment: string
@@ -59,11 +70,14 @@ export interface RigDoctorCheckInput {
   readonly healthChecks: readonly RigHealthOwnershipCheck[]
   readonly ports: readonly RigPortReservationCheck[]
   readonly staleState: readonly RigNamedCheck[]
-  readonly providers: readonly (RigNamedCheck & { readonly profile?: string })[]
+  readonly providers: readonly RigDoctorProviderCheck[]
 }
 
 export interface RigDoctorFailure {
   readonly category: RigDoctorCategory
+  readonly providerId?: string
+  readonly project?: string
+  readonly deployment?: string
   readonly component?: string
   readonly reason: string
   readonly message: string
@@ -89,7 +103,7 @@ export interface RigDoctorReportInput {
   readonly health: readonly RigHealthOwnershipCheck[]
   readonly ports: readonly RigPortReservationCheck[]
   readonly staleState: readonly RigNamedCheck[]
-  readonly providers: readonly (RigNamedCheck & { readonly profile: string })[]
+  readonly providers: readonly RigDoctorProviderCheck[]
 }
 
 export interface RigDoctorCategoryReport {
@@ -102,6 +116,7 @@ export interface RigDoctorReport {
   readonly project: string
   readonly ok: boolean
   readonly categories: readonly RigDoctorCategoryReport[]
+  readonly diagnostics: readonly RigDoctorFailure[]
 }
 
 export interface RigReconstructInput {
@@ -173,6 +188,28 @@ const portFailure = (check: RigPortReservationCheck): RigDoctorFailure => ({
   },
 })
 
+const providerFailure = (check: RigDoctorProviderCheck): RigDoctorFailure => {
+  const providerId = check.providerId ?? check.name
+  return {
+    category: "providers",
+    providerId,
+    project: check.project,
+    deployment: check.deployment,
+    component: check.component,
+    reason: check.reason ?? "failed-check",
+    message: check.message ?? `Provider '${check.name}' check failed.`,
+    hint: check.hint ?? `Fix provider '${check.name}' before continuing.`,
+    details: {
+      providerId,
+      profile: check.profile,
+      project: check.project,
+      deployment: check.deployment,
+      component: check.component,
+      ...(check.details ?? {}),
+    },
+  }
+}
+
 const collectPreflightFailures = (input: RigDoctorCheckInput): readonly RigDoctorFailure[] => [
   ...input.dependencies.filter((check) => !check.ok).map((check) => genericFailure("dependencies", check.name, check.details)),
   ...input.binaries.filter((check) => !check.ok).map((check) => genericFailure("binaries", check.path, check.details)),
@@ -181,7 +218,7 @@ const collectPreflightFailures = (input: RigDoctorCheckInput): readonly RigDocto
   ...input.healthChecks.filter((check) => !check.ok || !check.ownedByRig).map(healthFailure),
   ...input.ports.filter((check) => !check.available).map(portFailure),
   ...input.staleState.filter((check) => !check.ok).map((check) => genericFailure("stale-state", check.name, check.details)),
-  ...input.providers.filter((check) => !check.ok).map((check) => genericFailure("providers", check.name, check.details)),
+  ...input.providers.filter((check) => !check.ok).map(providerFailure),
 ]
 
 const category = (
@@ -208,6 +245,7 @@ export const evaluateRigPreflight = (input: RigDoctorCheckInput): RigPreflightRe
 export const RigDoctorLive = Layer.succeed(RigDoctor, {
   preflight: (input) => Effect.succeed(evaluateRigPreflight(input)),
   report: (input) => {
+    const diagnostics = input.providers.filter((check) => !check.ok).map(providerFailure)
     const categories = [
       category("path", input.path.ok, input.path),
       category("binaries", input.binaries.every((check) => check.ok), input.binaries),
@@ -221,6 +259,7 @@ export const RigDoctorLive = Layer.succeed(RigDoctor, {
       project: input.project,
       ok: categories.every((entry) => entry.ok),
       categories,
+      diagnostics,
     })
   },
   reconstruct: (input) => {

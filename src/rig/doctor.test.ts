@@ -132,6 +132,7 @@ describe("GIVEN rig doctor and deploy preflight WHEN reliability checks run THEN
       "providers",
     ])
     expect(report.ok).toBe(true)
+    expect(report.diagnostics).toEqual([])
   })
 
   test("GIVEN reconstruction evidence WHEN safe THEN bounded recovery plan is returned", async () => {

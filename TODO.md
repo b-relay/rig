@@ -21,4 +21,4 @@
 - #50 Expand init ergonomics only where real project setup shows repeated friction.
 - Decide whether `rig bump` remains the final command name.
 - Decide whether `rig forget` is needed.
-- #53 Expand doctor real-provider diagnostics.
+- #53 Keep doctor real-provider diagnostics actionable as more failures are found.

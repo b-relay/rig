@@ -543,6 +543,72 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     }
   })
 
+  test("GIVEN command-mode Caddy reload without command WHEN doctor runs THEN provider diagnostic is actionable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
+    const caddyfile = join(root, "proxy", "Caddyfile")
+    const configPath = join(repo, "rig.json")
+
+    try {
+      await writeFile(
+        join(root, "config.json"),
+        `${JSON.stringify({
+          providers: {
+            defaultProfile: "default",
+            caddy: {
+              caddyfile,
+              reload: {
+                mode: "command",
+              },
+            },
+          },
+        }, null, 2)}\n`,
+        "utf8",
+      )
+      await writeFile(
+        configPath,
+        `${JSON.stringify({
+          name: "pantry",
+          domain: "pantry.b-relay.com",
+          components: {
+            web: {
+              mode: "managed",
+              command: "bun run start -- --host 127.0.0.1 --port ${web.port}",
+              port: 3070,
+              health: "http://127.0.0.1:${web.port}/health",
+            },
+          },
+          live: {
+            providerProfile: "default",
+            proxy: {
+              upstream: "web",
+            },
+          },
+        }, null, 2)}\n`,
+        "utf8",
+      )
+
+      const { stdout, stderr, exitCode } = await runRigCommand(
+        ["doctor", "--project", "pantry", "--state-root", root, "--config", configPath],
+        { RIG_ROOT: root },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(stdout).toContain("[INFO] rig doctor report")
+      expect(stdout).toContain('"reason":"caddy-reload-command-missing"')
+      expect(stdout).toContain('"providerId":"caddy"')
+      expect(stdout).toContain('"project":"pantry"')
+      expect(stdout).toContain('"deployment":"live"')
+      expect(stdout).toContain('"component":"web"')
+      expect(stdout).toContain("Set providers.caddy.reload.command")
+      await expect(readFile(caddyfile, "utf8")).rejects.toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN config set apply WHEN run from repo THEN rig.json is safely updated", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
     const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))

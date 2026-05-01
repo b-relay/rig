@@ -1,6 +1,7 @@
 # Pantry Cutover Rehearsal Plan
 
-Status: active plan, non-destructive.
+Status: active plan, non-destructive. Pantry config migration and
+rehearsal-safe Convex port override patches prepared locally.
 
 Date: 2026-05-01
 
@@ -61,6 +62,17 @@ Current `rig` compatibility:
   under an isolated temporary `RIG_ROOT` fails validation because the Pantry
   config is still the old schema:
   - missing top-level `components`
+- A local Pantry `rig.json` migration patch now validates under current `rig`
+  with an isolated temporary `RIG_ROOT`.
+- A local Pantry runtime-script patch now keeps live defaults at `3290`/`3291`
+  while allowing explicit rehearsal ports through environment variables.
+- Pantry's dotenv loader patch now lets command-provided environment values win
+  over `.env` values. This is required so an isolated rehearsal can point
+  Convex push commands at the rehearsal backend instead of the live URL.
+- `bun run test` currently fails in Pantry's existing CLI integration tests
+  because they cannot connect to Convex. The failure is not in config parsing,
+  but it means an isolated Convex-backed rehearsal is still needed before live
+  cutover.
 
 ## Preservation Rules
 
@@ -122,14 +134,19 @@ The current prod values to preserve are:
 ## Rehearsal Sequence
 
 1. Create a branch or patch in the Pantry repo that migrates `rig.json` to the
-   current schema.
+   current schema. Done locally.
 2. Validate that new Pantry `rig.json` with current `rig` using a temporary
-   `RIG_ROOT`.
+   `RIG_ROOT`. Done locally with `rig config read`.
 3. Run `rig doctor --project pantry --config /path/to/pantry/rig.json` with an
    isolated `RIG_ROOT`.
-4. Run a live-lane rehearsal with isolated state, bin root, workspaces, Caddyfile,
-   and logs. This must not use `~/.rig` or `/usr/local/etc/Caddyfile`.
-5. Confirm the isolated rehearsal can:
+   Done locally.
+4. Add rehearsal-safe Pantry port overrides before starting services. Convex
+   must be able to bind non-live ports during isolated rehearsals without
+   changing live defaults. Done locally.
+5. Run a live-lane rehearsal with isolated state, bin root, workspaces,
+   Caddyfile, logs, and non-live ports. This must not use `~/.rig`,
+   `/usr/local/etc/Caddyfile`, or live Pantry ports.
+6. Confirm the isolated rehearsal can:
    - install dependencies
    - build the web app
    - build/install the `pantry` CLI
@@ -137,7 +154,7 @@ The current prod values to preserve are:
    - start web on an isolated port
    - pass health checks
    - render a Caddy route in an isolated Caddyfile
-6. Only after the isolated rehearsal passes, prepare a live cutover checklist.
+7. Only after the isolated rehearsal passes, prepare a live cutover checklist.
 
 ## Live Cutover Gates
 
@@ -163,5 +180,5 @@ Rollback must keep these available:
 
 ## Next Concrete Step
 
-Create the Pantry `rig.json` migration patch in the Pantry repo, then validate
-it with current `rig` using a temporary `RIG_ROOT`.
+Run the isolated live-lane rehearsal with temporary state, non-live ports, and
+no writes to `~/.rig`, `/usr/local/etc/Caddyfile`, or live Pantry data.

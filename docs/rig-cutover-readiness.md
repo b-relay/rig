@@ -70,7 +70,7 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
 
 | Area | Current behavior | Follow-up |
 |---|---|---|
-| Init/setup | `rig init` writes `rig.json`, can add non-overwriting `rig:` scripts, can scaffold bundled component stubs, domain/proxy metadata, and initialization state. | Expand ergonomics from real project friction. |
+| Init/setup | `rig init` writes `rig.json`, can add non-overwriting `rig:` scripts, can scaffold bundled component stubs, explicit app-owned managed/installed components, domain/proxy metadata, and initialization state. | Keep additions tied to repeated real-project friction. |
 | Lifecycle | `rig up/down/restart --lane local|live` routes config-backed writes through `rigd` and selected providers. | Deepen provider parity and failure reporting. |
 | Status/logs | `rig status`, `rig list`, and `rig logs` read shared `rigd` read models and structured logs. | Improve operator summaries where real use shows gaps. |
 | Deploy | `rig deploy --target live|generated --ref <ref>` executes through SCM, workspace, package, health, process, event, and proxy providers. | Prove real Caddy reachability and Pantry dry run. |
@@ -99,6 +99,8 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
   real package installation, real Caddy route rendering/reachability, real
   health checks, and real structured event logs with capture providers for SCM,
   workspace materialization, and process restart.
+- Keep the documented Pantry init friction covered: app-owned web and CLI
+  components can be scaffolded explicitly without framework presets.
 - Confirm historical runtime state follows the documented preservation policy.
 
 ## Rollback
@@ -127,7 +129,7 @@ The replacement should remain reversible:
 
 - #48 Add isolated real-Caddy reachability E2E.
 - #49 Add isolated Pantry cutover dry run.
-- #50 Improve `rig init` from real project setup friction.
+- #50 Keep `rig init` ergonomics tied to repeated real project setup friction.
 - #51 Keep the historical rig state preservation policy current.
 - #52 Harden hosted control-plane transport lifecycle.
 - #53 Keep doctor real-provider diagnostics actionable as more failures are found.

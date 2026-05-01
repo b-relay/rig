@@ -75,6 +75,30 @@ You can scaffold a rig-style `rig.json` with the `rig` init command:
 ./rig init --project pantry --path . --provider-profile stub --package-scripts
 ```
 
+The Pantry dry run exposed one repeated setup step: after scaffolding routing
+and storage, the app-owned web process and installed CLI still had to be added
+through separate config edits. `rig init` now supports explicit generic
+component scaffolding for that case:
+
+```bash
+./rig init --project pantry --path . \
+  --domain pantry.b-relay.com \
+  --proxy web \
+  --uses sqlite \
+  --managed web \
+  --managed-command "bun run start -- --host 127.0.0.1 --port \${web.port}" \
+  --managed-port 3070 \
+  --managed-health "http://127.0.0.1:\${web.port}/health" \
+  --installed cli \
+  --installed-entrypoint dist/pantry \
+  --installed-build "bun run build" \
+  --installed-name pantry
+```
+
+These flags are non-interactive and explicit. They do not infer Next, Vite,
+Bun, database, or package-manager defaults; the command and entrypoint are the
+project maintainer's values.
+
 Add bundled component plugins at init time when the project needs Rig-owned
 database/backend components:
 
@@ -94,8 +118,7 @@ Routing metadata can be scaffolded at the same time:
 
 `--domain` writes the project domain. `--proxy web` writes `proxy.upstream` as
 `"web"` in the local, live, and generated deployment lanes. It does not create a
-`web` component; add that component explicitly with the command, package manager,
-and port your project actually uses.
+`web` component unless `--managed web` is also supplied with an explicit command.
 
 Use `stub` for isolated tests and agent runs. Use `default` only when you are
 ready for real local providers. A lane `providerProfile` overrides the machine

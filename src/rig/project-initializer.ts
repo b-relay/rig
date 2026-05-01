@@ -13,6 +13,20 @@ import type { RigComponentPluginId } from "./component-plugins.js"
 
 export type RigInitComponentPluginId = Extract<RigComponentPluginId, "sqlite" | "postgres" | "convex">
 
+export interface RigInitManagedComponent {
+  readonly name: string
+  readonly command: string
+  readonly port?: number
+  readonly health?: string
+}
+
+export interface RigInitInstalledComponent {
+  readonly name: string
+  readonly entrypoint: string
+  readonly build?: string
+  readonly installName?: string
+}
+
 export interface RigProjectInitInput {
   readonly project: string
   readonly path: string
@@ -22,6 +36,8 @@ export interface RigProjectInitInput {
   readonly proxy?: string
   readonly packageScripts?: boolean
   readonly componentPlugins?: readonly RigInitComponentPluginId[]
+  readonly managedComponent?: RigInitManagedComponent
+  readonly installedComponent?: RigInitInstalledComponent
 }
 
 export interface RigProjectInitResult {
@@ -56,7 +72,7 @@ const rigPackageScripts = {
   "rig:list": "rig list",
 } as const
 
-const scaffoldComponents = (
+const scaffoldPluginComponents = (
   plugins: readonly RigInitComponentPluginId[],
 ): Record<string, unknown> => {
   const selected = new Set(plugins)
@@ -86,10 +102,36 @@ const scaffoldComponents = (
   }
 }
 
+const scaffoldAppComponents = (input: {
+  readonly managedComponent?: RigInitManagedComponent
+  readonly installedComponent?: RigInitInstalledComponent
+}): Record<string, unknown> => ({
+  ...(input.managedComponent
+    ? {
+      [input.managedComponent.name]: {
+        mode: "managed",
+        command: input.managedComponent.command,
+        ...(input.managedComponent.port ? { port: input.managedComponent.port } : {}),
+        ...(input.managedComponent.health ? { health: input.managedComponent.health } : {}),
+      },
+    }
+    : {}),
+  ...(input.installedComponent
+    ? {
+      [input.installedComponent.name]: {
+        mode: "installed",
+        entrypoint: input.installedComponent.entrypoint,
+        ...(input.installedComponent.build ? { build: input.installedComponent.build } : {}),
+        ...(input.installedComponent.installName ? { installName: input.installedComponent.installName } : {}),
+      },
+    }
+    : {}),
+})
+
 const projectConfig = (
   project: string,
   providerProfile: "default" | "stub",
-  plugins: readonly RigInitComponentPluginId[],
+  components: Record<string, unknown>,
   routing: {
     readonly domain?: string
     readonly proxy?: string
@@ -101,7 +143,7 @@ const projectConfig = (
     name: project,
     ...(routing.domain ? { domain: routing.domain } : {}),
     description: `Rig project for ${project}.`,
-    components: scaffoldComponents(plugins),
+    components,
     local: {
       providerProfile,
       ...proxyConfig,
@@ -117,6 +159,12 @@ const projectConfig = (
     },
   }
 }
+
+const duplicateComponentName = (
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): string | undefined =>
+  Object.keys(left).find((name) => Object.prototype.hasOwnProperty.call(right, name))
 
 const runtimeError = (
   message: string,
@@ -247,13 +295,32 @@ export const RigProjectInitializerLive = Layer.effect(
           }
 
           const selectedPlugins = input.componentPlugins ?? []
-          const scaffoldedComponents = Object.keys(scaffoldComponents(selectedPlugins))
+          const pluginComponents = scaffoldPluginComponents(selectedPlugins)
+          const appComponents = scaffoldAppComponents({
+            ...(input.managedComponent ? { managedComponent: input.managedComponent } : {}),
+            ...(input.installedComponent ? { installedComponent: input.installedComponent } : {}),
+          })
+          const duplicateName = duplicateComponentName(pluginComponents, appComponents)
+          if (duplicateName) {
+            return yield* Effect.fail(
+              new RigRuntimeError(
+                `Cannot scaffold duplicate component '${duplicateName}'.`,
+                "Use distinct component names for --uses, --managed, and --installed scaffolding.",
+                { project: input.project, component: duplicateName },
+              ),
+            )
+          }
+          const components = {
+            ...pluginComponents,
+            ...appComponents,
+          }
+          const scaffoldedComponents = Object.keys(components)
 
           yield* platformWriteFileString(
             configPath,
             `${
               JSON.stringify(
-                projectConfig(input.project, input.providerProfile, selectedPlugins, {
+                projectConfig(input.project, input.providerProfile, components, {
                   ...(input.domain ? { domain: input.domain } : {}),
                   ...(input.proxy ? { proxy: input.proxy } : {}),
                 }),

@@ -51,6 +51,7 @@ Create or update a rig project config:
 
 ```bash
 ./rig init --project pantry --path . --provider-profile stub --package-scripts
+./rig init --project pantry --path . --domain pantry.b-relay.com --proxy web --managed web --managed-command "bun run start -- --host 127.0.0.1 --port \${web.port}" --managed-port 3070
 ```
 
 Run local lifecycle commands from inside a managed repo:

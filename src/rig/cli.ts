@@ -12,7 +12,12 @@ import { RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
 import { RigLifecycle, type RigLifecycleAction, type RigLifecycleLane } from "./lifecycle.js"
 import { rigRoot } from "./paths.js"
 import { RigProjectConfigLoader } from "./project-config-loader.js"
-import { RigProjectInitializer, type RigInitComponentPluginId } from "./project-initializer.js"
+import {
+  RigProjectInitializer,
+  type RigInitComponentPluginId,
+  type RigInitInstalledComponent,
+  type RigInitManagedComponent,
+} from "./project-initializer.js"
 import { RigProjectLocator } from "./project-locator.js"
 import { RigProviderRegistry } from "./provider-contracts.js"
 import { Rigd, type RigdWebReadModel } from "./rigd.js"
@@ -156,6 +161,46 @@ const usesFlag = Flag.string("uses").pipe(
   Flag.withDescription("Comma-separated bundled component plugins to scaffold, for example sqlite,postgres,convex."),
 )
 
+const initManagedFlag = Flag.string("managed").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Explicit managed component name to scaffold, for example web."),
+)
+
+const initManagedCommandFlag = Flag.string("managed-command").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Command for the explicit managed component."),
+)
+
+const initManagedPortFlag = Flag.integer("managed-port").pipe(
+  Flag.withDefault(0),
+  Flag.withDescription("Optional port for the explicit managed component."),
+)
+
+const initManagedHealthFlag = Flag.string("managed-health").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Optional health check for the explicit managed component."),
+)
+
+const initInstalledFlag = Flag.string("installed").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Explicit installed component name to scaffold, for example cli."),
+)
+
+const initInstalledEntrypointFlag = Flag.string("installed-entrypoint").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Entrypoint for the explicit installed component."),
+)
+
+const initInstalledBuildFlag = Flag.string("installed-build").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Optional build command for the explicit installed component."),
+)
+
+const initInstalledNameFlag = Flag.string("installed-name").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Optional installed executable name."),
+)
+
 const deployRefFlag = Flag.string("ref").pipe(
   Flag.withDefault("HEAD"),
   Flag.withDescription("Git ref to deploy. Semver is optional metadata, not required."),
@@ -282,6 +327,81 @@ const parseInitUses = (raw: string): Effect.Effect<readonly RigInitComponentPlug
     }
   }
   return Effect.succeed(selected)
+}
+
+const optionalText = (raw: string): string | undefined => {
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+const parseInitManagedComponent = (input: {
+  readonly managed: string
+  readonly managedCommand: string
+  readonly managedPort: number
+  readonly managedHealth: string
+}): Effect.Effect<RigInitManagedComponent | undefined, RigCliArgumentError> => {
+  const name = optionalText(input.managed)
+  const command = optionalText(input.managedCommand)
+  const health = optionalText(input.managedHealth)
+  const hasManagedInput = Boolean(name || command || health || input.managedPort !== 0)
+  if (!hasManagedInput) {
+    return Effect.succeed(undefined)
+  }
+  if (!name || !command) {
+    return Effect.fail(
+      new RigCliArgumentError(
+        "Managed component scaffolding requires --managed and --managed-command.",
+        "Pass both flags, or omit all managed component scaffold flags.",
+      ),
+    )
+  }
+  if (input.managedPort < 0 || input.managedPort > 65535) {
+    return Effect.fail(
+      new RigCliArgumentError(
+        "Managed component port must be between 1 and 65535 when provided.",
+        "Pass --managed-port with a valid TCP port, or omit it.",
+        { port: input.managedPort },
+      ),
+    )
+  }
+
+  return Effect.succeed({
+    name,
+    command,
+    ...(input.managedPort > 0 ? { port: input.managedPort } : {}),
+    ...(health ? { health } : {}),
+  })
+}
+
+const parseInitInstalledComponent = (input: {
+  readonly installed: string
+  readonly installedEntrypoint: string
+  readonly installedBuild: string
+  readonly installedName: string
+}): Effect.Effect<RigInitInstalledComponent | undefined, RigCliArgumentError> => {
+  const name = optionalText(input.installed)
+  const entrypoint = optionalText(input.installedEntrypoint)
+  const build = optionalText(input.installedBuild)
+  const installName = optionalText(input.installedName)
+  const hasInstalledInput = Boolean(name || entrypoint || build || installName)
+  if (!hasInstalledInput) {
+    return Effect.succeed(undefined)
+  }
+  if (!name || !entrypoint) {
+    return Effect.fail(
+      new RigCliArgumentError(
+        "Installed component scaffolding requires --installed and --installed-entrypoint.",
+        "Pass both flags, or omit all installed component scaffold flags.",
+      ),
+    )
+  }
+
+  return Effect.succeed({
+    name,
+    entrypoint,
+    ...(build ? { build } : {}),
+    ...(installName ? { installName } : {}),
+  })
 }
 
 const runConfigPatch = (input: {
@@ -519,6 +639,14 @@ const initCommand = Command.make(
       Flag.withDescription("Add rig package scripts to package.json when it exists."),
     ),
     uses: usesFlag,
+    managed: initManagedFlag,
+    managedCommand: initManagedCommandFlag,
+    managedPort: initManagedPortFlag,
+    managedHealth: initManagedHealthFlag,
+    installed: initInstalledFlag,
+    installedEntrypoint: initInstalledEntrypointFlag,
+    installedBuild: initInstalledBuildFlag,
+    installedName: initInstalledNameFlag,
   },
   (input) =>
     Effect.gen(function* () {
@@ -539,6 +667,17 @@ const initCommand = Command.make(
       const initializer = yield* RigProjectInitializer
       const logger = yield* RigLogger
       const componentPlugins = yield* parseInitUses(input.uses)
+      const managedComponent = yield* parseInitManagedComponent(input)
+      const installedComponent = yield* parseInitInstalledComponent(input)
+      if (managedComponent && installedComponent && managedComponent.name === installedComponent.name) {
+        return yield* Effect.fail(
+          new RigCliArgumentError(
+            `Cannot scaffold duplicate component '${managedComponent.name}'.`,
+            "Use distinct names for --managed and --installed.",
+            { component: managedComponent.name },
+          ),
+        )
+      }
       const domain = input.domain.trim()
       const proxy = input.proxy.trim()
       const result = yield* initializer.init({
@@ -550,6 +689,8 @@ const initCommand = Command.make(
         ...(proxy ? { proxy } : {}),
         packageScripts: input.packageScripts,
         componentPlugins,
+        ...(managedComponent ? { managedComponent } : {}),
+        ...(installedComponent ? { installedComponent } : {}),
       })
       yield* logger.info("rig project initialized", result)
     }),

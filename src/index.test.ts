@@ -131,6 +131,77 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     }
   })
 
+  test("GIVEN init command with explicit app components WHEN run directly THEN managed and installed components are scaffolded", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
+
+    try {
+      const init = await runRigCommand(
+        [
+          "init",
+          "--project",
+          "pantry",
+          "--path",
+          repo,
+          "--state-root",
+          root,
+          "--provider-profile",
+          "stub",
+          "--domain",
+          "pantry.b-relay.com",
+          "--proxy",
+          "web",
+          "--uses",
+          "sqlite",
+          "--managed",
+          "web",
+          "--managed-command",
+          "bun run start -- --host 127.0.0.1 --port ${web.port}",
+          "--managed-port",
+          "3070",
+          "--managed-health",
+          "http://127.0.0.1:${web.port}/health",
+          "--installed",
+          "cli",
+          "--installed-entrypoint",
+          "dist/pantry",
+          "--installed-build",
+          "bun run build",
+          "--installed-name",
+          "pantry",
+        ],
+        { RIG_ROOT: root },
+      )
+
+      expect(init.exitCode).toBe(0)
+      expect(init.stderr).toBe("")
+
+      const rigConfig = JSON.parse(await readFile(join(repo, "rig.json"), "utf8")) as {
+        readonly components?: Record<string, unknown>
+        readonly live?: { readonly proxy?: { readonly upstream?: string } }
+      }
+      expect(rigConfig.live?.proxy?.upstream).toBe("web")
+      expect(rigConfig.components).toMatchObject({
+        sqlite: { uses: "sqlite" },
+        web: {
+          mode: "managed",
+          command: "bun run start -- --host 127.0.0.1 --port ${web.port}",
+          port: 3070,
+          health: "http://127.0.0.1:${web.port}/health",
+        },
+        cli: {
+          mode: "installed",
+          entrypoint: "dist/pantry",
+          build: "bun run build",
+          installName: "pantry",
+        },
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN status command WHEN run through src/index.ts THEN it uses the isolated rig root", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 

@@ -18,7 +18,7 @@
 
 ### Product Polish
 
-- #50 Expand init ergonomics only where real project setup shows repeated friction.
+- #50 Keep init ergonomics tied to repeated real project setup friction.
 - Decide whether `rig bump` remains the final command name.
 - Decide whether `rig forget` is needed.
 - #53 Keep doctor real-provider diagnostics actionable as more failures are found.

@@ -83,7 +83,7 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
       expect(rigConfig).toMatchObject({
         name: "pantry",
         components: {
-          db: { uses: "sqlite" },
+          sqlite: { uses: "sqlite" },
           postgres: { uses: "postgres" },
           convex: { uses: "convex" },
         },

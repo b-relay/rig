@@ -77,7 +77,7 @@ class CaptureV2ProjectInitializer {
         packageJsonPath: `${input.path === "." ? "/tmp/repo" : input.path}/package.json`,
         addedScripts: input.packageScripts ? ["rig:up", "rig:down"] : [],
       },
-      scaffoldedComponents: (input.componentPlugins ?? []).map((plugin) => plugin === "sqlite" ? "db" : plugin),
+      scaffoldedComponents: input.componentPlugins ?? [],
     } satisfies V2ProjectInitResult)
   }
 }

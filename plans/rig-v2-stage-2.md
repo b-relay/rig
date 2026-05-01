@@ -402,21 +402,21 @@ SQLite is file-backed:
 ```json
 {
   "components": {
-    "db": {
+    "sqlite": {
       "uses": "sqlite"
     },
     "api": {
       "mode": "managed",
-      "command": "bun run api -- --sqlite ${db.path}",
-      "dependsOn": ["db"]
+      "command": "bun run api -- --sqlite ${sqlite.path}",
+      "dependsOn": ["sqlite"]
     }
   }
 }
 ```
 
 The default SQLite path is `${dataRoot}/sqlite/<component>.sqlite`, so
-`${db.path}` resolves to `${dataRoot}/sqlite/db.sqlite` for a component named
-`db`. `rigd` prepares the parent directory on `up` and deploy before managed
+`${sqlite.path}` resolves to `${dataRoot}/sqlite/sqlite.sqlite` for a component named
+`sqlite`. `rigd` prepares the parent directory on `up` and deploy before managed
 processes start.
 
 Postgres is process-backed:

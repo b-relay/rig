@@ -387,20 +387,20 @@ file-backed component:
 ```json
 {
   "components": {
-    "db": {
+    "sqlite": {
       "uses": "sqlite"
     },
     "api": {
       "mode": "managed",
-      "command": "bun run api -- --sqlite ${db.path}",
-      "dependsOn": ["db"]
+      "command": "bun run api -- --sqlite ${sqlite.path}",
+      "dependsOn": ["sqlite"]
     }
   }
 }
 ```
 
 SQLite defaults to `${dataRoot}/sqlite/<component>.sqlite`, so the example
-above resolves `${db.path}` to `${dataRoot}/sqlite/db.sqlite`. `rigd` prepares
+above resolves `${sqlite.path}` to `${dataRoot}/sqlite/sqlite.sqlite`. `rigd` prepares
 the parent directory on `up` and deploy before starting managed processes; the
 app still decides how to consume the path.
 

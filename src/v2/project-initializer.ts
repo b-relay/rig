@@ -60,7 +60,7 @@ const scaffoldComponents = (
   return {
     ...(selected.has("sqlite")
       ? {
-        db: {
+        sqlite: {
           uses: "sqlite",
         },
       }

@@ -750,6 +750,67 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     }
   })
 
+  test("GIVEN launchd process supervisor WHEN bootstrap fails THEN the error is tagged and actionable", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "rig-v2-launchd-bootstrap-workspace-"))
+    const home = await mkdtemp(join(tmpdir(), "rig-v2-launchd-bootstrap-home-"))
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+        logRoot: join(home, "logs"),
+        resolved: {
+          providers: {
+            processSupervisor: "launchd",
+          },
+        },
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processSupervisor = yield* V2ProcessSupervisorProvider
+          return yield* processSupervisor.up({
+            deployment,
+            service: {
+              name: "web",
+              type: "server",
+              command: "bun run start",
+              port: 3070,
+            },
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default", [], {
+            launchd: {
+              home,
+              runCommand: async (args) =>
+                args[1] === "bootstrap"
+                  ? { stdout: "", stderr: "invalid plist", exitCode: 78 }
+                  : { stdout: "", stderr: "", exitCode: 0 },
+            },
+          })),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        message: "launchd failed to bootstrap 'web' with exit code 78.",
+        hint: "Inspect the generated plist and launchctl stderr, then retry the lifecycle action.",
+        details: {
+          providerId: "launchd",
+          component: "web",
+          deployment: "live",
+          stderr: "invalid plist",
+        },
+      })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN a deployment-selected process supervisor WHEN executing operations THEN bundled providers share the same interface", async () => {
     const home = await mkdtemp(join(tmpdir(), "rig-v2-launchd-interface-"))
 

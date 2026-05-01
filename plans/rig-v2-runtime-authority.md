@@ -327,12 +327,12 @@ contract.
 
 ### Acceptance Criteria
 
-- [ ] Launchd process supervisor implementation lives in a focused adapter
+- [x] Launchd process supervisor implementation lives in a focused adapter
       module.
-- [ ] Plist rendering preserves v2 namespace and label isolation.
-- [ ] Bootstrap and bootout behavior remains externally compatible.
-- [ ] Launchd errors remain tagged and actionable.
-- [ ] Tests cover install/remove behavior and provider selection through the
+- [x] Plist rendering preserves v2 namespace and label isolation.
+- [x] Bootstrap and bootout behavior remains externally compatible.
+- [x] Launchd errors remain tagged and actionable.
+- [x] Tests cover install/remove behavior and provider selection through the
       contract.
 
 ---

@@ -1,17 +1,17 @@
 # Rig Guide
 
-`rig` is the Rig 2 CLI. It uses the new repo-first model while keeping runtime
-state isolated under `~/.rig-v2` or `RIG_V2_ROOT`.
+`rig` is the Rig CLI. It uses the new repo-first model while keeping runtime
+state isolated under `~/.rig` or `RIG_ROOT`.
 
-V2 uses two config scopes:
+Rig uses two config scopes:
 
 - project `rig.json` for repo-specific components, lane overrides, and
   project-specific deploy behavior
 - home rig config for machine/user defaults such as production branch defaults,
   generated deployment caps, replacement policy, and provider defaults
 
-The home config lives at `~/.rig-v2/config.json` by default, or
-`$RIG_V2_ROOT/config.json` when `RIG_V2_ROOT` is set. Missing home config uses
+The home config lives at `~/.rig/config.json` by default, or
+`$RIG_ROOT/config.json` when `RIG_ROOT` is set. Missing home config uses
 these defaults:
 
 ```json
@@ -43,10 +43,10 @@ these defaults:
 | Area | Legacy Rig | Rig |
 |---|---|---|
 | Binary | removed v1 command surface | `rig` |
-| State root | `~/.rig` or `RIG_ROOT` | `~/.rig-v2` or `RIG_V2_ROOT` |
+| State root | `~/.rig` or `RIG_ROOT` | `~/.rig` or `RIG_ROOT` |
 | Config shape | `environments.dev` and `environments.prod` | shared `components`, plus `local`, `live`, and `deployments` |
 | Runtime lanes | `dev` and `prod` | `local`, `live`, and generated deployments |
-| Components | v1 `services` with `server` or `bin` type | v2 `components` with `managed` or `installed` mode |
+| Components | v1 `services` with `server` or `bin` type | rig `components` with `managed` or `installed` mode |
 | CLI style | project/env positional commands | repo-first commands, with `--project` and `--config` for cross-project use |
 | Deploy model | prod release/version oriented | git ref oriented; semver is optional metadata |
 | Runtime authority | command-assembled runtime state | `rigd` owns state, receipts, logs, health, and control-plane contracts |
@@ -61,15 +61,15 @@ bun install
 bun run build
 ```
 
-For isolated testing, set a temporary v2 state root:
+For isolated testing, set a temporary rig state root:
 
 ```bash
-export RIG_V2_ROOT="$(mktemp -d)"
+export RIG_ROOT="$(mktemp -d)"
 ```
 
-## Create A V2 Config
+## Create A Rig Config
 
-You can scaffold a v2-style `rig.json` with the `rig` init command:
+You can scaffold a rig-style `rig.json` with the `rig` init command:
 
 ```bash
 ./rig init --project pantry --path . --provider-profile stub --package-scripts
@@ -107,7 +107,7 @@ is selected per lane with `providers.processSupervisor`; it defaults to
 default lanes. Use `"launchd"` there only for lanes that should use the bundled
 launchd plugin.
 
-Minimal v2 shape:
+Minimal rig shape:
 
 ```json
 {
@@ -140,13 +140,13 @@ deployments it can be the assigned per-deployment port.
 The bundled Caddy provider renders portable site blocks by default:
 
 ```caddy
-# [rig2:pantry:live:web]
+# [rig:pantry:live:web]
 pantry.b-relay.com {
   reverse_proxy http://127.0.0.1:3070
 }
 ```
 
-Machine-specific Caddy behavior belongs in the v2 home config, not in project
+Machine-specific Caddy behavior belongs in the rig home config, not in project
 config or the hard-coded renderer. For example, a maintainer machine that uses
 the system Caddyfile plus reusable snippets can set:
 
@@ -177,7 +177,7 @@ passwordless narrow helper or an unprivileged Caddy admin reload.
 Start the local `rigd` authority:
 
 ```bash
-./rig rigd
+./rigd
 ```
 
 Start the local lane from inside a managed repo:
@@ -195,7 +195,7 @@ Start or inspect a project from outside the repo:
 ./rig status --project pantry
 ```
 
-When running outside the project repo, pass the v2 config path if the command
+When running outside the project repo, pass the rig config path if the command
 should use deployment inventory or provider-backed execution:
 
 ```bash
@@ -218,7 +218,7 @@ need the structured foundation, `rigd`, inventory, and runtime status details:
 ./rig status --project pantry --json
 ```
 
-`rig list` reads the global v2 project/deployment inventory from `rigd` state.
+`rig list` reads the global rig project/deployment inventory from `rigd` state.
 Add `--json` to emit the structured read model:
 
 ```bash
@@ -249,7 +249,7 @@ Run doctor checks:
 
 ## Config Editing
 
-The v2 config editor is exposed through `rig config` commands backed by
+The rig config editor is exposed through `rig config` commands backed by
 `rigd` interfaces:
 
 - `configRead`
@@ -267,7 +267,7 @@ path array:
 }
 ```
 
-`configPreview` validates the candidate config with the v2 Effect Schema and
+`configPreview` validates the candidate config with the rig Effect Schema and
 returns diffs without writing. `configApply` checks the expected revision,
 validates again, writes atomically, and returns a backup path.
 
@@ -307,21 +307,21 @@ Outside the repo, pass both project and config path:
 
 ## Current Limits
 
-- Repo-inferred `rig up`, `down`, `status`, `logs`, and `deploy` load the v2
+- Repo-inferred `rig up`, `down`, `status`, `logs`, and `deploy` load the rig
   `rig.json` through the config-loader interface. Outside the repo, use
   `--project` plus `--config` to get the same validated config-backed path.
-- Config-backed `rigd` lifecycle and deploy actions now run through ordered v2
+- Config-backed `rigd` lifecycle and deploy actions now run through ordered rig
   runtime provider methods before receipts are persisted. Runtime execution
   emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
   `structured-log-file` writes deployment-scoped JSONL event logs,
   `native-health` performs real HTTP and command health checks,
   `package-json-scripts` runs installed-component build commands and installs
-  executables into the v2-managed bin root, the core `rigd` process supervisor
+  executables into the rig-managed bin root, the core `rigd` process supervisor
   runs managed component commands while returning provider stdout/stderr lines
   for log ingestion, the bundled `launchd` process supervisor installs/removes
-  v2-namespaced plists, `local-git` fetches and verifies deploy refs,
+  rig-namespaced plists, `local-git` fetches and verifies deploy refs,
   `git-worktree` materializes/removes deployment workspaces at those refs, and
-  `caddy` upserts/removes v2-namespaced Caddyfile routes.
+  `caddy` upserts/removes rig-namespaced Caddyfile routes.
 - Config-backed lifecycle and deploy writes persist desired runtime state.
   `rigd.start` reconciles desired-running deployments from that state, so a
   fresh `rigd` process can restart previously running local/live/generated
@@ -332,9 +332,9 @@ Outside the repo, pass both project and config path:
   crashes inside the backoff window. The core `rigd` process supervisor wires
   real child-process exits into this entrypoint, and `rig status` exposes
   desired deployment state plus recent managed-service failure evidence.
-- Pantry cutover readiness is covered by v2 tests for a live
+- Pantry cutover readiness is covered by rig tests for a live
   `pantry.b-relay.com` route and an installed `pantry` CLI under an isolated
-  v2 bin root.
+  rig bin root.
 - `rig config read`, `rig config set`, and `rig config unset` expose
   project config read/preview/apply through `rigd`. Hosted web config editing
   is still future work.
@@ -373,7 +373,7 @@ and generated deployments. Application environment variables, database users,
 schemas, migrations, and connection strings remain developer-owned unless a
 later plugin explicitly adds helpers.
 
-Each v2 deployment has a Rig-owned `dataRoot` outside the app workspace:
+Each rig deployment has a Rig-owned `dataRoot` outside the app workspace:
 `<stateRoot>/data/<project>/<lane>` for `local` and `live`, and
 `<stateRoot>/data/<project>/deployments/<name>` for generated deployments.
 Configs can interpolate it as `${dataRoot}`.

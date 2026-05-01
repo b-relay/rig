@@ -2,10 +2,10 @@
 
 Local Mac deployment manager.
 
-`rig` is the Rig 2 CLI. It is repo-first, Effect v4 based, and built around
+`rig` is the Rig CLI. It is repo-first, Effect v4 based, and built around
 `rigd` as the local runtime authority. The old v1 command surface has been
-removed from the codebase; v2 state remains isolated under `~/.rig-v2` or
-`RIG_V2_ROOT` so cutover does not mutate existing `~/.rig` state.
+removed from the codebase. Rig state defaults to `~/.rig`; set `RIG_ROOT` for
+isolated test, CI, or agent runs.
 
 ## Model
 
@@ -22,7 +22,7 @@ Rig projects use one `rig.json` with:
 
 Runtime mutation goes through `rigd`. CLI, future hosted control-plane
 transport, logs, receipts, health, config editing, lifecycle actions, and deploy
-actions use the same v2 runtime state.
+actions use the same rig runtime state.
 
 ## Install
 
@@ -34,7 +34,7 @@ bun run build
 
 ## Quick Start
 
-Create or update a v2 project config:
+Create or update a rig project config:
 
 ```bash
 ./rig init --project pantry --path . --provider-profile stub --package-scripts
@@ -62,14 +62,14 @@ Run cross-project commands explicitly:
 Use isolated state for tests or agent runs:
 
 ```bash
-export RIG_V2_ROOT="$(mktemp -d)"
+export RIG_ROOT="$(mktemp -d)"
 ./rig init --project pantry --path . --provider-profile stub
 ```
 
 ## Docs
 
 - [Rig guide](./docs/rig-guide.md)
-- [Rig v2 design](./docs/DESIGN_V2.md)
+- [Rig design](./DESIGN.md)
 - [Effect v4 notes](./docs/effect-v4-help-notes.md)
 
 ## Development
@@ -86,8 +86,8 @@ Architecture rules:
 - Language: TypeScript strict mode.
 - Effects, services, layers, errors, schema validation, and CLI parsing use
   Effect v4.
-- External concerns stay behind provider-family interfaces in `src/v2`.
-- Concrete providers live in focused modules under `src/v2/providers`.
+- External concerns stay behind provider-family interfaces in `src/rig`.
+- Concrete providers live in focused modules under `src/rig/providers`.
 - `rigd` is the runtime authority for lifecycle, deploy, inventory, health,
   logs, receipts, config editing, and control-plane contracts.
 - All output goes through the logger interface. Do not use `console.log` in

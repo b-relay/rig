@@ -37,12 +37,11 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     expect(exitCode).toBe(0)
     expect(stderr).toBe("")
     expect(stdout).toContain("rig")
-    expect(stdout).not.toContain("rig2")
   })
 
-  test("GIVEN init command WHEN run directly THEN it writes v2 project files and registers the project", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
-    const repo = await mkdtemp(join(tmpdir(), "rig2-repo-"))
+  test("GIVEN init command WHEN run directly THEN it writes rig project files and registers the project", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
 
     try {
       await writeFile(
@@ -75,7 +74,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           "--uses",
           "sqlite,postgres,convex",
         ],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
       )
 
       expect(init.exitCode).toBe(0)
@@ -120,7 +119,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       expect(packageJson.scripts?.["rig:restart"]).toBe("rig restart")
       expect(packageJson.scripts?.["rig:list"]).toBe("rig list")
 
-      const list = await runRigCommand(["list", "--state-root", root], { RIG_V2_ROOT: root })
+      const list = await runRigCommand(["list", "--state-root", root], { RIG_ROOT: root })
 
       expect(list.exitCode).toBe(0)
       expect(list.stderr).toBe("")
@@ -132,13 +131,13 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     }
   })
 
-  test("GIVEN status command WHEN run through src/index.ts THEN it uses the isolated v2 root", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+  test("GIVEN status command WHEN run through src/index.ts THEN it uses the isolated rig root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["status", "--project", "pantry"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
       )
 
       expect(exitCode).toBe(0)
@@ -146,8 +145,8 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       expect(stdout).toContain("[INFO] rig foundation ready")
       expect(stdout).toContain("[INFO] rigd status")
       expect(stdout).toContain(`state root: ${root}`)
-      expect(stdout).toContain("namespace: rig.v2.pantry")
-      expect(stdout).toContain("launchd label prefix: com.b-relay.rig2")
+      expect(stdout).toContain("namespace: rig.pantry")
+      expect(stdout).toContain("launchd label prefix: com.b-relay.rig")
       expect(stdout).toContain("rigd: running")
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -155,8 +154,8 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
   })
 
   test("GIVEN up command without project WHEN run from repo THEN it infers current project", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
-    const repo = await mkdtemp(join(tmpdir(), "rig2-repo-"))
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
 
     try {
       await writeFile(
@@ -179,7 +178,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["up", "--state-root", root],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -196,8 +195,8 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
   })
 
   test("GIVEN a fake project initialized by rig WHEN web component is added THEN local live and generated deploys accept the config", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
-    const repo = await mkdtemp(join(tmpdir(), "rig2-fake-project-"))
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-fake-project-"))
     const configPath = join(repo, "rig.json")
 
     try {
@@ -219,7 +218,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           "--uses",
           "sqlite",
         ],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
       )
 
       expect(init.exitCode).toBe(0)
@@ -238,7 +237,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           }),
           "--apply",
         ],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -248,7 +247,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const up = await runRigCommand(
         ["up", "--state-root", root],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -260,7 +259,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const deploy = await runRigCommand(
         ["deploy", "--state-root", root, "--ref", "main"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -272,7 +271,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const generatedDeploy = await runRigCommand(
         ["deploy", "--state-root", root, "--target", "generated", "--ref", "feature/test"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -284,7 +283,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const list = await runRigCommand(
         ["list", "--state-root", root, "--json"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -299,7 +298,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const logs = await runRigCommand(
         ["logs", "--state-root", root, "--lines", "100"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -327,9 +326,9 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     }
   })
 
-  test("GIVEN a Pantry-like fake app WHEN web sqlite and CLI components are configured THEN v2 deploys the app shape", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
-    const repo = await mkdtemp(join(tmpdir(), "rig2-pantry-like-"))
+  test("GIVEN a Pantry-like fake app WHEN web sqlite and CLI components are configured THEN rig deploys the app shape", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-pantry-like-"))
     const configPath = join(repo, "rig.json")
 
     try {
@@ -351,7 +350,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           "--uses",
           "sqlite",
         ],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
       )
 
       expect(init.exitCode).toBe(0)
@@ -370,7 +369,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           }),
           "--apply",
         ],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -392,7 +391,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
           }),
           "--apply",
         ],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -401,7 +400,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const liveDeploy = await runRigCommand(
         ["deploy", "--state-root", root, "--ref", "main"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -413,7 +412,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const generatedDeploy = await runRigCommand(
         ["deploy", "--state-root", root, "--target", "generated", "--ref", "feature/pantry-like-preview"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -423,7 +422,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const list = await runRigCommand(
         ["list", "--state-root", root, "--json"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -435,7 +434,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const logs = await runRigCommand(
         ["logs", "--state-root", root, "--lines", "200"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -473,12 +472,12 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
   })
 
   test("GIVEN rigd command WHEN run directly THEN it starts the local MVP API", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["rigd", "--state-root", root],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
       )
 
       expect(exitCode).toBe(0)
@@ -492,12 +491,12 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
   })
 
   test("GIVEN deploy command WHEN run directly THEN it emits a ref-based deploy intent", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["deploy", "--project", "pantry", "--state-root", root, "--ref", "feature/preview", "--target", "generated"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
       )
 
       expect(exitCode).toBe(0)
@@ -524,12 +523,12 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
   })
 
   test("GIVEN doctor command WHEN run directly THEN it emits reliability categories", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["doctor", "--project", "pantry", "--state-root", root],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
       )
 
       expect(exitCode).toBe(0)
@@ -545,8 +544,8 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
   })
 
   test("GIVEN config set apply WHEN run from repo THEN rig.json is safely updated", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
-    const repo = await mkdtemp(join(tmpdir(), "rig2-repo-"))
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
     const configPath = join(repo, "rig.json")
 
     try {
@@ -567,7 +566,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["config", "set", "--path", "live.deployBranch", "--json", "\"stable\"", "--apply"],
-        { RIG_V2_ROOT: root },
+        { RIG_ROOT: root },
         { cwd: repo },
       )
 
@@ -586,12 +585,12 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     }
   })
 
-  test("GIVEN v2 lifecycle command help WHEN run directly THEN Effect CLI renders subcommand help", async () => {
+  test("GIVEN rig lifecycle command help WHEN run directly THEN Effect CLI renders subcommand help", async () => {
     const { stdout, stderr, exitCode } = await runRigCommand(["up", "--help"], {})
 
     expect(exitCode).toBe(0)
     expect(stderr).toBe("")
-    expect(stdout).toContain("Start a v2 local or live lane.")
+    expect(stdout).toContain("Start a rig local or live lane.")
     expect(stdout).toContain("--project string")
     expect(stdout).toContain("--lane choice")
     expect(stdout).toContain("--help, -h")

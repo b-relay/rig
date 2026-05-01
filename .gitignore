@@ -5,8 +5,6 @@ node_modules
 out
 dist
 rig
-rig2
-rig-smoke
 *.tgz
 
 # code coverage

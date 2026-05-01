@@ -2,16 +2,16 @@
 
 ## Terms
 
-### Rig 2
+### Rig
 
-The replacement CLI and runtime model for Rig. Rig 2 is currently developed
+The replacement CLI and runtime model for Rig. Rig is currently developed
 beside v1 in the same repo, but v1 is temporary and will be deleted at cutover.
-Rig 2 should not preserve v1-shaped interfaces unless they buy a short migration
+Rig should not preserve v1-shaped interfaces unless they buy a short migration
 step.
 
 ### rigd
 
-The Rig 2 runtime authority. `rigd` is the only module that should mutate
+The Rig runtime authority. `rigd` is the only module that should mutate
 runtime state for lifecycle and deploy actions: deployment inventory, generated
 deployment materialization, port reservations, runtime events, receipts, health
 state, and process execution all sit behind `rigd`.
@@ -53,8 +53,8 @@ the same evidence for humans, but `rigd` owns enforcing the gate.
 
 ### Runtime plan
 
-The resolved Rig 2 shape that runtime execution, preflight, and provider
-adapters consume. The runtime plan uses Rig 2 concepts: deployments, lanes,
+The resolved Rig shape that runtime execution, preflight, and provider
+adapters consume. The runtime plan uses Rig concepts: deployments, lanes,
 managed components, installed components, workspace roots, data roots, log
 roots, runtime roots, proxy config, provider selections, hooks, env, health,
 and dependencies. V1-shaped `Environment`, `RigConfig`, `server`, `bin`, `dev`,

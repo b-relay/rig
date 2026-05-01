@@ -13,8 +13,8 @@ Keep this file current as you learn. When you verify an API, package version con
 - **Effect v4 is in beta**. Verified on 2026-04-27: `npm view effect version dist-tags --json` reports `latest` as `3.21.2` and `beta` as `4.0.0-beta.57`. For production, treat APIs as still settling.
 - **Rig uses package-name `effect` for v4** so first-party v4 platform packages
   can resolve their peer dependency correctly. The old v1 `effect-v3` alias was
-  removed when Rig 2 became the main CLI.
-- **Effect CLI for v4 currently lives in the beta package** under `effect/unstable/cli`. `@effect/cli@0.75.1` still peers against Effect 3; do not use it for the v2 beta path unless its peer requirements change.
+  removed when Rig became the main CLI.
+- **Effect CLI for v4 currently lives in the beta package** under `effect/unstable/cli`. `@effect/cli@0.75.1` still peers against Effect 3; do not use it for the rig beta path unless its peer requirements change.
 - **For Bun**, the official docs support Bun directly, and the v4 beta post shows `bun add effect@beta`.
 - **Helpful first-party tooling**:
   - `@effect/language-service`
@@ -66,7 +66,7 @@ import { Effect, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 ```
 
-## Verified Rig v2 beta APIs
+## Verified Rig beta APIs
 
 ### Effect v4 package state
 
@@ -75,9 +75,9 @@ Verified on 2026-04-20:
 - `effect@latest` is `3.21.1`
 - `effect@beta` is `4.0.0-beta.52`
 - `@effect/cli@latest` is `0.75.1` and peers against `effect@^3.21.1`
-- `effect@4.0.0-beta.52` exports `./unstable/cli`, so v2 can use unstable CLI without adding `@effect/cli`
+- `effect@4.0.0-beta.52` exports `./unstable/cli`, so rig can use unstable CLI without adding `@effect/cli`
 
-Superseded stable upgrade plan: keep v1 on an Effect 3 alias while v2 used a
+Superseded stable upgrade plan: keep v1 on an Effect 3 alias while rig used a
 separate package alias. That was replaced because v4 platform packages require
 package-name `effect`, and v1 was removed at cutover.
 
@@ -90,13 +90,13 @@ Verified again on 2026-04-27:
 - `@effect/platform-bun@beta` is `4.0.0-beta.57` and peers against package name `effect@^4.0.0-beta.57`.
 - Because v4 platform packages peer-import package-name `effect`, Rig keeps v4
   on package-name `effect`.
-- Do not use `@effect/platform-bun@latest` for v2. Use `@effect/platform-bun@beta`, currently pinned as `4.0.0-beta.57`.
+- Do not use `@effect/platform-bun@latest` for rig. Use `@effect/platform-bun@beta`, currently pinned as `4.0.0-beta.57`.
 
 ### Effect API renames confirmed in v4 beta
 
 - `Effect.catchAll` from v3 is now `Effect.catch` in v4.
 - `Effect.flip` works for tests that need to assert the typed error value.
-- `Effect.try` should use the object form with `try` and `catch` in Rig v2 code. The function shorthand caused runtime failures in `4.0.0-beta.57` because the implementation expects a `catch` callback.
+- `Effect.try` should use the object form with `try` and `catch` in Rig code. The function shorthand caused runtime failures in `4.0.0-beta.57` because the implementation expects a `catch` callback.
 - `Effect.timeoutFail` is not exported in `4.0.0-beta.57`. Use `Effect.timeoutOrElse({ duration, orElse: () => Effect.fail(error) })` when a timeout must become a domain error.
 - `Context.Service<{ ... }>("Name")` works for simple service tags.
 - The service-class form is `class X extends Context.Service<X, Shape>()("Name") {}`; calling `Context.Service("Name")<...>` is invalid.
@@ -125,16 +125,16 @@ Verified on 2026-04-27 from the v4 beta package tarballs and official generated 
 
 - In the v4 beta line, process spawning is centered on `effect/unstable/process/ChildProcess` and `ChildProcessSpawner`, not the older `@effect/platform/CommandExecutor` shape from the Effect 3 platform line.
 - `@effect/platform-bun@4.0.0-beta.57` exports `BunChildProcessSpawner`, `BunFileSystem`, and `BunPath`.
-- Rig v2 source must not call direct `Bun.*` runtime APIs. Use Effect services with `@effect/platform-bun` layers instead; `src/v2/effect-platform-version.test.ts` scans v2 source for direct `Bun.` usage.
-- Rig v2 production source must not import `node:fs` or `fs` directly. Put filesystem work behind Effect `FileSystem.FileSystem` and provide `BunFileSystem.layer`.
+- Rig source must not call direct `Bun.*` runtime APIs. Use Effect services with `@effect/platform-bun` layers instead; `src/rig/effect-platform-version.test.ts` scans rig source for direct `Bun.` usage.
+- Rig production source must not import `node:fs` or `fs` directly. Put filesystem work behind Effect `FileSystem.FileSystem` and provide `BunFileSystem.layer`.
 - `BunChildProcessSpawner.layer` is backed by `@effect/platform-node-shared/NodeChildProcessSpawner`.
 - `ChildProcessHandle` exposes `pid`, `exitCode`, `isRunning`, `kill(options?)`, `stdout`, `stderr`, `all`, `stdin`, and `unref`.
 - The node-shared implementation uses detached child processes by default on non-Windows platforms and kills the process group with `process.kill(-pid, signal)` when terminating, with timeout escalation support.
-- `src/v2/effect-platform-version.test.ts` verifies that Rig v2 can run a child process through `@effect/platform-bun@4.0.0-beta.57` with package-name `effect@4.0.0-beta.57`.
+- `src/rig/effect-platform-version.test.ts` verifies that Rig can run a child process through `@effect/platform-bun@4.0.0-beta.57` with package-name `effect@4.0.0-beta.57`.
 
 ### Effect testing note
 
-- Keep `bun:test` for now. If v2 Effect tests become noisy to maintain, pilot `@effect/vitest@4.0.0-beta.57` with `vitest@3.2.4` on one small v2 service test before migrating broader suites.
+- Keep `bun:test` for now. If rig Effect tests become noisy to maintain, pilot `@effect/vitest@4.0.0-beta.57` with `vitest@3.2.4` on one small rig service test before migrating broader suites.
 
 ### Scaffold from the official starter
 

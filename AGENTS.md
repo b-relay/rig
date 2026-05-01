@@ -1,10 +1,10 @@
-# AGENTS.md - Rig 2 Development Guide
+# AGENTS.md - Rig Development Guide
 
 <!-- AGENTS.md is the source of truth. CLAUDE.md is a symlink to this file. DO NOT rename, delete, or revert this setup. -->
 
-Rig is a local Mac deployment manager. Rig 2 is now the main `rig` CLI, built
-around isolated v2 state, `rigd` as the runtime authority, Effect v4, Effect
-Schema, Effect CLI, and provider-backed modular interfaces.
+Rig is a local Mac deployment manager built around `rigd` as the runtime
+authority, Effect v4, Effect Schema, Effect CLI, and provider-backed modular
+interfaces.
 
 ## Default Workflow
 
@@ -36,14 +36,14 @@ Schema, Effect CLI, and provider-backed modular interfaces.
   package constraint, or gotcha.
 - Prefer official Effect docs, `effect-smol`, and migration docs over older
   blog posts or Effect v3 examples.
-- Rig 2 uses:
+- Rig uses:
   - `effect` for Effect v4 services, layers, errors, and tests.
-  - Effect Schema for v2 parsing and validation.
+  - Effect Schema for rig parsing and validation.
   - `effect/unstable/cli` for `rig` command parsing and help.
 
 ## Architecture Rules
 
-- Design Rig 2 as interfaces first. External concerns must sit behind service
+- Design Rig as interfaces first. External concerns must sit behind service
   interfaces and layers before command or core code uses them.
 - Keep interfaces in the domain language. Callers should depend on capabilities
   like config, process execution, filesystem, git, logging, health checks,
@@ -52,11 +52,10 @@ Schema, Effect CLI, and provider-backed modular interfaces.
   future external plugins should use the same provider contract shape.
 - Core/runtime orchestration must depend on interfaces, not concrete provider
   modules.
-- Keep `rigd` as the v2 runtime authority for lifecycle, deploy, inventory,
+- Keep `rigd` as the rig runtime authority for lifecycle, deploy, inventory,
   health, logs, receipts, config editing, and control-plane contracts.
-- Keep v2 runtime state isolated after cutover: no accidental writes to
-  legacy `~/.rig`, legacy launchd labels, legacy Caddy entries, or legacy
-  runtime state.
+- Keep tests and agent runs isolated with `RIG_ROOT`; do not accidentally mutate
+  the user's real rig state, launchd labels, Caddy entries, or runtime state.
 - Local development is the working-copy lane. Pushed refs drive live/generated
   deployments; `main` is the production ref unless the PRD says otherwise.
 - Enforce localhost-only bindings in schema validation: use `127.0.0.1` or

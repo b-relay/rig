@@ -1,768 +1,754 @@
-# rig — Local Mac Deployment Manager
+# rig — Redesign Spec
 
-Note: this document describes the current implementation model. The forward-looking redesign spec lives in [docs/DESIGN_V2.md](./docs/DESIGN_V2.md).
+This document defines the current product and architecture direction for `rig`.
 
-A declarative, config-driven CLI for managing local project deployments on a Mac Mini server. Non-interactive, AI-agent friendly. Think Vercel, but for any project on your local machine.
+## Status
 
-## Problem
+- `DESIGN.md`: product and architecture contract
 
-Every project reinvents deployment boilerplate: start/stop scripts, PID management, port detection, dev/prod splitting, log management, Caddy config, launchd plists. `rig` absorbs all of it into one tool with a single config file.
+Contributors should treat this document as the source of truth for architecture
+and UX decisions.
+
+For practical `rig` usage, see
+[`rig-guide.md`](./docs/rig-guide.md). For the replacement-readiness
+audit, validation, rollback, and remaining HITL decisions, see
+[`rig-cutover-readiness.md`](./docs/rig-cutover-readiness.md).
+
+## Migration Posture
+
+Rig was built as a parallel implementation path and has now been promoted to the
+main `rig` entrypoint.
+
+There are no external users to preserve compatibility for. Rig is an entirely
+new CLI model. The cutover is replacement: the old CLI was removed rather than
+gradually routing selected rig commands through it.
+
+The main safety requirement is avoiding accidental mutation of the maintainer's
+real machine state during tests and agent runs.
+
+Rules:
+
+- use `~/.rig` as the normal state root and `RIG_ROOT` for isolated runs
+- namespace launchd labels, workspaces, logs, proxy entries, and runtime state
+  under Rig-owned identifiers
+- copy or reuse proven older code patterns where useful, but do not force rig
+  through old env/service/release assumptions
+
+Good candidates to reuse are provider interface ideas, structured logger shape, process-group handling, health checks, worktree mechanics, tagged error style, and behavior-focused tests.
+
+Good candidates to replace are the `dev`/`prod` environment model, `server`/`bin` naming, semver-first deploy flow, hand-written CLI parsing, and Zod schemas.
+
+## Product Goal
+
+Make `rig` the simplest way for a human or AI agent to run, inspect, and deploy apps on a single machine.
+
+The redesign optimizes for:
+- one obvious workflow for long-running lifecycle
+- much less config duplication
+- safer, more reliable deploys
+- first-class preview deployments
+- one Effect-native backend stack
+- plugin-driven architecture for portability and testing
+- a local control plane that can feed the web UI at `rig.b-relay.com`
+
+## Product Inspiration
+
+Dokploy (sometimes written informally as Docploy in project notes) is an
+important product reference point for `rig`.
+
+The inspiration is not a one-for-one copy. The useful idea is Dokploy's simplicity: a deployment wrapper with a friendly interface, practical defaults, and a feature set that makes self-hosting feel approachable.
+
+`rig` aims for that same wrapper-style product feel, but without Docker or containers as the foundation. The design in this document stays centered on native local-machine process management, core `rigd` supervision, bundled launchd/Caddy/local git providers, provider plugins, and repo-first workflows.
+
+Future contributors should understand this as product context: match the ease and polish of a Docker-first tool like Dokploy, while building the non-Docker architecture described here.
 
 ## Core Principles
 
-1. **Declarative** — `rig.json` is the source of truth. Change the config, run a command, and rig figures out what changed and applies it.
-2. **Non-interactive** — No prompts. Every command is deterministic. AI agents can call any command blindly.
-3. **Environment is always explicit** — No default env. You always specify `--dev` or `--prod`.
-4. **Localhost only** — If a service runs on this machine, it binds to `127.0.0.1`. Never `0.0.0.0`. Enforced by schema validation.
-5. **Dev folder ≠ rig folder** — Projects in `~/Projects/` are for development. Prod deployments run from managed copies/worktrees under `~/.rig/`.
-6. **Config is always git-tracked** — `rig.json` lives in the project repo. The Caddyfile is also git-tracked via rig.
+1. `rig` is repo-first.
+   Running inside a managed repo should not require a project name.
 
-## CLI Design
+2. `rig` is lifecycle-first.
+   Humans and AI agents should use `rig` for anything that starts, stops, supervises, deploys, or inspects long-running app state.
 
-```bash
-# Apply config changes (the main command)
-rig deploy <name> --dev|--prod         # The one command. Reads rig.json, diffs state,
-                                             # applies changes, and starts/restarts services.
+3. `rig` is plugin-driven.
+   Every external concern remains behind an interface and can be swapped at composition time.
 
-# Setup
-rig init <name> --path <project-path>     # Scaffold rig.json + register project
-                                             # (optional if rig.json already exists)
+4. `rig` is git-push-first for deployments.
+   Normal deploys should not require semver bumps or tags.
 
-# Lifecycle
-rig start <name> --dev|--prod             # Start services (without re-deploying)
-rig stop <name> --dev|--prod              # Stop all services
-rig restart <name> --dev|--prod           # Stop then start (runs all hooks)
+5. `rig` is local-control-plane-first.
+   `rigd` is the runtime authority. CLI and web are clients.
 
-# Monitoring
-rig status [<name>] [--dev|--prod]        # Status, health, ports, version, everything
+6. `rig` is reconstructable.
+   Persisted `.rig` state matters, but loss of that state should be survivable where possible.
 
-# Service management
-rig logs <name> --dev|--prod [--follow] [--lines 50] [--service <name>]
-# Versioning (prod only)
-rig version <name>                        # Show current version + tag status
-rig version <name> patch                  # Bump patch (0.1.0 → 0.1.1)
-rig version <name> minor                  # Bump minor (0.1.0 → 0.2.0)
-rig version <name> major                  # Bump major (0.1.0 → 1.0.0)
-rig version <name> undo                   # Revert last bump (only if not deployed)
-rig version <name> list                   # Version history
+7. `rig` rig is Effect-native.
+   Backend logic, schema validation, CLI parsing, services, layers, and structured errors should use the Effect ecosystem rather than a mix of Effect plus one-off parser/validator libraries.
 
-# Config reference
-rig config --help                         # Full config docs, defaults, inheritance rules
+## Operating Decisions
 
-# Listing
-rig list                                  # List all managed projects with status
-```
+These decisions close the initial rig product questions that affect command behavior, generated deployments, health checks, status, and logs.
 
-### No separate `caddy` or `launchd` subcommands
+### Cross-project targeting
 
-Caddy entries and launchd plists are derived from `rig.json`. When you run `rig deploy`, it:
-- Diffs the current Caddyfile against what rig.json declares
-- Updates Caddy entries if changed
-- Creates/updates launchd plists if changed
-- Notifies you to kickstart Caddy if the Caddyfile was modified
+The explicit cross-project selector is `--project <name>`.
 
-You never manually run caddy or launchd commands through rig.
+Rules:
 
-## Project Config: `rig.json`
+- repo-first commands infer the project only when run inside a registered managed repo
+- outside a managed repo, project-scoped commands require `--project <name>`
+- `--project` is intentionally long-form only for rig; no short alias is defined initially
+- cross-project operations should never fall back to "first" or "last used" project state
+- inventory commands that truly operate across projects must use an explicit flag such as `--all`
 
-Lives in the project repo root. Validated with Zod at every read.
+### Outside-repo behavior
+
+When a repo-first command runs outside a managed repo and no explicit project is provided, it fails with a tagged argument error and a hint to either run from a managed repo or pass `--project <name>`.
+
+This applies to lifecycle and deployment commands such as `up`, `down`, `logs`, `deploy`, and `bump`. `status` follows the same rule for project-scoped status; global status must be explicit, for example `rig status --all`.
+
+### Path targeting
+
+Path-based project targeting is rejected for lifecycle, logs, status, deploy, and bump commands.
+
+`rig` operates on registered project identities. Paths may still appear in setup flows such as `rig init --path <path>` or provider/debug output, but a path is not a runtime selector. This keeps destructive or cross-project operations tied to a stable project name rather than an arbitrary filesystem location.
+
+### Same-port local and live runtimes
+
+`local` and `live` may declare the same concrete port, but they cannot run at the same time while requiring that same port.
+
+`rigd` owns port reservations. Starting or deploying a lane must preflight required ports before cutover and fail with a structured conflict if another active rig deployment owns the port. Generated deployments should use assigned ports by default so branch previews can run concurrently without manual port management.
+
+### Health ownership
+
+Health checks must be tied to rig-owned runtime state, not just an arbitrary successful probe.
+
+For managed components:
+
+- HTTP health checks must target the component's assigned or reserved endpoint for that deployment
+- the checked endpoint must belong to a currently supervised rig process or provider-owned runtime for that component
+- command health checks run in the component workspace with the component environment and are attributed to that component
+- a health check cannot pass solely because another process is listening on the expected port
+
+This gives `doctor`, `status`, and deploy preflight a reliable way to detect false-positive health.
+
+### Status for undeployed versions
+
+Runtime status is about materialized deployments, not abstract release metadata.
+
+If a command explicitly asks for a deployment, branch, lane instance, or version that has not been materialized, `status` fails with a tagged not-found style error and a hint to deploy or list available deployments. Listing commands may still show available metadata and deployment inventory, but explicit runtime inspection of an undeployed target does not silently synthesize a status row.
+
+### Installed component logs
+
+Aggregate runtime logs include `managed` components only.
+
+`installed` components do not have long-running runtime logs by default. They can appear in status as installed/build surfaces, and build/install events may be visible through structured event history, but `rig logs` does not mix installed-component build output into runtime logs. If a user explicitly asks for logs for an installed component with no event log support, the command returns a tagged error with a hint that installed components do not produce runtime logs.
+
+## Current vs Target
+
+### Current model
+
+- Top-level `environments.dev` and `environments.prod`
+- Per-environment duplicated `services[]`
+- `type: "server" | "bin"`
+- Release/tag driven prod deploy flow
+- File-oriented runtime state assembled directly by commands
+- Main-binary E2E coverage now uses isolated state and safe provider composition
+
+### Target model
+
+- Top-level `components`
+- `mode: "managed" | "installed"`
+- One stable built lane: `live`
+- One generated deployment template class: `deployments`
+- One special working-copy lane: `local`
+- Git-push-first deployment flow
+- `rigd` as the single runtime authority
+- Main `rig` binary testable under `RIG_ROOT` with stub plugins
+
+## Terminology
+
+### Project
+
+A registered repo that contains a `rig.json`.
+
+### Component
+
+A single app/runtime/tool unit within a project. `components` replaces the old `services` collection.
+
+### Component mode
+
+Each component has a `mode`:
+
+- `managed`
+  Long-running supervised runtime. `rig` starts it, stops it, health-checks it, logs it, and may daemonize it.
+
+- `installed`
+  Installed executable surface. `rig` builds, shims, or installs it, but does not supervise it as a long-running runtime.
+
+### Lanes
+
+`rig` rig uses three deployment/runtime lanes:
+
+- `live`
+  The stable built deployment lane.
+
+- `deployments`
+  The shared template/rules for generated built deployments, including branch-based ones.
+
+- `local`
+  The special working-copy runtime mode.
+
+### Generated deployment
+
+A built deployment instance materialized from `deployments`, typically keyed by branch slug or explicit deployment name.
+
+### Home config
+
+`rig` rig has two config scopes:
+
+- Project config (`rig.json`)
+  Defines components, lane overrides, project-specific production branch behavior,
+  generated deployment template settings, and provider choices that should travel
+  with the repo.
+
+- Home config (`~/.rig/config.json` or equivalent)
+  Defines machine/user defaults such as default production branch, generated
+  deployment caps, replacement policy, default provider profile, and web-control
+  preferences. `rigd` reads these defaults when resolving deploy intent and
+  enforcing runtime inventory limits. Project config can override them.
+
+Current implementation: `RigHomeConfigStore` reads and writes
+`$RIG_ROOT/config.json` or `~/.rig/config.json` and normalizes missing
+fields to explicit defaults. Deploy intent resolution uses project
+`live.deployBranch` first, then home `deploy.productionBranch`, then `main`.
+Generated deployment caps are enforced during deploy-intent materialization and
+`rigd` generated deploy actions with `reject` and `oldest` replacement policies.
+
+## High-Level UX
+
+### Primary deployment model
+
+- `git push rig <production-branch>` updates `live`; the production branch
+  defaults from home config, and can be overridden by project config.
+- `git push rig <branch>` creates or updates the corresponding generated
+  deployment when the branch is not the configured production branch.
+
+CLI deploys still exist, but they target refs/lanes instead of the old env model.
+
+### Primary CLI
+
+Canonical verbs:
+
+- `rig up`
+- `rig down`
+- `rig logs`
+- `rig status`
+- `rig deploy`
+- `rig bump`
+- `rig doctor`
+- `rig init`
+
+Rules:
+
+- Inside a managed repo, project name is omitted by default.
+- `--project` exists only for cross-project control.
+- `down` stops by default.
+- `down --destroy` tears down generated deployment state.
+- `status` remains the canonical inspect verb.
+
+### Package-manager guardrails
+
+`rig` should discourage long-running lifecycle via `npm run dev`, `bun run dev`, `vite dev`, `next dev`, etc.
+
+The rig approach is a package-manager integration plugin:
+
+- optional
+- setup-time only
+- non-JS repos are unaffected
+
+When enabled, it may generate scripts such as:
+
+- `rig:up`
+- `rig:down`
+- `rig:logs`
+- `rig:deploy`
+
+It must not overwrite `dev`, `start`, or similar conventional scripts by default.
+
+## Configuration Direction
+
+## Shape
+
+The exact schema can evolve, but the top-level structure should look like:
 
 ```json
 {
   "name": "pantry",
-  "description": "Grocery & meal tracker",
-  "version": "0.0.0",
   "domain": "pantry.b-relay.com",
-  "hooks": {
-    "preStart": "bun install",
-    "postStart": null,
-    "preStop": null,
-    "postStop": null
-  },
-  "environments": {
-    "prod": {
-      "envFile": ".env.prod",
-      "proxy": { "upstream": "web" },
-      "services": [
-        {
-          "name": "convex",
-          "type": "server",
-          "command": "env -u TZ ./convex-local-backend --interface 127.0.0.1 --instance-name pantry --port 3290 ...",
-          "port": 3290,
-          "healthCheck": "http://127.0.0.1:3290/version",
-          "readyTimeout": 60,
-          "hooks": {
-            "preStart": "bunx convex dev --once"
-          }
-        },
-        {
-          "name": "web",
-          "type": "server",
-          "command": "bunx vite preview --port 3070 --host 127.0.0.1",
-          "port": 3070,
-          "healthCheck": "http://127.0.0.1:3070",
-          "readyTimeout": 30,
-          "dependsOn": ["convex"]
-        },
-        {
-          "name": "cli",
-          "type": "bin",
-          "build": "bun build --compile cli/index.ts --outfile dist/pantry",
-          "entrypoint": "dist/pantry"
-        }
-      ]
+  "components": {
+    "api": {
+      "mode": "managed"
     },
-    "dev": {
-      "envFile": ".env.dev",
-      "proxy": { "upstream": "web" },
-      "services": [
-        {
-          "name": "convex",
-          "type": "server",
-          "command": "env -u TZ ./convex-local-backend --interface 127.0.0.1 --instance-name pantry-dev --port 3210 ...",
-          "port": 3210,
-          "healthCheck": "http://127.0.0.1:3210/version",
-          "readyTimeout": 60,
-          "hooks": {
-            "preStart": "bunx convex dev --once"
-          }
-        },
-        {
-          "name": "web",
-          "type": "server",
-          "command": "bunx vite dev --host 127.0.0.1",
-          "port": 5173,
-          "healthCheck": "http://127.0.0.1:5173",
-          "readyTimeout": 30,
-          "dependsOn": ["convex"]
-        },
-        {
-          "name": "cli",
-          "type": "bin",
-          "entrypoint": "bun cli/index.ts"
-        }
-      ]
+    "cli": {
+      "mode": "installed"
     }
   },
-  "daemon": {
-    "enabled": true,
-    "keepAlive": true
-  }
+  "live": {},
+  "deployments": {},
+  "local": {}
 }
 ```
 
-### Service Types
-
-| Type | Description |
-|------|-------------|
-| `server` | Long-running daemon. Has `command`, `port`, `healthCheck`. Managed as a process. |
-| `bin` | CLI tool. See **Bin Resolution Logic** below for full behavior. |
-
-### Bin Resolution Logic
-
-When deploying a `bin` service, rig resolves the entrypoint as follows:
-
-1. **`build` is set** → run the build command → check `entrypoint` path:
-   - If the file is a binary → copy to `~/.rig/bin/`. ✓
-   - If the file is NOT binary → error: `"build produced a non-binary file at <entrypoint>. Remove the build key and use hooks if you need a pre-step."`
-2. **`build` is NOT set** → check `entrypoint`:
-   - **File path exists and is a binary** → copy to `~/.rig/bin/`. ✓
-   - **File path exists but is a script** (shebang, not binary) → create a shim (not copied — would break relative imports). ✓
-   - **Command string** (contains spaces, e.g. `bun cli/index.ts`) → create a shim script in `~/.rig/bin/` that `cd`s to the workspace and runs the command. ✓
-   - **File path does not exist** → error: `"Entrypoint <path> not found. Need to compile first? Add a build key."`
-
-Dev bins get a `-dev` suffix automatically (e.g. `pantry-dev`).
-
-**Examples:**
-
-| Scenario | `build` | `entrypoint` | Result in `~/.rig/bin/` |
-|----------|---------|-------------|------------------------|
-| Bun compiled (prod) | `bun build --compile ...` | `dist/pantry` | Binary copied |
-| Rust (dev or prod) | `cargo build --release` | `target/release/pantry` | Binary copied |
-| Bun script (dev) | _(none)_ | `bun cli/index.ts` | Shim: `cd <workspace> && exec bun cli/index.ts "$@"` |
-| Go (prod) | `go build -o dist/pantry` | `dist/pantry` | Binary copied |
-| Executable script | _(none)_ | `cli/index.ts` | Shim: `cd <workspace> && exec ./cli/index.ts "$@"` |
-
-### Proxy per environment
-
-Each environment specifies `"proxy": { "upstream": "<service-name>" }` to declare which service the reverse proxy routes to. Domain is derived from the top-level `domain` field:
-- **prod** → `pantry.b-relay.com` proxies to the `web` service's port
-- **dev** → `dev.pantry.b-relay.com` proxies to the `web` service's port
-
-
-### Schema Validation (Zod)
-
-Every `rig.json` read is validated against a Zod schema. Invalid configs fail fast with clear errors. The schema enforces:
-- All ports use `127.0.0.1` (no `0.0.0.0` allowed anywhere)
-- Environment must be explicitly specified in commands
-- Required fields are present
-- Port numbers are valid
-- Service names are unique within an environment
-- `dependsOn` references exist
-- Version `0.0.0` blocks prod deploy
-- Dev bin names must end in `-dev` (enforced by rig on copy)
-- Cannot tag a commit that already has a version tag
-
-Every Zod field uses `.describe()` with human+AI-readable docs:
-
-```typescript
-const ServiceSchema = z.object({
-  name: z.string().describe("Unique service name within this environment."),
-  type: z.enum(["server", "bin"]).describe("server = long-running daemon, bin = CLI tool."),
-  envFile: z.string().optional().describe(
-    "Env file for this service. Overrides the environment-level envFile if set."
-  ),
-  // ...
-})
-```
-
-`rig config --help` renders these descriptions as a full config reference:
-
-```
-RIG.JSON REFERENCE
-
-name (required)
-  Project identifier. Used in all CLI commands.
-
-version (required)
-  Semver string. Starts at 0.0.0. Bump with: rig version <name> patch|minor|major
-
-domain (optional)
-  Base domain. Prod = domain, dev = dev.<domain>
-
-environments.<env>.envFile (optional)
-  Default env file for all services in this environment.
-
-environments.<env>.services[].envFile (optional)
-  Env file for this service. Overrides the environment-level envFile if set.
-
-INHERITANCE:
-  envFile:  environment-level → service-level (service wins)
-  hooks:    top-level runs first, then service-level
-  proxy:    per-environment, references a service by name
-```
-
-## Deployment Workspaces
-
-**Key idea:** `~/Projects/` is for development. Prod deployments run from isolated copies.
-CLI binaries are installed to `~/.rig/bin/`.
-
-```
-~/.rig/
-├── caddy/
-│   └── Caddyfile                  # Git-tracked copy (symlinked from /usr/local/etc/Caddyfile or synced)
-├── registry.json                  # Maps project names → repo paths
-├── workspaces/
-│   └── pantry/
-│       ├── dev/
-│       │   ├── pids.json          # Dev runs from the project repo directly
-│       │   └── logs/              # Only runtime state lives here
-│       │       ├── convex.log
-│       │       └── web.log
-│       └── prod/
-│           ├── current -> v0.1.0/ # Symlink to active version
-│           ├── v0.1.0/            # Versioned copy (kept)
-│           ├── pids.json
-│           └── logs/
-│               ├── convex.log
-│               └── web.log
-```
+Key goals:
 
-Versions are stored in `~/.rig/versions/` as rebuildable local history cache files.
+- define components once
+- override only what differs by lane
+- avoid duplicated arrays of nearly identical component definitions
 
-### How versioning works
+### Components
 
-**Versions are prod-only.** Dev has no version tracking.
+Every component definition is rooted in the shared top-level `components` map.
 
-**Prod requires a tagged commit:**
-- `rig version pantry patch` (or `minor`/`major`) bumps the version in `rig.json` and creates a git tag (`v1.2.3`) on the current HEAD. It does NOT auto-commit — you commit when you're ready, but the tag pins the exact commit.
-- `rig deploy pantry --prod` reads the version from `rig.json`, finds the matching git tag, and deploys from that exact commit.
-- If the git tag doesn't exist, or HEAD has uncommitted changes that haven't been tagged, prod deploy **refuses**.
-- Version `0.0.0` cannot be deployed to prod — it's the initial "not yet versioned" state. Bump to at least `0.1.0` first.
-- Each version gets its own workspace: `~/.rig/workspaces/pantry/prod/v1.2.3/`
-- `current` symlink points to the active version
-- Previous version workspaces are kept on disk
+Common component identity:
 
-**Version undo:**
-`rig version pantry undo` reverts the last bump — but ONLY if that version was never deployed (no workspace exists for it). It reverts `rig.json` and deletes the git tag.
+- name
+- mode
+- optional metadata
 
-```bash
-rig version pantry patch    # 1.0.0 → 1.0.1, creates git tag v1.0.1
-rig version pantry minor    # 1.0.1 → 1.1.0, creates git tag v1.1.0
-rig version pantry major    # 1.1.0 → 2.0.0, creates git tag v2.0.0
-rig version pantry undo     # Reverts last bump (only if not deployed)
-rig version pantry          # Show current version + tag status
-rig version pantry list     # Show version history
-```
+Mode-specific behavior:
 
-**Dev:**
-Dev has a single workspace at `~/.rig/workspaces/<name>/dev/` (no version subdirectories, no `current` symlink). Every `rig deploy --dev` syncs fresh from the repo — dirty working tree, uncommitted files, whatever. Dev is always changing; there's nothing to version.
+- `managed`
+  Supports runtime-oriented fields such as command, health, port, hooks, dependencies, proxy eligibility, and daemonization.
 
-### Git worktree vs copy
+- `installed`
+  Supports install-oriented fields such as build, entrypoint, shim/install strategy, and exposed executable names.
 
-Prefer `git worktree` when possible (lighter, shares git objects). Fall back to full copy if the repo doesn't support worktrees or if explicitly configured.
+### Dependencies
 
-## Caddy Integration
+Dependencies stay intentionally narrow.
 
-### Git-tracked Caddyfile
+Rules:
 
-The canonical Caddyfile lives at `~/.rig/caddy/Caddyfile` and is git-tracked. launchd plists are also backed up at `~/.rig/launchd/` so we have history if anything breaks. The system Caddyfile at `/usr/local/etc/Caddyfile` is either:
-- A symlink to `~/.rig/caddy/Caddyfile`, or
-- Synced from it (if symlinks aren't practical for root-owned files)
+- only `managed` components can declare dependencies
+- dependencies only control startup ordering and shutdown ordering
+- dependencies do not imply restart propagation
+- dependencies do not imply runtime cascade behavior after boot
+- dependencies do not model tool prerequisites in rig
 
-### Auto-generated entries
+This keeps the concept simple and predictable.
 
-`rig deploy` manages Caddy blocks using the existing pattern:
+### Lane overrides
 
-```caddy
-# [rig:pantry:prod]
-pantry.b-relay.com {
-	reverse_proxy http://127.0.0.1:3070
-	import cloudflare
-	import backend_errors
-}
+`live`, `deployments`, and `local` can override only the fields that commonly differ:
 
-# [rig:pantry:dev]
-dev.pantry.b-relay.com {
-	reverse_proxy http://127.0.0.1:5173
-	import cloudflare
-	import backend_errors
-}
-```
+- command/build
+- environment variables / env file references
+- proxy exposure / domain rules
+- health checks
+- provider selection
+- install naming/details for `installed` components
 
-The `[rig:<name>:<env>]` comment is a marker for rig to find and update its own blocks. Manually-added Caddy blocks (without markers) are left untouched.
+Lane overrides should be partial patches, not full duplicated component redefinitions.
 
-### Caddy reload
+### Interpolation
 
-Caddy runs as a root launchd service. Deploy cannot restart it directly. When the Caddyfile changes, rig prints:
+The config must support built-in interpolation values for:
 
-```
-✓ Caddyfile updated (pantry prod domain changed).
-  To reload: sudo launchctl kickstart -k system/caddy
-```
-
-## launchd Integration
-
-When `daemon.enabled: true` in rig.json, `rig deploy` creates/updates a plist at:
-
-```
-~/Library/LaunchAgents/com.b-relay.rig.<name>-<env>.plist
-```
-
-The plist calls `rig start <name> --<env> --foreground` with `KeepAlive` if configured.
-
-`rig deploy` handles loading/unloading automatically. If the plist changed, it unloads the old one and loads the new one.
-
-## Hooks
-
-All four hooks run at the appropriate lifecycle points:
-
-| Hook | When it runs |
-|------|-------------|
-| `preStart` | Before any service starts (install deps, push schema, build, etc.) |
-| `postStart` | After all services are healthy |
-| `preStop` | Before sending SIGTERM to services |
-| `postStop` | After all services are confirmed stopped |
-
-**During `restart`:** All hooks run in order: `preStop` → stop → `postStop` → `preStart` → start → `postStart`.
-
-Top-level `hooks.*` are project-level, not environment-specific. If they are defined in `rig.json`, they run for both `dev` and `prod`. If you need different behavior by environment, put the logic in service hooks or branch inside the hook command itself.
-
-Hooks run in the workspace directory — for prod that's the versioned workspace under `~/.rig/`, for dev that's the project repo directly. Service-level hooks receive that service's resolved env vars (from envFile).
-
-## Service Lifecycle
-
-### `rig start <name> --prod`
-
-1. Validate `rig.json` (Zod schema)
-2. Resolve rig workspace (`~/.rig/workspaces/<name>/prod/current/`)
-3. Check no declared ports are in use (fail fast)
-4. Run `hooks.preStart`
-5. Start services in dependency order:
-   - Spawn process with env vars from envFile
-   - Write PID to `pids.json`
-   - Stream stdout/stderr to per-service log files
-   - Poll `healthCheck` URL (up to `readyTimeout`)
-   - If health check fails: kill everything, report error
-6. Run `hooks.postStart`
-7. Print status summary
-
-### `rig stop <name> --prod`
-
-1. Run `hooks.preStop`
-2. Read PIDs from `pids.json`
-3. SIGTERM all processes (reverse dependency order)
-4. Wait up to 5s, then SIGKILL stragglers
-5. Also check ports directly (catch orphans)
-6. Clean up PID files
-7. Run `hooks.postStop`
-
-### `rig start --foreground` (launchd mode)
-
-- Stays in foreground, monitors all services
-- If any service dies, runs cleanup and exits (launchd KeepAlive restarts the whole stack)
-
-### `rig deploy <name> --prod`
-
-The smart command. Reads rig.json, diffs against current state, and applies only what changed:
-
-- **Version changed** → create new workspace, migrate services
-- **Ports changed** → restart affected services
-- **Domain changed** → update Caddyfile, notify to reload
-- **New service added** → start it
-- **Service removed** → stop it
-- **envFile changed** → restart affected services
-- **launchd config changed** → update and reload plist
-- **Hooks changed** → no action (hooks run on next start/stop)
-- **Bin service changed** → rebuild/re-shim
-
-## Architecture
-
-### Design Principles
-
-- **Modular with interfaces** — Every external concern (reverse proxy, process manager, workspace strategy) is defined as an interface. Implementations are swappable.
-- **Effect TS services and layers** — Each interface maps to an Effect Service. Implementations are Layers. Testing uses mock layers.
-- **Rich structured errors** — Every failure carries context: what happened, where, why, and a human+AI-readable hint. No bare `throw new Error("failed")`.
-- **Separation of concerns** — CLI parsing, core logic, and provider implementations never directly import each other. They communicate through interfaces.
-- **All subcommands support `--help`, `-h`, and `help`** — Every command prints detailed usage with examples.
-
-### Module Structure
-
-```
-src/
-├── cli/                    # CLI entry point + help rendering
-│   ├── help.ts             # Help text generation for all commands
-│   └── index.ts            # Main entry, arg parsing, command routing
-├── core/                   # Business logic (no I/O, uses only interfaces)
-│   ├── config-command.ts   # `rig config` command output
-│   ├── config.ts           # Config loading + environment resolution
-│   ├── deploy.ts           # Deploy orchestration (diff, apply)
-│   ├── init.ts             # `rig init` command handler
-│   ├── lifecycle.ts        # Start, stop, restart logic
-│   ├── list.ts             # `rig list` command output
-│   ├── logs.ts             # `rig logs` command handler
-│   ├── shared.ts           # Shared core helpers (labels, config errors)
-│   ├── status.ts           # Status + health aggregation
-│   └── version.ts          # Version bumping, tagging, undo
-├── interfaces/             # Contracts (no implementations)
-│   ├── bin-installer.ts    # BinInstaller interface
-│   ├── env-loader.ts       # EnvLoader interface
-│   ├── file-system.ts      # FileSystem interface
-│   ├── git.ts              # Git interface
-│   ├── health-checker.ts   # HealthChecker interface
-│   ├── hook-runner.ts      # HookRunner interface
-│   ├── logger.ts           # Logger interface
-│   ├── port-checker.ts     # PortChecker interface
-│   ├── process-manager.ts  # ProcessManager interface
-│   ├── registry.ts         # Registry interface
-│   ├── reverse-proxy.ts    # ReverseProxy interface
-│   ├── service-runner.ts   # ServiceRunner interface
-│   └── workspace.ts        # Workspace interface
-├── providers/              # Swappable implementations
-│   ├── bun-bin.ts          # BunBinInstaller implements BinInstaller
-│   ├── bun-git.ts          # BunGit implements Git (shells out to git)
-│   ├── bun-hook-runner.ts  # BunHookRunner implements HookRunner
-│   ├── bun-port-checker.ts # BunPortChecker implements PortChecker
-│   ├── bun-service-runner.ts  # BunServiceRunner implements ServiceRunner
-│   ├── caddy.ts            # CaddyProxy implements ReverseProxy
-│   ├── cmd-health.ts       # CmdHealthChecker implements HealthChecker
-│   ├── composite-logger.ts # CompositeLogger fan-outs to multiple loggers
-│   ├── dotenv-loader.ts    # DotenvLoader implements EnvLoader
-│   ├── file-logger.ts      # FileLogger appends structured log lines to file
-│   ├── health-checker-dispatch.ts # DispatchHealthChecker routes by check type
-│   ├── health-poll.ts      # Shared polling helper for health check providers
-│   ├── http-health.ts      # HttpHealthChecker implements HealthChecker
-│   ├── json-logger.ts      # JsonLogger implements Logger
-│   ├── json-registry.ts    # JSONRegistry implements Registry
-│   ├── launchd.ts          # LaunchdManager implements ProcessManager
-│   ├── node-fs.ts          # NodeFileSystem implements FileSystem
-│   ├── stub-bin-installer.ts   # StubBinInstaller for tests
-│   ├── stub-git.ts             # StubGit for tests
-│   ├── stub-health-checker.ts  # StubHealthChecker for tests
-│   ├── stub-hook-runner.ts     # StubHookRunner for tests
-│   ├── stub-port-checker.ts    # StubPortChecker for tests
-│   ├── stub-process-manager.ts # StubProcessManager for tests
-│   ├── stub-reverse-proxy.ts   # StubReverseProxy for tests
-│   ├── stub-service-runner.ts  # StubServiceRunner for tests
-│   ├── stub-workspace.ts       # StubWorkspace for tests
-│   ├── terminal-logger.ts      # TerminalLogger implements Logger
-│   └── worktree.ts             # GitWorktreeWorkspace implements Workspace
-├── schema/                 # Zod schemas + validation
-│   ├── args.ts             # CLI argument schemas per subcommand
-│   ├── config.ts           # rig.json schema
-│   └── errors.ts           # Structured error types
-└── index.ts                # Wires layers together, runs CLI
-```
-
-### Interfaces
-
-```typescript
-// ── File System ──────────────────────────────────────────────────────────────
-// Abstracts all I/O for testability. Tests use in-memory implementation.
-
-interface FileSystem {
-  read(path: string): Effect<string>
-  write(path: string, content: string): Effect<void>
-  append(path: string, content: string): Effect<void>
-  copy(src: string, dest: string): Effect<void>
-  symlink(target: string, link: string): Effect<void>
-  exists(path: string): Effect<boolean>
-  remove(path: string): Effect<void>
-  mkdir(path: string): Effect<void>
-  list(path: string): Effect<string[]>
-  chmod(path: string, mode: number): Effect<void>
-}
-
-// ── Logger ───────────────────────────────────────────────────────────────────
-// Current implementations: terminal, json, file, and composite fan-out
-// `RIG_LOG_FORMAT=json` switches primary output to JsonLogger.
-// `RIG_LOG_FILE=/path/to/rig.log` enables FileLogger and wraps with CompositeLogger.
-// All output goes through this — never raw console.log.
-
-interface Logger {
-  info(message: string, details?: Record<string, unknown>): Effect<void>
-  warn(message: string, details?: Record<string, unknown>): Effect<void>
-  error(structured: RigError): Effect<void>
-  success(message: string, details?: Record<string, unknown>): Effect<void>
-  table(rows: Record<string, unknown>[]): Effect<void>
-}
-
-// ── Git ──────────────────────────────────────────────────────────────────────
-// All git operations in one place. Branch detection uses ordered strategies.
-
-interface Git {
-  // Branch detection (uses strategy chain, see below)
-  detectMainBranch(repoPath: string): Effect<string>
-
-  // State queries
-  isDirty(repoPath: string): Effect<boolean>
-  currentBranch(repoPath: string): Effect<string>
-  commitHash(repoPath: string, ref?: string): Effect<string>
-  changedFiles(repoPath: string): Effect<string[]>
-
-  // Tagging
-  createTag(repoPath: string, tag: string): Effect<void>
-  deleteTag(repoPath: string, tag: string): Effect<void>
-  tagExists(repoPath: string, tag: string): Effect<boolean>
-  commitHasTag(repoPath: string, commit: string): Effect<string | null>
-
-  // Worktrees
-  createWorktree(repoPath: string, dest: string, ref: string): Effect<void>
-  removeWorktree(repoPath: string, dest: string): Effect<void>
-}
-
-// ── Reverse Proxy ────────────────────────────────────────────────────────────
-// Current implementation: Caddy
-// Future: nginx, Traefik, etc.
-
-interface ReverseProxy {
-  read(): Effect<ProxyEntry[]>
-  add(entry: ProxyEntry): Effect<ProxyChange>
-  update(entry: ProxyEntry): Effect<ProxyChange>
-  remove(name: string, env: string): Effect<ProxyChange>
-  diff(): Effect<ProxyDiff>
-  backup(): Effect<string>  // Returns backup path
-}
-
-// ── Process Manager ──────────────────────────────────────────────────────────
-// Current implementation: launchd
-// Future: systemd (Linux), pm2, etc.
-
-interface ProcessManager {
-  install(config: DaemonConfig): Effect<void>
-  uninstall(label: string): Effect<void>
-  start(label: string): Effect<void>
-  stop(label: string): Effect<void>
-  status(label: string): Effect<DaemonStatus>
-  backup(label: string): Effect<string>
-}
-
-// ── Workspace ────────────────────────────────────────────────────────────────
-// Current implementations: git worktree (preferred), full copy (fallback)
-
-interface Workspace {
-  create(name: string, env: string, version: string, commitRef: string): Effect<string>
-  resolve(name: string, env: string): Effect<string>
-  sync(name: string, env: string): Effect<void>       // Dev: sync from repo
-  list(name: string): Effect<WorkspaceInfo[]>
-}
-
-// ── Health Checker ───────────────────────────────────────────────────────────
-// Current implementations: http (curl URL), command (shell exit code)
-// Dispatched based on healthCheck string format.
-
-interface HealthChecker {
-  check(config: HealthCheckConfig): Effect<HealthResult>
-  poll(config: HealthCheckConfig, interval: number, timeout: number): Effect<HealthResult>
-}
-
-// ── Hook Runner ──────────────────────────────────────────────────────────────
-// Runs lifecycle hook shell commands in the resolved workspace with merged env.
-
-interface HookRunner {
-  runHook(
-    command: string,
-    opts: {
-      workdir: string
-      env: Readonly<Record<string, string>>
-    }
-  ): Effect<{
-    exitCode: number
-    stdout: string
-    stderr: string
-  }>
-}
-
-// ── Port Checker ─────────────────────────────────────────────────────────────
-// Verifies `127.0.0.1` port availability before starting services.
-
-interface PortChecker {
-  check(port: number, service: string): Effect<void>
-}
-
-// ── Service Runner ───────────────────────────────────────────────────────────
-
-interface ServiceRunner {
-  start(service: ServerService, opts: RunOpts): Effect<RunningService>
-  stop(service: RunningService): Effect<void>
-  health(service: RunningService): Effect<HealthStatus>
-  logs(service: string, opts: LogOpts): Effect<string>
-}
-
-// ── Bin Installer ────────────────────────────────────────────────────────────
-// Handles building and installing CLI tools to ~/.rig/bin/
-// Current: bun build --compile, plain copy
-// Future: other bundlers, cross-compilation
-
-interface BinInstaller {
-  build(config: BinService, workdir: string): Effect<string>  // Returns built path
-  install(name: string, env: string, binaryPath: string): Effect<string>  // Returns shim path
-  uninstall(name: string, env: string): Effect<void>
-}
-
-// ── Env Loader ───────────────────────────────────────────────────────────────
-// Current implementation: .env file parser
-// Future: 1Password CLI, Vault, AWS SSM, etc.
-
-interface EnvLoader {
-  load(envFile: string, workdir: string): Effect<Record<string, string>>
-}
-
-// ── Registry ─────────────────────────────────────────────────────────────────
-
-interface Registry {
-  register(name: string, repoPath: string): Effect<void>
-  unregister(name: string): Effect<void>
-  resolve(name: string): Effect<string>
-  list(): Effect<RegistryEntry[]>
-}
-```
-
-### Main Branch Detection Strategies
-
-Strategies are tried in order. First success wins.
-
-| Order | Strategy | How it works |
-|-------|----------|-------------|
-| 1 | **Git remote HEAD** | Run `git symbolic-ref refs/remotes/origin/HEAD`. Parse branch name. |
-| 2 | **Convention check** | Check if `main` branch exists locally → use it. Else check `master`. |
-| 3 | **Fail with hint** | Error: "Could not detect main branch. Create a main/master branch." |
-
-Each strategy is its own function. The chain is explicit and easy to extend:
-
-```typescript
-const detectMainBranch = (repoPath: string, config?: RigConfig) =>
-  tryRemoteHead(repoPath).pipe(
-    Effect.orElse(() => tryConvention(repoPath)),
-    Effect.orElse(() => Effect.fail(new MainBranchDetectionError({
-      repoPath,
-      strategiesTried: ["remote-head", "convention"],
-      hint: "Could not detect main branch. Create a main/master branch."
-    })))
-  )
-```
-
-### Structured Errors
-
-Every error is a tagged union with full context. AI agents can parse these programmatically.
-
-```typescript
-class VersionTagError {
-  readonly _tag = "VersionTagError"
-  constructor(
-    readonly commit: string,
-    readonly branch: string,
-    readonly reason: "uncommitted-changes" | "already-tagged" | "not-main" | "zero-version",
-    readonly hint: string,
-    readonly details?: Record<string, unknown>
-  ) {}
-}
-
-class PortConflictError {
-  readonly _tag = "PortConflictError"
-  constructor(
-    readonly port: number,
-    readonly service: string,
-    readonly existingPid: number | null,
-    readonly hint: string
-  ) {}
-}
-
-class HealthCheckError {
-  readonly _tag = "HealthCheckError"
-  constructor(
-    readonly service: string,
-    readonly check: string,
-    readonly timeout: number,
-    readonly lastResponse: string | null,
-    readonly hint: string
-  ) {}
-}
-
-class ConfigValidationError {
-  readonly _tag = "ConfigValidationError"
-  constructor(
-    readonly path: string,
-    readonly issues: ZodIssue[],
-    readonly hint: string
-  ) {}
-}
-```
-
-Example output:
-```
-✗ Cannot tag commit a1b2c3d on main: uncommitted changes detected.
-  Hint: Commit or stash your changes, then retry.
-  Changed files: rig.json, src/index.ts, README.md
-
-✗ Port 3070 is already in use (pid 42381).
-  Service: web (pantry prod)
-  Hint: Run "rig stop pantry --prod" first, or check what's using port 3070.
-
-✗ Health check failed for convex (pantry prod).
-  Check: http://127.0.0.1:3290/version
-  Timeout: 60s elapsed, no healthy response.
-  Last response: connection refused
-  Hint: Check runtime/logs/convex.log for startup errors.
-```
-
-## Tech Stack
-
-| Layer | Tech |
-|-------|------|
-| Runtime | Bun |
-| Language | TypeScript |
-| Error handling | Effect TS |
-| Schema validation | Zod (config + CLI arg parsing) |
-| Process management | `Bun.spawn` |
-| Config format | JSON |
-
-Minimal dependencies. Infrastructure tooling should be fast, reliable, and boring.
-
-## Out of Scope (for now)
-
-- Blue/green deploys
-- Rollback (previous versions are kept but no automatic rollback)
-- Remote deployment
-- Docker/containers
-- Multi-machine orchestration
+- branch slug
+- deployment name
+- workspace path
+- assigned ports
+- subdomain
+- lane name
+
+Generated deployment subdomains default from branch slugs, but must be overrideable.
+
+### Effect-native validation
+
+`rig` rig should migrate validation from Zod to Effect Schema.
+
+Rules:
+
+- new rig schemas use Effect Schema
+- schemas remain the source of runtime validation and TypeScript types
+- every config field must keep clear user-facing documentation
+- validation errors must map into tagged `rig` errors with structured context and hints
+- localhost-only validation remains mandatory
+- legacy Zod schemas may remain during the transition only where needed for v1 compatibility
+
+## Effect Stack
+
+`rig` rig targets Effect v4 as the backend foundation.
+
+This applies to:
+
+- core command logic
+- `rigd`
+- provider services and layers
+- structured errors
+- config parsing and validation via Effect Schema
+- CLI parsing via Effect CLI
+- health, logs, deploys, recovery, and doctor flows
+
+Effect v4 may need to be pinned to a beta while v4 is not the npm `latest` release. If v4 is still prerelease when implementation starts, pin the exact beta version intentionally and document the upgrade path to the stable v4 release.
+
+Use [`effect-v4-help-notes.md`](./effect-v4-help-notes.md) as the living implementation reference for Effect v4 migration work. Contributors and agents should read it before rig Effect changes and update it when they verify a new API, migration detail, Bun integration pattern, package constraint, or source link.
+
+## Deployment Model
+
+### `live`
+
+`live` is the stable built deployment lane.
+
+It is the operational replacement for old `prod`.
+
+### `local`
+
+`local` is the only working-copy lane.
+
+It is explicitly different from built deployments:
+
+- runs from the current repo checkout
+- may use HMR/dev commands
+- does not require git push
+
+### Generated deployments
+
+Generated deployments are built deployments created from the `deployments` template.
+
+Typical examples:
+
+- branch-based previews
+- named temporary review environments
+
+Properties:
+
+- isolated workspace
+- isolated ports
+- isolated logs
+- isolated runtime state
+- generated or overridden subdomain
+
+## Git and Versioning
+
+### Git-driven deploys
+
+Normal deploys are git-push driven:
+
+- `git push rig main` updates `live`
+- `git push rig my-branch` updates or creates that generated deployment
+
+### Optional version metadata
+
+Semver and tags remain optional metadata, not the main deploy path.
+
+Use:
+
+- `rig bump patch`
+- `rig bump minor`
+- `rig bump major`
+- `rig bump set <version>`
+
+Tags are useful for labeling and rollback anchors, but not required for routine deploys.
+
+## Plugin Architecture
+
+All external concerns remain behind interfaces.
+
+### Required provider families
+
+- process supervisor / daemon manager
+- proxy/router manager
+- SCM integration
+- workspace/deployment materializer
+- logging/event transport
+- control-plane transport
+- health checking
+- package-manager integration
+- tunnel/exposure
+
+### Core And Bundled Providers
+
+`rigd` is the core process supervisor and runtime authority. It is bundled with
+Rig, but it is not a plugin in the same sense as optional provider extensions.
+Lane config still selects it through the same provider id slot so bundled and
+future third-party providers use one interface shape.
+
+The shipped bundled providers include:
+
+- rigd core process supervisor
+- launchd
+- Caddy
+- local git
+- localhost HTTP control-plane transport on `127.0.0.1`
+- manual Tailscale DNS routing for private remote access
+
+Launchd is a bundled first-party process supervisor plugin. A lane may choose
+`providers.processSupervisor = "launchd"` when it should install/use launchd
+instead of the default core `rigd` supervisor path.
+
+These are defaults and bundled options, not assumptions embedded in core logic.
+
+Rig exposes these through explicit provider-family service tags and a provider
+registry service so `rigd`, `doctor`, and future web control-plane surfaces can
+report the selected provider profile and capability metadata without importing
+concrete providers from core logic.
+
+### Stub providers
+
+Stub/test providers must be first-class plugins.
+
+They are not special test-only hacks.
+
+Examples:
+
+- stub process supervisor
+- stub proxy manager
+- stub SCM provider
+- stub control-plane transport
+- stub tunnel/exposure provider
+
+These are necessary so the main binary can be tested safely without touching real system integrations.
+
+## `rigd`
+
+`rigd` is the new runtime authority.
+
+It is a local daemon/server process and should itself be manageable by `rig` as a normal `managed` component.
+
+### Responsibilities
+
+`rigd` owns:
+
+- deployment inventory
+- process supervision
+- structured logs
+- health state
+- port allocation
+- deploy actions
+- provider coordination
+- local state reconciliation
+
+### CLI relationship
+
+The CLI becomes a client of `rigd` over a local API/socket.
+
+Current MVP: `rig` uses an in-process local API contract while the daemon boundary is still being built. The API surface already models health, project/deployment inventory, structured logs, health state, lifecycle action receipts, and deploy action receipts so later transport work can preserve the same interface shape.
+
+Current runtime-facing rig commands route through the rigd-backed lifecycle service. Any remaining direct command assembly is compatibility scaffolding for v1 or tests, not the rig source of truth.
+
+### Persistent state
+
+`rigd` persists restart evidence under the isolated rig state root. The current
+state-store contract records runtime events, accepted action receipts, health
+summaries, provider observations, deployment snapshots, and rigd-owned port
+reservations in `runtime/rigd-state.json`.
+
+Reconstruction is evidence-based. Missing health, provider, or deployment
+evidence returns a tagged unsafe-reconstruction error with a recovery hint
+rather than guessing at runtime state.
+
+### Web relationship
+
+`rigd` serves a localhost-first control plane on `127.0.0.1`.
+
+The hosted web UI lives at `https://rig.b-relay.com`, but the local machine does
+not need to expose a public port by default. A user can route a private
+Tailscale DNS name to the localhost server. Public internet exposure should be a
+provider/plugin concern, for example a Cloudflare Tunnel plugin.
+
+Current MVP control-plane contract:
+
+- website: `https://rig.b-relay.com`
+- transport: localhost HTTP server bound to `127.0.0.1`
+- exposure: localhost first, with optional Tailscale DNS or tunnel plugins
+- auth: not required for local/Tailscale-only access; token pairing required for public internet exposure
+- status: documented localhost-first contract
+
+The current implementation exposes this through interfaces for the local
+server, tunnel exposure provider, and auth boundary. `rigd` health reports the
+local server status, exposure mode, auth mode, heartbeat, and tunnel/transport
+errors. Runtime events and action receipts serialize into plain JSON envelopes
+for later hosted-control-plane transport work.
+
+For now, Caddy is the default router provider. Traefik and Pangolin are useful
+references but not current defaults. Traefik maps naturally to Docker and other
+provider-discovery systems; Pangolin is better categorized as an
+identity-aware remote-access/tunnel layer. Rig's immediate router goal is
+simple localhost service routing through Caddy, with optional exposure
+providers deferred.
+
+The hosted control plane is `rig.b-relay.com`.
+
+The web UI should:
+
+- list projects
+- list deployments
+- show logs and health
+- trigger lifecycle and deploy actions
+- edit config
+
+Current read-side contract: `rigd.webReadModel` exposes project rows,
+deployment rows, and health snapshots for `rigd`, deployments, components, and
+providers from durable state. `rigd.webLogs` exposes filtered structured log
+windows by project, lane, deployment, component, and line count. These read
+models serialize through the control-plane `read-model` envelope.
+
+Current write-side contract: `rigd` accepts control-plane lifecycle actions,
+live deploy actions, generated deploy actions, and explicit generated teardown
+actions. These route through the same runtime authority used by CLI-visible
+state, persist durable action receipts, and emit structured events/logs.
+Generated deploy writes materialize deployment inventory before acceptance.
+Generated teardown writes reject `local` and `live` targets and only operate on
+materialized generated deployments. Provider capability checks and deploy
+preflight checks stay behind the `RigdActionPreflight` interface so bundled
+and future external providers can share the same validation boundary.
+
+Current config-edit contract: `rigd.configRead` returns editor-ready rig config
+state with raw JSON data, decoded config, a content revision, and editable
+field docs. `rigd.configPreview` accepts structured `set` and `remove` patch
+operations expressed as path arrays, applies them in memory, validates the
+candidate config with the rig Effect Schema, and returns field-doc-aware diffs
+without writing. `rigd.configApply` repeats the same validation, rejects stale
+revisions, writes atomically through the config file store interface, and
+returns a backup path for recovery. `rig config read`, `rig config set`, and
+`rig config unset` are the current user-facing project config surface for this
+contract; hosted web editing can call the same interface later.
+
+## Reliability Requirements
+
+The redesign is also a reliability pass.
+
+### Preflight before cutover
+
+Built deployments must be fully prepared before traffic/runtime cutover:
+
+- dependencies installed
+- binaries available
+- env resolved
+- health checks valid
+- hooks runnable
+- ports reserved
+
+### Process supervision
+
+Use process-group-aware supervision so `down` and restarts do not leave orphaned child processes.
+
+### Logs
+
+Structured logs are the source of truth for both CLI and web.
+
+### Port management
+
+Generated deployments must support automatic port assignment.
+
+### Doctor checks
+
+`rig doctor` should cover common local-machine failures:
+
+- PATH issues
+- missing binaries/files
+- health-check mismatch
+- port conflicts
+- stale runtime state
+- provider misconfiguration
+
+The rig runway exposes this as a `RigDoctor` interface so deploy preflight,
+doctor output, and recovery checks can share the same structured failure model
+without binding core logic to concrete process or provider implementations.
+
+## Recoverable State
+
+`.rig` remains the persisted rig root, but the system should be able to recover from partial loss where safe.
+
+If `rigd` is still alive, it should be able to reconstruct minimum operational state from:
+
+- supervised runtime state
+- provider state
+- deployment inventory
+- SCM/deployment metadata
+
+This does not mean “silently rewrite everything,” but it does mean accidental deletion of `.rig` should not automatically imply total operational blindness.
+
+## Testing Direction
+
+The long-term target is to keep end-to-end coverage on the main shipped binary.
+
+### Target test model
+
+Use the main `rig` binary with:
+
+- `RIG_ROOT` for isolated state
+- stub providers for launchd/process supervision, proxy, SCM, and other external concerns
+
+### Transitional rule
+
+The separate smoke-only binary has been retired; coverage should stay on the main binary.
+
+The target architecture is:
+
+- one main binary
+- isolated rig root
+- selected provider composition
+
+The target is one main `rig` binary backed by explicit runtime state and
+provider composition. Use `RIG_ROOT` when a run must be isolated from the normal
+user state root.
+
+## `rig init`
+
+The current `rig init` is too minimal.
+
+The redesign should make it a real setup tool while keeping it non-interactive.
+
+`rig init` should scaffold:
+
+- base config structure
+- provider/plugin selection
+- lane wiring
+- optional package-manager integration
+
+It should stay explicit and scriptable so AI agents can run it without prompts.
+
+## Rollout Plan
+
+### Phase A
+
+Write and adopt this rig design spec.
+
+### Phase B
+
+Refactor docs and onboarding around the new concepts:
+
+- `components`
+- `mode`
+- `live`
+- `deployments`
+- `local`
+
+### Phase C
+
+Introduce provider selection and stub-provider compatibility into the main binary.
+
+Before or as part of this phase, establish an isolated state root so rig can be
+tested without touching real machine state.
+
+### Phase D
+
+Introduce `rigd` and move runtime truth behind it.
+
+### Phase E
+
+Transition CLI and config model from old env/service/type semantics to the new model.
+
+### Phase F
+
+Keep main-binary E2E coverage under `RIG_ROOT` and safe provider composition at parity.
+
+## Non-Goals
+
+- No app presets in rig
+- No built-in migration CLI command
+- No separate rig website
+- No broad dependency model for installed/tool prerequisites in rig

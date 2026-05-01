@@ -95,14 +95,12 @@ Add bundled component plugins at init time when the project needs Rig-owned
 database/backend components:
 
 ```bash
-./rig2 init --project pantry --path . --provider-profile stub --sqlite --postgres --convex
+./rig2 init --project pantry --path . --provider-profile stub --uses sqlite,postgres,convex
 ```
 
-`--sqlite` scaffolds a file-backed `db` component, `--postgres` scaffolds a
-supervised localhost-bound `postgres` component, and `--convex` scaffolds a
-supervised localhost-bound `convex` component. These flags write `uses`
-components only; they do not generate Vite, Next.js, or package-manager
-specific app commands.
+`--uses` accepts `sqlite`, `postgres`, and `convex`. It only writes component
+stubs such as `{ "uses": "postgres" }`; it does not add dependencies between
+components, ports, Vite/Next presets, or package-manager-specific app commands.
 
 Use `stub` for isolated tests and agent runs. Use `default` only when you are
 ready for real local providers. The process supervisor is selected per lane
@@ -428,8 +426,9 @@ Postgres defaults to `${dataRoot}/postgres/<component>` for its data directory,
 exposes `${postgres.dataDir}` and `${postgres.port}`, and resolves to a managed
 service bound to `127.0.0.1`. The default command runs `initdb` on first start
 when `PG_VERSION` is missing, then runs `postgres -D <dataDir> -h 127.0.0.1 -p
-<port>`. Rig does not create database users, schemas, migrations, or connection
-strings. Lane overrides may still set `port`, `command`, `health`,
+<port>`. `rig2 init --uses postgres` writes only the component stub; add a
+component or lane `port` before running local/live lanes. Rig does not create
+database users, schemas, migrations, or connection strings. Lane overrides may still set `port`, `command`, `health`,
 `readyTimeout`, and `dependsOn`.
 
 Convex Local is a process-backed component:
@@ -456,7 +455,9 @@ Convex resolves to a managed service using `bunx convex dev --local
 `${convex.url}/instance_name`, and Convex's project-local state directory at
 `${workspace}/.convex/local/default`. Rig exposes `${convex.url}`,
 `${convex.siteUrl}`, `${convex.port}`, `${convex.sitePort}`, and
-`${convex.stateDir}` for interpolation. Lane overrides may still set `port`,
+`${convex.stateDir}` for interpolation. `rig2 init --uses convex` writes only
+the component stub; add `port` and optionally `sitePort` before running
+local/live lanes. Lane overrides may still set `port`,
 `sitePort`, `command`, `health`, `readyTimeout`, and `dependsOn`.
 
 Convex CLI 1.36.1 does not expose a supported data-directory flag for

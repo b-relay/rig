@@ -59,9 +59,8 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
           "--provider-profile",
           "stub",
           "--package-scripts",
-          "--sqlite",
-          "--postgres",
-          "--convex",
+          "--uses",
+          "sqlite,postgres,convex",
         ],
         { RIG_V2_ROOT: root },
       )
@@ -85,13 +84,8 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
         name: "pantry",
         components: {
           db: { uses: "sqlite" },
-          postgres: { uses: "postgres", port: 55432 },
-          convex: {
-            uses: "convex",
-            port: 3210,
-            sitePort: 3211,
-            dependsOn: ["postgres"],
-          },
+          postgres: { uses: "postgres" },
+          convex: { uses: "convex" },
         },
         local: { providerProfile: "stub" },
         live: { providerProfile: "stub" },

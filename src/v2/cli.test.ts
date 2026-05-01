@@ -436,9 +436,8 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
       "--provider-profile",
       "stub",
       "--package-scripts",
-      "--sqlite",
-      "--postgres",
-      "--convex",
+      "--uses",
+      "sqlite,postgres,convex",
     ])
 
     expect(exitCode).toBe(0)
@@ -464,6 +463,26 @@ describe("GIVEN rig2 Effect CLI foundation WHEN commands run THEN behavior is co
         }),
       },
     ])
+  })
+
+  test("GIVEN init command with unknown uses plugin WHEN running THEN it reports a tagged argument error", async () => {
+    const { exitCode, logger, initializer } = await runWithLogger([
+      "init",
+      "--project",
+      "pantry",
+      "--state-root",
+      "/tmp/rig-v2",
+      "--uses",
+      "sqlite,nextjs",
+    ])
+
+    expect(exitCode).toBe(1)
+    expect(initializer.requests).toEqual([])
+    expect(logger.errors).toHaveLength(1)
+    expect(logger.errors[0]).toEqual(expect.objectContaining({
+      _tag: "V2CliArgumentError",
+      message: "Unknown init component plugin 'nextjs'.",
+    }))
   })
 
   test("GIVEN status command with project and state root WHEN running THEN it reports isolated v2 state", async () => {

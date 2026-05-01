@@ -330,8 +330,8 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   `rig2 init --project <name> --path <path>` now writes a valid lane-wired v2
   config, can add non-overwriting `rig:` package scripts, and records a
   project-initialized event in isolated `rigd` state so `rig2 list` can
-  discover the project. `--sqlite`, `--postgres`, and `--convex` scaffold
-  bundled component-plugin `uses` components without adding Vite/Next-style
+  discover the project. `--uses sqlite,postgres,convex` scaffolds bundled
+  component-plugin stubs without adding dependencies, ports, or Vite/Next-style
   app command presets.
   `rigd.managedProcessExited` records crash evidence, restarts while the retry
   budget allows it, and marks repeated crashes failed. The core `rigd`

@@ -69,7 +69,6 @@ const scaffoldComponents = (
       ? {
         postgres: {
           uses: "postgres",
-          port: 55432,
         },
       }
       : {}),
@@ -77,9 +76,6 @@ const scaffoldComponents = (
       ? {
         convex: {
           uses: "convex",
-          port: 3210,
-          sitePort: 3211,
-          ...(selected.has("postgres") ? { dependsOn: ["postgres"] } : {}),
         },
       }
       : {}),

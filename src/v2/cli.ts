@@ -11,7 +11,7 @@ import { V2CliArgumentError, unknownToV2CliError } from "./errors.js"
 import { V2Lifecycle, type V2LifecycleAction, type V2LifecycleLane } from "./lifecycle.js"
 import { rigV2Root } from "./paths.js"
 import { V2ProjectConfigLoader } from "./project-config-loader.js"
-import { V2ProjectInitializer } from "./project-initializer.js"
+import { V2ProjectInitializer, type V2InitComponentPluginId } from "./project-initializer.js"
 import { V2ProjectLocator } from "./project-locator.js"
 import { V2ProviderRegistry } from "./provider-contracts.js"
 import { V2Rigd, type V2RigdWebReadModel } from "./rigd.js"
@@ -140,16 +140,9 @@ const providerProfileFlag = Flag.choice("provider-profile", ["default", "stub"])
   Flag.withDescription("Provider profile to scaffold into the local, live, and generated lanes."),
 )
 
-const sqliteFlag = Flag.boolean("sqlite").pipe(
-  Flag.withDescription("Scaffold a SQLite file-backed component named db."),
-)
-
-const postgresFlag = Flag.boolean("postgres").pipe(
-  Flag.withDescription("Scaffold a supervised Postgres component named postgres."),
-)
-
-const convexFlag = Flag.boolean("convex").pipe(
-  Flag.withDescription("Scaffold a supervised Convex Local component named convex."),
+const usesFlag = Flag.string("uses").pipe(
+  Flag.withDefault(""),
+  Flag.withDescription("Comma-separated bundled component plugins to scaffold, for example sqlite,postgres,convex."),
 )
 
 const deployRefFlag = Flag.string("ref").pipe(
@@ -260,6 +253,25 @@ const parseJsonValue = (raw: string): Effect.Effect<unknown, V2CliArgumentError>
         },
       ),
   })
+
+const parseInitUses = (raw: string): Effect.Effect<readonly V2InitComponentPluginId[], V2CliArgumentError> => {
+  const selected: V2InitComponentPluginId[] = []
+  for (const candidate of raw.split(",").map((value) => value.trim()).filter((value) => value.length > 0)) {
+    if (candidate !== "sqlite" && candidate !== "postgres" && candidate !== "convex") {
+      return Effect.fail(
+        new V2CliArgumentError(
+          `Unknown init component plugin '${candidate}'.`,
+          "Use --uses with a comma-separated list containing sqlite, postgres, or convex.",
+          { uses: raw, allowed: ["sqlite", "postgres", "convex"] },
+        ),
+      )
+    }
+    if (!selected.includes(candidate)) {
+      selected.push(candidate)
+    }
+  }
+  return Effect.succeed(selected)
+}
 
 const runConfigPatch = (input: {
   readonly project: string
@@ -493,9 +505,7 @@ const initCommand = Command.make(
     packageScripts: Flag.boolean("package-scripts").pipe(
       Flag.withDescription("Add rig package scripts to package.json when it exists."),
     ),
-    sqlite: sqliteFlag,
-    postgres: postgresFlag,
-    convex: convexFlag,
+    uses: usesFlag,
   },
   (input) =>
     Effect.gen(function* () {
@@ -515,11 +525,7 @@ const initCommand = Command.make(
       })
       const initializer = yield* V2ProjectInitializer
       const logger = yield* V2Logger
-      const componentPlugins = [
-        ...(input.sqlite ? ["sqlite" as const] : []),
-        ...(input.postgres ? ["postgres" as const] : []),
-        ...(input.convex ? ["convex" as const] : []),
-      ]
+      const componentPlugins = yield* parseInitUses(input.uses)
       const result = yield* initializer.init({
         project: decoded.project,
         path: input.path,

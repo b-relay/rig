@@ -93,8 +93,11 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
   The isolated high-port shape uses an explicit `http://` site address and a
   temporary Caddy home so Caddy does not write to the user's real Caddy config
   or autosave location.
-- Run Pantry readiness tests proving `pantry.b-relay.com` Caddy routing and
-  `pantry` CLI installation under isolated paths.
+- Run Pantry readiness tests proving Caddy routing, SQLite state preparation,
+  and `pantry` CLI installation under isolated paths. The current dry run uses
+  real package installation, real Caddy route rendering/reachability, real
+  health checks, and real structured event logs with capture providers for SCM,
+  workspace materialization, and process restart.
 - Confirm historical runtime state remains preserved until a deliberate state
   migration or deletion decision exists.
 

@@ -337,9 +337,9 @@ Outside the repo, pass both project and config path:
   crashes inside the backoff window. The core `rigd` process supervisor wires
   real child-process exits into this entrypoint, and `rig status` exposes
   desired deployment state plus recent managed-service failure evidence.
-- Pantry cutover readiness is covered by rig tests for a live
-  `pantry.b-relay.com` route and an installed `pantry` CLI under an isolated
-  rig bin root.
+- Pantry cutover readiness is covered by rig tests for live Caddy routing,
+  SQLite state preparation, installed `pantry` CLI output, native health
+  checks, and structured event logs under isolated temp paths.
 - `rig config read`, `rig config set`, and `rig config unset` expose
   project config read/preview/apply through `rigd`. Hosted web config editing
   is still future work.

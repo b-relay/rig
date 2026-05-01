@@ -5,8 +5,8 @@
 ### Real Provider Validation
 
 - #48 Keep isolated real-Caddy reachability coverage green.
-- #49 Run a Pantry dry run with isolated bin root, Caddyfile, launchd home, and
-  rig state root.
+- #49 Keep the Pantry dry run green with isolated bin root, Caddyfile,
+  workspace, data, log, and rig state paths.
 - #51 Document the exact state preservation or migration decision before deleting
   historical runtime state.
 

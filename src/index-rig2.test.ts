@@ -186,6 +186,107 @@ describe("GIVEN rig2 entrypoint WHEN executed directly THEN behavior is covered"
     }
   })
 
+  test("GIVEN a fake project initialized by rig2 WHEN web component is added THEN local up and live deploy accept the config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig2-fake-project-"))
+    const configPath = join(repo, "rig.json")
+
+    try {
+      await writeFile(
+        join(root, "config.json"),
+        `${JSON.stringify({ providers: { defaultProfile: "stub" } }, null, 2)}\n`,
+        "utf8",
+      )
+
+      const init = await runRig2Command(
+        [
+          "init",
+          "--project",
+          "fake-fullstack",
+          "--path",
+          repo,
+          "--state-root",
+          root,
+          "--provider-profile",
+          "stub",
+          "--domain",
+          "fake-fullstack.example.test",
+          "--proxy",
+          "web",
+          "--uses",
+          "sqlite",
+        ],
+        { RIG_V2_ROOT: root },
+      )
+
+      expect(init.exitCode).toBe(0)
+      expect(init.stderr).toBe("")
+
+      const addWeb = await runRig2Command(
+        [
+          "config",
+          "set",
+          "--path",
+          "components.web",
+          "--json",
+          JSON.stringify({
+            mode: "managed",
+            command: "printf 'fake web started\\n'",
+            port: 3180,
+          }),
+          "--apply",
+        ],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(addWeb.exitCode).toBe(0)
+      expect(addWeb.stderr).toBe("")
+      expect(addWeb.stdout).toContain("[INFO] rig2 config applied")
+
+      const up = await runRig2Command(
+        ["up", "--state-root", root],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(up.exitCode).toBe(0)
+      expect(up.stderr).toBe("")
+      expect(up.stdout).toContain("[INFO] rig2 lifecycle accepted")
+      expect(up.stdout).toContain('"project":"fake-fullstack"')
+      expect(up.stdout).toContain('"target":"local"')
+
+      const deploy = await runRig2Command(
+        ["deploy", "--state-root", root, "--ref", "main"],
+        { RIG_V2_ROOT: root },
+        { cwd: repo },
+      )
+
+      expect(deploy.exitCode).toBe(0)
+      expect(deploy.stderr).toBe("")
+      expect(deploy.stdout).toContain("[INFO] rig2 deploy accepted")
+      expect(deploy.stdout).toContain('"project":"fake-fullstack"')
+      expect(deploy.stdout).toContain('"target":"live"')
+
+      const rigConfig = JSON.parse(await readFile(configPath, "utf8")) as {
+        readonly components?: Record<string, unknown>
+        readonly local?: { readonly proxy?: { readonly upstream?: string } }
+      }
+      expect(rigConfig.components).toMatchObject({
+        sqlite: { uses: "sqlite" },
+        web: {
+          mode: "managed",
+          command: "printf 'fake web started\\n'",
+          port: 3180,
+        },
+      })
+      expect(rigConfig.local?.proxy?.upstream).toBe("web")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN rigd command WHEN run directly THEN it starts the local MVP API", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig2-root-"))
 

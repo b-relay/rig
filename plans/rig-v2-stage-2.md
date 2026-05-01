@@ -333,7 +333,10 @@ direction is to keep `rig2` isolated until it is ready, then rename/build it as
   discover the project. `--uses sqlite,postgres,convex` scaffolds bundled
   component-plugin stubs without adding dependencies, ports, or Vite/Next-style
   app command presets. `--domain` and `--proxy` scaffold neutral routing
-  metadata without creating app components.
+  metadata without creating app components. A fake-project CLI flow now starts
+  from `rig2 init`, adds `components.web` through `rig2 config set`, and proves
+  local `up` plus live `deploy` are accepted under the isolated stub provider
+  profile without using Pantry as the test bed.
   `rigd.managedProcessExited` records crash evidence, restarts while the retry
   budget allows it, and marks repeated crashes failed. The core `rigd`
   process-supervisor provider reports real child-process exits into that policy

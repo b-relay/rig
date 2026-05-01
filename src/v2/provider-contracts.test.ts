@@ -1571,6 +1571,178 @@ describe("GIVEN v2 provider plugin contracts WHEN registry reports profiles THEN
     }
   })
 
+  test("GIVEN package-json-scripts provider WHEN command entrypoint is installed THEN it writes a command shim", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-package-command-shim-"))
+    const workspace = join(root, "workspace")
+    const binRoot = join(root, "bin")
+
+    try {
+      await mkdir(workspace, { recursive: true })
+      const deployment = {
+        project: "pantry",
+        kind: "local",
+        name: "local",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const packages = yield* V2PackageManagerProvider
+          return yield* packages.install({
+            deployment,
+            service: {
+              name: "tool",
+              type: "bin",
+              entrypoint: "node ./src/cli.js --flag",
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default", [], {
+          packageManager: {
+            binRoot,
+          },
+        }))),
+      )
+
+      const destination = join(binRoot, "tool-dev")
+      expect(operation).toBe(`package-manager:package-json-scripts:install:tool:installed:${destination}`)
+      expect(await readFile(destination, "utf8")).toBe(
+        `#!/bin/sh\ncd ${JSON.stringify(workspace)} && exec node ./src/cli.js --flag "$@"\n`,
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN package-json-scripts provider WHEN text file entrypoint is installed THEN it writes a script shim", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-package-script-shim-"))
+    const workspace = join(root, "workspace")
+    const binRoot = join(root, "bin")
+
+    try {
+      await mkdir(join(workspace, "scripts"), { recursive: true })
+      await writeFile(join(workspace, "scripts", "tool.js"), "console.log('tool')\n")
+      const deployment = {
+        project: "pantry",
+        kind: "generated",
+        name: "feature-a",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const packages = yield* V2PackageManagerProvider
+          return yield* packages.install({
+            deployment,
+            service: {
+              name: "tool",
+              type: "bin",
+              entrypoint: "scripts/tool.js",
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default", [], {
+          packageManager: {
+            binRoot,
+          },
+        }))),
+      )
+
+      const destination = join(binRoot, "tool-feature-a")
+      expect(operation).toBe(`package-manager:package-json-scripts:install:tool:installed:${destination}`)
+      expect(await readFile(destination, "utf8")).toBe(
+        `#!/bin/sh\ncd ${JSON.stringify(workspace)} && exec ./scripts/tool.js "$@"\n`,
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN package-json-scripts provider WHEN binary entrypoint is installed THEN it copies the binary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-package-binary-copy-"))
+    const workspace = join(root, "workspace")
+    const binRoot = join(root, "bin")
+
+    try {
+      await mkdir(join(workspace, "bin"), { recursive: true })
+      await writeFile(join(workspace, "bin", "tool"), new Uint8Array([0, 1, 2, 3]))
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const packages = yield* V2PackageManagerProvider
+          return yield* packages.install({
+            deployment,
+            service: {
+              name: "tool",
+              type: "bin",
+              entrypoint: "bin/tool",
+            },
+          })
+        }).pipe(Effect.provide(V2ProviderContractsLive("default", [], {
+          packageManager: {
+            binRoot,
+          },
+        }))),
+      )
+
+      const destination = join(binRoot, "tool")
+      expect(operation).toBe(`package-manager:package-json-scripts:install:tool:installed:${destination}`)
+      expect([...await readFile(destination)]).toEqual([0, 1, 2, 3])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN package-json-scripts provider WHEN entrypoint escapes workspace THEN it returns a tagged path error", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-v2-package-unsafe-entrypoint-"))
+    const workspace = join(root, "workspace")
+
+    try {
+      await mkdir(workspace, { recursive: true })
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        workspacePath: workspace,
+      } as V2DeploymentRecord
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const packages = yield* V2PackageManagerProvider
+          return yield* packages.install({
+            deployment,
+            service: {
+              name: "tool",
+              type: "bin",
+              entrypoint: "../outside.js",
+            },
+          })
+        }).pipe(
+          Effect.provide(V2ProviderContractsLive("default")),
+          Effect.flip,
+        ),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "V2RuntimeError",
+        message: "Installed component 'tool' resolves outside the deployment workspace.",
+        details: {
+          providerId: "package-json-scripts",
+          component: "tool",
+          deployment: "live",
+          entrypoint: "../outside.js",
+          workspacePath: workspace,
+        },
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN package-json-scripts provider WHEN build command fails THEN it returns a tagged runtime error", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "rig-v2-package-install-fail-"))
 

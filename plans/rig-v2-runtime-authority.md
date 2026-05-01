@@ -440,12 +440,12 @@ binary copying, install naming, bin root handling, and tagged errors.
 
 ### Acceptance Criteria
 
-- [ ] Package manager provider implementation lives in a focused adapter
+- [x] Package manager provider implementation lives in a focused adapter
       module.
-- [ ] Build and install behavior remains externally compatible.
-- [ ] Entrypoint workspace containment checks remain enforced.
-- [ ] Command, script, and binary install paths remain externally compatible.
-- [ ] Tests cover build success/failure, command entrypoints, file entrypoints,
+- [x] Build and install behavior remains externally compatible.
+- [x] Entrypoint workspace containment checks remain enforced.
+- [x] Command, script, and binary install paths remain externally compatible.
+- [x] Tests cover build success/failure, command entrypoints, file entrypoints,
       binary copying, and unsafe path rejection.
 
 ---

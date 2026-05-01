@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { join } from "node:path"
 import { Context, Effect, Exit, Layer, Scope, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
@@ -7,14 +7,10 @@ import { BunChildProcessSpawner, BunFileSystem, BunPath } from "@effect/platform
 import type { V2DeploymentRecord } from "./deployments.js"
 import {
   platformAppendFileString,
-  platformChmod,
-  platformCopyFile,
   platformMakeDirectory,
-  platformReadFileBytes,
   platformWriteFileString,
 } from "./effect-platform.js"
 import { V2RuntimeError } from "./errors.js"
-import { rigV2BinRoot } from "./paths.js"
 import {
   V2ProcessSupervisorProvider,
   type V2ProcessSupervisorExitResult,
@@ -53,6 +49,10 @@ import {
   createShellLifecycleHookAdapter,
   shellLifecycleHookProvider,
 } from "./providers/shell-lifecycle-hook.js"
+import {
+  createPackageJsonScriptsAdapter,
+  packageJsonScriptsProvider,
+} from "./providers/package-json-scripts.js"
 
 export {
   V2ProcessSupervisorProvider,
@@ -391,7 +391,7 @@ const defaultProviders: readonly V2ProviderPlugin[] = [
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   nativeHealthCheckerProvider,
   shellLifecycleHookProvider,
-  plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
+  packageJsonScriptsProvider,
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
 
@@ -424,7 +424,7 @@ const isolatedE2EProviders: readonly V2ProviderPlugin[] = [
   plugin("localhost-http", "control-plane-transport", "Localhost HTTP", ["127.0.0.1-bind", "rig-b-relay-com"]),
   nativeHealthCheckerProvider,
   shellLifecycleHookProvider,
-  plugin("package-json-scripts", "package-manager", "package.json Scripts", ["npm-compatible", "bun-compatible"]),
+  packageJsonScriptsProvider,
   plugin("manual-tailscale", "tunnel", "Manual Tailscale DNS", ["private-dns-route", "no-app-auth"]),
 ]
 
@@ -755,148 +755,7 @@ const packageManagerService = (
   options: V2ProviderContractsOptions = {},
 ): V2PackageManagerProviderService => {
   const base = familyService(report, "package-manager")
-
-  const binRoot = options.packageManager?.binRoot ?? rigV2BinRoot()
-
-  const installName = (deployment: V2DeploymentRecord, serviceName: string): string => {
-    if (deployment.kind === "live") return serviceName
-    if (deployment.kind === "local") return `${serviceName}-dev`
-    return `${serviceName}-${deployment.name}`
-  }
-
-  const installPath = (deployment: V2DeploymentRecord, serviceName: string): string =>
-    join(binRoot, installName(deployment, serviceName))
-
-  const isWithinWorkspace = (path: string, workspacePath: string): boolean => {
-    const workspace = resolve(workspacePath)
-    const candidate = resolve(path)
-    const rel = relative(workspace, candidate)
-    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
-  }
-
-  const resolveEntrypoint = (entrypoint: string, workspacePath: string): string =>
-    isAbsolute(entrypoint) ? entrypoint : resolve(workspacePath, entrypoint)
-
-  const isBinaryContent = (content: Uint8Array): boolean => {
-    const sample = content.subarray(0, 8192)
-    return sample.includes(0)
-  }
-
-  const commandShim = (workspacePath: string, command: string): string =>
-    `#!/bin/sh\ncd ${JSON.stringify(workspacePath)} && exec ${command} "$@"\n`
-
-  const scriptShim = (workspacePath: string, entrypoint: string): string =>
-    `#!/bin/sh\ncd ${JSON.stringify(workspacePath)} && exec ./${entrypoint} "$@"\n`
-
-  const installEntrypoint = (
-    deployment: V2DeploymentRecord,
-    service: Extract<V2RuntimeServiceConfig, { readonly type: "bin" }>,
-    selected: V2ProviderPluginForFamily<"package-manager">,
-  ): Effect.Effect<string, V2RuntimeError> => Effect.gen(function* () {
-    const destination = installPath(deployment, service.name)
-    yield* platformMakeDirectory(dirname(destination))
-
-    if (service.entrypoint.includes(" ") && !service.build) {
-      yield* platformWriteFileString(destination, commandShim(deployment.workspacePath, service.entrypoint))
-      yield* platformChmod(destination, 0o755)
-      return destination
-    }
-
-    if (service.entrypoint.includes(" ") && service.build) {
-      return yield* Effect.fail(new V2RuntimeError(
-        `Installed component '${service.name}' cannot use a command entrypoint with a build command.`,
-        "Use a file entrypoint for built CLI artifacts.",
-        {
-          providerId: selected.id,
-          component: service.name,
-          deployment: deployment.name,
-          entrypoint: service.entrypoint,
-          build: service.build,
-        },
-      ))
-    }
-
-    const entrypoint = resolveEntrypoint(service.entrypoint, deployment.workspacePath)
-    if (!isWithinWorkspace(entrypoint, deployment.workspacePath)) {
-      return yield* Effect.fail(new V2RuntimeError(
-        `Installed component '${service.name}' resolves outside the deployment workspace.`,
-        "Use an entrypoint path inside the deployment workspace.",
-        {
-          providerId: selected.id,
-          component: service.name,
-          deployment: deployment.name,
-          entrypoint: service.entrypoint,
-          workspacePath: deployment.workspacePath,
-        },
-      ))
-    }
-
-    const content = yield* platformReadFileBytes(entrypoint)
-    if (isBinaryContent(content)) {
-      yield* platformCopyFile(entrypoint, destination)
-    } else if (service.build) {
-      yield* platformCopyFile(entrypoint, destination)
-    } else {
-      yield* platformWriteFileString(destination, scriptShim(deployment.workspacePath, service.entrypoint))
-    }
-    yield* platformChmod(destination, 0o755)
-    return destination
-  })
-
-  const installPackageJsonScript = (input: {
-    readonly deployment: V2DeploymentRecord
-    readonly service: V2RuntimeServiceConfig
-  }, selected: V2ProviderPluginForFamily<"package-manager">): Effect.Effect<string, V2RuntimeError> => {
-    if (input.service.type !== "bin") {
-      return providerOperation(selected, `install:${input.service.name}`)
-    }
-
-    return Effect.gen(function* () {
-        if ("build" in input.service && input.service.build) {
-          const { exitCode, stdout, stderr } = yield* runPlatformCommand(
-            ["sh", "-lc", input.service.build],
-            { cwd: input.deployment.workspacePath },
-          )
-
-          if (exitCode !== 0) {
-            return yield* Effect.fail(new V2RuntimeError(
-              `Package build failed for '${input.service.name}' with exit code ${exitCode}.`,
-              "Fix the installed component build command before retrying the deploy action.",
-              {
-                providerId: selected.id,
-                component: input.service.name,
-                deployment: input.deployment.name,
-                build: input.service.build,
-                exitCode,
-                stdout,
-                stderr,
-              },
-            ))
-          }
-        }
-
-        const destination = yield* installEntrypoint(input.deployment, input.service, selected)
-        return `${selected.family}:${selected.id}:install:${input.service.name}:installed:${destination}`
-    }).pipe(
-      Effect.mapError((cause) =>
-        cause instanceof V2RuntimeError
-          ? cause
-          : new V2RuntimeError(
-            `Unable to install package component '${input.service.name}'.`,
-            "Ensure the deployment workspace, entrypoint, build command, and v2 bin root are available.",
-            {
-              providerId: selected.id,
-              component: input.service.name,
-              deployment: input.deployment.name,
-              ...("build" in input.service && input.service.build ? { build: input.service.build } : {}),
-              entrypoint: input.service.entrypoint,
-              binRoot,
-              cause: cause instanceof Error ? cause.message : String(cause),
-            },
-          ),
-      ),
-    )
-  }
+  const packageJsonScripts = createPackageJsonScriptsAdapter(options.packageManager, runPlatformCommand)
 
   return {
     ...base,
@@ -904,7 +763,7 @@ const packageManagerService = (
       providerForDeploymentFamily(reportForDeployment, input.deployment, "package-manager").pipe(
         Effect.flatMap((selected) =>
           selected.id === "package-json-scripts"
-            ? installPackageJsonScript(input, selected)
+            ? packageJsonScripts.install(input, selected)
             : providerOperation(selected, `install:${input.service.name}`),
         ),
       ),

@@ -14,6 +14,8 @@ export interface RigdActionPreflightInput {
   readonly project: string
   readonly stateRoot: string
   readonly target: string
+  readonly ref?: string
+  readonly deploymentName?: string
   readonly config?: RigProjectConfig
 }
 
@@ -238,7 +240,16 @@ const deploymentForPreflight = (
       stateRoot: input.stateRoot,
     })
     const name = targetDeploymentName(input.target)
-    return inventory.find((deployment) => deployment.kind === kind && deployment.name === name)
+    const found = inventory.find((deployment) => deployment.kind === kind && deployment.name === name)
+    if (found || kind !== "generated") {
+      return found
+    }
+    return yield* deployments.previewGenerated({
+      config: input.config,
+      stateRoot: input.stateRoot,
+      branch: input.ref ?? name,
+      name: input.deploymentName ?? name,
+    })
   })
 
 export const preflightError = (

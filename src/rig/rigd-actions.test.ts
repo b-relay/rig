@@ -1337,6 +1337,114 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN new generated deploy port conflict WHEN requested THEN preflight blocks before generated inventory is written", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+
+    try {
+      const config = await Effect.runPromise(
+        decodeRigProjectConfig({
+          name: "pantry",
+          components: {
+            web: {
+              mode: "managed",
+              command: "bun run start -- --port ${web.port}",
+              port: 3070,
+            },
+          },
+          local: {
+            components: {
+              web: {
+                port: 5173,
+              },
+            },
+          },
+          deployments: {
+            providerProfile: "stub",
+            components: {
+              web: {
+                port: 3070,
+              },
+            },
+          },
+        }),
+      )
+      const executor = new CaptureRuntimeExecutor()
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const store = yield* RigdStateStore
+          const deployments = yield* RigDeploymentManager
+          const preview = yield* deployments.previewGenerated({
+            config,
+            stateRoot,
+            branch: "feature/conflict",
+            name: "feature-conflict",
+          })
+          yield* store.writePortReservations({
+            stateRoot,
+            reservations: [
+              {
+                project: "other",
+                deployment: "live",
+                component: "web",
+                port: preview.assignedPorts.web as number,
+                owner: "rigd",
+                status: "reserved",
+                observedAt: "2026-05-01T00:00:00.000Z",
+              },
+            ],
+          })
+          yield* store.writeDesiredDeployment({
+            stateRoot,
+            desired: {
+              project: "other",
+              deployment: "live",
+              kind: "live",
+              desiredStatus: "running",
+              updatedAt: "2026-05-01T00:00:00.000Z",
+              providerProfile: "stub",
+              record: {} as RigDeploymentRecord,
+            },
+          })
+          const error = yield* Effect.flip(
+            rigd.controlPlaneDeploy({
+              project: "pantry",
+              target: "generated",
+              ref: "feature/conflict",
+              stateRoot,
+              config,
+            }),
+          )
+          const inventory = yield* deployments.list({ config, stateRoot })
+          return { error, inventory }
+        }),
+        { executor },
+      )
+
+      expect(result.error).toMatchObject({
+        _tag: "RigRuntimeError",
+        details: {
+          reason: "preflight-failed",
+          target: "generated:feature-conflict",
+          failures: [
+            expect.objectContaining({
+              category: "ports",
+              component: "web",
+              reason: "port-conflict",
+            }),
+          ],
+        },
+      })
+      expect(executor.deployCalls).toEqual([])
+      expect(result.inventory.map((deployment) => `${deployment.kind}:${deployment.name}`)).toEqual([
+        "local:local",
+        "live:live",
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN runtime plan managed component WHEN preflight derives port evidence THEN legacy environment services are not required", async () => {
     const deployment = {
       project: "pantry",
@@ -1377,6 +1485,7 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
         {
           deployments: {
             list: () => Effect.succeed([deployment]),
+            previewGenerated: () => Effect.die("unused"),
             materializeGenerated: () => Effect.die("unused"),
             destroyGenerated: () => Effect.die("unused"),
           },

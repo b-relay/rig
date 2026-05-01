@@ -853,6 +853,8 @@ export const RigdLive = Layer.effect(
           project: input.project,
           stateRoot: input.stateRoot,
           target,
+          ...(input.target === "generated" ? { ref: input.ref } : {}),
+          ...(input.deploymentName ? { deploymentName: input.deploymentName } : {}),
           ...(input.config ? { config: input.config } : {}),
         })
 

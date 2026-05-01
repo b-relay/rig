@@ -68,6 +68,9 @@ export interface RigDeploymentStoreService {
 }
 
 export interface RigDeploymentManagerService {
+  readonly previewGenerated: (
+    input: RigMaterializeGeneratedInput,
+  ) => Effect.Effect<RigDeploymentRecord, RigRuntimeError>
   readonly materializeGenerated: (
     input: RigMaterializeGeneratedInput,
   ) => Effect.Effect<RigDeploymentRecord, RigRuntimeError>
@@ -269,6 +272,7 @@ export const RigDeploymentManagerLive = Layer.effect(
     const store = yield* RigDeploymentStore
 
     return {
+      previewGenerated: (input) => generatedRecord(input),
       materializeGenerated: (input) =>
         Effect.gen(function* () {
           const record = yield* generatedRecord(input)

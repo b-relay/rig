@@ -502,3 +502,11 @@ optional exposure can come later through a dedicated provider. Tailscale should
 stay outside Rig as machine/network plumbing; users can point private DNS at
 the machine and Rig only needs to serve the configured localhost-bound services
 and domains.
+
+Deferred provider-hardening note: add an isolated real-Caddy reachability E2E
+before real Caddy/Pantry cutover. The test should start a fake localhost HTTP
+app, write a temp Caddyfile, run Caddy on a high local port, upsert a route
+through the Rig Caddy provider, and verify the app is reachable through Caddy
+with a `Host` header. This is stronger than the current provider-contract tests,
+which verify Caddyfile rendering, adoption, reload command execution, and route
+removal without starting Caddy itself.

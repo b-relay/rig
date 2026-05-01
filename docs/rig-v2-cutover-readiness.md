@@ -117,6 +117,10 @@ Cutover tests must keep provider mutation explicit:
 - Keep a Pantry-like fake app flow green before real Pantry cutover; it should
   cover routed web, SQLite state, and an installed CLI named `pantry` under
   isolated v2 state.
+- Defer but keep tracked: add an isolated real-Caddy reachability E2E that
+  starts a fake localhost app, writes a temp Caddyfile, runs Caddy on a high
+  local port, upserts a Rig route, and verifies the app is reachable through
+  Caddy with a `Host` header.
 
 ## Validation Checklist
 
@@ -134,6 +138,7 @@ Before renaming or building `rig2` as `rig`:
   before testing Pantry itself.
 - Run the Pantry readiness tests proving `pantry.b-relay.com` Caddy routing and
   `pantry` CLI installation under an isolated v2 bin root.
+- Before real Caddy cutover, run the isolated real-Caddy reachability E2E.
 - Run `rigd` read model, write action, and config edit tests.
 - Confirm current v1 state is preserved until the replacement is deliberate.
 - Confirm rollback steps are documented for the deliberate v1-removal and v2

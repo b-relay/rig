@@ -1,516 +1,255 @@
 # Rig Guide
 
-`rig` is the repo-first local deployment CLI. Normal runtime state lives under
-`~/.rig`; tests, CI, and agent runs should set `RIG_ROOT`.
+This guide describes the accepted Rig product model. Some implementation
+cleanup is still tracked in GitHub issues; do not use older lane/ref/bump
+examples as product direction.
 
-Rig uses two config scopes:
+## Setup
 
-- project `rig.json` for repo-specific components, lane overrides, and
-  project-specific deploy behavior
-- home rig config for machine/user defaults such as production branch defaults,
-  generated deployment caps, replacement policy, and provider defaults
-
-The home config lives at `~/.rig/config.json` by default, or
-`$RIG_ROOT/config.json` when `RIG_ROOT` is set. Missing home config uses
-these defaults:
-
-```json
-{
-  "deploy": {
-    "productionBranch": "main",
-    "generated": {
-      "maxActive": 5,
-      "replacePolicy": "oldest"
-    }
-  },
-  "providers": {
-    "defaultProfile": "default",
-    "caddy": {
-      "extraConfig": [],
-      "reload": {
-        "mode": "manual"
-      }
-    }
-  },
-  "web": {
-    "controlPlane": "localhost",
-    "hosted": {
-      "enabled": false
-    }
-  }
-}
-```
-
-## Concept Map
-
-| Area | Rig |
-|---|---|
-| Binary | `rig` |
-| State root | `~/.rig` or `RIG_ROOT` |
-| Config shape | shared `components`, plus `local`, `live`, and `deployments` |
-| Runtime lanes | `local`, `live`, and generated deployments |
-| Components | `managed` or `installed` |
-| CLI style | repo-first commands, with `--project` and `--config` for cross-project use |
-| Deploy model | git ref oriented; semver is optional metadata |
-| Runtime authority | `rigd` owns state, receipts, logs, health, and control-plane contracts |
-| Providers | provider interfaces and profiles |
-
-## Basic Setup
-
-Install dependencies and build the CLI:
+Build the CLI:
 
 ```bash
 bun install
 bun run build
 ```
 
-For isolated testing, set a temporary rig state root:
+Install the daemon:
 
 ```bash
-export RIG_ROOT="$(mktemp -d)"
+rigd install
+rigd status
 ```
 
-## Create A Rig Config
+`rigd install` owns daemon setup and creates the local control-plane auth token.
+Normal `rig` commands do not install or manually start `rigd`; if the daemon is
+missing or unreachable, they report the problem and point to `rigd status` or
+`rigd install`.
 
-You can scaffold a rig-style `rig.json` with the `rig` init command:
+## Initialize A Project
+
+From inside a Git repository:
 
 ```bash
-./rig init --project pantry --path . --provider-profile stub --package-scripts
+rig init
 ```
 
-The Pantry dry run exposed one repeated setup step: after scaffolding routing
-and storage, the app-owned web process and installed CLI still had to be added
-through separate config edits. `rig init` now supports explicit generic
-component scaffolding for that case:
+`rig init` should:
+
+- resolve the repository root, even when run from a subdirectory
+- choose a Project identity, defaulting to a slug from the repo directory
+- confirm the Production branch interactively
+- write committed Project config at the repo root
+- configure the `rig` Git remote when possible
+- register the Project with `rigd`
+
+If run outside Git in an interactive terminal, `rig init` may ask before running
+`git init`. It should not create commits.
+
+If config is written but `rigd` registration fails, `rig init` should report the
+partial state without rolling the file back. A later `rig init` should resume
+registration idempotently when the config still matches the workspace.
+
+## Project And Host Scope
+
+Project-scoped commands require a Project context:
 
 ```bash
-./rig init --project pantry --path . \
-  --domain pantry.b-relay.com \
-  --proxy web \
-  --uses sqlite \
-  --managed web \
-  --managed-command "bun run start -- --host 127.0.0.1 --port \${web.port}" \
-  --managed-port 3070 \
-  --managed-health "http://127.0.0.1:\${web.port}/health" \
-  --installed cli \
-  --installed-entrypoint dist/pantry \
-  --installed-build "bun run build" \
-  --installed-name pantry
+rig status
+rig up local
+rig down live
+rig restart preview feature/login
+rig logs live
+rig deploy live
 ```
 
-These flags are non-interactive and explicit. They do not infer Next, Vite,
-Bun, database, or package-manager defaults; the command and entrypoint are the
-project maintainer's values.
-
-Add bundled component plugins at init time when the project needs Rig-owned
-database/backend components:
+They infer the Project from the current workspace or use:
 
 ```bash
-./rig init --project pantry --path . --provider-profile stub --uses sqlite,postgres,convex
+rig status --project pantry
+rig deploy live --project pantry
 ```
 
-`--uses` accepts `sqlite`, `postgres`, and `convex`. It only writes component
-stubs such as `{ "uses": "postgres" }`; it does not add dependencies between
-components, ports, Vite/Next presets, or package-manager-specific app commands.
+`--project` selects the configured Project identity known to `rigd`, not the
+folder name.
 
-Routing metadata can be scaffolded at the same time:
+`rig list` is host-scoped. It shows Projects plus summary metadata such as
+Target count. It does not show every Target for every Project.
+
+## Targets
+
+Rig commands act on Targets:
+
+| Target form | Meaning |
+|---|---|
+| `local` | Working copy Target backed by the current checkout. |
+| `live` | First Stable Target. Future Project config may support custom stable target names. |
+| `preview <branch>` | Preview Target for a Branch. Branch names may include slashes. |
+
+Bare names such as `local` or `live` resolve to the Working copy Target or
+Stable Targets. Previews must use the `preview` selector.
+
+Target-aware commands with no selected Target should show an interactive picker
+in a TTY and fail with guidance in non-interactive use:
 
 ```bash
-./rig init --project pantry --path . --domain pantry.b-relay.com --proxy web
+rig up
+rig down
+rig restart
+rig logs
 ```
 
-`--domain` writes the project domain. `--proxy web` writes `proxy.upstream` as
-`"web"` in the local, live, and generated deployment lanes. It does not create a
-`web` component unless `--managed web` is also supplied with an explicit command.
+`rig status` is different: it shows all Targets for the selected Project by
+default.
 
-Use `stub` for isolated tests and agent runs. Use `default` only when you are
-ready for real local providers. A lane `providerProfile` overrides the machine
-home-config default for runtime execution, so a stub lane uses stub SCM,
-workspace, proxy, health, hook, package-manager, and process-supervisor
-providers even when the machine default profile is real. The process supervisor
-is selected per lane with `providers.processSupervisor`; it defaults to
-`stub-process-supervisor` for stub lanes and the core `rigd` supervisor for
-default lanes. Use `"launchd"` there only for lanes that should use the bundled
-launchd plugin.
+## Deploy
 
-Minimal rig shape:
-
-```json
-{
-  "name": "pantry",
-  "components": {
-    "web": {
-      "mode": "managed",
-      "command": "bun run start -- --port ${web.port}",
-      "port": 3070,
-      "health": "http://127.0.0.1:${web.port}/health"
-    }
-  },
-  "deployments": {
-    "subdomain": "${branchSlug}",
-    "providerProfile": "stub",
-    "providers": {
-      "processSupervisor": "rigd"
-    }
-  }
-}
-```
-
-Interpolation is component-first. For a component named `web`, `${web.port}`
-means "the resolved port for the `web` component." In the `local` and `live`
-lanes that is usually the component's configured `port`; in generated
-deployments it can be the assigned per-deployment port.
-
-## Caddy Provider Config
-
-The bundled Caddy provider renders portable site blocks by default:
-
-```caddy
-# [rig:pantry:live:web]
-pantry.b-relay.com {
-  reverse_proxy http://127.0.0.1:3070
-}
-```
-
-Machine-specific Caddy behavior belongs in the rig home config, not in project
-config or the hard-coded renderer. For example, a maintainer machine that uses
-the system Caddyfile plus reusable snippets can set:
-
-```json
-{
-  "providers": {
-    "caddy": {
-      "caddyfile": "/usr/local/etc/Caddyfile",
-      "extraConfig": ["import cloudflare", "import backend_errors"],
-      "reload": {
-        "mode": "manual",
-        "command": "sudo launchctl kickstart -k system/com.caddyserver.caddy"
-      }
-    }
-  }
-}
-```
-
-`extraConfig` lines are inserted inside every Rig-managed site block after the
-`reverse_proxy` line. The default reload mode is `manual`, so `rig` writes the
-Caddyfile but does not require sudo. If `reload.mode` is `command`, the bundled
-Caddy provider runs the configured command after route upsert/remove. Use that
-only with a command the current user can run non-interactively, such as a
-passwordless narrow helper or an unprivileged Caddy admin reload.
-
-The isolated real-Caddy E2E runs Caddy with a temporary home and a temporary
-Caddyfile on a high localhost port. For that shape, the test uses an explicit
-HTTP site address such as `http://pantry.test`; a bare hostname makes Caddy use
-its HTTPS listener instead of the configured high HTTP port.
-
-## Common Commands
-
-Start the local `rigd` authority:
+Stable deploy:
 
 ```bash
-./rig rigd
+rig deploy live
+rig deploy live main
 ```
 
-Start the local lane from inside a managed repo:
+`rig deploy live` deploys the configured Production branch. It can run from
+detached HEAD because it does not deploy the current checkout. If the current
+checkout differs from the Production branch, interactive commands should make
+the deployed branch clear.
+
+Preview deploy:
 
 ```bash
-./rig up
+rig deploy preview
+rig deploy preview feature/login
 ```
 
-Start or inspect a project from outside the repo:
+`rig deploy preview` uses the current Branch. It fails from detached HEAD. A
+Preview deploy from the Production branch itself is rejected; create a branch
+such as `preview/main` when you want a preview of production code.
+
+Deploy options:
 
 ```bash
-./rig list
-./rig up --project pantry
-./rig restart --project pantry
-./rig status --project pantry
+rig deploy live --no-up
+rig deploy preview feature/login --no-up
+rig deploy preview feature/login --force
 ```
 
-When running outside the project repo, pass the rig config path if the command
-should use deployment inventory or provider-backed execution:
+`--no-up` materializes without starting. If a new Commit replaces a running
+Target, the old process is stopped rather than left running on stale code.
+`--force` redeploys even when the same Commit is already deployed.
+
+CLI deploy uses local Branches only. It should warn, not block, when the Branch
+is ahead or behind its configured upstream. It should not fetch implicitly.
+
+## Git Push Deploy
+
+`rig init` configures the conventional Git remote name:
 
 ```bash
-./rig up --project pantry --config /path/to/pantry/rig.json
-./rig status --project pantry --config /path/to/pantry/rig.json
+git push rig main
+git push rig feature/login
+git push rig main:preview/main
 ```
 
-Use the live lane:
+Rig remote classification uses the pushed destination Branch:
+
+- Production branch updates the Stable Target and brings it up by default.
+- Any other destination Branch creates or updates a Preview and brings it up by
+  default.
+- Same-Commit pushes are no-ops and should not start a stopped Target.
+- Rig remote pushes do not support `--no-up` in the first release.
+
+## Lifecycle And Logs
+
+Lifecycle commands act only on existing Targets. They do not create missing
+Deployments.
 
 ```bash
-./rig restart --project pantry --lane live
-./rig status --project pantry --lane live
-./rig logs --project pantry --lane live --lines 100
+rig up local
+rig down live
+rig restart preview feature/login
 ```
 
-`rig status` defaults to readable terminal output. Add `--json` when you also
-need the structured foundation, `rigd`, inventory, and runtime status details:
+If `rig up preview feature/login` names a Preview that has not been deployed,
+Rig should fail and tell the user to deploy it first.
+
+`down` stops a Target but does not remove it from inventory. Stopped Previews
+remain visible until a future cleanup/delete design removes them.
+
+Logs:
 
 ```bash
-./rig status --project pantry --json
+rig logs live
+rig logs preview feature/login
+rig logs preview feature/login --follow
 ```
 
-`rig list` reads the global rig project/deployment inventory from `rigd` state.
-Add `--json` to emit the structured read model:
+`rig logs` prints recent stdout and stderr together by default and exits.
+`--follow` streams. Logs may be read for stopped Targets when logs exist.
+
+## Status, List, Doctor
 
 ```bash
-./rig list --json
+rig status
+rig list
+rig doctor
+rig doctor --project pantry
 ```
 
-Create deploy intents:
+`rig status` is Project-scoped and shows all Targets for that Project. It fails
+outside a Project unless `--project <name>` is provided.
 
-```bash
-./rig deploy --project pantry --ref main --target live
-./rig deploy --project pantry --ref feature/preview --target generated
-./rig deploy --project pantry --ref feature/preview --target generated --deployment preview-a
-./rig deploy --project pantry --config /path/to/pantry/rig.json --ref feature/preview --target generated
-```
+`rig list` is Host-scoped and daemon-backed. It fails if `rigd` is unreachable.
 
-Manage optional version metadata:
+`rig doctor` always runs Host diagnostics. When a Project context is available,
+it also runs Project diagnostics. Outside a Project, it may succeed with
+Host-only checks and a note that Project checks were skipped. `doctor` is
+read-only by default.
 
-```bash
-./rig bump --project pantry --current 1.2.3 --bump patch
-./rig bump --project pantry --current 1.2.3 --set 2.0.0
-```
+## Config
 
-Run doctor checks:
+Project config is committed and owns portable Project intent:
 
-```bash
-./rig doctor --project pantry
-./rig doctor --project pantry --config /path/to/pantry/rig.json
-```
+- Project identity
+- Production branch
+- Target names
+- commands and health paths
+- route shape
+- Preview naming policy
 
-Doctor reads provider config without mutating provider state. For real Caddy
-profiles, command-mode reload without a configured command is reported as a
-provider diagnostic with the `caddy` provider id, project, live deployment,
-proxy component when known, and a hint for fixing home config.
+Host config owns machine capability:
 
-## Config Editing
+- local tool paths
+- base domains
+- port ranges
+- runtime roots
+- daemon address and local auth token
+- installed provider defaults
 
-The rig config editor is exposed through `rig config` commands backed by
-`rigd` interfaces:
+Not every config change needs a CLI command. Advanced or structured Project
+policy may be edited directly in config or through a future Rig UI, while
+`rig doctor` and preflight validate the result.
 
-- `configRead`
-- `configPreview`
-- `configApply`
+First cleanup scope:
 
-Edits are structured patches, not raw text writes. A patch operation uses a
-path array:
+- `rig config get` is optional and read-only if present.
+- `rig config set` is omitted.
+- managed fields such as Project identity are not simple settable fields.
+- broad `--json` output flags are avoided.
 
-```json
-{
-  "op": "set",
-  "path": ["components", "web", "port"],
-  "value": 4080
-}
-```
+## Provider Boundary
 
-`configPreview` validates the candidate config with the rig Effect Schema and
-returns diffs without writing. `configApply` checks the expected revision,
-validates again, writes atomically, and returns a backup path.
+`rigd` resolves Host config and Project config into a runtime plan before
+calling providers.
 
-Read the current project config from inside a managed repo:
+Provider calls use:
 
-```bash
-./rig config read
-```
+- shared Runtime context for common domain facts and capabilities
+- typed provider-specific config for settings only that provider understands
 
-Preview a config edit without writing:
+Providers must not read home config, Project config, or global path helpers
+directly. First-party providers and future third-party providers should use the
+same contract shape.
 
-```bash
-./rig config set --path live.deployBranch --json '"stable"'
-```
-
-Apply the same edit:
-
-```bash
-./rig config set --path live.deployBranch --json '"stable"' --apply
-```
-
-Remove a field:
-
-```bash
-./rig config unset --path live.deployBranch --apply
-```
-
-Outside the repo, pass both project and config path:
-
-```bash
-./rig config read --project pantry --config /path/to/pantry/rig.json
-./rig config set --project pantry --config /path/to/pantry/rig.json --path components.web.port --json 4080
-```
-
-`--json` must be valid JSON, so strings need quotes, booleans use `true` or
-`false`, numbers are plain numbers, and objects/arrays use normal JSON syntax.
-
-## Current Limits
-
-- Repo-inferred `rig up`, `down`, `status`, `logs`, and `deploy` load the rig
-  `rig.json` through the config-loader interface. Outside the repo, use
-  `--project` plus `--config` to get the same validated config-backed path.
-- Config-backed `rigd` lifecycle and deploy actions now run through ordered rig
-  runtime provider methods before receipts are persisted. Runtime execution
-  emits component-scoped events into `rigd` logs for web/CLI filtering. Concrete
-  `structured-log-file` writes deployment-scoped JSONL event logs,
-  `native-health` performs real HTTP and command health checks,
-  `package-json-scripts` runs installed-component build commands and installs
-  executables into the rig-managed bin root, the core `rigd` process supervisor
-  runs managed component commands while returning provider stdout/stderr lines
-  for log ingestion, the bundled `launchd` process supervisor installs/removes
-  rig-namespaced plists, `local-git` fetches and verifies deploy refs,
-  `git-worktree` materializes/removes deployment workspaces at those refs, and
-  `caddy` upserts/removes rig-namespaced Caddyfile routes.
-- Config-backed lifecycle and deploy writes persist desired runtime state.
-  `rigd.start` reconciles desired-running deployments from that state, so a
-  fresh `rigd` process can restart previously running local/live/generated
-  deployment records without needing project config to be passed again.
-- `rigd.managedProcessExited` records managed process crashes, keeps stdout and
-  stderr evidence when provided, restarts the desired-running deployment while
-  the retry budget allows it, and marks the deployment failed after repeated
-  crashes inside the backoff window. The core `rigd` process supervisor wires
-  real child-process exits into this entrypoint, and `rig status` exposes
-  desired deployment state plus recent managed-service failure evidence.
-- Pantry cutover readiness is covered by rig tests for live Caddy routing,
-  SQLite state preparation, installed `pantry` CLI output, native health
-  checks, and structured event logs under isolated temp paths.
-- `rig config read`, `rig config set`, and `rig config unset` expose
-  project config read/preview/apply through `rigd`. Hosted web config editing
-  is still future work.
-- Hosted web transport for `rig.b-relay.com` stays disabled unless home config
-  explicitly enables it with a hosted endpoint and machine identity. Public
-  tunnel exposure still requires token pairing. Transport connect/send failures
-  are retained as structured control-plane status with provider id, operation,
-  endpoint, machine id, error, and attempt count.
-- Home config is schema-validated and file-backed. Deploy intent now uses
-  project `live.deployBranch` first, then home `deploy.productionBranch`, then
-  the built-in `main` default. Generated deployment caps from home config are
-  enforced for deploy-intent materialization and `rigd` generated deploy
-  actions with `reject` and `oldest` replacement policies.
-
-Tracked follow-ups:
-
-- #23 rename/build `rig` as `rig` when replacement criteria are met
-- #26 add hosted control-plane transport adapter
-
-Current plugin/preset track:
-
-- SQLite tracks per-lane/per-deployment database file paths. SQLite is not a
-  long-running supervised process, so this plugin stays focused on path
-  ownership and status metadata.
-- Postgres provides a supervised localhost-bound database component with
-  per-lane/per-deployment port and data-root tracking.
-- Convex Local provides a supervised localhost-bound Convex component with
-  cloud/site ports and project-local state tracking.
-
-Web framework presets such as Vite or Next.js are intentionally not first-class
-plugins yet. Their default value is mostly command scaffolding, and teams can
-write those commands directly with their package manager of choice. A later
-adapter should only exist if Rig needs to safely edit framework config such as
-allowed hosts or CORS.
-
-Keep these plugins simple at first. Rig's job is to keep all parts of a
-website/service in one project lifecycle, supervise daemon components through
-`rigd`, and record which localhost ports and paths belong to `local`, `live`,
-and generated deployments. Application environment variables, database users,
-schemas, migrations, and connection strings remain developer-owned unless a
-later plugin explicitly adds helpers.
-
-Each rig deployment has a Rig-owned `dataRoot` outside the app workspace:
-`<stateRoot>/data/<project>/<lane>` for `local` and `live`, and
-`<stateRoot>/data/<project>/deployments/<name>` for generated deployments.
-Configs can interpolate it as `${dataRoot}`.
-
-Plugin-backed components use `uses` instead of `mode`. `mode` remains reserved
-for raw Rig primitives such as `managed` and `installed`; `uses` means the
-component comes from a bundled or future external component plugin. SQLite is a
-file-backed component:
-
-```json
-{
-  "components": {
-    "sqlite": {
-      "uses": "sqlite"
-    },
-    "api": {
-      "mode": "managed",
-      "command": "bun run api -- --sqlite ${sqlite.path}",
-      "dependsOn": ["sqlite"]
-    }
-  }
-}
-```
-
-SQLite defaults to `${dataRoot}/sqlite/<component>.sqlite`, so the example
-above resolves `${sqlite.path}` to `${dataRoot}/sqlite/sqlite.sqlite`. `rigd` prepares
-the parent directory on `up` and deploy before starting managed processes; the
-app still decides how to consume the path.
-
-Postgres is a process-backed component:
-
-```json
-{
-  "components": {
-    "postgres": {
-      "uses": "postgres",
-      "port": 55432
-    },
-    "api": {
-      "mode": "managed",
-      "command": "bun run api -- --postgres ${postgres.port}",
-      "dependsOn": ["postgres"]
-    }
-  }
-}
-```
-
-Postgres defaults to `${dataRoot}/postgres/<component>` for its data directory,
-exposes `${postgres.dataDir}` and `${postgres.port}`, and resolves to a managed
-service bound to `127.0.0.1`. The default command runs `initdb` on first start
-when `PG_VERSION` is missing, then runs `postgres -D <dataDir> -h 127.0.0.1 -p
-<port>`. `rig init --uses postgres` writes only the component stub; add a
-component or lane `port` before running local/live lanes. Rig does not create
-database users, schemas, migrations, or connection strings. Lane overrides may still set `port`, `command`, `health`,
-`readyTimeout`, and `dependsOn`.
-
-Convex Local is a process-backed component:
-
-```json
-{
-  "components": {
-    "convex": {
-      "uses": "convex",
-      "port": 3210,
-      "sitePort": 3211
-    },
-    "api": {
-      "mode": "managed",
-      "command": "bun run api -- --convex ${convex.url}",
-      "dependsOn": ["convex"]
-    }
-  }
-}
-```
-
-Convex resolves to a managed service using `bunx convex dev --local
---local-cloud-port <port> --local-site-port <sitePort>`, a health check at
-`${convex.url}/instance_name`, and Convex's project-local state directory at
-`${workspace}/.convex/local/default`. Rig exposes `${convex.url}`,
-`${convex.siteUrl}`, `${convex.port}`, `${convex.sitePort}`, and
-`${convex.stateDir}` for interpolation. `rig init --uses convex` writes only
-the component stub; add `port` and optionally `sitePort` before running
-local/live lanes. Lane overrides may still set `port`,
-`sitePort`, `command`, `health`, `readyTimeout`, and `dependsOn`.
-
-Convex CLI 1.36.1 does not expose a supported data-directory flag for
-`convex dev`; it stores local backend state under the workspace `.convex`
-directory and passes sqlite/storage paths only to its internal backend binary.
-Rig keeps that behavior instead of relying on unsupported backend flags.
-
-Internally, `uses` components resolve through the first-party component-plugin
-resolver boundary. That keeps SQLite, Postgres, and Convex Local out of the raw
-lane resolver path without inventing external plugin loading yet.
-
-Caddy remains the first router provider. Traefik and Pangolin are useful
-research references but are not current defaults: Traefik fits Docker/provider
-discovery-heavy systems, while Pangolin is better understood as an
-identity-aware remote-access/tunnel layer. Database remote access is optional
-future scope, not a requirement for database plugins.
+Stub providers, provider profiles, `--state-root`, and generic `--config` path
+overrides are test/dev/internal surfaces, not normal release UX.

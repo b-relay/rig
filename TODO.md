@@ -2,6 +2,18 @@
 
 ## Post-Cutover Follow-Ups
 
+### CLI And Provider Cleanup
+
+- #54 Keep PRD, docs, and implementation issues aligned with the Target,
+  Branch/Commit deploy, daemon-admin, config ownership, and provider-context
+  model.
+- Remove `rig bump` from the normal CLI.
+- Remove stale normal CLI exposure for `--state-root`, generic `--config`,
+  provider-profile flags, package-script flags, broad `--json` flags, and stub
+  provider choices.
+- Keep project deletion out of implementation until a dedicated delete design
+  exists.
+
 ### Real Provider Validation
 
 - #48 Keep isolated real-Caddy reachability coverage green.
@@ -18,6 +30,4 @@
 ### Product Polish
 
 - #50 Keep init ergonomics tied to repeated real project setup friction.
-- Decide whether `rig bump` remains the final command name.
-- Decide whether `rig forget` is needed.
 - #53 Keep doctor real-provider diagnostics actionable as more failures are found.

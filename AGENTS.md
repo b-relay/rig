@@ -53,11 +53,12 @@ interfaces.
 - Core/runtime orchestration must depend on interfaces, not concrete provider
   modules.
 - Keep `rigd` as the rig runtime authority for lifecycle, deploy, inventory,
-  health, logs, receipts, config editing, and control-plane contracts.
+  health, logs, receipts, preflight, and control-plane contracts.
 - Keep tests and agent runs isolated with `RIG_ROOT`; do not accidentally mutate
   the user's real rig state, launchd labels, Caddy entries, or runtime state.
-- Local development is the working-copy lane. Pushed refs drive live/generated
-  deployments; `main` is the production ref unless the PRD says otherwise.
+- Local development is the Working copy Target. Branch/Commit deploys drive the
+  Stable Target and Previews; `main` is the default Production branch unless
+  Project config says otherwise.
 - Enforce localhost-only bindings in schema validation: use `127.0.0.1` or
   localhost, never `0.0.0.0`.
 

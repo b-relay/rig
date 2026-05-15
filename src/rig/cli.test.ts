@@ -464,15 +464,10 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       "pantry",
       "--path",
       "/tmp/pantry",
-      "--state-root",
-      "/tmp/rig",
-      "--provider-profile",
-      "stub",
       "--domain",
       "pantry.b-relay.com",
       "--proxy",
       "web",
-      "--package-scripts",
       "--uses",
       "sqlite,postgres,convex",
     ])
@@ -483,11 +478,11 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       {
         project: "pantry",
         path: "/tmp/pantry",
-        stateRoot: "/tmp/rig",
-        providerProfile: "stub",
+        stateRoot: expect.stringContaining(".rig"),
+        providerProfile: "default",
         domain: "pantry.b-relay.com",
         proxy: "web",
-        packageScripts: true,
+        packageScripts: false,
         componentPlugins: ["sqlite", "postgres", "convex"],
       },
     ])
@@ -498,7 +493,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
           project: "pantry",
           repoPath: "/tmp/pantry",
           configPath: "/tmp/pantry/rig.json",
-          providerProfile: "stub",
+          providerProfile: "default",
         }),
       },
     ])
@@ -509,8 +504,6 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       "init",
       "--project",
       "pantry",
-      "--state-root",
-      "/tmp/rig",
       "--uses",
       "sqlite,nextjs",
     ])
@@ -524,26 +517,22 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     }))
   })
 
-  test("GIVEN status command with project and state root WHEN running THEN it reports isolated rig state", async () => {
+  test("GIVEN status command with project WHEN running THEN it reports rig state", async () => {
     const { exitCode, logger, rigd } = await runWithLogger([
       "status",
       "--project",
       "pantry",
-      "--state-root",
-      "/tmp/rig",
     ])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
     expect(logger.infos).toHaveLength(2)
-    expect(logger.infos[0]?.message).toBe([
-      "rig foundation ready",
-      "project: pantry",
-      "lane: local",
-      "state root: /tmp/rig",
-      "namespace: rig.pantry",
-      "launchd label prefix: com.b-relay.rig",
-    ].join("\n"))
+    expect(logger.infos[0]?.message).toContain("rig foundation ready")
+    expect(logger.infos[0]?.message).toContain("project: pantry")
+    expect(logger.infos[0]?.message).toContain("lane: local")
+    expect(logger.infos[0]?.message).toContain("state root:")
+    expect(logger.infos[0]?.message).toContain("namespace: rig.pantry")
+    expect(logger.infos[0]?.message).toContain("launchd label prefix: com.b-relay.rig")
     expect(logger.infos[0]?.details).toBeUndefined()
     expect(logger.infos[1]?.message).toBe([
       "rigd status",
@@ -552,71 +541,32 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       "deployments: 0",
     ].join("\n"))
     expect(logger.infos[1]?.details).toBeUndefined()
-    expect(rigd.healthRequests).toEqual([{ stateRoot: "/tmp/rig" }])
-    expect(rigd.inventoryRequests).toEqual([{ project: "pantry", stateRoot: "/tmp/rig" }])
+    expect(rigd.healthRequests).toEqual([{ stateRoot: expect.stringContaining(".rig") }])
+    expect(rigd.inventoryRequests).toEqual([{ project: "pantry", stateRoot: expect.stringContaining(".rig") }])
   })
 
-  test("GIVEN status command with json WHEN running THEN structured details are emitted alongside readable output", async () => {
-    const { exitCode, logger, lifecycle } = await runWithLogger([
-      "status",
-      "--project",
-      "pantry",
-      "--state-root",
-      "/tmp/rig",
-      "--json",
-    ])
+  test("GIVEN removed normal commands and flags WHEN running THEN they are rejected", async () => {
+    const bump = await runWithLogger(["bump"])
+    expect(bump.exitCode).toBe(1)
+    expect(bump.deployIntents.bumps).toEqual([])
 
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toEqual([])
-    expect(logger.infos.map((entry) => entry.message)).toEqual([
-      expect.stringContaining("rig foundation ready"),
-      "rig foundation details",
-      expect.stringContaining("rigd status"),
-      "rigd status details",
-    ])
-    expect(logger.infos[1]?.details).toMatchObject({
-      project: "pantry",
-      stateRoot: "/tmp/rig",
-      namespace: "rig.pantry",
-    })
-    expect(logger.infos[3]?.details).toMatchObject({
-      health: {
-        status: "running",
-      },
-      inventory: {
-        project: "pantry",
-        deploymentCount: 0,
-      },
-    })
-    expect(lifecycle.requests[0]).toMatchObject({
-      action: "status",
-      project: "pantry",
-      structured: true,
-    })
-  })
+    const rigd = await runWithLogger(["rigd"])
+    expect(rigd.exitCode).toBe(1)
+    expect(rigd.rigd.startRequests).toEqual([])
 
-  test("GIVEN rigd command WHEN running THEN local API start is requested", async () => {
-    const { exitCode, logger, rigd } = await runWithLogger([
-      "rigd",
-      "--state-root",
-      "/tmp/rig",
-    ])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toEqual([])
-    expect(rigd.startRequests).toEqual([{ stateRoot: "/tmp/rig" }])
+    const json = await runWithLogger(["status", "--project", "pantry", "--json"])
+    expect(json.exitCode).toBe(1)
+    expect(json.logger.errors[0]?._tag).toBe("RigCliArgumentError")
   })
 
   test("GIVEN list command WHEN running THEN it renders projects and deployments from rigd", async () => {
     const { exitCode, logger, rigd } = await runWithLogger([
       "list",
-      "--state-root",
-      "/tmp/rig",
     ])
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
-    expect(rigd.webReadModelRequests).toEqual([{ stateRoot: "/tmp/rig" }])
+    expect(rigd.webReadModelRequests).toEqual([{ stateRoot: expect.stringContaining(".rig") }])
     expect(logger.infos).toEqual([
       {
         message: [
@@ -634,64 +584,23 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     ])
   })
 
-  test("GIVEN list json command WHEN running THEN it emits the structured rigd read model", async () => {
-    const { exitCode, logger, rigd } = await runWithLogger([
-      "list",
-      "--state-root",
-      "/tmp/rig",
-      "--json",
-    ])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toEqual([])
-    expect(rigd.webReadModelRequests).toEqual([{ stateRoot: "/tmp/rig" }])
-    expect(logger.infos.map((entry) => entry.message)).toEqual([
-      expect.stringContaining("rig projects"),
-      "rig projects details",
-    ])
-    expect(logger.infos[1]?.details).toMatchObject({
-      projects: [
-        { name: "api" },
-        { name: "pantry" },
-      ],
-      deployments: expect.arrayContaining([
-        expect.objectContaining({
-          project: "api",
-          name: "local",
-          kind: "local",
-        }),
-      ]),
-      health: {
-        rigd: {
-          status: "running",
-        },
-      },
-    })
-  })
-
-  test("GIVEN deploy command WHEN running THEN CLI deploy intent targets refs without semver", async () => {
+  test("GIVEN preview deploy command WHEN running inside a managed repo THEN CLI deploy intent targets Branches without semver", async () => {
     const { exitCode, logger, deployIntents, rigd } = await runWithLogger([
       "deploy",
-      "--project",
-      "pantry",
-      "--state-root",
-      "/tmp/rig",
-      "--config",
-      "/tmp/pantry/rig.json",
-      "--ref",
+      "preview",
       "feature/preview",
-      "--target",
-      "generated",
       "--deployment",
       "qa",
-    ])
+    ], {
+      inferredProject: "pantry",
+    })
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
     expect(deployIntents.cliDeploys).toEqual([
       {
         project: "pantry",
-        stateRoot: "/tmp/rig",
+        stateRoot: expect.stringContaining(".rig"),
         ref: "feature/preview",
         target: "generated",
         config: expect.objectContaining({
@@ -703,7 +612,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     expect(rigd.deployRequests).toEqual([
       expect.objectContaining({
         project: "pantry",
-        stateRoot: "/tmp/rig",
+        stateRoot: expect.stringContaining(".rig"),
         ref: "feature/preview",
         target: "generated",
         config: expect.objectContaining({
@@ -721,10 +630,8 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
   test("GIVEN deploy inside managed repo WHEN running THEN config is loaded and accepted by rigd", async () => {
     const { exitCode, logger, deployIntents, rigd, configLoader } = await runWithLogger([
       "deploy",
-      "--ref",
+      "preview",
       "feature/preview",
-      "--target",
-      "generated",
     ], {
       inferredProject: "pantry",
     })
@@ -759,8 +666,8 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     expect(logger.infos.map((entry) => entry.message)).toContain("rig deploy accepted")
   })
 
-  test("GIVEN explicit project with config path WHEN running up THEN it loads that config", async () => {
-    const { exitCode, lifecycle, configLoader } = await runWithLogger([
+  test("GIVEN explicit config path flag WHEN running up THEN normal CLI rejects it", async () => {
+    const { exitCode, lifecycle, configLoader, logger } = await runWithLogger([
       "up",
       "--project",
       "pantry",
@@ -768,45 +675,10 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       "/tmp/pantry/rig.json",
     ])
 
-    expect(exitCode).toBe(0)
-    expect(configLoader.loads).toEqual([
-      {
-        project: "pantry",
-        configPath: "/tmp/pantry/rig.json",
-      },
-    ])
-    expect(lifecycle.requests[0]).toMatchObject({
-      action: "up",
-      project: "pantry",
-      config: expect.objectContaining({
-        name: "pantry",
-      }),
-    })
-  })
-
-  test("GIVEN bump command WHEN running THEN optional version metadata is emitted", async () => {
-    const { exitCode, logger, deployIntents } = await runWithLogger([
-      "bump",
-      "--project",
-      "pantry",
-      "--state-root",
-      "/tmp/rig",
-      "--current",
-      "1.2.3",
-      "--bump",
-      "minor",
-    ])
-
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toEqual([])
-    expect(deployIntents.bumps).toEqual([
-      {
-        project: "pantry",
-        currentVersion: "1.2.3",
-        bump: "minor",
-      },
-    ])
-    expect(logger.infos.at(-1)?.message).toBe("rig bump metadata")
+    expect(exitCode).toBe(1)
+    expect(configLoader.loads).toEqual([])
+    expect(lifecycle.requests).toEqual([])
+    expect(logger.errors[0]?._tag).toBe("RigCliArgumentError")
   })
 
   test("GIVEN doctor command WHEN running THEN doctor report is emitted", async () => {
@@ -814,8 +686,6 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       "doctor",
       "--project",
       "pantry",
-      "--state-root",
-      "/tmp/rig",
     ])
 
     expect(exitCode).toBe(0)
@@ -824,7 +694,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       project: "pantry",
       path: {
         ok: true,
-        entries: ["/tmp/rig"],
+        entries: [expect.stringContaining(".rig")],
       },
       providers: expect.arrayContaining([
         expect.objectContaining({
@@ -863,7 +733,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     })
   })
 
-  test("GIVEN config set preview WHEN running THEN rigd previews a structured patch without applying", async () => {
+  test("GIVEN config set WHEN running THEN normal CLI rejects generic config writes", async () => {
     const { exitCode, logger, rigd } = await runWithLogger([
       "config",
       "set",
@@ -877,27 +747,13 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       "\"stable\"",
     ])
 
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toEqual([])
-    expect(rigd.configPreviewRequests).toEqual([
-      {
-        project: "pantry",
-        configPath: "/tmp/pantry/rig.json",
-        expectedRevision: "rev-1",
-        patch: [
-          {
-            op: "set",
-            path: ["live", "deployBranch"],
-            value: "stable",
-          },
-        ],
-      },
-    ])
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("RigCliArgumentError")
+    expect(rigd.configPreviewRequests).toEqual([])
     expect(rigd.configApplyRequests).toEqual([])
-    expect(logger.infos.at(-1)?.message).toBe("rig config preview")
   })
 
-  test("GIVEN config unset apply WHEN running THEN rigd applies a remove patch", async () => {
+  test("GIVEN config unset WHEN running THEN normal CLI rejects generic config writes", async () => {
     const { exitCode, logger, rigd } = await runWithLogger([
       "config",
       "unset",
@@ -910,27 +766,9 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       "--apply",
     ])
 
-    expect(exitCode).toBe(0)
-    expect(logger.errors).toEqual([])
-    expect(rigd.configApplyRequests).toEqual([
-      {
-        project: "pantry",
-        configPath: "/tmp/pantry/rig.json",
-        expectedRevision: "rev-1",
-        patch: [
-          {
-            op: "remove",
-            path: ["live", "deployBranch"],
-          },
-        ],
-      },
-    ])
-    expect(logger.infos.at(-1)).toMatchObject({
-      message: "rig config applied",
-      details: expect.objectContaining({
-        backupPath: "/tmp/pantry/rig.json.backup-rev-1.json",
-      }),
-    })
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]?._tag).toBe("RigCliArgumentError")
+    expect(rigd.configApplyRequests).toEqual([])
   })
 
   test("GIVEN up without project inside managed repo WHEN running THEN it loads config and targets local lane", async () => {
@@ -959,30 +797,26 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     ])
   })
 
-  test("GIVEN restart with explicit project WHEN running THEN lifecycle receives restart with config", async () => {
+  test("GIVEN restart inside managed repo WHEN running THEN lifecycle receives restart with config", async () => {
     const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
       "restart",
-      "--project",
-      "pantry",
-      "--config",
-      "/tmp/pantry/rig.json",
-      "--lane",
-      "live",
-    ])
+    ], {
+      inferredProject: "pantry",
+    })
 
     expect(exitCode).toBe(0)
     expect(logger.errors).toEqual([])
     expect(configLoader.loads).toEqual([
       {
         project: "pantry",
-        configPath: "/tmp/pantry/rig.json",
+        configPath: "/tmp/repo/rig.json",
       },
     ])
     expect(lifecycle.requests).toEqual([
       {
         action: "restart",
         project: "pantry",
-        lane: "live",
+        lane: "local",
         stateRoot: expect.stringContaining(".rig"),
         config: expect.objectContaining({
           name: "pantry",
@@ -1064,13 +898,11 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     })
   })
 
-  test("GIVEN logs with explicit project and live lane WHEN running THEN lifecycle request includes log options", async () => {
+  test("GIVEN logs with explicit project WHEN running THEN lifecycle request includes log options", async () => {
     const { exitCode, lifecycle } = await runWithLogger([
       "logs",
       "--project",
       "pantry",
-      "--lane",
-      "live",
       "--lines",
       "25",
       "--follow",
@@ -1080,7 +912,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     expect(lifecycle.requests[0]).toMatchObject({
       action: "logs",
       project: "pantry",
-      lane: "live",
+      lane: "local",
       lines: 25,
       follow: true,
     })

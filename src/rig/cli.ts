@@ -1,10 +1,9 @@
 import { Effect, FileSystem, Layer, Path, Sink, Stdio, Stream, Terminal } from "effect"
-import { Command, Flag } from "effect/unstable/cli"
+import { Argument, Command, Flag } from "effect/unstable/cli"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { BunStdio } from "@effect/platform-bun"
 
 import { decodeRigStatusInput, type RigProjectConfig } from "./config.js"
-import type { RigConfigPatchOperation } from "./config-editor.js"
 import { RigDeployIntents, type RigDeployTarget } from "./deploy-intent.js"
 import { RigDoctor } from "./doctor.js"
 import { RigCliArgumentError, unknownToRigCliError } from "./errors.js"
@@ -117,38 +116,9 @@ const projectFlag = Flag.string("project").pipe(
   Flag.withDescription("Registered project name. Optional inside a managed repo."),
 )
 
-const laneFlag = Flag.choice("lane", ["local", "live"]).pipe(
-  Flag.withDefault("local" as const),
-  Flag.withDescription("Rig runtime lane: local working copy or live built deployment."),
-)
-
-const optionalLaneFlag = Flag.string("lane").pipe(
-  Flag.withDefault(""),
-  Flag.withDescription("Optional rig runtime lane filter: local or live."),
-)
-
-const stateRootFlag = Flag.string("state-root").pipe(
-  Flag.withDefault(rigRoot()),
-  Flag.withDescription("Isolated rig state root. Defaults to ~/.rig."),
-)
-
-const statusJsonFlag = Flag.boolean("json").pipe(
-  Flag.withDescription("Emit structured status details after the human-readable status output."),
-)
-
-const configFlag = Flag.string("config").pipe(
-  Flag.withDefault(""),
-  Flag.withDescription("Path to a rig.json. Optional inside a managed repo."),
-)
-
 const initPathFlag = Flag.string("path").pipe(
   Flag.withDefault("."),
   Flag.withDescription("Project directory where rig should write rig.json."),
-)
-
-const providerProfileFlag = Flag.choice("provider-profile", ["default", "stub"]).pipe(
-  Flag.withDefault("default" as const),
-  Flag.withDescription("Provider profile to scaffold into the local, live, and generated lanes."),
 )
 
 const initDomainFlag = Flag.string("domain").pipe(
@@ -206,29 +176,9 @@ const initInstalledNameFlag = Flag.string("installed-name").pipe(
   Flag.withDescription("Optional installed executable name."),
 )
 
-const deployRefFlag = Flag.string("ref").pipe(
-  Flag.withDefault("HEAD"),
-  Flag.withDescription("Git ref to deploy. Semver is optional metadata, not required."),
-)
-
-const deployTargetFlag = Flag.choice("target", ["live", "generated"]).pipe(
-  Flag.withDefault("live" as RigDeployTarget),
-  Flag.withDescription("Deploy target: live or generated."),
-)
-
-const configPathFlag = Flag.string("path").pipe(
-  Flag.withDefault(""),
-  Flag.withDescription("Dot-separated rig config path, for example live.deployBranch."),
-)
-
-const configJsonFlag = Flag.string("json").pipe(
-  Flag.withDefault(""),
-  Flag.withDescription("JSON value for config set, for example '\"main\"', true, 3070, or '{\"upstream\":\"web\"}'."),
-)
-
 const resolveProjectScopedInput = (input: {
   readonly project: string
-  readonly lane: RigLifecycleLane
+  readonly lane?: RigLifecycleLane
   readonly stateRoot: string
   readonly configPath?: string
 }): Effect.Effect<ProjectScopedInput, RigCliArgumentError, RigProjectLocator> =>
@@ -254,6 +204,7 @@ const resolveProjectScopedInput = (input: {
       if (explicitProject.length > 0) {
         return {
           ...input,
+          lane: input.lane ?? "local",
           project: explicitProject,
         }
       }
@@ -263,12 +214,14 @@ const resolveProjectScopedInput = (input: {
     if (explicitProject.length > 0 && located.name !== explicitProject) {
       return {
         ...input,
+        lane: input.lane ?? "local",
         project: explicitProject,
       }
     }
 
     return {
       ...input,
+      lane: input.lane ?? "local",
       project: explicitProject || located.name,
       configPath: explicitConfigPath || located.configPath,
     }
@@ -304,7 +257,7 @@ const requireProjectConfig = (input: {
     return yield* Effect.fail(
       new RigCliArgumentError(
         `rig ${input.command} requires a rig.json for runtime changes.`,
-        "Run the command from a managed repo or pass --config <path>.",
+        "Run the command from a managed repo so Rig can discover project config.",
         { project: input.project, command: input.command },
       ),
     )
@@ -320,40 +273,11 @@ const requireConfigPath = (
   return Effect.fail(
     new RigCliArgumentError(
       "rig config commands require a rig.json path.",
-      "Run the command from a managed repo or pass --config <path>.",
+      "Run the command from a managed repo so Rig can discover project config.",
       { project: input.project },
     ),
   )
 }
-
-const parseConfigPatchPath = (path: string): Effect.Effect<readonly [string, ...string[]], RigCliArgumentError> => {
-  const segments = path.split(".").map((segment) => segment.trim())
-  if (segments.length === 0 || segments.some((segment) => segment.length === 0)) {
-    return Effect.fail(
-      new RigCliArgumentError(
-        "Config path must contain non-empty dot-separated segments.",
-        "Use a path like live.deployBranch or components.web.port.",
-        { path },
-      ),
-    )
-  }
-
-  return Effect.succeed(segments as [string, ...string[]])
-}
-
-const parseJsonValue = (raw: string): Effect.Effect<unknown, RigCliArgumentError> =>
-  Effect.try({
-    try: () => JSON.parse(raw) as unknown,
-    catch: (cause) =>
-      new RigCliArgumentError(
-        "Config set requires a valid JSON value.",
-        "Pass strings with JSON quotes, for example --json '\"main\"'.",
-        {
-          value: raw,
-          cause: cause instanceof Error ? cause.message : String(cause),
-        },
-      ),
-  })
 
 const parseInitUses = (raw: string): Effect.Effect<readonly RigInitComponentPluginId[], RigCliArgumentError> => {
   const selected: RigInitComponentPluginId[] = []
@@ -378,6 +302,9 @@ const optionalText = (raw: string): string | undefined => {
   const trimmed = raw.trim()
   return trimmed.length > 0 ? trimmed : undefined
 }
+
+const initProviderProfile = (): "default" | "stub" =>
+  process.env.RIG_PROVIDER_PROFILE?.trim() === "stub" ? "stub" : "default"
 
 const parseInitManagedComponent = (input: {
   readonly managed: string
@@ -449,48 +376,6 @@ const parseInitInstalledComponent = (input: {
   })
 }
 
-const runConfigPatch = (input: {
-  readonly project: string
-  readonly configPath?: string
-  readonly stateRoot: string
-  readonly path: string
-  readonly apply: boolean
-  readonly patchFor: (path: readonly [string, ...string[]]) => Effect.Effect<RigConfigPatchOperation, RigCliArgumentError>
-}) =>
-  Effect.gen(function* () {
-    const scoped = yield* resolveProjectScopedInput({
-      project: input.project,
-      lane: "live",
-      stateRoot: input.stateRoot,
-      configPath: input.configPath,
-    })
-    const configPath = yield* requireConfigPath(scoped)
-    const decoded = yield* decodeRigStatusInput(scoped)
-    const path = yield* parseConfigPatchPath(input.path)
-    const patch = yield* input.patchFor(path)
-    const rigd = yield* Rigd
-    const logger = yield* RigLogger
-    const current = yield* rigd.configRead({
-      project: decoded.project,
-      configPath,
-    })
-    const request = {
-      project: decoded.project,
-      configPath,
-      expectedRevision: current.revision,
-      patch: [patch],
-    }
-
-    if (input.apply) {
-      const result = yield* rigd.configApply(request)
-      yield* logger.info("rig config applied", result)
-      return
-    }
-
-    const preview = yield* rigd.configPreview(request)
-    yield* logger.info("rig config preview", preview)
-  })
-
 const runLifecycleAction = (
   action: RigLifecycleAction,
   input: {
@@ -517,7 +402,7 @@ const runLifecycleAction = (
       return yield* Effect.fail(
         new RigCliArgumentError(
           `rig ${action} requires a rig.json for runtime changes.`,
-          "Run the command from a managed repo or pass --config <path>.",
+          "Run the command from a managed repo so Rig can discover project config.",
           { project: decoded.project, action },
         ),
       )
@@ -526,7 +411,7 @@ const runLifecycleAction = (
     yield* lifecycle.run({
       action,
       project: decoded.project,
-      lane: input.lane,
+      lane: input.lane ?? "local",
       stateRoot: decoded.stateRoot,
       ...(config ? { config } : {}),
       ...(input.follow !== undefined ? { follow: input.follow } : {}),
@@ -535,35 +420,18 @@ const runLifecycleAction = (
     })
   })
 
-const parseOptionalLane = (value: string) => {
-  const lane = value.trim()
-  if (lane === "") {
-    return Effect.succeed(undefined)
-  }
-  if (lane === "local" || lane === "live") {
-    return Effect.succeed(lane)
-  }
-  return Effect.fail(
-    new RigCliArgumentError(
-      `Unknown lane '${lane}'.`,
-      "Use --lane local, --lane live, or omit --lane to show all project logs.",
-      { lane },
-    ),
-  )
-}
-
 const lifecycleCommand = (action: RigLifecycleAction, description: string) =>
   Command.make(
     action,
     {
       project: projectFlag,
-      lane: laneFlag,
-      stateRoot: stateRootFlag,
-      configPath: configFlag,
     },
     (input) =>
       Effect.gen(function* () {
-        const resolved = yield* resolveProjectScopedInput(input)
+        const resolved = yield* resolveProjectScopedInput({
+          ...input,
+          stateRoot: rigRoot(),
+        })
         yield* runLifecycleAction(action, resolved)
       }),
   ).pipe(Command.withDescription(description))
@@ -572,9 +440,6 @@ const logsCommand = Command.make(
   "logs",
   {
     project: projectFlag,
-    lane: optionalLaneFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
     follow: Flag.boolean("follow").pipe(Flag.withDescription("Follow log output.")),
     lines: Flag.integer("lines").pipe(
       Flag.withDefault(50),
@@ -583,31 +448,26 @@ const logsCommand = Command.make(
   },
   (input) =>
     Effect.gen(function* () {
-      const lane = yield* parseOptionalLane(input.lane)
       const resolved = yield* resolveProjectScopedInput({
         ...input,
-        lane: lane ?? "local",
+        stateRoot: rigRoot(),
       })
       yield* runLifecycleAction("logs", {
         project: resolved.project,
         stateRoot: resolved.stateRoot,
         ...(resolved.configPath ? { configPath: resolved.configPath } : {}),
-        ...(lane ? { lane } : {}),
         follow: input.follow,
         lines: input.lines,
       })
     }),
-).pipe(Command.withDescription("Inspect logs for a rig local or live lane."))
+).pipe(Command.withDescription("Inspect logs for an existing Rig Target."))
 
 const downCommand = Command.make(
   "down",
   {
     project: projectFlag,
-    lane: laneFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
     destroy: Flag.boolean("destroy").pipe(
-      Flag.withDescription("Reserved for generated deployment teardown; rejected for local/live lanes."),
+      Flag.withDescription("Reserved for future Preview cleanup; rejected for normal Targets."),
     ),
   },
   (input) =>
@@ -617,28 +477,29 @@ const downCommand = Command.make(
           new RigCliArgumentError(
             "down --destroy is reserved for generated deployments.",
             "Use plain 'rig down' for local/live lanes until generated deployments are available.",
-            { lane: input.lane },
           ),
         )
       }
 
-      const resolved = yield* resolveProjectScopedInput(input)
+      const resolved = yield* resolveProjectScopedInput({
+        ...input,
+        stateRoot: rigRoot(),
+      })
       yield* runLifecycleAction("down", resolved)
     }),
-).pipe(Command.withDescription("Stop a rig local or live lane."))
+).pipe(Command.withDescription("Stop an existing Rig Target."))
 
 const statusCommand = Command.make(
   "status",
   {
     project: projectFlag,
-    lane: laneFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
-    json: statusJsonFlag,
   },
   (input) =>
     Effect.gen(function* () {
-      const scoped = yield* resolveProjectScopedInput(input)
+      const scoped = yield* resolveProjectScopedInput({
+        ...input,
+        stateRoot: rigRoot(),
+      })
       const decoded = yield* decodeRigStatusInput(scoped)
       const config = yield* loadProjectConfig({
         project: decoded.project,
@@ -649,14 +510,8 @@ const statusCommand = Command.make(
       const rigd = yield* Rigd
       const state = yield* runtime.describeFoundation(decoded)
 
-      const foundationStatus = {
-        ...state,
-        lane: scoped.lane,
-      }
+      const foundationStatus = { ...state, lane: scoped.lane }
       yield* logger.info(formatFoundationStatus(foundationStatus))
-      if (input.json) {
-        yield* logger.info("rig foundation details", foundationStatus)
-      }
       const health = yield* rigd.health({
         stateRoot: decoded.stateRoot,
       })
@@ -665,57 +520,27 @@ const statusCommand = Command.make(
         stateRoot: decoded.stateRoot,
         ...(config ? { config } : {}),
       })
-      const rigdStatus = {
-        health,
-        inventory: {
-          project: inventory.project,
-          deploymentCount: inventory.deployments.length,
-        },
-      }
       yield* logger.info(formatRigdStatus({
         status: health.status,
         project: inventory.project,
         deploymentCount: inventory.deployments.length,
       }))
-      if (input.json) {
-        yield* logger.info("rigd status details", rigdStatus)
-      }
       yield* runLifecycleAction("status", {
         ...scoped,
         ...(config ? { config } : {}),
-        structured: input.json,
       })
     }),
 ).pipe(
   Command.withDescription("Inspect the isolated rig runtime foundation."),
 )
 
-const rigdCommand = Command.make(
-  "rigd",
-  {
-    stateRoot: stateRootFlag,
-  },
-  (input) =>
-    Effect.gen(function* () {
-      const rigd = yield* Rigd
-      yield* rigd.start({
-        stateRoot: input.stateRoot,
-      })
-    }),
-).pipe(Command.withDescription("Start the local rigd MVP API and report health."))
-
 const initCommand = Command.make(
   "init",
   {
     project: projectFlag,
     path: initPathFlag,
-    stateRoot: stateRootFlag,
-    providerProfile: providerProfileFlag,
     domain: initDomainFlag,
     proxy: initProxyFlag,
-    packageScripts: Flag.boolean("package-scripts").pipe(
-      Flag.withDescription("Add rig package scripts to package.json when it exists."),
-    ),
     uses: usesFlag,
     managed: initManagedFlag,
     managedCommand: initManagedCommandFlag,
@@ -740,7 +565,7 @@ const initCommand = Command.make(
 
       const decoded = yield* decodeRigStatusInput({
         project,
-        stateRoot: input.stateRoot,
+        stateRoot: rigRoot(),
       })
       const initializer = yield* RigProjectInitializer
       const logger = yield* RigLogger
@@ -762,10 +587,10 @@ const initCommand = Command.make(
         project: decoded.project,
         path: input.path,
         stateRoot: decoded.stateRoot,
-        providerProfile: input.providerProfile,
+        providerProfile: initProviderProfile(),
         ...(domain ? { domain } : {}),
         ...(proxy ? { proxy } : {}),
-        packageScripts: input.packageScripts,
+        packageScripts: false,
         componentPlugins,
         ...(managedComponent ? { managedComponent } : {}),
         ...(installedComponent ? { installedComponent } : {}),
@@ -776,43 +601,37 @@ const initCommand = Command.make(
 
 const listCommand = Command.make(
   "list",
-  {
-    stateRoot: stateRootFlag,
-    json: statusJsonFlag,
-  },
-  (input) =>
+  {},
+  () =>
     Effect.gen(function* () {
       const logger = yield* RigLogger
       const rigd = yield* Rigd
-      const model = yield* rigd.webReadModel({ stateRoot: input.stateRoot })
+      const model = yield* rigd.webReadModel({ stateRoot: rigRoot() })
 
       yield* logger.info(formatProjectList(model))
-      if (input.json) {
-        yield* logger.info("rig projects details", model)
-      }
     }),
 ).pipe(Command.withDescription("List rig projects and deployments from rigd state."))
 
-const deployCommand = Command.make(
-  "deploy",
+const makeDeployCommand = (
+  name: "live" | "preview",
+  target: RigDeployTarget,
+  defaultBranch: string,
+  description: string,
+) => Command.make(
+  name,
   {
     project: projectFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
-    ref: deployRefFlag,
-    target: deployTargetFlag,
+    branch: Argument.string("branch").pipe(Argument.withDefault(defaultBranch)),
     deployment: Flag.string("deployment").pipe(
       Flag.withDefault(""),
-      Flag.withDescription("Optional generated deployment name override."),
+      Flag.withDescription("Optional Preview name override."),
     ),
   },
   (input) =>
     Effect.gen(function* () {
       const scoped = yield* resolveProjectScopedInput({
         project: input.project,
-        lane: "live",
-        stateRoot: input.stateRoot,
-        configPath: input.configPath,
+        stateRoot: rigRoot(),
       })
       const decoded = yield* decodeRigStatusInput(scoped)
       const config = yield* requireProjectConfig({
@@ -826,8 +645,8 @@ const deployCommand = Command.make(
       const intent = yield* intents.fromCliDeploy({
         project: decoded.project,
         stateRoot: decoded.stateRoot,
-        ref: input.ref,
-        target: input.target,
+        ref: input.branch,
+        target,
         config,
         ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
       })
@@ -836,52 +655,22 @@ const deployCommand = Command.make(
       const receipt = yield* rigd.deploy({
         project: decoded.project,
         stateRoot: decoded.stateRoot,
-        ref: input.ref,
-        target: input.target,
+        ref: input.branch,
+        target,
         config,
         ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
       })
       yield* logger.info("rig deploy accepted", receipt)
     }),
-).pipe(Command.withDescription("Create a rig deploy intent for a ref and target without requiring semver."))
+).pipe(Command.withDescription(description))
 
-const bumpCommand = Command.make(
-  "bump",
-  {
-    project: projectFlag,
-    stateRoot: stateRootFlag,
-    current: Flag.string("current").pipe(
-      Flag.withDefault("0.0.0"),
-      Flag.withDescription("Current optional version metadata."),
-    ),
-    bump: Flag.choice("bump", ["patch", "minor", "major"]).pipe(
-      Flag.withDefault("patch" as const),
-      Flag.withDescription("Semantic version bump to apply when --set is omitted."),
-    ),
-    set: Flag.string("set").pipe(
-      Flag.withDefault(""),
-      Flag.withDescription("Explicit optional version metadata to set."),
-    ),
-  },
-  (input) =>
-    Effect.gen(function* () {
-      const scoped = yield* resolveProjectScopedInput({
-        project: input.project,
-        lane: "live",
-        stateRoot: input.stateRoot,
-      })
-      const decoded = yield* decodeRigStatusInput(scoped)
-      const intents = yield* RigDeployIntents
-      const logger = yield* RigLogger
-      const metadata = yield* intents.bump({
-        project: decoded.project,
-        currentVersion: input.current,
-        ...(input.set.trim().length > 0 ? { set: input.set.trim() } : { bump: input.bump }),
-      })
-
-      yield* logger.info("rig bump metadata", metadata)
-    }),
-).pipe(Command.withDescription("Manage optional version metadata and rollback tag anchors."))
+const deployCommand = Command.make("deploy").pipe(
+  Command.withDescription("Deploy a Branch to a Stable Target or Preview."),
+  Command.withSubcommands([
+    makeDeployCommand("live", "live", "main", "Deploy the Production Branch to the Stable Target."),
+    makeDeployCommand("preview", "generated", "HEAD", "Deploy a Branch as a Preview."),
+  ]),
+)
 
 const caddyDoctorChecks = (input: {
   readonly project: string
@@ -925,16 +714,12 @@ const doctorCommand = Command.make(
   "doctor",
   {
     project: projectFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
   },
   (input) =>
     Effect.gen(function* () {
       const scoped = yield* resolveProjectScopedInput({
         project: input.project,
-        lane: "live",
-        stateRoot: input.stateRoot,
-        configPath: input.configPath,
+        stateRoot: rigRoot(),
       })
       const decoded = yield* decodeRigStatusInput(scoped)
       const config = yield* loadProjectConfig({
@@ -987,16 +772,12 @@ const configReadCommand = Command.make(
   "read",
   {
     project: projectFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
   },
   (input) =>
     Effect.gen(function* () {
       const scoped = yield* resolveProjectScopedInput({
         project: input.project,
-        lane: "live",
-        stateRoot: input.stateRoot,
-        configPath: input.configPath,
+        stateRoot: rigRoot(),
       })
       const configPath = yield* requireConfigPath(scoped)
       const decoded = yield* decodeRigStatusInput(scoped)
@@ -1014,68 +795,10 @@ const configReadCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Read editor-ready rig project config, revision, and field docs."))
 
-const configSetCommand = Command.make(
-  "set",
-  {
-    project: projectFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
-    path: configPathFlag,
-    json: configJsonFlag,
-    apply: Flag.boolean("apply").pipe(
-      Flag.withDescription("Apply the config change. Without this flag, only preview the diff."),
-    ),
-  },
-  (input) =>
-    runConfigPatch({
-      project: input.project,
-      stateRoot: input.stateRoot,
-      configPath: input.configPath,
-      path: input.path,
-      apply: input.apply,
-      patchFor: (path) =>
-        parseJsonValue(input.json).pipe(
-          Effect.map((value) => ({
-            op: "set" as const,
-            path,
-            value,
-          })),
-        ),
-    }),
-).pipe(Command.withDescription("Preview or apply a structured rig config set operation."))
-
-const configUnsetCommand = Command.make(
-  "unset",
-  {
-    project: projectFlag,
-    stateRoot: stateRootFlag,
-    configPath: configFlag,
-    path: configPathFlag,
-    apply: Flag.boolean("apply").pipe(
-      Flag.withDescription("Apply the config removal. Without this flag, only preview the diff."),
-    ),
-  },
-  (input) =>
-    runConfigPatch({
-      project: input.project,
-      stateRoot: input.stateRoot,
-      configPath: input.configPath,
-      path: input.path,
-      apply: input.apply,
-      patchFor: (path) =>
-        Effect.succeed({
-          op: "remove" as const,
-          path,
-        }),
-    }),
-).pipe(Command.withDescription("Preview or apply a structured rig config remove operation."))
-
 const configCommand = Command.make("config").pipe(
-  Command.withDescription("Read, preview, and apply safe rig project config edits through rigd."),
+  Command.withDescription("Read Rig project config through rigd."),
   Command.withSubcommands([
     configReadCommand,
-    configSetCommand,
-    configUnsetCommand,
   ]),
 )
 
@@ -1083,15 +806,13 @@ const rigCommand = Command.make("rig").pipe(
   Command.withDescription("Local Mac deployment manager."),
   Command.withSubcommands([
     initCommand,
-    lifecycleCommand("up", "Start a rig local or live lane."),
-    lifecycleCommand("restart", "Restart a rig local or live lane."),
+    lifecycleCommand("up", "Start an existing Rig Target."),
+    lifecycleCommand("restart", "Restart an existing Rig Target."),
     downCommand,
     logsCommand,
     statusCommand,
     listCommand,
-    rigdCommand,
     deployCommand,
-    bumpCommand,
     doctorCommand,
     configCommand,
   ]),

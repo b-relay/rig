@@ -4,10 +4,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "bun build --compile src/index.ts --outfile rig",
+    "build": "bun build --compile src/index.ts --outfile rig && bun build --compile src/rigd.ts --outfile rigd",
     "start": "bun run src/index.ts"
   },
-  "bin": "./rig",
+  "bin": {
+    "rig": "./rig",
+    "rigd": "./rigd"
+  },
   "devDependencies": {
     "@types/bun": "^1.3.9"
   },

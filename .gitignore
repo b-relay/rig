@@ -4,7 +4,8 @@ node_modules
 # output
 out
 dist
-rig
+/rig
+/rigd
 *.tgz
 
 # code coverage

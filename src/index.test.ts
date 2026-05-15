@@ -8,10 +8,12 @@ const runRigCommand = async (
   env: Record<string, string>,
   options: {
     readonly cwd?: string
+    readonly entrypoint?: "rig" | "rigd"
   } = {},
 ) => {
+  const entrypoint = options.entrypoint === "rigd" ? "src/rigd.ts" : "src/index.ts"
   const processHandle = Bun.spawn({
-    cmd: [process.execPath, "run", join(process.cwd(), "src/index.ts"), ...argv],
+    cmd: [process.execPath, "run", join(process.cwd(), entrypoint), ...argv],
     cwd: options.cwd ?? process.cwd(),
     env: {
       ...process.env,
@@ -30,7 +32,146 @@ const runRigCommand = async (
   return { stdout, stderr, exitCode }
 }
 
+const runRigdCommand = (
+  argv: readonly string[],
+  env: Record<string, string>,
+  options: { readonly cwd?: string } = {},
+) => runRigCommand(argv, env, { ...options, entrypoint: "rigd" })
+
+const installRigd = async (root: string) => {
+  const install = await runRigdCommand(["install"], { RIG_ROOT: root })
+  expect(install.exitCode).toBe(0)
+  expect(install.stderr).toBe("")
+  return install
+}
+
 describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered", () => {
+  test("GIVEN rigd daemon admin WHEN run directly THEN it installs and reports daemon state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+
+    try {
+      const help = await runRigdCommand(["--help"], { RIG_ROOT: root })
+
+      expect(help.exitCode).toBe(0)
+      expect(help.stderr).toBe("")
+      expect(help.stdout).toContain("rigd")
+      expect(help.stdout).toContain("install")
+      expect(help.stdout).toContain("status")
+      expect(help.stdout).toContain("uninstall")
+      expect(help.stdout).not.toContain("projects:")
+      expect(help.stdout).not.toContain("deployments:")
+
+      const install = await runRigdCommand(["install"], { RIG_ROOT: root })
+
+      expect(install.exitCode).toBe(0)
+      expect(install.stderr).toBe("")
+      expect(install.stdout).toContain("[INFO] rigd installed")
+      expect(install.stdout).toContain(`"stateRoot":"${root}"`)
+      expect(install.stdout).toContain('"tokenCreated":true')
+
+      const status = await runRigdCommand(["status"], { RIG_ROOT: root })
+
+      expect(status.exitCode).toBe(0)
+      expect(status.stderr).toBe("")
+      expect(status.stdout).toContain("[INFO] rigd daemon status")
+      expect(status.stdout).toContain('"installed":true')
+      expect(status.stdout).toContain('"running":true')
+      expect(status.stdout).toContain('"reachable":true')
+
+      const token = await readFile(join(root, "auth", "control-plane.token"), "utf8")
+      expect(token.trim().length).toBeGreaterThan(20)
+
+      const uninstall = await runRigdCommand(["uninstall"], { RIG_ROOT: root })
+
+      expect(uninstall.exitCode).toBe(0)
+      expect(uninstall.stderr).toBe("")
+      expect(uninstall.stdout).toContain("[INFO] rigd uninstalled")
+      expect(uninstall.stdout).toContain('"removed":true')
+      await expect(readFile(join(root, "auth", "control-plane.token"), "utf8")).rejects.toThrow()
+
+      const afterUninstall = await runRigdCommand(["status"], { RIG_ROOT: root })
+
+      expect(afterUninstall.exitCode).toBe(0)
+      expect(afterUninstall.stderr).toBe("")
+      expect(afterUninstall.stdout).toContain('"installed":false')
+      expect(afterUninstall.stdout).toContain('"running":false')
+      expect(afterUninstall.stdout).toContain('"reachable":false')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN running Rig target WHEN rigd uninstall runs THEN it refuses to remove daemon artifacts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
+
+    try {
+      await installRigd(root)
+      await writeFile(
+        join(repo, "rig.json"),
+        `${JSON.stringify({
+          name: "pantry",
+          components: {
+            web: {
+              mode: "managed",
+              command: "printf 'started\\n'",
+              port: 3070,
+            },
+          },
+          local: {
+            providerProfile: "stub",
+          },
+        }, null, 2)}\n`,
+        "utf8",
+      )
+
+      const up = await runRigCommand(
+        ["up"],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: repo },
+      )
+
+      expect(up.exitCode).toBe(0)
+      expect(up.stderr).toBe("")
+
+      const uninstall = await runRigdCommand(["uninstall"], { RIG_ROOT: root })
+
+      expect(uninstall.exitCode).toBe(1)
+      expect(uninstall.stdout).toBe("")
+      expect(uninstall.stderr).toContain("[ERROR] Cannot uninstall rigd while Rig Targets are running.")
+      expect(uninstall.stderr).toContain("Run rig down")
+      expect(uninstall.stderr).toContain('"project":"pantry"')
+
+      const status = await runRigdCommand(["status"], { RIG_ROOT: root })
+
+      expect(status.exitCode).toBe(0)
+      expect(status.stdout).toContain('"installed":true')
+      expect(status.stdout).toContain('"reachable":true')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("GIVEN normal rig command WHEN rigd is missing THEN it fails with daemon guidance", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+
+    try {
+      const { stdout, stderr, exitCode } = await runRigCommand(
+        ["status", "--project", "pantry"],
+        { RIG_ROOT: root },
+      )
+
+      expect(exitCode).toBe(1)
+      expect(stdout).toBe("")
+      expect(stderr).toContain("[ERROR] rigd is not installed or reachable.")
+      expect(stderr).toContain("Run 'rigd install'")
+      expect(stderr).toContain("rigd status")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN main help WHEN run directly THEN it identifies the final rig CLI", async () => {
     const { stdout, stderr, exitCode } = await runRigCommand(["--help"], {})
 
@@ -77,17 +218,24 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     expect(bumpHelp.exitCode).toBe(0)
     expect(bumpHelp.stdout).not.toContain("  bump")
 
-    const bump = await runRigCommand(["bump"], {})
-    expect(bump.exitCode).toBe(1)
-    expect(bump.stdout).not.toContain("  bump")
-    expect(bump.stderr).toContain("bump")
-  })
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    try {
+      await installRigd(root)
+      const bump = await runRigCommand(["bump"], { RIG_ROOT: root })
+      expect(bump.exitCode).toBe(1)
+      expect(bump.stdout).not.toContain("  bump")
+      expect(bump.stderr).toContain("bump")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 10000)
 
   test("GIVEN init command WHEN run directly THEN it writes rig project files and registers the project", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
     const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
 
     try {
+      await installRigd(root)
       await writeFile(
         join(repo, "package.json"),
         `${JSON.stringify({
@@ -175,6 +323,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
 
     try {
+      await installRigd(root)
       const init = await runRigCommand(
         [
           "init",
@@ -241,6 +390,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
+      await installRigd(root)
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["status", "--project", "pantry"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
@@ -264,6 +414,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const repo = await mkdtemp(join(tmpdir(), "rig-repo-"))
 
     try {
+      await installRigd(root)
       await writeFile(
         join(repo, "rig.json"),
         `${JSON.stringify({
@@ -309,6 +460,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const configPath = join(repo, "rig.json")
 
     try {
+      await installRigd(root)
       const init = await runRigCommand(
         [
           "init",
@@ -407,7 +559,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       await rm(root, { recursive: true, force: true })
       await rm(repo, { recursive: true, force: true })
     }
-  })
+  }, 15000)
 
   test("GIVEN a Pantry-like fake app WHEN web sqlite and CLI components are configured THEN rig deploys the app shape", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
@@ -415,6 +567,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const configPath = join(repo, "rig.json")
 
     try {
+      await installRigd(root)
       const init = await runRigCommand(
         [
           "init",
@@ -524,12 +677,13 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       await rm(root, { recursive: true, force: true })
       await rm(repo, { recursive: true, force: true })
     }
-  })
+  }, 15000)
 
   test("GIVEN rigd command WHEN run directly THEN normal rig rejects the daemon surface", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
+      await installRigd(root)
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["rigd"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
@@ -548,6 +702,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
+      await installRigd(root)
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["deploy", "preview", "feature/preview", "--project", "pantry"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
@@ -563,21 +718,29 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
   })
 
   test("GIVEN bump command WHEN run directly THEN normal rig rejects version metadata", async () => {
-    const { stdout, stderr, exitCode } = await runRigCommand(
-      ["bump", "--project", "pantry", "--current", "1.2.3", "--bump", "patch"],
-      {},
-    )
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
-    expect(exitCode).toBe(1)
-    expect(stdout).not.toContain("[INFO] rig bump metadata")
-    expect(stdout).not.toContain("  bump")
-    expect(stderr).toContain("bump")
+    try {
+      await installRigd(root)
+      const { stdout, stderr, exitCode } = await runRigCommand(
+        ["bump", "--project", "pantry", "--current", "1.2.3", "--bump", "patch"],
+        { RIG_ROOT: root },
+      )
+
+      expect(exitCode).toBe(1)
+      expect(stdout).not.toContain("[INFO] rig bump metadata")
+      expect(stdout).not.toContain("  bump")
+      expect(stderr).toContain("bump")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test("GIVEN doctor command WHEN run directly THEN it emits reliability categories", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
 
     try {
+      await installRigd(root)
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["doctor", "--project", "pantry"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
@@ -602,6 +765,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const configPath = join(repo, "rig.json")
 
     try {
+      await installRigd(root)
       await writeFile(
         join(root, "config.json"),
         `${JSON.stringify({
@@ -668,6 +832,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     const configPath = join(repo, "rig.json")
 
     try {
+      await installRigd(root)
       await writeFile(
         configPath,
         `${JSON.stringify({

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
@@ -43,6 +43,26 @@ const installRigd = async (root: string) => {
   expect(install.exitCode).toBe(0)
   expect(install.stderr).toBe("")
   return install
+}
+
+const runCommand = async (
+  argv: readonly string[],
+  options: {
+    readonly cwd?: string
+  } = {},
+) => {
+  const processHandle = Bun.spawn({
+    cmd: [...argv],
+    cwd: options.cwd ?? process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    processHandle.stdout ? new Response(processHandle.stdout).text() : Promise.resolve(""),
+    processHandle.stderr ? new Response(processHandle.stderr).text() : Promise.resolve(""),
+    processHandle.exited,
+  ])
+  return { stdout, stderr, exitCode }
 }
 
 describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered", () => {
@@ -317,6 +337,214 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       await rm(repo, { recursive: true, force: true })
     }
   })
+
+  test("GIVEN init from a git subdirectory WHEN project is omitted THEN it writes root config remote and registration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const parent = await mkdtemp(join(tmpdir(), "rig-init-parent-"))
+    const repo = join(parent, "Pantry App")
+    const nested = join(repo, "apps", "web")
+
+    try {
+      await installRigd(root)
+      await mkdir(nested, { recursive: true })
+      const gitInit = await runCommand(["git", "init", "-b", "main"], { cwd: repo })
+      expect(gitInit.exitCode).toBe(0)
+
+      const init = await runRigCommand(
+        [
+          "init",
+          "--domain",
+          "pantry.example.test",
+          "--proxy",
+          "web",
+        ],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: nested },
+      )
+
+      expect(init.exitCode).toBe(0)
+      expect(init.stderr).toBe("")
+      expect(init.stdout).toContain("[INFO] rig project initialized")
+      expect(init.stdout).toContain('"project":"pantry-app"')
+      const gitRepoPath = await realpath(repo)
+      expect(init.stdout).toContain(`"repoPath":"${gitRepoPath}"`)
+      expect(init.stdout).toContain(`"configPath":"${join(gitRepoPath, "rig.json")}"`)
+      expect(init.stdout).toContain('"productionBranch":"main"')
+      expect(init.stdout).toContain('"remoteConfigured":true')
+      expect(init.stdout).toContain('"registered":true')
+
+      const rigConfig = JSON.parse(await readFile(join(repo, "rig.json"), "utf8")) as {
+        readonly name?: string
+        readonly live?: { readonly deployBranch?: string }
+      }
+      expect(rigConfig.name).toBe("pantry-app")
+      expect(rigConfig.live?.deployBranch).toBe("main")
+
+      const remote = await runCommand(["git", "remote", "get-url", "rig"], { cwd: repo })
+      expect(remote.exitCode).toBe(0)
+      expect(remote.stdout.trim()).toBe("rig://localhost/pantry-app")
+
+      const list = await runRigCommand(["list"], { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" })
+      expect(list.exitCode).toBe(0)
+      expect(list.stdout).toContain("projects:\n  pantry-app")
+
+      const rerun = await runRigCommand(
+        ["init"],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: nested },
+      )
+
+      expect(rerun.exitCode).toBe(0)
+      expect(rerun.stderr).toBe("")
+      expect(rerun.stdout).toContain('"project":"pantry-app"')
+      expect(rerun.stdout).toContain('"remoteConfigured":false')
+      expect(rerun.stdout).toContain('"registered":true')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(parent, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("GIVEN rig remote points elsewhere WHEN init runs THEN it refuses to overwrite the remote", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-remote-conflict-"))
+
+    try {
+      await installRigd(root)
+      const gitInit = await runCommand(["git", "init", "-b", "main"], { cwd: repo })
+      expect(gitInit.exitCode).toBe(0)
+      const addRemote = await runCommand(["git", "remote", "add", "rig", "https://example.test/not-rig.git"], {
+        cwd: repo,
+      })
+      expect(addRemote.exitCode).toBe(0)
+
+      const init = await runRigCommand(
+        ["init", "--project", "pantry"],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: repo },
+      )
+
+      expect(init.exitCode).toBe(1)
+      expect(init.stdout).toBe("")
+      expect(init.stderr).toContain("Cannot configure rig remote because it already points somewhere else.")
+      expect(init.stderr).toContain("existingRemoteUrl")
+      await expect(readFile(join(repo, "rig.json"), "utf8")).rejects.toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN config already exists without registration WHEN init reruns THEN it completes daemon registration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const parent = await mkdtemp(join(tmpdir(), "rig-partial-parent-"))
+    const repo = join(parent, "Partial App")
+    const nested = join(repo, "packages", "web")
+
+    try {
+      await installRigd(root)
+      await mkdir(nested, { recursive: true })
+      const gitInit = await runCommand(["git", "init", "-b", "main"], { cwd: repo })
+      expect(gitInit.exitCode).toBe(0)
+      await writeFile(
+        join(repo, "rig.json"),
+        `${JSON.stringify({
+          name: "partial-app",
+          components: {},
+          local: { providerProfile: "stub" },
+          live: { providerProfile: "stub", deployBranch: "main" },
+          deployments: { providerProfile: "stub" },
+        }, null, 2)}\n`,
+        "utf8",
+      )
+
+      const init = await runRigCommand(
+        ["init"],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: nested },
+      )
+
+      expect(init.exitCode).toBe(0)
+      expect(init.stderr).toBe("")
+      expect(init.stdout).toContain('"project":"partial-app"')
+      expect(init.stdout).toContain('"remoteConfigured":true')
+      expect(init.stdout).toContain('"registered":true')
+
+      const list = await runRigCommand(["list"], { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" })
+      expect(list.exitCode).toBe(0)
+      expect(list.stdout).toContain("partial-app")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(parent, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("GIVEN project identity is already registered elsewhere WHEN init runs THEN it rejects the duplicate", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const parent = await mkdtemp(join(tmpdir(), "rig-duplicate-parent-"))
+    const repoA = join(parent, "Repo A")
+    const repoB = join(parent, "Repo B")
+
+    try {
+      await installRigd(root)
+      await mkdir(repoA, { recursive: true })
+      await mkdir(repoB, { recursive: true })
+      expect((await runCommand(["git", "init", "-b", "main"], { cwd: repoA })).exitCode).toBe(0)
+      expect((await runCommand(["git", "init", "-b", "main"], { cwd: repoB })).exitCode).toBe(0)
+
+      const first = await runRigCommand(
+        ["init", "--project", "pantry"],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: repoA },
+      )
+      expect(first.exitCode).toBe(0)
+
+      const duplicate = await runRigCommand(
+        ["init", "--project", "pantry"],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: repoB },
+      )
+
+      expect(duplicate.exitCode).toBe(1)
+      expect(duplicate.stdout).toBe("")
+      expect(duplicate.stderr).toContain("Project 'pantry' is already registered for another path.")
+      await expect(readFile(join(repoB, "rig.json"), "utf8")).rejects.toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(parent, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("GIVEN rigd registration write fails WHEN init wrote config THEN it reports partial state clearly", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-partial-registration-"))
+    const runtimeRoot = join(root, "runtime")
+
+    try {
+      await installRigd(root)
+      await mkdir(runtimeRoot, { recursive: true })
+      await chmod(runtimeRoot, 0o555)
+
+      const init = await runRigCommand(
+        ["init", "--project", "pantry", "--path", repo],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+      )
+
+      expect(init.exitCode).toBe(1)
+      expect(init.stdout).toBe("")
+      expect(init.stderr).toContain("rig init wrote project config but could not register with rigd.")
+      expect(init.stderr).toContain("rerun 'rig init'")
+
+      const rigConfig = JSON.parse(await readFile(join(repo, "rig.json"), "utf8")) as {
+        readonly name?: string
+      }
+      expect(rigConfig.name).toBe("pantry")
+    } finally {
+      await chmod(runtimeRoot, 0o755).catch(() => {})
+      await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
+    }
+  }, 15000)
 
   test("GIVEN init command with explicit app components WHEN run directly THEN managed and installed components are scaffolded", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))

@@ -554,19 +554,6 @@ const initCommand = Command.make(
   (input) =>
     Effect.gen(function* () {
       const project = input.project.trim()
-      if (project.length === 0) {
-        return yield* Effect.fail(
-          new RigCliArgumentError(
-            "rig init requires --project <name>.",
-            "Pass a stable project name, for example rig init --project pantry --path .",
-          ),
-        )
-      }
-
-      const decoded = yield* decodeRigStatusInput({
-        project,
-        stateRoot: rigRoot(),
-      })
       const initializer = yield* RigProjectInitializer
       const logger = yield* RigLogger
       const componentPlugins = yield* parseInitUses(input.uses)
@@ -584,9 +571,9 @@ const initCommand = Command.make(
       const domain = input.domain.trim()
       const proxy = input.proxy.trim()
       const result = yield* initializer.init({
-        project: decoded.project,
+        project,
         path: input.path,
-        stateRoot: decoded.stateRoot,
+        stateRoot: rigRoot(),
         providerProfile: initProviderProfile(),
         ...(domain ? { domain } : {}),
         ...(proxy ? { proxy } : {}),

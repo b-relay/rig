@@ -100,6 +100,7 @@ describe("GIVEN rig deploy intent model WHEN resolving pushes and CLI deploys TH
           project: "pantry",
           stateRoot: "/tmp/rig",
           ref: "main",
+          commit: "abc123",
           mainRef: "main",
           config,
         })
@@ -110,6 +111,7 @@ describe("GIVEN rig deploy intent model WHEN resolving pushes and CLI deploys TH
       source: "git-push",
       project: "pantry",
       ref: "main",
+      commit: "abc123",
       target: "live",
       lane: "live",
     })

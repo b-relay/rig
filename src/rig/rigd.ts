@@ -206,6 +206,14 @@ export interface RigdDeployInput {
   readonly config?: RigProjectConfig
 }
 
+export interface RigdGitPushDeployInput {
+  readonly project: string
+  readonly destinationBranch: string
+  readonly commit: string
+  readonly stateRoot: string
+  readonly config?: RigProjectConfig
+}
+
 export interface RigdControlPlaneDeployInput extends RigdDeployInput {
   readonly config?: RigProjectConfig
 }
@@ -255,6 +263,7 @@ export interface RigdService {
   readonly healthState: (input: RigdHealthStateInput) => Effect.Effect<RigdHealthState, RigRuntimeError>
   readonly lifecycle: (input: RigdLifecycleInput) => Effect.Effect<RigdActionReceipt, RigRuntimeError>
   readonly deploy: (input: RigdDeployInput) => Effect.Effect<RigdActionReceipt, RigRuntimeError>
+  readonly gitPushDeploy: (input: RigdGitPushDeployInput) => Effect.Effect<RigdActionReceipt, RigRuntimeError>
   readonly controlPlaneLifecycle: (
     input: RigdControlPlaneLifecycleInput,
   ) => Effect.Effect<RigdActionReceipt, RigRuntimeError>
@@ -301,6 +310,7 @@ const controlPlaneContract = (runtime: RigControlPlaneStatus): RigControlPlaneCo
 const now = (): string => new Date().toISOString()
 const CRASH_BACKOFF_WINDOW_MS = 5 * 60 * 1000
 const MAX_RESTARTS_IN_BACKOFF_WINDOW = 2
+type RigdDeployActionSource = "cli" | "control-plane" | "git-push"
 
 export const RigdLive = Layer.effect(
   Rigd,
@@ -431,7 +441,7 @@ export const RigdLive = Layer.effect(
     const deployAccepted = (
       input: RigdDeployInput,
       target: string,
-      source: "cli" | "control-plane",
+      source: RigdDeployActionSource,
       execution?: RigRuntimeExecutionResult,
     ): Effect.Effect<RigdActionReceipt, RigRuntimeError> =>
       Effect.gen(function* () {
@@ -459,7 +469,7 @@ export const RigdLive = Layer.effect(
     const deployNoop = (
       input: RigdDeployInput,
       target: string,
-      source: "cli" | "control-plane",
+      source: RigdDeployActionSource,
       reason: string,
       desiredStatus?: string,
     ): Effect.Effect<RigdActionReceipt, RigRuntimeError> =>
@@ -968,7 +978,7 @@ export const RigdLive = Layer.effect(
 
     const runDeployAction = (
       input: RigdControlPlaneDeployInput,
-      source: "cli" | "control-plane",
+      source: RigdDeployActionSource,
     ): Effect.Effect<RigdActionReceipt, RigRuntimeError> =>
       Effect.gen(function* () {
         if (input.target !== "live" && input.target !== "generated") {
@@ -1241,6 +1251,21 @@ export const RigdLive = Layer.effect(
         }),
       deploy: (input) =>
         runDeployAction(input, "cli"),
+      gitPushDeploy: (input) =>
+        Effect.gen(function* () {
+          const homeConfigStore = yield* RigHomeConfigStore
+          const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
+          const productionBranch = input.config?.live?.deployBranch ?? homeConfig.deploy.productionBranch
+          const target = input.destinationBranch === productionBranch ? "live" : "generated"
+          return yield* runDeployAction({
+            project: input.project,
+            stateRoot: input.stateRoot,
+            ref: input.destinationBranch,
+            commit: input.commit,
+            target,
+            ...(input.config ? { config: input.config } : {}),
+          }, "git-push")
+        }),
       controlPlaneLifecycle: (input) =>
         Effect.gen(function* () {
           if (!isLifecycleWriteAction(input.action)) {

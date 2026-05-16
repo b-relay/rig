@@ -5,6 +5,7 @@ import { RigLifecycle, RigLifecycleLive } from "./lifecycle.js"
 import type { RigProjectConfig } from "./config.js"
 import {
   Rigd,
+  type RigdGitPushDeployInput,
   type RigdHealthState,
   type RigdHealthStateInput,
   type RigdLifecycleInput,
@@ -103,6 +104,10 @@ class CaptureRigd {
   }
 
   deploy() {
+    return Effect.die("unused")
+  }
+
+  gitPushDeploy(_input: RigdGitPushDeployInput) {
     return Effect.die("unused")
   }
 }

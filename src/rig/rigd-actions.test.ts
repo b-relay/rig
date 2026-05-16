@@ -1246,6 +1246,162 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN Rig remote pushes WHEN destination Branches differ THEN rigd classifies Stable and Preview deploys", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+    const executor = new CaptureRuntimeExecutor()
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const store = yield* RigdStateStore
+          const live = yield* rigd.gitPushDeploy({
+            project: "pantry",
+            destinationBranch: "main",
+            commit: "commit-main",
+            stateRoot,
+            config,
+          })
+          const preview = yield* rigd.gitPushDeploy({
+            project: "pantry",
+            destinationBranch: "preview/main",
+            commit: "commit-preview-main",
+            stateRoot,
+            config,
+          })
+          const model = yield* rigd.webReadModel({ stateRoot })
+          const logs = yield* rigd.webLogs({ stateRoot, project: "pantry", lines: 20 })
+          const persisted = yield* store.load({ stateRoot })
+          return { live, preview, model, logs, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.live).toMatchObject({ kind: "deploy", target: "live", accepted: true })
+      expect(result.preview).toMatchObject({ kind: "deploy", target: "generated:preview-main", accepted: true })
+      expect(executor.deployCalls.map((call) => `${call.ref}:${call.deployment.kind}:${call.deployment.name}:${call.start}`)).toEqual([
+        "commit-main:live:live:true",
+        "commit-preview-main:generated:preview-main:true",
+      ])
+      expect(result.model.deployments.map((deployment) => `${deployment.kind}:${deployment.name}`)).toEqual([
+        "local:local",
+        "live:live",
+        "generated:preview-main",
+      ])
+      expect(result.persisted.desiredDeployments.map((desired) => `${desired.kind}:${desired.deployment}:${desired.desiredStatus}:${desired.record.sourceRef ?? ""}:${desired.record.sourceCommit ?? ""}`)).toEqual([
+        "live:live:running:main:commit-main",
+        "generated:preview-main:running:preview/main:commit-preview-main",
+      ])
+      expect(result.logs).toContainEqual(expect.objectContaining({
+        event: "rigd.deploy.accepted",
+        details: expect.objectContaining({
+          source: "git-push",
+          target: "generated",
+          ref: "preview/main",
+          commit: "commit-preview-main",
+        }),
+      }))
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN Rig remote push to configured Production Branch WHEN deployed THEN Stable Target is updated", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+    const executor = new CaptureRuntimeExecutor()
+
+    try {
+      const baseConfig = await Effect.runPromise(projectConfig())
+      const config = {
+        ...baseConfig,
+        live: {
+          ...baseConfig.live,
+          deployBranch: "stable",
+        },
+      } satisfies RigProjectConfig
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          return yield* rigd.gitPushDeploy({
+            project: "pantry",
+            destinationBranch: "stable",
+            commit: "commit-stable",
+            stateRoot,
+            config,
+          })
+        }),
+        { executor },
+      )
+
+      expect(result).toMatchObject({ kind: "deploy", target: "live", accepted: true })
+      expect(executor.deployCalls).toHaveLength(1)
+      expect(executor.deployCalls[0]).toMatchObject({
+        ref: "commit-stable",
+        start: true,
+        deployment: expect.objectContaining({
+          kind: "live",
+          sourceRef: "stable",
+          sourceCommit: "commit-stable",
+        }),
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN same Commit Rig remote push WHEN Target is stopped THEN rigd no-ops without starting it", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+    const executor = new CaptureRuntimeExecutor()
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const store = yield* RigdStateStore
+          yield* rigd.deploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            commit: "commit-main",
+            stateRoot,
+            config,
+            noUp: true,
+          })
+          const pushed = yield* rigd.gitPushDeploy({
+            project: "pantry",
+            destinationBranch: "main",
+            commit: "commit-main",
+            stateRoot,
+            config,
+          })
+          const logs = yield* rigd.webLogs({ stateRoot, project: "pantry", lines: 20 })
+          const persisted = yield* store.load({ stateRoot })
+          return { pushed, logs, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.pushed).toMatchObject({ kind: "deploy", target: "live", accepted: true })
+      expect(executor.deployCalls).toHaveLength(1)
+      expect(executor.deployCalls[0]).toMatchObject({ ref: "commit-main", start: false })
+      expect(result.logs).toContainEqual(expect.objectContaining({
+        event: "rigd.deploy.noop",
+        details: expect.objectContaining({
+          source: "git-push",
+          reason: "same-commit",
+          desiredStatus: "stopped",
+        }),
+      }))
+      expect(result.persisted.desiredDeployments.find((desired) => desired.deployment === "live")).toMatchObject({
+        desiredStatus: "stopped",
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN CLI and control-plane generated deploys WHEN cap is reached THEN both use the same rigd replacement path", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
 

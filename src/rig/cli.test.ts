@@ -43,6 +43,7 @@ import {
   Rigd,
   type RigdControlPlaneDeployInput,
   type RigdDeployInput,
+  type RigdGitPushDeployInput,
   type RigdHealthStateInput,
   type RigdProjectInventoryInput,
   type RigdStartInput,
@@ -101,6 +102,7 @@ class CaptureRigd {
   readonly configReadRequests: RigConfigReadInput[] = []
   readonly controlPlaneDeployRequests: RigdControlPlaneDeployInput[] = []
   readonly deployRequests: RigdDeployInput[] = []
+  readonly gitPushDeployRequests: RigdGitPushDeployInput[] = []
   readonly healthRequests: RigdStartInput[] = []
   readonly healthStateRequests: RigdHealthStateInput[] = []
   readonly inventoryRequests: RigdProjectInventoryInput[] = []
@@ -218,6 +220,19 @@ class CaptureRigd {
       project: input.project,
       stateRoot: input.stateRoot,
       target: input.target,
+      receivedAt: "2026-04-24T00:00:00.000Z",
+    })
+  }
+
+  gitPushDeploy(input: RigdGitPushDeployInput) {
+    this.gitPushDeployRequests.push(input)
+    return Effect.succeed({
+      id: "rigd-1",
+      kind: "deploy" as const,
+      accepted: true as const,
+      project: input.project,
+      stateRoot: input.stateRoot,
+      target: input.destinationBranch,
       receivedAt: "2026-04-24T00:00:00.000Z",
     })
   }

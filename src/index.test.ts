@@ -192,6 +192,28 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
     }
   })
 
+  test("GIVEN doctor command WHEN rigd is missing THEN it reports daemon reachability instead of failing preflight", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+
+    try {
+      const { stdout, stderr, exitCode } = await runRigCommand(
+        ["doctor"],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+        { cwd: root },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(stdout).toContain("[INFO] rig doctor report")
+      expect(stdout).toContain('"project":"host"')
+      expect(stdout).toContain('"name":"rigd-daemon"')
+      expect(stdout).toContain('"reachable":false')
+      expect(stdout).toContain('"reason":"rigd-unreachable"')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN main help WHEN run directly THEN it identifies the final rig CLI", async () => {
     const { stdout, stderr, exitCode } = await runRigCommand(["--help"], {})
 
@@ -616,9 +638,16 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
   test("GIVEN status command WHEN run through src/index.ts THEN it uses the isolated rig root", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
+    const repo = await mkdtemp(join(tmpdir(), "rig-status-repo-"))
 
     try {
       await installRigd(root)
+      const init = await runRigCommand(
+        ["init", "--project", "pantry", "--path", repo],
+        { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
+      )
+      expect(init.exitCode).toBe(0)
+
       const { stdout, stderr, exitCode } = await runRigCommand(
         ["status", "--project", "pantry"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
@@ -627,13 +656,14 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       expect(exitCode).toBe(0)
       expect(stderr).toBe("")
       expect(stdout).toContain("[INFO] rig foundation ready")
-      expect(stdout).toContain("[INFO] rigd status")
+      expect(stdout).toContain("[INFO] rig project status")
       expect(stdout).toContain(`state root: ${root}`)
       expect(stdout).toContain("namespace: rig.pantry")
       expect(stdout).toContain("launchd label prefix: com.b-relay.rig")
       expect(stdout).toContain("rigd: running")
     } finally {
       await rm(root, { recursive: true, force: true })
+      await rm(repo, { recursive: true, force: true })
     }
   })
 
@@ -757,7 +787,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       expect(list.exitCode).toBe(0)
       expect(list.stderr).toBe("")
-      expect(list.stdout).toContain("fake-fullstack/feature-test (generated) profile=stub")
+      expect(list.stdout).toContain("fake-fullstack targets=3")
 
       const logs = await runRigCommand(
         ["logs", "--lines", "100"],
@@ -867,8 +897,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
       expect(list.exitCode).toBe(0)
       expect(list.stderr).toBe("")
-      expect(list.stdout).toContain("pantry-like/live (live) profile=stub")
-      expect(list.stdout).toContain("pantry-like/feature-pantry-like-preview (generated) profile=stub")
+      expect(list.stdout).toContain("pantry-like targets=3")
 
       const logs = await runRigCommand(
         ["logs", "--lines", "200"],

@@ -97,6 +97,12 @@ export interface RigdWebLogsInput {
 
 export interface RigdWebProjectRow {
   readonly name: string
+  readonly repoPath?: string
+  readonly configPath?: string
+  readonly productionBranch?: string
+  readonly targetCount?: number
+  readonly duplicateIdentityPaths?: readonly string[]
+  readonly duplicatePathProjects?: readonly string[]
 }
 
 export interface RigdWebDeploymentRow {

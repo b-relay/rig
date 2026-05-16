@@ -16,7 +16,12 @@ import {
   type RigCliDeployInput,
   type RigGitPushDeployInput,
 } from "./deploy-intent.js"
+import type { RigDeploymentRecord } from "./deployments.js"
 import { RigDoctor, type RigDoctorReportInput } from "./doctor.js"
+import {
+  RigdDaemonAdmin,
+  type RigdDaemonAdminInput,
+} from "./daemon-admin.js"
 import { RigCliArgumentError, type RigTaggedError } from "./errors.js"
 import {
   RigHomeConfigStore,
@@ -165,7 +170,23 @@ class CaptureRigd {
         launchdLabelPrefix: "com.b-relay.rig",
         launchdBackupRoot: `${input.stateRoot}/launchd`,
       },
-      deployments: [],
+      deployments: input.project === "pantry"
+        ? [
+          deploymentRecord({
+            project: "pantry",
+            kind: "local",
+            name: "local",
+            port: 3070,
+          }),
+          deploymentRecord({
+            project: "pantry",
+            kind: "live",
+            name: "live",
+            port: 4070,
+            sourceRef: "main",
+          }),
+        ]
+        : [],
     })
   }
 
@@ -238,8 +259,8 @@ class CaptureRigd {
     this.webReadModelRequests.push(input)
     return Effect.succeed({
       projects: [
-        { name: "api" },
-        { name: "pantry" },
+        { name: "api", repoPath: "/tmp/api", configPath: "/tmp/api/rig.json", targetCount: 1 },
+        { name: "pantry", repoPath: "/tmp/repo", configPath: "/tmp/repo/rig.json", targetCount: 2 },
       ],
       deployments: [
         {
@@ -248,6 +269,13 @@ class CaptureRigd {
           kind: "local" as const,
           providerProfile: "stub",
           observedAt: "2026-04-30T12:00:00.000Z",
+        },
+        {
+          project: "pantry",
+          name: "local",
+          kind: "local" as const,
+          providerProfile: "default",
+          observedAt: "2026-04-30T12:01:00.000Z",
         },
         {
           project: "pantry",
@@ -307,6 +335,73 @@ class CaptureRigd {
         components: {},
       } as RigProjectConfig,
     }
+  }
+}
+
+const deploymentRecord = (input: {
+  readonly project: string
+  readonly kind: RigDeploymentRecord["kind"]
+  readonly name: string
+  readonly port: number
+  readonly sourceRef?: string
+}): RigDeploymentRecord => ({
+  project: input.project,
+  kind: input.kind,
+  name: input.name,
+  ...(input.sourceRef ? { sourceRef: input.sourceRef } : {}),
+  branchSlug: input.name,
+  subdomain: input.name,
+  workspacePath: `/tmp/rig/workspaces/${input.project}/${input.name}`,
+  dataRoot: `/tmp/rig/data/${input.project}/${input.name}`,
+  logRoot: `/tmp/rig/logs/${input.project}/${input.name}`,
+  runtimeRoot: `/tmp/rig/runtime/${input.project}/${input.name}`,
+  runtimeStatePath: `/tmp/rig/runtime/${input.project}/${input.name}/state.json`,
+  assignedPorts: { web: input.port },
+  providerProfile: "default",
+  resolved: {
+    project: input.project,
+    lane: input.kind === "generated" ? "deployments" : input.kind,
+    deploymentName: input.name,
+    branchSlug: input.name,
+    subdomain: input.name,
+    workspacePath: `/tmp/rig/workspaces/${input.project}/${input.name}`,
+    dataRoot: `/tmp/rig/data/${input.project}/${input.name}`,
+    providerProfile: "default",
+    providers: {},
+    preparedComponents: [],
+    runtimePlan: { components: [] },
+    environment: {
+      project: input.project,
+      lane: input.kind === "generated" ? "deployments" : input.kind,
+      deploymentName: input.name,
+      variables: {},
+    },
+    v1Config: {},
+  } as RigDeploymentRecord["resolved"],
+})
+
+class CaptureRigdDaemonAdmin {
+  readonly statusRequests: RigdDaemonAdminInput[] = []
+
+  install() {
+    return Effect.die("unused")
+  }
+
+  status(input: RigdDaemonAdminInput) {
+    this.statusRequests.push(input)
+    return Effect.succeed({
+      stateRoot: input.stateRoot,
+      installed: true,
+      running: true,
+      reachable: true,
+      tokenPath: `${input.stateRoot}/auth/control-plane.token`,
+      tokenPresent: true,
+      daemonStatePath: `${input.stateRoot}/daemon/rigd.json`,
+    })
+  }
+
+  uninstall() {
+    return Effect.die("unused")
   }
 }
 
@@ -388,8 +483,19 @@ class CaptureRigHomeConfigStore {
 class CaptureRigProjectConfigLoader {
   readonly loads: RigProjectConfigLoadInput[] = []
 
+  constructor(private readonly shouldFail = false) {}
+
   load(input: RigProjectConfigLoadInput) {
     this.loads.push(input)
+    if (this.shouldFail) {
+      return Effect.fail(
+        new RigCliArgumentError(
+          `Unable to load rig config for '${input.project}'.`,
+          "Run from a repo with a valid rig.json before using rig runtime commands.",
+          { project: input.project, configPath: input.configPath },
+        ),
+      )
+    }
     return Effect.succeed({
       project: input.project,
       configPath: input.configPath,
@@ -415,22 +521,25 @@ const runWithLogger = async (
   argv: readonly string[],
   options: {
     readonly inferredProject?: string
+    readonly configLoadFails?: boolean
   } = {},
 ) => {
   const logger = new CaptureRigLogger()
   const lifecycle = new CaptureRigLifecycle()
   const initializer = new CaptureRigProjectInitializer()
   const rigd = new CaptureRigd()
+  const daemonAdmin = new CaptureRigdDaemonAdmin()
   const deployIntents = new CaptureRigDeployIntents()
   const doctor = new CaptureRigDoctor()
   const homeConfigStore = new CaptureRigHomeConfigStore()
-  const configLoader = new CaptureRigProjectConfigLoader()
+  const configLoader = new CaptureRigProjectConfigLoader(options.configLoadFails ?? false)
   const layer = Layer.mergeAll(
     RigRuntimeLive,
     Layer.succeed(RigLogger, logger),
     Layer.succeed(RigLifecycle, lifecycle),
     Layer.succeed(RigProjectInitializer, initializer),
     Layer.succeed(Rigd, rigd),
+    Layer.succeed(RigdDaemonAdmin, daemonAdmin),
     Layer.succeed(RigDeployIntents, deployIntents),
     Layer.succeed(RigDoctor, doctor),
     Layer.succeed(RigHomeConfigStore, homeConfigStore),
@@ -453,7 +562,7 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRigCli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle, initializer, rigd, deployIntents, doctor, homeConfigStore, configLoader }
+  return { exitCode, logger, lifecycle, initializer, rigd, daemonAdmin, deployIntents, doctor, homeConfigStore, configLoader }
 }
 
 describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
@@ -517,7 +626,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     }))
   })
 
-  test("GIVEN status command with project WHEN running THEN it reports rig state", async () => {
+  test("GIVEN status command with project WHEN running THEN it reports all project targets", async () => {
     const { exitCode, logger, rigd } = await runWithLogger([
       "status",
       "--project",
@@ -535,14 +644,33 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     expect(logger.infos[0]?.message).toContain("launchd label prefix: com.b-relay.rig")
     expect(logger.infos[0]?.details).toBeUndefined()
     expect(logger.infos[1]?.message).toBe([
-      "rigd status",
+      "rig project status",
       "rigd: running",
       "project: pantry",
-      "deployments: 0",
+      "targets:",
+      "  local (local) profile=default ports=web:3070 ref=working-copy",
+      "  live (live) profile=default ports=web:4070 ref=main",
     ].join("\n"))
     expect(logger.infos[1]?.details).toBeUndefined()
     expect(rigd.healthRequests).toEqual([{ stateRoot: expect.stringContaining(".rig") }])
     expect(rigd.inventoryRequests).toEqual([{ project: "pantry", stateRoot: expect.stringContaining(".rig") }])
+    expect(rigd.webReadModelRequests).toEqual([{ stateRoot: expect.stringContaining(".rig") }])
+  })
+
+  test("GIVEN status for an unknown project WHEN running THEN it fails before reading stale local state", async () => {
+    const { exitCode, logger, rigd, lifecycle } = await runWithLogger([
+      "status",
+      "--project",
+      "missing",
+    ])
+
+    expect(exitCode).toBe(1)
+    expect(logger.errors[0]).toEqual(expect.objectContaining({
+      _tag: "RigCliArgumentError",
+      message: "Project 'missing' is not registered with rigd.",
+    }))
+    expect(rigd.inventoryRequests).toEqual([])
+    expect(lifecycle.requests).toEqual([])
   })
 
   test("GIVEN removed normal commands and flags WHEN running THEN they are rejected", async () => {
@@ -559,7 +687,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     expect(json.logger.errors[0]?._tag).toBe("RigCliArgumentError")
   })
 
-  test("GIVEN list command WHEN running THEN it renders projects and deployments from rigd", async () => {
+  test("GIVEN list command WHEN running THEN it renders Host project summaries from rigd", async () => {
     const { exitCode, logger, rigd } = await runWithLogger([
       "list",
     ])
@@ -573,11 +701,8 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
           "rig projects",
           "rigd: running",
           "projects:",
-          "  api",
-          "  pantry",
-          "deployments:",
-          "  api/local (local) profile=stub observed=2026-04-30T12:00:00.000Z",
-          "  pantry/live (live) profile=default observed=2026-04-30T12:01:00.000Z",
+          "  api targets=1",
+          "  pantry targets=2",
         ].join("\n"),
         details: undefined,
       },
@@ -682,7 +807,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
   })
 
   test("GIVEN doctor command WHEN running THEN doctor report is emitted", async () => {
-    const { exitCode, logger, doctor } = await runWithLogger([
+    const { exitCode, logger, doctor, daemonAdmin } = await runWithLogger([
       "doctor",
       "--project",
       "pantry",
@@ -698,6 +823,13 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       },
       providers: expect.arrayContaining([
         expect.objectContaining({
+          name: "rigd-daemon",
+          ok: true,
+          details: expect.objectContaining({
+            reachable: true,
+          }),
+        }),
+        expect.objectContaining({
           name: "localhost-http",
           profile: "default",
           details: expect.objectContaining({
@@ -707,7 +839,54 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
         }),
       ]),
     })
+    expect(daemonAdmin.statusRequests).toEqual([{ stateRoot: expect.stringContaining(".rig") }])
     expect(logger.infos.at(-1)?.message).toBe("rig doctor report")
+  })
+
+  test("GIVEN doctor outside a managed repo WHEN running THEN it emits Host diagnostics without requiring a Project", async () => {
+    const { exitCode, logger, doctor, configLoader } = await runWithLogger([
+      "doctor",
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(configLoader.loads).toEqual([])
+    expect(doctor.reports[0]).toMatchObject({
+      project: "host",
+      providers: expect.arrayContaining([
+        expect.objectContaining({
+          name: "rigd-daemon",
+          ok: true,
+        }),
+        expect.objectContaining({
+          name: "host-capability",
+          ok: true,
+        }),
+      ]),
+    })
+    expect(logger.infos.at(-1)?.message).toBe("rig doctor report")
+  })
+
+  test("GIVEN doctor in a repo with invalid project config WHEN running THEN it reports a Project diagnostic", async () => {
+    const { exitCode, logger, doctor } = await runWithLogger([
+      "doctor",
+    ], {
+      inferredProject: "pantry",
+      configLoadFails: true,
+    })
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(doctor.reports[0]).toMatchObject({
+      project: "pantry",
+      providers: expect.arrayContaining([
+        expect.objectContaining({
+          name: "project-config",
+          ok: false,
+          reason: "project-config-invalid",
+        }),
+      ]),
+    })
   })
 
   test("GIVEN config read inside managed repo WHEN running THEN rigd returns editor-ready config details", async () => {

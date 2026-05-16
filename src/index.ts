@@ -34,6 +34,7 @@ const RuntimeLive = Layer.mergeAll(
 
 const isPassiveRigInvocation = (argv: readonly string[]): boolean =>
   argv.length === 0 ||
+  argv[0] === "doctor" ||
   argv.includes("--help") ||
   argv.includes("-h") ||
   argv.includes("--version") ||

@@ -4,7 +4,9 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { BunStdio } from "@effect/platform-bun"
 
 import { decodeRigStatusInput, type RigProjectConfig } from "./config.js"
+import { RigdDaemonAdmin } from "./daemon-admin.js"
 import { RigDeployIntents, type RigDeployTarget } from "./deploy-intent.js"
+import type { RigDeploymentRecord } from "./deployments.js"
 import { RigDoctor } from "./doctor.js"
 import { RigCliArgumentError, unknownToRigCliError } from "./errors.js"
 import { RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
@@ -19,7 +21,7 @@ import {
 } from "./project-initializer.js"
 import { RigProjectLocator } from "./project-locator.js"
 import { RigProviderRegistry } from "./provider-contracts.js"
-import { Rigd, type RigdWebReadModel } from "./rigd.js"
+import { Rigd, type RigdWebProjectRow, type RigdWebReadModel } from "./rigd.js"
 import { RigLogger, RigRuntime, type RigFoundationState } from "./services.js"
 
 const displayText = (text: string) =>
@@ -76,38 +78,77 @@ const formatFoundationStatus = (state: RigFoundationState & { readonly lane: Rig
   `launchd label prefix: ${state.launchdLabelPrefix}`,
 ].join("\n")
 
-const formatRigdStatus = (input: {
-  readonly status: string
-  readonly project: string
-  readonly deploymentCount: number
-}) => [
-  "rigd status",
-  `rigd: ${input.status}`,
-  `project: ${input.project}`,
-  `deployments: ${input.deploymentCount}`,
-].join("\n")
+const targetCountForProject = (model: RigdWebReadModel, project: RigdWebProjectRow): number =>
+  project.targetCount ?? model.deployments.filter((deployment) => deployment.project === project.name).length
 
 const formatProjectList = (model: RigdWebReadModel) => {
   const projectLines = model.projects.length === 0
     ? ["projects: none"]
     : [
       "projects:",
-      ...model.projects.map((project) => `  ${project.name}`),
-    ]
-  const deploymentLines = model.deployments.length === 0
-    ? ["deployments: none"]
-    : [
-      "deployments:",
-      ...model.deployments.map((deployment) =>
-        `  ${deployment.project}/${deployment.name} (${deployment.kind}) profile=${deployment.providerProfile} observed=${deployment.observedAt}`
-      ),
+      ...model.projects.map((project) => `  ${project.name} targets=${targetCountForProject(model, project)}`),
     ]
 
   return [
     "rig projects",
     `rigd: ${model.health.rigd.status}`,
     ...projectLines,
-    ...deploymentLines,
+  ].join("\n")
+}
+
+const projectRegistration = (
+  model: RigdWebReadModel,
+  project: string,
+): RigdWebProjectRow | undefined =>
+  model.projects.find((candidate) => candidate.name === project)
+
+const requireRegisteredProject = (
+  model: RigdWebReadModel,
+  project: string,
+): Effect.Effect<RigdWebProjectRow, RigCliArgumentError> => {
+  const registration = projectRegistration(model, project)
+  if (registration) {
+    return Effect.succeed(registration)
+  }
+
+  return Effect.fail(
+    new RigCliArgumentError(
+      `Project '${project}' is not registered with rigd.`,
+      "Run 'rig init' from the project repo, or pass --project with a Project known to rigd.",
+      { project, knownProjects: model.projects.map((candidate) => candidate.name) },
+    ),
+  )
+}
+
+const formatPorts = (deployment: RigDeploymentRecord): string => {
+  const entries = Object.entries(deployment.assignedPorts)
+  return entries.length === 0
+    ? "none"
+    : entries.map(([component, port]) => `${component}:${port}`).join(",")
+}
+
+const formatDeploymentRef = (deployment: RigDeploymentRecord): string =>
+  deployment.sourceRef ?? (deployment.kind === "local" ? "working-copy" : "unknown")
+
+const formatProjectStatus = (input: {
+  readonly status: string
+  readonly project: string
+  readonly deployments: readonly RigDeploymentRecord[]
+}) => {
+  const targetLines = input.deployments.length === 0
+    ? ["targets: none"]
+    : [
+      "targets:",
+      ...input.deployments.map((deployment) =>
+        `  ${deployment.name} (${deployment.kind}) profile=${deployment.providerProfile} ports=${formatPorts(deployment)} ref=${formatDeploymentRef(deployment)}`
+      ),
+    ]
+
+  return [
+    "rig project status",
+    `rigd: ${input.status}`,
+    `project: ${input.project}`,
+    ...targetLines,
   ].join("\n")
 }
 
@@ -225,6 +266,22 @@ const resolveProjectScopedInput = (input: {
       project: explicitProject || located.name,
       configPath: explicitConfigPath || located.configPath,
     }
+  })
+
+const inferCurrentProjectOptional = (): Effect.Effect<
+  | { readonly name: string; readonly repoPath: string; readonly configPath: string }
+  | undefined,
+  never,
+  RigProjectLocator
+> =>
+  Effect.gen(function* () {
+    const locator = yield* RigProjectLocator
+    return yield* locator.inferCurrentProject.pipe(
+      Effect.match({
+        onSuccess: (located) => located,
+        onFailure: () => undefined,
+      }),
+    )
   })
 
 const loadProjectConfig = (input: {
@@ -508,6 +565,8 @@ const statusCommand = Command.make(
       const runtime = yield* RigRuntime
       const logger = yield* RigLogger
       const rigd = yield* Rigd
+      const model = yield* rigd.webReadModel({ stateRoot: decoded.stateRoot })
+      yield* requireRegisteredProject(model, decoded.project)
       const state = yield* runtime.describeFoundation(decoded)
 
       const foundationStatus = { ...state, lane: scoped.lane }
@@ -520,10 +579,10 @@ const statusCommand = Command.make(
         stateRoot: decoded.stateRoot,
         ...(config ? { config } : {}),
       })
-      yield* logger.info(formatRigdStatus({
+      yield* logger.info(formatProjectStatus({
         status: health.status,
         project: inventory.project,
-        deploymentCount: inventory.deployments.length,
+        deployments: inventory.deployments,
       }))
       yield* runLifecycleAction("status", {
         ...scoped,
@@ -531,7 +590,7 @@ const statusCommand = Command.make(
       })
     }),
 ).pipe(
-  Command.withDescription("Inspect the isolated rig runtime foundation."),
+  Command.withDescription("Inspect all Targets for one registered Project."),
 )
 
 const initCommand = Command.make(
@@ -597,7 +656,7 @@ const listCommand = Command.make(
 
       yield* logger.info(formatProjectList(model))
     }),
-).pipe(Command.withDescription("List rig projects and deployments from rigd state."))
+).pipe(Command.withDescription("List Host Project summaries from rigd state."))
 
 const makeDeployCommand = (
   name: "live" | "preview",
@@ -704,30 +763,185 @@ const doctorCommand = Command.make(
   },
   (input) =>
     Effect.gen(function* () {
-      const scoped = yield* resolveProjectScopedInput({
-        project: input.project,
-        stateRoot: rigRoot(),
-      })
-      const decoded = yield* decodeRigStatusInput(scoped)
-      const config = yield* loadProjectConfig({
+      const stateRoot = rigRoot()
+      const explicitProject = input.project.trim()
+      const located = yield* inferCurrentProjectOptional()
+      const project = explicitProject || located?.name || "host"
+      const configPath = located && located.name === project ? located.configPath : undefined
+      const decoded = yield* decodeRigStatusInput({ project, stateRoot })
+      const configLoad = yield* loadProjectConfig({
         project: decoded.project,
-        configPath: scoped.configPath,
-      })
+        configPath,
+      }).pipe(Effect.match({
+        onSuccess: (config) => ({ ok: true as const, config }),
+        onFailure: (error) => ({ ok: false as const, error }),
+      }))
+      const config = configLoad.ok ? configLoad.config : undefined
+      const projectConfigChecks = configLoad.ok
+        ? []
+        : [{
+          name: "project-config",
+          providerId: "rigd",
+          ok: false,
+          project: decoded.project,
+          reason: "project-config-invalid",
+          message: `Unable to load rig config for Project '${decoded.project}'.`,
+          hint: configLoad.error.hint,
+          details: {
+            configPath,
+            cause: configLoad.error.message,
+          },
+        }]
       const doctor = yield* RigDoctor
       const logger = yield* RigLogger
+      const rigd = yield* Rigd
+      const daemonAdmin = yield* RigdDaemonAdmin
       const providerRegistry = yield* RigProviderRegistry
       const homeConfigStore = yield* RigHomeConfigStore
       const providerReport = yield* providerRegistry.current
       const homeConfig = yield* homeConfigStore.read({ stateRoot: decoded.stateRoot })
       const providerIds = providerReport.providers.map((provider) => provider.id)
+      const daemonStatus = yield* daemonAdmin.status({ stateRoot: decoded.stateRoot }).pipe(
+        Effect.match({
+          onSuccess: (status) => ({ ok: true as const, status }),
+          onFailure: (error) => ({ ok: false as const, error }),
+        }),
+      )
+      const readModel = yield* rigd.webReadModel({ stateRoot: decoded.stateRoot }).pipe(
+        Effect.match({
+          onSuccess: (model) => ({ ok: true as const, model }),
+          onFailure: (error) => ({ ok: false as const, error }),
+        }),
+      )
+      const registeredProject = readModel.ok
+        ? projectRegistration(readModel.model, decoded.project)
+        : undefined
+      const localhostControlPlane = providerReport.providers.some((provider) =>
+        provider.capabilities.includes("127.0.0.1-bind")
+      )
+      const projectChecks = decoded.project === "host"
+        ? []
+        : [
+          ...projectConfigChecks,
+          {
+            name: "project-registration",
+            providerId: "rigd",
+            ok: Boolean(registeredProject),
+            profile: providerReport.profile,
+            project: decoded.project,
+            reason: "project-not-registered",
+            message: `Project '${decoded.project}' is not registered with rigd.`,
+            hint: "Run 'rig init' from the project repo so rigd can register the Project identity.",
+            details: {
+              knownProjects: readModel.ok ? readModel.model.projects.map((candidate) => candidate.name) : [],
+            },
+          },
+          ...(located && located.name !== decoded.project
+            ? [{
+              name: "project-identity",
+              providerId: "rigd",
+              ok: false,
+              profile: providerReport.profile,
+              project: decoded.project,
+              reason: "project-identity-drift",
+              message: `Current rig.json is Project '${located.name}', not '${decoded.project}'.`,
+              hint: "Run doctor without --project from this repo, or switch to the matching Project repo.",
+              details: {
+                requestedProject: decoded.project,
+                currentProject: located.name,
+                configPath: located.configPath,
+              },
+            }]
+            : []),
+          ...(located && registeredProject?.repoPath && registeredProject.repoPath !== located.repoPath
+            ? [{
+              name: "project-path",
+              providerId: "rigd",
+              ok: false,
+              profile: providerReport.profile,
+              project: decoded.project,
+              reason: "project-path-drift",
+              message: `Project '${decoded.project}' is registered to a different repo path.`,
+              hint: "Rerun 'rig init' from the intended repo or repair the stale rigd registration.",
+              details: {
+                registeredPath: registeredProject.repoPath,
+                currentPath: located.repoPath,
+              },
+            }]
+            : []),
+          ...(registeredProject?.duplicateIdentityPaths?.length
+            ? [{
+              name: "project-identity",
+              providerId: "rigd",
+              ok: false,
+              profile: providerReport.profile,
+              project: decoded.project,
+              reason: "duplicate-project-identity",
+              message: `Project '${decoded.project}' has multiple registered repo paths.`,
+              hint: "Repair rigd project registration before relying on Project-scoped commands.",
+              details: {
+                paths: registeredProject.duplicateIdentityPaths,
+              },
+            }]
+            : []),
+          ...(registeredProject?.duplicatePathProjects?.length
+            ? [{
+              name: "project-path",
+              providerId: "rigd",
+              ok: false,
+              profile: providerReport.profile,
+              project: decoded.project,
+              reason: "duplicate-project-path",
+              message: `Project '${decoded.project}' shares its repo path with another Project.`,
+              hint: "Repair rigd project registration so one repo path maps to one Project identity.",
+              details: {
+                projects: registeredProject.duplicatePathProjects,
+              },
+            }]
+            : []),
+        ]
       const report = yield* doctor.report({
         project: decoded.project,
-        path: { ok: true, entries: [decoded.stateRoot] },
+        path: { ok: true, entries: [decoded.stateRoot, ...(configPath ? [configPath] : [])] },
         binaries: [],
         health: [],
         ports: [],
         staleState: [],
         providers: [
+          {
+            name: "rigd-daemon",
+            providerId: "rigd",
+            ok: daemonStatus.ok && daemonStatus.status.reachable,
+            profile: providerReport.profile,
+            reason: "rigd-unreachable",
+            message: "rigd is not reachable from the normal rig CLI.",
+            hint: "Run 'rigd install' to set up the daemon, or 'rigd status' to inspect it.",
+            details: daemonStatus.ok
+              ? {
+                installed: daemonStatus.status.installed,
+                running: daemonStatus.status.running,
+                reachable: daemonStatus.status.reachable,
+                tokenPresent: daemonStatus.status.tokenPresent,
+                daemonStatePath: daemonStatus.status.daemonStatePath,
+              }
+              : {
+                cause: daemonStatus.error.message,
+              },
+          },
+          {
+            name: "host-capability",
+            providerId: "localhost-http",
+            ok: localhostControlPlane,
+            profile: providerReport.profile,
+            reason: "host-capability-missing",
+            message: "Host control-plane provider is missing localhost binding support.",
+            hint: "Use a provider profile that includes the localhost-http control-plane transport.",
+            details: {
+              requiredCapability: "127.0.0.1-bind",
+              providers: providerReport.providers.map((provider) => provider.id),
+            },
+          },
+          ...projectChecks,
           ...providerReport.providers.map((provider) => ({
             name: provider.id,
             providerId: provider.id,
@@ -753,7 +967,7 @@ const doctorCommand = Command.make(
 
       yield* logger.info("rig doctor report", report)
     }),
-).pipe(Command.withDescription("Report rig PATH, binary, health, port, stale-state, and provider checks."))
+).pipe(Command.withDescription("Report Host diagnostics and Project diagnostics when context exists."))
 
 const configReadCommand = Command.make(
   "read",

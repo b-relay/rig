@@ -23,11 +23,25 @@ const deploymentKindRank = (kind: RigDeploymentRecord["kind"]): number => {
   }
 }
 
+const stringDetail = (
+  details: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): string | undefined => {
+  const value = details?.[key]
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined
+}
+
 export const deriveRigRuntimeWebReadModel = (
   state: RigdPersistentState,
 ): RigdWebReadModel => {
   const latestHealth = state.healthSummaries.at(-1)
   const projectNames = new Set<string>()
+  const registrations = new Map<string, {
+    readonly repoPaths: Set<string>
+    readonly configPath?: string
+    readonly productionBranch?: string
+  }>()
+  const projectsByRepoPath = new Map<string, Set<string>>()
 
   for (const snapshot of state.deploymentSnapshots) {
     projectNames.add(snapshot.project)
@@ -38,6 +52,26 @@ export const deriveRigRuntimeWebReadModel = (
   for (const event of state.events) {
     if (event.project) {
       projectNames.add(event.project)
+    }
+    if (
+      event.project &&
+      (event.event === "rigd.project.registered" || event.event === "rigd.project.initialized")
+    ) {
+      const repoPath = stringDetail(event.details, "repoPath")
+      const configPath = stringDetail(event.details, "configPath")
+      const productionBranch = stringDetail(event.details, "productionBranch")
+      const existing = registrations.get(event.project) ?? { repoPaths: new Set<string>() }
+      if (repoPath) {
+        existing.repoPaths.add(repoPath)
+        const projects = projectsByRepoPath.get(repoPath) ?? new Set<string>()
+        projects.add(event.project)
+        projectsByRepoPath.set(repoPath, projects)
+      }
+      registrations.set(event.project, {
+        repoPaths: existing.repoPaths,
+        configPath: configPath ?? existing.configPath,
+        productionBranch: productionBranch ?? existing.productionBranch,
+      })
     }
   }
 
@@ -55,8 +89,30 @@ export const deriveRigRuntimeWebReadModel = (
       observedAt: snapshot.observedAt,
     }))
 
+  const targetCounts = new Map<string, number>()
+  for (const deployment of deployments) {
+    targetCounts.set(deployment.project, (targetCounts.get(deployment.project) ?? 0) + 1)
+  }
+
   return {
-    projects: [...projectNames].sort().map((name) => ({ name })),
+    projects: [...projectNames].sort().map((name) => {
+      const registration = registrations.get(name)
+      const repoPaths = [...(registration?.repoPaths ?? [])].sort()
+      const repoPath = repoPaths[0]
+      const duplicatePathProjects = repoPath
+        ? [...(projectsByRepoPath.get(repoPath) ?? [])].filter((project) => project !== name).sort()
+        : []
+
+      return {
+        name,
+        ...(repoPath ? { repoPath } : {}),
+        ...(registration?.configPath ? { configPath: registration.configPath } : {}),
+        ...(registration?.productionBranch ? { productionBranch: registration.productionBranch } : {}),
+        targetCount: targetCounts.get(name) ?? 0,
+        ...(repoPaths.length > 1 ? { duplicateIdentityPaths: repoPaths } : {}),
+        ...(duplicatePathProjects.length > 0 ? { duplicatePathProjects } : {}),
+      }
+    }),
     deployments,
     health: {
       rigd: latestHealth

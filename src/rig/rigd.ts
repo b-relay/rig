@@ -198,8 +198,11 @@ export interface RigdDeployInput {
   readonly project: string
   readonly target: "live" | "generated"
   readonly ref: string
+  readonly commit?: string
   readonly stateRoot: string
   readonly deploymentName?: string
+  readonly force?: boolean
+  readonly noUp?: boolean
   readonly config?: RigProjectConfig
 }
 
@@ -441,10 +444,40 @@ export const RigdLive = Layer.effect(
           details: {
             target: input.target,
             ref: input.ref,
+            commit: input.commit,
             deploymentName: input.deploymentName,
+            force: input.force,
+            noUp: input.noUp,
             receiptId: accepted.id,
             source,
             ...(execution ? { execution } : {}),
+          },
+        })
+        return accepted
+      })
+
+    const deployNoop = (
+      input: RigdDeployInput,
+      target: string,
+      source: "cli" | "control-plane",
+      reason: string,
+      desiredStatus?: string,
+    ): Effect.Effect<RigdActionReceipt, RigRuntimeError> =>
+      Effect.gen(function* () {
+        const accepted = yield* receipt("deploy", input.project, input.stateRoot, target)
+        yield* appendEvent(input.stateRoot, {
+          event: "rigd.deploy.noop",
+          project: input.project,
+          deployment: input.target === "generated" ? target.replace(/^generated:/, "") : undefined,
+          details: {
+            target: input.target,
+            ref: input.ref,
+            commit: input.commit,
+            deploymentName: input.deploymentName,
+            receiptId: accepted.id,
+            source,
+            reason,
+            desiredStatus,
           },
         })
         return accepted
@@ -517,6 +550,15 @@ export const RigdLive = Layer.effect(
         deployment,
         desiredStatus,
       })
+
+    const deploymentWithDeploySource = (
+      deployment: RigDeploymentRecord,
+      input: RigdDeployInput,
+    ): RigDeploymentRecord => ({
+      ...deployment,
+      sourceRef: input.ref,
+      ...(input.commit ? { sourceCommit: input.commit } : {}),
+    })
 
     const recentFailuresForProcess = (
       failures: readonly {
@@ -731,22 +773,28 @@ export const RigdLive = Layer.effect(
     ): Effect.Effect<RigDeployRuntimeResult | undefined, RigRuntimeError> =>
       Effect.gen(function* () {
         if (generatedDeployment) {
+          const deployment = deploymentWithDeploySource(generatedDeployment, input)
           const execution = yield* runtimeExecutor.deploy({
-            deployment: generatedDeployment,
-            ref: input.ref,
+            deployment,
+            ref: input.commit ?? input.ref,
+            start: input.noUp ? false : true,
             onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
           })
-          return { deployment: generatedDeployment, execution }
+          return { deployment, execution }
         }
 
         if (!input.config) {
           return undefined
         }
 
-        const deployment = yield* deploymentForLane(input.config, input.stateRoot, "live")
+        const deployment = deploymentWithDeploySource(
+          yield* deploymentForLane(input.config, input.stateRoot, "live"),
+          input,
+        )
         const execution = yield* runtimeExecutor.deploy({
           deployment,
-          ref: input.ref,
+          ref: input.commit ?? input.ref,
+          start: input.noUp ? false : true,
           onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
         })
         return { deployment, execution }
@@ -961,9 +1009,26 @@ export const RigdLive = Layer.effect(
             config: generatedConfig,
             stateRoot: input.stateRoot,
             branch: input.ref,
+            ...(input.commit ? { commit: input.commit } : {}),
             ...(input.deploymentName ? { name: input.deploymentName } : {}),
           })
           target = `generated:${plannedGenerated.name}`
+        }
+
+        const targetDeployment = input.target === "generated"
+          ? target.replace(/^generated:/, "")
+          : "live"
+        const state = yield* stateStore.load({ stateRoot: input.stateRoot })
+        const currentDesired = state.desiredDeployments.find((desired) =>
+          desired.project === input.project &&
+          desired.deployment === targetDeployment
+        )
+        if (
+          input.commit &&
+          !input.force &&
+          currentDesired?.record.sourceCommit === input.commit
+        ) {
+          return yield* deployNoop(input, target, source, "same-commit", currentDesired.desiredStatus)
         }
 
         yield* verifyActionPreflight({
@@ -975,6 +1040,16 @@ export const RigdLive = Layer.effect(
           ...(input.deploymentName ? { deploymentName: input.deploymentName } : {}),
           ...(input.config ? { config: input.config } : {}),
         })
+
+        if (input.noUp && currentDesired?.desiredStatus === "running") {
+          const stopped = yield* runtimeExecutor.lifecycle({
+            action: "down",
+            deployment: currentDesired.record,
+            onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
+          })
+          yield* persistExecutionEvents(input.stateRoot, stopped)
+          yield* persistDesiredDeployment(input.stateRoot, currentDesired.record, "stopped")
+        }
 
         let materialized: RigDeploymentRecord | undefined
         let previousGenerated: RigDeploymentRecord | undefined
@@ -999,6 +1074,7 @@ export const RigdLive = Layer.effect(
             config: generatedConfig,
             stateRoot: input.stateRoot,
             branch: input.ref,
+            ...(input.commit ? { commit: input.commit } : {}),
             name: input.deploymentName,
           })
           target = `generated:${materialized.name}`
@@ -1017,7 +1093,11 @@ export const RigdLive = Layer.effect(
           ),
         )
         if (runtimeResult) {
-          yield* persistDesiredDeployment(input.stateRoot, runtimeResult.deployment, "running")
+          yield* persistDesiredDeployment(
+            input.stateRoot,
+            runtimeResult.deployment,
+            input.noUp ? "stopped" : "running",
+          )
         }
         if (input.target === "generated" && replacedGenerated && homeConfig) {
           yield* replaceGeneratedAfterSuccessfulDeploy(

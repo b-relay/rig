@@ -65,6 +65,32 @@ const runCommand = async (
   return { stdout, stderr, exitCode }
 }
 
+const initGitRepo = async (
+  repo: string,
+  branches: readonly string[] = [],
+) => {
+  const init = await runCommand(["git", "init", "-b", "main"], { cwd: repo })
+  expect(init.exitCode).toBe(0)
+  await writeFile(join(repo, "README.md"), "# test repo\n", "utf8")
+  const add = await runCommand(["git", "add", "README.md"], { cwd: repo })
+  expect(add.exitCode).toBe(0)
+  const commit = await runCommand([
+    "git",
+    "-c",
+    "user.name=Rig Test",
+    "-c",
+    "user.email=rig-test@example.test",
+    "commit",
+    "-m",
+    "initial",
+  ], { cwd: repo })
+  expect(commit.exitCode).toBe(0)
+  for (const branch of branches) {
+    const created = await runCommand(["git", "branch", branch], { cwd: repo })
+    expect(created.exitCode).toBe(0)
+  }
+}
+
 describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered", () => {
   test("GIVEN rigd daemon admin WHEN run directly THEN it installs and reports daemon state", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-root-"))
@@ -719,6 +745,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
     try {
       await installRigd(root)
+      await initGitRepo(repo, ["feature/test"])
       const init = await runRigCommand(
         [
           "init",
@@ -826,6 +853,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
 
     try {
       await installRigd(root)
+      await initGitRepo(repo, ["feature/pantry-like-preview"])
       const init = await runRigCommand(
         [
           "init",

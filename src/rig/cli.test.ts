@@ -23,6 +23,7 @@ import {
   type RigdDaemonAdminInput,
 } from "./daemon-admin.js"
 import { RigCliArgumentError, type RigTaggedError } from "./errors.js"
+import { RigGitWorkspace, type RigGitUpstreamStatus } from "./git-workspace.js"
 import {
   RigHomeConfigStore,
   rigHomeConfigDefaults,
@@ -420,6 +421,7 @@ class CaptureRigDeployIntents {
       project: input.project,
       stateRoot: input.stateRoot,
       ref: input.ref,
+      ...(input.commit ? { commit: input.commit } : {}),
       target: input.target,
       lane: input.target === "live" ? "live" as const : "deployment" as const,
       ...(input.deploymentName ? { deploymentName: input.deploymentName } : {}),
@@ -435,6 +437,50 @@ class CaptureRigDeployIntents {
       tag: `v${input.set ?? "1.3.0"}`,
       rollbackAnchor: `v${input.currentVersion}`,
     })
+  }
+}
+
+class CaptureRigGitWorkspace {
+  readonly currentBranchRequests: string[] = []
+  readonly branchCommitRequests: Array<{ readonly repoPath: string; readonly branch: string }> = []
+  readonly branchExistsRequests: Array<{ readonly repoPath: string; readonly branch: string }> = []
+  readonly upstreamStatusRequests: Array<{ readonly repoPath: string; readonly branch: string }> = []
+
+  constructor(
+    private readonly options: {
+      readonly currentBranch?: string
+      readonly detached?: boolean
+      readonly missingBranches?: readonly string[]
+      readonly upstreamStatus?: RigGitUpstreamStatus
+    } = {},
+  ) {}
+
+  currentBranch(repoPath: string) {
+    this.currentBranchRequests.push(repoPath)
+    if (this.options.detached) {
+      return Effect.fail(
+        new RigCliArgumentError(
+          "Cannot deploy preview from detached HEAD.",
+          "Check out a local Branch, or pass an explicit Branch such as 'rig deploy preview feature/name'.",
+        ),
+      )
+    }
+    return Effect.succeed(this.options.currentBranch ?? "feature/current")
+  }
+
+  branchCommit(repoPath: string, branch: string) {
+    this.branchCommitRequests.push({ repoPath, branch })
+    return Effect.succeed(`commit-${branch.replace(/[^a-z0-9]/gi, "-")}`)
+  }
+
+  branchExists(repoPath: string, branch: string) {
+    this.branchExistsRequests.push({ repoPath, branch })
+    return Effect.succeed(!(this.options.missingBranches ?? []).includes(branch))
+  }
+
+  upstreamStatus(repoPath: string, branch: string) {
+    this.upstreamStatusRequests.push({ repoPath, branch })
+    return Effect.succeed(this.options.upstreamStatus ?? { ahead: 0, behind: 0 })
   }
 }
 
@@ -483,11 +529,16 @@ class CaptureRigHomeConfigStore {
 class CaptureRigProjectConfigLoader {
   readonly loads: RigProjectConfigLoadInput[] = []
 
-  constructor(private readonly shouldFail = false) {}
+  constructor(
+    private readonly options: {
+      readonly shouldFail?: boolean
+      readonly liveDeployBranch?: string
+    } = {},
+  ) {}
 
   load(input: RigProjectConfigLoadInput) {
     this.loads.push(input)
-    if (this.shouldFail) {
+    if (this.options.shouldFail) {
       return Effect.fail(
         new RigCliArgumentError(
           `Unable to load rig config for '${input.project}'.`,
@@ -512,6 +563,9 @@ class CaptureRigProjectConfigLoader {
         deployments: {
           providerProfile: "stub" as const,
         },
+        live: {
+          deployBranch: this.options.liveDeployBranch ?? "main",
+        },
       } satisfies RigProjectConfig,
     })
   }
@@ -522,6 +576,11 @@ const runWithLogger = async (
   options: {
     readonly inferredProject?: string
     readonly configLoadFails?: boolean
+    readonly currentBranch?: string
+    readonly detached?: boolean
+    readonly liveDeployBranch?: string
+    readonly missingBranches?: readonly string[]
+    readonly upstreamStatus?: RigGitUpstreamStatus
   } = {},
 ) => {
   const logger = new CaptureRigLogger()
@@ -529,10 +588,19 @@ const runWithLogger = async (
   const initializer = new CaptureRigProjectInitializer()
   const rigd = new CaptureRigd()
   const daemonAdmin = new CaptureRigdDaemonAdmin()
+  const git = new CaptureRigGitWorkspace({
+    currentBranch: options.currentBranch,
+    detached: options.detached,
+    missingBranches: options.missingBranches,
+    upstreamStatus: options.upstreamStatus,
+  })
   const deployIntents = new CaptureRigDeployIntents()
   const doctor = new CaptureRigDoctor()
   const homeConfigStore = new CaptureRigHomeConfigStore()
-  const configLoader = new CaptureRigProjectConfigLoader(options.configLoadFails ?? false)
+  const configLoader = new CaptureRigProjectConfigLoader({
+    shouldFail: options.configLoadFails,
+    liveDeployBranch: options.liveDeployBranch,
+  })
   const layer = Layer.mergeAll(
     RigRuntimeLive,
     Layer.succeed(RigLogger, logger),
@@ -540,6 +608,7 @@ const runWithLogger = async (
     Layer.succeed(RigProjectInitializer, initializer),
     Layer.succeed(Rigd, rigd),
     Layer.succeed(RigdDaemonAdmin, daemonAdmin),
+    Layer.succeed(RigGitWorkspace, git),
     Layer.succeed(RigDeployIntents, deployIntents),
     Layer.succeed(RigDoctor, doctor),
     Layer.succeed(RigHomeConfigStore, homeConfigStore),
@@ -562,7 +631,7 @@ const runWithLogger = async (
   )
   const exitCode = await Effect.runPromise(runRigCli(argv).pipe(Effect.provide(layer)))
 
-  return { exitCode, logger, lifecycle, initializer, rigd, daemonAdmin, deployIntents, doctor, homeConfigStore, configLoader }
+  return { exitCode, logger, lifecycle, initializer, rigd, daemonAdmin, git, deployIntents, doctor, homeConfigStore, configLoader }
 }
 
 describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is covered", () => {
@@ -727,6 +796,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
         project: "pantry",
         stateRoot: expect.stringContaining(".rig"),
         ref: "feature/preview",
+        commit: "commit-feature-preview",
         target: "generated",
         config: expect.objectContaining({
           name: "pantry",
@@ -739,7 +809,10 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
         project: "pantry",
         stateRoot: expect.stringContaining(".rig"),
         ref: "feature/preview",
+        commit: "commit-feature-preview",
         target: "generated",
+        force: false,
+        noUp: false,
         config: expect.objectContaining({
           name: "pantry",
         }),
@@ -772,6 +845,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     expect(deployIntents.cliDeploys[0]).toMatchObject({
       project: "pantry",
       ref: "feature/preview",
+      commit: "commit-feature-preview",
       target: "generated",
       config: expect.objectContaining({
         name: "pantry",
@@ -781,6 +855,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       expect.objectContaining({
         project: "pantry",
         ref: "feature/preview",
+        commit: "commit-feature-preview",
         target: "generated",
         config: expect.objectContaining({
           name: "pantry",
@@ -789,6 +864,131 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     ])
     expect(rigd.controlPlaneDeployRequests).toEqual([])
     expect(logger.infos.map((entry) => entry.message)).toContain("rig deploy accepted")
+  })
+
+  test("GIVEN live deploy without branch WHEN running THEN it deploys the configured Production Branch", async () => {
+    const { exitCode, logger, deployIntents, rigd, git } = await runWithLogger([
+      "deploy",
+      "live",
+      "--force",
+      "--no-up",
+    ], {
+      inferredProject: "pantry",
+      liveDeployBranch: "stable",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(deployIntents.cliDeploys[0]).toMatchObject({
+      project: "pantry",
+      ref: "stable",
+      commit: "commit-stable",
+      target: "live",
+    })
+    expect(rigd.deployRequests[0]).toMatchObject({
+      project: "pantry",
+      ref: "stable",
+      commit: "commit-stable",
+      target: "live",
+      force: true,
+      noUp: true,
+    })
+    expect(git.currentBranchRequests).toEqual([])
+    expect(git.branchCommitRequests).toEqual([{ repoPath: "/tmp/repo", branch: "stable" }])
+  })
+
+  test("GIVEN live deploy with non-production branch WHEN running THEN it is rejected", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "deploy",
+      "live",
+      "feature/wrong",
+    ], {
+      inferredProject: "pantry",
+      liveDeployBranch: "stable",
+    })
+
+    expect(exitCode).toBe(1)
+    expect(rigd.deployRequests).toEqual([])
+    expect(logger.errors[0]).toEqual(expect.objectContaining({
+      _tag: "RigCliArgumentError",
+      message: "Cannot deploy Branch 'feature/wrong' to the Stable Target.",
+    }))
+  })
+
+  test("GIVEN preview deploy without branch WHEN running THEN it deploys the current Branch", async () => {
+    const { exitCode, deployIntents, git } = await runWithLogger([
+      "deploy",
+      "preview",
+    ], {
+      inferredProject: "pantry",
+      currentBranch: "feature/current",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(deployIntents.cliDeploys[0]).toMatchObject({
+      ref: "feature/current",
+      commit: "commit-feature-current",
+      target: "generated",
+    })
+    expect(git.currentBranchRequests).toEqual(["/tmp/repo"])
+  })
+
+  test("GIVEN preview deploy from detached HEAD WHEN branch omitted THEN it fails with guidance", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "deploy",
+      "preview",
+    ], {
+      inferredProject: "pantry",
+      detached: true,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(rigd.deployRequests).toEqual([])
+    expect(logger.errors[0]?.message).toBe("Cannot deploy preview from detached HEAD.")
+  })
+
+  test("GIVEN preview deploy of Production Branch WHEN running THEN it is rejected", async () => {
+    const { exitCode, logger, rigd } = await runWithLogger([
+      "deploy",
+      "preview",
+      "main",
+    ], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(1)
+    expect(rigd.deployRequests).toEqual([])
+    expect(logger.errors[0]).toEqual(expect.objectContaining({
+      _tag: "RigCliArgumentError",
+      message: "Cannot deploy Production Branch 'main' as a Preview.",
+      hint: "Create a Preview Branch such as 'preview/main' and deploy that Branch instead.",
+    }))
+  })
+
+  test("GIVEN deploy branch differs from upstream WHEN running THEN it logs a non-fetching git warning", async () => {
+    const { exitCode, logger } = await runWithLogger([
+      "deploy",
+      "preview",
+      "feature/ahead",
+    ], {
+      inferredProject: "pantry",
+      upstreamStatus: {
+        upstream: "origin/feature/ahead",
+        ahead: 2,
+        behind: 1,
+      },
+    })
+
+    expect(exitCode).toBe(0)
+    expect(logger.infos).toContainEqual({
+      message: "rig deploy git warning",
+      details: expect.objectContaining({
+        branch: "feature/ahead",
+        upstream: "origin/feature/ahead",
+        ahead: 2,
+        behind: 1,
+      }),
+    })
   })
 
   test("GIVEN explicit config path flag WHEN running up THEN normal CLI rejects it", async () => {

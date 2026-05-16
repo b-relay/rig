@@ -57,6 +57,7 @@ export interface RigRuntimeLifecycleExecutionInput {
 export interface RigRuntimeDeployExecutionInput {
   readonly deployment: RigDeploymentRecord
   readonly ref: string
+  readonly start?: boolean
   readonly onManagedProcessExit?: RigManagedProcessExitHandler
 }
 
@@ -559,6 +560,14 @@ export const RigRuntimeExecutorLive = Layer.effect(
               component: service.name,
               details: event.details,
             }))
+          }
+          if (input.start === false) {
+            operations.push(yield* eventTransport.append({
+              deployment: input.deployment,
+              event: `deploy:${input.ref}:materialized`,
+            }))
+
+            return executionResult(input.deployment, operations, events)
           }
           for (const service of managed) {
             const operation = yield* processSupervisor.restart({ deployment: input.deployment, service })

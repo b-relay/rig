@@ -6,6 +6,7 @@ import { RigDeployIntentsLive } from "./rig/deploy-intent.js"
 import { RigDeploymentManagerLive, RigFileDeploymentStoreLive } from "./rig/deployments.js"
 import { RigDoctorLive } from "./rig/doctor.js"
 import { RigCliArgumentError, RigRuntimeError } from "./rig/errors.js"
+import { RigGitWorkspaceLive } from "./rig/git-workspace.js"
 import { RigFileHomeConfigStoreLive } from "./rig/home-config.js"
 import { RigLifecycleLive } from "./rig/lifecycle.js"
 import { rigRoot } from "./rig/paths.js"
@@ -29,6 +30,7 @@ const RuntimeLive = Layer.mergeAll(
   RigdRuntimeLive,
   RigdDaemonAdminLive,
   RigDoctorLive,
+  RigGitWorkspaceLive,
   Layer.provide(RigLifecycleLive, Layer.mergeAll(RigLive, RigdRuntimeLive)),
 )
 

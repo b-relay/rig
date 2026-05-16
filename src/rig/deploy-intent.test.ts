@@ -238,14 +238,15 @@ describe("GIVEN rig deploy intent model WHEN resolving pushes and CLI deploys TH
     })
   })
 
-  test("GIVEN CLI deploy target WHEN resolving intent THEN refs and lanes do not require semver", async () => {
+  test("GIVEN CLI live deploy of Production Branch WHEN resolving intent THEN refs and lanes do not require semver", async () => {
     const { result } = await runWithDeployIntents(
       Effect.gen(function* () {
         const intents = yield* RigDeployIntents
         return yield* intents.fromCliDeploy({
           project: "pantry",
           stateRoot: "/tmp/rig",
-          ref: "HEAD",
+          ref: "main",
+          commit: "abc123",
           target: "live",
         })
       }),
@@ -254,11 +255,56 @@ describe("GIVEN rig deploy intent model WHEN resolving pushes and CLI deploys TH
     expect(result).toMatchObject({
       source: "cli",
       project: "pantry",
-      ref: "HEAD",
+      ref: "main",
+      commit: "abc123",
       target: "live",
       lane: "live",
     })
     expect(result.version).toBeUndefined()
+  })
+
+  test("GIVEN CLI live deploy of non-production Branch WHEN resolving intent THEN it is rejected", async () => {
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* RigDeployIntents
+        return yield* Effect.flip(intents.fromCliDeploy({
+          project: "pantry",
+          stateRoot: "/tmp/rig",
+          ref: "feature/nope",
+          target: "live",
+        }))
+      }),
+    )
+
+    expect(result).toMatchObject({
+      _tag: "RigRuntimeError",
+      details: {
+        reason: "non-production-live-deploy",
+        productionBranch: "main",
+      },
+    })
+  })
+
+  test("GIVEN CLI preview deploy of Production Branch WHEN resolving intent THEN it is rejected", async () => {
+    const { result } = await runWithDeployIntents(
+      Effect.gen(function* () {
+        const intents = yield* RigDeployIntents
+        return yield* Effect.flip(intents.fromCliDeploy({
+          project: "pantry",
+          stateRoot: "/tmp/rig",
+          ref: "main",
+          target: "generated",
+        }))
+      }),
+    )
+
+    expect(result).toMatchObject({
+      _tag: "RigRuntimeError",
+      details: {
+        reason: "production-branch-preview",
+        productionBranch: "main",
+      },
+    })
   })
 
   test("GIVEN version bump metadata WHEN resolving THEN tags remain rollback anchors", async () => {

@@ -8,7 +8,8 @@ import { RigdDaemonAdmin } from "./daemon-admin.js"
 import { RigDeployIntents, type RigDeployTarget } from "./deploy-intent.js"
 import type { RigDeploymentRecord } from "./deployments.js"
 import { RigDoctor } from "./doctor.js"
-import { RigCliArgumentError, unknownToRigCliError } from "./errors.js"
+import { RigCliArgumentError, unknownToRigCliError, type RigRuntimeError } from "./errors.js"
+import { RigGitWorkspace, type RigGitUpstreamStatus } from "./git-workspace.js"
 import { RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
 import { RigLifecycle, type RigLifecycleAction, type RigLifecycleLane } from "./lifecycle.js"
 import { rigRoot } from "./paths.js"
@@ -67,6 +68,7 @@ interface ProjectScopedInput {
   readonly lane: RigLifecycleLane
   readonly stateRoot: string
   readonly configPath?: string
+  readonly repoPath?: string
 }
 
 const formatFoundationStatus = (state: RigFoundationState & { readonly lane: RigLifecycleLane }) => [
@@ -265,6 +267,7 @@ const resolveProjectScopedInput = (input: {
       lane: input.lane ?? "local",
       project: explicitProject || located.name,
       configPath: explicitConfigPath || located.configPath,
+      repoPath: located.repoPath,
     }
   })
 
@@ -655,19 +658,125 @@ const listCommand = Command.make(
       const model = yield* rigd.webReadModel({ stateRoot: rigRoot() })
 
       yield* logger.info(formatProjectList(model))
-    }),
+  }),
 ).pipe(Command.withDescription("List Host Project summaries from rigd state."))
+
+const requireRepoPath = (input: ProjectScopedInput, command: string): Effect.Effect<string, RigCliArgumentError> => {
+  if (input.repoPath) {
+    return Effect.succeed(input.repoPath)
+  }
+  return Effect.fail(
+    new RigCliArgumentError(
+      `rig ${command} requires a managed Git repo.`,
+      "Run the command from the project repo so Rig can resolve local Branches and Commits.",
+      { project: input.project, command },
+    ),
+  )
+}
+
+const productionBranchForDeploy = (
+  config: RigProjectConfig,
+  stateRoot: string,
+): Effect.Effect<string, never, RigHomeConfigStore> =>
+  Effect.gen(function* () {
+    if (config.live?.deployBranch) {
+      return config.live.deployBranch
+    }
+    const homeConfigStore = yield* RigHomeConfigStore
+    const homeConfig = yield* homeConfigStore.read({ stateRoot }).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    )
+    return homeConfig?.deploy.productionBranch ?? "main"
+  })
+
+const resolveDeployBranch = (input: {
+  readonly command: "live" | "preview"
+  readonly rawBranch: string
+  readonly productionBranch: string
+  readonly repoPath: string
+}): Effect.Effect<string, RigCliArgumentError | RigRuntimeError, RigGitWorkspace> =>
+  Effect.gen(function* () {
+    const branch = input.rawBranch.trim()
+    if (input.command === "live") {
+      const selected = branch || input.productionBranch
+      if (selected !== input.productionBranch) {
+        return yield* Effect.fail(
+          new RigCliArgumentError(
+            `Cannot deploy Branch '${selected}' to the Stable Target.`,
+            `Deploy the configured Production Branch '${input.productionBranch}' with 'rig deploy live'.`,
+            {
+              branch: selected,
+              productionBranch: input.productionBranch,
+              reason: "non-production-live-deploy",
+            },
+          ),
+        )
+      }
+      return selected
+    }
+
+    const git = yield* RigGitWorkspace
+    const selected = branch || (yield* git.currentBranch(input.repoPath))
+    if (selected === input.productionBranch) {
+      return yield* Effect.fail(
+        new RigCliArgumentError(
+          `Cannot deploy Production Branch '${input.productionBranch}' as a Preview.`,
+          `Create a Preview Branch such as 'preview/${input.productionBranch}' and deploy that Branch instead.`,
+          {
+            branch: selected,
+            productionBranch: input.productionBranch,
+            reason: "production-branch-preview",
+          },
+        ),
+      )
+    }
+    return selected
+  })
+
+const requireLocalBranch = (input: {
+  readonly repoPath: string
+  readonly branch: string
+}): Effect.Effect<void, RigCliArgumentError | RigRuntimeError, RigGitWorkspace> =>
+  Effect.gen(function* () {
+    const git = yield* RigGitWorkspace
+    const exists = yield* git.branchExists(input.repoPath, input.branch)
+    if (exists) {
+      return
+    }
+    return yield* Effect.fail(
+      new RigCliArgumentError(
+        `Branch '${input.branch}' does not exist locally.`,
+        "Create or check out the Branch locally before deploying it.",
+        { branch: input.branch, repoPath: input.repoPath, reason: "local-branch-missing" },
+      ),
+    )
+  })
+
+const upstreamWarningDetails = (
+  branch: string,
+  status: RigGitUpstreamStatus,
+): Readonly<Record<string, unknown>> | undefined =>
+  status.ahead > 0 || status.behind > 0
+    ? {
+      branch,
+      upstream: status.upstream,
+      ahead: status.ahead,
+      behind: status.behind,
+      message: `Branch '${branch}' differs from upstream ${status.upstream ?? "(none)"}: ahead=${status.ahead} behind=${status.behind}.`,
+    }
+    : undefined
 
 const makeDeployCommand = (
   name: "live" | "preview",
   target: RigDeployTarget,
-  defaultBranch: string,
   description: string,
 ) => Command.make(
   name,
   {
     project: projectFlag,
-    branch: Argument.string("branch").pipe(Argument.withDefault(defaultBranch)),
+    branch: Argument.string("branch").pipe(Argument.withDefault("")),
+    force: Flag.boolean("force").pipe(Flag.withDescription("Redeploy even when the selected Branch resolves to the same Commit.")),
+    noUp: Flag.boolean("no-up").pipe(Flag.withDescription("Materialize the selected Commit without starting the Target.")),
     deployment: Flag.string("deployment").pipe(
       Flag.withDefault(""),
       Flag.withDescription("Optional Preview name override."),
@@ -688,10 +797,27 @@ const makeDeployCommand = (
       const intents = yield* RigDeployIntents
       const logger = yield* RigLogger
       const rigd = yield* Rigd
+      const git = yield* RigGitWorkspace
+      const repoPath = yield* requireRepoPath(scoped, "deploy")
+      const productionBranch = yield* productionBranchForDeploy(config, decoded.stateRoot)
+      const branch = yield* resolveDeployBranch({
+        command: name,
+        rawBranch: input.branch,
+        productionBranch,
+        repoPath,
+      })
+      yield* requireLocalBranch({ repoPath, branch })
+      const commit = yield* git.branchCommit(repoPath, branch)
+      const upstreamStatus = yield* git.upstreamStatus(repoPath, branch)
+      const warning = upstreamWarningDetails(branch, upstreamStatus)
+      if (warning) {
+        yield* logger.info("rig deploy git warning", warning)
+      }
       const intent = yield* intents.fromCliDeploy({
         project: decoded.project,
         stateRoot: decoded.stateRoot,
-        ref: input.branch,
+        ref: branch,
+        commit,
         target,
         config,
         ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
@@ -701,8 +827,11 @@ const makeDeployCommand = (
       const receipt = yield* rigd.deploy({
         project: decoded.project,
         stateRoot: decoded.stateRoot,
-        ref: input.branch,
+        ref: branch,
+        commit,
         target,
+        force: input.force,
+        noUp: input.noUp,
         config,
         ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
       })
@@ -713,8 +842,8 @@ const makeDeployCommand = (
 const deployCommand = Command.make("deploy").pipe(
   Command.withDescription("Deploy a Branch to a Stable Target or Preview."),
   Command.withSubcommands([
-    makeDeployCommand("live", "live", "main", "Deploy the Production Branch to the Stable Target."),
-    makeDeployCommand("preview", "generated", "HEAD", "Deploy a Branch as a Preview."),
+    makeDeployCommand("live", "live", "Deploy the Production Branch to the Stable Target."),
+    makeDeployCommand("preview", "generated", "Deploy a Branch as a Preview."),
   ]),
 )
 

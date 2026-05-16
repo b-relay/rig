@@ -14,6 +14,7 @@ export interface RigDeployIntent {
   readonly project: string
   readonly stateRoot: string
   readonly ref: string
+  readonly commit?: string
   readonly target: RigDeployTarget
   readonly lane: "live" | "deployment"
   readonly deploymentName?: string
@@ -25,6 +26,7 @@ export interface RigGitPushDeployInput {
   readonly project: string
   readonly stateRoot: string
   readonly ref: string
+  readonly commit?: string
   readonly mainRef?: string
   readonly config?: RigProjectConfig
   readonly dirty?: boolean
@@ -35,6 +37,7 @@ export interface RigCliDeployInput {
   readonly project: string
   readonly stateRoot: string
   readonly ref: string
+  readonly commit?: string
   readonly target: RigDeployTarget
   readonly deploymentName?: string
   readonly config?: RigProjectConfig
@@ -147,6 +150,7 @@ export const RigDeployIntentsLive = Layer.effect(
         readonly project: string
         readonly stateRoot: string
         readonly ref: string
+        readonly commit?: string
         readonly deploymentName?: string
         readonly config?: RigProjectConfig
       },
@@ -156,6 +160,7 @@ export const RigDeployIntentsLive = Layer.effect(
         project: input.project,
         stateRoot: input.stateRoot,
         ref: input.ref,
+        ...(input.commit ? { commit: input.commit } : {}),
         target: "generated",
         lane: "deployment",
         deploymentName: branchSlug(input.deploymentName ?? input.ref),
@@ -176,6 +181,7 @@ export const RigDeployIntentsLive = Layer.effect(
                   project: input.project,
                   stateRoot: input.stateRoot,
                   ref: input.ref,
+                  ...(input.commit ? { commit: input.commit } : {}),
                   target: "live",
                   lane: "live",
                 } satisfies RigDeployIntent
@@ -187,20 +193,54 @@ export const RigDeployIntentsLive = Layer.effect(
         ),
       fromCliDeploy: (input) =>
         validateDeployEdges(input).pipe(
-          Effect.flatMap(() => {
-            if (input.target === "live") {
-              return Effect.succeed({
-                source: "cli",
-                project: input.project,
-                stateRoot: input.stateRoot,
-                ref: input.ref,
-                target: "live",
-                lane: "live",
-              } satisfies RigDeployIntent)
-            }
+          Effect.flatMap(() =>
+            Effect.gen(function* () {
+              const homeConfig = yield* homeConfigStore.read({ stateRoot: input.stateRoot })
+              const productionBranch = input.config?.live?.deployBranch ?? homeConfig.deploy.productionBranch
 
-            return generatedIntent("cli", input)
-          }),
+              if (input.target === "live") {
+                if (input.ref !== productionBranch) {
+                  return yield* Effect.fail(
+                    new RigRuntimeError(
+                      `Cannot deploy Branch '${input.ref}' to the Stable Target.`,
+                      `Deploy the configured Production Branch '${productionBranch}' with 'rig deploy live'.`,
+                      {
+                        project: input.project,
+                        ref: input.ref,
+                        productionBranch,
+                        reason: "non-production-live-deploy",
+                      },
+                    ),
+                  )
+                }
+                return {
+                  source: "cli",
+                  project: input.project,
+                  stateRoot: input.stateRoot,
+                  ref: input.ref,
+                  ...(input.commit ? { commit: input.commit } : {}),
+                  target: "live",
+                  lane: "live",
+                } satisfies RigDeployIntent
+              }
+
+              if (input.ref === productionBranch) {
+                return yield* Effect.fail(
+                  new RigRuntimeError(
+                    `Cannot deploy Production Branch '${productionBranch}' as a Preview.`,
+                    `Create a Preview Branch such as 'preview/${productionBranch}' and deploy that Branch instead.`,
+                    {
+                      project: input.project,
+                      ref: input.ref,
+                      productionBranch,
+                      reason: "production-branch-preview",
+                    },
+                  ),
+                )
+              }
+              return yield* generatedIntent("cli", input)
+            }),
+          ),
         ),
       bump: (input) =>
         Effect.gen(function* () {

@@ -22,6 +22,7 @@ export interface RigDeploymentRecord {
   readonly kind: RigDeploymentKind
   readonly name: string
   readonly sourceRef?: string
+  readonly sourceCommit?: string
   readonly branchSlug: string
   readonly subdomain: string
   readonly workspacePath: string
@@ -38,6 +39,7 @@ export interface RigMaterializeGeneratedInput {
   readonly config: RigProjectConfig
   readonly stateRoot: string
   readonly branch?: string
+  readonly commit?: string
   readonly name?: string
   readonly subdomain?: string
   readonly assignedPorts?: Readonly<Record<string, number>>
@@ -278,6 +280,7 @@ const generatedRecord = (
       kind: "generated",
       name,
       ...(identity.sourceRef ? { sourceRef: identity.sourceRef } : {}),
+      ...(input.commit ? { sourceCommit: input.commit } : {}),
       branchSlug: slug,
       subdomain: resolved.subdomain,
       ...paths,

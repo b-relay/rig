@@ -1102,6 +1102,150 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN same Commit deploy WHEN Target is stopped THEN rigd no-ops unless force is used", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+    const executor = new CaptureRuntimeExecutor()
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const store = yield* RigdStateStore
+          const materialized = yield* rigd.deploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            commit: "commit-one",
+            stateRoot,
+            config,
+            noUp: true,
+          })
+          const noop = yield* rigd.deploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            commit: "commit-one",
+            stateRoot,
+            config,
+          })
+          const forced = yield* rigd.deploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            commit: "commit-one",
+            stateRoot,
+            config,
+            force: true,
+          })
+          const logs = yield* rigd.webLogs({ stateRoot, project: "pantry", lines: 20 })
+          const persisted = yield* store.load({ stateRoot })
+          return { materialized, noop, forced, logs, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.materialized).toMatchObject({ target: "live", accepted: true })
+      expect(result.noop).toMatchObject({ target: "live", accepted: true })
+      expect(result.forced).toMatchObject({ target: "live", accepted: true })
+      expect(executor.deployCalls).toHaveLength(2)
+      expect(executor.deployCalls[0]).toMatchObject({ ref: "commit-one", start: false })
+      expect(executor.deployCalls[1]).toMatchObject({ ref: "commit-one", start: true })
+      expect(result.logs).toContainEqual(expect.objectContaining({
+        event: "rigd.deploy.noop",
+        details: expect.objectContaining({
+          reason: "same-commit",
+          commit: "commit-one",
+          desiredStatus: "stopped",
+        }),
+      }))
+      const liveDesired = result.persisted.desiredDeployments.find((desired) => desired.deployment === "live")
+      expect(liveDesired).toMatchObject({
+        desiredStatus: "running",
+        record: expect.objectContaining({
+          sourceRef: "main",
+          sourceCommit: "commit-one",
+        }),
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN no-up generated redeploy replaces a running Target THEN old process is stopped and new Commit stays stopped", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
+    const executor = new CaptureRuntimeExecutor()
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const store = yield* RigdStateStore
+          yield* rigd.deploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/app",
+            commit: "commit-one",
+            stateRoot,
+            config,
+          })
+          const redeployed = yield* rigd.deploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/app",
+            commit: "commit-two",
+            stateRoot,
+            config,
+            noUp: true,
+          })
+          const inventory = yield* rigd.inventory({ project: "pantry", stateRoot, config })
+          const persisted = yield* store.load({ stateRoot })
+          return { redeployed, inventory, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.redeployed).toMatchObject({
+        kind: "deploy",
+        target: "generated:feature-app",
+        accepted: true,
+      })
+      expect(executor.lifecycleCalls).toHaveLength(1)
+      expect(executor.lifecycleCalls[0]).toMatchObject({
+        action: "down",
+        deployment: expect.objectContaining({
+          name: "feature-app",
+          sourceCommit: "commit-one",
+        }),
+      })
+      expect(executor.deployCalls).toHaveLength(2)
+      expect(executor.deployCalls[1]).toMatchObject({
+        ref: "commit-two",
+        start: false,
+        deployment: expect.objectContaining({
+          name: "feature-app",
+          sourceRef: "feature/app",
+          sourceCommit: "commit-two",
+        }),
+      })
+      const generated = result.inventory.deployments.find((deployment) => deployment.name === "feature-app")
+      expect(generated).toMatchObject({
+        sourceRef: "feature/app",
+        sourceCommit: "commit-two",
+      })
+      const desired = result.persisted.desiredDeployments.find((entry) => entry.deployment === "feature-app")
+      expect(desired).toMatchObject({
+        desiredStatus: "stopped",
+        record: expect.objectContaining({
+          sourceCommit: "commit-two",
+        }),
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN CLI and control-plane generated deploys WHEN cap is reached THEN both use the same rigd replacement path", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
 

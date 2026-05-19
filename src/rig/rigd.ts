@@ -516,15 +516,42 @@ export const RigdLive = Layer.effect(
         ? { deployment: lifecycleTargetName(target) }
         : { lane: target.kind }
 
+    const logDeploymentScope = (
+      input: RigdLogInput,
+    ): Effect.Effect<string | undefined, RigRuntimeError> => {
+      if (input.target?.kind !== "generated") {
+        return Effect.succeed(input.deployment)
+      }
+
+      const deployment = lifecycleTargetName(input.target)
+      if (input.deployment && input.deployment !== deployment) {
+        return Effect.fail(
+          new RigRuntimeError(
+            `Preview log scope '${input.deployment}' does not match requested Preview '${deployment}'.`,
+            "Resolve logs from one Preview target at a time without overriding the generated deployment filter.",
+            {
+              reason: "log-target-scope-mismatch",
+              project: input.project,
+              deployment: input.deployment,
+              requestedDeployment: input.target.deploymentName,
+              expectedDeployment: deployment,
+            },
+          ),
+        )
+      }
+
+      return Effect.succeed(deployment)
+    }
+
     const assertGeneratedLogTargetExists = (
       input: RigdLogInput,
       state: RigdPersistentState,
+      deployment: string | undefined,
     ): Effect.Effect<void, RigRuntimeError> => {
-      if (input.target?.kind !== "generated") {
+      if (input.target?.kind !== "generated" || !deployment) {
         return Effect.void
       }
 
-      const deployment = input.deployment ?? lifecycleTargetName(input.target)
       const hasTargetEvidence =
         state.deploymentSnapshots.some((snapshot) =>
           snapshot.project === input.project && snapshot.deployment === deployment
@@ -1252,13 +1279,14 @@ export const RigdLive = Layer.effect(
               ...persisted,
               events,
             }
-          yield* assertGeneratedLogTargetExists(input, runtimeState)
+          const deployment = yield* logDeploymentScope(input)
+          yield* assertGeneratedLogTargetExists(input, runtimeState, deployment)
           return deriveRigRuntimeLogWindow(
             runtimeState,
             {
               project: input.project,
               ...(input.lane ? { lane: input.lane } : {}),
-              ...(input.deployment ? { deployment: input.deployment } : {}),
+              ...(deployment ? { deployment } : {}),
               lines: input.lines,
               includeGlobal: true,
             },

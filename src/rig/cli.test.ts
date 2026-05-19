@@ -930,6 +930,32 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     }))
   })
 
+  test("GIVEN live deploy with Preview deployment name WHEN running THEN it is rejected", async () => {
+    const { exitCode, logger, deployIntents, rigd } = await runWithLogger([
+      "deploy",
+      "live",
+      "--deployment",
+      "qa",
+    ], {
+      inferredProject: "pantry",
+      liveDeployBranch: "stable",
+    })
+
+    expect(exitCode).toBe(1)
+    expect(deployIntents.cliDeploys).toEqual([])
+    expect(rigd.deployRequests).toEqual([])
+    expect(logger.errors[0]?._tag).toBe("RigCliArgumentError")
+    expect(logger.errors[0]?.message).toBe("Stable deploys do not accept a Preview deployment name.")
+    expect(logger.errors[0]?.details).toMatchObject({
+      originalTag: "RigCliArgumentError",
+      originalDetails: {
+        reason: "stable-deployment-name",
+        target: "live",
+        deploymentName: "qa",
+      },
+    })
+  })
+
   test("GIVEN preview deploy without branch WHEN running THEN it deploys the current Branch", async () => {
     const { exitCode, deployIntents, git } = await runWithLogger([
       "deploy",

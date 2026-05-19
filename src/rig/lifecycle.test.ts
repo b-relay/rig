@@ -9,6 +9,7 @@ import {
   type RigdHealthState,
   type RigdHealthStateInput,
   type RigdLifecycleInput,
+  type RigdLogEntry,
   type RigdLogInput,
 } from "./rigd.js"
 import { RigLogger, type RigLoggerService } from "./services.js"
@@ -32,6 +33,7 @@ class CaptureRigd {
   readonly lifecycleRequests: RigdLifecycleInput[] = []
   readonly logRequests: RigdLogInput[] = []
   readonly healthStateRequests: RigdHealthStateInput[] = []
+  logResponses: ReadonlyArray<ReadonlyArray<RigdLogEntry>> = []
   desiredDeployments: RigdHealthState["desiredDeployments"] = []
   managedServiceFailures: RigdHealthState["managedServiceFailures"] = []
 
@@ -49,7 +51,7 @@ class CaptureRigd {
 
   logs(input: RigdLogInput) {
     this.logRequests.push(input)
-    return Effect.succeed([
+    const response = this.logResponses[this.logRequests.length - 1] ?? [
       {
         timestamp: "2026-04-24T00:00:00.000Z",
         event: "component.log",
@@ -62,7 +64,8 @@ class CaptureRigd {
           line: "server listening",
         },
       },
-    ])
+    ]
+    return Effect.succeed(response)
   }
 
   healthState(input: RigdHealthStateInput) {
@@ -315,6 +318,51 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
         },
       ],
     })
+  })
+
+  test("GIVEN followed logs repeat an identical entry WHEN polling THEN the repeated entry is emitted", async () => {
+    const repeatedLog = {
+      timestamp: "2026-04-24T00:00:00.000Z",
+      event: "component.log",
+      project: "pantry",
+      lane: "local",
+      component: "web",
+      details: {
+        stream: "stdout",
+        line: "heartbeat",
+      },
+    } satisfies RigdLogEntry
+
+    const { rigd, logger } = await runWithLifecycle(
+      Effect.gen(function* () {
+        const lifecycle = yield* RigLifecycle
+        yield* lifecycle.run({
+          action: "logs",
+          project: "pantry",
+          lane: "local",
+          stateRoot: "/tmp/rig",
+          follow: true,
+        }).pipe(Effect.timeoutOption("1250 millis"))
+      }),
+      (rigd) => {
+        rigd.logResponses = [
+          [repeatedLog],
+          [repeatedLog, repeatedLog],
+        ]
+      },
+    )
+
+    expect(rigd.logRequests).toHaveLength(2)
+    expect(logger.infos.map((info) => info.message)).toEqual([
+      [
+        "rig logs",
+        "2026-04-24T00:00:00.000Z local/web stdout: heartbeat",
+      ].join("\n"),
+      [
+        "rig logs",
+        "2026-04-24T00:00:00.000Z local/web stdout: heartbeat",
+      ].join("\n"),
+    ])
   })
 
   test("GIVEN preview logs WHEN running THEN rigd filters by generated deployment", async () => {

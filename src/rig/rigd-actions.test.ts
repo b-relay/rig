@@ -512,6 +512,47 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN mismatched Preview log scope WHEN requested THEN rigd rejects the ambiguous read", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-preview-log-mismatch-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const error = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          yield* rigd.deploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/provider-backed",
+            commit: "commit-preview",
+            stateRoot,
+            config,
+          })
+          return yield* Effect.flip(rigd.logs({
+            project: "pantry",
+            stateRoot,
+            target: { kind: "generated", deploymentName: "feature/missing" },
+            deployment: "feature-provider-backed",
+            lines: 10,
+          }))
+        }),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "RigRuntimeError",
+        message: "Preview log scope 'feature-provider-backed' does not match requested Preview 'feature-missing'.",
+        details: expect.objectContaining({
+          reason: "log-target-scope-mismatch",
+          deployment: "feature-provider-backed",
+          expectedDeployment: "feature-missing",
+          requestedDeployment: "feature/missing",
+        }),
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN missing Preview lifecycle WHEN requested THEN it fails with deploy-first guidance", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-missing-preview-"))
 

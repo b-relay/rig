@@ -892,6 +892,21 @@ const makeDeployCommand = (
       const logger = yield* RigLogger
       const rigd = yield* Rigd
       const git = yield* RigGitWorkspace
+      const deploymentName = input.deployment.trim()
+      if (name !== "preview" && deploymentName.length > 0) {
+        return yield* Effect.fail(
+          new RigCliArgumentError(
+            "Stable deploys do not accept a Preview deployment name.",
+            "Use 'rig deploy preview <branch> --deployment <name>' when naming a Preview.",
+            {
+              command: "deploy",
+              target: name,
+              deploymentName,
+              reason: "stable-deployment-name",
+            },
+          ),
+        )
+      }
       const repoPath = yield* requireRepoPath(scoped, "deploy")
       const productionBranch = yield* productionBranchForDeploy(config, decoded.stateRoot)
       const branch = yield* resolveDeployBranch({
@@ -914,7 +929,7 @@ const makeDeployCommand = (
         commit,
         target,
         config,
-        ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
+        ...(deploymentName.length > 0 ? { deploymentName } : {}),
       })
 
       yield* logger.info("rig deploy intent", intent)
@@ -927,7 +942,7 @@ const makeDeployCommand = (
         force: input.force,
         noUp: input.noUp,
         config,
-        ...(input.deployment.trim().length > 0 ? { deploymentName: input.deployment.trim() } : {}),
+        ...(deploymentName.length > 0 ? { deploymentName } : {}),
       })
       yield* logger.info("rig deploy accepted", receipt)
     }),

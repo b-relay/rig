@@ -52,9 +52,15 @@ class CaptureRigd {
     return Effect.succeed([
       {
         timestamp: "2026-04-24T00:00:00.000Z",
-        event: "rigd.lifecycle.accepted",
+        event: "component.log",
         project: input.project,
         lane: input.lane,
+        deployment: input.deployment,
+        component: "web",
+        details: {
+          stream: "stdout",
+          line: "server listening",
+        },
       },
     ])
   }
@@ -92,13 +98,16 @@ class CaptureRigd {
 
   lifecycle(input: RigdLifecycleInput) {
     this.lifecycleRequests.push(input)
+    const target = input.target?.kind === "generated"
+      ? `generated:${input.target.deploymentName.replace(/[^a-z0-9]+/gi, "-").toLowerCase().replace(/^-+|-+$/g, "")}`
+      : input.lane
     return Effect.succeed({
       id: "rigd-1",
       kind: "lifecycle" as const,
       accepted: true as const,
       project: input.project,
       stateRoot: input.stateRoot,
-      target: input.lane,
+      target,
       receivedAt: "2026-04-24T00:00:00.000Z",
     })
   }
@@ -196,6 +205,7 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
         action: "down",
         project: "pantry",
         lane: "local",
+        target: { kind: "local" },
         stateRoot: "/tmp/rig",
         config,
       },
@@ -203,6 +213,7 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
         action: "up",
         project: "pantry",
         lane: "local",
+        target: { kind: "local" },
         stateRoot: "/tmp/rig",
         config,
       },
@@ -220,6 +231,54 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
     ])
   })
 
+  test("GIVEN restart preview WHEN running THEN rigd stops then starts the generated target", async () => {
+    const config = {
+      name: "pantry",
+      components: {
+        web: {
+          mode: "managed" as const,
+          command: "bun run start -- --port ${web.port}",
+        },
+      },
+    } satisfies RigProjectConfig
+    const { rigd, logger } = await runWithLifecycle(
+      Effect.gen(function* () {
+        const lifecycle = yield* RigLifecycle
+        yield* lifecycle.run({
+          action: "restart",
+          project: "pantry",
+          target: { kind: "generated", deploymentName: "feature/preview" },
+          stateRoot: "/tmp/rig",
+          config,
+        })
+      }),
+    )
+
+    expect(rigd.lifecycleRequests).toEqual([
+      {
+        action: "down",
+        project: "pantry",
+        target: { kind: "generated", deploymentName: "feature/preview" },
+        stateRoot: "/tmp/rig",
+        config,
+      },
+      {
+        action: "up",
+        project: "pantry",
+        target: { kind: "generated", deploymentName: "feature/preview" },
+        stateRoot: "/tmp/rig",
+        config,
+      },
+    ])
+    expect(logger.infos[0]).toEqual({
+      message: "rig lifecycle restarted",
+      details: expect.objectContaining({
+        project: "pantry",
+        target: { kind: "generated", deploymentName: "feature/preview" },
+      }),
+    })
+  })
+
   test("GIVEN logs WHEN running THEN structured rigd logs are returned", async () => {
     const { rigd, logger } = await runWithLifecycle(
       Effect.gen(function* () {
@@ -230,7 +289,6 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
           lane: "local",
           stateRoot: "/tmp/rig",
           lines: 25,
-          follow: true,
         })
       }),
     )
@@ -240,16 +298,56 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
         project: "pantry",
         stateRoot: "/tmp/rig",
         lines: 25,
+        target: { kind: "local" },
         lane: "local",
       },
     ])
-    expect(logger.infos[0]?.message).toBe("rig logs")
+    expect(logger.infos[0]?.message).toBe([
+      "rig logs",
+      "2026-04-24T00:00:00.000Z local/web stdout: server listening",
+    ].join("\n"))
     expect(logger.infos[0]?.details).toMatchObject({
-      follow: true,
+      follow: false,
       entries: [
         {
-          event: "rigd.lifecycle.accepted",
+          event: "component.log",
           project: "pantry",
+        },
+      ],
+    })
+  })
+
+  test("GIVEN preview logs WHEN running THEN rigd filters by generated deployment", async () => {
+    const { rigd, logger } = await runWithLifecycle(
+      Effect.gen(function* () {
+        const lifecycle = yield* RigLifecycle
+        yield* lifecycle.run({
+          action: "logs",
+          project: "pantry",
+          target: { kind: "generated", deploymentName: "feature/preview" },
+          stateRoot: "/tmp/rig",
+          lines: 25,
+        })
+      }),
+    )
+
+    expect(rigd.logRequests).toEqual([
+      {
+        project: "pantry",
+        stateRoot: "/tmp/rig",
+        lines: 25,
+        target: { kind: "generated", deploymentName: "feature/preview" },
+        deployment: "feature-preview",
+      },
+    ])
+    expect(logger.infos[0]?.details).toMatchObject({
+      project: "pantry",
+      target: { kind: "generated", deploymentName: "feature/preview" },
+      entries: [
+        {
+          event: "component.log",
+          project: "pantry",
+          deployment: "feature-preview",
         },
       ],
     })
@@ -345,7 +443,7 @@ describe("GIVEN rig lifecycle live service WHEN runtime-facing actions run THEN 
       "deployments:",
       "  local (local): failed since 2026-04-27T12:02:00.000Z",
       "failures:",
-      "  local/web: crashed 3 times at 2026-04-27T12:02:00.000Z; exit code 1; stderr: port already in use; logs: rig logs --project pantry --lane local",
+      "  local/web: crashed 3 times at 2026-04-27T12:02:00.000Z; exit code 1; stderr: port already in use; logs: rig logs local --project pantry",
     ].join("\n"))
     expect(logger.infos[0]?.details).toBeUndefined()
     expect(logger.infos[1]?.message).toBe("rig runtime status details")

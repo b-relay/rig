@@ -11,7 +11,7 @@ import { RigDoctor } from "./doctor.js"
 import { RigCliArgumentError, unknownToRigCliError, type RigRuntimeError } from "./errors.js"
 import { RigGitWorkspace, type RigGitUpstreamStatus } from "./git-workspace.js"
 import { RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
-import { RigLifecycle, type RigLifecycleAction, type RigLifecycleLane } from "./lifecycle.js"
+import { RigLifecycle, type RigLifecycleAction, type RigLifecycleLane, type RigLifecycleTarget } from "./lifecycle.js"
 import { rigRoot } from "./paths.js"
 import { RigProjectConfigLoader } from "./project-config-loader.js"
 import {
@@ -69,6 +69,13 @@ interface ProjectScopedInput {
   readonly stateRoot: string
   readonly configPath?: string
   readonly repoPath?: string
+}
+
+type CliLifecycleAction = "up" | "down" | "restart" | "logs"
+
+interface LifecycleTargetSelection {
+  readonly target: RigLifecycleTarget
+  readonly lane?: RigLifecycleLane
 }
 
 const formatFoundationStatus = (state: RigFoundationState & { readonly lane: RigLifecycleLane }) => [
@@ -441,6 +448,7 @@ const runLifecycleAction = (
   input: {
     readonly project: string
     readonly lane?: RigLifecycleLane
+    readonly target?: RigLifecycleTarget
     readonly stateRoot: string
     readonly follow?: boolean
     readonly lines?: number
@@ -471,7 +479,8 @@ const runLifecycleAction = (
     yield* lifecycle.run({
       action,
       project: decoded.project,
-      lane: input.lane ?? "local",
+      ...(input.lane ? { lane: input.lane } : {}),
+      ...(input.target ? { target: input.target } : {}),
       stateRoot: decoded.stateRoot,
       ...(config ? { config } : {}),
       ...(input.follow !== undefined ? { follow: input.follow } : {}),
@@ -480,19 +489,82 @@ const runLifecycleAction = (
     })
   })
 
-const lifecycleCommand = (action: RigLifecycleAction, description: string) =>
+const targetGuidance = (command: string) =>
+  new RigCliArgumentError(
+    `rig ${command} requires a Target in non-interactive use.`,
+    "Pass 'local', 'live', or 'preview <branch>'.",
+    { command, allowedTargets: ["local", "live", "preview <branch>"] },
+  )
+
+const parseLifecycleTarget = (input: {
+  readonly action: CliLifecycleAction
+  readonly rawTarget: string
+  readonly rawPreviewBranch: string
+}): Effect.Effect<LifecycleTargetSelection, RigCliArgumentError> => {
+  const target = input.rawTarget.trim()
+  const previewBranch = input.rawPreviewBranch.trim()
+  if (!target) {
+    return Effect.fail(targetGuidance(input.action))
+  }
+  if (target === "local" || target === "live") {
+    if (previewBranch) {
+      return Effect.fail(
+        new RigCliArgumentError(
+          `rig ${input.action} ${target} does not accept a Preview Branch.`,
+          "Use 'preview <branch>' when targeting a Preview.",
+          { command: input.action, target, previewBranch },
+        ),
+      )
+    }
+    return Effect.succeed({ lane: target, target: { kind: target } })
+  }
+  if (target === "preview") {
+    if (!previewBranch) {
+      return Effect.fail(
+        new RigCliArgumentError(
+          `rig ${input.action} preview requires a Branch.`,
+          "Pass the Preview Branch, for example 'preview feature/login'.",
+          { command: input.action, target },
+        ),
+      )
+    }
+    return Effect.succeed({ target: { kind: "generated", deploymentName: previewBranch } })
+  }
+  return Effect.fail(
+    new RigCliArgumentError(
+      `Unknown Target '${target}'.`,
+      "Use 'local', 'live', or 'preview <branch>'.",
+      { command: input.action, target },
+    ),
+  )
+}
+
+const lifecycleCommand = (action: CliLifecycleAction, description: string) =>
   Command.make(
     action,
     {
       project: projectFlag,
+      target: Argument.string("target").pipe(Argument.withDefault("")),
+      previewBranch: Argument.string("branch").pipe(Argument.withDefault("")),
     },
     (input) =>
       Effect.gen(function* () {
+        const target = yield* parseLifecycleTarget({
+          action,
+          rawTarget: input.target,
+          rawPreviewBranch: input.previewBranch,
+        })
         const resolved = yield* resolveProjectScopedInput({
           ...input,
           stateRoot: rigRoot(),
         })
-        yield* runLifecycleAction(action, resolved)
+        yield* runLifecycleAction(action, {
+          project: resolved.project,
+          stateRoot: resolved.stateRoot,
+          ...(target.lane ? { lane: target.lane } : {}),
+          target: target.target,
+          ...(resolved.configPath ? { configPath: resolved.configPath } : {}),
+        })
       }),
   ).pipe(Command.withDescription(description))
 
@@ -500,6 +572,8 @@ const logsCommand = Command.make(
   "logs",
   {
     project: projectFlag,
+    target: Argument.string("target").pipe(Argument.withDefault("")),
+    previewBranch: Argument.string("branch").pipe(Argument.withDefault("")),
     follow: Flag.boolean("follow").pipe(Flag.withDescription("Follow log output.")),
     lines: Flag.integer("lines").pipe(
       Flag.withDefault(50),
@@ -508,6 +582,11 @@ const logsCommand = Command.make(
   },
   (input) =>
     Effect.gen(function* () {
+      const target = yield* parseLifecycleTarget({
+        action: "logs",
+        rawTarget: input.target,
+        rawPreviewBranch: input.previewBranch,
+      })
       const resolved = yield* resolveProjectScopedInput({
         ...input,
         stateRoot: rigRoot(),
@@ -515,6 +594,8 @@ const logsCommand = Command.make(
       yield* runLifecycleAction("logs", {
         project: resolved.project,
         stateRoot: resolved.stateRoot,
+        ...(target.lane ? { lane: target.lane } : {}),
+        target: target.target,
         ...(resolved.configPath ? { configPath: resolved.configPath } : {}),
         follow: input.follow,
         lines: input.lines,
@@ -526,6 +607,8 @@ const downCommand = Command.make(
   "down",
   {
     project: projectFlag,
+    target: Argument.string("target").pipe(Argument.withDefault("")),
+    previewBranch: Argument.string("branch").pipe(Argument.withDefault("")),
     destroy: Flag.boolean("destroy").pipe(
       Flag.withDescription("Reserved for future Preview cleanup; rejected for normal Targets."),
     ),
@@ -541,11 +624,22 @@ const downCommand = Command.make(
         )
       }
 
+      const target = yield* parseLifecycleTarget({
+        action: "down",
+        rawTarget: input.target,
+        rawPreviewBranch: input.previewBranch,
+      })
       const resolved = yield* resolveProjectScopedInput({
         ...input,
         stateRoot: rigRoot(),
       })
-      yield* runLifecycleAction("down", resolved)
+      yield* runLifecycleAction("down", {
+        project: resolved.project,
+        stateRoot: resolved.stateRoot,
+        ...(target.lane ? { lane: target.lane } : {}),
+        target: target.target,
+        ...(resolved.configPath ? { configPath: resolved.configPath } : {}),
+      })
     }),
 ).pipe(Command.withDescription("Stop an existing Rig Target."))
 

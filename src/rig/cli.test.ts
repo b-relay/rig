@@ -1165,8 +1165,23 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     expect(rigd.configApplyRequests).toEqual([])
   })
 
-  test("GIVEN up without project inside managed repo WHEN running THEN it loads config and targets local lane", async () => {
+  test("GIVEN up without Target inside managed repo WHEN non-interactive THEN it fails with Target guidance", async () => {
     const { exitCode, logger, lifecycle, configLoader } = await runWithLogger(["up"], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(1)
+    expect(configLoader.loads).toEqual([])
+    expect(lifecycle.requests).toEqual([])
+    expect(logger.errors[0]).toEqual(expect.objectContaining({
+      _tag: "RigCliArgumentError",
+      message: "rig up requires a Target in non-interactive use.",
+      hint: "Pass 'local', 'live', or 'preview <branch>'.",
+    }))
+  })
+
+  test("GIVEN up local inside managed repo WHEN running THEN it loads config and targets local", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger(["up", "local"], {
       inferredProject: "pantry",
     })
 
@@ -1183,6 +1198,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
         action: "up",
         project: "pantry",
         lane: "local",
+        target: { kind: "local" },
         stateRoot: expect.stringContaining(".rig"),
         config: expect.objectContaining({
           name: "pantry",
@@ -1191,9 +1207,76 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
     ])
   })
 
-  test("GIVEN restart inside managed repo WHEN running THEN lifecycle receives restart with config", async () => {
+  test("GIVEN up preview branch inside managed repo WHEN running THEN lifecycle targets that Preview", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
+      "up",
+      "preview",
+      "feature/preview",
+    ], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(logger.errors).toEqual([])
+    expect(configLoader.loads).toEqual([
+      {
+        project: "pantry",
+        configPath: "/tmp/repo/rig.json",
+      },
+    ])
+    expect(lifecycle.requests).toEqual([
+      {
+        action: "up",
+        project: "pantry",
+        target: { kind: "generated", deploymentName: "feature/preview" },
+        stateRoot: expect.stringContaining(".rig"),
+        config: expect.objectContaining({
+          name: "pantry",
+        }),
+      },
+    ])
+  })
+
+  test("GIVEN preview lifecycle without branch WHEN running THEN it fails with branch guidance", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
+      "up",
+      "preview",
+    ], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(1)
+    expect(configLoader.loads).toEqual([])
+    expect(lifecycle.requests).toEqual([])
+    expect(logger.errors[0]).toEqual(expect.objectContaining({
+      _tag: "RigCliArgumentError",
+      message: "rig up preview requires a Branch.",
+      hint: "Pass the Preview Branch, for example 'preview feature/login'.",
+    }))
+  })
+
+  test("GIVEN bare branch lifecycle target WHEN running THEN it is rejected as an unknown Target", async () => {
+    const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
+      "up",
+      "feature/preview",
+    ], {
+      inferredProject: "pantry",
+    })
+
+    expect(exitCode).toBe(1)
+    expect(configLoader.loads).toEqual([])
+    expect(lifecycle.requests).toEqual([])
+    expect(logger.errors[0]).toEqual(expect.objectContaining({
+      _tag: "RigCliArgumentError",
+      message: "Unknown Target 'feature/preview'.",
+      hint: "Use 'local', 'live', or 'preview <branch>'.",
+    }))
+  })
+
+  test("GIVEN restart live inside managed repo WHEN running THEN lifecycle receives restart with config", async () => {
     const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
       "restart",
+      "live",
     ], {
       inferredProject: "pantry",
     })
@@ -1210,7 +1293,8 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
       {
         action: "restart",
         project: "pantry",
-        lane: "local",
+        lane: "live",
+        target: { kind: "live" },
         stateRoot: expect.stringContaining(".rig"),
         config: expect.objectContaining({
           name: "pantry",
@@ -1222,6 +1306,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
   test("GIVEN explicit project inside matching repo WHEN config is omitted THEN repo config is still loaded", async () => {
     const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
       "up",
+      "local",
       "--project",
       "pantry",
     ], {
@@ -1248,6 +1333,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
   test("GIVEN explicit project inside different repo WHEN config is omitted THEN runtime change is rejected", async () => {
     const { exitCode, logger, lifecycle, configLoader } = await runWithLogger([
       "up",
+      "local",
       "--project",
       "api",
     ], {
@@ -1295,6 +1381,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
   test("GIVEN logs with explicit project WHEN running THEN lifecycle request includes log options", async () => {
     const { exitCode, lifecycle } = await runWithLogger([
       "logs",
+      "local",
       "--project",
       "pantry",
       "--lines",
@@ -1313,7 +1400,7 @@ describe("GIVEN rig Effect CLI foundation WHEN commands run THEN behavior is cov
   })
 
   test("GIVEN repo-first command outside managed repo WHEN project is omitted THEN it logs a tagged argument error", async () => {
-    const { exitCode, logger, lifecycle } = await runWithLogger(["up"])
+    const { exitCode, logger, lifecycle } = await runWithLogger(["up", "local"])
 
     expect(exitCode).toBe(1)
     expect(lifecycle.requests).toEqual([])

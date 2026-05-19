@@ -400,6 +400,153 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN materialized Preview lifecycle WHEN up logs and down run THEN it uses the existing generated deployment", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-preview-lifecycle-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor()
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          const store = yield* RigdStateStore
+          const deployed = yield* rigd.deploy({
+            project: "pantry",
+            target: "generated",
+            ref: "feature/provider-backed",
+            commit: "commit-preview",
+            stateRoot,
+            config,
+            noUp: true,
+          })
+          const started = yield* rigd.lifecycle({
+            action: "up",
+            project: "pantry",
+            target: { kind: "generated", deploymentName: "feature/provider-backed" },
+            stateRoot,
+            config,
+          })
+          const logs = yield* rigd.logs({
+            project: "pantry",
+            stateRoot,
+            target: { kind: "generated", deploymentName: "feature/provider-backed" },
+            deployment: "feature-provider-backed",
+            lines: 10,
+          })
+          const stopped = yield* rigd.lifecycle({
+            action: "down",
+            project: "pantry",
+            target: { kind: "generated", deploymentName: "feature/provider-backed" },
+            stateRoot,
+            config,
+          })
+          const inventory = yield* rigd.inventory({ project: "pantry", stateRoot, config })
+          const persisted = yield* store.load({ stateRoot })
+          return { deployed, started, stopped, logs, inventory, persisted }
+        }),
+        { executor },
+      )
+
+      expect(result.deployed).toMatchObject({ kind: "deploy", target: "generated:feature-provider-backed" })
+      expect(result.started).toMatchObject({ kind: "lifecycle", target: "generated:feature-provider-backed" })
+      expect(result.stopped).toMatchObject({ kind: "lifecycle", target: "generated:feature-provider-backed" })
+      expect(executor.deployCalls.map((call) => `${call.ref}:${call.deployment.kind}:${call.deployment.name}:${call.start}`)).toEqual([
+        "commit-preview:generated:feature-provider-backed:false",
+      ])
+      expect(executor.lifecycleCalls.map((call) => `${call.action}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
+        "up:generated:feature-provider-backed",
+        "down:generated:feature-provider-backed",
+      ])
+      expect(result.logs.map((entry) => entry.deployment)).toEqual([
+        "feature-provider-backed",
+        "feature-provider-backed",
+        "feature-provider-backed",
+        "feature-provider-backed",
+      ])
+      expect(result.inventory.deployments).toContainEqual(expect.objectContaining({
+        kind: "generated",
+        name: "feature-provider-backed",
+      }))
+      expect(result.persisted.desiredDeployments).toEqual([
+        expect.objectContaining({
+          project: "pantry",
+          deployment: "feature-provider-backed",
+          kind: "generated",
+          desiredStatus: "stopped",
+        }),
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN missing Preview logs WHEN requested THEN it fails with deploy-first guidance", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-missing-preview-logs-"))
+
+    try {
+      const error = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          return yield* Effect.flip(rigd.logs({
+            project: "pantry",
+            stateRoot,
+            target: { kind: "generated", deploymentName: "feature/missing" },
+            deployment: "feature-missing",
+            lines: 10,
+          }))
+        }),
+      )
+
+      expect(error).toMatchObject({
+        _tag: "RigRuntimeError",
+        message: "Preview 'feature-missing' is not materialized.",
+        hint: "Deploy it first with 'rig deploy preview feature/missing' before reading logs.",
+        details: expect.objectContaining({
+          reason: "preview-not-materialized",
+          deployment: "feature-missing",
+          requestedDeployment: "feature/missing",
+        }),
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN missing Preview lifecycle WHEN requested THEN it fails with deploy-first guidance", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-missing-preview-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const executor = new CaptureRuntimeExecutor()
+      const error = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          return yield* Effect.flip(rigd.lifecycle({
+            action: "up",
+            project: "pantry",
+            target: { kind: "generated", deploymentName: "feature/missing" },
+            stateRoot,
+            config,
+          }))
+        }),
+        { executor },
+      )
+
+      expect(error).toMatchObject({
+        _tag: "RigRuntimeError",
+        message: "Preview 'feature-missing' is not materialized.",
+        hint: "Deploy it first with 'rig deploy preview feature/missing' before running lifecycle commands.",
+        details: expect.objectContaining({
+          reason: "preview-not-materialized",
+          deployment: "feature-missing",
+        }),
+      })
+      expect(executor.lifecycleCalls).toEqual([])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN local and live runtime logs WHEN lane is requested THEN only matching lane logs are returned", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-"))
 

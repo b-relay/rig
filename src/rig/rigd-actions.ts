@@ -270,6 +270,9 @@ const deploymentForPreflight = (
     if (found || kind !== "generated") {
       return found
     }
+    if (input.kind !== "deploy") {
+      return undefined
+    }
     return yield* deployments.previewGenerated({
       config: input.config,
       stateRoot: input.stateRoot,

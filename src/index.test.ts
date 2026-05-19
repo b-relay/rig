@@ -172,7 +172,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       )
 
       const up = await runRigCommand(
-        ["up"],
+        ["up", "local"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
         { cwd: repo },
       )
@@ -721,7 +721,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       )
 
       const { stdout, stderr, exitCode } = await runRigCommand(
-        ["up"],
+        ["up", "local"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
         { cwd: repo },
       )
@@ -771,7 +771,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       expect(init.stderr).toBe("")
 
       const up = await runRigCommand(
-        ["up"],
+        ["up", "local"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
         { cwd: repo },
       )
@@ -817,7 +817,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       expect(list.stdout).toContain("fake-fullstack targets=3")
 
       const logs = await runRigCommand(
-        ["logs", "--lines", "100"],
+        ["logs", "local", "--lines", "100"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
         { cwd: repo },
       )
@@ -887,7 +887,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       expect(init.stderr).toBe("")
 
       const up = await runRigCommand(
-        ["up"],
+        ["up", "local"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
         { cwd: repo },
       )
@@ -928,7 +928,7 @@ describe("GIVEN rig entrypoint WHEN executed directly THEN behavior is covered",
       expect(list.stdout).toContain("pantry-like targets=3")
 
       const logs = await runRigCommand(
-        ["logs", "--lines", "200"],
+        ["logs", "local", "--lines", "200"],
         { RIG_ROOT: root, RIG_PROVIDER_PROFILE: "stub" },
         { cwd: repo },
       )

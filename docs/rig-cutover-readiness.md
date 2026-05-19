@@ -74,13 +74,13 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
 | Area | Current behavior | Follow-up |
 |---|---|---|
 | Init/setup | `rig init` writes `rig.json`, can add non-overwriting `rig:` scripts, can scaffold bundled component stubs, explicit app-owned managed/installed components, domain/proxy metadata, and initialization state. | Keep additions tied to repeated real-project friction. |
-| Lifecycle | `rig up/down/restart --lane local|live` routes config-backed writes through `rigd` and selected providers. | Deepen provider parity and failure reporting. |
+| Lifecycle | `rig up/down/restart local|live` and `rig up/down/restart preview <branch>` route config-backed writes through `rigd` and selected providers. | Deepen provider parity and failure reporting. |
 | Status/logs | `rig status`, `rig list`, and `rig logs` read shared `rigd` read models and structured logs. | Improve operator summaries where real use shows gaps. |
-| Deploy | `rig deploy --target live|generated --ref <ref>` executes through SCM, workspace, package, health, process, event, and proxy providers. | Prove real Caddy reachability and Pantry dry run. |
-| Config | `rig config read/set/unset` uses `rigd.configRead/configPreview/configApply`. | Connect hosted/web editing later. |
-| Version metadata | `rig bump` carries optional semver/rollback metadata. | Decide whether `bump` remains final. |
+| Deploy | `rig deploy live [branch]` and `rig deploy preview [branch]` execute through SCM, workspace, package, health, process, event, and proxy providers. | Prove real Caddy reachability and Pantry dry run. |
+| Config | `rig config read` uses `rigd.configRead`; generic config writes are reserved for hosted or expert workflows. | Connect hosted/web editing later. |
+| Version metadata | Branch/Commit deploys replaced `rig bump`; version metadata is not a user-facing redeploy command. | Keep release metadata separate from Target lifecycle. |
 | Forget/purge | No direct replacement command yet. | Defer unless real use needs it. |
-| Daemon authority | `rig rigd`. | Keep as runtime authority command. |
+| Daemon authority | `rigd install/status/uninstall` is a separate daemon admin CLI; normal `rig` rejects daemon control surfaces. | Keep `rigd` as the runtime authority with a narrow admin surface. |
 | Doctor | `rig doctor`. | Caddy reload-command misconfiguration is reported as an actionable provider diagnostic. |
 | Hosted transport | Hosted identity and pairing token live in home config; transport retry/reconnect and delivery failures are covered without the real hosted service. | Keep disabled unless explicitly configured. |
 
@@ -124,7 +124,7 @@ The replacement should remain reversible:
 
 ## Open Decisions
 
-- Whether `bump` is the final command name for optional version metadata.
+- Whether optional release metadata belongs in config, receipts, or a future hosted workflow.
 - Whether `forget` needs a replacement command.
 - Whether Pantry should be the first real project to cut over after isolated
   Caddy validation is green.

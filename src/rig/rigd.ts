@@ -13,10 +13,10 @@ import { RigControlPlane, type RigControlPlaneStatus } from "./control-plane.js"
 import { branchSlug, RigDeploymentManager, type RigDeploymentRecord } from "./deployments.js"
 import { RigRuntimeError } from "./errors.js"
 import { RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
-import type { RigLifecycleLane, RigLifecycleWriteAction } from "./lifecycle.js"
+import type { RigLifecycleLane, RigLifecycleTarget, RigLifecycleWriteAction } from "./lifecycle.js"
 import { RigProviderRegistry, type RigProviderRegistryReport } from "./provider-contracts.js"
 import { verifyRigdActionPreflight, RigdActionPreflight, type RigdActionKind, type RigdActionPreflightInput } from "./rigd-actions.js"
-import { RigdStateStore } from "./rigd-state.js"
+import { RigdStateStore, type RigdPersistentState } from "./rigd-state.js"
 import { makeRigRuntimeJournal } from "./runtime-journal.js"
 import { deriveRigRuntimeLogWindow, deriveRigRuntimeWebReadModel } from "./runtime-read-models.js"
 import { RigRuntimeExecutor, type RigRuntimeExecutionResult } from "./runtime-executor.js"
@@ -70,6 +70,8 @@ export interface RigdLogInput {
   readonly stateRoot: string
   readonly lines: number
   readonly lane?: RigLifecycleLane
+  readonly deployment?: string
+  readonly target?: RigLifecycleTarget
 }
 
 export interface RigdLogEntry {
@@ -181,7 +183,8 @@ export interface RigdHealthState {
 export interface RigdLifecycleInput {
   readonly action: RigLifecycleWriteAction
   readonly project: string
-  readonly lane: RigLifecycleLane
+  readonly lane?: RigLifecycleLane
+  readonly target?: RigLifecycleTarget
   readonly stateRoot: string
   readonly config?: RigProjectConfig
 }
@@ -422,12 +425,13 @@ export const RigdLive = Layer.effect(
       execution?: RigRuntimeExecutionResult,
     ): Effect.Effect<RigdActionReceipt, RigRuntimeError> =>
       Effect.gen(function* () {
-        const accepted = yield* receipt("lifecycle", input.project, input.stateRoot, input.lane)
+        const target = lifecycleTarget(input)
+        const accepted = yield* receipt("lifecycle", input.project, input.stateRoot, lifecycleReceiptTarget(target))
         yield* persistExecutionEvents(input.stateRoot, execution)
         yield* appendEvent(input.stateRoot, {
           event: "rigd.lifecycle.accepted",
           project: input.project,
-          lane: input.lane,
+          ...lifecycleTargetEventScope(target),
           details: {
             action: input.action,
             receiptId: accepted.id,
@@ -498,6 +502,58 @@ export const RigdLive = Layer.effect(
         ? `${input.target}:${input.deploymentName}`
         : input.target
 
+    const lifecycleTarget = (input: RigdLifecycleInput | RigdControlPlaneLifecycleInput): RigLifecycleTarget =>
+      "target" in input && input.target ? input.target : { kind: input.lane ?? "local" }
+
+    const lifecycleTargetName = (target: RigLifecycleTarget): string =>
+      target.kind === "generated" ? branchSlug(target.deploymentName) : target.kind
+
+    const lifecycleReceiptTarget = (target: RigLifecycleTarget): string =>
+      target.kind === "generated" ? `generated:${lifecycleTargetName(target)}` : target.kind
+
+    const lifecycleTargetEventScope = (target: RigLifecycleTarget) =>
+      target.kind === "generated"
+        ? { deployment: lifecycleTargetName(target) }
+        : { lane: target.kind }
+
+    const assertGeneratedLogTargetExists = (
+      input: RigdLogInput,
+      state: RigdPersistentState,
+    ): Effect.Effect<void, RigRuntimeError> => {
+      if (input.target?.kind !== "generated") {
+        return Effect.void
+      }
+
+      const deployment = input.deployment ?? lifecycleTargetName(input.target)
+      const hasTargetEvidence =
+        state.deploymentSnapshots.some((snapshot) =>
+          snapshot.project === input.project && snapshot.deployment === deployment
+        ) ||
+        state.desiredDeployments.some((desired) =>
+          desired.project === input.project && desired.deployment === deployment
+        ) ||
+        state.events.some((event) =>
+          event.project === input.project && event.deployment === deployment
+        )
+
+      if (hasTargetEvidence) {
+        return Effect.void
+      }
+
+      return Effect.fail(
+        new RigRuntimeError(
+          `Preview '${deployment}' is not materialized.`,
+          `Deploy it first with 'rig deploy preview ${input.target.deploymentName}' before reading logs.`,
+          {
+            reason: "preview-not-materialized",
+            project: input.project,
+            deployment,
+            requestedDeployment: input.target.deploymentName,
+          },
+        ),
+      )
+    }
+
     const isLifecycleWriteAction = (action: unknown): action is RigLifecycleWriteAction =>
       action === "up" || action === "down"
 
@@ -529,7 +585,28 @@ export const RigdLive = Layer.effect(
         if (!input.config || !isLifecycleWriteAction(input.action)) {
           return undefined
         }
-        const deployment = yield* deploymentForLane(input.config, input.stateRoot, input.lane)
+        const target = lifecycleTarget(input)
+        const deployment = target.kind === "generated"
+          ? yield* deployments.resolveGenerated({
+            config: input.config,
+            stateRoot: input.stateRoot,
+            name: lifecycleTargetName(target),
+          }).pipe(
+            Effect.mapError((error) =>
+              new RigRuntimeError(
+                `Preview '${lifecycleTargetName(target)}' is not materialized.`,
+                `Deploy it first with 'rig deploy preview ${target.deploymentName}' before running lifecycle commands.`,
+                {
+                  reason: "preview-not-materialized",
+                  project: input.project,
+                  deployment: lifecycleTargetName(target),
+                  requestedDeployment: target.deploymentName,
+                  cause: error.message,
+                },
+              )
+            ),
+          )
+          : yield* deploymentForLane(input.config, input.stateRoot, target.kind)
         const execution = yield* runtimeExecutor.lifecycle({
           action: input.action,
           deployment,
@@ -1169,16 +1246,19 @@ export const RigdLive = Layer.effect(
           const persisted = yield* stateStore.load({
             stateRoot: input.stateRoot,
           })
+          const runtimeState = persisted.events.length > 0
+            ? persisted
+            : {
+              ...persisted,
+              events,
+            }
+          yield* assertGeneratedLogTargetExists(input, runtimeState)
           return deriveRigRuntimeLogWindow(
-            persisted.events.length > 0
-              ? persisted
-              : {
-                ...persisted,
-                events,
-              },
+            runtimeState,
             {
               project: input.project,
               ...(input.lane ? { lane: input.lane } : {}),
+              ...(input.deployment ? { deployment: input.deployment } : {}),
               lines: input.lines,
               includeGlobal: true,
             },
@@ -1242,7 +1322,7 @@ export const RigdLive = Layer.effect(
             kind: "lifecycle",
             project: input.project,
             stateRoot: input.stateRoot,
-            target: input.lane,
+            target: lifecycleReceiptTarget(lifecycleTarget(input)),
             ...(input.config ? { config: input.config } : {}),
           })
           const runtimeResult = yield* lifecycleExecution(input)
@@ -1285,7 +1365,7 @@ export const RigdLive = Layer.effect(
             kind: "lifecycle",
             project: input.project,
             stateRoot: input.stateRoot,
-            target: input.lane,
+            target: lifecycleReceiptTarget(lifecycleTarget(input)),
             ...(input.config ? { config: input.config } : {}),
           })
           const runtimeResult = yield* lifecycleExecution(input)

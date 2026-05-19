@@ -1,17 +1,22 @@
 import { Context, Effect, Layer } from "effect"
 
 import type { RigProjectConfig } from "./config.js"
-import { Rigd, type RigdHealthState } from "./rigd.js"
+import { branchSlug } from "./deployments.js"
+import { Rigd, type RigdHealthState, type RigdLogEntry } from "./rigd.js"
 import { RigLogger } from "./services.js"
 
 export type RigLifecycleWriteAction = "up" | "down"
 export type RigLifecycleAction = RigLifecycleWriteAction | "restart" | "logs" | "status"
 export type RigLifecycleLane = "local" | "live"
+export type RigLifecycleTarget =
+  | { readonly kind: RigLifecycleLane }
+  | { readonly kind: "generated"; readonly deploymentName: string }
 
 export interface RigLifecycleRequest {
   readonly action: RigLifecycleAction
   readonly project: string
   readonly lane?: RigLifecycleLane
+  readonly target?: RigLifecycleTarget
   readonly stateRoot: string
   readonly config?: RigProjectConfig
   readonly follow?: boolean
@@ -25,16 +30,28 @@ export interface RigLifecycleService {
 
 export const RigLifecycle = Context.Service<RigLifecycleService>("rig/rig/RigLifecycle")
 
+const lifecycleTarget = (request: RigLifecycleRequest): RigLifecycleTarget =>
+  request.target ?? { kind: request.lane ?? "local" }
+
+const lifecycleTargetLogScope = (target: RigLifecycleTarget) =>
+  target.kind === "generated"
+    ? { deployment: branchSlug(target.deploymentName) }
+    : { lane: target.kind }
+
 const lifecycleWriteInput = (
   request: RigLifecycleRequest,
   action: RigLifecycleWriteAction,
-) => ({
-  action,
-  project: request.project,
-  lane: request.lane ?? "local",
-  stateRoot: request.stateRoot,
-  ...(request.config ? { config: request.config } : {}),
-})
+) => {
+  const target = lifecycleTarget(request)
+  return {
+    action,
+    project: request.project,
+    ...(target.kind === "generated" ? {} : { lane: target.kind }),
+    target,
+    stateRoot: request.stateRoot,
+    ...(request.config ? { config: request.config } : {}),
+  }
+}
 
 const summarizeFailure = (failure: RigdHealthState["managedServiceFailures"][number]): string => [
   `${failure.deployment}/${failure.component} crashed at ${failure.occurredAt} after ${failure.recentCrashCount} recent ${
@@ -57,6 +74,65 @@ const summarizeRuntimeStatus = (status: RigdHealthState) => ({
 const pluralize = (count: number, singular: string, plural = `${singular}s`) =>
   count === 1 ? singular : plural
 
+const logDetailText = (entry: RigdLogEntry): string => {
+  const stream = typeof entry.details?.stream === "string" ? entry.details.stream : undefined
+  const line = typeof entry.details?.line === "string" ? entry.details.line : undefined
+  const operation = typeof entry.details?.operation === "string" ? entry.details.operation : undefined
+  if (stream && line) {
+    return `${stream}: ${line}`
+  }
+  if (operation) {
+    return operation
+  }
+  return entry.event
+}
+
+const formatLogEntry = (entry: RigdLogEntry): string => {
+  const target = entry.deployment ?? entry.lane ?? "host"
+  const component = entry.component ? `/${entry.component}` : ""
+  return `${entry.timestamp} ${target}${component} ${logDetailText(entry)}`
+}
+
+const formatLogEntries = (entries: readonly RigdLogEntry[]): string =>
+  [
+    "rig logs",
+    ...(entries.length === 0 ? ["no log entries"] : entries.map(formatLogEntry)),
+  ].join("\n")
+
+type LogEntryCounts = Map<string, number>
+
+const logEntryKey = (entry: RigdLogEntry): string =>
+  JSON.stringify({
+    timestamp: entry.timestamp,
+    event: entry.event,
+    project: entry.project,
+    lane: entry.lane,
+    deployment: entry.deployment,
+    component: entry.component,
+    details: entry.details,
+  })
+
+const markLogEntries = (entries: readonly RigdLogEntry[], counts: LogEntryCounts): void => {
+  for (const entry of entries) {
+    const key = logEntryKey(entry)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+}
+
+const unseenLogEntries = (
+  entries: readonly RigdLogEntry[],
+  counts: LogEntryCounts,
+): readonly RigdLogEntry[] => {
+  const observed = new Map<string, number>()
+  return entries.filter((entry) => {
+    const key = logEntryKey(entry)
+    const seenCount = counts.get(key) ?? 0
+    const observedCount = observed.get(key) ?? 0
+    observed.set(key, observedCount + 1)
+    return observedCount >= seenCount
+  })
+}
+
 const formatRuntimeStatus = (project: string, status: RigdHealthState): string => {
   const deploymentLines = status.desiredDeployments.length === 0
     ? ["deployments: none"]
@@ -72,8 +148,8 @@ const formatRuntimeStatus = (project: string, status: RigdHealthState): string =
       "failures:",
       ...status.managedServiceFailures.map((failure) => {
         const logHint = failure.deployment === "local" || failure.deployment === "live"
-          ? `; logs: rig logs --project ${project} --lane ${failure.deployment}`
-          : ""
+          ? `; logs: rig logs ${failure.deployment} --project ${project}`
+          : `; logs: rig logs preview ${failure.deployment} --project ${project}`
         return [
           `  ${failure.deployment}/${failure.component}: crashed ${failure.recentCrashCount} ${
             pluralize(failure.recentCrashCount, "time")
@@ -102,18 +178,43 @@ export const RigLifecycleLive = Layer.effect(
       run: (request) =>
         Effect.gen(function* () {
           if (request.action === "logs") {
+            const target = lifecycleTarget(request)
+            const scope = lifecycleTargetLogScope(target)
+            const seen: LogEntryCounts = new Map()
+            const logDetails = (entries: readonly RigdLogEntry[]) => ({
+              project: request.project,
+              target,
+              ...scope,
+              follow: request.follow ?? false,
+              entries,
+            })
             const entries = yield* rigd.logs({
               project: request.project,
               stateRoot: request.stateRoot,
               lines: request.lines ?? 50,
-              ...(request.lane ? { lane: request.lane } : {}),
+              target,
+              ...scope,
             })
-            yield* logger.info("rig logs", {
-              project: request.project,
-              ...(request.lane ? { lane: request.lane } : {}),
-              follow: request.follow ?? false,
-              entries,
-            })
+            markLogEntries(entries, seen)
+            yield* logger.info(formatLogEntries(entries), logDetails(entries))
+            if (request.follow) {
+              yield* Effect.forever(Effect.gen(function* () {
+                yield* Effect.sleep("1 second")
+                const nextEntries = yield* rigd.logs({
+                  project: request.project,
+                  stateRoot: request.stateRoot,
+                  lines: request.lines ?? 50,
+                  target,
+                  ...scope,
+                })
+                const unseen = unseenLogEntries(nextEntries, seen)
+                if (unseen.length === 0) {
+                  return
+                }
+                markLogEntries(unseen, seen)
+                yield* logger.info(formatLogEntries(unseen), logDetails(unseen))
+              }))
+            }
             return
           }
 
@@ -135,7 +236,8 @@ export const RigLifecycleLive = Layer.effect(
             const started = yield* rigd.lifecycle(lifecycleWriteInput(request, "up"))
             yield* logger.info("rig lifecycle restarted", {
               project: request.project,
-              lane: request.lane,
+              target: lifecycleTarget(request),
+              ...(request.lane ? { lane: request.lane } : {}),
               stopped,
               started,
             })

@@ -112,6 +112,8 @@ export const launchdPlist = (input: {
     `\t<string>${escapeXml(input.workdir)}</string>`,
     `\t<key>KeepAlive</key>`,
     `\t<${input.keepAlive}/>`,
+    `\t<key>RunAtLoad</key>`,
+    `\t<true/>`,
     `\t<key>StandardOutPath</key>`,
     `\t<string>${escapeXml(input.logPath)}</string>`,
     `\t<key>StandardErrorPath</key>`,
@@ -186,6 +188,22 @@ export const createLaunchdProcessSupervisorAdapter = (
               label,
               plistPath: path,
               stderr: result.stderr,
+            },
+          )
+        }
+
+        const startResult = await runLaunchd(["launchctl", "kickstart", "-k", `${domain}/${label}`])
+        if (startResult.exitCode !== 0) {
+          throw new RigRuntimeError(
+            `launchd failed to start '${input.service.name}' with exit code ${startResult.exitCode}.`,
+            "Inspect the generated plist and launchctl stderr, then retry the lifecycle action.",
+            {
+              providerId: provider.id,
+              component: input.service.name,
+              deployment: input.deployment.name,
+              label,
+              plistPath: path,
+              stderr: startResult.stderr,
             },
           )
         }

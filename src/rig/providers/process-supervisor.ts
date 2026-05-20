@@ -5,6 +5,7 @@ import type { RigRuntimeError } from "../errors.js"
 import type {
   RigProviderFamilyService,
   RigProviderOutputLine,
+  RigProviderRuntimeContext,
   RigRuntimeServiceConfig,
 } from "../provider-contracts.js"
 
@@ -26,14 +27,17 @@ export interface RigProcessSupervisorProviderService
   readonly up: (input: {
     readonly deployment: RigDeploymentRecord
     readonly service: RigRuntimeServiceConfig
+    readonly context?: RigProviderRuntimeContext
   }) => Effect.Effect<RigProcessSupervisorOperationResult, RigRuntimeError>
   readonly down: (input: {
     readonly deployment: RigDeploymentRecord
     readonly service: RigRuntimeServiceConfig
+    readonly context?: RigProviderRuntimeContext
   }) => Effect.Effect<RigProcessSupervisorOperationResult, RigRuntimeError>
   readonly restart: (input: {
     readonly deployment: RigDeploymentRecord
     readonly service: RigRuntimeServiceConfig
+    readonly context?: RigProviderRuntimeContext
   }) => Effect.Effect<RigProcessSupervisorOperationResult, RigRuntimeError>
 }
 

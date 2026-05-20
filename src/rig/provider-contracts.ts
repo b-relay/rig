@@ -91,6 +91,27 @@ export interface RigProviderContractsOptions {
   }
 }
 
+export interface RigCaddyProviderRuntimeConfig {
+  readonly caddyfile?: string
+  readonly caddyfilePath?: string
+  readonly extraConfig?: readonly string[]
+  readonly reload?: {
+    readonly mode: "manual" | "command" | "disabled"
+    readonly command?: string
+  }
+}
+
+export interface RigProviderRuntimeContext {
+  readonly project: string
+  readonly stateRoot: string
+  readonly binRoot: string
+  readonly proxyRoot: string
+  readonly launchdLabelPrefix: string
+  readonly providers?: {
+    readonly caddy?: RigCaddyProviderRuntimeConfig
+  }
+}
+
 export type RigProviderPluginForFamily<Family extends RigProviderFamily> =
   RigProviderPlugin & { readonly family: Family }
 
@@ -166,6 +187,7 @@ export interface RigPackageManagerProviderService
   readonly install: (input: {
     readonly deployment: RigDeploymentRecord
     readonly service: RigRuntimeServiceConfig
+    readonly context?: RigProviderRuntimeContext
   }) => Effect.Effect<string, RigRuntimeError>
 }
 
@@ -174,10 +196,12 @@ export interface RigProxyRouterProviderService
   readonly upsert: (input: {
     readonly deployment: RigDeploymentRecord
     readonly proxy: RigRuntimeProxyConfig
+    readonly context?: RigProviderRuntimeContext
   }) => Effect.Effect<string, RigRuntimeError>
   readonly remove: (input: {
     readonly deployment: RigDeploymentRecord
     readonly proxy: RigRuntimeProxyConfig
+    readonly context?: RigProviderRuntimeContext
   }) => Effect.Effect<string, RigRuntimeError>
 }
 

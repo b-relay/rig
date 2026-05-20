@@ -12,10 +12,10 @@ import {
   platformWriteFileString,
 } from "../effect-platform.js"
 import { RigRuntimeError } from "../errors.js"
-import { rigProxyRoot } from "../paths.js"
 import type {
   RigProviderPlugin,
   RigProviderPluginForFamily,
+  RigProviderRuntimeContext,
   RigRuntimeProxyConfig,
 } from "../provider-contracts.js"
 
@@ -43,6 +43,7 @@ export interface RigCaddyProxyRouterAdapter {
     input: {
       readonly deployment: RigDeploymentRecord
       readonly proxy: RigRuntimeProxyConfig
+      readonly context?: RigProviderRuntimeContext
     },
     selected: RigProviderPluginForFamily<"proxy-router">,
   ) => Effect.Effect<string, RigRuntimeError>
@@ -50,6 +51,7 @@ export interface RigCaddyProxyRouterAdapter {
     input: {
       readonly deployment: RigDeploymentRecord
       readonly proxy: RigRuntimeProxyConfig
+      readonly context?: RigProviderRuntimeContext
     },
     selected: RigProviderPluginForFamily<"proxy-router">,
   ) => Effect.Effect<string, RigRuntimeError>
@@ -282,13 +284,44 @@ export const createCaddyProxyRouterAdapter = (
   options: RigCaddyProxyRouterOptions | undefined,
   defaultCommandRunner: RigCaddyCommandRunner,
 ): RigCaddyProxyRouterAdapter => {
-  const caddyfilePath = options?.caddyfilePath ?? options?.caddyfile ?? join(rigProxyRoot(), "Caddyfile")
-  const extraConfig = options?.extraConfig ?? []
-  const reloadConfig = options?.reload ?? { mode: "manual" as const }
   const runReload = options?.runCommand ?? defaultCommandRunner
+
+  const caddySettings = (context: RigProviderRuntimeContext | undefined) => {
+    const caddy = context?.providers?.caddy
+    const proxyRoot = context?.proxyRoot
+    return {
+      caddyfilePath:
+        caddy?.caddyfilePath ?? caddy?.caddyfile ?? options?.caddyfilePath ?? options?.caddyfile ??
+          (proxyRoot ? join(proxyRoot, "Caddyfile") : undefined),
+      extraConfig: caddy?.extraConfig ?? options?.extraConfig ?? [],
+      reloadConfig: caddy?.reload ?? options?.reload ?? { mode: "manual" as const },
+    }
+  }
+
+  const requireCaddyfilePath = (
+    selected: RigProviderPluginForFamily<"proxy-router">,
+    context: RigProviderRuntimeContext | undefined,
+  ): Effect.Effect<string, RigRuntimeError> => {
+    const caddyfilePath = caddySettings(context).caddyfilePath
+    return caddyfilePath
+      ? Effect.succeed(caddyfilePath)
+      : Effect.fail(
+        new RigRuntimeError(
+          "Caddy provider requires a runtime proxy root or configured Caddyfile path.",
+          "Resolve provider runtime context in rigd before calling the Caddy provider.",
+          {
+            providerId: selected.id,
+            project: context?.project,
+            stateRoot: context?.stateRoot,
+          },
+        ),
+      )
+  }
 
   const reloadCaddyAfterWrite = (
     selected: RigProviderPluginForFamily<"proxy-router">,
+    caddyfilePath: string,
+    reloadConfig: NonNullable<ReturnType<typeof caddySettings>["reloadConfig"]>,
     details: Readonly<Record<string, unknown>>,
   ): Promise<void> => {
     if (reloadConfig.mode !== "command") {
@@ -327,22 +360,23 @@ export const createCaddyProxyRouterAdapter = (
   }
 
   const applyCaddyfileChange = (input: {
+    readonly caddyfilePath: string
     readonly previousText: string
     readonly hadExistingFile: boolean
     readonly nextText: string
     readonly reload: Effect.Effect<unknown, unknown>
   }): Effect.Effect<void, unknown> =>
     Effect.gen(function* () {
-      yield* backupIfExists(caddyfilePath)
-      yield* writeText(caddyfilePath, input.nextText)
+      yield* backupIfExists(input.caddyfilePath)
+      yield* writeText(input.caddyfilePath, input.nextText)
       yield* input.reload.pipe(Effect.matchEffect({
         onSuccess: () => Effect.void,
         onFailure: (error) =>
           Effect.gen(function* () {
             if (input.hadExistingFile) {
-              yield* writeText(caddyfilePath, input.previousText)
+              yield* writeText(input.caddyfilePath, input.previousText)
             } else {
-              yield* platformRemove(caddyfilePath, { force: true })
+              yield* platformRemove(input.caddyfilePath, { force: true })
             }
             return yield* Effect.fail(error)
           }),
@@ -352,8 +386,11 @@ export const createCaddyProxyRouterAdapter = (
   const upsert = (input: {
     readonly deployment: RigDeploymentRecord
     readonly proxy: RigRuntimeProxyConfig
+    readonly context?: RigProviderRuntimeContext
   }, selected: RigProviderPluginForFamily<"proxy-router">): Effect.Effect<string, RigRuntimeError> =>
     Effect.gen(function* () {
+      const caddyfilePath = yield* requireCaddyfilePath(selected, input.context)
+      const settings = caddySettings(input.context)
       const domain = yield* deploymentDomain(input.deployment, selected)
       const port = yield* upstreamPort(input.deployment, input.proxy.upstream, selected)
       const route: RigCaddyRoute = {
@@ -372,7 +409,7 @@ export const createCaddyProxyRouterAdapter = (
         const target =
           existing.find((block) => block.route && routeKey(block.route) === routeKey(route)) ??
           existing.find((block) => block.domain === route.domain)
-        const block = renderRigCaddyBlock(route, extraConfig)
+        const block = renderRigCaddyBlock(route, settings.extraConfig)
         const next = target
           ? [
             ...lines.slice(0, target.startLine),
@@ -384,11 +421,12 @@ export const createCaddyProxyRouterAdapter = (
             : `${text.trimEnd()}\n\n${block}\n`
 
         yield* applyCaddyfileChange({
+          caddyfilePath,
           previousText: text,
           hadExistingFile,
           nextText: next,
           reload: Effect.tryPromise({
-            try: () => reloadCaddyAfterWrite(selected, {
+            try: () => reloadCaddyAfterWrite(selected, caddyfilePath, settings.reloadConfig, {
               project: input.deployment.project,
               deployment: input.deployment.name,
               upstream: input.proxy.upstream,
@@ -420,53 +458,59 @@ export const createCaddyProxyRouterAdapter = (
   const remove = (input: {
     readonly deployment: RigDeploymentRecord
     readonly proxy: RigRuntimeProxyConfig
+    readonly context?: RigProviderRuntimeContext
   }, selected: RigProviderPluginForFamily<"proxy-router">): Effect.Effect<string, RigRuntimeError> =>
     Effect.gen(function* () {
-      const text = yield* readTextIfExists(caddyfilePath)
-      const lines = text.split("\n")
-      const key = routeKey({
-        project: input.deployment.project,
-        deployment: input.deployment.name,
-        upstream: input.proxy.upstream,
-      })
-      const target = parseRigCaddyBlocks(text).find((block) => routeKey(block.route) === key)
-      if (target) {
-        let endLine = target.endLine + 1
-        if (endLine < lines.length && lines[endLine]?.trim() === "") {
-          endLine += 1
-        }
-        const next = [
-          ...lines.slice(0, target.startLine),
-          ...lines.slice(endLine),
-        ].join("\n")
-        yield* applyCaddyfileChange({
-          previousText: text,
-          hadExistingFile: true,
-          nextText: next,
-          reload: Effect.tryPromise({
-            try: () => reloadCaddyAfterWrite(selected, {
-              project: input.deployment.project,
-              deployment: input.deployment.name,
-              upstream: input.proxy.upstream,
-            }),
-            catch: (cause) => cause,
-          }),
-        })
-      }
-      return `${selected.family}:${selected.id}:remove:${input.deployment.project}:${input.deployment.name}:${input.proxy.upstream}`
-    }).pipe(
-      Effect.mapError(runtimeError(
-        `Unable to remove Caddy route for deployment '${input.deployment.name}'.`,
-        "Ensure the rig Caddyfile path is writable and retry proxy teardown.",
-        {
-          providerId: selected.id,
-          caddyfilePath,
+      const caddyfilePath = yield* requireCaddyfilePath(selected, input.context)
+      const settings = caddySettings(input.context)
+      yield* Effect.gen(function* () {
+        const text = yield* readTextIfExists(caddyfilePath)
+        const lines = text.split("\n")
+        const key = routeKey({
           project: input.deployment.project,
           deployment: input.deployment.name,
           upstream: input.proxy.upstream,
-        },
-      )),
-    )
+        })
+        const target = parseRigCaddyBlocks(text).find((block) => routeKey(block.route) === key)
+        if (target) {
+          let endLine = target.endLine + 1
+          if (endLine < lines.length && lines[endLine]?.trim() === "") {
+            endLine += 1
+          }
+          const next = [
+            ...lines.slice(0, target.startLine),
+            ...lines.slice(endLine),
+          ].join("\n")
+          yield* applyCaddyfileChange({
+            caddyfilePath,
+            previousText: text,
+            hadExistingFile: true,
+            nextText: next,
+            reload: Effect.tryPromise({
+              try: () => reloadCaddyAfterWrite(selected, caddyfilePath, settings.reloadConfig, {
+                project: input.deployment.project,
+                deployment: input.deployment.name,
+                upstream: input.proxy.upstream,
+              }),
+              catch: (cause) => cause,
+            }),
+          })
+        }
+      }).pipe(
+        Effect.mapError(runtimeError(
+          `Unable to remove Caddy route for deployment '${input.deployment.name}'.`,
+          "Ensure the rig Caddyfile path is writable and retry proxy teardown.",
+          {
+            providerId: selected.id,
+            caddyfilePath,
+            project: input.deployment.project,
+            deployment: input.deployment.name,
+            upstream: input.proxy.upstream,
+          },
+        )),
+      )
+      return `${selected.family}:${selected.id}:remove:${input.deployment.project}:${input.deployment.name}:${input.proxy.upstream}`
+    })
 
   return { upsert, remove }
 }

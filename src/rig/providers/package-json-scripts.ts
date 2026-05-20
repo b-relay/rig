@@ -10,10 +10,10 @@ import {
   platformWriteFileString,
 } from "../effect-platform.js"
 import { RigRuntimeError } from "../errors.js"
-import { rigBinRoot } from "../paths.js"
 import type {
   RigProviderPlugin,
   RigProviderPluginForFamily,
+  RigProviderRuntimeContext,
   RigRuntimeServiceConfig,
 } from "../provider-contracts.js"
 
@@ -37,6 +37,7 @@ export interface RigPackageJsonScriptsAdapter {
     input: {
       readonly deployment: RigDeploymentRecord
       readonly service: RigRuntimeServiceConfig
+      readonly context?: RigProviderRuntimeContext
     },
     selected: RigProviderPluginForFamily<"package-manager">,
   ) => Effect.Effect<string, RigRuntimeError>
@@ -54,7 +55,7 @@ export const createPackageJsonScriptsAdapter = (
   options: RigPackageJsonScriptsOptions | undefined,
   runPlatformCommand: RigPackageJsonScriptsCommandRunner,
 ): RigPackageJsonScriptsAdapter => {
-  const binRoot = options?.binRoot ?? rigBinRoot()
+  const configuredBinRoot = options?.binRoot
 
   const installName = (deployment: RigDeploymentRecord, serviceName: string): string => {
     if (deployment.kind === "live") return serviceName
@@ -62,8 +63,8 @@ export const createPackageJsonScriptsAdapter = (
     return `${serviceName}-${deployment.name}`
   }
 
-  const installPath = (deployment: RigDeploymentRecord, serviceName: string): string =>
-    join(binRoot, installName(deployment, serviceName))
+  const deploymentBinRoot = (context?: RigProviderRuntimeContext): string | undefined =>
+    context?.binRoot ?? configuredBinRoot
 
   const isWithinWorkspace = (path: string, workspacePath: string): boolean => {
     const workspace = resolve(workspacePath)
@@ -90,8 +91,9 @@ export const createPackageJsonScriptsAdapter = (
     deployment: RigDeploymentRecord,
     service: Extract<RigRuntimeServiceConfig, { readonly type: "bin" }>,
     selected: RigProviderPluginForFamily<"package-manager">,
+    binRoot: string,
   ): Effect.Effect<string, RigRuntimeError> => Effect.gen(function* () {
-    const destination = installPath(deployment, service.name)
+    const destination = join(binRoot, installName(deployment, service.name))
     yield* platformMakeDirectory(dirname(destination))
 
     if (service.entrypoint.includes(" ") && !service.build) {
@@ -144,12 +146,27 @@ export const createPackageJsonScriptsAdapter = (
   const install = (input: {
     readonly deployment: RigDeploymentRecord
     readonly service: RigRuntimeServiceConfig
+    readonly context?: RigProviderRuntimeContext
   }, selected: RigProviderPluginForFamily<"package-manager">): Effect.Effect<string, RigRuntimeError> => {
     if (input.service.type !== "bin") {
       return Effect.succeed(`${selected.family}:${selected.id}:install:${input.service.name}`)
     }
 
     return Effect.gen(function* () {
+      const binRoot = deploymentBinRoot(input.context)
+      if (!binRoot) {
+        return yield* Effect.fail(new RigRuntimeError(
+          "Package scripts provider requires a runtime bin root.",
+          "Resolve provider runtime context in rigd before calling the package scripts provider.",
+          {
+            providerId: selected.id,
+            project: input.deployment.project,
+            deployment: input.deployment.name,
+            stateRoot: input.context?.stateRoot,
+          },
+        ))
+      }
+
       if ("build" in input.service && input.service.build) {
         const { exitCode, stdout, stderr } = yield* runPlatformCommand(
           ["sh", "-lc", input.service.build],
@@ -173,7 +190,7 @@ export const createPackageJsonScriptsAdapter = (
         }
       }
 
-      const destination = yield* installEntrypoint(input.deployment, input.service, selected)
+      const destination = yield* installEntrypoint(input.deployment, input.service, selected, binRoot)
       return `${selected.family}:${selected.id}:install:${input.service.name}:installed:${destination}`
     }).pipe(
       Effect.mapError((cause) =>

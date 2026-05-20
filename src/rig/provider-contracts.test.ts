@@ -24,11 +24,10 @@ import {
   RigWorkspaceMaterializerProvider,
   rigProviderFamilies,
   type RigProviderPlugin,
+  type RigProviderRuntimeContext,
 } from "./provider-contracts.js"
 import type { RigDeploymentRecord } from "./deployments.js"
-import { RigFileHomeConfigStoreLive } from "./home-config.js"
 import { stubProcessSupervisorProvider } from "./providers/stub-process-supervisor.js"
-import { RigProviderContractsFromHomeConfigLive } from "./services.js"
 
 const runWithRegistry = <A>(
   effect: Effect.Effect<A, unknown, RigProviderRegistry>,
@@ -99,6 +98,18 @@ const waitForProcessExit = (process: ChildProcessWithoutNullStreams): Promise<vo
 
 const caddyPath = await resolveCaddyPath()
 const testWithCaddy = caddyPath ? test : test.skip
+
+const providerRuntimeContext = (
+  stateRoot: string,
+  providers: RigProviderRuntimeContext["providers"] = {},
+): RigProviderRuntimeContext => ({
+  project: "pantry",
+  stateRoot,
+  binRoot: join(stateRoot, "bin"),
+  proxyRoot: join(stateRoot, "proxy"),
+  launchdLabelPrefix: "com.b-relay.rig",
+  providers,
+})
 
 describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THEN provider composition is explicit", () => {
   test("GIVEN built-in profiles WHEN reported THEN every profile satisfies the same provider family contract", async () => {
@@ -618,6 +629,73 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
     }
   })
 
+  test("GIVEN caddy proxy router WHEN runtime context injects Caddy config THEN it ignores stale composition defaults", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-caddy-context-"))
+    const staleRoot = await mkdtemp(join(tmpdir(), "rig-caddy-stale-"))
+    const caddyfilePath = join(root, "Caddyfile")
+    const staleCaddyfilePath = join(staleRoot, "Caddyfile")
+
+    try {
+      const deployment = {
+        project: "pantry",
+        kind: "live",
+        name: "live",
+        resolved: {
+          v1Config: {
+            domain: "pantry.b-relay.com",
+          },
+          environment: {
+            services: [
+              {
+                name: "web",
+                type: "server",
+                command: "bun run start",
+                port: 3070,
+              },
+            ],
+          },
+        },
+      } as RigDeploymentRecord
+
+      const upserted = await Effect.runPromise(
+        Effect.gen(function* () {
+          const proxy = yield* RigProxyRouterProvider
+          return yield* proxy.upsert({
+            deployment,
+            proxy: {
+              upstream: "web",
+            },
+            context: providerRuntimeContext(root, {
+              caddy: {
+                caddyfilePath,
+                extraConfig: ["import cloudflare"],
+                reload: { mode: "manual" },
+              },
+            }),
+          } as Parameters<typeof proxy.upsert>[0])
+        }).pipe(Effect.provide(RigProviderContractsLive("default", [], {
+          proxyRouter: {
+            caddyfilePath: staleCaddyfilePath,
+            extraConfig: ["import stale"],
+          },
+        }))),
+      )
+
+      const content = await readFile(caddyfilePath, "utf8")
+      const staleFiles = await readdir(staleRoot)
+
+      expect(upserted).toBe("proxy-router:caddy:upsert:pantry.b-relay.com:web:3070")
+      expect(content).toContain("pantry.b-relay.com {")
+      expect(content).toContain("reverse_proxy http://127.0.0.1:3070")
+      expect(content).toContain("import cloudflare")
+      expect(content).not.toContain("import stale")
+      expect(staleFiles).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(staleRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN caddy proxy router WHEN pantry live is routed THEN pantry.b-relay.com points at the selected localhost service", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-pantry-caddy-"))
     const caddyfilePath = join(root, "Caddyfile")
@@ -1026,25 +1104,11 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
     }
   })
 
-  test("GIVEN caddy provider settings in rig home config WHEN default provider contracts are composed THEN routes use those settings", async () => {
+  test("GIVEN caddy provider settings in runtime context WHEN default provider contracts are composed THEN routes use those settings", async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-caddy-home-config-"))
     const caddyfilePath = join(root, "system-Caddyfile")
-    const previousRoot = process.env.RIG_ROOT
-    process.env.RIG_ROOT = root
 
     try {
-      await writeFile(join(root, "config.json"), JSON.stringify({
-        providers: {
-          caddy: {
-            caddyfile: caddyfilePath,
-            extraConfig: ["import cloudflare"],
-            reload: {
-              mode: "manual",
-            },
-          },
-        },
-      }))
-
       const deployment = {
         project: "pantry",
         kind: "live",
@@ -1074,22 +1138,23 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
             proxy: {
               upstream: "web",
             },
+            context: providerRuntimeContext(root, {
+              caddy: {
+                caddyfile: caddyfilePath,
+                extraConfig: ["import cloudflare"],
+                reload: {
+                  mode: "manual",
+                },
+              },
+            }),
           })
-        }).pipe(Effect.provide(Layer.provide(
-          RigProviderContractsFromHomeConfigLive,
-          RigFileHomeConfigStoreLive,
-        ))),
+        }).pipe(Effect.provide(RigProviderContractsLive("default"))),
       )
 
       const caddyfile = await readFile(caddyfilePath, "utf8")
       expect(caddyfile).toContain("pantry.b-relay.com {")
       expect(caddyfile).toContain("\timport cloudflare")
     } finally {
-      if (previousRoot === undefined) {
-        delete process.env.RIG_ROOT
-      } else {
-        process.env.RIG_ROOT = previousRoot
-      }
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -1835,6 +1900,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
           const packages = yield* RigPackageManagerProvider
           return yield* packages.install({
             deployment,
+            context: providerRuntimeContext(root),
             service: {
               name: "tool",
               type: "bin",
@@ -1853,6 +1919,54 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
       expect(await readFile(join(workspace, "dist", "tool"), "utf8")).toBe("built")
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN package-json-scripts provider WHEN runtime context injects bin root THEN it ignores stale composition defaults", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-package-runtime-context-"))
+    const staleRoot = await mkdtemp(join(tmpdir(), "rig-package-stale-context-"))
+    const workspace = join(root, "workspace")
+    const binRoot = join(root, "bin")
+    const staleBinRoot = join(staleRoot, "bin")
+
+    try {
+      await mkdir(join(workspace, "scripts"), { recursive: true })
+      await writeFile(join(workspace, "scripts", "tool.js"), "console.log('tool')\n")
+      const deployment = {
+        project: "pantry",
+        kind: "generated",
+        name: "feature-a",
+        workspacePath: workspace,
+      } as RigDeploymentRecord
+
+      const operation = await Effect.runPromise(
+        Effect.gen(function* () {
+          const packages = yield* RigPackageManagerProvider
+          return yield* packages.install({
+            deployment,
+            context: providerRuntimeContext(root),
+            service: {
+              name: "tool",
+              type: "bin",
+              entrypoint: "scripts/tool.js",
+            },
+          })
+        }).pipe(Effect.provide(RigProviderContractsLive("default", [], {
+          packageManager: {
+            binRoot: staleBinRoot,
+          },
+        }))),
+      )
+
+      const destination = join(binRoot, "tool-feature-a")
+      expect(operation).toBe(`package-manager:package-json-scripts:install:tool:installed:${destination}`)
+      expect(await readFile(destination, "utf8")).toBe(
+        `#!/bin/sh\ncd ${JSON.stringify(workspace)} && exec ./scripts/tool.js "$@"\n`,
+      )
+      expect(await readdir(staleRoot)).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(staleRoot, { recursive: true, force: true })
     }
   })
 
@@ -1918,6 +2032,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
           const packages = yield* RigPackageManagerProvider
           return yield* packages.install({
             deployment,
+            context: providerRuntimeContext(root),
             service: {
               name: "tool",
               type: "bin",
@@ -2000,6 +2115,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
           const packages = yield* RigPackageManagerProvider
           return yield* packages.install({
             deployment,
+            context: providerRuntimeContext(root),
             service: {
               name: "tool",
               type: "bin",
@@ -2044,6 +2160,7 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
           const packages = yield* RigPackageManagerProvider
           return yield* packages.install({
             deployment,
+            context: providerRuntimeContext(workspace),
             service: {
               name: "tool",
               type: "bin",

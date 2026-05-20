@@ -6,7 +6,10 @@ import { RigDefaultControlPlaneLive } from "./control-plane.js"
 import { RigConfigEditorLive, RigConfigFileStoreLive } from "./config-editor.js"
 import type { RigTaggedError } from "./errors.js"
 import { RigFileHomeConfigStoreLive, RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
-import { RigProviderContractsLive, type RigProviderContractsOptions } from "./provider-contracts.js"
+import {
+  RigProviderContractsLive,
+  type RigProviderRuntimeContext,
+} from "./provider-contracts.js"
 import { RigProviderProfileLive } from "./provider-profiles.js"
 import { RigProjectConfigLoaderLive } from "./project-config-loader.js"
 import { RigProjectInitializerLive } from "./project-initializer.js"
@@ -18,6 +21,7 @@ import {
   RIG_LAUNCHD_LABEL_PREFIX,
   RIG_NAMESPACE,
   RIG_PROXY_NAMESPACE,
+  rigBinRoot,
   rigLogsRoot,
   rigProjectNamespace,
   rigProxyRoot,
@@ -37,6 +41,7 @@ export interface RigFoundationState {
   readonly projectLogRoot: string
   readonly runtimeRoot: string
   readonly runtimeStatePath: string
+  readonly binRoot: string
   readonly proxyRoot: string
   readonly proxyNamespace: string
   readonly launchdLabelPrefix: string
@@ -65,6 +70,7 @@ export const RigRuntimeLive = Layer.succeed(RigRuntime, {
       projectLogRoot: join(stateRoot, "logs", project),
       runtimeRoot: join(stateRoot, "runtime"),
       runtimeStatePath: join(stateRoot, "runtime", "runtime.json"),
+      binRoot: join(stateRoot, "bin"),
       proxyRoot: join(stateRoot, "proxy"),
       proxyNamespace: RIG_PROXY_NAMESPACE,
       launchdLabelPrefix: RIG_LAUNCHD_LABEL_PREFIX,
@@ -105,11 +111,21 @@ export const RigLoggerLive = Layer.succeed(RigLogger, {
     ),
 })
 
-const rigProviderOptionsFromHomeConfig = (config: RigHomeConfig): RigProviderContractsOptions => ({
-  proxyRouter: {
-    ...(config.providers.caddy.caddyfile ? { caddyfile: config.providers.caddy.caddyfile } : {}),
-    extraConfig: config.providers.caddy.extraConfig,
-    reload: config.providers.caddy.reload,
+export const rigProviderRuntimeContext = (
+  foundation: RigFoundationState,
+  config: RigHomeConfig,
+): RigProviderRuntimeContext => ({
+  project: foundation.project,
+  stateRoot: foundation.stateRoot,
+  binRoot: foundation.binRoot,
+  proxyRoot: foundation.proxyRoot,
+  launchdLabelPrefix: foundation.launchdLabelPrefix,
+  providers: {
+    caddy: {
+      ...(config.providers.caddy.caddyfile ? { caddyfile: config.providers.caddy.caddyfile } : {}),
+      extraConfig: config.providers.caddy.extraConfig,
+      reload: config.providers.caddy.reload,
+    },
   },
 })
 
@@ -119,7 +135,7 @@ export const RigProviderContractsFromHomeConfigLive = Layer.unwrap(Effect.gen(fu
   return RigProviderContractsLive(
     homeConfig.providers.defaultProfile,
     [],
-    rigProviderOptionsFromHomeConfig(homeConfig),
+    {},
   )
 }))
 
@@ -150,6 +166,7 @@ export const rigNamespaceSummary = () => ({
   workspacesRoot: rigWorkspacesRoot(),
   logsRoot: rigLogsRoot(),
   runtimeRoot: rigRuntimeRoot(),
+  binRoot: rigBinRoot(),
   proxyRoot: rigProxyRoot(),
   launchdLabelPrefix: RIG_LAUNCHD_LABEL_PREFIX,
 })

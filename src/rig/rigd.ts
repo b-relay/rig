@@ -20,7 +20,7 @@ import { RigdStateStore, type RigdPersistentState } from "./rigd-state.js"
 import { makeRigRuntimeJournal } from "./runtime-journal.js"
 import { deriveRigRuntimeLogWindow, deriveRigRuntimeWebReadModel } from "./runtime-read-models.js"
 import { RigRuntimeExecutor, type RigRuntimeExecutionResult } from "./runtime-executor.js"
-import { RigLogger, RigRuntime, type RigFoundationState } from "./services.js"
+import { RigLogger, RigRuntime, rigProviderRuntimeContext, type RigFoundationState } from "./services.js"
 
 export interface RigControlPlaneContract {
   readonly website: "https://rig.b-relay.com"
@@ -348,6 +348,17 @@ export const RigdLive = Layer.effect(
         yield* actionPreflight.verify(input)
       })
 
+    const resolveProviderRuntimeContext = (
+      project: string,
+      stateRoot: string,
+    ) =>
+      Effect.gen(function* () {
+        const foundation = yield* runtime.describeFoundation({ project, stateRoot })
+        const homeConfigStore = yield* RigHomeConfigStore
+        const homeConfig = yield* homeConfigStore.read({ stateRoot })
+        return rigProviderRuntimeContext(foundation, homeConfig)
+      })
+
     const health = (stateRoot: string): Effect.Effect<RigdHealth> =>
       Effect.gen(function* () {
         const providers = yield* providerRegistry.current
@@ -637,6 +648,7 @@ export const RigdLive = Layer.effect(
         const execution = yield* runtimeExecutor.lifecycle({
           action: input.action,
           deployment,
+          providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
           onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
         })
         return { deployment, execution }
@@ -786,6 +798,7 @@ export const RigdLive = Layer.effect(
           const execution = yield* runtimeExecutor.lifecycle({
             action: "up",
             deployment: desired.record,
+            providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
             onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
           })
           yield* persistExecutionEvents(input.stateRoot, execution)
@@ -865,6 +878,7 @@ export const RigdLive = Layer.effect(
           const execution = yield* runtimeExecutor.lifecycle({
             action: "up",
             deployment: desired.record,
+            providerContext: yield* resolveProviderRuntimeContext(desired.project, stateRoot),
             onManagedProcessExit: managedProcessExitHandler(stateRoot),
           })
           yield* persistExecutionEvents(stateRoot, execution)
@@ -892,6 +906,7 @@ export const RigdLive = Layer.effect(
             deployment,
             ref: input.commit ?? input.ref,
             start: input.noUp ? false : true,
+            providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
             onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
           })
           return { deployment, execution }
@@ -909,6 +924,7 @@ export const RigdLive = Layer.effect(
           deployment,
           ref: input.commit ?? input.ref,
           start: input.noUp ? false : true,
+          providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
           onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
         })
         return { deployment, execution }
@@ -959,7 +975,10 @@ export const RigdLive = Layer.effect(
           )
         }
 
-        const cleanupError = yield* runtimeExecutor.destroyGenerated({ deployment }).pipe(
+        const cleanupError = yield* runtimeExecutor.destroyGenerated({
+          deployment,
+          providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
+        }).pipe(
           Effect.as(undefined),
           Effect.catch((error) => Effect.succeed(error)),
         )
@@ -1057,7 +1076,10 @@ export const RigdLive = Layer.effect(
           return
         }
 
-        const execution = yield* runtimeExecutor.destroyGenerated({ deployment: replaced })
+        const execution = yield* runtimeExecutor.destroyGenerated({
+          deployment: replaced,
+          providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
+        })
         yield* persistExecutionEvents(input.stateRoot, execution)
         yield* persistDesiredDeployment(input.stateRoot, replaced, "stopped")
         yield* deployments.destroyGenerated({
@@ -1159,6 +1181,7 @@ export const RigdLive = Layer.effect(
           const stopped = yield* runtimeExecutor.lifecycle({
             action: "down",
             deployment: currentDesired.record,
+            providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
             onManagedProcessExit: managedProcessExitHandler(input.stateRoot),
           })
           yield* persistExecutionEvents(input.stateRoot, stopped)
@@ -1433,7 +1456,10 @@ export const RigdLive = Layer.effect(
             stateRoot: input.stateRoot,
             name: deploymentName,
           })
-          const execution = yield* runtimeExecutor.destroyGenerated({ deployment: destroyed })
+          const execution = yield* runtimeExecutor.destroyGenerated({
+            deployment: destroyed,
+            providerContext: yield* resolveProviderRuntimeContext(input.project, input.stateRoot),
+          })
           yield* persistDesiredDeployment(input.stateRoot, destroyed, "stopped")
           yield* deployments.destroyGenerated({
             config: input.config,

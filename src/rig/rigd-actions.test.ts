@@ -300,6 +300,36 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     try {
       const config = await Effect.runPromise(projectConfig())
       const executor = new CaptureRuntimeExecutor()
+      const caddyfile = join(stateRoot, "host-caddy", "Caddyfile")
+      const homeConfig: RigHomeConfig = {
+        ...rigHomeConfigDefaults,
+        providers: {
+          ...rigHomeConfigDefaults.providers,
+          caddy: {
+            caddyfile,
+            extraConfig: ["import cloudflare"],
+            reload: {
+              mode: "manual",
+            },
+          },
+        },
+      }
+      const expectedProviderContext = {
+        project: "pantry",
+        stateRoot,
+        binRoot: join(stateRoot, "bin"),
+        proxyRoot: join(stateRoot, "proxy"),
+        launchdLabelPrefix: "com.b-relay.rig",
+        providers: {
+          caddy: {
+            caddyfile,
+            extraConfig: ["import cloudflare"],
+            reload: {
+              mode: "manual",
+            },
+          },
+        },
+      }
       const result = await runWithRigd(
         Effect.gen(function* () {
           const rigd = yield* Rigd
@@ -335,7 +365,7 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
           const persisted = yield* store.load({ stateRoot })
           return { lifecycle, liveDeploy, generatedDeploy, componentLogs, persisted }
         }),
-        { executor },
+        { executor, homeConfig },
       )
 
       expect(result.lifecycle).toMatchObject({ kind: "lifecycle", target: "local", accepted: true })
@@ -348,9 +378,16 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
       expect(executor.lifecycleCalls.map((call) => `${call.action}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
         "up:local:local",
       ])
+      expect(executor.lifecycleCalls.map((call) => call.providerContext)).toEqual([
+        expectedProviderContext,
+      ])
       expect(executor.deployCalls.map((call) => `${call.ref}:${call.deployment.kind}:${call.deployment.name}`)).toEqual([
         "main:live:live",
         "feature/provider-backed:generated:feature-provider-backed",
+      ])
+      expect(executor.deployCalls.map((call) => call.providerContext)).toEqual([
+        expectedProviderContext,
+        expectedProviderContext,
       ])
       expect(result.persisted.events.map((event) => event.details)).toEqual([
         expect.objectContaining({

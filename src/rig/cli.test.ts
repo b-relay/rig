@@ -168,6 +168,7 @@ class CaptureRigd {
         projectLogRoot: `${input.stateRoot}/logs/${input.project}`,
         runtimeRoot: `${input.stateRoot}/runtime`,
         runtimeStatePath: `${input.stateRoot}/runtime/runtime.json`,
+        binRoot: `${input.stateRoot}/bin`,
         proxyRoot: `${input.stateRoot}/proxy`,
         proxyNamespace: "rig",
         launchdLabelPrefix: "com.b-relay.rig",

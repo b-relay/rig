@@ -12,6 +12,7 @@ import {
   RigPackageManagerProvider,
   RigProcessSupervisorProvider,
   type RigProcessSupervisorOperationResult,
+  type RigProviderRuntimeContext,
   type RigRuntimeServiceConfig,
   RigProxyRouterProvider,
   RigScmProvider,
@@ -51,6 +52,7 @@ export type RigManagedProcessExitHandler = (
 export interface RigRuntimeLifecycleExecutionInput {
   readonly action: "up" | "down"
   readonly deployment: RigDeploymentRecord
+  readonly providerContext?: RigProviderRuntimeContext
   readonly onManagedProcessExit?: RigManagedProcessExitHandler
 }
 
@@ -58,11 +60,13 @@ export interface RigRuntimeDeployExecutionInput {
   readonly deployment: RigDeploymentRecord
   readonly ref: string
   readonly start?: boolean
+  readonly providerContext?: RigProviderRuntimeContext
   readonly onManagedProcessExit?: RigManagedProcessExitHandler
 }
 
 export interface RigRuntimeDestroyGeneratedExecutionInput {
   readonly deployment: RigDeploymentRecord
+  readonly providerContext?: RigProviderRuntimeContext
 }
 
 export interface RigRuntimeExecutorService {
@@ -442,8 +446,16 @@ export const RigRuntimeExecutorLive = Layer.effect(
               service,
             })
             const operation = yield* (input.action === "up"
-              ? processSupervisor.up({ deployment: input.deployment, service })
-              : processSupervisor.down({ deployment: input.deployment, service }))
+              ? processSupervisor.up({
+                deployment: input.deployment,
+                service,
+                ...(input.providerContext ? { context: input.providerContext } : {}),
+              })
+              : processSupervisor.down({
+                deployment: input.deployment,
+                service,
+                ...(input.providerContext ? { context: input.providerContext } : {}),
+              }))
             operations.push(operation.operation)
             if (input.action === "up") {
               started.push(service)
@@ -507,7 +519,11 @@ export const RigRuntimeExecutorLive = Layer.effect(
               ? Effect.gen(function* () {
                 const rollbackFailures: Array<{ readonly service: string; readonly error: string }> = []
                 for (const service of [...started].reverse()) {
-                  const rollbackError = yield* processSupervisor.down({ deployment: input.deployment, service }).pipe(
+                  const rollbackError = yield* processSupervisor.down({
+                    deployment: input.deployment,
+                    service,
+                    ...(input.providerContext ? { context: input.providerContext } : {}),
+                  }).pipe(
                     Effect.as(undefined),
                     Effect.catch((error) => Effect.succeed(error)),
                   )
@@ -547,7 +563,11 @@ export const RigRuntimeExecutorLive = Layer.effect(
           }))
           yield* prepareDeploymentComponents(eventTransport, input.deployment, events, operations)
           for (const service of installed) {
-            const operation = yield* packageManager.install({ deployment: input.deployment, service })
+            const operation = yield* packageManager.install({
+              deployment: input.deployment,
+              service,
+              ...(input.providerContext ? { context: input.providerContext } : {}),
+            })
             operations.push(operation)
             const event = runtimeEvent(input.deployment, "component.install", service.name, {
               action: "deploy",
@@ -570,7 +590,11 @@ export const RigRuntimeExecutorLive = Layer.effect(
             return executionResult(input.deployment, operations, events)
           }
           for (const service of managed) {
-            const operation = yield* processSupervisor.restart({ deployment: input.deployment, service })
+            const operation = yield* processSupervisor.restart({
+              deployment: input.deployment,
+              service,
+              ...(input.providerContext ? { context: input.providerContext } : {}),
+            })
             operations.push(operation.operation)
             yield* appendProcessEvents(
               eventTransport,
@@ -607,7 +631,11 @@ export const RigRuntimeExecutorLive = Layer.effect(
             }
           }
           if (proxy) {
-            operations.push(yield* proxyRouter.upsert({ deployment: input.deployment, proxy }))
+            operations.push(yield* proxyRouter.upsert({
+              deployment: input.deployment,
+              proxy,
+              ...(input.providerContext ? { context: input.providerContext } : {}),
+            }))
           }
           operations.push(yield* eventTransport.append({
             deployment: input.deployment,
@@ -624,7 +652,11 @@ export const RigRuntimeExecutorLive = Layer.effect(
           const events: RigRuntimeExecutionEvent[] = []
 
           for (const service of services) {
-            const operation = yield* processSupervisor.down({ deployment: input.deployment, service })
+            const operation = yield* processSupervisor.down({
+              deployment: input.deployment,
+              service,
+              ...(input.providerContext ? { context: input.providerContext } : {}),
+            })
             operations.push(operation.operation)
             yield* appendProcessEvents(
               eventTransport,
@@ -637,7 +669,11 @@ export const RigRuntimeExecutorLive = Layer.effect(
             )
           }
           if (proxy) {
-            operations.push(yield* proxyRouter.remove({ deployment: input.deployment, proxy }))
+            operations.push(yield* proxyRouter.remove({
+              deployment: input.deployment,
+              proxy,
+              ...(input.providerContext ? { context: input.providerContext } : {}),
+            }))
           }
           operations.push(yield* workspaceMaterializer.remove({ deployment: input.deployment }))
           operations.push(yield* eventTransport.append({

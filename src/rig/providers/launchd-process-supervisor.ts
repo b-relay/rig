@@ -10,10 +10,10 @@ import {
   platformWriteFileString,
 } from "../effect-platform.js"
 import { RigRuntimeError } from "../errors.js"
-import { RIG_LAUNCHD_LABEL_PREFIX } from "../paths.js"
 import type {
   RigProviderPlugin,
   RigProviderPluginForFamily,
+  RigProviderRuntimeContext,
   RigRuntimeServiceConfig,
 } from "../provider-contracts.js"
 import type { RigProcessSupervisorOperationResult } from "./process-supervisor.js"
@@ -34,6 +34,7 @@ export interface RigLaunchdProcessSupervisorOptions {
 interface RigLaunchdProcessSupervisorInput {
   readonly deployment: RigDeploymentRecord
   readonly service: RigRuntimeServiceConfig
+  readonly context?: RigProviderRuntimeContext
 }
 
 export interface RigLaunchdProcessSupervisorAdapter {
@@ -59,6 +60,8 @@ export const launchdProcessSupervisorProvider = {
   capabilities: ["user-agent", "restart-policy", "v1-compatible"],
 } satisfies RigProviderPlugin
 
+const DEFAULT_LAUNCHD_LABEL_PREFIX = "com.b-relay.rig"
+
 const escapeXml = (value: string): string =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 
@@ -67,9 +70,13 @@ const guiDomain = (): string => `gui/${getuid!()}`
 const launchdLabelPart = (value: string): string =>
   value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "component"
 
-export const launchdLabel = (deployment: RigDeploymentRecord, service: RigRuntimeServiceConfig): string =>
+export const launchdLabel = (
+  deployment: RigDeploymentRecord,
+  service: RigRuntimeServiceConfig,
+  labelPrefix = DEFAULT_LAUNCHD_LABEL_PREFIX,
+): string =>
   [
-    RIG_LAUNCHD_LABEL_PREFIX,
+    labelPrefix,
     launchdLabelPart(deployment.project),
     launchdLabelPart(deployment.name),
     launchdLabelPart(service.name),
@@ -148,7 +155,7 @@ export const createLaunchdProcessSupervisorAdapter = (
 
     return Effect.tryPromise({
       try: async () => {
-        const label = launchdLabel(input.deployment, input.service)
+        const label = launchdLabel(input.deployment, input.service, input.context?.launchdLabelPrefix)
         const path = launchdPlistPath(launchdHome, label)
         const logPath = launchdLogPath(input.deployment, input.service)
         const domain = guiDomain()
@@ -209,7 +216,7 @@ export const createLaunchdProcessSupervisorAdapter = (
   ): Effect.Effect<RigProcessSupervisorOperationResult, RigRuntimeError> =>
     Effect.tryPromise({
       try: async () => {
-        const label = launchdLabel(input.deployment, input.service)
+        const label = launchdLabel(input.deployment, input.service, input.context?.launchdLabelPrefix)
         const path = launchdPlistPath(launchdHome, label)
         const result = await runLaunchd(["launchctl", "bootout", `${guiDomain()}/${label}`])
         if (result.exitCode !== 0) {

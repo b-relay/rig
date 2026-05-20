@@ -5,12 +5,12 @@
     "rig": {
       "mode": "installed",
       "entrypoint": "rig",
-      "build": "bun build --compile src/index.ts --outfile rig"
+      "build": "bun install --frozen-lockfile && bun build --compile src/index.ts --outfile rig"
     },
     "rigd": {
       "mode": "installed",
       "entrypoint": "rigd",
-      "build": "bun build --compile src/rigd.ts --outfile rigd"
+      "build": "bun install --frozen-lockfile && bun build --compile src/rigd.ts --outfile rigd"
     }
   },
   "live": {

@@ -1,7 +1,7 @@
 # Plan: CLI And Provider Cleanup
 
 > Source PRD: GitHub issue #54 and `docs/PRD.md`
-> Status: active implementation plan
+> Status: complete - implemented through GitHub issues #55 through #62
 
 ## Goal
 

@@ -1,30 +1,22 @@
 {
   "name": "rig",
-  "version": "0.7.0",
-  "hooks": {
-    "preStart": "bun install"
-  },
-  "environments": {
-    "dev": {
-      "services": [
-        {
-          "name": "rig",
-          "type": "bin",
-          "entrypoint": "rig",
-          "build": "bun build --compile src/index.ts --outfile rig"
-        }
-      ]
+  "description": "Rig project config for the Rig CLI and daemon binaries.",
+  "components": {
+    "rig": {
+      "mode": "installed",
+      "entrypoint": "rig",
+      "build": "bun build --compile src/index.ts --outfile rig"
     },
-    "prod": {
-      "deployBranch": "main",
-      "services": [
-        {
-          "name": "rig",
-          "type": "bin",
-          "entrypoint": "rig",
-          "build": "bun build --compile src/index.ts --outfile rig"
-        }
-      ]
+    "rigd": {
+      "mode": "installed",
+      "entrypoint": "rigd",
+      "build": "bun build --compile src/rigd.ts --outfile rigd"
     }
+  },
+  "live": {
+    "deployBranch": "main"
+  },
+  "deployments": {
+    "subdomain": "${branchSlug}"
   }
 }

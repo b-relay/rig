@@ -1237,6 +1237,9 @@ describe("GIVEN rig provider plugin contracts WHEN registry reports profiles THE
       expect(plist).toContain(`<string>${workspace}</string>`)
       expect(plist).toContain(`<key>RunAtLoad</key>`)
       expect(plist).toContain(`<true/>`)
+      expect(plist).toContain(`<key>EnvironmentVariables</key>`)
+      expect(plist).toContain(`<key>PATH</key>`)
+      expect(plist).toContain(`/usr/bin`)
       expect(commands).toEqual([
         ["launchctl", "bootout", expect.stringContaining(label)],
         ["launchctl", "bootstrap", expect.stringMatching(/^gui\/\d+$/), plistPath],

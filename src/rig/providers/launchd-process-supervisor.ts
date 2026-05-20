@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { getuid } from "node:process"
+import { env, getuid } from "node:process"
 import { Effect } from "effect"
 
 import type { RigDeploymentRecord } from "../deployments.js"
@@ -28,6 +28,7 @@ export type RigLaunchdCommandRunner = (args: readonly string[]) => Promise<RigLa
 
 export interface RigLaunchdProcessSupervisorOptions {
   readonly home?: string
+  readonly path?: string
   readonly runCommand?: RigLaunchdCommandRunner
 }
 
@@ -94,6 +95,7 @@ export const launchdPlist = (input: {
   readonly workdir: string
   readonly logPath: string
   readonly keepAlive: boolean
+  readonly path: string
 }): string =>
   [
     `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -114,6 +116,11 @@ export const launchdPlist = (input: {
     `\t<${input.keepAlive}/>`,
     `\t<key>RunAtLoad</key>`,
     `\t<true/>`,
+    `\t<key>EnvironmentVariables</key>`,
+    `\t<dict>`,
+    `\t\t<key>PATH</key>`,
+    `\t\t<string>${escapeXml(input.path)}</string>`,
+    `\t</dict>`,
     `\t<key>StandardOutPath</key>`,
     `\t<string>${escapeXml(input.logPath)}</string>`,
     `\t<key>StandardErrorPath</key>`,
@@ -136,6 +143,7 @@ export const createLaunchdProcessSupervisorAdapter = (
 ): RigLaunchdProcessSupervisorAdapter => {
   const runLaunchd = options?.runCommand ?? defaultCommandRunner
   const launchdHome = options?.home ?? homedir()
+  const launchdPath = options?.path ?? env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
   const installLaunchdProcess = (
     provider: RigProviderPlugin,
@@ -172,6 +180,7 @@ export const createLaunchdProcessSupervisorAdapter = (
             workdir: input.deployment.workspacePath,
             logPath,
             keepAlive: input.deployment.resolved.v1Config?.daemon?.keepAlive ?? false,
+            path: launchdPath,
           }),
         ))
 

@@ -16,7 +16,7 @@ import { RigHomeConfigStore, type RigHomeConfig } from "./home-config.js"
 import type { RigLifecycleLane, RigLifecycleTarget, RigLifecycleWriteAction } from "./lifecycle.js"
 import { RigProviderRegistry, type RigProviderRegistryReport } from "./provider-contracts.js"
 import { verifyRigdActionPreflight, RigdActionPreflight, type RigdActionKind, type RigdActionPreflightInput } from "./rigd-actions.js"
-import { RigdStateStore, type RigdPersistentState } from "./rigd-state.js"
+import { RigdStateStore, type RigDesiredDeploymentState, type RigdPersistentState } from "./rigd-state.js"
 import { makeRigRuntimeJournal } from "./runtime-journal.js"
 import { deriveRigRuntimeLogWindow, deriveRigRuntimeWebReadModel } from "./runtime-read-models.js"
 import { RigRuntimeExecutor, type RigRuntimeExecutionResult } from "./runtime-executor.js"
@@ -399,6 +399,64 @@ export const RigdLive = Layer.effect(
         deployments: deploymentInventory,
       })
 
+    const desiredDeploymentForRecord = (
+      state: RigdPersistentState,
+      project: string,
+      deployment: RigDeploymentRecord,
+    ): RigDesiredDeploymentState | undefined =>
+      state.desiredDeployments.find((desired) =>
+        desired.project === project &&
+        desired.kind === deployment.kind &&
+        desired.deployment === deployment.name
+      )
+
+    const withDesiredDeploymentSource = (
+      deployment: RigDeploymentRecord,
+      desired: RigDesiredDeploymentState | undefined,
+    ): RigDeploymentRecord =>
+      desired
+        ? {
+          ...deployment,
+          ...(desired.record.sourceRef ? { sourceRef: desired.record.sourceRef } : {}),
+          ...(desired.record.sourceCommit ? { sourceCommit: desired.record.sourceCommit } : {}),
+        }
+        : deployment
+
+    const inventoryWithDesiredSources = (
+      inventory: readonly RigDeploymentRecord[],
+      state: RigdPersistentState,
+      project: string,
+    ): readonly RigDeploymentRecord[] =>
+      inventory.map((deployment) =>
+        withDesiredDeploymentSource(
+          deployment,
+          desiredDeploymentForRecord(state, project, deployment),
+        )
+      )
+
+    const deploymentKindRank = (kind: RigDeploymentRecord["kind"]): number => {
+      switch (kind) {
+        case "local":
+          return 0
+        case "live":
+          return 1
+        case "generated":
+          return 2
+      }
+    }
+
+    const recordedDeploymentsFromState = (
+      state: RigdPersistentState,
+      project: string,
+    ): readonly RigDeploymentRecord[] =>
+      state.desiredDeployments
+        .filter((desired) => desired.project === project)
+        .map((desired) => desired.record)
+        .sort((left, right) =>
+          deploymentKindRank(left.kind) - deploymentKindRank(right.kind) ||
+          left.name.localeCompare(right.name)
+        )
+
     const appendEvent = (
       stateRoot: string,
       entry: Omit<RigdLogEntry, "timestamp">,
@@ -616,6 +674,27 @@ export const RigdLive = Layer.effect(
         return found
       })
 
+    const deploymentForLifecycleLane = (
+      input: RigdLifecycleInput,
+      lane: RigLifecycleLane,
+      config: RigProjectConfig,
+    ): Effect.Effect<RigDeploymentRecord, RigRuntimeError> =>
+      Effect.gen(function* () {
+        if (input.action === "down") {
+          const state = yield* stateStore.load({ stateRoot: input.stateRoot })
+          const desired = state.desiredDeployments.find((candidate) =>
+            candidate.project === input.project &&
+            candidate.kind === lane &&
+            candidate.deployment === lane
+          )
+          if (desired) {
+            return desired.record
+          }
+        }
+
+        return yield* deploymentForLane(config, input.stateRoot, lane)
+      })
+
     const lifecycleExecution = (
       input: RigdLifecycleInput,
     ): Effect.Effect<RigLifecycleRuntimeResult | undefined, RigRuntimeError> =>
@@ -644,7 +723,7 @@ export const RigdLive = Layer.effect(
               )
             ),
           )
-          : yield* deploymentForLane(input.config, input.stateRoot, target.kind)
+          : yield* deploymentForLifecycleLane(input, target.kind, input.config)
         const execution = yield* runtimeExecutor.lifecycle({
           action: input.action,
           deployment,
@@ -1274,12 +1353,18 @@ export const RigdLive = Layer.effect(
             project: input.project,
             stateRoot: input.stateRoot,
           })
-          const deploymentInventory = input.config
+          const state = yield* stateStore.load({ stateRoot: input.stateRoot })
+          const rawDeploymentInventory = input.config
             ? yield* deployments.list({
               config: input.config,
               stateRoot: input.stateRoot,
             })
-            : []
+            : recordedDeploymentsFromState(state, input.project)
+          const deploymentInventory = inventoryWithDesiredSources(
+            rawDeploymentInventory,
+            state,
+            input.project,
+          )
 
           if (input.config) {
             yield* persistInventoryEvidence(input.stateRoot, deploymentInventory)

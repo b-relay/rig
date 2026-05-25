@@ -437,6 +437,136 @@ describe("GIVEN control-plane write actions WHEN routed through rigd THEN CLI-vi
     }
   })
 
+  test("GIVEN a live deploy with a source Branch WHEN inventory is requested THEN status keeps the deployed source", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-live-source-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          yield* rigd.deploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            commit: "commit-main",
+            stateRoot,
+            config,
+          })
+          return yield* rigd.inventory({ project: "pantry", stateRoot, config })
+        }),
+      )
+
+      expect(result.deployments).toContainEqual(expect.objectContaining({
+        kind: "live",
+        name: "live",
+        sourceRef: "main",
+        sourceCommit: "commit-main",
+      }))
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN project config is unavailable WHEN inventory is requested THEN recorded deployments are still returned", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-recorded-inventory-"))
+
+    try {
+      const config = await Effect.runPromise(projectConfig())
+      const result = await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          yield* rigd.deploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            commit: "commit-main",
+            stateRoot,
+            config,
+          })
+          return yield* rigd.inventory({ project: "pantry", stateRoot })
+        }),
+      )
+
+      expect(result.deployments).toEqual([
+        expect.objectContaining({
+          kind: "live",
+          name: "live",
+          sourceRef: "main",
+          sourceCommit: "commit-main",
+        }),
+      ])
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("GIVEN a live deployment started with an older provider WHEN config changes THEN down stops the recorded provider", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-live-provider-"))
+
+    try {
+      const baseConfig = await Effect.runPromise(projectConfig())
+      const rigdConfig = {
+        ...baseConfig,
+        live: {
+          ...baseConfig.live,
+          providers: {
+            ...baseConfig.live?.providers,
+            processSupervisor: "rigd",
+          },
+        },
+      }
+      const launchdConfig = {
+        ...baseConfig,
+        live: {
+          ...baseConfig.live,
+          providers: {
+            ...baseConfig.live?.providers,
+            processSupervisor: "launchd",
+          },
+        },
+      }
+      const executor = new CaptureRuntimeExecutor()
+      await runWithRigd(
+        Effect.gen(function* () {
+          const rigd = yield* Rigd
+          yield* rigd.deploy({
+            project: "pantry",
+            target: "live",
+            ref: "main",
+            commit: "commit-main",
+            stateRoot,
+            config: rigdConfig,
+          })
+          return yield* rigd.lifecycle({
+            action: "down",
+            project: "pantry",
+            lane: "live",
+            stateRoot,
+            config: launchdConfig,
+          })
+        }),
+        { executor },
+      )
+
+      expect(executor.lifecycleCalls).toHaveLength(1)
+      expect(executor.lifecycleCalls[0]).toMatchObject({
+        action: "down",
+        deployment: expect.objectContaining({
+          kind: "live",
+          name: "live",
+          resolved: expect.objectContaining({
+            providers: expect.objectContaining({
+              processSupervisor: "rigd",
+            }),
+          }),
+        }),
+      })
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true })
+    }
+  })
+
   test("GIVEN materialized Preview lifecycle WHEN up logs and down run THEN it uses the existing generated deployment", async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), "rig-actions-preview-lifecycle-"))
 

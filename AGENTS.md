@@ -6,6 +6,27 @@ Rig is a local Mac deployment manager built around `rigd` as the runtime
 authority, Effect v4, Effect Schema, Effect CLI, and provider-backed modular
 interfaces.
 
+## Agent skills
+
+These override the global defaults in `~/.claude/CLAUDE.md` and
+`~/.codex/docs/agents/`.
+
+### Issue tracker
+
+Issues are tracked as GitHub Issues on `b-relay/rig` via the `gh` CLI, not
+Linear. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`,
+`ready-for-human`, `wontfix`) plus `in-progress` and `in-review` for the
+supervisor flow. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
+`docs/agents/domain.md`.
+
 ## Default Workflow
 
 - Use the PRD skills for product work:

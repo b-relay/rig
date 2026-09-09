@@ -133,3 +133,17 @@ export function diagnosticCauses(error: unknown): FailureCauses {
   }
   return failureCauses(error);
 }
+
+/** Inspect an untrusted failure without allowing its prototype or code getter to replace it. */
+export function diagnosticErrorCode(error: unknown): string {
+  try {
+    if (error instanceof RigError) {
+      const code = error.code;
+      if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(code))
+        return code;
+    }
+  } catch {
+    /* Diagnostic preparation is best effort, including property inspection. */
+  }
+  return "UNEXPECTED";
+}

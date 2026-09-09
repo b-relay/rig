@@ -1127,3 +1127,94 @@ test("non-Error secondary failure retains both categories without inspecting cyc
   ]);
   expect(JSON.stringify(entries)).not.toContain("private-token");
 });
+
+test.each([
+  [false, "prototype"],
+  [true, "prototype"],
+  [false, "code"],
+  [true, "code"],
+] as const)(
+  "malformed initiating failure survives recovery and diagnostic preparation (activity failure: %s, inspection: %s)",
+  async (activityFails, inspection) => {
+    const { runtime, deps, state } = fixture();
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    const primary =
+      inspection === "code"
+        ? Object.defineProperty(
+            new RigError("HEALTH_FAILED", "safe", "safe"),
+            "code",
+            {
+              get() {
+                throw new Error("secret-code-getter");
+              },
+            },
+          )
+        : new Proxy(
+            {},
+            {
+              getPrototypeOf() {
+                throw new Error("secret-inspection-failure");
+              },
+            },
+          );
+    const entries: unknown[] = [];
+    let rolledBack = false;
+    const update = deps.store.update;
+    deps.store.update = async (change) => {
+      const next = structuredClone(state);
+      await change(next);
+      if (activityFails && next.activity.at(-1)?.outcome === "failed")
+        throw new Error("activity failure");
+      await update(change);
+    };
+    deps.lifecycle.up = async () => {
+      throw primary;
+    };
+    deps.lifecycle.checkpoint = async (target) => ({
+      targetId: target.id,
+      async commit() {},
+      async rollback() {
+        rolledBack = true;
+      },
+    });
+    deps.diagnostic = (event) => {
+      entries.push(event);
+      throw new Error("synchronous secret sink failure");
+    };
+    let thrown: unknown;
+    try {
+      await runtime.command({
+        action: "deploy",
+        project: "demo",
+        target: "live",
+        operationId: "malformed-runtime",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown === primary).toBe(true);
+    expect(rolledBack).toBe(true);
+    expect(state.targets[0]!.recovery).toBeUndefined();
+    expect(state.targets[0]!.desired).toBe("stopped");
+    expect(entries).toEqual([
+      expect.objectContaining({
+        operationId: "malformed-runtime",
+        outcome: "failed",
+        errorCode: "UNEXPECTED",
+        primaryCause: "non-error",
+      }),
+    ]);
+    expect(JSON.stringify(entries)).not.toContain("secret");
+  },
+);
+
+test("synchronous diagnostic failure cannot turn successful registration into failure", async () => {
+  const { runtime, deps, state } = fixture();
+  deps.diagnostic = () => {
+    throw new Error("sink failure");
+  };
+  await expect(
+    runtime.command({ action: "init", repoPath: "/tmp/developer" }),
+  ).resolves.toMatchObject({ outcome: "registered" });
+  expect(state.activity.map((entry) => entry.outcome)).toEqual(["registered"]);
+});

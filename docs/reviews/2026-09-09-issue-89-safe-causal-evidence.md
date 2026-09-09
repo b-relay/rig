@@ -94,3 +94,38 @@ files were rerun: **62 tests passed, 414 assertions**. `bunx tsc --noEmit` and
 `git diff --check` passed. Initial unprivileged localhost runs reported sandbox
 EADDRINUSE; authorized isolated reruns passed. An initial missing yaml dependency
 was resolved by linking the existing shared node_modules (ignored by Git).
+
+## Review correction — malformed failures at the diagnostic caller
+
+Spec review at `ec7cba7` found the classifier was total but its runtime caller
+still performed unchecked `instanceof RigError`/`.code` inspection before both
+normal and fallback diagnostic attempts. A throwing prototype proxy therefore
+replaced the initiating failure after successful rollback and emitted no evidence.
+The new public runtime regression reproduced this exact identity failure in both
+normal-activity and failed-activity-persistence paths before the fix.
+
+`diagnosticErrorCode(unknown): string` now owns guarded, bounded outer-code
+inspection. It borrows the throwable, retains nothing, performs no I/O or mutation,
+and returns an existing uppercase bounded Rig code or UNEXPECTED. Both prototype
+inspection and code access are inside its guard. Its direct caller, runtime
+`execute`, extracts code and classified causes once and preserves `throw error`.
+The callback invocation and await in both runtime `record` and its fallback are
+inside try/catch; this covers synchronous throws as well as rejected promises.
+Previously `.catch()` protected only a successfully returned promise. These
+functions retain their existing injected store/clock/diagnostic dependencies,
+activity-first ordering, return channels and recovery ownership. The test seam
+controls the callback and store failures; original throwable identity, completed
+rollback, cleared recovery, stopped intent and one bounded correlated diagnostic
+are directly asserted. No failure text is inspected or copied.
+
+Equivalent inspection in the touched path was checked: causal field extraction
+already guards getters; both primary and fallback code reads now use the total
+helper, and both callback invocations are fully guarded. Source-branch policy and
+background reconciliation catches outside this operation failure-reporting path
+are unchanged; their broader error policy remains outside this correction.
+
+Tests also cover a throwing `.code` getter on a RigError, each activity path with
+a synchronously throwing sink, and successful registration with a synchronous
+sink failure. Five new public cases passed. Final focused runtime, diagnostic,
+CLI and real localhost transport gate: **67 passed, 440 assertions** with
+`RIG_ROOT=/tmp/rig89-review-final.rig`. Strict TypeScript and diff checks passed.

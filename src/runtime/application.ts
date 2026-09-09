@@ -16,6 +16,7 @@ import type {
 import {
   RigError,
   diagnosticCauses,
+  diagnosticErrorCode,
   type FailureCauses,
 } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
@@ -407,24 +408,25 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       await persistTarget(target, deps.store);
       return await finish(outcome);
     } catch (error) {
-      if (!reads.has(command.action))
+      if (!reads.has(command.action)) {
+        const errorCode = diagnosticErrorCode(error);
+        const causes = diagnosticCauses(error);
         try {
-          await record(
-            "failed",
-            error instanceof RigError ? error.code : "UNEXPECTED",
-            diagnosticCauses(error),
-          );
+          await record("failed", errorCode, causes);
         } catch {
-          await deps
-            .diagnostic({
+          try {
+            await deps.diagnostic({
               operationId,
               action: command.action,
               outcome: "failed",
-              errorCode: error instanceof RigError ? error.code : "UNEXPECTED",
-              ...diagnosticCauses(error),
-            })
-            .catch(() => {});
+              errorCode,
+              ...causes,
+            });
+          } catch {
+            /* Neither synchronous nor asynchronous diagnostic failures replace the operation outcome. */
+          }
         }
+      }
       throw error;
     }
     async function record(
@@ -444,8 +446,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           ...(errorCode ? { message: errorCode } : {}),
         });
       });
-      await deps
-        .diagnostic({
+      try {
+        await deps.diagnostic({
           operationId,
           action: command.action,
           outcome,
@@ -453,8 +455,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           target: target?.name,
           errorCode,
           ...causes,
-        })
-        .catch(() => {});
+        });
+      } catch {
+        /* Diagnostic failure cannot change an already recorded operation. */
+      }
     }
     async function finish(
       outcome: OperationRecord["outcome"],

@@ -395,3 +395,12 @@ and preserved Project data were separately verified during the live rollout.
 No product questions remain from the interview for this increment. Parser
 selection, precise Interface signatures, and deterministic edge-case algorithms
 are implementation choices to verify. Expert/`rigx` remains intentionally deferred.
+
+### Follow-up #83: shared observation settlement
+
+Status and Activity now consume one finite-batch observation owner with a
+controllable deadline. Provider observations share one budget; Activity store I/O
+remains outside that deadline. Completed, rejected and expired results stay
+distinct internally, while each caller retains its report or crash-history policy.
+Design, contract ledger and controlled-timing evidence are in
+[the #83 implementation notes](../docs/reviews/2026-09-09-issue-83-bounded-observations.md).

@@ -262,16 +262,25 @@ export function createTargetLifecycle(effects: TargetEffects): TargetLifecycle {
 async function awaitReady(
   component: ManagedComponent,
   target: TargetRecord,
-  effects: TargetEffects,
+  effects: Pick<TargetEffects, "health">,
 ): Promise<void> {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    component.readyTimeout * 1000,
-  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Aborting asks the provider to stop; settlement must not depend on it cooperating.
+  const expired = new Promise<false>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(false);
+      controller.abort();
+    }, component.readyTimeout * 1000);
+  });
   try {
     while (!controller.signal.aborted) {
-      if (await effects.health(component, target, controller.signal)) return;
+      const healthy = await Promise.race([
+        effects.health(component, target, controller.signal),
+        expired,
+      ]);
+      if (healthy) return;
+      if (controller.signal.aborted) break;
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
   } catch (error) {

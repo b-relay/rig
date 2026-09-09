@@ -69,7 +69,6 @@ export interface RuntimeFiles {
     after: string | undefined,
     lines: number,
   ): Promise<{ entries: TargetLogEntry[]; cursor: string }>;
-  exists(path: string): Promise<boolean>;
 }
 export interface RuntimeDependencies {
   root: string;

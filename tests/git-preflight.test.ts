@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { preflightDeployment } from "../src/git/preflight";
 import type { CommandRunner } from "../src/providers/contracts";
 
-test("CLI deploy rejects a remote-only ref and reports cached upstream divergence without fetching", async () => {
+test.each(["a".repeat(40), "b".repeat(64)])("CLI preflight preserves exact Commit identity and reports cached divergence without fetching (%s)", async (commit) => {
   const commands: string[][] = [];
   const run: CommandRunner = async (input) => {
     const args = [...input.command];
@@ -16,7 +16,7 @@ test("CLI deploy rejects a remote-only ref and reports cached upstream divergenc
         stderr: "",
       };
     if (args.includes("rev-parse"))
-      return { exitCode: 0, stdout: "a".repeat(40), stderr: "" };
+      return { exitCode: 0, stdout: commit, stderr: "" };
     if (args.includes("for-each-ref"))
       return {
         exitCode: 0,
@@ -37,7 +37,7 @@ test("CLI deploy rejects a remote-only ref and reports cached upstream divergenc
     { repoPath: "/repo", branch: "main", productionBranch: "main" },
     run,
   );
-  expect(result.commit).toBe("a".repeat(40));
+  expect(result.commit).toBe(commit);
   expect(result.warnings.join(" ")).toContain("2 commits ahead");
   expect(result.warnings.join(" ")).toContain("3 commits behind");
   expect(commands.flat()).not.toContain("fetch");

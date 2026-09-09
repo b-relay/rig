@@ -5,6 +5,7 @@ import type { RuntimeCommand } from "../daemon/protocol";
 import { DaemonClient } from "../daemon/client";
 import { readDaemonAddress, readDaemonToken } from "../daemon/files";
 import { RigError, asRigError } from "../domain/errors";
+import { isGitCommit } from "../domain/git";
 import type { UserOutput } from "../cli/types";
 import type { DiagnosticLog } from "../diagnostics/types";
 import { createHostDiagnosticLog } from "../diagnostics/host-log";
@@ -35,7 +36,7 @@ interface PushRequest {
 }
 const commit = z
   .string()
-  .regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/)
+  .refine(isGitCommit)
   .describe("Exact Git Commit identifier.");
 const status = z.object({
   targets: z

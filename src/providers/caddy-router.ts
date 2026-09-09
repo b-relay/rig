@@ -65,22 +65,10 @@ export function createCaddyRouter(options: {
         "The route changed after its checkpoint.",
         "Inspect the current route before retrying recovery.",
       );
-    const token = createHash("sha256").update(key).digest("hex");
-    const begin = `# rig begin ${token}`,
-      end = `# rig end ${token}`;
-    const start = before.indexOf(begin),
-      finish = before.indexOf(end);
-    if (start >= 0 !== finish >= 0 || (start >= 0 && finish < start))
-      throw new RigError(
-        "ROUTE_CORRUPT",
-        "A managed route marker is incomplete.",
-        "Repair the Caddyfile before changing routes.",
-      );
-    const without =
-      start < 0
-        ? before
-        : before.slice(0, start) +
-          before.slice(finish + end.length).replace(/^\r?\n/, "");
+    const existing = restoration
+      ? restoration.expected.value
+      : ownedBlock(before, key);
+    const without = existing === null ? before : before.replace(existing, "");
     if (route && hostnamePresent(without, route.hostname))
       throw new RigError(
         "ROUTE_CONFLICT",
@@ -88,6 +76,7 @@ export function createCaddyRouter(options: {
         "Choose a different hostname or explicitly migrate its existing owner.",
         { hostname: route.hostname },
       );
+    const { begin, end } = routeMarkers(key);
     const block = restoration
       ? (restoration.saved.value ?? "")
       : route
@@ -100,6 +89,14 @@ export function createCaddyRouter(options: {
       (await stat(options.caddyfile).catch(() => undefined))?.mode ?? 0o600;
     const temporary = `${options.caddyfile}.${randomUUID()}.tmp`;
     const executable = options.executable ?? "caddy";
+    const reloadCommand = options.reloadCommand ?? [
+      executable,
+      "reload",
+      "--config",
+      options.caddyfile,
+      "--adapter",
+      "caddyfile",
+    ];
     try {
       await writeFile(temporary, after, { mode });
       const validation = await run({
@@ -123,14 +120,7 @@ export function createCaddyRouter(options: {
       await rename(temporary, options.caddyfile);
       if (options.reload !== false) {
         const reload = await run({
-          command: options.reloadCommand ?? [
-            executable,
-            "reload",
-            "--config",
-            options.caddyfile,
-            "--adapter",
-            "caddyfile",
-          ],
+          command: reloadCommand,
         }).catch((error) => ({
           exitCode: 1,
           stdout: "",
@@ -140,14 +130,7 @@ export function createCaddyRouter(options: {
           await writeFile(temporary, before, { mode });
           await rename(temporary, options.caddyfile);
           const rollback = await run({
-            command: options.reloadCommand ?? [
-              executable,
-              "reload",
-              "--config",
-              options.caddyfile,
-              "--adapter",
-              "caddyfile",
-            ],
+            command: reloadCommand,
           }).catch(() => ({ exitCode: 1 }));
           throw new RigError(
             "ROUTE_RELOAD",
@@ -206,10 +189,14 @@ function hostnamePresent(text: string, hostname: string): boolean {
   });
 }
 
+function routeMarkers(key: string): { begin: string; end: string } {
+  const token = createHash("sha256").update(key).digest("hex");
+  return { begin: `# rig begin ${token}`, end: `# rig end ${token}` };
+}
+
+/** Reads the complete owned block, including its newline, or rejects incomplete markers. */
 function ownedBlock(text: string, key: string): string | null {
-  const token = createHash("sha256").update(key).digest("hex"),
-    begin = `# rig begin ${token}`,
-    end = `# rig end ${token}`;
+  const { begin, end } = routeMarkers(key);
   const start = text.indexOf(begin),
     finish = text.indexOf(end);
   if (start >= 0 !== finish >= 0 || (start >= 0 && finish < start))

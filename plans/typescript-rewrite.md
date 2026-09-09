@@ -97,3 +97,10 @@ release gate. [PR #74](https://github.com/b-relay/rig/pull/74) links #64–73 wi
 The missing inactive rig-env-check source cannot be upgraded. Slack delivery
 is blocked because this session has neither a Slack connector nor an available
 browser; the PR link is delivered in the conversation. No merge is performed.
+
+## Subsequent repository cleanup
+
+The [cleanup review](../docs/reviews/2026-09-09-repository-cleanup.md) records
+documentation pruning, shared policy owners, three boundary fixes, and remaining
+design work. Its isolated validation passes 194 tests and strict typecheck;
+the separate cleanup delivery does not update the Host rollout recorded above.

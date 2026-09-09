@@ -5,6 +5,7 @@ import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
+import { recordedPorts } from "./ports";
 export function targetName(command: RuntimeCommand): string {
   if (command.target !== "preview") return command.target ?? "local";
   if (command.deployment) {
@@ -136,14 +137,7 @@ export async function planTarget(
     },
   );
   const previousPorts: Record<string, number> = existing
-    ? Object.fromEntries(
-        existing.plan.components
-          .filter((c) => c.kind === "managed")
-          .flatMap((c) => [
-            [c.name, c.port],
-            ...(c.sitePort ? [[`${c.name}.site`, c.sitePort]] : []),
-          ]),
-      )
+    ? recordedPorts(existing.plan.components)
     : {};
   const prior = Object.fromEntries(
     requests

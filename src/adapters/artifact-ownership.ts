@@ -103,16 +103,6 @@ export function createArtifactOwnership(root: string) {
         }),
       );
     },
-    async observe(
-      identity: ArtifactIdentity,
-    ): Promise<"owned" | "missing" | "unknown"> {
-      try {
-        const { owner: saved, revision } = await inspect(identity);
-        return revision === undefined ? "missing" : saved ? "owned" : "unknown";
-      } catch {
-        return "unknown";
-      }
-    },
   };
 }
 /** Explicit migration only: the caller must verify the backed-up bytes it intends to adopt. */

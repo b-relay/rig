@@ -4,10 +4,6 @@ import type { ProjectRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
-export interface SelectedProject {
-  project: ProjectRecord;
-  document: ConfigDocument<ProjectConfig>;
-}
 /** A current registration is authoritative; history is never a candidate path list. */
 export async function selectProject(
   command: RuntimeCommand,

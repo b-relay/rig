@@ -1,4 +1,5 @@
 import { RigError } from "../domain/errors";
+import { isGitCommit } from "../domain/git";
 import type { CommandRunner } from "../providers/contracts";
 
 /** CLI deploy requires a local named Branch; upstream warnings inspect cached refs only. */
@@ -35,10 +36,7 @@ export async function preflightDeployment(
     cwd: input.repoPath,
   });
   const commit = resolved.stdout.trim();
-  if (
-    resolved.exitCode !== 0 ||
-    !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(commit)
-  )
+  if (resolved.exitCode !== 0 || !isGitCommit(commit))
     throw new RigError(
       "GIT_COMMIT",
       "The Branch does not resolve to a Commit.",

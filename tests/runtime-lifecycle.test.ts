@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { createTargetLifecycle } from "../src/runtime/lifecycle";
+import {
+  createTargetLifecycle,
+  type TargetEffects,
+} from "../src/runtime/lifecycle";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { Supervisor } from "../src/providers/contracts";
 const target: TargetRecord = {
@@ -44,6 +47,76 @@ const target: TargetRecord = {
     ],
   },
 };
+
+test("readiness expires even when a health provider ignores cancellation, then rolls back newly started processes", async () => {
+  const record = structuredClone(target);
+  const component = record.plan.components[0]!;
+  if (component.kind !== "managed")
+    throw new Error("Expected managed fixture");
+  component.health = "http://127.0.0.1:4000/health";
+  component.readyTimeout = 0.01;
+  const running = new Set<string>();
+  let healthSignal: AbortSignal | undefined;
+  let rolledBack = false;
+  const effects: TargetEffects = {
+    async checkpoint(record) {
+      return {
+        targetId: record.id,
+        async commit() {},
+        async rollback() {
+          rolledBack = true;
+        },
+      };
+    },
+    async restoreEffects() {},
+    async commitEffects() {},
+    async retireSuperseded() {},
+    async retireArtifacts() {},
+    supervisor: () => ({
+      async observe(key) {
+        return { state: running.has(key) ? "running" : "stopped" };
+      },
+      async ensureRunning(request) {
+        running.add(request.key);
+        return { outcome: "started" };
+      },
+      async stop(key) {
+        running.delete(key);
+        return { outcome: "stopped" };
+      },
+      async shutdown() {},
+    }),
+    async prepare() {},
+    async environment() {
+      return {};
+    },
+    async hook() {},
+    health(_component, _target, signal) {
+      healthSignal = signal;
+      return new Promise<boolean>(() => {});
+    },
+    async install() {
+      return { outcome: "unchanged" };
+    },
+    async route() {},
+    async removeRoute() {},
+  };
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const outcome = await Promise.race([
+      createTargetLifecycle(effects).up(record).catch((error: unknown) => error),
+      new Promise((resolve) => {
+        watchdog = setTimeout(() => resolve({ code: "TEST_DEADLINE" }), 200);
+      }),
+    ]);
+    expect(outcome).toMatchObject({ code: "HEALTH_FAILED" });
+  } finally {
+    clearTimeout(watchdog);
+  }
+  expect(healthSignal?.aborted).toBe(true);
+  expect([...running]).toEqual([]);
+  expect(rolledBack).toBe(true);
+}, 500);
 test("up preserves running components and rollback stops only newly started components", async () => {
   const stopped: string[] = [];
   const started: string[] = [];

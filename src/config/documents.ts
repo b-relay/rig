@@ -135,8 +135,17 @@ async function readDocument<T>(
   path: string,
   validate: (value: unknown) => T,
 ): Promise<ConfigDocument<T>> {
+  const { raw, ...document } = await readDocumentSource(path, validate);
+  return document;
+}
+/** One filesystem read owns source bytes, decoding, and safe path-aware failures. */
+async function readDocumentSource<T>(
+  path: string,
+  validate: (value: unknown) => T,
+): Promise<ConfigDocument<T> & { raw: string }> {
   try {
-    return decodeDocument(await readFile(path, "utf8"), path, validate);
+    const raw = await readFile(path, "utf8");
+    return { ...decodeDocument(raw, path, validate), raw };
   } catch (error) {
     if (error instanceof ConfigError)
       throw new ConfigError(
@@ -233,21 +242,7 @@ export async function readProjectConfigSource(
     throw new ConfigError("No rig.yaml or rig.json found.", "missing_config", {
       repoPath,
     });
-  try {
-    const raw = await readFile(path, "utf8");
-    return { ...decodeDocument(raw, path, parseProjectConfig), raw };
-  } catch (error) {
-    if (error instanceof ConfigError)
-      throw new ConfigError(
-        error.message,
-        error.code,
-        { ...error.context, path },
-        `In ${path.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 240)}: ${error.hint}`,
-      );
-    throw new ConfigError("Unable to read config document.", "read_failed", {
-      path,
-    });
-  }
+  return readDocumentSource(path, parseProjectConfig);
 }
 function prepareEdit(
   raw: string,

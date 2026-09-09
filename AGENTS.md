@@ -3,8 +3,8 @@
 <!-- AGENTS.md is the source of truth. CLAUDE.md is a symlink to this file. DO NOT rename, delete, or revert this setup. -->
 
 Rig is a local Mac deployment manager built around `rigd` as the runtime
-authority, Effect v4, Effect Schema, Effect CLI, and provider-backed modular
-interfaces.
+authority, strict TypeScript, Bun, Zod validation, and provider-backed modular
+interfaces. The September 9 rewrite explicitly removes Effect TS.
 
 ## Agent skills
 
@@ -48,24 +48,20 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 - Prefer thin vertical slices over horizontal layer work. Each slice should be
   independently verifiable through public behavior.
 
-## Effect v4
+## TypeScript implementation
 
-- Read `docs/effect-v4-help-notes.md` before changing Effect v4, Effect Schema,
-  Effect CLI, Effect Platform, or Effect testing code.
-- Treat `docs/effect-v4-help-notes.md` as repo-local memory. Update it when you
-  verify a new Effect v4 API, migration detail, Bun integration pattern,
-  package constraint, or gotcha.
-- Prefer official Effect docs, `effect-smol`, and migration docs over older
-  blog posts or Effect v3 examples.
-- Rig uses:
-  - `effect` for Effect v4 services, layers, errors, and tests.
-  - Effect Schema for rig parsing and validation.
-  - `effect/unstable/cli` for `rig` command parsing and help.
+- Use plain TypeScript functions, explicit dependency interfaces, async/await,
+  and structured tagged errors. Effect TS is not part of the runtime or tests.
+- Validate external input with Zod; keep domain calculations independent of I/O.
+- Follow `function-design` and the current PRD. Keep contract ledgers and review
+  evidence in the rewrite run notes, not scattered through production code.
+- Run review subagents after each major milestone and resolve material findings
+  before marking the milestone complete.
 
 ## Architecture Rules
 
 - Design Rig as interfaces first. External concerns must sit behind service
-  interfaces and layers before command or core code uses them.
+  interfaces and adapters before command or core code uses them.
 - Keep interfaces in the domain language. Callers should depend on capabilities
   like config, process execution, filesystem, git, logging, health checks,
   deploy orchestration, providers, and plugins, not concrete tools.
@@ -89,7 +85,8 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 - Language: TypeScript strict mode.
 - Process management: keep concrete process APIs behind provider interfaces.
 - Errors must be tagged classes with structured context and a useful hint.
-- All output goes through the logger interface. Do not use `console.log`.
+- Human output goes through the user-output interface; diagnostic evidence goes
+  through the diagnostic-log interface. Do not use `console.log`.
 - Every schema field needs clear user-facing documentation.
 - Every subcommand must support `--help` and `-h`.
 - Keep files focused. Prefer one interface or provider responsibility per file.

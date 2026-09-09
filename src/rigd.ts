@@ -1,43 +1,38 @@
-import { Effect, Layer } from "effect"
-
-import { RigdDaemonAdminLive } from "./rig/daemon-admin.js"
-import { runRigdCli } from "./rig/rigd-cli.js"
-import { RigRuntimeError } from "./rig/errors.js"
-import { RigLive, RigLogger, RigLoggerLive } from "./rig/services.js"
-
-const RigdAdminLive = Layer.mergeAll(
-  RigLive,
-  RigdDaemonAdminLive,
-)
-
-export const main = (argv: readonly string[]): Promise<number> =>
-  Effect.runPromise(
-    runRigdCli(argv).pipe(
-      Effect.provide(RigdAdminLive),
-    ),
-  )
-
-const logSignal = (signal: string) =>
-  Effect.gen(function* () {
-    const logger = yield* RigLogger
-    yield* logger.error(
-      new RigRuntimeError(
-        `Received ${signal}. Shutting down.`,
-        "Restart the interrupted rigd command when ready.",
-        { signal },
-      ),
-    )
-  }).pipe(Effect.provide(RigLoggerLive))
-
-const handleSignal = (signal: string) => {
-  void Effect.runPromise(logSignal(signal)).finally(() => process.exit(130))
+import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { runRigdCli } from "./cli/rigd";
+import { daemonCommand, rigRoot, userOutput } from "./cli/entry-environment";
+import { createHostDiagnosticLog } from "./diagnostics/host-log";
+import { DaemonAdmin } from "./daemon/admin";
+import { composeDaemon } from "./daemon/composition";
+import { runDaemonHost } from "./daemon/host";
+import { runCapturedProcess } from "./providers/captured-process";
+export async function main(args: readonly string[]): Promise<number> {
+  const root = rigRoot();
+  if (args[0] === "capture") {
+    if (!args[1] || args.length !== 2) return 2;
+    return await runCapturedProcess(args[1]);
+  }
+  if (process.env.RIG_DAEMON_CHILD === "1") {
+    const command = daemonCommand();
+    const runtime = await composeDaemon(root, [...command, "capture"]);
+    await runDaemonHost({ root, port: 0, ...runtime });
+    return 0;
+  }
+  return await runRigdCli(args, {
+    admin: new DaemonAdmin({
+      root,
+      command: daemonCommand(),
+      mode: process.env.RIG_ROOT ? "process" : "launchd",
+      userHome: homedir(),
+    }),
+    output: userOutput(),
+    newOperationId: randomUUID,
+    diagnostics: createHostDiagnosticLog({
+      root,
+      source: "rigd",
+      now: () => new Date(),
+    }),
+  });
 }
-
-process.on("SIGTERM", () => handleSignal("SIGTERM"))
-process.on("SIGINT", () => handleSignal("SIGINT"))
-
-if (import.meta.main) {
-  const exitCode = await main(process.argv.slice(2))
-  process.exitCode = exitCode
-}
-
+if (import.meta.main) process.exitCode = await main(process.argv.slice(2));

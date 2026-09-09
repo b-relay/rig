@@ -7,9 +7,14 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
-    "types": ["bun-types"]
+    "rootDir": ".",
+    "declaration": false,
+    "types": [
+      "bun-types"
+    ]
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "tests"
+  ]
 }

@@ -1,5 +1,11 @@
 # Rig Context
 
+This is the accepted domain model and product contract, including planned
+interaction behavior. It is not a release-completion record. The current
+implementation uses plain strict TypeScript/Bun/Zod without Effect TS; consult
+the [PRD](docs/PRD.md), [module map](README.md#module-map), and
+[cutover readiness](docs/rig-cutover-readiness.md) for implementation scope and gates.
+
 ## Terms
 
 ### Rig
@@ -60,9 +66,123 @@ _Relationship_: `rigd status` should report daemon installation, running, and
 reachability state. It may include high-level counts, but detailed Project and
 Target status belongs to `rig list` and `rig status`.
 
+_Relationship_: The normal `rigd status` response should stay focused on
+daemon administration state: installed, running, and reachable. The Rig
+Project's own Targets and components belong to `rig status`, even when `rigd`
+is one of those components.
+
+### User response
+
+The human-readable command result printed directly by `rig` or `rigd`.
+_Avoid_: log, info event
+
+_Relationship_: User responses should be concise, formatted for people, and
+should not expose internal log levels, tagged error types, or structured
+diagnostic details by default.
+
+_Relationship_: Error User responses should be compact and actionable. They
+should avoid `[ERROR]`, tagged error names, raw JSON, and internal details in
+normal mode, while optionally pointing to a Diagnostic log path for deeper
+debugging.
+
+_Relationship_: Expected usage errors should be self-contained and should not
+point to Diagnostic logs. Unexpected failures, provider failures, and corrupt
+state may point to the relevant Diagnostic log when deeper evidence is useful.
+
+_Relationship_: Successful User responses should be terse by default. They
+should report the outcome the user asked for and omit Host internals such as
+state roots, namespaces, provider details, and launchd labels unless a
+diagnostic command or future verbose mode explicitly asks for them.
+
+_Relationship_: User responses should be plain text first. Rig should rely on
+spacing, headings, indentation, and short labels before adding terminal color
+or icons. Color can be added later at the user-output adapter when stdout is a
+TTY.
+
+_Relationship_: Long-running commands may show a small number of meaningful
+progress phases before the final result. Fast commands should print only their
+final response.
+
+### Diagnostic log
+
+Structured operational evidence produced by `rig` or `rigd` for debugging Rig
+itself.
+_Avoid_: user response, Target logs
+
+_Relationship_: Diagnostic logs are distinct from User responses. They may
+include levels, tagged errors, structured context, and internal events that are
+too noisy for normal command output.
+
+_Relationship_: Diagnostic logging should be enabled by default and written to
+Host Rig state. Normal command output should stay quiet, but error User
+responses may point to the relevant Diagnostic log path.
+
+_Relationship_: `rig` and `rigd` should have separate Diagnostic logs because
+the CLI and daemon have different lifecycles and failure modes.
+
+_Relationship_: Healthy User responses should not show Diagnostic log paths by
+default. Error or failure User responses may show the relevant Diagnostic log
+path as a follow-up detail.
+
+_Relationship_: Diagnostic logs must not expose auth tokens, environment
+values, or complete configs by default. They should record safe structured
+metadata and refer to Target logs rather than copying Target output wholesale.
+
+### Activity log
+
+A user-facing history of meaningful Rig actions across Projects and Targets.
+_Avoid_: audit trail, Diagnostic log, Target logs
+
+_Relationship_: The Activity log answers what Rig did, such as deploys,
+lifecycle actions, crashes, daemon installation, and Project registration. It
+is distinct from Diagnostic logs, which explain internal execution details, and
+Target logs, which contain managed runtime output.
+
+_Relationship_: Rig should avoid calling this an audit trail until retention,
+identity, immutability, and tamper-evidence guarantees are explicitly designed.
+
+_Relationship_: `rig activity` should be added after the User response and
+Diagnostic log model is cleaned up. Activity history should be presented
+through the same user-output model as other commands rather than as another
+one-off formatter.
+
+_Relationship_: The Activity log should include Operations that reached
+`rigd`, including successful, failed, and unchanged outcomes. Usage mistakes
+that never attempted an Operation should not appear.
+
+### Operation
+
+A lifecycle, deploy, registration, or daemon action that Rig attempts and
+tracks to a final outcome.
+
+_Relationship_: An Operation has a final outcome such as started, stopped,
+deployed, failed, or unchanged. `accepted` is transport language and should not
+be used as the user-facing outcome.
+
+_Relationship_: One Operation should be traceable across the `rig` and `rigd`
+Diagnostic logs. Its identifier should stay hidden on ordinary success and may
+be shown when an unexpected failure requires investigation.
+
 ### Host
 
 A computer that can run `rigd` and own Rig runtime state.
+
+### Host config
+
+The user-authored configuration for one Host, stored canonically at
+`~/.rig/config.yaml`.
+
+_Relationship_: Existing `~/.rig/config.json` files remain readable for
+compatibility, but Rig should create and prefer YAML for new Host config.
+
+_Relationship_: If both `config.yaml` and `config.json` exist, Rig should fail
+with a clear ambiguity error rather than silently choosing or merging them.
+
+_Relationship_: Host config migration is manual. Rig should not expose a
+config migration command or silently rewrite an existing JSON file.
+
+_Relationship_: Runtime records and Diagnostic logs are machine-owned state,
+not Host config, and may remain JSON or JSONL.
 
 ### Project deletion
 
@@ -86,6 +206,10 @@ _Relationship_: `--state-root` should not be exposed on normal `rig` commands.
 State-root overrides are test/dev/internal mechanisms, not normal Project
 lifecycle or deploy options.
 
+_Relationship_: Diagnostic-log verbosity should not be exposed as a normal
+global `--log-level` flag. Advanced verbosity control belongs in Host config or
+the future Expert surface.
+
 _Relationship_: Generic `--config` path overrides should not be exposed on
 normal `rig` commands. Normal commands discover Project config from the
 workspace or `--project`, and Host config from the current user/Host.
@@ -107,6 +231,43 @@ write inventory, reserve ports, or start processes.
 The user-facing runtime object a Rig command acts on, such as the Working copy
 Target, a Stable Target, or a Preview.
 _Avoid_: lane when speaking about the user-facing CLI
+
+### Component
+
+A named Project capability managed or prepared within a Target, such as a
+server, installed CLI, database, or provider-backed dependency.
+
+_Relationship_: Component state should use vocabulary appropriate to the
+component kind. Managed servers may be healthy, running, starting, unhealthy,
+stopped, or failed; installed CLIs may be installed, missing, or failed; and
+persistent dependencies may be ready, missing, or failed.
+
+_Relationship_: `healthy` means a configured health check passed. A managed
+component without a configured health check may be `running`, but should not be
+reported as `healthy` without evidence.
+
+_Relationship_: A Target may be running while its components have different
+states. `rig status` should show the Target state first and component states
+underneath it.
+
+_Relationship_: Component state shown by `rig status` should come from fresh,
+read-only observations when possible rather than desired state alone. A check
+that cannot complete promptly should produce `unknown` instead of delaying the
+entire Project status response.
+
+_Relationship_: A Target is `degraded` when some expected components are
+usable and others are unhealthy, failed, missing, or unknown. `failed` is
+reserved for a Target that cannot provide any of its expected runtime
+capabilities.
+
+_Relationship_: A Target containing only installed components is `ready` when
+they are installed. For a Target containing managed and installed components,
+the managed components determine whether the Target is running, degraded, or
+failed.
+
+_Relationship_: Configured routes should remain visible in `rig status` when a
+Target is stopped. The Target and component states communicate that the route
+is not currently available.
 
 ### Working copy Target
 
@@ -158,6 +319,10 @@ _Relationship_: `rig list` should read runtime inventory from `rigd` and fail
 when `rigd` is unreachable, rather than falling back to potentially stale local
 files.
 
+_Relationship_: The normal `rig list` response should show each Project's
+identity, Target count, and registered repository path. It should not repeat a
+healthy daemon summary.
+
 _Relationship_: Project-scoped commands such as `rig status`, `rig up`, `rig
 down`, `rig restart`, `rig deploy`, and `rig logs` require a Project context.
 They should
@@ -200,6 +365,11 @@ must be decided as part of the future repair design.
 
 _Relationship_: `rig doctor` should not fetch from remotes implicitly. It
 should diagnose Git branch state from local refs only.
+
+_Relationship_: A healthy `rig doctor` response should summarize Host health
+and, when present, Project health, followed by a quiet confirmation that no
+problems were found. Detailed checks, suggestions, and Diagnostic log paths
+should be expanded only for problems.
 
 ### Project initialization
 
@@ -268,6 +438,23 @@ Production branch option is provided.
 
 Reading or changing Rig configuration through Rig commands.
 
+_Relationship_: User-authored Host and Project config use `.yaml` as the
+canonical YAML extension. Rig should not also accept `.yml`; the only alternate
+format is the supported legacy `.json` filename.
+
+_Relationship_: A valid legacy JSON config is supported rather than deprecated.
+`rig doctor` should not report a problem solely because a Host or Project still
+uses JSON. YAML preference means new files and documentation use YAML.
+
+_Relationship_: YAML config should accept one ordinary YAML 1.2 document and
+comments. Rig should reject duplicate keys, custom tags, anchors, aliases,
+merge keys, and multiple documents so configuration remains deterministic.
+
+_Relationship_: Future structured config writers, including a Rig UI, should
+preserve YAML comments and ordering. If an edit cannot be applied without
+unexpectedly rewriting human-maintained structure, the writer should refuse
+the edit.
+
 _Relationship_: Generic project config reads are useful, but generic project
 config writes should be allowlisted. Managed fields such as Project identity
 should not be exposed as simple `rig config set` targets.
@@ -293,6 +480,14 @@ _Relationship_: `rig config set` should be omitted from the first cleanup
 slice. Project config should be created by `rig init`, advanced changes may be
 made by direct file edits, and `rig doctor`/preflight should validate the
 result.
+
+_Relationship_: `rig config` with no subcommand should show the validated
+Project config in readable form and identify its source path. A separate
+`read` subcommand is unnecessary.
+
+_Relationship_: Revision metadata, field documentation, and structured config
+editing belong in the `rigd` control-plane API or a future Rig UI rather than
+the normal terminal response.
 
 ### Stable Target
 
@@ -493,6 +688,57 @@ by default, rather than requiring a Target picker.
 _Relationship_: The first release should keep `rig status` Project-wide only;
 Target-filtered status can be added later if needed.
 
+_Relationship_: `rig status` should show a compact Project report with each
+Target as a heading and that Target's component state indented underneath.
+Routes should appear next to the component they serve when known, and a quiet
+failure summary such as "No failures" should be included.
+
+### Project config
+
+The current committed `rig.yaml` policy for a Project.
+_Avoid_: using Project config to mean the recorded runtime state of an active
+Target
+
+_Relationship_: `rig.yaml` is the canonical Project config filename, and
+`rig init` should create YAML. Existing `rig.json` files remain readable for
+compatibility.
+
+_Relationship_: If both `rig.yaml` and `rig.json` exist in one Project, Rig
+should fail with a clear ambiguity error rather than silently choosing or
+merging them.
+
+_Relationship_: Project config migration is manual. Rig should not expose a
+config migration command or silently rewrite an existing JSON file.
+
+_Relationship_: User-authored YAML should remain ordinary, deterministic
+configuration. Runtime records and Diagnostic logs are machine-owned state and
+may remain JSON or JSONL.
+
+_Relationship_: Deploy, init, config editing, and doctor use current Project
+config. A deploy is the moment when current Project config becomes the recorded
+runtime policy for the deployed Target.
+
+### Deployment record
+
+The runtime state recorded by `rigd` for a materialized Target.
+_Avoid_: Project config
+
+_Relationship_: Lifecycle commands for an existing Target should use the
+Deployment record so they stop, start, or restart the same materialized Target
+with the provider choices, ports, commands, source Branch, Commit, and resolved
+component plan that Rig actually deployed.
+
+_Relationship_: `rig status` should primarily show recorded runtime state and
+configured Targets. It should not diagnose config drift by default.
+
+_Relationship_: A Target or component that exists in current Project config
+but has no recorded runtime state should appear in status as `configured`, not
+as running or stopped.
+
+_Relationship_: `rig doctor` should diagnose drift between current Project
+config and Deployment records, including command, port, provider, component,
+or route differences.
+
 ### Restart
 
 Stopping and starting the same already-materialized Target.
@@ -506,6 +752,7 @@ must not materialize a missing Target or change the deployed Commit.
 ### Logs
 
 Runtime output for a Target.
+_Avoid_: Diagnostic log
 
 _Relationship_: `rig logs` is Project-scoped and Target-aware. It should read
 logs for an existing Target and should not create Deployments or start stopped
@@ -519,6 +766,13 @@ logs requires an explicit `--follow` flag.
 
 _Relationship_: `rig logs` should present stdout and stderr together by
 default, with room for future filtering if users need separate streams.
+
+_Relationship_: When a Target has multiple components, `rig logs` should merge
+their entries chronologically and prefix each entry with its component name.
+
+_Relationship_: Default human log output should use compact stream markers:
+`>` for stdout and `!` for stderr. It should not repeat full stdout/stderr labels
+on every line.
 
 ### Redeploy
 

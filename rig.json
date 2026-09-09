@@ -1,6 +1,6 @@
 {
   "name": "rig",
-  "description": "Rig project config for the Rig CLI and daemon binaries.",
+  "description": "Rig project config for the CLI, daemon, and Git remote helper binaries.",
   "components": {
     "rig": {
       "mode": "installed",
@@ -11,6 +11,11 @@
       "mode": "installed",
       "entrypoint": "rigd",
       "build": "bun install --frozen-lockfile && bun build --compile src/rigd.ts --outfile rigd"
+    },
+    "git-remote-rig": {
+      "mode": "installed",
+      "entrypoint": "git-remote-rig",
+      "build": "bun install --frozen-lockfile && bun build --compile src/git/remote-helper.ts --outfile git-remote-rig"
     }
   },
   "live": {

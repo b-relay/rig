@@ -69,7 +69,7 @@
   },
   "deployments": {
     "subdomain": "${branchSlug}",
-    "providerProfile": "stub",
+    "providerProfile": "default",
     "proxy": {
       "upstream": "web"
     }

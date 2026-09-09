@@ -4,6 +4,12 @@ This document is the architecture and UX contract for Rig. For detailed domain
 terms, see [CONTEXT.md](./CONTEXT.md). For user-facing command examples, see
 [docs/rig-guide.md](./docs/rig-guide.md).
 
+The current rewrite uses strict TypeScript, Bun, Zod, and explicit capability
+interfaces without Effect TS. See the [module map](README.md#module-map),
+[current PRD](docs/PRD.md), and [cutover gates](docs/rig-cutover-readiness.md).
+Accepted product contracts below do not imply that final validation or the live
+rollout is complete.
+
 ## Core Principles
 
 1. Rig is repo-first.
@@ -42,6 +48,9 @@ terms, see [CONTEXT.md](./CONTEXT.md). For user-facing command examples, see
 - `rig list`
 - `rig status`
 - `rig doctor`
+- `rig config`
+- `rig activity`
+- `rig rename` / `rig repoint` for stopped Projects
 - `rig deploy`
 - `rig up`
 - `rig down`
@@ -96,8 +105,10 @@ Lifecycle commands act on existing Targets:
 They do not create missing Preview Deployments. A missing Preview must be
 created by deploy first.
 
-`down` stops but does not delete. Stopped Previews remain in inventory and in
-status until a future cleanup or deletion design removes them.
+`down` stops but does not delete. Stopped Previews remain in inventory and status.
+Explicit `down preview <branch> --destroy` removes the Preview inventory and
+owned route after stopping; it preserves data, source history, and logs.
+Project deletion remains outside this design.
 
 ## Inventory And Diagnostics
 
@@ -108,6 +119,11 @@ metadata such as Target count.
 
 `rig doctor` always runs Host diagnostics and adds Project diagnostics when a
 Project context is available. It is read-only by default.
+
+Observed status has one two-second total deadline. Configured checks distinguish
+healthy from merely running; timeouts remain unknown. Up/down/restart consume
+recorded Target policy, while doctor diagnoses drift against current config.
+Final Operation activity is distinct from safe diagnostic JSONL and Target logs.
 
 ## Config
 
@@ -135,6 +151,12 @@ Generic `rig config set` is omitted from the first cleanup slice. Some advanced
 Project config may be edited directly or through a future UI, with `doctor` and
 preflight validating the result.
 
+`rig config` reads the validated document and source path. New Project/Host
+documents use `rig.yaml`/`config.yaml`; existing JSON is supported without
+conversion. Ambiguous filenames or unsupported YAML features fail closed.
+Only the default provider profile is executable. Runtime migration retains
+historical evidence separately and requires explicit verified ownership adoption.
+
 ## Provider Contract
 
 Provider calls use a consistent shape:
@@ -157,6 +179,9 @@ The first cleanup should remove or hide these from normal release UX:
 - broad `--json` flags
 - stub provider choices
 - direct `rigd` subcommand under `rig`
+
+Command-scoped `--json` for status/lifecycle/deploy is supported by #72; it does
+not reintroduce a global output flag.
 
 Project deletion is explicitly out of scope until a dedicated design defines
 what deletion means for config, inventory, routes, processes, and Persistent

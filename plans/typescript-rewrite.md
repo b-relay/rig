@@ -109,3 +109,7 @@ Follow-up #79 preserves fresh application state behind launchd capture wrappers,
 including backoff, recovery identity, and exhausted retry status. Its bounded
 provider/status regression and observation contracts are recorded in
 [the capture observation review](../docs/reviews/2026-09-09-issue-79-capture-observations.md).
+
+Follow-up #81 gates pre-stop hooks on managed process observations for explicit
+stop and daemon reconciliation, preserving post-stop cleanup and stop failure
+classification. See [the policy and validation evidence](../docs/reviews/2026-09-09-issue-81-pre-stop-hooks.md).

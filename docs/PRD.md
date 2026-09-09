@@ -239,6 +239,17 @@ presentation model and `rigd` journal evidence.
 Establish final-outcome evidence during earlier slices. Optional activity
 filters in interview examples are not required command contracts in this PRD.
 
+Pre-stop hooks run only before stopping relevant active managed processes: once
+per Target if any managed component needs stopping, and once per such component.
+A definitive stopped observation skips its pre-stop hook; unknown, failed, or
+restart-pending observations remain conservative and retain hooks. Every process
+still receives a stop attempt so provider shutdown remains the final authority.
+Repeated down and daemon reconciliation use this same policy. Post-stop cleanup
+is unchanged: component hooks follow a successful changed stop, and the Target
+hook follows any changed stop. Hook failures report `STOP_HOOKS` with verified
+process-stop outcome; process-stop failures report `STOP_INCOMPLETE` and retain
+hook failure evidence. See [the #81 evidence](reviews/2026-09-09-issue-81-pre-stop-hooks.md).
+
 ## Scope And Dependencies
 
 Deliver R1–R7 first, then R8. Fresh observations and final Operation outcomes are

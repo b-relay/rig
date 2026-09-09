@@ -653,3 +653,35 @@ test("legacy completion metadata is neither inferred nor rewritten on reopen", a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("repeated down and daemon reconciliation skip stopped pre-stop hooks while reconciling active processes", async () => {
+  const { stopHookFixture } = await import("./stop-hook-fixture");
+  const { runtime, deps, state, config } = fixture();
+  config.hooks = { preStop: "target-pre", postStop: "target-post" };
+  config.components.web = { mode: "managed", command: "serve", port: 4567,
+    hooks: { preStop: "web-pre", postStop: "web-post" } };
+  const f = stopHookFixture();
+  deps.lifecycle = f.lifecycle;
+  const diagnostics: unknown[] = [];
+  deps.diagnostic = async (event) => {
+    if (event.action === "reconcile") diagnostics.push(event);
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  expect(await runtime.command({ action: "down", project: "demo" })).toMatchObject({ outcome: "stopped" });
+  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
+  f.hookFailures.add("target-pre");
+  f.hookFailures.add("web-pre");
+  expect(await runtime.command({ action: "down", project: "demo" })).toMatchObject({ outcome: "unchanged" });
+  await createRuntime(deps).reconcile();
+  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
+  expect(diagnostics).toEqual([]);
+  expect(state.targets[0]?.desired).toBe("stopped");
+
+  f.hookFailures.clear();
+  f.running.add(`${state.targets[0]!.id}:web`);
+  await createRuntime(deps).reconcile();
+  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post", "target-pre", "web-pre", "web-post", "target-post"]);
+  expect([...f.running]).toEqual([]);
+  expect(diagnostics).toEqual([]);
+});

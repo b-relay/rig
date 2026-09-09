@@ -253,3 +253,81 @@ test("down attempts every process even when a hook or another process stop fails
   ).rejects.toThrow();
   expect(stopped).toEqual(["t1:web", "t1:api"]);
 });
+
+import { stopHookFixture } from "./stop-hook-fixture";
+
+function targetWithStopHooks(): TargetRecord {
+  const record = structuredClone(target);
+  record.plan.hooks = { preStop: "target-pre", postStop: "target-post" };
+  for (const component of record.plan.components) {
+    if (component.kind === "managed")
+      component.hooks = { preStop: `${component.name}-pre`, postStop: `${component.name}-post` };
+  }
+  return record;
+}
+
+test("down on an already-stopped Target skips all pre-stop hooks and remains unchanged", async () => {
+  const f = stopHookFixture();
+  f.hookFailures.add("target-pre");
+  expect(await f.lifecycle.down(targetWithStopHooks())).toEqual({ outcome: "unchanged" });
+  expect(f.hooks).toEqual([]);
+  expect(f.stops).toEqual(["t1:web", "t1:api"]);
+});
+
+test("mixed Targets run pre-stop only for active components, and repeated down invokes no hooks", async () => {
+  const f = stopHookFixture(["t1:api"]);
+  const record = targetWithStopHooks();
+  expect(await f.lifecycle.down(record)).toEqual({ outcome: "stopped" });
+  expect(f.hooks).toEqual(["target-pre", "api-pre", "api-post", "target-post"]);
+  expect(await f.lifecycle.down(record)).toEqual({ outcome: "unchanged" });
+  expect(f.hooks).toEqual(["target-pre", "api-pre", "api-post", "target-post"]);
+  expect(f.stops).toEqual(["t1:web", "t1:api", "t1:web", "t1:api"]);
+  expect([...f.running]).toEqual([]);
+});
+
+test.each(["unknown", "failed-observation", "restart-pending"] as const)(
+  "%s is not proof of absence and keeps pre-stop hooks before verified shutdown",
+  async (state) => {
+    const f = stopHookFixture(["t1:web"]);
+    f.observations.set("t1:web", state === "failed-observation"
+      ? new Error("Observation failed")
+      : state === "restart-pending" ? { state: "stopped", restartPending: true } : { state: "unknown" });
+    expect(await f.lifecycle.down(targetWithStopHooks())).toEqual({ outcome: "stopped" });
+    expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
+    expect([...f.running]).toEqual([]);
+  },
+);
+
+test("pre-stop failure reports STOP_HOOKS after successful shutdown and retains post-stop cleanup", async () => {
+  const f = stopHookFixture(["t1:web", "t1:api"]);
+  f.hookFailures.add("target-pre");
+  f.hookFailures.add("web-pre");
+  await expect(f.lifecycle.down(targetWithStopHooks())).rejects.toMatchObject({
+    code: "STOP_HOOKS",
+    details: { processesStopped: true, outcome: "stopped", hookFailures: [expect.any(Error), expect.any(Error)] },
+  });
+  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "api-pre", "api-post", "target-post"]);
+  expect([...f.running]).toEqual([]);
+});
+
+test("failed process shutdown reports STOP_INCOMPLETE with hook failures and still stops other components", async () => {
+  const f = stopHookFixture(["t1:web", "t1:api"]);
+  f.hookFailures.add("web-pre");
+  f.stopFailures.add("t1:web");
+  await expect(f.lifecycle.down(targetWithStopHooks())).rejects.toMatchObject({
+    code: "STOP_INCOMPLETE",
+    details: { processFailures: [expect.any(Error)], hookFailures: [expect.any(Error)] },
+  });
+  expect(f.hooks).toEqual(["target-pre", "web-pre", "api-pre", "api-post", "target-post"]);
+  expect([...f.running]).toEqual(["t1:web"]);
+  expect(f.stops).toEqual(["t1:web", "t1:api"]);
+});
+
+test("Targets without managed components have no pre-stop work", async () => {
+  const f = stopHookFixture();
+  const record = targetWithStopHooks();
+  record.plan.components = [];
+  expect(await f.lifecycle.down(record)).toEqual({ outcome: "unchanged" });
+  expect(f.hooks).toEqual([]);
+  expect(f.stops).toEqual([]);
+});

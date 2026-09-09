@@ -1,4 +1,3 @@
-import { realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import { ConfigError } from "../config/errors";
 import {
@@ -14,11 +13,17 @@ import type { CommandRunner } from "../providers/contracts";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
 import { renameRigRemote } from "../git/remotes";
-import { inspectProjectGit, ensureProjectGit } from "../git/project";
+import {
+  createProjectDiscovery,
+  inspectProjectLocation,
+  ensureProjectGit,
+  type ProjectDiscovery,
+} from "../git/project";
 export function createProjectDocuments(
   root: string,
   run: CommandRunner,
 ): ProjectDocuments {
+  const discovery = createProjectDiscovery(run);
   return {
     discover: discoverProject,
     read: readProjectConfig,
@@ -28,7 +33,7 @@ export function createProjectDocuments(
       const info = await inspectInitialization(
         path,
         { action: "init", createGit: true },
-        run,
+        discovery,
       );
       return {
         name: info.name,
@@ -41,16 +46,16 @@ export function createProjectDocuments(
       const { repoPath, name } = await inspectInitialization(
         path,
         command,
-        run,
+        discovery,
       );
       return { repoPath, name };
     },
     async initialize(path, command) {
       const { repoPath, name, existing, productionBranch } =
-        await inspectInitialization(path, command, run);
+        await inspectInitialization(path, command, discovery);
       await ensureProjectGit(
         { path: repoPath, project: name, createGit: command.createGit },
-        run,
+        discovery,
       );
       if (existing) return existing;
       return await initializeProjectConfig(repoPath, {
@@ -81,31 +86,16 @@ export function createProjectDocuments(
 async function inspectInitialization(
   path: string,
   command: RuntimeCommand,
-  run: CommandRunner,
+  discovery: ProjectDiscovery,
 ) {
-  let repoPath: string,
-    productionBranch = "main",
-    gitRequired = false;
-  try {
-    const git = await inspectProjectGit(path, run);
-    repoPath = git.repoPath;
-    productionBranch = git.productionBranch;
-  } catch (error) {
-    if (
-      !(error instanceof RigError) ||
-      error.code !== "GIT_REQUIRED" ||
-      !command.createGit
-    )
-      throw error;
-    repoPath = await realpath(path);
-    gitRequired = true;
-    const initial = await run({
-      command: ["git", "config", "--get", "init.defaultBranch"],
-      cwd: repoPath,
-    });
-    if (initial.exitCode === 0 && initial.stdout.trim())
-      productionBranch = initial.stdout.trim();
-  }
+  const { repoPath, productionBranch, gitRequired } =
+    await inspectProjectLocation(path, discovery);
+  if (gitRequired && !command.createGit)
+    throw new RigError(
+      "GIT_REQUIRED",
+      "Rig needs a Git working repository.",
+      "Explicitly use rig init --create-git.",
+    );
   let existing;
   try {
     existing = await readProjectConfig(repoPath);

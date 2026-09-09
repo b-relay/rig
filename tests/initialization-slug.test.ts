@@ -9,10 +9,12 @@ test("initialization suggests a lowercase directory slug while preserving config
   const root = await mkdtemp(join(tmpdir(), "rig-slug-")),
     repo = join(root, "My App.v2");
   await mkdir(repo);
-  const run: CommandRunner = async () => ({
-    exitCode: 1,
+  const run: CommandRunner = async (input) => ({
+    exitCode: input.command.includes("rev-parse") ? 128 : 1,
     stdout: "",
-    stderr: "",
+    stderr: input.command.includes("rev-parse")
+      ? "fatal: not a git repository"
+      : "",
   });
   const documents = createProjectDocuments(root, run);
   try {

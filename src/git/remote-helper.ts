@@ -12,7 +12,7 @@ import { recordDiagnostic } from "../cli/failure";
 import { rigRoot, userOutput } from "../cli/entry-environment";
 import { runCommand } from "../providers/command-runner";
 import type { CommandRunner } from "../providers/contracts";
-import { inspectProjectGit } from "./project";
+import { inspectProjectGit, createProjectDiscovery } from "./project";
 import { targetName } from "../runtime/targets";
 
 export interface RemoteHelperDependencies {
@@ -321,7 +321,10 @@ export async function main(args: readonly string[]): Promise<number> {
     return 1;
   }
   try {
-    const { repoPath } = await inspectProjectGit(process.cwd(), runCommand);
+    const { repoPath } = await inspectProjectGit(
+      process.cwd(),
+      createProjectDiscovery(runCommand),
+    );
     const root = rigRoot();
     return await runRemoteHelper(url, {
       repoPath,

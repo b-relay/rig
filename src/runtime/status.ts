@@ -1,3 +1,8 @@
+import {
+  boundedObservations,
+  timerObservationDeadline,
+  type ObservationDeadline,
+} from "./bounded-observations";
 import type {
   InstalledComponent,
   ManagedComponent,
@@ -51,138 +56,104 @@ export async function observeTargets(
   targets: readonly TargetRecord[],
   effects: ObservationEffects,
   budgetMs = 2000,
+  deadline: ObservationDeadline = timerObservationDeadline,
 ): Promise<TargetReport[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), budgetMs);
-  const withinDeadline = async <T>(
-    work: Promise<T>,
-    fallback: { deadline: T; failure: T },
-  ): Promise<T> => {
-    if (controller.signal.aborted) return fallback.deadline;
-    return await new Promise<T>((resolve) => {
-      const abort = () => {
-        controller.signal.removeEventListener("abort", abort);
-        resolve(fallback.deadline);
-      };
-      controller.signal.addEventListener("abort", abort, { once: true });
-      work
-        .then(resolve, () => resolve(fallback.failure))
-        .finally(() => controller.signal.removeEventListener("abort", abort));
-    });
-  };
-  try {
-    return await Promise.all(
-      targets.map(async (target) => {
-        const components = await Promise.all(
-          target.plan.components.map((component) => {
-            const base = {
-              name: component.name,
-              kind: component.kind,
-              ...(component.kind === "managed" ? { port: component.port } : {}),
-              ...(target.plan.proxy?.upstream === component.name &&
-              target.plan.domain
-                ? { route: target.plan.domain }
-                : {}),
+  const entries = targets.flatMap((target) =>
+    target.plan.components.map((component) => ({
+      target,
+      component,
+      base: {
+        name: component.name,
+        kind: component.kind,
+        ...(component.kind === "managed" ? { port: component.port } : {}),
+        ...(target.plan.proxy?.upstream === component.name && target.plan.domain
+          ? { route: target.plan.domain }
+          : {}),
+      },
+    })),
+  );
+  const results = await boundedObservations(
+    entries.map(
+      ({ target, component, base }) =>
+        async (signal): Promise<ComponentReport> => {
+          if (component.kind === "installed")
+            return {
+              ...base,
+              state: await effects.artifact(target, component, signal),
             };
-            return withinDeadline(
-              (async (): Promise<ComponentReport> => {
-                if (component.kind === "installed")
-                  return {
-                    ...base,
-                    state: await effects.artifact(
-                      target,
-                      component,
-                      controller.signal,
-                    ),
-                  };
-                if (component.kind === "persistent")
-                  return {
-                    ...base,
-                    state: (await effects.persistent(
-                      target,
-                      component,
-                      controller.signal,
-                    ))
-                      ? "ready"
-                      : "missing",
-                  };
-                const observed = await effects.process(
-                  target,
-                  component,
-                  controller.signal,
-                );
-                if (observed.state !== "running")
-                  return {
-                    ...base,
-                    state: observed.restartPending
-                      ? "starting"
-                      : observed.state === "stopped" &&
-                          target.desired === "running"
-                        ? "failed"
-                        : observed.state,
-                    port: component.port,
-                    ...(observed.exitCode === undefined
-                      ? {}
-                      : { exitCode: observed.exitCode }),
-                    ...(observed.reason
-                      ? { reason: observed.reason }
-                      : observed.state === "stopped" &&
-                          target.desired === "running"
-                        ? {
-                            reason:
-                              observed.exitCode === undefined
-                                ? "The expected process is not running."
-                                : `The process exited with code ${observed.exitCode}.`,
-                          }
-                        : {}),
-                  };
-                return {
-                  ...base,
-                  port: component.port,
-                  pid: observed.pid,
-                  state: component.health
-                    ? (await effects.health(
-                        target,
-                        component,
-                        controller.signal,
-                      ))
-                      ? "healthy"
-                      : "unhealthy"
-                    : "running",
-                };
-              })(),
-              {
-                deadline: {
-                  ...base,
-                  state: "unknown",
-                  reason:
-                    "Observation did not complete before the status deadline.",
-                },
-                failure: {
-                  ...base,
-                  state: "unknown",
-                  reason: "Observation failed.",
-                },
-              },
-            );
-          }),
-        );
-        return {
-          name: target.name,
-          kind: target.kind,
-          branch: target.branch,
-          commit: target.commit,
-          route: target.plan.domain,
-          components,
-          state: aggregate(components),
-        };
-      }),
-    );
-  } finally {
-    clearTimeout(timer);
-    controller.abort();
-  }
+          if (component.kind === "persistent")
+            return {
+              ...base,
+              state: (await effects.persistent(target, component, signal))
+                ? "ready"
+                : "missing",
+            };
+          const observed = await effects.process(target, component, signal);
+          if (observed.state !== "running")
+            return {
+              ...base,
+              state: observed.restartPending
+                ? "starting"
+                : observed.state === "stopped" && target.desired === "running"
+                  ? "failed"
+                  : observed.state,
+              port: component.port,
+              ...(observed.exitCode === undefined
+                ? {}
+                : { exitCode: observed.exitCode }),
+              ...(observed.reason
+                ? { reason: observed.reason }
+                : observed.state === "stopped" && target.desired === "running"
+                  ? {
+                      reason:
+                        observed.exitCode === undefined
+                          ? "The expected process is not running."
+                          : `The process exited with code ${observed.exitCode}.`,
+                    }
+                  : {}),
+            };
+          return {
+            ...base,
+            port: component.port,
+            pid: observed.pid,
+            state: component.health
+              ? (await effects.health(target, component, signal))
+                ? "healthy"
+                : "unhealthy"
+              : "running",
+          };
+        },
+    ),
+    budgetMs,
+    deadline,
+  );
+  let offset = 0;
+  return targets.map((target) => {
+    const components = target.plan.components.map(() => {
+      const base = entries[offset]!.base;
+      const result = results[offset++]!;
+      if (result.kind === "completed") return result.value;
+      return {
+        ...base,
+        state: "unknown",
+        reason:
+          result.kind === "expired"
+            ? "Observation did not complete before the status deadline."
+            : "Observation failed.",
+      };
+    });
+    return {
+      name: target.name,
+      kind: target.kind,
+      branch: target.branch,
+      commit: target.commit,
+      route: target.plan.domain,
+      components,
+      state: aggregate(components),
+    };
+  });
 }
+
 function aggregate(components: ComponentReport[]): string {
   if (!components.length) return "configured";
   const managed = components.filter(

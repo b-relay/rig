@@ -1,3 +1,4 @@
+import { controlledDeadline } from "./controlled-observation-deadline";
 import { test, expect } from "bun:test";
 import { observeTargets } from "../src/runtime/status";
 import type { TargetRecord } from "../src/domain/runtime";
@@ -73,10 +74,14 @@ test("one deadline bounds every concurrent probe and timeouts are unknown", asyn
   );
   expect(performance.now() - start).toBeLessThan(150);
   expect(
-    result.flatMap((t) => t.components).every((c) =>
-      c.state === "unknown" &&
-      c.reason === "Observation did not complete before the status deadline."
-    ),
+    result
+      .flatMap((t) => t.components)
+      .every(
+        (c) =>
+          c.state === "unknown" &&
+          c.reason ===
+            "Observation did not complete before the status deadline.",
+      ),
   ).toBe(true);
 });
 test("a crashed desired-running process is failed with exit evidence while an intentional stop remains stopped", async () => {
@@ -171,7 +176,8 @@ test("timed out observations retain the configured port and route without claimi
     ...target,
     plan: { ...target.plan, proxy: { upstream: "api" } },
   };
-  const [report] = await observeTargets(
+  const deadline = controlledDeadline();
+  const pending = observeTargets(
     [routed],
     {
       async process() {
@@ -188,7 +194,10 @@ test("timed out observations retain the configured port and route without claimi
       },
     },
     10,
+    deadline,
   );
+  deadline.expire();
+  const [report] = await pending;
   expect(report!.components[0]).toMatchObject({
     name: "api",
     port: 4444,
@@ -198,11 +207,48 @@ test("timed out observations retain the configured port and route without claimi
 });
 
 test("immediate observation rejection is unknown with a safe failure reason", async () => {
-  const [report] = await observeTargets(
-    [target],
+  const [report] = await observeTargets([target], {
+    async process() {
+      throw new Error("provider unavailable: TOKEN=private-credential");
+    },
+    async health() {
+      return true;
+    },
+    async artifact() {
+      return "installed";
+    },
+    async persistent() {
+      return true;
+    },
+  });
+  expect(report).toMatchObject({
+    state: "unknown",
+    components: [
+      { name: "api", state: "unknown", reason: "Observation failed." },
+      { name: "web", state: "unknown", reason: "Observation failed." },
+    ],
+  });
+  expect(JSON.stringify(report)).not.toContain("private-credential");
+});
+
+test("controlled common expiry settles every Target and ignores late provider results", async () => {
+  const deadline = controlledDeadline();
+  const signals: AbortSignal[] = [];
+  let started!: () => void;
+  const begun = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: (value: { state: "running" }) => void;
+  const work = new Promise<{ state: "running" }>((resolve) => {
+    finish = resolve;
+  });
+  const pending = observeTargets(
+    [target, target],
     {
-      async process() {
-        throw new Error("provider unavailable: TOKEN=private-credential");
+      process(_target, _component, signal) {
+        signals.push(signal);
+        if (signals.length === 4) started();
+        return work;
       },
       async health() {
         return true;
@@ -214,13 +260,137 @@ test("immediate observation rejection is unknown with a safe failure reason", as
         return true;
       },
     },
+    123,
+    deadline,
   );
-  expect(report).toMatchObject({
-    state: "unknown",
-    components: [
-      { name: "api", state: "unknown", reason: "Observation failed." },
-      { name: "web", state: "unknown", reason: "Observation failed." },
-    ],
+  await begun;
+  expect(signals).toHaveLength(4);
+  expect(deadline.budgets).toEqual([123]);
+  deadline.expire();
+  const reports = await pending;
+  expect(
+    reports.flatMap((report) => report.components).map((c) => c.reason),
+  ).toEqual(
+    Array(4).fill("Observation did not complete before the status deadline."),
+  );
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  expect(deadline.pending).toBe(false);
+  const before = JSON.stringify(reports);
+  finish({ state: "running" });
+  await Promise.resolve();
+  expect(JSON.stringify(reports)).toBe(before);
+});
+
+for (const outcome of ["completed", "rejected", "empty"] as const) {
+  test(`controlled ${outcome} Status cleans scheduling without waiting for expiry`, async () => {
+    const deadline = controlledDeadline();
+    const reports = await observeTargets(
+      outcome === "empty" ? [] : [target],
+      {
+        async process() {
+          if (outcome === "rejected") throw new Error("private");
+          return { state: "stopped", exitCode: 2 };
+        },
+        async health() {
+          return true;
+        },
+        async artifact() {
+          return "installed";
+        },
+        async persistent() {
+          return true;
+        },
+      },
+      100,
+      deadline,
+    );
+    expect(deadline.pending).toBe(false);
+    expect(deadline.budgets).toEqual(outcome === "empty" ? [] : [100]);
+    if (outcome === "empty") expect(reports).toEqual([]);
+    else
+      expect(reports[0]!.components[0]).toMatchObject(
+        outcome === "rejected"
+          ? { state: "unknown", reason: "Observation failed." }
+          : { state: "stopped", exitCode: 2 },
+      );
   });
-  expect(JSON.stringify(report)).not.toContain("private-credential");
+}
+
+test("expiry before the queued completion handler wins exactly once", async () => {
+  const deadline = controlledDeadline();
+  let started!: () => void;
+  const begun = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let complete!: (value: { state: "stopped" }) => void;
+  const work = new Promise<{ state: "stopped" }>((resolve) => {
+    complete = resolve;
+  });
+  const reports = observeTargets(
+    [target],
+    {
+      process() {
+        started();
+        return work;
+      },
+      async health() {
+        return true;
+      },
+      async artifact() {
+        return "installed";
+      },
+      async persistent() {
+        return true;
+      },
+    },
+    100,
+    deadline,
+  );
+  await begun;
+  complete({ state: "stopped" });
+  deadline.expire();
+  expect((await reports)[0]!.components.map((c) => c.state)).toEqual([
+    "unknown",
+    "unknown",
+  ]);
+  expect(deadline.pending).toBe(false);
+});
+
+test("completed observations keep their result while the shared budget expires pending health", async () => {
+  const deadline = controlledDeadline();
+  let healthStarted!: () => void;
+  const begun = new Promise<void>((resolve) => {
+    healthStarted = resolve;
+  });
+  const reports = observeTargets(
+    [target],
+    {
+      async process() {
+        return { state: "running", pid: 22 };
+      },
+      health() {
+        healthStarted();
+        return new Promise(() => {});
+      },
+      async artifact() {
+        return "installed";
+      },
+      async persistent() {
+        return true;
+      },
+    },
+    100,
+    deadline,
+  );
+  await begun;
+  // Let the independently completed web observation settle before expiry.
+  await Promise.resolve();
+  await Promise.resolve();
+  deadline.expire();
+  expect((await reports)[0]!.components).toMatchObject([
+    { name: "api", state: "unknown" },
+    { name: "web", state: "running", pid: 22 },
+  ]);
+  expect(deadline.budgets).toEqual([100]);
+  expect(deadline.pending).toBe(false);
 });

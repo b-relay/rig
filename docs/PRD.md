@@ -1,191 +1,278 @@
-# Rig PRD
+# Rig PRD: Human Output, Observability, And YAML Configuration
 
-## Problem Statement
+> Status: implementation in progress; plain TypeScript rewrite authorized.
+> Updated: 2026-09-09.
+> Sources: [completed interview](codex://threads/019de162-a710-73b2-b418-e36383393a60), through its September 9 closing decisions, and [CONTEXT.md](../CONTEXT.md).
+> Implementation: [CLI observability and YAML plan](../plans/cli-observability-and-yaml.md).
 
-Rig is a local Mac deployment manager whose current implementation still exposes
-too many old and internal concepts: lanes, generated deployments, refs,
-provider profiles, package-script flags, state-root overrides, direct config
-paths, broad JSON flags, manual `rigd` startup, and version bump deployment
-flow.
+This is the next increment after the [CLI/provider cleanup PRD](prds/cli-provider-cleanup.md)
+and its [completed plan](../plans/cli-provider-cleanup.md), tracked by #54–#62.
+The requirements below describe the intended result, not currently shipped
+behavior. Earlier issue closure does not establish live daemon or process health.
 
-Those concepts make normal use harder and increase the chance of bad state:
-deploying the wrong branch, pointing a command at the wrong state root, using
-test providers in a real workflow, or letting providers mutate global paths
-outside the resolved runtime context.
+## Problem
 
-Rig needs a smaller release CLI and a sharper architecture:
+Normal commands render internal log levels, error tags, and large diagnostic
+objects as user responses. Status mixes configured policy, recorded intent,
+and observed health, so it can say a Target is running after a component dies.
+Lifecycle can use newer Project config instead of the configuration that started
+the Target. Application output, Rig diagnostics, and activity need distinct roles.
 
-- `rig` is the user CLI for Projects, Targets, deploy, lifecycle, logs, status,
-  list, and doctor.
-- `rigd` is the runtime authority and daemon admin surface.
-- Project config owns portable Project intent.
-- Host config owns machine capability.
-- Providers receive resolved runtime context from `rigd`; they do not discover
-  global state themselves.
+User-authored config is JSON-only. Discovery, initialization, registration,
+editing, and Host loading need consistent YAML-first behavior without breaking
+existing JSON users or rewriting their files.
 
-## Solution
+## Product Baseline
 
-Center Rig around Projects, Targets, Branches, Commits, Deployments, and
-Persistent storage.
+Preserve the accepted Project/Target/Branch/Commit model:
 
-The first release uses:
-
-- Working copy Target named `local`
-- one Stable Target named `live`
-- Preview Targets selected as `preview <branch>`
-
-The model should leave room for future custom Target names and multiple stable
-stages, but the first cleanup slice should not implement that customization.
-
-Deploys are Branch/Commit based:
-
-- `rig deploy live` deploys the configured Production branch.
-- `rig deploy live main` deploys an explicit Branch only if it is the
-  Production branch.
-- `rig deploy preview` deploys the current Branch as a Preview.
-- `rig deploy preview feature/login` deploys an explicit Branch as a Preview.
-- `git push rig main` updates the Stable Target.
-- `git push rig feature/login` updates a Preview.
-
-Lifecycle commands act on existing Targets:
-
-- `rig up`
-- `rig down`
-- `rig restart`
-- `rig logs`
-
-They do not materialize missing Deployments. `deploy` materializes; lifecycle
-starts, stops, restarts, or reads logs.
-
-Daemon administration is separate:
-
-- `rigd install`
-- `rigd status`
-- `rigd uninstall`
-
-Normal `rig` commands should not install or start `rigd` automatically.
+- `rig` handles Project commands; `rigd` owns runtime actions and daemon
+  administration: install, status, uninstall. Normal commands do not install
+  or manually start the daemon.
+- `local` is the Working copy Target; `live` is the Stable Target; Previews use
+  `preview <branch>`. Lifecycle never materializes a missing Preview.
+- Branch/Commit deploy policy, same-Commit no-ops, `--force`, `--no-up`, and
+  Persistent storage preservation remain in force.
+- Project config owns portable intent; Host config owns machine capability.
+  Providers consume resolved context from `rigd`.
+- Do not add broad `--json`, `--state-root`, generic `--config`, or stub/provider
+  flags to normal commands. Structured control-plane models remain available
+  for future clients.
 
 ## User Stories
 
-1. As a developer, I want `rig init` to register the current repo with Rig, so
-   that normal commands can infer the Project.
-2. As a developer, I want `rig init` to configure the `rig` Git remote, so that
-   `git push rig <branch>` works.
-3. As a developer, I want Project identity to be confirmed during init, so that
-   routes and `--project` use a stable name.
-4. As a developer, I want `rig status` to show all Targets for the current
-   Project, so that I can understand runtime state quickly.
-5. As a developer, I want `rig list` to show known Projects and Target counts,
-   so that I can scan the Host inventory.
-6. As a developer, I want `rig doctor` to run Host checks and Project checks
-   when possible, so that install and project drift are both visible.
-7. As a developer, I want `rig deploy live` to deploy the Production branch, so
-   that stable deploys are predictable.
-8. As a developer, I want `rig deploy preview` to deploy my current Branch, so
-   that preview deploys are simple.
-9. As a developer, I want Preview lifecycle commands to use
-   `preview <branch>`, so that branches cannot be confused with Stable Targets.
-10. As a developer, I want `rig up preview <branch>` to fail when the Preview
-    does not exist yet, so that lifecycle does not secretly deploy code.
-11. As a developer, I want `rig down` to stop but not delete Targets, so that
-    stopping a Preview does not lose inventory or logs.
-12. As a developer, I want stopped Previews visible in status, so that I can
-    inspect what exists.
-13. As a developer, I want `rig logs` to read stopped Target logs when present,
-    so that I can debug crashes after a stop.
-14. As a developer, I want `rig deploy --no-up`, so that I can materialize a
-    Deployment without starting it.
-15. As a developer, I want same-Commit deploys to be no-ops, so that repeated
-    commands do not restart services unnecessarily.
-16. As a developer, I want `rig bump` removed, so that deploys are not confused
-    with version metadata.
-17. As a developer, I want normal commands to hide `--state-root` and
-    `--config`, so that I do not accidentally split runtime state.
-18. As a developer, I want test/dev provider profiles hidden from normal help,
-    so that release UX does not expose stubs.
-19. As an operator, I want `rigd install` to set up daemon credentials, so that
-    `rig` can authenticate to local `rigd`.
-20. As an operator, I want `rigd uninstall` to refuse while Targets are running,
-    so that uninstall does not leave unmanaged processes or routes.
-21. As a maintainer, I want providers to receive resolved context from `rigd`,
-    so that providers do not call global path helpers.
-22. As a maintainer, I want Project config and Host config separated, so that
-    repo policy stays portable.
-23. As a future UI user, I want the web UI to talk to `rigd`, so that CLI and UI
-    see the same runtime state.
+1. Read a command result without decoding internal logs.
+2. Trace a failed Operation across CLI and daemon diagnostics without exposing
+   credentials or copying application output.
+3. See fresh state for Targets and components, including partial failure,
+   installed tools, and configured-only Targets.
+4. Stop or restart what Rig actually deployed after current config changes.
+5. Inspect a registered Project from outside its repository.
+6. Read chronological component logs and, later, separate activity history.
+7. Use YAML for Project and Host config while existing JSON remains supported.
 
-## Implementation Decisions
+## Requirements
 
-- Use Project identity as the canonical `--project <name>` selector. Folder
-  names are only defaults during initialization.
-- Store Project identity, Production branch, Target names, and Preview routing
-  policy in committed Project config.
-- Treat Project identity as managed config; do not expose it as a simple
-  `rig config set` field.
-- Require Project identity to be unique per Host.
-- Keep `rig list` Host-scoped and daemon-backed.
-- Keep `rig status` Project-scoped and Project-wide by default.
-- Let `rig doctor` run Host-only when no Project context exists.
-- Keep `rig doctor` read-only by default. Reserve `rig doctor --fix` as a
-  future shape, without designing repair behavior now.
-- Keep `rigd` daemon-admin-only: install, status, uninstall.
-- Use localhost HTTP bound to `127.0.0.1` with a local auth token as the first
-  control-plane transport.
-- Store the local control-plane auth token in Host/user state, not Project
-  config.
-- Remove `rig bump`.
-- Omit `rig config set` from the first cleanup slice.
-- Avoid broad normal-CLI `--json` flags in the first release.
-- Remove package-script and provider-profile flags from normal CLI.
-- Hide `--state-root` and generic `--config` from normal CLI.
-- Keep stub providers for tests/dev/internal use.
-- Providers use shared Runtime context plus typed provider-specific config.
-- Project config owns Project intent; Host config owns machine capability.
-- Project config may be valid even when a Host lacks capabilities; doctor and
-  preflight report missing Host capability.
+### R1. Human Command Responses
 
-## Testing Decisions
+- Bare `rig` prints help and exits successfully. `--help` and `-h` likewise
+  never become internal errors.
+- Use plain text, spacing, short headings, and indentation. No terminal color
+  or icons are required in this increment.
+- Normal responses omit log levels, tagged error names, diagnostic JSON,
+  namespaces, state roots, provider names, and launchd labels.
+- Usage errors explain the mistake and useful next command, without diagnostic
+  paths. Still record them internally.
+- Unexpected/provider failures and corrupt state receive a concise explanation,
+  relevant diagnostic path when useful, and Operation ID when available. Do not
+  advertise a file that was not written.
+- Report final outcomes: started, stopped, deployed, failed, or unchanged.
+  Transport acceptance is not completion.
+- Slow deploy/start operations may show major phases such as preparing the
+  deployment, starting components, and checking health. Fast commands print only
+  their final response. Progress omits provider implementation details.
+- Remove the global `--log-level` flag from normal `rig` and `rigd` help and
+  parsing. Diagnostics default to useful info-level evidence; advanced verbosity
+  belongs in Host config or the deferred Expert surface.
 
-- Use TDD for implementation.
-- Test external command behavior through the public CLI where possible.
-- Add parser/help tests proving removed normal flags and commands are absent.
-- Add init tests for Project identity, Production branch selection, Rig remote
-  setup, daemon registration, partial init recovery, and duplicate identity
-  conflicts.
-- Add deploy tests for Stable Target branch policy, Preview branch policy,
-  detached HEAD behavior, same-Commit no-op, `--force`, `--no-up`, and upstream
-  warnings.
-- Add Rig remote classification tests for Production branch versus Preview
-  branches.
-- Add lifecycle/log tests proving lifecycle commands do not materialize missing
-  Previews.
-- Add status/list/doctor tests for project scope, host scope, daemon
-  reachability, stopped Previews, and config/runtime identity drift.
-- Add provider-boundary tests proving providers consume resolved context and do
-  not call global path helpers.
+### R2. Diagnostic Logs And Operation Identity
 
-## Out Of Scope
+- Separate User responses, Diagnostic logs, Target logs, and Activity log.
+- Enable diagnostics by default with separate current JSONL files:
+  `~/.rig/logs/rig/rig.jsonl` and `~/.rig/logs/rigd/rigd.jsonl`.
+  Resolve equivalent paths under `RIG_ROOT` for isolated runs.
+- Rotate daily into dated files, such as `rig-2026-09-08.jsonl`, and retain
+  **14 days by default**. This applies to diagnostics, not Target logs, activity
+  history, or Project data.
+- Give each Operation one correlation ID shared across CLI and daemon logs.
+  Hide it on ordinary success; show it with unexpected failures when useful.
+- Record safe structured metadata and redact likely secrets. Do not dump auth
+  tokens, environment values, complete configs, or arbitrary command strings.
+  Target stdout/stderr belongs in Target logs; diagnostics may reference them.
 
-- Project deletion. Do not implement delete until a dedicated design exists.
-- Preview cleanup automation. Stopped Previews remain until future cleanup or
-  deletion design.
-- Custom Target names and multiple Stable Target stages in the first cleanup
-  slice.
-- Remote `rigd` hosts. Keep interfaces future-ready, but first transport is
-  local-only.
-- `rig doctor --fix` behavior.
-- A full web UI. A future UI should be a client of `rigd`.
-- Generic project config mutation through `rig config set`.
+### R3. Fresh Project And Component Status
 
-## Implementation Order
+`rig status` is Project-wide. Show configured and recorded Targets, including
+stopped Previews, with Target headings and component details underneath. Keep
+routes visible for stopped Targets without implying reachability.
 
-Use tracer-bullet vertical slices:
+```text
+pantry
 
-1. Clean docs and PRD around the accepted domain model.
-2. Remove obsolete normal CLI surfaces and lock down help/parser behavior.
-3. Implement daemon admin surface and localhost control-plane auth boundary.
-4. Implement Project initialization and registration.
-5. Implement inventory and diagnostics commands.
-6. Implement Branch/Commit deploy for Stable Targets and Previews.
-7. Implement lifecycle/log Target selection.
-8. Refactor providers behind resolved runtime context.
+live  degraded  main
+  web     failed   :3070  https://pantry.b-relay.com
+  convex  healthy  :3290
+
+local  configured  working copy
+  web     configured  :5173
+
+Failures
+  web exited with code 1
+```
+
+- `rigd` gathers fresh, read-only provider observations of process presence,
+  configured health checks, installed CLI existence/executability, and prepared
+  dependency paths.
+- Independent checks run concurrently within a **two-second total observation
+  budget**, not two seconds per component. Startup readiness timeouts are
+  separate. Unfinished checks become `unknown`; available results still render.
+- Managed components are `healthy` only when a configured check passes. Process
+  presence without a check means `running`; a present process with a failed
+  check is `unhealthy`. Uncertain evidence is `unknown`.
+- Use states appropriate to component kind: servers use healthy/running/
+  starting/unhealthy/stopped/failed; tools use installed/missing/failed;
+  persistent dependencies use ready/missing/failed. Unknown observations and
+  configured-only components remain distinct.
+- A Target is `degraded` when some expected capabilities are usable and others
+  are unavailable or uncertain. Reserve `failed` for loss of expected runtime
+  capability, not every partial failure. A timeout alone proves neither success
+  nor failure.
+- CLI-only Targets are `ready` when their tools are installed. Managed components
+  determine the runtime summary for mixed CLI/server Targets; show installed
+  component state separately.
+- Config-defined but unrecorded Targets/components are `configured`, never
+  falsely running or stopped. Distinguish an intentional stop from a crashed
+  desired-running component.
+- Include a quiet failure summary, such as `No failures`, when clear. Unknown
+  checks remain visible so absence of recorded failures cannot imply a verified
+  all-clear.
+- Config drift belongs in doctor, not default status.
+
+### R4. Current Config Versus Recorded Deployment
+
+- Existing materialized Target up/down/restart uses the recorded providers,
+  commands, ports, Branch, Commit, and component plan. Restart cycles the same
+  Target; it does not deploy today's config.
+- Deploy, init, config inspection/editing, and doctor use current Project config.
+  Deploy is when new policy becomes recorded runtime policy. Preserve local as
+  the Working copy; do not turn its lifecycle into a Branch deployment.
+- `--project <name>` resolves registered context outside the repo. Current-config
+  views load the registered repository's config document and validate identity.
+  Runtime control resolves the recorded Target rather than adopting newer policy.
+- Report missing, ambiguous, or mismatched current config honestly. Read-only
+  views may show available recorded state with a warning, but cannot silently
+  choose conflicting documents or invent component state. Doctor diagnoses
+  path/identity and current-config-versus-deployment drift.
+
+### R5. Command Views
+
+| Command | Required response |
+|---|---|
+| `rig list` | Project identity, Target count, registered repo path; no repeated healthy daemon summary. Fail clearly if the daemon is unreachable. |
+| `rig status` | Project Targets and components per R3, including when the Project is Rig itself. |
+| `rig doctor` | Compact Host and optional Project summary. Expand problems and suggestions, not every passing check. Passing checks must not carry failure messages. |
+| `rig config` | Validated Project config, Project identity, and source path. Replace the separate normal `read` subcommand; omit revisions and field documentation. |
+| `rigd status` | Installed, running, reachable, backed by actual evidence. Omit token/state paths and launchd details from healthy output. |
+| Lifecycle/deploy/init/daemon actions | Concise final outcome, with meaningful progress phases only when useful. |
+
+`rig config` may show the readable formatted JSON agreed in the interview even
+when the source is YAML. That is intentional config content, not a diagnostic
+object, and does not rewrite the source file.
+
+Doctor remains read-only, runs Host checks outside a Project, and reports daemon
+unreachability while continuing independent diagnostics. It owns config drift,
+identity/path conflicts, and missing Host capability. Add no implicit fetch or
+repair. Rig Project status follows its actual component kinds; do not hardcode a
+healthy daemon component merely because the Project is named `rig`.
+
+### R6. Target Logs
+
+- Automatically capture managed-component stdout/stderr in Rig-owned Target
+  logs, separate from Rig diagnostics.
+- `rig logs <target>` prints recent entries and exits; `--follow` streams.
+  Stopped Targets remain readable when logs exist.
+- Merge multiple components chronologically, prefix their names, retain useful
+  timestamps, and use `>` for stdout and `!` for stderr.
+
+```text
+pantry live
+
+09:42:11  web     > Server ready
+09:42:12  web     ! Optional cache unavailable
+09:42:14  convex  > Backend ready
+```
+
+Reading logs never starts processes or materializes Deployments. Defer custom
+per-component destinations; do not add log-sink fields now.
+
+### R7. YAML-First User Configuration
+
+| Scope | New canonical file | Supported existing file |
+|---|---|---|
+| Project | `<repo>/rig.yaml` | `<repo>/rig.json` |
+| Host | `~/.rig/config.yaml` | `~/.rig/config.json` |
+
+- New files use YAML. Valid JSON is fully supported without a doctor warning
+  merely about format.
+- Support `.yaml` and legacy `.json`, not `.yml`.
+- Both filenames present for one config is an ambiguity error. Do not prefer,
+  merge, or fall back to JSON when YAML is invalid.
+- Accept one YAML 1.2 document with comments. Reject duplicate keys, custom
+  tags, anchors, aliases, merge keys, and multiple documents before domain
+  validation. Both formats feed the same Zod schema for their scope.
+- Apply the same policy across discovery, init, loading, registration, doctor,
+  config inspection, and existing structured editing paths.
+- **No migration command and no automatic migration.** Users may convert
+  manually; Rig never silently renames, converts, or deletes existing JSON.
+- Runtime state and diagnostics remain machine-owned JSON/JSONL.
+- Structured writers editing existing YAML must preserve comments and ordering
+  or refuse safely. Preserve revision checks, validation, and backups for
+  existing editor operations. YAML reading must not enable lossy JSON-based
+  writers to overwrite human-maintained YAML.
+
+### R8. Activity History — Follow-On Phase
+
+After cleaning existing output and diagnostics, add `rig activity` using the same
+presentation model and `rigd` journal evidence.
+
+- Include attempted Operations reaching `rigd` with succeeded, failed, and
+  unchanged/no-op final outcomes. Exclude usage mistakes that attempted nothing.
+- Preserve meaningful lifecycle, deploy, registration, daemon, and crash events.
+- Show what happened separately from diagnostics/application streams. Never
+  render an acceptance receipt as completed success.
+- Call this an Activity log, not an audit trail with unimplemented retention,
+  immutability, identity, or tamper-evidence guarantees.
+
+Establish final-outcome evidence during earlier slices. Optional activity
+filters in interview examples are not required command contracts in this PRD.
+
+## Scope And Dependencies
+
+Deliver R1–R7 first, then R8. Fresh observations and final Operation outcomes are
+prerequisites for corresponding user claims. The current file-based daemon
+marker and in-process runtime do not prove reachability or durable ownership;
+the plan must establish the required runtime evidence before calling them done.
+
+Do not automatically absorb every open issue. #64/#65 local workspace/shutdown,
+#66/#67 partial recovery/crash status, and #73 ref retention inform runtime proof.
+#70/#71 inform identity and doctor views. Rename/repoint and source ownership
+(#68/#69) remain separate designs. #72 does not override the accepted decision
+against broad JSON flags.
+
+Out of scope: Expert/`rigx`, full web UI, remote hosts, project deletion,
+automatic Preview cleanup, custom/multiple Stable stages, automatic doctor
+repair, generic normal-CLI config writes, custom log sinks, config migration
+commands, and blanket JSON-output flags. Preserve runtime data per the
+[state preservation policy](state-preservation-policy.md).
+
+## Acceptance And Validation
+
+Use public-behavior TDD slices from the linked plan. Cover external effects,
+partial failure, timeouts, managed/installed components, both config formats,
+and both CLI entrypoints. Isolate `RIG_ROOT`, provider paths, processes, and
+ports. Constant statuses and captured calls alone cannot establish runtime
+claims. Run focused tests, full tests, build, and type-checking; distinguish
+pre-existing failures from regressions. Update user docs as behavior ships,
+without advertising planned YAML, activity, or daemon functionality as available.
+
+## September 9 Implementation Authorization
+
+The subsequent implementation request supersedes the Effect stack: use strict
+plain TypeScript, Bun, Zod, and explicit provider interfaces. Finish this PRD
+and all open GitHub issues, with independent review after major milestones.
+The narrower issue #72 structured status/lifecycle output is now in scope:
+command-specific `--json` renders the same read model, without reintroducing a
+global output flag. Issue #68 authorizes a supported explicit Project repoint
+and rename workflow; design it with stopped Targets and validated conflicts
+before mutating identity/path ownership. This does not authorize Project data
+deletion or automatic migration of existing runtime state.

@@ -1,7 +1,11 @@
 # Plan: CLI And Provider Cleanup
 
-> Source PRD: GitHub issue #54 and `docs/PRD.md`
+> Source PRD: GitHub issue #54 and [archived cleanup PRD](../docs/prds/cli-provider-cleanup.md)
 > Status: complete - implemented through GitHub issues #55 through #62
+
+The next increment is the [CLI observability and YAML plan](cli-observability-and-yaml.md),
+based on the [current PRD](../docs/PRD.md). This document preserves the completed
+milestone; its command/config scope is historical where the next PRD changes it.
 
 ## Goal
 

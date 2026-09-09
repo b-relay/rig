@@ -1,3 +1,4 @@
+import { failureCategories } from "../domain/errors";
 import { Database } from "bun:sqlite";
 import {
   appendFile,
@@ -49,6 +50,14 @@ export function diagnosticRecord(
   for (const key of metadataKeys) {
     const value = safeMetadata(entry[key]);
     if (value !== undefined) record[key] = value;
+  }
+  for (const key of ["primaryCause", "recoveryCause"] as const) {
+    const value = entry[key];
+    if (
+      typeof value === "string" &&
+      failureCategories.some((category) => category === value)
+    )
+      record[key] = value;
   }
   return record;
 }

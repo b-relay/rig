@@ -334,3 +334,9 @@ acquisition. Doctor alone retains read-only offline Host inspection for missing
 setup or unreachable transport, using the invocation's captured repository path;
 authentication rejection, corrupt metadata and protocol failures remain errors.
 See the [connection evidence](reviews/2026-09-09-issue-86-daemon-connections.md).
+
+Registration and Deployment failures retain bounded initiating/recovery categories
+in correlated daemon diagnostics, alongside their existing outer error codes and
+recovery hints. The closed metadata policy admits categories only; raw provider
+errors, commands, config and environment values remain excluded. See the
+[causal evidence notes](reviews/2026-09-09-issue-89-safe-causal-evidence.md).

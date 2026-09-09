@@ -13,7 +13,11 @@ import type {
   ProjectRecord,
   TargetRecord,
 } from "../domain/runtime";
-import { RigError } from "../domain/errors";
+import {
+  RigError,
+  diagnosticCauses,
+  type FailureCauses,
+} from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { registerProject, selectProject } from "./projects";
 import { persistTarget, planTarget, targetName } from "./targets";
@@ -332,7 +336,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target = await activateDeployment(
           candidate,
           target,
-          command.noUp ?? false,
+          { activation: command.noUp ? "prepare" : "start" },
           deps,
         );
         if (replacement) {
@@ -372,7 +376,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             "Use rig rename to update registration.",
           );
         target = await planTarget({ command, project, document }, deps);
-        await persistTarget(target, deps);
+        await persistTarget(target, deps.store);
       }
       if (target.recovery) {
         if (command.action !== "down")
@@ -387,20 +391,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (command.action === "down") {
         target.desired = "stopped";
         target.updatedAt = deps.now();
-        await persistTarget(target, deps);
+        await persistTarget(target, deps.store);
         outcome = (await stopRecordedTarget(target, deps.lifecycle)).outcome;
       } else {
         if (command.action === "restart") {
           target.desired = "stopped";
           target.updatedAt = deps.now();
-          await persistTarget(target, deps);
+          await persistTarget(target, deps.store);
           await stopRecordedTarget(target, deps.lifecycle);
         }
         outcome = (await deps.lifecycle.up(target)).outcome;
         target.desired = "running";
       }
       target.updatedAt = deps.now();
-      await persistTarget(target, deps);
+      await persistTarget(target, deps.store);
       return await finish(outcome);
     } catch (error) {
       if (!reads.has(command.action))
@@ -408,6 +412,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           await record(
             "failed",
             error instanceof RigError ? error.code : "UNEXPECTED",
+            diagnosticCauses(error),
           );
         } catch {
           await deps
@@ -416,6 +421,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               action: command.action,
               outcome: "failed",
               errorCode: error instanceof RigError ? error.code : "UNEXPECTED",
+              ...diagnosticCauses(error),
             })
             .catch(() => {});
         }
@@ -424,6 +430,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     async function record(
       outcome: OperationRecord["outcome"],
       errorCode?: string,
+      causes: FailureCauses = {},
     ): Promise<void> {
       await deps.store.update((state) => {
         state.activity.push({
@@ -445,6 +452,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           project: project?.name,
           target: target?.name,
           errorCode,
+          ...causes,
         })
         .catch(() => {});
     }

@@ -1,3 +1,4 @@
+import { RigError } from "../src/domain/errors";
 import { test, expect } from "bun:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -504,13 +505,19 @@ test.each(["running", "deliberately stopped", "prepared no-up"] as const)(
     } as const;
     await runtime.command({ ...deploy, noUp: mode === "prepared no-up" });
     if (mode === "deliberately stopped")
-      await runtime.command({ action: "down", project: "demo", target: "live" });
+      await runtime.command({
+        action: "down",
+        project: "demo",
+        target: "live",
+      });
     const before = structuredClone(state.targets);
     const effects = plans.length;
     const activityCount = state.activity.length;
     expect(before[0]!.recovery).toBeUndefined();
     expect(before[0]!.desired).toBe(mode === "running" ? "running" : "stopped");
-    expect(await runtime.command(deploy)).toMatchObject({ outcome: "unchanged" });
+    expect(await runtime.command(deploy)).toMatchObject({
+      outcome: "unchanged",
+    });
     expect(state.targets).toEqual(before);
     expect(plans).toHaveLength(effects);
     expect(state.activity.slice(activityCount)).toEqual([
@@ -541,7 +548,10 @@ test("failed first activation can deploy the same Commit after reopening without
     const runtime = createRuntime(deps);
     await runtime.command({ action: "init", repoPath: "/tmp/developer" });
     const deploy = {
-      action: "deploy", project: "demo", target: "live", branch: "main",
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
     } as const;
     await expect(runtime.command(deploy)).rejects.toThrow("readiness failed");
     const failed = (await deps.store.read()).targets[0]!;
@@ -549,7 +559,9 @@ test("failed first activation can deploy the same Commit after reopening without
     expect(failed.desired).toBe("stopped");
     deps.store = new FileStateStore(root);
     const reopened = createRuntime(deps);
-    expect(await reopened.command(deploy)).toMatchObject({ outcome: "deployed" });
+    expect(await reopened.command(deploy)).toMatchObject({
+      outcome: "deployed",
+    });
     expect(activations).toBe(2);
     const saved = await deps.store.read();
     expect(saved.targets).toHaveLength(1);
@@ -570,7 +582,9 @@ test("failed first activation can deploy the same Commit after reopening without
     expect(
       saved.activity.filter((a) => a.action === "deploy").map((a) => a.outcome),
     ).toEqual(["failed", "deployed"]);
-    expect(await reopened.command(deploy)).toMatchObject({ outcome: "unchanged" });
+    expect(await reopened.command(deploy)).toMatchObject({
+      outcome: "unchanged",
+    });
     expect(activations).toBe(2);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -588,7 +602,10 @@ test.each(["incomplete", "completed"] as const)(
       const runtime = createRuntime(deps);
       await runtime.command({ action: "init", repoPath: "/tmp/developer" });
       const deploy = {
-        action: "deploy", project: "demo", target: "live", branch: "main",
+        action: "deploy",
+        project: "demo",
+        target: "live",
+        branch: "main",
       } as const;
       let failActivation = prior === "incomplete";
       let activations = 0;
@@ -598,7 +615,9 @@ test.each(["incomplete", "completed"] as const)(
         return { outcome: "started" };
       };
       if (prior === "incomplete")
-        await expect(runtime.command(deploy)).rejects.toThrow("readiness failed");
+        await expect(runtime.command(deploy)).rejects.toThrow(
+          "readiness failed",
+        );
       else await runtime.command(deploy);
       failActivation = true;
       let stops = 0;
@@ -615,7 +634,11 @@ test.each(["incomplete", "completed"] as const)(
         "unresolved transition",
       );
       deps.lifecycle.down = async () => ({ outcome: "stopped" });
-      await reopened.command({ action: "down", project: "demo", target: "live" });
+      await reopened.command({
+        action: "down",
+        project: "demo",
+        target: "live",
+      });
       failActivation = false;
       const before = activations;
       expect(await reopened.command(deploy)).toMatchObject({
@@ -634,7 +657,10 @@ test("legacy completion metadata is neither inferred nor rewritten on reopen", a
   try {
     await runtime.command({ action: "init", repoPath: "/tmp/developer" });
     await runtime.command({
-      action: "deploy", project: "demo", target: "live", noUp: true,
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      noUp: true,
     });
     const content = JSON.stringify(state);
     expect(content).not.toContain("deploymentIncomplete");
@@ -646,7 +672,9 @@ test("legacy completion metadata is neither inferred nor rewritten on reopen", a
     expect(await readFile(path, "utf8")).toBe(content);
     expect(
       await createRuntime(deps).command({
-        action: "deploy", project: "demo", target: "live",
+        action: "deploy",
+        project: "demo",
+        target: "live",
       }),
     ).toMatchObject({ outcome: "unchanged" });
   } finally {
@@ -658,8 +686,12 @@ test("repeated down and daemon reconciliation skip stopped pre-stop hooks while 
   const { stopHookFixture } = await import("./stop-hook-fixture");
   const { runtime, deps, state, config } = fixture();
   config.hooks = { preStop: "target-pre", postStop: "target-post" };
-  config.components.web = { mode: "managed", command: "serve", port: 4567,
-    hooks: { preStop: "web-pre", postStop: "web-post" } };
+  config.components.web = {
+    mode: "managed",
+    command: "serve",
+    port: 4567,
+    hooks: { preStop: "web-pre", postStop: "web-post" },
+  };
   const f = stopHookFixture();
   deps.lifecycle = f.lifecycle;
   const diagnostics: unknown[] = [];
@@ -668,11 +700,15 @@ test("repeated down and daemon reconciliation skip stopped pre-stop hooks while 
   };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
-  expect(await runtime.command({ action: "down", project: "demo" })).toMatchObject({ outcome: "stopped" });
+  expect(
+    await runtime.command({ action: "down", project: "demo" }),
+  ).toMatchObject({ outcome: "stopped" });
   expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
   f.hookFailures.add("target-pre");
   f.hookFailures.add("web-pre");
-  expect(await runtime.command({ action: "down", project: "demo" })).toMatchObject({ outcome: "unchanged" });
+  expect(
+    await runtime.command({ action: "down", project: "demo" }),
+  ).toMatchObject({ outcome: "unchanged" });
   await createRuntime(deps).reconcile();
   expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
   expect(diagnostics).toEqual([]);
@@ -681,7 +717,16 @@ test("repeated down and daemon reconciliation skip stopped pre-stop hooks while 
   f.hookFailures.clear();
   f.running.add(`${state.targets[0]!.id}:web`);
   await createRuntime(deps).reconcile();
-  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post", "target-pre", "web-pre", "web-post", "target-post"]);
+  expect(f.hooks).toEqual([
+    "target-pre",
+    "web-pre",
+    "web-post",
+    "target-post",
+    "target-pre",
+    "web-pre",
+    "web-post",
+    "target-post",
+  ]);
   expect([...f.running]).toEqual([]);
   expect(diagnostics).toEqual([]);
 });
@@ -756,4 +801,329 @@ test("one runtime Status report reaches localhost human output and the Target pi
   } finally {
     await server.stop(true);
   }
+});
+
+test("failed deploy records separate safe initiating and rollback categories", async () => {
+  const { runtime, deps, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const entries: unknown[] = [];
+  deps.diagnostic = async (event) => {
+    entries.push(event);
+  };
+  deps.lifecycle.up = async () => {
+    throw new RigError("HEALTH_FAILED", "token-secret", "secret-hint");
+  };
+  deps.lifecycle.checkpoint = async (target) => ({
+    targetId: target.id,
+    async commit() {},
+    async rollback() {
+      throw new Error("rollback-secret");
+    },
+  });
+  await expect(
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+      operationId: "cause-operation",
+    }),
+  ).rejects.toMatchObject({ code: "DEPLOY_ROLLBACK_BLOCKED" });
+  expect(entries).toEqual([
+    expect.objectContaining({
+      operationId: "cause-operation",
+      outcome: "failed",
+      errorCode: "DEPLOY_ROLLBACK_BLOCKED",
+      primaryCause: "health",
+      recoveryCause: "unexpected",
+    }),
+  ]);
+  expect(JSON.stringify(entries)).not.toContain("secret");
+  expect(state.targets[0]!.recovery?.stage).toBe("blocked");
+});
+
+test.each(["commit", "restore", "rename", "activation", "pending"] as const)(
+  "%s failure keeps outcome, recovery ordering and correlated safe evidence",
+  async (phase) => {
+    const { runtime, deps, state } = fixture();
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    if (phase === "restore")
+      await runtime.command({
+        action: "deploy",
+        project: "demo",
+        target: "live",
+        branch: "main",
+      });
+    const events: string[] = [],
+      entries: unknown[] = [];
+    const primary = new RigError(
+      "HEALTH_FAILED",
+      "provider-secret",
+      "provider-hint",
+    );
+    const recovery = new Error("recovery-secret");
+    deps.diagnostic = async (event) => {
+      entries.push(event);
+      throw new Error("logging-secret");
+    };
+    deps.sources.resolve = async () => "def";
+    deps.sources.preflight = async () => ({ commit: "def", warnings: [] });
+    deps.sources.prepare = async (request) => ({
+      workspacePath: request.destination,
+      commit: "def",
+    });
+    deps.lifecycle.up = async (target) => {
+      events.push(`up:${target.commit}`);
+      if (phase === "activation" || phase === "restore")
+        throw target.commit === "def" ? primary : recovery;
+      return { outcome: "started" };
+    };
+    deps.lifecycle.down = async (target) => {
+      events.push(`down:${target.commit}`);
+      return { outcome: "stopped" };
+    };
+    deps.lifecycle.checkpoint = async (target) => ({
+      targetId: target.id,
+      async commit() {
+        events.push("commit");
+        if (phase === "commit") throw primary;
+      },
+      async rollback() {
+        events.push("rollback");
+        if (phase === "pending") throw recovery;
+      },
+    });
+    const update = deps.store.update;
+    let failPersistence = phase === "rename" || phase === "pending";
+    deps.store.update = async (change) => {
+      if (failPersistence) {
+        failPersistence = false;
+        throw primary;
+      }
+      await update(change);
+    };
+    let renameCalls = 0;
+    deps.documents.rename = async () => {
+      events.push("rename");
+      if (++renameCalls === 2) throw recovery;
+      return deps.documents.read("/tmp/developer");
+    };
+    const command =
+      phase === "rename"
+        ? { action: "rename" as const, project: "demo", newName: "renamed" }
+        : {
+            action: "deploy" as const,
+            project: "demo",
+            target: "live" as const,
+            branch: "main",
+            force: true,
+          };
+    let thrown: unknown;
+    try {
+      await runtime.command({ ...command, operationId: `cause-${phase}` });
+    } catch (error) {
+      thrown = error;
+    }
+    const codes = {
+      commit: "DEPLOY_COMMIT_PENDING",
+      restore: "DEPLOY_RESTORE_FAILED",
+      rename: "RENAME_ROLLBACK",
+      activation: "HEALTH_FAILED",
+      pending: undefined,
+    };
+    if (phase === "pending")
+      expect(thrown).toMatchObject({ code: "UNEXPECTED" });
+    else expect(thrown).toMatchObject({ code: codes[phase] });
+    if (phase === "activation") expect(thrown).toBe(primary);
+    expect(entries).toEqual([
+      expect.objectContaining({
+        operationId: `cause-${phase}`,
+        primaryCause: "health",
+        ...(["rename", "restore", "pending"].includes(phase)
+          ? { recoveryCause: "unexpected" }
+          : {}),
+      }),
+    ]);
+    expect(JSON.stringify(entries)).not.toContain("secret");
+    if (phase === "commit") {
+      expect(events).toEqual(["up:def", "commit"]);
+      expect(state.targets[0]!.recovery?.stage).toBe("committing");
+    }
+    if (phase === "restore") {
+      expect(events).toEqual([
+        "down:abc",
+        "up:def",
+        "down:def",
+        "down:abc",
+        "rollback",
+        "up:abc",
+      ]);
+      expect(state.targets[0]!.recovery?.stage).toBe("blocked");
+    }
+    if (phase === "rename") {
+      expect(events).toEqual(["rename", "rename"]);
+      expect(state.projects[0]!.name).toBe("demo");
+    }
+    if (phase === "activation") {
+      expect(events).toEqual(["up:def", "down:def", "rollback"]);
+      expect(state.targets[0]!.recovery).toBeUndefined();
+      expect(state.targets[0]!.deploymentIncomplete).toBe(true);
+    }
+    if (phase === "pending") {
+      expect(events).toEqual(["rollback"]);
+      expect(state.targets).toEqual([]);
+    }
+  },
+);
+
+test("wrapped failure writes a correlated private diagnostic and safe public response", async () => {
+  const { createFileDiagnosticLog } =
+    await import("../src/diagnostics/file-log");
+  const { startControlPlane } = await import("../src/daemon/server");
+  const root = await mkdtemp(join(tmpdir(), "rig89-correlated-"));
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const log = createFileDiagnosticLog({
+    root: join(root, ".rig"),
+    source: "rigd",
+    now: () => new Date("2026-09-09T00:00:00Z"),
+  });
+  deps.diagnostic = async (event) => {
+    await log.record({
+      event: "operation.completed",
+      ...event,
+      code: event.errorCode,
+    });
+  };
+  deps.lifecycle.up = async () => {
+    throw new RigError(
+      "HEALTH_FAILED",
+      "secret-provider-output",
+      "secret-provider-hint",
+      { env: "secret-env" },
+    );
+  };
+  deps.lifecycle.checkpoint = async (target) => ({
+    targetId: target.id,
+    async commit() {},
+    async rollback() {
+      throw new Error("secret-rollback");
+    },
+  });
+  const server = startControlPlane({
+    handle: runtime.command,
+    instanceId: "causal-test",
+    token: "test-token",
+    port: 0,
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/v1/command`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        action: "deploy",
+        project: "demo",
+        target: "live",
+        branch: "main",
+        operationId: "correlated-cause",
+      }),
+    });
+    const body = await response.text();
+    expect(body).toContain("DEPLOY_ROLLBACK_BLOCKED");
+    expect(body).toContain("Run down for this Target");
+    expect(body).not.toContain("secret");
+    const text = await readFile(
+      join(root, ".rig/logs/rigd/rigd.jsonl"),
+      "utf8",
+    );
+    expect(JSON.parse(text)).toMatchObject({
+      operationId: "correlated-cause",
+      code: "DEPLOY_ROLLBACK_BLOCKED",
+      primaryCause: "health",
+      recoveryCause: "unexpected",
+      outcome: "failed",
+    });
+    expect(text).not.toContain("secret");
+  } finally {
+    server.stop(true);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("registration persistence preserves files guidance and initiating category when activity persistence also fails", async () => {
+  const { runtime, deps, state } = fixture();
+  const entries: unknown[] = [];
+  deps.store.update = async () => {
+    throw new RigError("STATE_READ", "secret-storage", "secret-hint");
+  };
+  deps.diagnostic = async (event) => {
+    entries.push(event);
+  };
+  await expect(
+    runtime.command({
+      action: "init",
+      repoPath: "/tmp/developer",
+      operationId: "registration-cause",
+    }),
+  ).rejects.toMatchObject({
+    code: "REGISTRATION_INCOMPLETE",
+    hint: expect.stringContaining("were preserved"),
+  });
+  expect(state.projects).toEqual([]);
+  expect(entries).toEqual([
+    expect.objectContaining({
+      operationId: "registration-cause",
+      errorCode: "REGISTRATION_INCOMPLETE",
+      primaryCause: "storage",
+    }),
+  ]);
+  expect(JSON.stringify(entries)).not.toContain("secret");
+});
+
+test("non-Error secondary failure retains both categories without inspecting cyclic secrets", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const entries: unknown[] = [];
+  deps.diagnostic = async (event) => {
+    entries.push(event);
+  };
+  const cyclic: Record<string, unknown> = { secret: "private-token" };
+  cyclic.self = cyclic;
+  let fail = true;
+  const update = deps.store.update;
+  deps.store.update = async (change) => {
+    if (fail) {
+      fail = false;
+      throw cyclic;
+    }
+    await update(change);
+  };
+  deps.lifecycle.checkpoint = async (target) => ({
+    targetId: target.id,
+    async commit() {},
+    async rollback() {
+      throw undefined;
+    },
+  });
+  await expect(
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+    }),
+  ).rejects.toMatchObject({
+    code: "UNEXPECTED",
+    message: "Rig could not complete this operation.",
+  });
+  expect(entries).toEqual([
+    expect.objectContaining({
+      primaryCause: "non-error",
+      recoveryCause: "non-error",
+    }),
+  ]);
+  expect(JSON.stringify(entries)).not.toContain("private-token");
 });

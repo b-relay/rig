@@ -140,7 +140,12 @@ test("failed candidate restores stopped previous binaries and route before resto
   const route = await f.router.checkpoint(f.previous.id);
   f.candidate.plan.hooks = { postStart: "false" };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toMatchObject({ code: "HOOK_FAILED" });
   expect(f.state.targets[0]).toMatchObject({
     commit: "old",
@@ -174,7 +179,12 @@ test("successful route-free deployment removes only its previous owned route", a
   });
   delete f.candidate.plan.domain;
   delete f.candidate.plan.proxy;
-  await activateDeployment(f.candidate, f.previous, false, f.deps);
+  await activateDeployment(
+    f.candidate,
+    f.previous,
+    { activation: "start" },
+    f.deps,
+  );
   expect(await f.router.checkpoint(f.previous.id)).toEqual({
     key: f.previous.id,
     value: null,
@@ -216,7 +226,12 @@ test("rollback refuses an external artifact edit and retains blocked recovery ev
     return result;
   };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toMatchObject({ code: "DEPLOY_ROLLBACK_BLOCKED" });
   expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
     "external change",
@@ -241,7 +256,12 @@ test("failed shutdown hooks do not prevent verified process rollback or explicit
   });
   f.candidate.plan.hooks = { postStart: "false", preStop: "false" };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toMatchObject({ code: "HOOK_FAILED" });
   expect(f.state.targets[0]).toMatchObject({
     commit: "old",
@@ -303,7 +323,12 @@ test("state publication failure restores old effects, while an initial state fai
     throw new Error("initial publication failure");
   };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toThrow("initial publication failure");
   expect(f.running.size).toBe(1);
   expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
@@ -315,7 +340,12 @@ test("state publication failure restores old effects, while an initial state fai
     await update(change);
   };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toThrow("final publication failure");
   expect(f.state.targets[0]).toMatchObject({
     commit: "old",
@@ -337,7 +367,12 @@ test("review regression: removing an installed Component releases its previously
   f.candidate.plan.components = f.candidate.plan.components.filter(
     (component) => component.name !== "tool",
   );
-  await activateDeployment(f.candidate, f.previous, false, f.deps);
+  await activateDeployment(
+    f.candidate,
+    f.previous,
+    { activation: "start" },
+    f.deps,
+  );
   await expect(readFile(join(f.root, "bin", "tool"))).rejects.toMatchObject({
     code: "ENOENT",
   });
@@ -358,7 +393,12 @@ test("durable commit decision recovers new effects and policy after checkpoint f
     };
   };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toMatchObject({ code: "DEPLOY_COMMIT_PENDING" });
   expect(f.state.targets[0]).toMatchObject({
     commit: "new",
@@ -391,7 +431,7 @@ test("first deployment and final inventory failure also retain a recoverable com
       activateDeployment(
         f.candidate,
         existing ? f.previous : undefined,
-        false,
+        { activation: "start" },
         f.deps,
       ),
     ).rejects.toMatchObject({ code: "DEPLOY_COMMIT_PENDING" });
@@ -465,7 +505,12 @@ test("changing installName retires the old destination and preserves receipt rol
   tool.installName = "next-tool";
   f.candidate.plan.hooks = { postStart: "false" };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toMatchObject({ code: "HOOK_FAILED" });
   expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
     "#!/bin/sh\necho old\n",
@@ -475,7 +520,12 @@ test("changing installName retires the old destination and preserves receipt rol
   ).rejects.toMatchObject({ code: "ENOENT" });
   delete f.candidate.plan.hooks;
   delete f.candidate.recovery;
-  await activateDeployment(f.candidate, f.previous, false, f.deps);
+  await activateDeployment(
+    f.candidate,
+    f.previous,
+    { activation: "start" },
+    f.deps,
+  );
   await expect(readFile(join(f.root, "bin", "tool"))).rejects.toMatchObject({
     code: "ENOENT",
   });
@@ -499,7 +549,12 @@ test("commit recovery refuses an external executable change without discarding t
     };
   };
   await expect(
-    activateDeployment(f.candidate, f.previous, false, f.deps),
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
   ).rejects.toMatchObject({ code: "DEPLOY_COMMIT_PENDING" });
   await writeFile(join(f.root, "bin", "tool"), "external bytes");
   f.deps.lifecycle = createTargetLifecycle(f.adapters());
@@ -516,7 +571,12 @@ test("no-up cannot certify the old installed binary as belonging to the newly re
   const f = await fixture();
   await f.lifecycle.up(f.previous);
   await f.lifecycle.down(f.previous);
-  await activateDeployment(f.candidate, f.previous, true, f.deps);
+  await activateDeployment(
+    f.candidate,
+    f.previous,
+    { activation: "prepare" },
+    f.deps,
+  );
   const tool = f.candidate.plan.components.find(
     (component) => component.kind === "installed",
   )!;

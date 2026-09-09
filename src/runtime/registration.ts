@@ -1,7 +1,7 @@
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
-import { RigError } from "../domain/errors";
+import { RigError, failureCauses } from "../domain/errors";
 import { observeTargets } from "./status";
 import { recordedPorts } from "./ports";
 export async function updateRegistration(
@@ -61,11 +61,13 @@ export async function updateRegistration(
           { ...project, name: command.newName },
           project.name,
         );
-      } catch {
+      } catch (recoveryError) {
         throw new RigError(
           "RENAME_ROLLBACK",
           "Project rename could not restore its previous config and remote.",
           "Inspect the registered name, Project config, and Rig remote before retrying.",
+          {},
+          failureCauses(error, recoveryError),
         );
       }
       throw error;

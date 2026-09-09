@@ -129,3 +129,44 @@ a synchronously throwing sink, and successful registration with a synchronous
 sink failure. Five new public cases passed. Final focused runtime, diagnostic,
 CLI and real localhost transport gate: **67 passed, 440 assertions** with
 `RIG_ROOT=/tmp/rig89-review-final.rig`. Strict TypeScript and diff checks passed.
+
+## Review correction round 2 — total recovery projection
+
+Both reviews at `b7f62b4` found that recovery normalization could inspect a
+malformed RigError outside a guard after `asRigError` returned it unchanged.
+Four public double-failure regressions (pending STATE_READ followed by rollback
+RigError with throwing code/message/hint/details getter) all failed before the
+fix, returning the inspection error instead of safe guidance and both categories.
+
+`retainFailureCauses` now derives both categories from the original inputs first,
+then performs the entire public error projection inside one guard. It snapshots
+all four copied fields, checks their types without coercion, and constructs a new
+RigError only for a valid projection. A throwing getter, invalid field type or
+failed normalization uses the fixed UNEXPECTED public message/hint and empty
+details while retaining both original cause categories. It does not traverse
+borrowed details, error stacks, nested causes or arbitrary properties. Known
+well-formed outer codes/messages/hints/details retain their previous behavior.
+Successful rollback still bypasses this normalizer and rethrows the original
+initiating value, including the malformed values covered in round 1.
+
+Ledger updates: `retainFailureCauses` treats the return from `asRigError` as
+untrusted borrowed provider state, even if its prototype is RigError. All reads,
+validation and construction sit within the total projection contract; there is
+no I/O, ambient dependency or input mutation. `unexpectedFailure(causes)` owns the
+single fixed fallback policy shared with `asRigError`: caller-supplied bounded
+categories to a newly owned error with no raw details. `isDiagnosticCode(unknown)`
+is a pure bounded predicate shared by projection and diagnostic code extraction;
+it prevents duplicate code-validation policy. These direct callees are covered
+through public command and diagnostic tests. Malformed detail values are not
+serialized, and readable valid detail objects retain their existing borrowed
+lifetime without traversal. The existing trusted RigError contract for actual
+user-safe message/hint text is unchanged.
+
+Eight public cases now pass: each copied field with a throwing getter and each
+with an invalid type (including values whose coercion would throw). They assert
+pending-write then rollback order, unchanged empty inventory, safe public fallback,
+both correlated categories and absence of secret markers. The existing malformed
+initiating-value exact-identity and normal recovery cases also pass. Focused gate:
+**91 tests passed, 558 assertions**, across runtime-application,
+deployment-effects, diagnostic file log, CLI and localhost transport with
+`RIG_ROOT=/tmp/rig89-round2-final.rig`. Strict TypeScript and diff checks passed.

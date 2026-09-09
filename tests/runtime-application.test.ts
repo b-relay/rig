@@ -1218,3 +1218,91 @@ test("synchronous diagnostic failure cannot turn successful registration into fa
   ).resolves.toMatchObject({ outcome: "registered" });
   expect(state.activity.map((entry) => entry.outcome)).toEqual(["registered"]);
 });
+
+test.each([
+  ["code", "getter"],
+  ["message", "getter"],
+  ["hint", "getter"],
+  ["details", "getter"],
+  ["code", "type"],
+  ["message", "type"],
+  ["hint", "type"],
+  ["details", "type"],
+] as const)(
+  "malformed recovery %s %s preserves primary and recovery evidence",
+  async (field, fault) => {
+    const { runtime, deps, state } = fixture();
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    const primary = new RigError("STATE_READ", "safe primary", "safe hint");
+    const recovery = Object.defineProperty(
+      new RigError("EFFECTS_RECOVERY", "safe recovery", "safe hint"),
+      field,
+      {
+        get() {
+          if (fault === "getter") throw new Error("secret-inspection-failure");
+          return field === "details"
+            ? null
+            : {
+                toString() {
+                  throw new Error("secret-coercion");
+                },
+              };
+        },
+      },
+    );
+    const entries: unknown[] = [],
+      sequence: string[] = [];
+    deps.diagnostic = async (entry) => {
+      entries.push(entry);
+    };
+    const update = deps.store.update;
+    let fail = true;
+    deps.store.update = async (change) => {
+      if (fail) {
+        fail = false;
+        sequence.push("pending-write");
+        throw primary;
+      }
+      await update(change);
+    };
+    deps.lifecycle.checkpoint = async (target) => ({
+      targetId: target.id,
+      async commit() {
+        sequence.push("commit");
+      },
+      async rollback() {
+        sequence.push("rollback");
+        throw recovery;
+      },
+    });
+    await expect(
+      runtime.command({
+        action: "deploy",
+        project: "demo",
+        target: "live",
+        operationId: "malformed-recovery",
+      }),
+    ).rejects.toMatchObject({
+      code: "UNEXPECTED",
+      message: "Rig could not complete this operation.",
+      hint: "Inspect the diagnostic log for details.",
+    });
+    expect(sequence).toEqual(["pending-write", "rollback"]);
+    expect(state.targets).toEqual([]);
+    expect(entries).toEqual([
+      expect.objectContaining({
+        operationId: "malformed-recovery",
+        outcome: "failed",
+        errorCode: "UNEXPECTED",
+        primaryCause: "storage",
+        recoveryCause:
+          field === "code"
+            ? fault === "getter"
+              ? "non-error"
+              : "rig"
+            : "effects",
+      }),
+    ]);
+    expect(JSON.stringify(entries)).not.toContain("secret");
+  },
+);

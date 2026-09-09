@@ -32,12 +32,15 @@ export function asRigError(error: unknown): RigError {
   } catch {
     /* Untrusted thrown values may reject even prototype inspection. */
   }
+  return unexpectedFailure(failureCauses(error));
+}
+function unexpectedFailure(causes: FailureCauses): RigError {
   return new RigError(
     "UNEXPECTED",
     "Rig could not complete this operation.",
     "Inspect the diagnostic log for details.",
     {},
-    failureCauses(error),
+    causes,
   );
 }
 
@@ -59,14 +62,22 @@ export function retainFailureCauses(
   primary: unknown,
   recovery: unknown,
 ): RigError {
-  const failure = asRigError(outcome);
-  return new RigError(
-    failure.code,
-    failure.message,
-    failure.hint,
-    failure.details,
-    failureCauses(primary, recovery),
-  );
+  const causes = failureCauses(primary, recovery);
+  try {
+    const { code, message, hint, details } = asRigError(outcome);
+    if (
+      isDiagnosticCode(code) &&
+      typeof message === "string" &&
+      typeof hint === "string" &&
+      typeof details === "object" &&
+      details !== null &&
+      !Array.isArray(details)
+    )
+      return new RigError(code, message, hint, details, causes);
+  } catch {
+    /* Every copied provider field is untrusted; retain original causal categories on projection failure. */
+  }
+  return unexpectedFailure(causes);
 }
 export interface FailureCauses {
   primaryCause?: FailureCategory;
@@ -139,11 +150,14 @@ export function diagnosticErrorCode(error: unknown): string {
   try {
     if (error instanceof RigError) {
       const code = error.code;
-      if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(code))
-        return code;
+      if (isDiagnosticCode(code)) return code;
     }
   } catch {
     /* Diagnostic preparation is best effort, including property inspection. */
   }
   return "UNEXPECTED";
+}
+
+function isDiagnosticCode(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value);
 }

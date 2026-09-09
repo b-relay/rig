@@ -250,11 +250,6 @@ export class DaemonAdmin {
     };
   }
   private async spawnDetached(): Promise<void> {
-    const log = await open(
-      join(this.options.root, "daemon", "startup.log"),
-      "a",
-      0o600,
-    );
     const [executable, ...args] = this.options.command;
     if (!executable)
       throw new RigError(
@@ -262,6 +257,11 @@ export class DaemonAdmin {
         "No daemon executable is configured.",
         "Build rigd first.",
       );
+    const log = await open(
+      join(this.options.root, "daemon", "startup.log"),
+      "a",
+      0o600,
+    );
     try {
       const child = spawn(executable, args, {
         cwd: this.options.root,

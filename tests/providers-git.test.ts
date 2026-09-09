@@ -23,6 +23,28 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
+test.each([41, 63])("deployment rejects a %i-character Commit before publishing source files", async (length) => {
+  const root = await mkdtemp(join(tmpdir(), "rig-git-invalid-"));
+  roots.push(root);
+  const sourceRoot = join(root, "sources");
+  const store = createGitSourceStore({
+    root: sourceRoot,
+    run: async ({ command }) => {
+      if (command[1] !== "rev-parse")
+        throw new Error("Unexpected Git operation");
+      return { exitCode: 0, stdout: "a".repeat(length), stderr: "" };
+    },
+  });
+  await expect(
+    store.prepare({
+      project: "demo",
+      repository: root,
+      ref: "main",
+      destination: join(root, "deployment"),
+    }),
+  ).rejects.toMatchObject({ code: "GIT_COMMIT" });
+  expect(existsSync(sourceRoot)).toBe(false);
+});
 test("a committed deployment remains a complete Git workspace after its developer repository is deleted", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-git-"));
   roots.push(root);

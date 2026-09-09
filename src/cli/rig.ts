@@ -18,7 +18,6 @@ export async function runRigCli(
     json = options.json === true;
     request = await prepareInteractiveRequest(request, dependencies);
     operationId = dependencies.newOperationId();
-    json = options.json === true;
     const correlated = { ...request, operationId };
     await recordDiagnostic(dependencies.diagnostics, {
       event: "command.started",

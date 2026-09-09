@@ -5,13 +5,12 @@ import {
   readFile,
   stat,
   writeFile,
-  rename,
   rm,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createReadStream } from "node:fs";
 import { z } from "zod";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { InstalledComponent, ManagedComponent } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import type {
@@ -25,7 +24,7 @@ import type { Router } from "../providers/caddy-router";
 import type { TargetEffects } from "../runtime/lifecycle";
 import type { ObservationEffects } from "../runtime/status";
 import { RigError } from "../domain/errors";
-import { createArtifactOwnership } from "./artifact-ownership";
+import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { createEffectTransactions } from "./effect-transactions";
 export interface TargetAdapterOptions {
   root: string;
@@ -557,14 +556,7 @@ async function writeInstallReceipt(
   path: string,
   receipt: InstallReceipt,
 ): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(receipt), { mode: 0o600 });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await atomicFile(path, JSON.stringify(receipt));
 }
 async function digestFile(path: string): Promise<string | undefined> {
   try {

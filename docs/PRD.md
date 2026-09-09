@@ -5,8 +5,8 @@
 > Sources: [completed interview](codex://threads/019de162-a710-73b2-b418-e36383393a60), through its September 9 closing decisions, and [CONTEXT.md](../CONTEXT.md).
 > Implementation: [CLI observability and YAML plan](../plans/cli-observability-and-yaml.md) and [rewrite execution](../plans/typescript-rewrite.md).
 
-This is the next increment after the [CLI/provider cleanup PRD](prds/cli-provider-cleanup.md)
-and its [completed plan](../plans/cli-provider-cleanup.md), tracked by #54–#62.
+This is the next increment after the [CLI/provider cleanup PRD](history.md)
+and its [completed plan](history.md), tracked by #54–#62.
 The requirements below describe the intended result, not currently shipped
 behavior. Earlier issue closure does not establish live daemon or process health.
 

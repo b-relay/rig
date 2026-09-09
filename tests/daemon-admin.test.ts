@@ -4,6 +4,26 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DaemonAdmin } from "../src/daemon/admin";
 
+test("an empty daemon command fails before acquiring a startup log", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-invalid-"));
+  try {
+    const admin = new DaemonAdmin({
+      root,
+      command: [],
+      mode: "process",
+      userHome: root,
+    });
+    await expect(admin.install()).rejects.toMatchObject({
+      code: "DAEMON_COMMAND",
+    });
+    await expect(
+      readFile(join(root, "daemon", "startup.log")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("daemon install starts a real service; status notices exit; uninstall preserves project state", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-"));
   const script = join(root, "child.ts");

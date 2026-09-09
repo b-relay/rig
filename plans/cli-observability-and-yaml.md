@@ -3,7 +3,7 @@
 > Source: [current PRD](../docs/PRD.md), [CONTEXT.md](../CONTEXT.md), and the [completed interview](codex://threads/019de162-a710-73b2-b418-e36383393a60).
 > Status: implemented and reviewed; release validation and live rollout complete for available Projects. PR #74 is the single delivery; missing inactive rig-env-check and unavailable Slack are explicit limitations.
 > Date: 2026-09-09.
-> Predecessor: [completed CLI/provider cleanup](cli-provider-cleanup.md).
+> Predecessor: [completed CLI/provider cleanup](../docs/history.md).
 
 ## Delivery Contract
 

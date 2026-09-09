@@ -127,9 +127,6 @@ function fixture() {
       async logs() {
         return { entries: [], cursor: "0" };
       },
-      async exists() {
-        return true;
-      },
     },
     now: () => new Date().toISOString(),
     id: () => `id${++id}`,
@@ -218,8 +215,16 @@ test("unsafe candidate rollback never restores an old plan over surviving candid
   ).rejects.toThrow("unresolved deployment");
 });
 
-test("repoint uses the new config path while old registration is missing, and re-resolves local paths", async () => {
-  const { runtime, state, deps } = fixture();
+test("repoint uses the new config path and retains assigned ports, including Convex site ports", async () => {
+  const { runtime, state, deps, config } = fixture();
+  config.components.api = { uses: "convex" };
+  config.components.db = { uses: "sqlite" };
+  config.components.cli = { mode: "installed", entrypoint: "cli.ts" };
+  deps.files.reservePorts = async () => ({
+    web: 4567,
+    api: 4568,
+    "api.site": 4569,
+  });
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   await runtime.command({ action: "down", project: "demo" });
@@ -235,6 +240,18 @@ test("repoint uses the new config path while old registration is missing, and re
   });
   expect(state.projects[0]?.repoPath).toBe("/tmp/moved");
   expect(state.targets[0]?.plan.workspacePath).toBe("/tmp/moved");
+  expect(state.targets[0]?.plan.components).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ name: "api", port: 4568, sitePort: 4569 }),
+    ]),
+  );
+  expect(
+    await runtime.command({ action: "doctor", project: "demo" }),
+  ).toMatchObject({
+    checks: expect.arrayContaining([
+      expect.objectContaining({ name: "local/config", ok: true }),
+    ]),
+  });
 });
 
 test("authenticated callers cannot destroy the local or live Target", async () => {

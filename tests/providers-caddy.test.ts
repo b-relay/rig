@@ -3,10 +3,47 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCaddyRouter } from "../src/providers/caddy-router";
+import { createHash } from "node:crypto";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
+});
+
+test("route checkpoints preserve CRLF and incomplete markers fail before publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-markers-"));
+  roots.push(root);
+  const caddyfile = join(root, "Caddyfile");
+  const router = createCaddyRouter({
+    caddyfile,
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    reload: false,
+  });
+  const token = createHash("sha256").update("target").digest("hex");
+  const begin = `# rig begin ${token}`;
+  const end = `# rig end ${token}`;
+  const block = `${begin}\r\napp.test {\r\n reverse_proxy localhost:3000\r\n}\r\n${end}\r\n`;
+  const unrelated = "# retain this\r\n";
+  await writeFile(caddyfile, block + unrelated);
+  expect(await router.checkpoint("target")).toEqual({
+    key: "target",
+    value: block,
+  });
+  await router.remove("target");
+  expect(await readFile(caddyfile, "utf8")).toBe(unrelated);
+  for (const malformed of [begin, end, `${end}\n${begin}`]) {
+    await writeFile(caddyfile, malformed);
+    await expect(router.checkpoint("target")).rejects.toMatchObject({
+      code: "ROUTE_CORRUPT",
+    });
+    await expect(router.remove("target")).rejects.toMatchObject({
+      code: "ROUTE_CORRUPT",
+    });
+    await expect(
+      router.restore({ key: "target", value: null }, { key: "other", value: null }),
+    ).rejects.toMatchObject({ code: "ROUTE_CHANGED" });
+    expect(await readFile(caddyfile, "utf8")).toBe(malformed);
+  }
 });
 test("route changes preserve unrelated text and rollback the file if reload fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-caddy-"));

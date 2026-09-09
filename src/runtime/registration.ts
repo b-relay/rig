@@ -3,6 +3,7 @@ import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import { RigError } from "../domain/errors";
 import { observeTargets } from "./status";
+import { recordedPorts } from "./ports";
 export async function updateRegistration(
   command: RuntimeCommand,
   project: ProjectRecord,
@@ -107,14 +108,7 @@ export async function updateRegistration(
             workspacePath: repoPath,
             dataRoot: target.plan.dataRoot,
             deploymentName: target.name,
-            assignedPorts: Object.fromEntries(
-              target.plan.components
-                .filter((c) => c.kind === "managed")
-                .flatMap((c) => [
-                  [c.name, c.port],
-                  ...(c.sitePort ? [[`${c.name}.site`, c.sitePort]] : []),
-                ]),
-            ),
+            assignedPorts: recordedPorts(target.plan.components),
           }),
         ]),
     );

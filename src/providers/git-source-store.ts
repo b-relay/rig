@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { RigError } from "../domain/errors";
+import { isGitCommit } from "../domain/git";
 import type { CommandRunner } from "./contracts";
 import { runCommand } from "./command-runner";
 export interface SourceRequest {
@@ -46,7 +47,7 @@ export function createGitSourceStore(options: {
       ["rev-parse", "--verify", "--end-of-options", `${request.ref}^{commit}`],
       request.repository,
     );
-    if (!/^[a-f0-9]{40,64}$/.test(commit))
+    if (!isGitCommit(commit))
       throw new RigError(
         "GIT_COMMIT",
         "Git returned an invalid Commit identifier.",

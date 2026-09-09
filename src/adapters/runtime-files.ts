@@ -1,5 +1,4 @@
 import { createServer } from "node:net";
-import { access } from "node:fs/promises";
 import { RigError } from "../domain/errors";
 import type { RuntimeFiles } from "../runtime/contracts";
 import { readTargetLogs } from "./target-log-reader";
@@ -24,15 +23,6 @@ export function createRuntimeFiles(): RuntimeFiles {
       return selected;
     },
     logs: readTargetLogs,
-    async exists(path) {
-      try {
-        await access(path);
-        return true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        throw error;
-      }
-    },
   };
 }
 async function availablePort(preferred: number): Promise<number> {

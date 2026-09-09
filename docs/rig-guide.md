@@ -1,10 +1,9 @@
 # Rig Guide
 
-This guide describes the accepted Rig product model and the September 9
-TypeScript rewrite. Final validation and existing-Project rollout are pending;
-see [cutover readiness](rig-cutover-readiness.md). Interaction requirements
-described with "should" remain acceptance criteria until verified in the release.
-Do not use archived Effect or older lane/ref/bump examples as product direction.
+This guide describes the TypeScript implementation. The September 9 release
+validation, rollout results, and remaining limitations are recorded in
+[cutover readiness](rig-cutover-readiness.md). Product acceptance criteria live
+in the [PRD](PRD.md); predecessor plans are indexed in [history](history.md).
 
 ## Setup
 

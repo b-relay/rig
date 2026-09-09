@@ -4,6 +4,7 @@ import type { RuntimeDependencies } from "./contracts";
 import { RigError } from "../domain/errors";
 import { observeTargets } from "./status";
 import { ConfigError } from "../config/errors";
+import { recordedPorts } from "./ports";
 
 /** Host checks and ownership evidence remain available when Project discovery fails. */
 export async function hostDoctor(
@@ -109,14 +110,7 @@ export async function doctor(
         branchSlug: target.plan.branchSlug,
         branch: target.branch,
         commit: target.commit,
-        assignedPorts: Object.fromEntries(
-          target.plan.components
-            .filter((c) => c.kind === "managed")
-            .flatMap((c) => [
-              [c.name, c.port],
-              ...(c.sitePort ? [[`${c.name}.site`, c.sitePort]] : []),
-            ]),
-        ),
+        assignedPorts: recordedPorts(target.plan.components),
       });
       const ok = isDeepStrictEqual(current, target.plan);
       checks.push(

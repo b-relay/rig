@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readProjectConfig } from "../src/config/index.js";
+import {
+  readProjectConfig,
+  readProjectConfigSource,
+} from "../src/config/index.js";
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -25,6 +28,28 @@ test("Project config reads YAML comments and returns its source and revision", a
   expect(document.format).toBe("yaml");
   expect(document.path).toBe(join(root, "rig.yaml"));
   expect(document.revision).toMatch(/^[a-f0-9]{64}$/);
+});
+
+test.each([
+  ["yaml", "# Project\nname: pantry\ncomponents: {}\n"],
+  ["json", '{"name":"pantry","components":{}}\n'],
+])("%s config inspection and editing read the same revision and errors", async (format, raw) => {
+  const root = await fixture();
+  const path = join(root, `rig.${format}`);
+  await writeFile(path, raw);
+  const source = await readProjectConfigSource(root);
+  const { raw: actual, ...document } = source;
+  expect(actual).toBe(raw);
+  expect(document).toEqual(await readProjectConfig(root));
+
+  await writeFile(path, "{");
+  const readError = await readProjectConfig(root).catch(
+    (error: unknown) => error,
+  );
+  const sourceError = await readProjectConfigSource(root).catch(
+    (error: unknown) => error,
+  );
+  expect(sourceError).toEqual(readError);
 });
 
 test("Target resolution provides forward component interpolation, environment inheritance, persistent paths, and dependency order", async () => {

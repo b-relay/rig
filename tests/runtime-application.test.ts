@@ -448,3 +448,69 @@ test.each(["pending", "blocked", "committing"] as const)(
     ).resolves.toEqual({ ready: true });
   },
 );
+
+test.each(["pending", "blocked", "committing"] as const)(
+  "matching deploy rejects %s recovery without changing its evidence or recording unchanged",
+  async (stage) => {
+    const { runtime, state } = fixture();
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    const deploy = {
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+    } as const;
+    await runtime.command(deploy);
+    const target = state.targets[0]!;
+    target.recovery = {
+      plan: structuredClone(target.plan),
+      branch: "previous-branch",
+      commit: "previous-commit",
+      desired: "running",
+      stage,
+    };
+    const before = structuredClone(state.targets);
+    const activityCount = state.activity.length;
+    await expect(runtime.command(deploy)).rejects.toMatchObject({
+      code: "DEPLOY_RECOVERY",
+      message: "The previous deployment has an unresolved transition.",
+      hint: "Run down for this Target to finish stopping both plans before deploying again.",
+    });
+    expect(state.targets).toEqual(before);
+    expect(state.activity.slice(activityCount)).toEqual([
+      expect.objectContaining({
+        action: "deploy",
+        outcome: "failed",
+        message: "DEPLOY_RECOVERY",
+      }),
+    ]);
+  },
+);
+
+test.each(["running", "deliberately stopped", "prepared no-up"] as const)(
+  "completed matching deploy remains unchanged when %s",
+  async (mode) => {
+    const { runtime, state, plans } = fixture();
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    const deploy = {
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+    } as const;
+    await runtime.command({ ...deploy, noUp: mode === "prepared no-up" });
+    if (mode === "deliberately stopped")
+      await runtime.command({ action: "down", project: "demo", target: "live" });
+    const before = structuredClone(state.targets);
+    const effects = plans.length;
+    const activityCount = state.activity.length;
+    expect(before[0]!.recovery).toBeUndefined();
+    expect(before[0]!.desired).toBe(mode === "running" ? "running" : "stopped");
+    expect(await runtime.command(deploy)).toMatchObject({ outcome: "unchanged" });
+    expect(state.targets).toEqual(before);
+    expect(plans).toHaveLength(effects);
+    expect(state.activity.slice(activityCount)).toEqual([
+      expect.objectContaining({ action: "deploy", outcome: "unchanged" }),
+    ]);
+  },
+);

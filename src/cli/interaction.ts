@@ -11,15 +11,6 @@ export interface CliInteraction {
   text(message: string, defaultValue: string): Promise<string>;
   confirm(message: string): Promise<boolean>;
 }
-const targets = z.object({
-  targets: z.array(
-    z.object({
-      name: z.string(),
-      kind: z.enum(["local", "live", "preview"]),
-      state: z.string(),
-    }),
-  ),
-});
 const initialization = z.object({
   name: z.string(),
   productionBranch: z.string(),
@@ -33,7 +24,7 @@ const deployment = z.object({
 /** Resolve human choices through read-only daemon queries before submitting any mutation. */
 export async function prepareInteractiveRequest(
   request: RuntimeCommand,
-  deps: CliDependencies,
+  deps: Pick<CliDependencies, "signal" | "interaction" | "client" | "output">,
 ): Promise<RuntimeCommand> {
   assertActive(deps.signal);
   const interaction = deps.interaction;
@@ -47,14 +38,10 @@ export async function prepareInteractiveRequest(
         "Choose a Target explicitly.",
         "Pass local, live, or preview <branch>; interactive terminals offer a Target picker.",
       );
-    const report = readReply(
-      targets,
-      await deps.client.command({
-        action: "status",
-        project: request.project,
-        repoPath: request.repoPath,
-      }),
-    );
+    const report = await deps.client.status({
+      project: request.project,
+      repoPath: request.repoPath,
+    });
     assertActive(deps.signal);
     if (!report.targets.length)
       throw new RigError(
@@ -66,7 +53,7 @@ export async function prepareInteractiveRequest(
       "Choose a Target",
       report.targets.map((target) => ({
         value: target.name,
-        label: `${target.name} (${target.state})`,
+        label: `${terminalText(target.name)} (${terminalText(target.state)})`,
       })),
     );
     assertActive(deps.signal);

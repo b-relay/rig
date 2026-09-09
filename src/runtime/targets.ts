@@ -6,7 +6,9 @@ import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { recordedPorts } from "./ports";
-export function targetName(command: RuntimeCommand): string {
+export function targetName(
+  command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
+): string {
   if (command.target !== "preview") return command.target ?? "local";
   if (command.deployment) {
     if (["local", "live"].includes(command.deployment))

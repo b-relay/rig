@@ -1,3 +1,8 @@
+import {
+  projectStatusSchema,
+  type ProjectStatusReport,
+  type StatusSelection,
+} from "../domain/project-status";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
 import type { DaemonAddress, DaemonHealth, RuntimeCommand } from "./protocol";
@@ -34,7 +39,26 @@ export class DaemonClient {
     if (!health.success) throw protocolFailure();
     return health.data;
   }
+  async status(selection: StatusSelection): Promise<ProjectStatusReport> {
+    const envelope = resultSchema.safeParse(
+      await this.request(
+        "/v1/command",
+        { ...selection, action: "status" },
+        5000,
+      ),
+    );
+    if (!envelope.success) throw protocolFailure();
+    const report = projectStatusSchema.safeParse(envelope.data.result);
+    if (
+      !report.success ||
+      (selection.project !== undefined &&
+        report.data.project !== selection.project)
+    )
+      throw protocolFailure();
+    return report.data;
+  }
   async command(command: RuntimeCommand): Promise<unknown> {
+    if (command.action === "status") return this.status(command);
     const envelope = resultSchema.safeParse(
       await this.request(
         "/v1/command",

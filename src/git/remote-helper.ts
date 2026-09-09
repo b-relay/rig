@@ -104,7 +104,6 @@ export async function runRemoteHelper(
                 : target.kind === "preview" &&
                   target.name ===
                     targetName({
-                      action: "status",
                       target: "preview",
                       branch: target.branch,
                     });

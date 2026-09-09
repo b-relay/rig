@@ -159,7 +159,6 @@ test("failed or acceptance-only daemon replies never acknowledge a successful pu
 test("advertises only canonical deployment destinations, excluding custom Previews and ambiguous duplicates", async () => {
   const { targetName } = await import("../src/runtime/targets");
   const canonical = targetName({
-    action: "status",
     target: "preview",
     branch: "feature",
   });
@@ -187,7 +186,6 @@ test("advertises only canonical deployment destinations, excluding custom Previe
     },
     {
       name: targetName({
-        action: "status",
         target: "preview",
         branch: "duplicate",
       }),
@@ -197,7 +195,6 @@ test("advertises only canonical deployment destinations, excluding custom Previe
     },
     {
       name: targetName({
-        action: "status",
         target: "preview",
         branch: "duplicate",
       }),

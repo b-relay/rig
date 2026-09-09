@@ -35,6 +35,19 @@ export async function main(args: readonly string[]): Promise<number> {
           }
         : {}),
       client: {
+        async status(selection) {
+          const address = await readDaemonAddress(root);
+          if (!address)
+            throw new RigError(
+              "DAEMON_MISSING",
+              "rigd is not installed or reachable.",
+              "Run rigd install to start the daemon.",
+            );
+          return new DaemonClient({
+            port: address.port,
+            token: await readDaemonToken(root),
+          }).status(selection);
+        },
         async command(request) {
           const address = await readDaemonAddress(root);
           if (!address && request.action === "doctor")

@@ -1,3 +1,4 @@
+import type { ProjectStatusReport } from "../domain/project-status";
 import { expect, test } from "bun:test";
 import { runRigCli } from "./rig";
 
@@ -8,6 +9,9 @@ test("bare help exits successfully without contacting the daemon", async () => {
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command() {
         calls++;
         return {};
@@ -41,6 +45,9 @@ test("status and scoped structured lifecycle output use one correlated daemon re
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command(request: unknown) {
         requests.push(request);
         return {
@@ -98,7 +105,7 @@ test("status and scoped structured lifecycle output use one correlated daemon re
 
 test("status renders observed component states and keeps configured routes visible", async () => {
   let text = "";
-  const result = {
+  const result: ProjectStatusReport = {
     project: "pantry",
     targets: [
       {
@@ -125,6 +132,9 @@ test("status renders observed component states and keeps configured routes visib
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status() {
+        return result;
+      },
       async command() {
         return result;
       },
@@ -161,6 +171,9 @@ test("usage errors never call runtime or advertise diagnostics; unexpected failu
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command() {
         calls++;
         throw new RigError(
@@ -214,6 +227,9 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command(request: unknown) {
         requests.push(request);
         return { project: "test", outcome: "unchanged" };
@@ -313,6 +329,9 @@ test("every command supports both help flags without side effects; removed globa
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command() {
         calls++;
         return {};
@@ -387,6 +406,9 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
       if (++waits === 2) controller.abort();
     },
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command(request: unknown) {
         requests.push(request);
         return {
@@ -428,6 +450,9 @@ test("sink failure preserves success and unexpected error while never advertisin
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command() {
         if (failing) throw new Error("secret provider stack");
         return { project: "pantry", target: "live", outcome: "started" };
@@ -473,6 +498,9 @@ test("config and doctor expose user views while suppressing editor metadata and 
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command() {
         return result;
       },
@@ -530,6 +558,9 @@ test("scoped JSON also renders usage failures before a daemon request is created
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command() {
         calls++;
         return {};
@@ -568,6 +599,9 @@ test("cancellation during diagnostics prevents submission of the prepared mutati
     cwd: "/repo",
     signal: controller.signal,
     client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
       async command() {
         calls++;
         return {};

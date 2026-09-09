@@ -322,3 +322,9 @@ application observations. Backoff renders starting, recovered applications repor
 their own PID, and exhausted retries retain terminal failure evidence. Legacy or
 unverifiable capture evidence remains unknown until a deliberate wrapper upgrade.
 See the [capture observation evidence](reviews/2026-09-09-issue-79-capture-observations.md).
+
+Project Status uses a shared domain report across the runtime, localhost client,
+human presenter and Target picker. Transport validation rejects malformed replies
+instead of rendering them as empty or healthy evidence. Optional fields and valid
+empty reports retain their behavior. See the
+[Status contract evidence](reviews/2026-09-09-issue-85-status-report-contract.md).

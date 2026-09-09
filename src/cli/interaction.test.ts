@@ -8,6 +8,27 @@ function fixture() {
     root: "/isolated",
     cwd: "/repo",
     client: {
+      async status(selection) {
+        requests.push({ ...selection, action: "status" });
+        return {
+          project: "demo",
+          targets: [
+            {
+              name: "local",
+              kind: "local",
+              state: "configured",
+              components: [],
+            },
+            { name: "live", kind: "live", state: "stopped", components: [] },
+            {
+              name: "old-preview",
+              kind: "preview",
+              state: "stopped",
+              components: [],
+            },
+          ],
+        };
+      },
       async command(request) {
         requests.push(request);
         if (request.action === "initialization-info")

@@ -104,3 +104,8 @@ The [cleanup review](../docs/reviews/2026-09-09-repository-cleanup.md) records
 documentation pruning, shared policy owners, three boundary fixes, and remaining
 design work. Its isolated validation passes 194 tests and strict typecheck;
 the separate cleanup delivery does not update the Host rollout recorded above.
+
+Follow-up #79 preserves fresh application state behind launchd capture wrappers,
+including backoff, recovery identity, and exhausted retry status. Its bounded
+provider/status regression and observation contracts are recorded in
+[the capture observation review](../docs/reviews/2026-09-09-issue-79-capture-observations.md).

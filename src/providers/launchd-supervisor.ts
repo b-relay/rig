@@ -1,3 +1,8 @@
+import { readCaptureObservation } from "./capture-observation";
+import {
+  createProcessIdentityReader,
+  type ProcessIdentityReader,
+} from "./process-identity";
 import { clearCaptureStatus, waitForCaptureStart } from "./capture-status";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
@@ -15,12 +20,18 @@ export interface LaunchdOptions {
   readonly domain: string;
   readonly labelPrefix: string;
   readonly run?: CommandRunner;
+  /** Fresh process birth identity checks for captured wrapper and application ownership. */
+  readonly inspect?: ProcessIdentityReader;
+  /** Unix milliseconds used to reject stale capture observations. */
+  readonly now?: () => number;
   /** rigd's private capture command, used to timestamp and separate both application streams. */
   readonly captureCommand?: readonly string[];
 }
 /** launchd owns persistent job lifetime; explicit up preserves already running jobs. */
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const run = options.run ?? runCommand;
+  const inspect = options.inspect ?? createProcessIdentityReader(run);
+  const now = options.now ?? Date.now;
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
   const service = (key: string) => `${options.domain}/${label(key)}`;
@@ -52,7 +63,13 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           ? { state: "stopped" }
           : { state: "unknown", reason: "launchd could not inspect the job." };
       const pid = result.stdout.match(/^\s*pid = (\d+)\s*$/m);
-      if (pid) return { state: "running", pid: Number(pid[1]) };
+      if (pid) return options.captureCommand
+        ? await readCaptureObservation({
+            requestPath: join(options.root, `${label(key)}.json`),
+            wrapperPid: Number(pid[1]),
+            inspect, now, signal,
+          })
+        : { state: "running", pid: Number(pid[1]) };
       const exit = result.stdout.match(/^\s*last exit code = (\d+)\s*$/m);
       return {
         state: "stopped",
@@ -67,12 +84,27 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       };
     }
   };
+  const waitForApplication = async (key: string): Promise<number | undefined> => {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const observation = await observe(key);
+      if (observation.state === "running") return observation.pid;
+      await Bun.sleep(100);
+    }
+    throw new RigError(
+      "LAUNCHD_START",
+      "The managed job did not start.",
+      "Inspect the Target logs and retry.",
+      { key },
+    );
+  };
   return {
     observe,
     async ensureRunning(request) {
       const before = await observe(request.key);
       if (before.state === "running")
         return { outcome: "unchanged", pid: before.pid };
+      if (before.restartPending)
+        return { outcome: "unchanged", pid: await waitForApplication(request.key) };
       if (before.state === "unknown")
         throw new RigError(
           "LAUNCHD_UNKNOWN",
@@ -118,18 +150,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           throw error;
         }
       }
-      for (let attempt = 0; attempt < 30; attempt++) {
-        const observation = await observe(request.key);
-        if (observation.state === "running")
-          return { outcome: "started", pid: observation.pid };
-        await Bun.sleep(100);
-      }
-      throw new RigError(
-        "LAUNCHD_START",
-        "The managed job did not start.",
-        "Inspect the Target logs and retry.",
-        { key: request.key },
-      );
+      return { outcome: "started", pid: await waitForApplication(request.key) };
     },
     async stop(key) {
       const existing = await run({

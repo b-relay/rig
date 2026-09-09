@@ -32,7 +32,10 @@ Preserve the accepted Project/Target/Branch/Commit model:
 - `local` is the Working copy Target; `live` is the Stable Target; Previews use
   `preview <branch>`. Lifecycle never materializes a missing Preview.
 - Branch/Commit deploy policy, same-Commit no-ops, `--force`, `--no-up`, and
-  Persistent storage preservation remain in force.
+  Persistent storage preservation remain in force. A failed first activation
+  remains retryable at the same Branch/Commit with its Target identity and
+  Persistent storage intact; successful no-up and deliberately stopped completed
+  deployments still qualify for same-Commit no-ops.
 - Project config owns portable intent; Host config owns machine capability.
   Providers consume resolved context from `rigd`.
 - Do not add broad `--json`, `--state-root`, generic `--config`, or stub/provider

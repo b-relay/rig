@@ -22,11 +22,15 @@ export interface TargetRecord {
   /** Stable storage paths survive a Project rename. */
   logRoot: string;
   sourceRoot?: string;
+  /** Present until deployment commits; absence retains legacy completion semantics. */
+  deploymentIncomplete?: true;
   recovery?: {
     plan: TargetPlan;
     branch?: string;
     commit?: string;
     desired: "running" | "stopped";
+    /** Completion state of the plan restored by rollback. */
+    deploymentIncomplete?: true;
     stage: "pending" | "blocked" | "committing";
   };
 }

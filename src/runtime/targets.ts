@@ -1,7 +1,11 @@
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { RuntimeCommand } from "../daemon/protocol";
-import type { ProjectRecord, TargetRecord } from "../domain/runtime";
+import type {
+  ProjectRecord,
+  TargetRecord,
+  StateStore,
+} from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
@@ -176,9 +180,9 @@ export async function planTarget(
 }
 export async function persistTarget(
   target: TargetRecord,
-  deps: RuntimeDependencies,
+  store: Pick<StateStore, "update">,
 ): Promise<void> {
-  await deps.store.update((state) => {
+  await store.update((state) => {
     const index = state.targets.findIndex((t) => t.id === target.id);
     if (index === -1) state.targets.push(target);
     else state.targets[index] = target;

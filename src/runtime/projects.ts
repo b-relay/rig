@@ -2,7 +2,7 @@ import { dirname, resolve } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
-import { RigError } from "../domain/errors";
+import { RigError, failureCauses } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
 /** A current registration is authoritative; history is never a candidate path list. */
 export async function selectProject(
@@ -100,12 +100,13 @@ export async function registerProject(
       };
       state.projects.push(result);
     });
-  } catch {
+  } catch (error) {
     throw new RigError(
       "REGISTRATION_INCOMPLETE",
       "Project files were initialized, but registration could not be completed.",
       "The Project config and Rig remote were preserved. Resolve the state error or registration conflict, then rerun rig init.",
       { repoPath, configPath: document.path },
+      failureCauses(error),
     );
   }
   return result!;

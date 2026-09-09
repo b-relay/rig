@@ -272,3 +272,54 @@ test("an interrupted archive handoff completes without duplicating the previous 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("causal metadata accepts only closed categories for malformed and secret-bearing failures", async () => {
+  const { diagnosticCauses, RigError } = await import("../domain/errors");
+  const { diagnosticRecord } = await import("./file-log");
+  const cyclic: Record<string, unknown> = { message: "secret-message" };
+  cyclic.cause = cyclic;
+  const malformed = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw new Error("secret-proxy");
+      },
+    },
+  );
+  for (const [input, expected] of [
+    [cyclic, "non-error"],
+    [null, "non-error"],
+    ["secret-string", "non-error"],
+    [malformed, "non-error"],
+    [new Error("secret-error"), "unexpected"],
+    [
+      new RigError("secret-code", "secret-message", "secret-hint", cyclic),
+      "rig",
+    ],
+  ] as const) {
+    const record = diagnosticRecord(
+      {
+        event: "operation.completed",
+        operationId: "safe-op",
+        ...diagnosticCauses(input),
+      },
+      "rigd",
+      "2026-09-09T00:00:00Z",
+    );
+    expect(record.primaryCause).toBe(expected);
+    expect(JSON.stringify(record)).not.toContain("secret");
+  }
+  const record = diagnosticRecord(
+    {
+      event: "operation.completed",
+      primaryCause: "secret-code",
+      recoveryCause: cyclic,
+      arbitrary: "secret",
+    } as any,
+    "rigd",
+    "2026-09-09T00:00:00Z",
+  );
+  expect(record).not.toHaveProperty("primaryCause");
+  expect(record).not.toHaveProperty("recoveryCause");
+  expect(JSON.stringify(record)).not.toContain("secret");
+});

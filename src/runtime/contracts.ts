@@ -1,3 +1,4 @@
+import type { FailureCauses } from "../domain/errors";
 import type {
   ConfigDocument,
   HostConfig,
@@ -20,9 +21,7 @@ export interface ProjectDocuments {
     path: string,
   ): Promise<{ repoPath: string; document: ConfigDocument<ProjectConfig> }>;
   read(path: string): Promise<ConfigDocument<ProjectConfig>>;
-  initializationInfo(
-    path: string,
-  ): Promise<{
+  initializationInfo(path: string): Promise<{
     name: string;
     productionBranch: string;
     gitRequired: boolean;
@@ -91,12 +90,14 @@ export interface RuntimeDependencies {
   files: RuntimeFiles;
   now(): string;
   id(): string;
-  diagnostic(event: {
-    operationId: string;
-    action: string;
-    outcome: string;
-    project?: string;
-    target?: string;
-    errorCode?: string;
-  }): Promise<void>;
+  diagnostic(
+    event: FailureCauses & {
+      operationId: string;
+      action: string;
+      outcome: string;
+      project?: string;
+      target?: string;
+      errorCode?: string;
+    },
+  ): Promise<void>;
 }

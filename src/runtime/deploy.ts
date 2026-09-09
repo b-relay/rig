@@ -1,5 +1,5 @@
 import type { TargetRecord } from "../domain/runtime";
-import { RigError } from "../domain/errors";
+import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
 import { stopForTransition } from "./lifecycle";
@@ -18,7 +18,7 @@ export function assertDeploymentRecovered(
 export async function activateDeployment(
   candidate: TargetRecord,
   previous: TargetRecord | undefined,
-  noUp: boolean,
+  intent: { activation: "start" | "prepare" },
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
   assertDeploymentRecovered(previous);
@@ -34,9 +34,13 @@ export async function activateDeployment(
   const checkpoint = await deps.lifecycle.checkpoint(candidate, previous);
   let commitDecided = false;
   try {
-    await persistTarget(candidate, deps);
+    await persistTarget(candidate, deps.store);
   } catch (error) {
-    await checkpoint.rollback();
+    try {
+      await checkpoint.rollback();
+    } catch (recoveryError) {
+      throw retainFailureCauses(recoveryError, error, recoveryError);
+    }
     throw error;
   }
   try {
@@ -44,7 +48,7 @@ export async function activateDeployment(
       await stopForTransition(previous, deps.lifecycle);
       await deps.lifecycle.retireSuperseded(previous, candidate);
     }
-    if (!noUp) {
+    if (intent.activation === "start") {
       await deps.lifecycle.up(candidate, checkpoint);
       candidate.desired = "running";
     }
@@ -53,12 +57,12 @@ export async function activateDeployment(
       recovery: { ...candidate.recovery!, stage: "committing" as const },
     };
     delete decision.deploymentIncomplete;
-    await persistTarget(decision, deps);
+    await persistTarget(decision, deps.store);
     commitDecided = true;
     await checkpoint.commit();
     const completed: TargetRecord = { ...decision };
     delete completed.recovery;
-    await persistTarget(completed, deps);
+    await persistTarget(completed, deps.store);
     return completed;
   } catch (error) {
     if (commitDecided)
@@ -66,12 +70,14 @@ export async function activateDeployment(
         "DEPLOY_COMMIT_PENDING",
         "The deployment was activated, but its commit finalization is incomplete.",
         "Run down for this Target to finish the recorded commit without restoring the previous build.",
+        {},
+        failureCauses(error),
       );
     try {
       await stopForTransition(candidate, deps.lifecycle);
       if (previous) await stopForTransition(previous, deps.lifecycle);
       await checkpoint.rollback();
-    } catch {
+    } catch (recoveryError) {
       candidate.recovery ??= {
         plan: candidate.plan,
         branch: candidate.branch,
@@ -81,30 +87,46 @@ export async function activateDeployment(
       };
       candidate.recovery.stage = "blocked";
       candidate.desired = "stopped";
-      await persistTarget(candidate, deps);
+      try {
+        await persistTarget(candidate, deps.store);
+      } catch (persistenceError) {
+        throw retainFailureCauses(persistenceError, error, persistenceError);
+      }
       throw new RigError(
         "DEPLOY_ROLLBACK_BLOCKED",
         "Deployment failed and process cleanup could not be verified, or saved effects could not be restored.",
         "Run down for this Target and inspect its logs before retrying.",
+        {},
+        failureCauses(error, recoveryError),
       );
     }
     if (previous) {
       try {
         if (previous.desired === "running") await deps.lifecycle.up(previous);
-        await persistTarget(previous, deps);
-      } catch {
+        await persistTarget(previous, deps.store);
+      } catch (recoveryError) {
         if (candidate.recovery) candidate.recovery.stage = "blocked";
-        await persistTarget(candidate, deps);
+        try {
+          await persistTarget(candidate, deps.store);
+        } catch (persistenceError) {
+          throw retainFailureCauses(persistenceError, error, persistenceError);
+        }
         throw new RigError(
           "DEPLOY_RESTORE_FAILED",
           "The deployment failed and its previous plan could not be restored.",
           "Run down for this Target and inspect its logs before retrying.",
+          {},
+          failureCauses(error, recoveryError),
         );
       }
     } else {
       candidate.desired = "stopped";
       delete candidate.recovery;
-      await persistTarget(candidate, deps);
+      try {
+        await persistTarget(candidate, deps.store);
+      } catch (recoveryError) {
+        throw retainFailureCauses(recoveryError, error, recoveryError);
+      }
     }
     throw error;
   }
@@ -120,7 +142,7 @@ export async function stopForRecovery(
     await deps.lifecycle.commitEffects(target);
     const completed = { ...target, desired: "stopped" as const };
     delete completed.recovery;
-    await persistTarget(completed, deps);
+    await persistTarget(completed, deps.store);
     return completed;
   }
   const previous: TargetRecord = {
@@ -134,6 +156,6 @@ export async function stopForRecovery(
   delete previous.recovery;
   await stopForTransition(previous, deps.lifecycle);
   await deps.lifecycle.restoreEffects(target);
-  await persistTarget(previous, deps);
+  await persistTarget(previous, deps.store);
   return previous;
 }

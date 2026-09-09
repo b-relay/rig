@@ -412,3 +412,8 @@ Human output and Target selection use that shared report; the transport adapter
 validates complete nested evidence and explicit Project identity before returning
 it. Empty reports and optional observation fields remain compatible. See the
 [design and verification ledger](../docs/reviews/2026-09-09-issue-85-status-report-contract.md).
+
+Follow-up #89 adds flat allowlisted primary/recovery categories to correlated
+registration and Deployment failure diagnostics without changing pending,
+committing, blocked, no-up or same-Commit recovery policy. See
+[implementation evidence](../docs/reviews/2026-09-09-issue-89-safe-causal-evidence.md).

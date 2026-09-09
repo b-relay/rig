@@ -1,5 +1,6 @@
+import type { FailureCauses } from "../domain/errors";
 /** Diagnostics accept metadata, never config, commands, secrets, or Target output. */
-export interface DiagnosticEntry {
+export interface DiagnosticEntry extends FailureCauses {
   event: string;
   level?: "debug" | "info" | "warn" | "error";
   operationId?: string;

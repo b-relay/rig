@@ -415,3 +415,36 @@ test("Preview destruction passes inventory publication into the retirement trans
   expect(retirementReceivedPublication).toBe(true);
   expect(state.targets).toHaveLength(1);
 });
+
+test.each(["pending", "blocked", "committing"] as const)(
+  "uninstall rejects stopped Targets with %s recovery and still permits explicit down",
+  async (stage) => {
+    const { runtime, state } = fixture();
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    await runtime.command({ action: "up", project: "demo" });
+    await runtime.command({ action: "down", project: "demo" });
+    const candidate = state.targets[0]!;
+    candidate.recovery = {
+      plan: structuredClone(candidate.plan),
+      desired: "running",
+      stage,
+    };
+    candidate.plan.components = [];
+    const savedTargets = structuredClone(state.targets);
+
+    await expect(
+      runtime.command({ action: "prepare-uninstall" }),
+    ).rejects.toMatchObject({
+      code: "DEPLOY_RECOVERY",
+      hint: expect.stringContaining("rig down"),
+    });
+    expect(state.targets).toEqual(savedTargets);
+    await expect(
+      runtime.command({ action: "down", project: "demo" }),
+    ).resolves.toMatchObject({ outcome: "stopped" });
+    expect(state.targets[0]!.recovery).toBeUndefined();
+    await expect(
+      runtime.command({ action: "prepare-uninstall" }),
+    ).resolves.toEqual({ ready: true });
+  },
+);

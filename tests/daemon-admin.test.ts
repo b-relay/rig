@@ -209,3 +209,56 @@ test("failed initial reconciliation shuts down and releases only owned daemon ev
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("rejected recovery readiness preserves daemon installation and credentials", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-recovery-"));
+  const script = join(root, "child.ts");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))};
+     import { RigError } from ${JSON.stringify(join(import.meta.dir, "../src/domain/errors.ts"))};
+     import { access } from 'node:fs/promises';
+     await runDaemonHost({root:process.env.RIG_ROOT!,port:0,shutdown:async()=>{},handle:async(command)=>{
+       if(command.action==='prepare-uninstall') {
+         try { await access(process.env.RIG_ROOT+'/recovered'); }
+         catch { throw new RigError('DEPLOY_RECOVERY','Cannot uninstall rigd while Targets have unresolved deployment recovery.','Run rig down for each affected Target to finish recovery, then retry uninstall.'); }
+       }
+       return {ready:true};
+     }});`,
+  );
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+  });
+  try {
+    await admin.install();
+    const installationPath = join(root, "daemon", "install.json");
+    const tokenPath = join(root, "auth", "control-plane.token");
+    const installation = await readFile(installationPath, "utf8");
+    const token = await readFile(tokenPath, "utf8");
+    await expect(admin.uninstall()).rejects.toMatchObject({
+      code: "DEPLOY_RECOVERY",
+      hint: expect.stringContaining("rig down"),
+    });
+    expect(await admin.status()).toEqual({
+      installed: true,
+      running: true,
+      reachable: true,
+    });
+    expect(await readFile(installationPath, "utf8")).toBe(installation);
+    expect(await readFile(tokenPath, "utf8")).toBe(token);
+    await writeFile(join(root, "recovered"), "yes");
+    await expect(admin.uninstall()).resolves.toMatchObject({
+      outcome: "uninstalled",
+      installed: false,
+      running: false,
+      reachable: false,
+    });
+  } finally {
+    await writeFile(join(root, "recovered"), "yes");
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);

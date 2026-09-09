@@ -108,3 +108,42 @@ Final verification:
   before the parent reserved subsequent build/entrypoint gates).
 - `git diff --check`: passed. Full suite and independent review remain parent
   gates. No installed OS launchd/Caddy behavior was exercised.
+
+## Parent full-gate follow-up: migration fixture timestamp race
+
+The parent gate at `15dd775` passed 268 tests and failed only migration-runtime-e2e
+with `LEGACY_ADOPTION_INVALID` at adoption.ts:227. Both independent PR review
+comments at that head were read and reported clean Standards/Spec findings.
+
+Using the diagnosing-bugs loop, the original isolated migration test first passed
+(1 test / 13 assertions). Ranked hypotheses were: an observation timestamp later
+than final verification, mismatched process identity, or changed migration source.
+The first hypothesis predicts exact rejection when construction crosses a clock
+millisecond. Git comparison confirmed neither the adoption validator nor this
+fixture had changed in the Status PR.
+
+A temporary 3 ms delay immediately after capturing `verifiedAt` reproduced the
+same line-227 failure: verifiedAt was `20:42:20.240Z`; the next observation could
+only occur at or after `20:42:20.246Z`. JavaScript evaluates that object property
+before mapping the process observations. The preservation check correctly rejects
+`observedAt > verifiedAt`; the old test happened to pass when all reads shared one
+millisecond. Provider identities and preservation policy did not change.
+
+Bounded correction: capture one timestamp for the fixture's synthetic ownership
+snapshot and use it for both verifiedAt and observedAt. Production code and all
+preservation checks are unchanged. No helper or new runtime contract is added.
+The test's existing public finalization, daemon, storage and exact-byte assertions
+remain the regression seam.
+
+Verification of the correction:
+
+- Isolated migration-e2e plus migration-adoption: 6 pass, 26 assertions.
+- Strict TypeScript checking: passed.
+- The same forced clock gap now passes: snapshot `20:43:17.900Z`, construction
+  resumed `20:43:17.906Z`, 1 pass / 13 assertions.
+- Temporary clock-delay/debug instrumentation was removed; final fixture matches
+  the version that passed the six-test check. No full-suite rerun was performed.
+
+This is an inherited test-fixture race exposed by the parent gate, not a Status
+runtime regression or an environment-only dismissal. Capturing snapshot time once
+prevents scheduling and millisecond-boundary timing from changing fixture validity.

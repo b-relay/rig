@@ -12,12 +12,17 @@ import type { ProcessObservation } from "../src/providers/contracts";
 test("launchd reports application backoff, recovery identity, and terminal failure through public status", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-launchd-observation-"));
   let child: ReturnType<typeof Bun.spawn> | undefined;
+  let replayExitingWrapperSnapshot = false;
+  const inspect = createProcessIdentityReader();
   const wrapper = join(root, "capture.ts");
   await writeFile(wrapper, `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[2]!);`);
   const supervisor = createLaunchdSupervisor({
     root, domain: "gui/99999", labelPrefix: "test.observation",
     captureCommand: [process.execPath, wrapper],
-    inspect: createProcessIdentityReader(),
+    inspect: async pid => {
+      if (replayExitingWrapperSnapshot && pid === child?.pid) await child.exited;
+      return inspect(pid);
+    },
     run: async ({ command }) => {
       if (command[1] === "bootstrap") {
         child = Bun.spawn([process.execPath, wrapper, command[3]!.replace(/\.plist$/, ".json")], { stdout: "ignore", stderr: "pipe" });
@@ -29,6 +34,7 @@ test("launchd reports application backoff, recovery identity, and terminal failu
         child = undefined;
         return { exitCode: 0, stdout: "", stderr: "" };
       }
+      if (replayExitingWrapperSnapshot && child) return { exitCode: 0, stdout: `pid = ${child.pid}\n`, stderr: "" };
       return child
         ? { exitCode: 0, stdout: child.exitCode === null ? `pid = ${child.pid}\n` : `last exit code = ${child.exitCode}\n`, stderr: "" }
         : { exitCode: 113, stdout: "", stderr: "Could not find service" };
@@ -70,6 +76,13 @@ test("launchd reports application backoff, recovery identity, and terminal failu
     expect(recovered.pid).not.toBe(child!.pid);
     expect((await report())[0]!.components.map(component => component.state)).toEqual(["running", "healthy"]);
     await waitFor(value => value.state === "stopped" && !value.restartPending && value.exitCode === 9);
+    // Replay a launchctl PID snapshot taken just before the wrapper exits. Its
+    // subsequent identity lookup must remain unknown, never trust dead ownership.
+    replayExitingWrapperSnapshot = true;
+    expect((await report())[0]!.components.map(component => component.state)).toEqual(["unknown", "unknown"]);
+    replayExitingWrapperSnapshot = false;
+    // A terminal child snapshot can precede the wrapper's own process exit.
+    await child!.exited;
     expect((await report())[0]!.components.map(component => component.state)).toEqual(["failed", "failed"]);
   } finally {
     await supervisor.stop(request.key);

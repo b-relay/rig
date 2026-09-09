@@ -89,3 +89,40 @@ PID/birth-time identity resolution.
   after frozen-lockfile dependency installation in the worktree.
 - Full suite, compiled entrypoints, and two independent reviews are the parent
   supervisor's final gate; no full-gate claim is made here.
+
+## Final-gate follow-up: inherited launchd terminal-observation race
+
+The parent gate at `040c7532e297ffa323839a411f06fc115a58e2fb` reported
+327 passed / 1 failed: launchd public-status coverage expected two failed
+components but observed two unknown components immediately after a terminal child
+snapshot. Failed-gate evidence is retained by the supervisor under
+`/tmp/rig-supervisor-20260909/gate-91-failed-1`.
+
+Focused original launchd tests passed (2 tests, 23 assertions). A controlled
+replay then made the exact failure deterministic: return a launchctl PID snapshot
+for the real wrapper, wait for that wrapper's actual exit before its real identity
+lookup, and observe public status. This yields unknown because ownership can no
+longer be verified. The same replay failed identically after temporarily restoring
+`child-supervisor.ts` from exact base `6e0e53ce00f7df10e95904fa49292cab4b4d4cc9`;
+the current source was restored immediately afterward.
+
+Ranked hypotheses were (1) wrapper exit between PID snapshot and identity lookup,
+(2) changed stop timing from #91, and (3) stale capture evidence. The deterministic
+identity/exit barrier establishes (1), and the exact-base comparison rules out a
+new #91 requirement for the failure. The captured terminal child observation does
+not synchronize wrapper process exit. There is no production failure here:
+unknown correctly preserves uncertainty across the independent OS observations.
+
+The smallest correction is test-only: explicitly verify this transient unknown
+through the existing controlled launchctl seam and real identity reader, then
+await wrapper exit before asserting final failed status from launchctl's exit
+record. No capture freshness, identity, or production observation rule changes.
+The test's injected identity function only waits for its owned wrapper exit, then
+uses the unchanged production reader; all process cleanup remains run-owned.
+
+Red: replay on current and exact-base supervisor both produced the original
+failed-versus-unknown assertion. Green: focused launchd coverage passed with 2 tests
+and 24 assertions; strict TypeScript and diff whitespace checks passed. Three
+additional focused repetitions all passed (2 tests / 24 assertions each); the full
+suite remains the parent's gate. The temporary baseline substitution and replay
+expectation were removed; the intentional race coverage remains in the test.

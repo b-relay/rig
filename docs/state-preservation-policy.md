@@ -81,3 +81,23 @@ shape:
 6. Perform the smallest approved action.
 7. Verify `rig status`, `rig doctor`, Caddy routing, launchd state, and project
    rollback handles after cleanup.
+
+## Interrupted effect checkpoint preparation
+
+Normal Target recovery (`rig down`) can recover a checkpoint that was interrupted
+before its journal was published. A valid preparation claim identifies the Target
+and canonical checkpoint location before any backups are copied. Recovery removes
+only regular, recognized preparation files under that claim, without restoring
+partially copied bytes over active executables or routes.
+
+Older backup-only directories have no such ownership proof. Recovery preserves
+these directories by renaming them to a unique sibling ending in
+`.preserved-<id>`, reports the retained evidence location, and asks for a retry.
+The next operation can create a checkpoint. Preserved directories are not deleted
+automatically. This narrowly scoped archival is the recovery policy for #78;
+it does not authorize historical runtime migration or general state cleanup.
+
+Absent journals alone never authorize deletion. Unknown entries, corrupt journals
+or claims, mismatched Target identities, and symlinked checkpoint paths remain
+unchanged and require inspection. Valid journals retain their existing rollback
+or committed-effect semantics.

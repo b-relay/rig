@@ -14,7 +14,11 @@ import { registerProject, selectProject } from "./projects";
 import { persistTarget, planTarget, targetName } from "./targets";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
-import { activateDeployment, stopForRecovery } from "./deploy";
+import {
+  activateDeployment,
+  assertDeploymentRecovered,
+  stopForRecovery,
+} from "./deploy";
 export interface RigRuntime {
   command(command: RuntimeCommand): Promise<unknown>;
   reconcile(): Promise<void>;
@@ -269,6 +273,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         const commit = command.commit
           ? await deps.sources.resolve(project.repoPath, command.commit)
           : preflight.commit;
+        assertDeploymentRecovered(target);
         if (
           target?.commit === commit &&
           target.branch === branch &&

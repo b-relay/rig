@@ -3,6 +3,17 @@ import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
 import { stopForTransition } from "./lifecycle";
+/** Unresolved recovery must be rejected before accepting any deployment outcome. */
+export function assertDeploymentRecovered(
+  previous: Pick<TargetRecord, "recovery"> | undefined,
+): void {
+  if (previous?.recovery)
+    throw new RigError(
+      "DEPLOY_RECOVERY",
+      "The previous deployment has an unresolved transition.",
+      "Run down for this Target to finish stopping both plans before deploying again.",
+    );
+}
 /** The saved recovery record owns both plans until candidate activation or verified rollback finishes. */
 export async function activateDeployment(
   candidate: TargetRecord,
@@ -10,12 +21,7 @@ export async function activateDeployment(
   noUp: boolean,
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
-  if (previous?.recovery)
-    throw new RigError(
-      "DEPLOY_RECOVERY",
-      "The previous deployment has an unresolved transition.",
-      "Run down for this Target to finish stopping both plans before deploying again.",
-    );
+  assertDeploymentRecovered(previous);
   candidate.recovery = {
     plan: previous?.plan ?? candidate.plan,
     branch: previous?.branch ?? candidate.branch,

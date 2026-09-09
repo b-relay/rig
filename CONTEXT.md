@@ -1,5 +1,11 @@
 # Rig Context
 
+This is the accepted domain model and product contract, including planned
+interaction behavior. It is not a release-completion record. The current
+implementation uses plain strict TypeScript/Bun/Zod without Effect TS; consult
+the [PRD](docs/PRD.md), [module map](README.md#module-map), and
+[cutover readiness](docs/rig-cutover-readiness.md) for implementation scope and gates.
+
 ## Terms
 
 ### Rig

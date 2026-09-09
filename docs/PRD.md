@@ -3,14 +3,14 @@
 > Status: implementation in progress; plain TypeScript rewrite authorized.
 > Updated: 2026-09-09.
 > Sources: [completed interview](codex://threads/019de162-a710-73b2-b418-e36383393a60), through its September 9 closing decisions, and [CONTEXT.md](../CONTEXT.md).
-> Implementation: [CLI observability and YAML plan](../plans/cli-observability-and-yaml.md).
+> Implementation: [CLI observability and YAML plan](../plans/cli-observability-and-yaml.md) and [rewrite execution](../plans/typescript-rewrite.md).
 
 This is the next increment after the [CLI/provider cleanup PRD](prds/cli-provider-cleanup.md)
 and its [completed plan](../plans/cli-provider-cleanup.md), tracked by #54–#62.
 The requirements below describe the intended result, not currently shipped
 behavior. Earlier issue closure does not establish live daemon or process health.
 
-## Problem
+## Starting Problem
 
 Normal commands render internal log levels, error tags, and large diagnostic
 objects as user responses. Status mixes configured policy, recorded intent,
@@ -18,7 +18,7 @@ and observed health, so it can say a Target is running after a component dies.
 Lifecycle can use newer Project config instead of the configuration that started
 the Target. Application output, Rig diagnostics, and activity need distinct roles.
 
-User-authored config is JSON-only. Discovery, initialization, registration,
+The pre-rewrite user-authored config was JSON-only. Discovery, initialization, registration,
 editing, and Host loading need consistent YAML-first behavior without breaking
 existing JSON users or rewriting their files.
 
@@ -212,7 +212,7 @@ per-component destinations; do not add log-sink fields now.
   validation. Both formats feed the same Zod schema for their scope.
 - Apply the same policy across discovery, init, loading, registration, doctor,
   config inspection, and existing structured editing paths.
-- **No migration command and no automatic migration.** Users may convert
+- **No configuration migration command and no automatic format migration.** Users may convert
   manually; Rig never silently renames, converts, or deletes existing JSON.
 - Runtime state and diagnostics remain machine-owned JSON/JSONL.
 - Structured writers editing existing YAML must preserve comments and ordering
@@ -239,15 +239,16 @@ filters in interview examples are not required command contracts in this PRD.
 ## Scope And Dependencies
 
 Deliver R1–R7 first, then R8. Fresh observations and final Operation outcomes are
-prerequisites for corresponding user claims. The current file-based daemon
+prerequisites for corresponding user claims. The pre-rewrite file-based daemon
 marker and in-process runtime do not prove reachability or durable ownership;
 the plan must establish the required runtime evidence before calling them done.
 
-Do not automatically absorb every open issue. #64/#65 local workspace/shutdown,
-#66/#67 partial recovery/crash status, and #73 ref retention inform runtime proof.
-#70/#71 inform identity and doctor views. Rename/repoint and source ownership
-(#68/#69) remain separate designs. #72 does not override the accepted decision
-against broad JSON flags.
+The completed interview originally kept adjacent issues separate. The later
+September 9 authorization expands implementation to all open issues #64–#73:
+local workspace/shutdown (#64/#65), partial recovery/crash status (#66/#67),
+stopped-Project rename/repoint (#68), independent source ownership (#69),
+identity/doctor (#70/#71), scoped structured output (#72), and ref retention
+(#73). These additions retain the interview decision against broad JSON flags.
 
 Out of scope: Expert/`rigx`, full web UI, remote hosts, project deletion,
 automatic Preview cleanup, custom/multiple Stable stages, automatic doctor
@@ -274,5 +275,20 @@ The narrower issue #72 structured status/lifecycle output is now in scope:
 command-specific `--json` renders the same read model, without reintroducing a
 global output flag. Issue #68 authorizes a supported explicit Project repoint
 and rename workflow; design it with stopped Targets and validated conflicts
-before mutating identity/path ownership. This does not authorize Project data
-deletion or automatic migration of existing runtime state.
+before mutating identity/path ownership.
+
+The later rollout instruction explicitly authorizes upgrading existing Rig
+Projects after battle testing, with inventory, exact backups, verified provider
+ownership, and preserved Persistent storage. This is a deliberate runtime
+compatibility cutover, not an automatic migration in normal commands. It does
+not authorize Project data deletion or conversion of existing JSON config to
+YAML. Historical source uncertainty must be resolved with recorded evidence;
+current config cannot invent a deployed Branch or Commit.
+
+Delivery is one large PR from the implementation branch, followed by its link
+in Slack. Independent review follows each major milestone. Full validation,
+live rollout, ticket acceptance, and final delivery remain pending until their
+evidence is recorded; implemented behavior alone does not mark them complete.
+Current evidence is in the [milestone review](reviews/2026-09-09-rewrite-milestones.md),
+[config review](reviews/2026-09-09-config-contracts.md), and
+[legacy migration review](reviews/2026-09-09-legacy-migration.md).

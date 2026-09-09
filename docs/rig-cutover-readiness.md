@@ -1,139 +1,69 @@
-# Rig Post-Cutover Validation
+# Rig TypeScript Cutover Readiness
 
-This document started as the HITL audit for GitHub issue #22. It now records
-the completed replacement, the remaining validation gates, and the rollback
-posture for real-provider use.
+Status: September 9 implementation validation is in progress. Existing Host
+rollout and final delivery have not been established by this document. The
+[prior Effect cutover record](rig-cutover-readiness-pre-typescript.md) is retained
+as historical evidence, not current instructions or a completion claim.
 
-## Completed Replacement
+## Current Architecture
 
-The approved cutover model was replacement, not gradual routing. That work is
-complete:
+`rig` and `git-remote-rig` call the authenticated localhost `rigd` runtime.
+The implementation uses strict TypeScript, Bun, Zod, explicit capability
+interfaces, and process/Git/artifact/Caddy adapters. The build packages all three
+executables. Effect code and dependencies are removed from the current source;
+Git retains the predecessor implementation.
 
-- legacy implementation code was removed from the repo
-- the final entrypoint and compiled binary are `rig`
-- runtime state defaults to `~/.rig`, with `RIG_ROOT` for isolated runs
-- Effect v4 services/layers, Effect Schema validation, and Effect CLI parsing
-  are active in the main command path
-- provider contracts are explicit interfaces
-- `rigd` owns runtime health, inventory, logs, events, receipts, web read
-  models, web write actions, and config edit interfaces
+Project and Host documents are YAML-first with legacy JSON compatibility.
+Only the default provider profile is supported. Tests use injected providers
+and isolated `RIG_ROOT`; a historical stub profile must never select real effects.
+User config is not automatically converted during runtime cutover.
 
-Remaining work is post-cutover product and provider hardening.
+## Evidence And Pending Gates
 
-## Safety Rules
-
-- Use `RIG_ROOT` temporary directories for tests, CI, and agent runs.
-- Use stub provider profiles unless a test is specifically validating real
-  providers.
-- Do not let tests mutate the user's real rig state, Caddyfile, launchd labels,
-  workspaces, logs, or generated deployment inventory.
-- Keep launchd, Caddy, filesystem, process, SCM, control-plane transport, and
-  tunnel/exposure concerns behind provider interfaces.
-- Follow the
-  [state preservation policy](./state-preservation-policy.md) before migrating,
-  archiving, or deleting historical runtime state.
-
-## Pantry Validation Target
-
-The first real replacement validation target is `pantry`.
-
-The non-destructive Pantry cutover rehearsal is tracked in
-[plans/pantry-cutover-rehearsal.md](../plans/pantry-cutover-rehearsal.md).
-
-Pantry readiness requires:
-
-- live web routing resolves `pantry.b-relay.com` to the configured
-  localhost-bound managed service through the Caddy proxy router
-- Caddy upsert adopts or replaces an existing same-domain site block instead of
-  appending a duplicate
-- default Caddy rendering stays portable:
-  `domain { reverse_proxy http://127.0.0.1:<port> }`
-- machine-specific Caddy snippets such as `import cloudflare` and
-  `import backend_errors` come from home config, not hard-coded provider output
-- config interpolation stays component-first, for example `${web.port}`
-- the installed CLI component builds from the deployment workspace and installs
-  an executable named `pantry` into the rig-managed bin root
-- bin root, Caddyfile, launchd home, and rig state root remain isolated during
-  dry runs
-
-On the maintainer machine, the running root Caddy service currently starts
-`/usr/local/bin/caddy run --config /usr/local/etc/Caddyfile --envfile
-/etc/secrets/cloudflare.env` from launchd label `com.caddyserver.caddy`.
-Updating a Caddyfile is not enough by itself; the running server must receive a
-graceful reload or be restarted by launchd. Prefer Caddy's reload/admin API
-path where possible. `rig` should not be run as root.
-
-Machine-specific fallback when manual restart is required:
-
-```bash
-sudo launchctl kickstart -k system/com.caddyserver.caddy
-```
-
-## Readiness Matrix
-
-| Area | Current behavior | Follow-up |
+| Area | Evidence | Remaining release gate |
 |---|---|---|
-| Init/setup | `rig init` writes `rig.json`, can add non-overwriting `rig:` scripts, can scaffold bundled component stubs, explicit app-owned managed/installed components, domain/proxy metadata, and initialization state. | Keep additions tied to repeated real-project friction. |
-| Lifecycle | `rig up/down/restart local|live` and `rig up/down/restart preview <branch>` route config-backed writes through `rigd` and selected providers. | Deepen provider parity and failure reporting. |
-| Status/logs | `rig status`, `rig list`, and `rig logs` read shared `rigd` read models and structured logs. | Improve operator summaries where real use shows gaps. |
-| Deploy | `rig deploy live [branch]` and `rig deploy preview [branch]` execute through SCM, workspace, package, health, process, event, and proxy providers. | Prove real Caddy reachability and Pantry dry run. |
-| Config | `rig config read` uses `rigd.configRead`; generic config writes are reserved for hosted or expert workflows. | Connect hosted/web editing later. |
-| Version metadata | Branch/Commit deploys replaced `rig bump`; version metadata is not a user-facing redeploy command. | Keep release metadata separate from Target lifecycle. |
-| Forget/purge | No direct replacement command yet. | Defer unless real use needs it. |
-| Daemon authority | `rigd install/status/uninstall` is a separate daemon admin CLI; normal `rig` rejects daemon control surfaces. | Keep `rigd` as the runtime authority with a narrow admin surface. |
-| Doctor | `rig doctor`. | Caddy reload-command misconfiguration is reported as an actionable provider diagnostic. |
-| Hosted transport | Hosted identity and pairing token live in home config; transport retry/reconnect and delivery failures are covered without the real hosted service. | Keep disabled unless explicitly configured. |
+| Runtime authority | Real isolated CLI/daemon lifecycle and cross-client stop tests. | Final compiled-binary battle tests and independent review. |
+| Providers | Isolated process capture/recovery, launchd, independent Git, artifact, and Caddy tests. | Verify actual Host ownership and routing during each explicit cutover. |
+| Config | Restricted YAML/JSON, safe editor, unsupported-profile, and reload-command tests. | Validate every existing Project/Host document without converting formats. |
+| Activity | Final admin outcomes survive daemon shutdown; terminal crash monitoring deduplicates persistent evidence. | Final runtime integration and operator-visible evidence checks. |
+| Legacy state | Exact backups, revision checks, explicit source recovery, and guarded adoption fixtures. | Publish and verify real metadata only after reviewing the actual source revision. |
+| Delivery | One implementation branch and acceptance evidence for #64–#73. | One PR, then its link in Slack. |
 
-## Validation Checklist
+See [milestone evidence](reviews/2026-09-09-rewrite-milestones.md),
+[migration review](reviews/2026-09-09-legacy-migration.md), and
+[Pantry source provenance](reviews/2026-09-09-legacy-source-evidence.md).
+Passing a fixture does not prove a live service or migration succeeded.
 
-- `bun install`
-- `bun test`
-- `bun run build`
-- `git diff --check`
-- Run command tests with isolated `RIG_ROOT`.
-- Run a stub-provider lifecycle path.
-- Run a stub-provider generated deployment path.
-- Keep the fake-project CLI flow green for local, live, and generated deploys.
-- Keep the isolated real-Caddy reachability E2E green before Pantry cutover.
-  The isolated high-port shape uses an explicit `http://` site address and a
-  temporary Caddy home so Caddy does not write to the user's real Caddy config
-  or autosave location.
-- Run Pantry readiness tests proving Caddy routing, SQLite state preparation,
-  and `pantry` CLI installation under isolated paths. The current dry run uses
-  real package installation, real Caddy route rendering/reachability, real
-  health checks, and real structured event logs with capture providers for SCM,
-  workspace materialization, and process restart.
-- Keep the documented Pantry init friction covered: app-owned web and CLI
-  components can be scaffolded explicitly without framework presets.
-- Confirm historical runtime state follows the documented preservation policy.
+## Live Cutover Contract
+
+1. Finish isolated battle tests, strict typecheck, build, and material review fixes.
+2. Inventory current registrations, source paths, binaries, exact process owners,
+   Caddy routes, and Persistent storage. Back up exact affected bytes and preserve
+   rollback artifacts before changing the Host.
+3. Establish independent Git source ownership. Preserve original workspaces and
+   untracked/environment files. Recover missing Branch/Commit only from verified
+   historical execution and source evidence; keep Pantry and pantry2 identities distinct.
+4. Quiesce legacy writers and publish new metadata using the reviewed revision.
+   Keep ownership adoption pending until every exact legacy process and route
+   has a verified disposition. Unreadable, missing, contradictory, or tampered
+   adoption evidence must not authorize runtime effects.
+5. Prevent old Rig/live recorded policy from reinstalling legacy binaries when
+   reconciliation starts. Explicitly deploy the reviewed source and preserve its
+   actual Branch/Commit identity.
+6. Verify each Project's desired state, process ownership, health, routes,
+   installed binary identity, logs, and retained Persistent storage. Record actual
+   outcomes and any blocked registrations before declaring rollout complete.
+
+Do not broadly delete state, workspaces, jobs, routes, or data. Replace only exact
+owned resources required by the explicit cutover. No stale machine-specific
+Caddy command from the historical record is authorization or current capability
+evidence. Follow the [state preservation policy](state-preservation-policy.md).
 
 ## Rollback
 
-The replacement should remain reversible:
-
-- Keep the last known old binary available from git history or a saved artifact
-  until the replacement is validated on real projects.
-- Do not migrate historical state in place.
-- Preserve historical state according to the
-  [state preservation policy](./state-preservation-policy.md).
-- If the replacement fails, restore the previous `rig` build and continue using
-  the preserved state.
-- If config edit apply fails, use the reported `rig.json.backup-*.json` file.
-- If generated deployment state is stale, use `rigd` inventory/read models to
-  inspect state before deleting anything manually.
-
-## Open Decisions
-
-- Whether optional release metadata belongs in config, receipts, or a future hosted workflow.
-- Whether `forget` needs a replacement command.
-- Whether Pantry should be the first real project to cut over after isolated
-  Caddy validation is green.
-
-## Current Follow-Up Issues
-
-- #48 Add isolated real-Caddy reachability E2E.
-- #49 Add isolated Pantry cutover dry run.
-- #50 Keep `rig init` ergonomics tied to repeated real project setup friction.
-- #51 Keep the historical rig state preservation policy current.
-- #52 Keep hosted control-plane retry, reconnect, and failure evidence behavior covered.
-- #53 Keep doctor real-provider diagnostics actionable as more failures are found.
+Retain original legacy files, the migration backup, the original adoption
+manifest, source workspaces, and the previous binaries and provider definitions.
+A rollback must restore matching runtime and provider ownership together;
+replacing a binary alone is insufficient after process/route ownership changes.
+If verification fails, keep the failed transition evidence and restore only the
+reviewed owned resources. Preserve unrelated Host configuration and Project data.

@@ -1,7 +1,7 @@
 # Plan: CLI Observability And YAML Configuration
 
 > Source: [current PRD](../docs/PRD.md), [CONTEXT.md](../CONTEXT.md), and the [completed interview](codex://threads/019de162-a710-73b2-b418-e36383393a60).
-> Status: ready for implementation; no slices implemented by this document update.
+> Status: implementation and milestone review in progress; final validation and live rollout pending.
 > Date: 2026-09-09.
 > Predecessor: [completed CLI/provider cleanup](cli-provider-cleanup.md).
 
@@ -15,11 +15,15 @@ Concrete interview policies: a **two-second total observation budget** with
 concurrent checks, and **daily diagnostic rotation with 14-day retention**.
 These are not per-component readiness timeouts or Target-log retention rules.
 
-This document update does not implement, deploy, or migrate anything. Use isolated
-fixtures during implementation; do not convert this repo's `rig.json` or the
-user's Host config merely to demonstrate YAML support.
+The September 9 follow-up expands delivery to the complete plain strict
+TypeScript/Bun/Zod rewrite and all GitHub tickets #64–#73, without Effect TS.
+Use isolated fixtures during implementation; do not convert this repo's
+`rig.json` or the user's Host config merely to demonstrate YAML support.
+After battle testing, explicitly inventory, back up, upgrade, and verify existing
+Rig Projects. Deliver one PR and send its link in Slack. The
+[rewrite execution plan](typescript-rewrite.md) tracks this expanded work.
 
-## Current Code And Proof Gaps
+## Historical Starting Point And Proof Gaps
 
 | Area | Starting point | Required change |
 |---|---|---|
@@ -33,7 +37,7 @@ user's Host config merely to demonstrate YAML support.
 September 9 baseline: 255 tests pass using an isolated root containing `.rig`;
 both binaries build; type-checking reports 145 diagnostics. A root ending in
 `/state` caused eight path-expectation failures. Recheck when implementation
-starts, make tests assert injected paths, and distinguish inherited type errors
+changes, make tests assert injected paths, and distinguish inherited type errors
 from regressions. Compiling binaries is not a passing type-check.
 
 ## Interface Decisions
@@ -101,13 +105,16 @@ follows the existing product contract. Reuse runtime/action Modules behind local
 transport; keep installation at the daemon-admin seam. Verify installation,
 process presence, and authenticated reachability separately. Limit implementation
 to this plan's local capabilities; hosted transport, tunnels, UI, and Git push
-transport are not prerequisites here.
+transport were not prerequisites for the interview increment. The later full
+rewrite authorization includes the Git remote helper and push deployment.
 
 ## Vertical Slices
 
 Use one failing public-behavior test, the smallest passing implementation, then
-refactor. Read `docs/effect-v4-help-notes.md` before Effect changes and record
-newly verified API facts there. A helper layer alone does not complete a slice.
+refactor. New runtime and tests use plain strict TypeScript, explicit dependency
+interfaces, async/await, Zod, and structured errors. Remove the old Effect
+implementation after equivalent public behavior is covered; retain its history
+in Git. A helper layer alone does not complete a slice.
 
 ### 1. Clean Help And One Error Path (R1, R2)
 
@@ -246,8 +253,8 @@ with truthful component states rather than the old desired-running summary.
 
 Exit: public CLI and provider tests establish fresh observations, total deadline,
 and no lifecycle/repair effects. Reproduce #67's dead-process/stale-status case
-without killing a real service. Broader automatic crash-restart policy remains
-a separately tracked reliability task unless required by the runtime proof.
+without killing a real service. The expanded #67 work includes bounded crash
+recovery; verify its restart limits and distinguish backoff from a running child.
 
 ### 7. Finish Command Views And Diagnostic Policy (R1, R2, R5)
 
@@ -324,17 +331,45 @@ without unapproved retention or tamper-evidence promises.
 | R7 YAML/JSON | 2, 3 |
 | R8 Activity | 9, using evidence from 4/7 |
 
-Execute sequentially in the listed order. Keep provider/control-plane contracts
-working while replacing callers. Do not expand into hosted transport, Git push
-transport, rename/move, deletion, or plugin infrastructure. Runtime prerequisite
-proof remains necessary even if an earlier issue was marked complete.
+Keep provider/control-plane contracts working while replacing callers. The
+expanded rewrite includes Git push transport, stopped-Project rename/repoint,
+independent source ownership, and command-scoped JSON alongside these slices.
+Retain the accepted deploy grammar: an omitted Preview Branch selects the
+current Branch, while an explicit Branch selects that local ref.
+Hosted transport, Project deletion, and external plugin infrastructure remain
+outside this work. Runtime prerequisite proof remains necessary even if an
+earlier issue was marked complete.
+
+## Rewrite Implementation Map And Review State
+
+The selected seams now live in `src/config`, `src/runtime`, `src/domain`,
+`src/daemon`, `src/providers`, `src/adapters`, `src/cli`, and `src/diagnostics`.
+`src/migration` owns explicit legacy metadata preview/publication and adoption
+validation. The [README module map](../README.md#module-map) describes ownership.
+
+Public tests exercise YAML/JSON parity and safe editing, authenticated daemon
+control, cross-client lifecycle, fresh status, recorded-policy deployment,
+process capture/recovery, source ownership, registration, and Git push behavior.
+Independent findings and corrected contracts are recorded in the
+[milestone review](../docs/reviews/2026-09-09-rewrite-milestones.md) and
+[config review](../docs/reviews/2026-09-09-config-contracts.md).
+This is implementation evidence, not a declaration that all slice exits pass.
+
+Legacy conversion retains exact source bytes and requires a reviewed revision.
+Pending or invalid adoption blocks runtime mutations/reconciliation and makes
+ownership observations unknown. Finalization requires evidence for every
+legacy process and route plus the preserved original manifest. See
+[migration evidence](../docs/reviews/2026-09-09-legacy-migration.md) and
+[Pantry source provenance](../docs/reviews/2026-09-09-legacy-source-evidence.md).
+Independent source ownership, real-provider cutover, installed binary identity,
+and preserved Project data require separate live verification.
 
 ## Validation And Documentation
 
 - Run focused red/green tests, then `bun test`, `bun run build`, and
   `bunx --no-install tsc --noEmit` for shared changes. Record inherited type-check
-  debt and add no diagnostics; fix touched contract errors without suppressing
-  the checker. Full unrelated type cleanup is not a product requirement here.
+  debt while replacing old code; the final rewrite must pass strict typechecking
+  without suppressing errors or retaining an alternate Effect runtime.
 - Isolate `RIG_ROOT`, workspaces, logs, Caddy paths, launchd labels, processes,
   and high localhost ports. Clean up only owned fixtures. Actual cross-client
   control and bounded observations supplement in-memory tests.
@@ -344,9 +379,14 @@ proof remains necessary even if an earlier issue was marked complete.
 - Update README, `docs/rig-guide.md`, readiness docs, and issue references as
   behavior ships. New examples use YAML, with explicit JSON compatibility.
   Preserve the predecessor plan as completed history.
-- This document update creates/comments on no issues. When breaking the plan
-  into work items, use these vertical slices and link relevant existing bugs;
-  documentation does not close those bugs.
+- Reconcile all #64–#73 tickets against actual implementation and acceptance
+  evidence in the single PR. Documentation or a passing unit test alone does
+  not establish full completion.
+- Final checks remain pending: complete packaging for `rig`, `rigd`, and
+  `git-remote-rig`; full tests/typecheck/build; adversarial deployment and lifecycle
+  testing; final independent review; explicitly backed-up existing-Project rollout;
+  PR publication and Slack delivery. Record blockers without marking unfinished
+  rollout or testing complete.
 
 No product questions remain from the interview for this increment. Parser
 selection, precise Interface signatures, and deterministic edge-case algorithms

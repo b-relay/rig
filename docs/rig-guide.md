@@ -1,8 +1,10 @@
 # Rig Guide
 
-This guide describes the accepted Rig product model. Some implementation
-cleanup is still tracked in GitHub issues; do not use older lane/ref/bump
-examples as product direction.
+This guide describes the accepted Rig product model and the September 9
+TypeScript rewrite. Final validation and existing-Project rollout are pending;
+see [cutover readiness](rig-cutover-readiness.md). Interaction requirements
+described with "should" remain acceptance criteria until verified in the release.
+Do not use archived Effect or older lane/ref/bump examples as product direction.
 
 ## Setup
 
@@ -11,7 +13,13 @@ Build the CLI:
 ```bash
 bun install
 bun run build
+bun run typecheck
 ```
+
+The build produces `rig`, `rigd`, and `git-remote-rig`. Put all three in the
+chosen executable directory for Git push deployment. Source development and
+tests must set an isolated `RIG_ROOT`; do not install into the real Host simply
+to try the rewrite. Existing Host state needs the explicit backed-up cutover.
 
 Install the daemon:
 
@@ -48,6 +56,10 @@ If run outside Git in an interactive terminal, `rig init` may ask before running
 If config is written but `rigd` registration fails, `rig init` should report the
 partial state without rolling the file back. A later `rig init` should resume
 registration idempotently when the config still matches the workspace.
+
+New config uses `rig.yaml`; matching existing `rig.json` is preserved. Explicit
+`--production-branch` and `--create-git` support noninteractive setup. Project
+identity comes from existing config when present, not a conflicting folder name.
 
 ## Project And Host Scope
 
@@ -162,7 +174,8 @@ Rig remote classification uses the pushed destination Branch:
 ## Lifecycle And Logs
 
 Lifecycle commands act only on existing Targets. They do not create missing
-Deployments.
+Preview Deployments. `rig up local` may create the Working copy Target directly
+from the registered repository.
 
 ```bash
 rig up local
@@ -173,8 +186,9 @@ rig restart preview feature/login
 If `rig up preview feature/login` names a Preview that has not been deployed,
 Rig should fail and tell the user to deploy it first.
 
-`down` stops a Target but does not remove it from inventory. Stopped Previews
-remain visible until a future cleanup/delete design removes them.
+`down` stops a Target but does not remove it from inventory. Explicit
+`rig down preview <branch> --destroy` stops and removes a Preview's inventory
+and owned route while retaining its data, logs, and source history.
 
 Logs:
 
@@ -186,6 +200,8 @@ rig logs preview feature/login --follow
 
 `rig logs` prints recent stdout and stderr together by default and exits.
 `--follow` streams. Logs may be read for stopped Targets when logs exist.
+Output identifies component, timestamp, and stream with `>` for stdout and `!`
+for stderr; legacy records with missing evidence must be marked unknown.
 
 ## Status, List, Doctor
 
@@ -205,6 +221,19 @@ outside a Project unless `--project <name>` is provided.
 it also runs Project diagnostics. Outside a Project, it may succeed with
 Host-only checks and a note that Project checks were skipped. `doctor` is
 read-only by default.
+
+Status shares one two-second budget across concurrent observations. Managed
+components without health checks are running, not healthy; uncertain observations
+are unknown. Configured-only components are configured, installed-tool Targets
+can be ready, and partial runtime capability is degraded. Recorded routes stay
+visible when stopped. Doctor owns current-config drift and failed checks; it
+does not repair or deploy configuration implicitly.
+
+`rig activity` displays final daemon Operations separately from Target output.
+It includes daemon administration and terminal crash evidence. Diagnostics live
+in separate `logs/rig/rig.jsonl` and `logs/rigd/rigd.jsonl` files beneath the Rig
+root, with daily rotation and 14-day retention by default. That retention does
+not delete Target logs, activity, or Persistent storage.
 
 ## Config
 
@@ -230,12 +259,22 @@ Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while
 `rig doctor` and preflight validate the result.
 
-First cleanup scope:
+Current config surface:
 
-- `rig config get` is optional and read-only if present.
+- `rig config` prints validated Project config and its source path.
 - `rig config set` is omitted.
 - managed fields such as Project identity are not simple settable fields.
-- broad `--json` output flags are avoided.
+- `--json` is available for status/lifecycle/deploy; there is no global flag.
+
+Project files use `rig.yaml` or legacy `rig.json`; Host files use `config.yaml`
+or legacy `config.json`. `.yml` is unsupported and both filenames in one scope
+are ambiguous. YAML accepts one document with comments, rejecting duplicate keys,
+tags, anchors, aliases, and merge keys. Existing config formats are never
+automatically converted, and supported structured edits preserve comments/order
+or refuse before mutation.
+
+`rig rename <name>` and `rig repoint <path>` require stopped Targets and validate
+registered identity/path conflicts. They do not delete Project data.
 
 ## Provider Boundary
 
@@ -251,5 +290,8 @@ Providers must not read home config, Project config, or global path helpers
 directly. First-party providers and future third-party providers should use the
 same contract shape.
 
-Stub providers, provider profiles, `--state-root`, and generic `--config` path
-overrides are test/dev/internal surfaces, not normal release UX.
+Only the default provider profile is supported; stub and isolated-e2e profiles
+are rejected. Tests supply isolated provider interfaces and `RIG_ROOT`.
+`--state-root` and generic `--config` path overrides are absent from normal UX.
+Caddy command reload requires an explicit nonblank command; manual/disabled
+policies never substitute a default reload command.

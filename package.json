@@ -1,24 +1,25 @@
 {
   "name": "rig",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "bun build --compile src/index.ts --outfile rig && bun build --compile src/rigd.ts --outfile rigd",
-    "start": "bun run src/index.ts"
+    "build": "bun build --compile src/index.ts --outfile rig && bun build --compile src/rigd.ts --outfile rigd && bun build --compile src/git/remote-helper.ts --outfile git-remote-rig",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "bin": {
     "rig": "./rig",
-    "rigd": "./rigd"
+    "rigd": "./rigd",
+    "git-remote-rig": "./git-remote-rig"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.9"
-  },
-  "peerDependencies": {
-    "typescript": "^5.9.3"
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-beta.57",
-    "effect": "4.0.0-beta.57"
+    "commander": "15.0.0",
+    "yaml": "2.9.0",
+    "zod": "4.5.4"
   }
 }

@@ -24,3 +24,8 @@ paths. This cleanup does not install, deploy, or alter the user's live Host.
 Record findings, function contracts, file coverage, and verification in
 `docs/reviews/2026-09-09-repository-cleanup.md`. Keep larger contract redesigns
 explicit in that review instead of introducing speculative abstractions.
+
+Follow-up #84 makes readiness deadline and 100ms retry scheduling controllable at
+lifecycle construction. Expiry now also interrupts a pending retry delay; health
+providers remain bounded even when they ignore cancellation. See
+[readiness timing evidence](../docs/reviews/2026-09-09-issue-84-readiness-timing.md).

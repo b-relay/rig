@@ -113,3 +113,7 @@ provider/status regression and observation contracts are recorded in
 Follow-up #81 gates pre-stop hooks on managed process observations for explicit
 stop and daemon reconciliation, preserving post-stop cleanup and stop failure
 classification. See [the policy and validation evidence](../docs/reviews/2026-09-09-issue-81-pre-stop-hooks.md).
+
+Issue #87 enforces absolute caller-acquired workspace and Persistent storage roots
+at Runtime plan resolution, before calculation. Relative Project config paths
+remain portable. See [root contract evidence](../docs/reviews/2026-09-09-issue-87-absolute-plan-roots.md).

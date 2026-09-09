@@ -368,3 +368,71 @@ test("capture-backed up rejects an app that cannot start instead of reporting th
   ).rejects.toThrow();
   expect((await supervisor.observe("missing")).state).toBe("stopped");
 });
+
+for (const captured of [false, true]) {
+  test(`stop drains final owned output before lease cleanup (capture wrapper: ${captured})`, async () => {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { createHash } = await import("node:crypto");
+    const { resolve } = await import("node:path");
+    const base = await mkdtemp(join(tmpdir(), "rig-stop-drain-"));
+    roots.push(base);
+    const root = join(base, ".rig");
+    await mkdir(root);
+    const captureScript = join(root, "capture.ts");
+    if (captured) await writeFile(captureScript,
+      `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};process.exitCode=await runCapturedProcess(process.argv[2]!);`);
+    const supervisor = createChildSupervisor({
+      stateRoot: root,
+      ...(captured ? { captureCommand: [process.execPath, captureScript] } : {}),
+    });
+    supervisors.push(supervisor);
+    const started = await supervisor.ensureRunning({
+      key: "drain", componentName: "web", cwd: root, logRoot: root,
+      env: { RIG_ROOT: root }, keepAlive: true,
+      command: [process.execPath, "-e", "process.on('SIGTERM',()=>setTimeout(()=>{process.stdout.write('final stdout');process.stderr.write('final stderr');process.exit(0)},100));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+    });
+    const log = join(root, "target.jsonl");
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if ((await readFile(log, "utf8")).includes('ready')) break;
+      await Bun.sleep(20);
+    }
+    expect(await readFile(log, "utf8")).toContain('ready');
+    const digest = createHash("sha256").update("drain").digest("hex");
+    const lease = join(root, "process-leases", `${digest}.json`);
+    expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(started.pid);
+    expect(await supervisor.stop("drain")).toEqual({ outcome: "stopped" });
+    const entries = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(entries.map(entry => [entry.stream, entry.line])).toContainEqual(["stdout", "final stdout"]);
+    expect(entries.map(entry => [entry.stream, entry.line])).toContainEqual(["stderr", "final stderr"]);
+    await expect(readFile(lease)).rejects.toMatchObject({ code: "ENOENT" });
+    if (captured) await expect(readFile(join(root, "capture", `${digest}.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(() => process.kill(started.pid!, 0)).toThrow();
+    expect(await supervisor.stop("drain")).toEqual({ outcome: "unchanged" });
+    await Bun.sleep(150);
+    expect((await supervisor.observe("drain")).state).toBe("stopped");
+  });
+}
+
+test("stop cancels an owned child's pending restart", async () => {
+  const { mkdir } = await import("node:fs/promises");
+  const base = await mkdtemp(join(tmpdir(), "rig-stop-restart-"));
+  roots.push(base);
+  const root = join(base, ".rig");
+  await mkdir(root);
+  const supervisor = createChildSupervisor({ stateRoot: root, restartBackoffMs: 500 });
+  supervisors.push(supervisor);
+  await supervisor.ensureRunning({
+    key: "restart", componentName: "web", cwd: root, logRoot: root, env: { RIG_ROOT: root }, keepAlive: true,
+    command: [process.execPath, "-e", "process.stdout.write('attempt\\n');setTimeout(()=>process.exit(7),100)"],
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if ((await supervisor.observe("restart")).restartPending) break;
+    await Bun.sleep(10);
+  }
+  expect((await supervisor.observe("restart")).restartPending).toBe(true);
+  expect(await supervisor.stop("restart")).toEqual({ outcome: "unchanged" });
+  await Bun.sleep(650);
+  expect((await supervisor.observe("restart")).restartPending).toBeUndefined();
+  const entries = (await readFile(join(root, "target.jsonl"), "utf8")).trim().split("\n");
+  expect(entries).toHaveLength(1);
+});

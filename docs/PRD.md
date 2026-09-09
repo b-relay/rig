@@ -349,3 +349,10 @@ It grants no live socket lease or future startup guarantee. Existing provider
 startup failures and configured health-check rollback remain authoritative; a
 health response alone does not prove listener ownership. No Deployment format or
 automatic retry policy changes are part of this contract clarification (#90).
+
+Process-mode stop requires fresh ownership and confirmed group absence before
+successful cleanup. Permission-denied probes use bounded process inspection;
+malformed or failed evidence remains an inspection failure. A failed stop does
+not make status claim the process exited. Restart cancellation, owned output
+draining, and lease/capture-request cleanup remain part of stop's contract.
+See [the #91 evidence](reviews/2026-09-09-issue-91-process-inspection.md).

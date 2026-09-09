@@ -126,3 +126,8 @@ fallback and filesystem identity; explicit setup alone initializes Git and adds
 a missing Rig remote. Discovery errors distinguish missing/unreadable paths,
 bare/non-repository cases and failed or malformed Git responses. See
 [the interface comparison and focused evidence](../docs/reviews/2026-09-09-issue-88-project-discovery.md).
+
+Follow-up #91 concentrates process-mode stop signal probes and permission fallback
+in a replaceable process-inspection adapter. Uncertain results preserve leases;
+failed stop intent no longer claims process exit. Owned output drain and restart
+cancellation remain required before cleanup. See [design and verification](../docs/reviews/2026-09-09-issue-91-process-inspection.md).

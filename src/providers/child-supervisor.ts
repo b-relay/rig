@@ -12,7 +12,6 @@ import {
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
-import { runCommand } from "./command-runner";
 import { RigError } from "../domain/errors";
 import type {
   ManagedProcess,
@@ -21,9 +20,9 @@ import type {
   TargetLogEntry,
 } from "./contracts";
 import {
-  createProcessIdentityReader,
-  type ProcessIdentityReader,
-} from "./process-identity";
+  createProcessInspection,
+  type ProcessInspection,
+} from "./process-inspection";
 const leaseSchema = z.object({
   key: z.string().describe("Stable component ownership key."),
   pid: z.number().int().min(2).describe("Owned process group leader."),
@@ -47,7 +46,7 @@ export interface ChildSupervisorOptions {
   readonly stateRoot: string;
   readonly stopTimeoutMs?: number;
   readonly now?: () => Date;
-  readonly inspect?: ProcessIdentityReader;
+  readonly processInspection?: ProcessInspection;
   readonly captureCommand?: readonly string[];
   readonly restartLimit?: number;
   readonly restartWindowMs?: number;
@@ -65,7 +64,8 @@ export function createChildSupervisor(
     { times: number[]; timer?: ReturnType<typeof setTimeout> }
   >();
   const now = options.now ?? (() => new Date());
-  const inspect = options.inspect ?? createProcessIdentityReader();
+  const inspection = options.processInspection ?? createProcessInspection();
+  const inspect = inspection.identity;
   const leaseRoot = join(options.stateRoot, "process-leases");
   let shuttingDown = false;
   const captureRoot = join(options.stateRoot, "capture");
@@ -134,9 +134,8 @@ export function createChildSupervisor(
       return { state: "unknown", reason: "Observation cancelled." };
     if (!owned) return { state: "stopped" };
     if (
-      owned.stopped ||
-      (owned.child &&
-        (owned.child.exitCode !== null || owned.child.signalCode !== null))
+      owned.child &&
+      (owned.child.exitCode !== null || owned.child.signalCode !== null)
     )
       return {
         state: "stopped",
@@ -208,17 +207,18 @@ export function createChildSupervisor(
         ? currentIdentity === undefined || currentIdentity === owned.identity
         : currentIdentity === owned.identity);
     if (verified) {
-      await signalGroup(owned.pid, "SIGTERM");
+      await inspection.signalGroup(owned.pid, "SIGTERM");
       const deadline =
         Date.now() +
         (options.stopTimeoutMs ?? (options.captureCommand ? 4000 : 1500));
-      while ((await groupExists(owned.pid)) && Date.now() < deadline)
+      while ((await inspection.groupExists(owned.pid)) && Date.now() < deadline)
         await Bun.sleep(20);
-      if (await groupExists(owned.pid)) await signalGroup(owned.pid, "SIGKILL");
+      if (await inspection.groupExists(owned.pid))
+        await inspection.signalGroup(owned.pid, "SIGKILL");
       const killDeadline = Date.now() + 1500;
-      while ((await groupExists(owned.pid)) && Date.now() < killDeadline)
+      while ((await inspection.groupExists(owned.pid)) && Date.now() < killDeadline)
         await Bun.sleep(20);
-      if (await groupExists(owned.pid))
+      if (await inspection.groupExists(owned.pid))
         throw new RigError(
           "STOP_TIMEOUT",
           "The process group did not stop.",
@@ -443,46 +443,6 @@ function captureOutput(
         });
         pipe.once("error", () => resolve());
       }),
-    );
-  }
-}
-async function groupExists(pid: number): Promise<boolean> {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-    const result = await runCommand({
-      command: ["/bin/ps", "-g", String(pid), "-o", "pid="],
-      timeoutMs: 2000,
-    });
-    if (result.exitCode === 1 && !result.stdout.trim() && !result.stderr.trim())
-      return false;
-    if (result.exitCode === 0 && /^\s*\d/m.test(result.stdout)) return true;
-    throw new RigError(
-      "PROCESS_INSPECT",
-      "Process group presence could not be verified.",
-      "Check process inspection permissions before retrying.",
-      { pid },
-    );
-  }
-}
-async function signalGroup(pid: number, signal: NodeJS.Signals): Promise<void> {
-  try {
-    process.kill(-pid, signal);
-  } catch (error) {
-    if (
-      (error as NodeJS.ErrnoException).code === "ESRCH" ||
-      ((error as NodeJS.ErrnoException).code === "EPERM" &&
-        !(await groupExists(pid)))
-    )
-      return;
-    throw new RigError(
-      "PROCESS_SIGNAL",
-      "The managed process could not be signalled.",
-      "Check process ownership and retry.",
-      { pid, signal },
     );
   }
 }

@@ -789,6 +789,10 @@ _Relationship_: Deploying a new Commit or using deploy `--force` brings the
 Target up by default; deploying the same already-deployed Commit is a no-op and
 does not start a down Target.
 
+_Relationship_: A failed first activation is not a completed Deployment. Retrying
+its Branch and Commit may activate again while retaining Target identity and
+Persistent storage. This distinction is recorded separately from stopped intent.
+
 _Relationship_: Deploy `--no-up` materializes the Deployment without starting
 the Target and is a normal user-facing option for Stable Targets and Previews.
 

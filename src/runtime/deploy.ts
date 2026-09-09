@@ -22,11 +22,13 @@ export async function activateDeployment(
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
   assertDeploymentRecovered(previous);
+  candidate.deploymentIncomplete = true;
   candidate.recovery = {
     plan: previous?.plan ?? candidate.plan,
     branch: previous?.branch ?? candidate.branch,
     commit: previous?.commit ?? candidate.commit,
     desired: previous?.desired ?? "stopped",
+    deploymentIncomplete: previous ? previous.deploymentIncomplete : true,
     stage: "pending",
   };
   const checkpoint = await deps.lifecycle.checkpoint(candidate, previous);
@@ -50,6 +52,7 @@ export async function activateDeployment(
       ...candidate,
       recovery: { ...candidate.recovery!, stage: "committing" as const },
     };
+    delete decision.deploymentIncomplete;
     await persistTarget(decision, deps);
     commitDecided = true;
     await checkpoint.commit();
@@ -126,6 +129,7 @@ export async function stopForRecovery(
     branch: target.recovery.branch,
     commit: target.recovery.commit,
     desired: "stopped",
+    deploymentIncomplete: target.recovery.deploymentIncomplete,
   };
   delete previous.recovery;
   await stopForTransition(previous, deps.lifecycle);

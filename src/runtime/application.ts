@@ -277,6 +277,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         if (
           target?.commit === commit &&
           target.branch === branch &&
+          !target.deploymentIncomplete &&
           !command.force
         )
           return await finish("unchanged", { warnings: preflight.warnings });

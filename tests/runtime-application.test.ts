@@ -1,4 +1,8 @@
 import { test, expect } from "bun:test";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { FileStateStore } from "../src/runtime/state-store";
 import { createRuntime } from "../src/runtime/application";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
@@ -514,3 +518,138 @@ test.each(["running", "deliberately stopped", "prepared no-up"] as const)(
     ]);
   },
 );
+
+test("failed first activation can deploy the same Commit after reopening without losing Target storage", async () => {
+  const { deps, config } = fixture();
+  const root = await mkdtemp(join(tmpdir(), "rig-first-deploy-"));
+  try {
+    deps.root = root;
+    deps.store = new FileStateStore(root);
+    config.components.db = { uses: "sqlite" };
+    let activations = 0;
+    deps.lifecycle.up = async (target) => {
+      activations++;
+      const path = join(target.plan.dataRoot, "retained-data");
+      if (activations === 1) {
+        await mkdir(target.plan.dataRoot, { recursive: true });
+        await writeFile(path, "data from first attempt");
+        throw new Error("readiness failed");
+      }
+      expect(await readFile(path, "utf8")).toBe("data from first attempt");
+      return { outcome: "started" };
+    };
+    const runtime = createRuntime(deps);
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    const deploy = {
+      action: "deploy", project: "demo", target: "live", branch: "main",
+    } as const;
+    await expect(runtime.command(deploy)).rejects.toThrow("readiness failed");
+    const failed = (await deps.store.read()).targets[0]!;
+    expect(failed.recovery).toBeUndefined();
+    expect(failed.desired).toBe("stopped");
+    deps.store = new FileStateStore(root);
+    const reopened = createRuntime(deps);
+    expect(await reopened.command(deploy)).toMatchObject({ outcome: "deployed" });
+    expect(activations).toBe(2);
+    const saved = await deps.store.read();
+    expect(saved.targets).toHaveLength(1);
+    expect(saved.targets[0]).toMatchObject({
+      id: failed.id,
+      projectId: failed.projectId,
+      name: failed.name,
+      createdAt: failed.createdAt,
+      logRoot: failed.logRoot,
+      branch: "main",
+      commit: "abc",
+      desired: "running",
+      plan: {
+        dataRoot: failed.plan.dataRoot,
+        preparedComponents: failed.plan.preparedComponents,
+      },
+    });
+    expect(
+      saved.activity.filter((a) => a.action === "deploy").map((a) => a.outcome),
+    ).toEqual(["failed", "deployed"]);
+    expect(await reopened.command(deploy)).toMatchObject({ outcome: "unchanged" });
+    expect(activations).toBe(2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test.each(["incomplete", "completed"] as const)(
+  "reopened rollback preserves %s deployment semantics",
+  async (prior) => {
+    const { deps } = fixture();
+    const root = await mkdtemp(join(tmpdir(), "rig-retry-recovery-"));
+    try {
+      deps.root = root;
+      deps.store = new FileStateStore(root);
+      const runtime = createRuntime(deps);
+      await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+      const deploy = {
+        action: "deploy", project: "demo", target: "live", branch: "main",
+      } as const;
+      let failActivation = prior === "incomplete";
+      let activations = 0;
+      deps.lifecycle.up = async () => {
+        activations++;
+        if (failActivation) throw new Error("readiness failed");
+        return { outcome: "started" };
+      };
+      if (prior === "incomplete")
+        await expect(runtime.command(deploy)).rejects.toThrow("readiness failed");
+      else await runtime.command(deploy);
+      failActivation = true;
+      let stops = 0;
+      deps.lifecycle.down = async () => {
+        if (++stops > 1) throw new Error("cleanup blocked");
+        return { outcome: "stopped" };
+      };
+      await expect(runtime.command({ ...deploy, force: true })).rejects.toThrow(
+        "cleanup could not be verified",
+      );
+      deps.store = new FileStateStore(root);
+      const reopened = createRuntime(deps);
+      await expect(reopened.command(deploy)).rejects.toThrow(
+        "unresolved transition",
+      );
+      deps.lifecycle.down = async () => ({ outcome: "stopped" });
+      await reopened.command({ action: "down", project: "demo", target: "live" });
+      failActivation = false;
+      const before = activations;
+      expect(await reopened.command(deploy)).toMatchObject({
+        outcome: prior === "incomplete" ? "deployed" : "unchanged",
+      });
+      expect(activations).toBe(before + (prior === "incomplete" ? 1 : 0));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("legacy completion metadata is neither inferred nor rewritten on reopen", async () => {
+  const { deps, state, runtime } = fixture();
+  const root = await mkdtemp(join(tmpdir(), "rig-legacy-completion-"));
+  try {
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    await runtime.command({
+      action: "deploy", project: "demo", target: "live", noUp: true,
+    });
+    const content = JSON.stringify(state);
+    expect(content).not.toContain("deploymentIncomplete");
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    await writeFile(path, content);
+    deps.store = new FileStateStore(root);
+    expect(await deps.store.read()).toEqual(state);
+    expect(await readFile(path, "utf8")).toBe(content);
+    expect(
+      await createRuntime(deps).command({
+        action: "deploy", project: "demo", target: "live",
+      }),
+    ).toMatchObject({ outcome: "unchanged" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

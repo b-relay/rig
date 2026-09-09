@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, realpath, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureProjectGit, inspectProjectGit } from "../src/git/project";
+import {
+  ensureProjectGit,
+  inspectProjectGit,
+  createProjectDiscovery,
+} from "../src/git/project";
 import { runCommand } from "../src/providers/command-runner";
 import type { CommandRunner } from "../src/providers/contracts";
 const run: CommandRunner = (input) =>
@@ -27,21 +31,28 @@ test("explicit Git creation and nested discovery use one repository root and an 
     await mkdtemp(join(tmpdir(), "rig-git-project-")),
   );
   try {
-    await expect(inspectProjectGit(directory, run)).rejects.toMatchObject({
+    await expect(
+      inspectProjectGit(directory, createProjectDiscovery(run)),
+    ).rejects.toMatchObject({
       code: "GIT_REQUIRED",
     });
     const first = await ensureProjectGit(
       { path: directory, project: "example", createGit: true },
-      run,
+      createProjectDiscovery(run),
     );
     expect(first.repoPath).toBe(directory);
     expect(first.remoteUrl).toBe("rig://localhost/example");
     expect(first.createdGit).toBe(true);
     const nested = join(directory, "nested");
     await mkdir(nested);
+    const link = join(directory, "linked");
+    await symlink(nested, link);
+    expect(
+      (await inspectProjectGit(link, createProjectDiscovery(run))).repoPath,
+    ).toBe(directory);
     const second = await ensureProjectGit(
       { path: nested, project: "example" },
-      run,
+      createProjectDiscovery(run),
     );
     expect(second.repoPath).toBe(directory);
     expect(second.remoteConfigured).toBe(false);
@@ -65,10 +76,13 @@ test("conflicting fetch or push destinations are preserved and reported explicit
   try {
     await ensureProjectGit(
       { path: directory, project: "original", createGit: true },
-      run,
+      createProjectDiscovery(run),
     );
     await expect(
-      ensureProjectGit({ path: directory, project: "renamed" }, run),
+      ensureProjectGit(
+        { path: directory, project: "renamed" },
+        createProjectDiscovery(run),
+      ),
     ).rejects.toMatchObject({ code: "GIT_REMOTE_CONFLICT" });
     expect(
       (
@@ -90,7 +104,10 @@ test("conflicting fetch or push destinations are preserved and reported explicit
       cwd: directory,
     });
     await expect(
-      ensureProjectGit({ path: directory, project: "original" }, run),
+      ensureProjectGit(
+        { path: directory, project: "original" },
+        createProjectDiscovery(run),
+      ),
     ).rejects.toMatchObject({ code: "GIT_REMOTE_CONFLICT" });
     expect(
       (
@@ -113,7 +130,7 @@ test("Project rename updates fetch and explicit push URLs and can compensate wit
   try {
     await ensureProjectGit(
       { path: directory, project: "old", createGit: true },
-      run,
+      createProjectDiscovery(run),
     );
     await run({
       command: [
@@ -244,6 +261,90 @@ test("real local Branch preflight reports ahead/behind from cached refs and only
         run,
       ),
     ).rejects.toMatchObject({ code: "GIT_LOCAL_BRANCH" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("real unborn, origin default, detached and bare repositories preserve discovery policy", async () => {
+  const directory = await realpath(
+    await mkdtemp(join(tmpdir(), "rig-discovery-")),
+  );
+  const commands: (readonly string[])[] = [];
+  const discovery = createProjectDiscovery(async (input) => {
+    commands.push(input.command);
+    return await run(input);
+  });
+  const git = (args: string[]) =>
+    run({ command: ["git", ...args], cwd: directory });
+  try {
+    await git(["init", "-b", "work"]);
+    expect(
+      (await inspectProjectGit(directory, discovery)).productionBranch,
+    ).toBe("work");
+    await git([
+      "-c",
+      "user.name=Rig Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "fixture",
+    ]);
+    await git(["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+    await git([
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/trunk",
+    ]);
+    expect(
+      (await inspectProjectGit(directory, discovery)).productionBranch,
+    ).toBe("trunk");
+    await git(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+    await git(["checkout", "--detach"]);
+    expect(
+      (await inspectProjectGit(directory, discovery)).productionBranch,
+    ).toBe("main");
+    expect(
+      commands.every((command) =>
+        ["rev-parse", "symbolic-ref"].includes(command[1]!),
+      ),
+    ).toBe(true);
+    const bare = join(directory, "bare");
+    await git(["init", "--bare", bare]);
+    await expect(inspectProjectGit(bare, discovery)).rejects.toMatchObject({
+      code: "GIT_BARE",
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit setup executes exactly init and missing remote add mutations", async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "rig-setup-")));
+  const mutations: (readonly string[])[] = [];
+  const discovery = createProjectDiscovery(async (input) => {
+    if (
+      input.command[1] === "init" ||
+      (input.command[1] === "remote" && input.command[2] === "add")
+    )
+      mutations.push(input.command);
+    return await run(input);
+  });
+  try {
+    await ensureProjectGit(
+      { path: directory, project: "example", createGit: true },
+      discovery,
+    );
+    await ensureProjectGit(
+      { path: directory, project: "example", createGit: true },
+      discovery,
+    );
+    expect(mutations).toEqual([
+      ["git", "init"],
+      ["git", "remote", "add", "rig", "rig://localhost/example"],
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

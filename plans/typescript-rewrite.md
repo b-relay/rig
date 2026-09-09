@@ -117,3 +117,12 @@ classification. See [the policy and validation evidence](../docs/reviews/2026-09
 Issue #87 enforces absolute caller-acquired workspace and Persistent storage roots
 at Runtime plan resolution, before calculation. Relative Project config paths
 remain portable. See [root contract evidence](../docs/reviews/2026-09-09-issue-87-absolute-plan-roots.md).
+
+### Project discovery identity (#88)
+
+Initialization and Rig remote now share explicit Git-plus-canonical-path discovery
+in `src/git/project.ts`. Read-only directory/repository inspection owns branch
+fallback and filesystem identity; explicit setup alone initializes Git and adds
+a missing Rig remote. Discovery errors distinguish missing/unreadable paths,
+bare/non-repository cases and failed or malformed Git responses. See
+[the interface comparison and focused evidence](../docs/reviews/2026-09-09-issue-88-project-discovery.md).

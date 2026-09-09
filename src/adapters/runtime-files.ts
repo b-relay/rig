@@ -5,7 +5,8 @@ import { readTargetLogs } from "./target-log-reader";
 /** Binds only localhost while choosing ports; process providers remain responsible for startup races. */
 export function createRuntimeFiles(): RuntimeFiles {
   return {
-    async reservePorts(requests, occupied, dynamic) {
+    async selectPorts({ requests, occupied, policy }) {
+      const dynamic = policy === "dynamic";
       const selected: Record<string, number> = {},
         used = new Set(occupied);
       for (const request of requests) {

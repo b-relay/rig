@@ -331,3 +331,63 @@ test("Targets without managed components have no pre-stop work", async () => {
   expect(f.hooks).toEqual([]);
   expect(f.stops).toEqual([]);
 });
+
+test("port contention after selection fails startup and preserves an already running component", async () => {
+  const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
+  const { createChildSupervisor } = await import("../src/providers/child-supervisor");
+  const { mkdtemp, mkdir, rm, writeFile, readFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const base = await mkdtemp(join(tmpdir(), "rig-port-contention-"));
+  const root = join(base, ".rig");
+  await mkdir(root);
+  const supervisor = createChildSupervisor({ stateRoot: root, restartLimit: 0 });
+  const ports = await createRuntimeFiles().selectPorts({ requests: [{ name: "api" }, { name: "web" }], occupied: new Set(), policy: "dynamic" });
+  const record = structuredClone(target);
+  record.plan.workspacePath = root;
+  record.plan.dataRoot = root;
+  record.logRoot = join(root, "logs");
+  await writeFile(join(root, "server.ts"), "Bun.serve({hostname:'127.0.0.1',port:Number(process.env.PORT),fetch:()=>new Response('owned')});");
+  await writeFile(join(root, "precious"), "prior Target work");
+  for (const component of record.plan.components) {
+    if (component.kind !== "managed") continue;
+    component.port = ports[component.name]!;
+    component.command = `'${process.execPath}' server.ts`;
+    component.env = { PORT: String(component.port), RIG_ROOT: root };
+    component.health = `http://127.0.0.1:${component.port}`;
+    component.readyTimeout = 0.5;
+  }
+  let rollback = false;
+  const effects: TargetEffects = {
+    async checkpoint(record) { return { targetId: record.id, async commit() {}, async rollback() { rollback = true; } }; },
+    async restoreEffects() {}, async commitEffects() {}, async retireSuperseded() {}, async retireArtifacts() {},
+    supervisor: () => supervisor, async prepare() {}, async environment(_target, component) { return component.env; },
+    async hook() {}, async health(component) {
+      try { return (await fetch(component.health!)).ok; } catch { return false; }
+    }, async install() { return { outcome: "unchanged" }; },
+    async route() {}, async removeRoute() {},
+  };
+  const lifecycle = createTargetLifecycle(effects);
+  const prior = structuredClone(record);
+  prior.plan.components = prior.plan.components.slice(0, 1);
+  let competitor: ReturnType<typeof Bun.serve> | undefined;
+  try {
+    await lifecycle.up(prior);
+    competitor = Bun.serve({ hostname: "127.0.0.1", port: ports.web!, fetch: () => new Response("competitor", { status: 503 }) });
+    await expect(lifecycle.up(record)).rejects.toMatchObject({ code: "HEALTH_FAILED", hint: expect.any(String) });
+    expect(rollback).toBe(true);
+    expect(await supervisor.observe("t1:api")).toMatchObject({ state: "running" });
+    expect(await supervisor.observe("t1:web")).toMatchObject({ state: "stopped" });
+    expect(await (await fetch(`http://127.0.0.1:${ports.api}`)).text()).toBe("owned");
+    expect(await readFile(join(root, "precious"), "utf8")).toBe("prior Target work");
+    expect(await readFile(join(record.logRoot, "target.jsonl"), "utf8")).toContain("EADDRINUSE");
+  } finally {
+    competitor?.stop(true);
+    await supervisor.shutdown();
+    await rm(base, { recursive: true, force: true });
+  }
+  for (const port of Object.values(ports)) {
+    const probe = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+    probe.stop();
+  }
+}, 15000);

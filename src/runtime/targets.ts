@@ -156,12 +156,12 @@ export async function planTarget(
       )
       .map((request) => [request.name, previousPorts[request.name]!]),
   );
-  const allocated = await deps.files.reservePorts(
-    requests.filter((r) => !prior[r.name]),
+  const selected = await deps.files.selectPorts({
+    requests: requests.filter((r) => !prior[r.name]),
     occupied,
-    kind === "preview",
-  );
-  const assignedPorts = { ...prior, ...allocated };
+    policy: kind === "preview" ? "dynamic" : "configured",
+  });
+  const assignedPorts = { ...prior, ...selected };
   const plan = deps.documents.resolve({ ...planInput, assignedPorts });
   return {
     id,

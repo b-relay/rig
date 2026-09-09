@@ -126,7 +126,7 @@ function fixture() {
       },
     },
     files: {
-      async reservePorts() {
+      async selectPorts() {
         return { web: 4567 };
       },
       async logs() {
@@ -225,7 +225,7 @@ test("repoint uses the new config path and retains assigned ports, including Con
   config.components.api = { uses: "convex" };
   config.components.db = { uses: "sqlite" };
   config.components.cli = { mode: "installed", entrypoint: "cli.ts" };
-  deps.files.reservePorts = async () => ({
+  deps.files.selectPorts = async () => ({
     web: 4567,
     api: 4568,
     "api.site": 4569,
@@ -1306,3 +1306,24 @@ test.each([
     expect(JSON.stringify(entries)).not.toContain("secret");
   },
 );
+
+test("local and Preview planning use real selection with inventory exclusion and retain recorded numbers", async () => {
+  const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
+  const { runtime, state, deps, config } = fixture();
+  deps.files = createRuntimeFiles();
+  config.components.web = { mode: "managed", command: "serve --host 127.0.0.1" };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  const local = state.targets.find((record) => record.kind === "local")!;
+  const localWeb = local.plan.components[0]!;
+  if (localWeb.kind !== "managed") throw new Error("Expected managed web");
+  config.components.web.port = localWeb.port;
+  await runtime.command({ action: "deploy", project: "demo", target: "preview", branch: "feature/ports" });
+  const preview = state.targets.find((record) => record.kind === "preview")!;
+  const previewWeb = preview.plan.components[0]!;
+  if (previewWeb.kind !== "managed") throw new Error("Expected managed web");
+  expect(previewWeb.port).not.toBe(localWeb.port);
+  await runtime.command({ action: "down", project: "demo" });
+  await runtime.command({ action: "up", project: "demo" });
+  expect(state.targets.find((record) => record.kind === "local")!.plan.components[0]).toMatchObject({ port: localWeb.port });
+});

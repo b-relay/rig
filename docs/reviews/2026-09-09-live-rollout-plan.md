@@ -1,6 +1,9 @@
 # Live Rig replacement plan and read-only evidence
 
-Status: **reviewable rollout plan; no live mutations performed by this inventory task**.
+Status: **historical preflight plan, executed with the reviewed production-resume
+adjustments in [the rollout results](2026-09-09-live-rollout-results.md)**.
+Inventory and unresolved statements below describe the pre-cutover checkpoint;
+the results document is authoritative for final state.
 The user authorized updating existing Rig projects after battle testing. This plan
 preserves historical files and all unrelated processes/routes. It is not permission
 to delete stale registrations or combine Pantry identities.

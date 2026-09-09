@@ -1,6 +1,6 @@
 # Rig PRD: Human Output, Observability, And YAML Configuration
 
-> Status: implementation in progress; plain TypeScript rewrite authorized.
+> Status: implemented and validated; rollout completed for available Projects. PR #74 is the single review delivery. Missing inactive rig-env-check source and unavailable Slack delivery remain explicit limitations.
 > Updated: 2026-09-09.
 > Sources: [completed interview](codex://threads/019de162-a710-73b2-b418-e36383393a60), through its September 9 closing decisions, and [CONTEXT.md](../CONTEXT.md).
 > Implementation: [CLI observability and YAML plan](../plans/cli-observability-and-yaml.md) and [rewrite execution](../plans/typescript-rewrite.md).
@@ -286,9 +286,14 @@ YAML. Historical source uncertainty must be resolved with recorded evidence;
 current config cannot invent a deployed Branch or Commit.
 
 Delivery is one large PR from the implementation branch, followed by its link
-in Slack. Independent review follows each major milestone. Full validation,
-live rollout, ticket acceptance, and final delivery remain pending until their
-evidence is recorded; implemented behavior alone does not mark them complete.
+in Slack when the session has that capability. Independent reviews followed
+each major milestone. Full release validation, ticket acceptance, and the backed-up
+rollout to available Projects are recorded in
+[the live results](reviews/2026-09-09-live-rollout-results.md) and
+[PR #74](https://github.com/b-relay/rig/pull/74). The missing inactive
+rig-env-check source and unavailable Slack connector/browser remain explicit.
+Pantry resumes its existing deployment with a pinned backend and no production
+push; its intentional recorded-policy drift is documented rather than redeployed.
 Current evidence is in the [milestone review](reviews/2026-09-09-rewrite-milestones.md),
 [config review](reviews/2026-09-09-config-contracts.md), and
 [legacy migration review](reviews/2026-09-09-legacy-migration.md).

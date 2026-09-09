@@ -1,7 +1,9 @@
 # Rig TypeScript Cutover Readiness
 
-Status: September 9 implementation validation is in progress. Existing Host
-rollout and final delivery have not been established by this document. The
+Status: September 9 release validation and rollout to available Host Projects
+passed. [PR #74](https://github.com/b-relay/rig/pull/74) is the single review
+delivery. See [live results](reviews/2026-09-09-live-rollout-results.md) for
+backups, the Pantry resume exception, and the missing inactive source. The
 [prior Effect cutover record](rig-cutover-readiness-pre-typescript.md) is retained
 as historical evidence, not current instructions or a completion claim.
 
@@ -18,21 +20,20 @@ Only the default provider profile is supported. Tests use injected providers
 and isolated `RIG_ROOT`; a historical stub profile must never select real effects.
 User config is not automatically converted during runtime cutover.
 
-## Evidence And Pending Gates
+## Verified evidence and limits
 
-| Area | Evidence | Remaining release gate |
+| Area | Final evidence | Limit |
 |---|---|---|
-| Runtime authority | Real isolated CLI/daemon lifecycle and cross-client stop tests. | Final compiled-binary battle tests and independent review. |
-| Providers | Isolated process capture/recovery, launchd, independent Git, artifact, and Caddy tests. | Verify actual Host ownership and routing during each explicit cutover. |
-| Config | Restricted YAML/JSON, safe editor, unsupported-profile, and reload-command tests. | Validate every existing Project/Host document without converting formats. |
-| Activity | Final admin outcomes survive daemon shutdown; terminal crash monitoring deduplicates persistent evidence. | Final runtime integration and operator-visible evidence checks. |
-| Legacy state | Exact backups, revision checks, explicit source recovery, and guarded adoption fixtures. | Publish and verify real metadata only after reviewing the actual source revision. |
-| Delivery | One implementation branch and acceptance evidence for #64–#73. | One PR, then its link in Slack. |
+| Runtime authority | 186 tests / 989 assertions, strict typecheck, three compiled binaries, and 16 compiled lifecycle/Git-push checks passed. | Tests used isolated roots; real Host evidence was checked separately. |
+| Providers | Actual owned Pantry jobs healthy; exact Rig release installed; daemon restart preserves Pantry PIDs and sampled HTTP health. | Active system Caddy remains separately owned and byte-identical. |
+| Config | Core's obsolete JSON converted with behavior preserved; all available Project configs validate. | Pantry's recorded safe-resume policy intentionally differs from source config. |
+| Activity/logs | Correlated real startup/idempotency activity, current stdout/stderr, legacy unknown streams, and unauthorized HTTP rejection verified. | Application log contents remain private. |
+| Legacy state | Original bytes retained, consistent production database backup, independent Git sources, and completed verified adoption. | The inactive rig-env-check temporary source is missing and remains explicit. |
+| Delivery | Single PR #74 and issue acceptance mapping for #64–73. | Review/merge remains with the user; Slack has no connector or available browser. |
 
 See [milestone evidence](reviews/2026-09-09-rewrite-milestones.md),
-[migration review](reviews/2026-09-09-legacy-migration.md), and
-[Pantry source provenance](reviews/2026-09-09-legacy-source-evidence.md).
-Passing a fixture does not prove a live service or migration succeeded.
+[ticket acceptance](reviews/2026-09-09-ticket-acceptance.md), and
+[live results](reviews/2026-09-09-live-rollout-results.md).
 
 ## Live Cutover Contract
 

@@ -1,6 +1,7 @@
 # Rig TypeScript rewrite execution
 
-Status: in progress. User authorization: September 9, finish current PRD and
+Status: implemented, validated, and deployed to available Projects; PR #74 is
+the single review delivery. Slack delivery is unavailable. User authorization: September 9, finish current PRD and
 all open GitHub tickets using plain TypeScript/Bun, without Effect. Review
 subagents after every major milestone. User unavailable; make bounded decisions.
 
@@ -18,7 +19,9 @@ subagents after every major milestone. User unavailable; make bounded decisions.
 5. Existing-Project rollout and delivery: after battle testing, inventory and
    back up each affected Host resource, complete explicit compatibility/source
    ownership cutover, verify runtime/data preservation, publish one PR, and send
-   its link in Slack. Release validation passed; live rollout and PR delivery are pending.
+   its link in Slack when available. Release validation and live rollout passed;
+   PR #74 contains delivery. The missing inactive source and Slack capability
+   remain explicit limitations.
 
 ## Contracts and preservation
 
@@ -55,7 +58,7 @@ its link in Slack when ready. Battle-test the finished implementation before
 updating existing Rig projects; inventory, backup, and verify each live rollout.
 The user allows additional subagents and requests milestone reviews.
 
-## Current Evidence And Remaining Work
+## Final Evidence And Delivery Limitations
 
 Detailed interface decisions, independent findings, fixes, and contract ledgers
 are in `docs/reviews/2026-09-09-rewrite-milestones.md`. Milestones 1–4 passed final
@@ -63,7 +66,9 @@ validation: 186 tests, 989 assertions, strict typecheck, three compiled binaries
 and 16 compiled-only lifecycle/Git-push checks. Independent reviews covered
 launchd/Caddy, hard daemon-exit recovery, deployment commit boundaries, artifact
 ownership, registration, doctor, interactions, and legacy logs. Live compatibility
-cutover remains pending; no real Project has been changed at this checkpoint.
+cutover has completed for available Projects. See
+[the live results](../docs/reviews/2026-09-09-live-rollout-results.md) for exact
+backups, source preservation, production resume exception, and final readback.
 
 The [config review](../docs/reviews/2026-09-09-config-contracts.md) records document
 and resolver contracts. The [legacy migration review](../docs/reviews/2026-09-09-legacy-migration.md)
@@ -73,11 +78,12 @@ The adoption suite verifies stale revisions, incomplete/contradictory ownership,
 missing manifests, and tampered completion provenance fail closed. Passing
 migration fixtures do not prove that the actual Host has been adopted.
 
-Before enabling live reconciliation, prevent the old recorded Rig/live build
-from reinstalling legacy binaries. Establish independent Git source ownership
-for materialized Targets while preserving existing workspaces/data; verify every
-legacy process and route before finalizing adoption. Keep ambiguous or missing
-registrations explicit rather than merging Project identities.
+Before live reconciliation was enabled, the cutover prevented the old recorded
+Rig/live build from reinstalling legacy binaries. Independent Git source
+ownership was established for materialized Targets while preserving their
+workspaces/data, and legacy process and route ownership was verified before
+adoption was finalized. Pantry and pantry2 remain distinct; the missing inactive
+registration remains explicit in the live results.
 
 The current source/dependency graph removes Effect. Final checks passed after
 all implementation and review fixes: `bun run typecheck`, `bun test`, and
@@ -85,8 +91,9 @@ all implementation and review fixes: `bun run typecheck`, `bun test`, and
 real isolated lifecycle/Git-push smoke test. Exact evidence is in the milestone
 review notes.
 
-Remaining release gates: verify each live upgrade and preservation readback;
-publish the single PR with ticket evidence. Slack delivery is currently blocked
-because this session has neither a Slack connector nor an available browser;
-provide the PR link in the conversation if that capability remains unavailable.
-No live gate is complete merely because isolated tests passed.
+Live upgrade and preservation readback passed independently after the isolated
+release gate. [PR #74](https://github.com/b-relay/rig/pull/74) links #64–73 with
+[acceptance evidence](../docs/reviews/2026-09-09-ticket-acceptance.md).
+The missing inactive rig-env-check source cannot be upgraded. Slack delivery
+is blocked because this session has neither a Slack connector nor an available
+browser; the PR link is delivered in the conversation. No merge is performed.

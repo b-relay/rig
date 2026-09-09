@@ -1,7 +1,7 @@
 # Plan: CLI Observability And YAML Configuration
 
 > Source: [current PRD](../docs/PRD.md), [CONTEXT.md](../CONTEXT.md), and the [completed interview](codex://threads/019de162-a710-73b2-b418-e36383393a60).
-> Status: implementation and milestone review in progress; final validation and live rollout pending.
+> Status: implemented and reviewed; release validation and live rollout complete for available Projects. PR #74 is the single delivery; missing inactive rig-env-check and unavailable Slack are explicit limitations.
 > Date: 2026-09-09.
 > Predecessor: [completed CLI/provider cleanup](cli-provider-cleanup.md).
 
@@ -75,10 +75,9 @@ output Module owns terminal formatting through terminal/capture Adapters. A
 Diagnostic log Module owns safe structured evidence, correlation, rotation,
 retention, and file failures. Both CLIs share one environment Adapter.
 
-Keep direct `console.log` and scattered terminal writes prohibited. When the
-split is implemented, update AGENTS.md's current all-output-through-logger rule
-to describe the accepted Interfaces using the agent-document guidance. This
-planning update does not change that instruction or add implementation code.
+AGENTS.md now directs human output through the user-output Interface and
+diagnostic evidence through the diagnostic-log Interface. The implemented split
+keeps direct `console.log` and scattered terminal writes prohibited.
 
 ### Observed Status
 
@@ -353,7 +352,9 @@ process capture/recovery, source ownership, registration, and Git push behavior.
 Independent findings and corrected contracts are recorded in the
 [milestone review](../docs/reviews/2026-09-09-rewrite-milestones.md) and
 [config review](../docs/reviews/2026-09-09-config-contracts.md).
-This is implementation evidence, not a declaration that all slice exits pass.
+Final release checks and independent milestone reviews passed; separate
+[live results](../docs/reviews/2026-09-09-live-rollout-results.md) record the
+Host cutover and Project preservation evidence.
 
 Legacy conversion retains exact source bytes and requires a reviewed revision.
 Pending or invalid adoption blocks runtime mutations/reconciliation and makes
@@ -362,7 +363,7 @@ legacy process and route plus the preserved original manifest. See
 [migration evidence](../docs/reviews/2026-09-09-legacy-migration.md) and
 [Pantry source provenance](../docs/reviews/2026-09-09-legacy-source-evidence.md).
 Independent source ownership, real-provider cutover, installed binary identity,
-and preserved Project data require separate live verification.
+and preserved Project data were separately verified during the live rollout.
 
 ## Validation And Documentation
 
@@ -382,11 +383,14 @@ and preserved Project data require separate live verification.
 - Reconcile all #64–#73 tickets against actual implementation and acceptance
   evidence in the single PR. Documentation or a passing unit test alone does
   not establish full completion.
-- Final checks remain pending: complete packaging for `rig`, `rigd`, and
-  `git-remote-rig`; full tests/typecheck/build; adversarial deployment and lifecycle
-  testing; final independent review; explicitly backed-up existing-Project rollout;
-  PR publication and Slack delivery. Record blockers without marking unfinished
-  rollout or testing complete.
+- Final checks passed: all three binaries, strict typecheck, 186 tests / 989
+  assertions, 16 compiled-only lifecycle/Git-push checks, adversarial recovery
+  tests, and independent reviews. The backed-up real Host rollout and its
+  intentional Pantry resume exception are recorded in
+  [live results](../docs/reviews/2026-09-09-live-rollout-results.md).
+  [PR #74](https://github.com/b-relay/rig/pull/74) carries all issue acceptance.
+  The deleted inactive rig-env-check source remains unavailable; Slack cannot
+  be sent because no connector or browser is exposed.
 
 No product questions remain from the interview for this increment. Parser
 selection, precise Interface signatures, and deterministic edge-case algorithms

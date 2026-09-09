@@ -1,8 +1,10 @@
 # TypeScript rewrite milestone evidence
 
-Work is on `feat/typescript-runtime`; the requested delivery is one PR.
-The implementation remains in progress. No existing host deployment has been
-changed. Tests use temporary roots and unique provider-owned resources.
+Work is on `feat/typescript-runtime`, delivered for review in [PR #74](https://github.com/b-relay/rig/pull/74).
+Implementation and release validation passed; the backed-up rollout to available
+Projects is recorded in [live results](2026-09-09-live-rollout-results.md).
+Implementation tests used temporary roots and unique provider-owned resources.
+The sections below retain milestone-specific evidence and its original scope.
 
 ## Interface decisions
 
@@ -296,3 +298,22 @@ contains no real Host mutation. Live rollout follows the separately recorded
 backup and adoption plan. Slack connector discovery found no Slack tools, and
 computer-use discovery reported no available browser; notification remains
 unavailable rather than claimed sent.
+
+
+## Milestone 5: actual Host rollout and delivery
+
+The verified release `087ce3b` was deployed through its real Git remote helper.
+Seven registrations and all original metadata remain; available Projects were
+updated, Pantry is healthy, and Rig's three installed binaries are ready.
+Independent cutover, rollback, production-resume, and final live reviews resolved
+material findings before completion. The daemon restart check retained Pantry's
+managed PIDs and passed all four HTTP samples. Ten external guidance files were
+updated from exact backed-up proposals.
+
+See [live rollout results](2026-09-09-live-rollout-results.md) for storage/source
+preservation and the reviewed exception that omits a production schema push and
+pins the prior backend. Pantry's resulting config drift and the missing inactive
+rig-env-check source remain explicit. [PR #74](https://github.com/b-relay/rig/pull/74)
+is the one review delivery, with [acceptance evidence](2026-09-09-ticket-acceptance.md)
+for #64–73. No GitHub-main push or merge was performed. Slack cannot be sent in
+this session because neither its connector nor a browser is available.

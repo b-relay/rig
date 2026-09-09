@@ -259,6 +259,11 @@ repair, generic normal-CLI config writes, custom log sinks, config migration
 commands, and blanket JSON-output flags. Preserve runtime data per the
 [state preservation policy](state-preservation-policy.md).
 
+Follow-up #78 makes interrupted effect checkpoint preparation recoverable through
+normal Target recovery. Proven preparations can be cleaned; pre-marker backups
+are preserved with a reported archive location before retry. Corrupt or ambiguous
+evidence stays protected under the state preservation policy.
+
 ## Acceptance And Validation
 
 Use public-behavior TDD slices from the linked plan. Cover external effects,

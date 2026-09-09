@@ -1,5 +1,6 @@
+import { createEffectPreparation } from "./effect-preparation";
 import { createHash } from "node:crypto";
-import { copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
+import { copyFile, lstat, readFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
@@ -76,6 +77,7 @@ export function createEffectTransactions(options: {
       "effect-checkpoints",
       createHash("sha256").update(targetId).digest("hex"),
     );
+  const preparation = createEffectPreparation(options.root, directory);
   const active = new Map<string, Journal>();
   const save = (journal: Journal) =>
     atomicFile(
@@ -83,12 +85,15 @@ export function createEffectTransactions(options: {
       JSON.stringify(journal),
     );
   const load = async (targetId: string): Promise<Journal | undefined> => {
+    await preparation.validateLayout(targetId);
     try {
-      return journalSchema.parse(
+      const journal = journalSchema.parse(
         JSON.parse(
           await readFile(join(directory(targetId), "journal.json"), "utf8"),
         ),
       );
+      if (journal.targetId !== targetId) throw new Error("Wrong Target");
+      return journal;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw new RigError(
@@ -99,6 +104,7 @@ export function createEffectTransactions(options: {
     }
   };
   const rollback = async (journal: Journal) => {
+    await preparation.validateLayout(journal.targetId);
     if (journal.phase === "committed")
       throw new RigError(
         "EFFECTS_COMMITTED",
@@ -159,6 +165,7 @@ export function createEffectTransactions(options: {
     journal.route.expected = journal.route.before;
     await save(journal);
     await rm(directory(journal.targetId), { recursive: true });
+    await preparation.release(journal.targetId);
     active.delete(journal.targetId);
   };
   return {
@@ -167,9 +174,10 @@ export function createEffectTransactions(options: {
       artifacts: readonly ArtifactCheckpointInput[],
     ): Promise<TargetEffectCheckpoint> {
       const prior = await load(targetId);
-      if (prior?.phase === "committed")
+      if (prior?.phase === "committed") {
         await rm(directory(targetId), { recursive: true });
-      else if (prior)
+        await preparation.release(targetId);
+      } else if (prior)
         throw new RigError(
           "EFFECTS_RECOVERY",
           "This Target has an unfinished effect transaction.",
@@ -187,19 +195,7 @@ export function createEffectTransactions(options: {
         await options.ownership.inspect(artifact);
       }
       const route = await options.router.checkpoint(targetId);
-      await mkdir(join(options.root, "effect-checkpoints"), {
-        recursive: true,
-        mode: 0o700,
-      });
-      try {
-        await mkdir(directory(targetId), { mode: 0o700 });
-      } catch {
-        throw new RigError(
-          "EFFECTS_RECOVERY",
-          "A saved Target effect checkpoint already exists.",
-          "Inspect the interrupted checkpoint before retrying.",
-        );
-      }
+      await preparation.begin(targetId);
       const journal: Journal = {
         targetId,
         phase: "pending",
@@ -227,12 +223,13 @@ export function createEffectTransactions(options: {
         await save(journal);
         active.set(targetId, journal);
       } catch (error) {
-        await rm(directory(targetId), { recursive: true, force: true });
+        await preparation.recover(targetId);
         throw error;
       }
       return {
         targetId,
         async commit() {
+          await preparation.validateLayout(targetId);
           journal.phase = "committed";
           try {
             await save(journal);
@@ -241,9 +238,9 @@ export function createEffectTransactions(options: {
             throw error;
           }
           active.delete(targetId);
-          await rm(directory(targetId), { recursive: true, force: true }).catch(
-            () => {},
-          );
+          await rm(directory(targetId), { recursive: true, force: true })
+            .then(() => preparation.release(targetId))
+            .catch(() => {});
         },
         rollback: () => rollback(journal),
       };
@@ -271,8 +268,9 @@ export function createEffectTransactions(options: {
       }
     },
     async commit(targetId: string) {
+      await preparation.validateLayout(targetId);
       const journal = active.get(targetId) ?? (await load(targetId));
-      if (!journal) return;
+      if (!journal) return preparation.recover(targetId);
       if (journal.targetId !== targetId)
         throw new RigError(
           "EFFECTS_CHECKPOINT",
@@ -301,13 +299,14 @@ export function createEffectTransactions(options: {
       journal.phase = "committed";
       await save(journal);
       active.delete(targetId);
-      await rm(directory(targetId), { recursive: true, force: true }).catch(
-        () => {},
-      );
+      await rm(directory(targetId), { recursive: true, force: true })
+        .then(() => preparation.release(targetId))
+        .catch(() => {});
     },
     async restore(targetId: string) {
+      await preparation.validateLayout(targetId);
       const journal = active.get(targetId) ?? (await load(targetId));
-      if (!journal) return;
+      if (!journal) return preparation.recover(targetId);
       if (journal.targetId !== targetId)
         throw new RigError(
           "EFFECTS_CHECKPOINT",
@@ -316,6 +315,7 @@ export function createEffectTransactions(options: {
         );
       if (journal.phase === "committed") {
         await rm(directory(targetId), { recursive: true, force: true });
+        await preparation.release(targetId);
         active.delete(targetId);
         return;
       }

@@ -86,3 +86,17 @@ covered. Existing rollback tests cover active file and route compensation.
   Initial missing commander/yaml resolution was environmental, not a code failure.
 
 No actual historical state, live launchd, Caddy service or deployment was touched.
+
+## Independent-review cleanup
+
+The independent standards review of `d08b3108` passed with optional P3 feedback:
+centralize directory removal followed by preparation-claim release. The narrow
+follow-up introduces `removeCheckpoint(targetId, { allowMissingDirectory })` as
+the single owner of that ordering. Its inputs retain each caller's existing
+missing-directory policy; its void/error result leaves propagation versus deferred
+cleanup with those callers. It owns only the existing rm and preparation.release
+effects, relies on their previously documented validation and serialization, and
+leaves active-map mutation at the callers. If directory removal fails, the claim
+is not released. If release fails, the claim-only state remains recoverable.
+No public contract or preservation behavior changes. The existing 36 preparation
+and deployment-effect tests plus strict typechecking remain the validation seams.

@@ -103,6 +103,16 @@ export function createEffectTransactions(options: {
       );
     }
   };
+  const removeCheckpoint = async (
+    targetId: string,
+    options: { allowMissingDirectory: boolean },
+  ): Promise<void> => {
+    await rm(directory(targetId), {
+      recursive: true,
+      force: options.allowMissingDirectory,
+    });
+    await preparation.release(targetId);
+  };
   const rollback = async (journal: Journal) => {
     await preparation.validateLayout(journal.targetId);
     if (journal.phase === "committed")
@@ -164,8 +174,7 @@ export function createEffectTransactions(options: {
     await options.router.restore(journal.route.before, journal.route.expected);
     journal.route.expected = journal.route.before;
     await save(journal);
-    await rm(directory(journal.targetId), { recursive: true });
-    await preparation.release(journal.targetId);
+    await removeCheckpoint(journal.targetId, { allowMissingDirectory: false });
     active.delete(journal.targetId);
   };
   return {
@@ -175,8 +184,7 @@ export function createEffectTransactions(options: {
     ): Promise<TargetEffectCheckpoint> {
       const prior = await load(targetId);
       if (prior?.phase === "committed") {
-        await rm(directory(targetId), { recursive: true });
-        await preparation.release(targetId);
+        await removeCheckpoint(targetId, { allowMissingDirectory: false });
       } else if (prior)
         throw new RigError(
           "EFFECTS_RECOVERY",
@@ -238,9 +246,9 @@ export function createEffectTransactions(options: {
             throw error;
           }
           active.delete(targetId);
-          await rm(directory(targetId), { recursive: true, force: true })
-            .then(() => preparation.release(targetId))
-            .catch(() => {});
+          await removeCheckpoint(targetId, {
+            allowMissingDirectory: true,
+          }).catch(() => {});
         },
         rollback: () => rollback(journal),
       };
@@ -299,9 +307,9 @@ export function createEffectTransactions(options: {
       journal.phase = "committed";
       await save(journal);
       active.delete(targetId);
-      await rm(directory(targetId), { recursive: true, force: true })
-        .then(() => preparation.release(targetId))
-        .catch(() => {});
+      await removeCheckpoint(targetId, { allowMissingDirectory: true }).catch(
+        () => {},
+      );
     },
     async restore(targetId: string) {
       await preparation.validateLayout(targetId);
@@ -314,8 +322,7 @@ export function createEffectTransactions(options: {
           "Inspect the checkpoint before retrying recovery.",
         );
       if (journal.phase === "committed") {
-        await rm(directory(targetId), { recursive: true, force: true });
-        await preparation.release(targetId);
+        await removeCheckpoint(targetId, { allowMissingDirectory: true });
         active.delete(targetId);
         return;
       }

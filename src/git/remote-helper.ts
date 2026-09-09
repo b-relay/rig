@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { z } from "zod";
 import type { RuntimeCommand } from "../daemon/protocol";
-import { DaemonClient } from "../daemon/client";
-import { readDaemonAddress, readDaemonToken } from "../daemon/files";
+import { connectDaemon } from "../daemon/connection";
 import { RigError, asRigError } from "../domain/errors";
 import { isGitCommit } from "../domain/git";
 import type { UserOutput } from "../cli/types";
@@ -337,17 +336,7 @@ export async function main(args: readonly string[]): Promise<number> {
       }),
       client: {
         async command(command) {
-          const address = await readDaemonAddress(root);
-          if (!address)
-            throw new RigError(
-              "DAEMON_MISSING",
-              "rigd is not reachable.",
-              "Run rigd status or install the daemon with rigd install.",
-            );
-          return await new DaemonClient({
-            port: address.port,
-            token: await readDaemonToken(root),
-          }).command(command);
+          return (await connectDaemon(root)).command(command);
         },
       },
     });

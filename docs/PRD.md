@@ -328,3 +328,9 @@ human presenter and Target picker. Transport validation rejects malformed replie
 instead of rendering them as empty or healthy evidence. Optional fields and valid
 empty reports retain their behavior. See the
 [Status contract evidence](reviews/2026-09-09-issue-85-status-report-contract.md).
+
+CLI and Rig remote share fresh per-operation daemon discovery and credential
+acquisition. Doctor alone retains read-only offline Host inspection for missing
+setup or unreachable transport, using the invocation's captured repository path;
+authentication rejection, corrupt metadata and protocol failures remain errors.
+See the [connection evidence](reviews/2026-09-09-issue-86-daemon-connections.md).

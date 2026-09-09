@@ -1,3 +1,4 @@
+import type { ProjectStatusReader } from "../domain/project-status";
 import type { CliInteraction } from "./interaction";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { DiagnosticLog } from "../diagnostics/types";
@@ -10,7 +11,9 @@ export interface UserOutput {
 export interface CliDependencies {
   root: string;
   cwd: string;
-  client: { command(request: RuntimeCommand): Promise<unknown> };
+  client: ProjectStatusReader & {
+    command(request: RuntimeCommand): Promise<unknown>;
+  };
   output: UserOutput;
   diagnostics: DiagnosticLog;
   newOperationId: () => string;

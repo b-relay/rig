@@ -1,3 +1,5 @@
+import type { ComponentReport, TargetReport } from "../domain/project-status";
+export type { ComponentReport, TargetReport } from "../domain/project-status";
 import {
   boundedObservations,
   timerObservationDeadline,
@@ -31,25 +33,6 @@ export interface ObservationEffects {
     component: PersistentComponent,
     signal: AbortSignal,
   ): Promise<boolean>;
-}
-export interface ComponentReport {
-  name: string;
-  kind: "managed" | "installed" | "persistent";
-  state: string;
-  pid?: number;
-  port?: number;
-  route?: string;
-  exitCode?: number;
-  reason?: string;
-}
-export interface TargetReport {
-  name: string;
-  kind: string;
-  state: string;
-  branch?: string;
-  commit?: string;
-  route?: string;
-  components: ComponentReport[];
 }
 /** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget. */
 export async function observeTargets(
@@ -129,7 +112,7 @@ export async function observeTargets(
   );
   let offset = 0;
   return targets.map((target) => {
-    const components = target.plan.components.map(() => {
+    const components: ComponentReport[] = target.plan.components.map(() => {
       const base = entries[offset]!.base;
       const result = results[offset++]!;
       if (result.kind === "completed") return result.value;
@@ -154,7 +137,7 @@ export async function observeTargets(
   });
 }
 
-function aggregate(components: ComponentReport[]): string {
+function aggregate(components: ComponentReport[]): TargetReport["state"] {
   if (!components.length) return "configured";
   const managed = components.filter(
     (component) => component.kind === "managed",

@@ -1,8 +1,8 @@
+import type { ProjectStatusReport } from "../domain/project-status";
 /** Human presenters consume the same domain report returned by structured commands. */
 export function renderResult(action: string, value: unknown): string {
   const report = object(value);
   if (action === "list") return renderProjects(report);
-  if (action === "status") return renderStatus(report);
   if (action === "doctor") return renderDoctor(report);
   if (action === "config")
     return `${word(report.project)}\n${word(report.path)}\n\n${JSON.stringify(report.config, null, 2)}\n`;
@@ -32,56 +32,51 @@ function renderProjects(report: Record<string, unknown>): string {
     ? `${projects.map((project) => `${word(project.name)}  ${Number(project.targetCount ?? 0)} Targets  ${word(project.repoPath)}`).join("\n")}\n`
     : "No Projects registered.\n";
 }
-function renderStatus(report: Record<string, unknown>): string {
-  const lines = [word(report.project)];
+export function renderStatus(report: ProjectStatusReport): string {
+  const lines = [displayWord(report.project)];
   const failures: string[] = [];
-  for (const target of rows(report.targets)) {
+  for (const target of report.targets) {
     lines.push(
       "",
       [
-        word(target.name),
-        word(target.state),
-        word(target.branch) || (target.kind === "local" ? "working copy" : ""),
+        displayWord(target.name),
+        displayWord(target.state),
+        displayWord(target.branch) ||
+          (target.kind === "local" ? "working copy" : ""),
       ]
         .filter(Boolean)
         .join("  "),
     );
-    if (
-      target.route &&
-      !rows(target.components).some((component) => component.route)
-    )
-      lines.push(`  Route  ${word(target.route)}`);
-    for (const component of rows(target.components)) {
-      const port =
-        typeof component.port === "number" ? `:${component.port}` : "";
-      const route = word(component.route);
+    if (target.route && !target.components.some((component) => component.route))
+      lines.push(`  Route  ${displayWord(target.route)}`);
+    for (const component of target.components) {
+      const port = component.port !== undefined ? `:${component.port}` : "";
+      const route = displayWord(component.route);
       lines.push(
-        `  ${[word(component.name), word(component.state), port, route].filter(Boolean).join("  ")}`,
+        `  ${[displayWord(component.name), displayWord(component.state), port, route].filter(Boolean).join("  ")}`,
       );
-      if (["failed", "unhealthy", "missing"].includes(word(component.state)))
+      if (["failed", "unhealthy", "missing"].includes(component.state))
         failures.push(
-          `${word(target.name)} ${word(component.name)}: ${word(component.reason) || word(component.state)}`,
+          `${displayWord(target.name)} ${displayWord(component.name)}: ${displayWord(component.reason) || displayWord(component.state)}`,
         );
       if (component.state === "unknown" && component.reason)
-        lines.push(`    ${word(component.reason)}`);
+        lines.push(`    ${displayWord(component.reason)}`);
     }
   }
-  if (!rows(report.targets).length) lines.push("", "No Targets configured.");
+  if (!report.targets.length) lines.push("", "No Targets configured.");
   if (failures.length)
     lines.push("", "Failures", ...failures.map((failure) => `  ${failure}`));
   else lines.push("", "No failures");
   if (
-    rows(report.targets).some(
+    report.targets.some(
       (target) =>
         target.state === "unknown" ||
-        rows(target.components).some(
-          (component) => component.state === "unknown",
-        ),
+        target.components.some((component) => component.state === "unknown"),
     )
   )
     lines.push("Some observations are unknown.");
-  for (const warning of Array.isArray(report.warnings) ? report.warnings : [])
-    lines.push(`Warning: ${word(warning)}`);
+  for (const warning of report.warnings ?? [])
+    lines.push(`Warning: ${displayWord(warning)}`);
   return `${lines.join("\n")}\n`;
 }
 function renderDoctor(report: Record<string, unknown>): string {
@@ -132,9 +127,10 @@ function rows(value: unknown): Record<string, unknown>[] {
 }
 /** Terminal fields cannot inject another line or an ANSI terminal command. */
 function word(value: unknown): string {
-  return typeof value === "string"
-    ? value
-        .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-        .replace(/[\x00-\x1f\x7f]/g, " ")
-    : "";
+  return typeof value === "string" ? displayWord(value) : "";
+}
+function displayWord(value = ""): string {
+  return value
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\x00-\x1f\x7f]/g, " ");
 }

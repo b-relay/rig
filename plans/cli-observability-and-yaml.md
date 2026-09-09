@@ -404,3 +404,11 @@ remains outside that deadline. Completed, rejected and expired results stay
 distinct internally, while each caller retains its report or crash-history policy.
 Design, contract ledger and controlled-timing evidence are in
 [the #83 implementation notes](../docs/reviews/2026-09-09-issue-83-bounded-observations.md).
+
+### Follow-up #85: shared Project Status report
+
+Runtime and localhost clients now expose a typed Project Status read capability.
+Human output and Target selection use that shared report; the transport adapter
+validates complete nested evidence and explicit Project identity before returning
+it. Empty reports and optional observation fields remain compatible. See the
+[design and verification ledger](../docs/reviews/2026-09-09-issue-85-status-report-contract.md).

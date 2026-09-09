@@ -152,17 +152,19 @@ test("legacy migration, explicit ownership and real daemon preserve recorded sou
     );
     const pending = await readLegacyAdoption(f.root);
     expect(pending).toBeDefined();
+    // This fixture supplies one ownership-evidence snapshot.
+    const verifiedAt = new Date().toISOString();
     await finalizeLegacyAdoption(f.root, {
       expectedRevision: pending!.revision,
       evidence: {
-        verifiedAt: new Date().toISOString(),
+        verifiedAt,
         processes: preview.adoption.processes.map((owner) => ({
           key: owner.key,
           provider: owner.provider,
           legacyLabel: owner.legacyLabel,
           outcome: "verified-absent",
           previousOwner: "absent",
-          observedAt: new Date().toISOString(),
+          observedAt: verifiedAt,
         })),
         routes: [],
       },

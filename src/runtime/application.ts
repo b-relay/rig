@@ -1,3 +1,8 @@
+import type {
+  ProjectStatusReader,
+  ProjectStatusReport,
+  StatusSelection,
+} from "../domain/project-status";
 import { stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
 import { updateRegistration } from "./registration";
@@ -19,7 +24,7 @@ import {
   assertDeploymentRecovered,
   stopForRecovery,
 } from "./deploy";
-export interface RigRuntime {
+export interface RigRuntime extends ProjectStatusReader {
   command(command: RuntimeCommand): Promise<unknown>;
   reconcile(): Promise<void>;
   exclusive<T>(operation: () => Promise<T>): Promise<T>;
@@ -39,6 +44,19 @@ const reads = new Set([
 export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   let queue: Promise<unknown> = Promise.resolve();
   let draining = false;
+  const status = async (
+    selection: StatusSelection,
+  ): Promise<ProjectStatusReport> => {
+    const command = { ...selection, action: "status" as const };
+    const { project } = await selectProject(command, deps, false);
+    const state = await deps.store.read();
+    return projectStatus(
+      project,
+      state.targets.filter((target) => target.projectId === project.id),
+      selection,
+      deps,
+    );
+  };
   const execute = async (command: RuntimeCommand): Promise<unknown> => {
     const operationId = command.operationId ?? deps.id();
     let project: ProjectRecord | undefined, target: TargetRecord | undefined;
@@ -142,6 +160,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           return await hostDoctor(deps, error);
         }
       }
+      if (command.action === "status") return await status(command);
       const selection = await selectProject(
         command,
         deps,
@@ -180,8 +199,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             .filter((o) => o.projectId === project!.id)
             .slice(-(command.lines ?? 100)),
         };
-      if (command.action === "status")
-        return await projectStatus(project, targets, command, deps);
       if (command.action === "doctor")
         return await doctor(project, targets, deps);
       if (command.action === "rename" || command.action === "repoint") {
@@ -449,6 +466,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     }
   };
   return {
+    status,
     async drain() {
       draining = true;
       await queue.catch(() => {});

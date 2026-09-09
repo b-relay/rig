@@ -3,7 +3,7 @@ import { prepareInteractiveRequest } from "./interaction";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { createRigCommand, type ExecuteCommand } from "./commands";
-import { renderResult, object, renderLogs } from "./output";
+import { renderResult, renderStatus, object, renderLogs } from "./output";
 import { isHelp, recordDiagnostic, reportFailure } from "./failure";
 
 /** Parse and render one invocation; the injected client owns runtime effects. */
@@ -32,11 +32,17 @@ export async function runRigCli(
         "The operation was cancelled.",
         "No runtime change was requested.",
       );
-    const result = await dependencies.client.command(correlated);
+    const status =
+      request.action === "status"
+        ? await dependencies.client.status(correlated)
+        : undefined;
+    const result = status ?? (await dependencies.client.command(correlated));
     dependencies.output.write(
       json
         ? `${JSON.stringify(result)}\n`
-        : renderResult(request.action, result),
+        : status
+          ? renderStatus(status)
+          : renderResult(request.action, result),
     );
     const evidence = await recordDiagnostic(dependencies.diagnostics, {
       event: "command.completed",

@@ -685,3 +685,75 @@ test("repeated down and daemon reconciliation skip stopped pre-stop hooks while 
   expect([...f.running]).toEqual([]);
   expect(diagnostics).toEqual([]);
 });
+
+test("one runtime Status report reaches localhost human output and the Target picker", async () => {
+  const { runtime, deps, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/repo" });
+  await runtime.command({ action: "up", project: "demo", target: "local" });
+  const { startControlPlane } = await import("../src/daemon/server");
+  const { DaemonClient } = await import("../src/daemon/client");
+  const { renderStatus } = await import("../src/cli/output");
+  const { prepareInteractiveRequest } = await import("../src/cli/interaction");
+  const server = startControlPlane({
+    port: 0,
+    token: "test",
+    instanceId: "status",
+    handle: runtime.command,
+  });
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test" });
+    for (const observed of ["unknown", "stopped", "running"] as const) {
+      deps.observations.process = async () => ({
+        state: observed,
+        exitCode: observed === "stopped" ? 7 : undefined,
+      });
+      const report = await client.status({ project: "demo" });
+      expect(report).toEqual(await runtime.status({ project: "demo" }));
+      expect(report.targets.find((t) => t.name === "live")?.state).toBe(
+        "configured",
+      );
+      const text = renderStatus(report);
+      const prepared = await prepareInteractiveRequest(
+        { action: "down", project: "demo" },
+        {
+          client,
+          output: { write() {}, error() {} },
+          interaction: {
+            async select(_message, choices) {
+              expect(choices.map((choice) => choice.value)).toEqual(
+                report.targets.map((t) => t.name),
+              );
+              for (const target of report.targets) {
+                expect(text).toContain(`${target.name}  ${target.state}`);
+                expect(choices).toContainEqual({
+                  value: target.name,
+                  label: `${target.name} (${target.state})`,
+                });
+              }
+              return "local";
+            },
+            async text(_message, value) {
+              return value;
+            },
+            async confirm() {
+              return true;
+            },
+          },
+        },
+      );
+      expect(prepared.target).toBe("local");
+    }
+    state.targets[0]!.recovery = {
+      stage: "pending",
+      plan: state.targets[0]!.plan,
+      desired: "running",
+    };
+    const recovery = await client.status({ project: "demo" });
+    expect(recovery.targets[0]?.state).toBe("unknown");
+    expect(recovery.warnings?.join(" ")).toContain(
+      "unresolved deployment transition",
+    );
+  } finally {
+    await server.stop(true);
+  }
+});

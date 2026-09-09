@@ -1,7 +1,10 @@
+import type {
+  ProjectStatusReport,
+  StatusSelection,
+} from "../domain/project-status";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import { asRigError } from "../domain/errors";
-import type { RuntimeCommand } from "../daemon/protocol";
 import type { RuntimeDependencies } from "./contracts";
 import {
   observeTargets,
@@ -11,11 +14,13 @@ import {
 import { targetName } from "./targets";
 /** Adds configured-only capabilities without interpreting configuration as runtime evidence. */
 export async function projectStatus(
-  project: ProjectRecord,
-  targets: TargetRecord[],
-  command: RuntimeCommand,
-  deps: RuntimeDependencies,
-) {
+  project: Pick<ProjectRecord, "name" | "repoPath">,
+  targets: readonly TargetRecord[],
+  command: StatusSelection,
+  deps: Pick<RuntimeDependencies, "assertOwnershipReady" | "observations"> & {
+    documents: Pick<RuntimeDependencies["documents"], "read">;
+  },
+): Promise<ProjectStatusReport> {
   const selected =
     command.target || command.deployment
       ? targets.filter((t) => t.name === targetName(command))

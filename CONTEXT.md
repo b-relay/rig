@@ -59,6 +59,10 @@ _Relationship_: `rigd uninstall` should refuse by default when Rig-managed
 Targets are running and guide the user to stop them first, so uninstall does
 not leave unmanaged processes or routes behind.
 
+_Relationship_: Unresolved Target recovery also blocks uninstall, even when
+the candidate is stopped. Keep daemon control available so explicit `rig down`
+can finish recovery before uninstall is retried.
+
 _Relationship_: `rigd uninstall --force` should not be part of the first
 release. Bulk stop/delete cleanup semantics require separate design.
 

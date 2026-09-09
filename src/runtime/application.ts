@@ -52,6 +52,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (!reads.has(command.action)) await deps.assertOwnershipReady();
       if (command.action === "prepare-uninstall") {
         const state = await deps.store.read();
+        if (state.targets.some((t) => t.recovery))
+          throw new RigError(
+            "DEPLOY_RECOVERY",
+            "Cannot uninstall rigd while Targets have unresolved deployment recovery.",
+            "Run rig down for each affected Target to finish recovery, then retry uninstall.",
+          );
         const reports = await observeTargets(state.targets, deps.observations);
         if (
           state.targets.some((t) => t.desired === "running") ||

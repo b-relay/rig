@@ -59,7 +59,10 @@ const route = text
 const hooks = z.strictObject({
   preStart: z.string().optional().describe("Run before starting."),
   postStart: z.string().optional().describe("Run after readiness."),
-  preStop: z.string().optional().describe("Run before stopping."),
+  preStop: z
+    .string()
+    .optional()
+    .describe("Run before stopping active managed processes; skipped when already stopped."),
   postStop: z.string().optional().describe("Run after stopping."),
 });
 const common = {

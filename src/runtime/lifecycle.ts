@@ -213,11 +213,25 @@ export function createTargetLifecycle(effects: TargetEffects): TargetLifecycle {
           (process ? processFailures : hookFailures).push(error);
         }
       };
-      if (target.plan.hooks?.preStop)
-        await attempt(() => effects.hook(target.plan.hooks!.preStop!, target));
+      let began = false;
       for (const component of [...target.plan.components].reverse()) {
         if (component.kind !== "managed") continue;
-        if (component.hooks?.preStop)
+        let needsPreStop = true;
+        try {
+          const observation = await supervisor.observe(
+            `${target.id}:${component.name}`,
+          );
+          needsPreStop =
+            observation.state !== "stopped" || observation.restartPending === true;
+        } catch {
+          // Failed observation is not proof of absence; stop still verifies shutdown.
+        }
+        if (needsPreStop && !began) {
+          began = true;
+          if (target.plan.hooks?.preStop)
+            await attempt(() => effects.hook(target.plan.hooks!.preStop!, target));
+        }
+        if (needsPreStop && component.hooks?.preStop)
           await attempt(() =>
             effects.hook(component.hooks!.preStop!, target, component),
           );

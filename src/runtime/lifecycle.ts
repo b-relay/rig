@@ -31,6 +31,7 @@ export interface TargetEffects {
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent,
   ): Promise<void>;
+  /** May block or ignore cancellation. False retries after 100ms; rejection fails startup. */
   health(
     component: ManagedComponent,
     target: TargetRecord,
@@ -64,8 +65,26 @@ export interface TargetLifecycle {
     publishRemoval?: () => Promise<void>,
   ): Promise<void>;
 }
+export interface ReadinessTiming {
+  /** Schedule once after delayMs; never inline. Return an idempotent cancellation.
+   * Callbacks and cancellation must not throw. Elapsed callbacks run in deadline order.
+   */
+  schedule(delayMs: number, fire: () => void): () => void;
+}
+
+/** Production scheduling effect owner; lifecycle callers may substitute controlled time. */
+const readinessTiming: ReadinessTiming = {
+  schedule(delayMs, fire) {
+    const timer = setTimeout(fire, delayMs);
+    return () => clearTimeout(timer);
+  },
+};
+
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
-export function createTargetLifecycle(effects: TargetEffects): TargetLifecycle {
+export function createTargetLifecycle(
+  effects: TargetEffects,
+  timing: ReadinessTiming = readinessTiming,
+): TargetLifecycle {
   const lifecycle: TargetLifecycle = {
     async checkpoint(target, previous) {
       assertProviderProfile(target);
@@ -165,7 +184,7 @@ export function createTargetLifecycle(effects: TargetEffects): TargetLifecycle {
             keepAlive: target.plan.daemon?.keepAlive ?? true,
           });
           if (result.outcome === "started") started.push(key);
-          if (component.health) await awaitReady(component, target, effects);
+          if (component.health) await awaitReady(component, target, effects, timing);
           if (component.hooks?.postStart && result.outcome === "started")
             await effects.hook(component.hooks.postStart, target, component);
         }
@@ -277,15 +296,17 @@ async function awaitReady(
   component: ManagedComponent,
   target: TargetRecord,
   effects: Pick<TargetEffects, "health">,
+  timing: ReadinessTiming,
 ): Promise<void> {
   const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  // Aborting asks the provider to stop; settlement must not depend on it cooperating.
+  let cancelDeadline = () => {};
+  let cancelRetry = () => {};
+  // Expiry settles independently of provider cooperation.
   const expired = new Promise<false>((resolve) => {
-    timer = setTimeout(() => {
+    cancelDeadline = timing.schedule(component.readyTimeout * 1000, () => {
       resolve(false);
       controller.abort();
-    }, component.readyTimeout * 1000);
+    });
   });
   try {
     while (!controller.signal.aborted) {
@@ -293,14 +314,18 @@ async function awaitReady(
         effects.health(component, target, controller.signal),
         expired,
       ]);
-      if (healthy) return;
       if (controller.signal.aborted) break;
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      if (healthy) return;
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          cancelRetry = timing.schedule(100, resolve);
+        }),
+        expired,
+      ]);
     }
-  } catch (error) {
-    if (!controller.signal.aborted) throw error;
   } finally {
-    clearTimeout(timer);
+    cancelDeadline();
+    cancelRetry();
   }
   throw new RigError(
     "HEALTH_FAILED",

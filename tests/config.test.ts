@@ -487,3 +487,66 @@ test("dependency and override lookup never treats inherited object names as Comp
     }),
   ).toThrow("Invalid Project");
 });
+
+test.each([
+  ["relative/work", "/data", "workspacePath"],
+  ["/work", "relative/data", "dataRoot"],
+  ["relative/work", "relative/data", "workspacePath"],
+  ["", "/data", "workspacePath"],
+])("Target resolution rejects unsupported roots %s and %s before policy calculation", async (workspacePath, dataRoot, field) => {
+  const { resolveTargetPlan, parseProjectConfig } = await import("../src/config/index.js");
+  const config = parseProjectConfig({ name: "app", components: {} });
+  // An invalid interpolation would fail if plan calculation started first.
+  expect(() => resolveTargetPlan({ config, target: "local", workspacePath, dataRoot, subdomain: "${unknown}" })).toThrow(
+    expect.objectContaining({ _tag: "ConfigError", code: "relative_root", context: { field }, hint: expect.stringContaining("absolute") }),
+  );
+});
+
+test("complete accepted plans are independent of process cwd with portable paths and Unicode roots", async () => {
+  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
+  const { mkdir } = await import("node:fs/promises");
+  const root = await fixture();
+  const cwdA = join(root, "cwd one"), cwdB = join(root, "cwd 二");
+  await Promise.all([mkdir(cwdA), mkdir(cwdB)]);
+  const input = {
+    config: parseProjectConfig({
+      name: "app",
+      hooks: { preStart: "echo ${workspace}" },
+      components: {
+        tool: { mode: "installed", entrypoint: "bin/工具", envFile: "env/tool.env" },
+        web: { mode: "managed", command: "serve --port ${web.port} --db ${db.path}", dependsOn: ["db", "pg"], env: { DATA: "${dataRoot}", URL: "${web.url}" } },
+        db: { uses: "sqlite", path: "relative/数据库.sqlite" },
+        stored: { uses: "sqlite" },
+        pg: { uses: "postgres" },
+      },
+      deployments: { envFile: "env/${target}.env", env: { ROOT: "${workspace}" } },
+    }),
+    target: "preview" as const,
+    workspacePath: "/work space/项目",
+    dataRoot: "/persistent space/数据",
+    branch: "feature/test",
+    commit: "abc",
+    assignedPorts: { web: 4100, pg: 5433 },
+  };
+  const script = `import { resolveTargetPlan } from ${JSON.stringify(join(import.meta.dir, "../src/config/index.ts"))}; process.stdout.write(JSON.stringify(resolveTargetPlan(${JSON.stringify(input)})));`;
+  const plans = await Promise.all([cwdA, cwdB].map(async (cwd) => {
+    const child = Bun.spawn([process.execPath, "--eval", script], {
+      cwd, env: { ...process.env, RIG_ROOT: join(cwd, ".rig") }, stdout: "pipe", stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    return JSON.parse(stdout);
+  }));
+  const plan = resolveTargetPlan(input);
+  expect(plans[0]).toEqual(plans[1]);
+  expect(plans[0]).toEqual(JSON.parse(JSON.stringify(plan)));
+  expect(plan.components.map((component) => component.name)).toEqual(["tool", "db", "pg", "web", "stored"]);
+  expect(plan.envFile).toBe("/work space/项目/env/preview.env");
+  expect(plan.components[0]).toMatchObject({ entrypoint: "/work space/项目/bin/工具", envFile: "/work space/项目/env/tool.env" });
+  expect(plan.components[3]).toMatchObject({ port: 4100, command: "serve --port 4100 --db /work space/项目/relative/数据库.sqlite", env: { DATA: "/persistent space/数据", URL: "http://127.0.0.1:4100" } });
+  expect(plan.preparedComponents).toEqual([
+    { name: "pg", uses: "postgres", dataDir: "/persistent space/数据/postgres/pg" },
+    { name: "db", uses: "sqlite", path: "/work space/项目/relative/数据库.sqlite" },
+    { name: "stored", uses: "sqlite", path: "/persistent space/数据/sqlite/stored.sqlite" },
+  ]);
+});

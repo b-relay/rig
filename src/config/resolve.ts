@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { ConfigError } from "./errors.js";
 import { parseProjectConfig, localhostCommand } from "./schema.js";
 import type {
@@ -64,9 +64,18 @@ function dependencyOrder(components: PlanComponent[]): PlanComponent[] {
 }
 /** Resolves portable Project policy into a materialized Target plan without reading files or allocating ports.
  * The caller owns assigned-port reservations, workspace/data roots, and Branch/Commit identity.
- * Throws ConfigError for incomplete ports, unsupported interpolation, collisions, or invalid resolved bindings.
+ * Both acquired roots must be absolute; portable config paths may remain relative.
+ * Throws ConfigError for relative roots, incomplete ports, unsupported interpolation, collisions, or invalid resolved bindings.
  */
 export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
+  for (const field of ["workspacePath", "dataRoot"] as const)
+    if (!isAbsolute(input[field]))
+      throw new ConfigError(
+        `Target plan ${field} must be an absolute path.`,
+        "relative_root",
+        { field },
+        "Supply absolute workspace and Persistent storage roots from discovery or runtime composition.",
+      );
   const config = parseProjectConfig(input.config),
     lane =
       input.target === "local"

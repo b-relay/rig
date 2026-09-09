@@ -70,6 +70,7 @@ export interface TargetPlan {
   hooks?: Hooks;
   envFile?: string;
 }
+/** Roots are caller-acquired strings; resolveTargetPlan validates absolute identity before calculation. */
 export interface ResolveTargetPlanInput {
   config: ProjectConfig;
   target: "local" | "live" | "preview";

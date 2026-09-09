@@ -24,7 +24,7 @@ safe project management actions.
 
 The Rig runtime authority daemon. `rigd` is the only module that should mutate
 runtime state for lifecycle and deploy actions: deployment inventory,
-Preview materialization, port reservations, runtime events,
+Preview materialization, port selections and inventory exclusions, runtime events,
 receipts, health state, and process execution all sit behind `rigd`.
 
 _Relationship_: A future Rig web UI should be a client of `rigd` through a
@@ -228,7 +228,7 @@ surfaces.
 The classification of a requested deploy. Deploy intent answers what Target a
 Branch maps to, such as a Stable Target or a Preview, and may carry optional
 metadata. Deploy intent does not materialize Deployments, enforce Preview caps,
-write inventory, reserve ports, or start processes.
+write inventory, select ports, or start processes.
 
 ### Target
 
@@ -873,7 +873,7 @@ rejecting, replacing, or destroying Previews mutates runtime state.
 
 The internal `rigd` module that records runtime evidence: accepted receipts,
 runtime events, health summaries, provider observations, deployment snapshots,
-port reservations, desired deployment state, and managed process failures.
+port selections and inventory exclusions, desired deployment state, and managed process failures.
 Callers do not write the runtime journal directly.
 
 ### Read model
@@ -881,6 +881,11 @@ Callers do not write the runtime journal directly.
 A derived view of runtime journal evidence, shaped for CLI and web consumers.
 Project lists, deployment rows, health snapshots, and log windows should come
 from read models so CLI and web views agree.
+
+Port selection probes localhost and releases every probe before returning. Recorded
+port numbers exclude conflicting Rig inventory; they do not retain OS socket
+ownership. Process startup and configured readiness checks still determine whether
+a Target can run. Another process may acquire a selected port before startup.
 
 ### Preflight
 

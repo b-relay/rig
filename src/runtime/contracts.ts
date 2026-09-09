@@ -58,11 +58,21 @@ export interface DeploymentSources {
   currentBranch(repository: string): Promise<string>;
 }
 export interface RuntimeFiles {
-  reservePorts(
-    requests: readonly { name: string; preferred?: number }[],
-    occupied: ReadonlySet<number>,
-    dynamic: boolean,
-  ): Promise<Record<string, number>>;
+  /**
+   * Select distinct localhost port numbers, excluding the supplied inventory.
+   * `configured` requires preferred ports when present; otherwise choose dynamic
+   * ports. `dynamic` ignores preferences (Preview policy). Inventory is read only.
+   * Probe sockets are closed before return, including partial failure. No live
+   * reservation is transferred: another process may bind before startup, whose
+   * failure/readiness remains the process provider and lifecycle owner's concern.
+   * Rejects PORT_RESERVED for configured inventory collisions and PORT_UNAVAILABLE
+   * for unsuccessful OS probes. Requests have unique names and validated ports.
+   */
+  selectPorts(input: {
+    requests: readonly { name: string; preferred?: number }[];
+    occupied: ReadonlySet<number>;
+    policy: "configured" | "dynamic";
+  }): Promise<Record<string, number>>;
   logs(
     target: TargetRecord,
     after: string | undefined,

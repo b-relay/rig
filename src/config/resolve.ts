@@ -63,7 +63,7 @@ function dependencyOrder(components: PlanComponent[]): PlanComponent[] {
   return result;
 }
 /** Resolves portable Project policy into a materialized Target plan without reading files or allocating ports.
- * The caller owns assigned-port reservations, workspace/data roots, and Branch/Commit identity.
+ * The caller owns assigned port numbers (not live socket reservations), workspace/data roots, and Branch/Commit identity.
  * Both acquired roots must be absolute; portable config paths may remain relative.
  * Throws ConfigError for relative roots, incomplete ports, unsupported interpolation, collisions, or invalid resolved bindings.
  */

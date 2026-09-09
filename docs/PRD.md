@@ -340,3 +340,12 @@ in correlated daemon diagnostics, alongside their existing outer error codes and
 recovery hints. The closed metadata policy admits categories only; raw provider
 errors, commands, config and environment values remain excluded. See the
 [causal evidence notes](reviews/2026-09-09-issue-89-safe-causal-evidence.md).
+
+Target planning selects localhost port numbers through `RuntimeFiles.selectPorts`.
+Local/Stable configured ports remain required when supplied; Preview selection
+ignores preferences and chooses dynamic ports. Selection excludes supplied runtime
+inventory and releases probe sockets before returning, including partial failure.
+It grants no live socket lease or future startup guarantee. Existing provider
+startup failures and configured health-check rollback remain authoritative; a
+health response alone does not prove listener ownership. No Deployment format or
+automatic retry policy changes are part of this contract clarification (#90).

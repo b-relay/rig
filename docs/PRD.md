@@ -305,3 +305,9 @@ push; its intentional recorded-policy drift is documented rather than redeployed
 Current evidence is in the [milestone review](reviews/2026-09-09-rewrite-milestones.md),
 [config review](reviews/2026-09-09-config-contracts.md), and
 [legacy migration review](reviews/2026-09-09-legacy-migration.md).
+
+Follow-up #79 makes capture-backed launchd status use fresh, ownership-verified
+application observations. Backoff renders starting, recovered applications report
+their own PID, and exhausted retries retain terminal failure evidence. Legacy or
+unverifiable capture evidence remains unknown until a deliberate wrapper upgrade.
+See the [capture observation evidence](reviews/2026-09-09-issue-79-capture-observations.md).

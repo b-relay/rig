@@ -73,7 +73,10 @@ test("one deadline bounds every concurrent probe and timeouts are unknown", asyn
   );
   expect(performance.now() - start).toBeLessThan(150);
   expect(
-    result.flatMap((t) => t.components).every((c) => c.state === "unknown"),
+    result.flatMap((t) => t.components).every((c) =>
+      c.state === "unknown" &&
+      c.reason === "Observation did not complete before the status deadline."
+    ),
   ).toBe(true);
 });
 test("a crashed desired-running process is failed with exit evidence while an intentional stop remains stopped", async () => {
@@ -192,4 +195,32 @@ test("timed out observations retain the configured port and route without claimi
     route: "demo.localhost",
     state: "unknown",
   });
+});
+
+test("immediate observation rejection is unknown with a safe failure reason", async () => {
+  const [report] = await observeTargets(
+    [target],
+    {
+      async process() {
+        throw new Error("provider unavailable: TOKEN=private-credential");
+      },
+      async health() {
+        return true;
+      },
+      async artifact() {
+        return "installed";
+      },
+      async persistent() {
+        return true;
+      },
+    },
+  );
+  expect(report).toMatchObject({
+    state: "unknown",
+    components: [
+      { name: "api", state: "unknown", reason: "Observation failed." },
+      { name: "web", state: "unknown", reason: "Observation failed." },
+    ],
+  });
+  expect(JSON.stringify(report)).not.toContain("private-credential");
 });

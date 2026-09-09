@@ -56,17 +56,17 @@ export async function observeTargets(
   const timer = setTimeout(() => controller.abort(), budgetMs);
   const withinDeadline = async <T>(
     work: Promise<T>,
-    fallback: T,
+    fallback: { deadline: T; failure: T },
   ): Promise<T> => {
-    if (controller.signal.aborted) return fallback;
+    if (controller.signal.aborted) return fallback.deadline;
     return await new Promise<T>((resolve) => {
       const abort = () => {
         controller.signal.removeEventListener("abort", abort);
-        resolve(fallback);
+        resolve(fallback.deadline);
       };
       controller.signal.addEventListener("abort", abort, { once: true });
       work
-        .then(resolve, () => resolve(fallback))
+        .then(resolve, () => resolve(fallback.failure))
         .finally(() => controller.signal.removeEventListener("abort", abort));
     });
   };
@@ -152,10 +152,17 @@ export async function observeTargets(
                 };
               })(),
               {
-                ...base,
-                state: "unknown",
-                reason:
-                  "Observation did not complete before the status deadline.",
+                deadline: {
+                  ...base,
+                  state: "unknown",
+                  reason:
+                    "Observation did not complete before the status deadline.",
+                },
+                failure: {
+                  ...base,
+                  state: "unknown",
+                  reason: "Observation failed.",
+                },
               },
             );
           }),

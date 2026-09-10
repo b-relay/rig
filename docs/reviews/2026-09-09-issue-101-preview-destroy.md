@@ -74,3 +74,35 @@ application, runtime lifecycle, CLI and deployment E2E files. Strict
 `bunx tsc --noEmit` and `git diff --check` passed. Evidence output:
 `/tmp/rig-issue101-focused.log`. Parent owns full suite, build/help gates,
 independent reviews and merge.
+
+## Review correction: truthful retirement finalization (#113)
+
+Spec review comment 5610760898 found that effects-only retirement inherited an
+error claiming inventory was removed. The new destroy caller intentionally
+retains inventory until storage deletion, so this claim was false.
+
+The lifecycle.retire contract now distinguishes completed publication from
+retirement without publication in its finalization error message/hint. Its local
+flag names pending finalization rather than inaccurately naming removal. Both
+paths retain RETIRE_COMMIT_PENDING and the conservative no-rollback/no-restart
+behavior once finalization starts. No recovery ordering or deletion scope changes.
+
+Function-design ledger addition: retire takes a recorded Target, effect adapter
+and optional publication callback. The callback's successful completion is the
+only proof of published inventory removal. Effects include verified stop,
+route/artifact retirement, optional inventory publication, and checkpoint commit.
+Errors before finalization may restore effects; commit failure never restores or
+restarts. The direct runtime destroy caller supplies no publication callback,
+whereas Preview replacement does. Existing deployment-effects tests establish
+publication rollback and post-publication commit failure behavior; the new public
+runtime regression covers the newly distinct no-publication result channel.
+
+TDD: the runtime test first failed against the old “inventory was removed”
+message. It then passed with truthful retained-inventory guidance, all three
+owned byte sentinels retained, destructionPending persisted, no rollback/restart,
+and successful explicit retry (one test, nine assertions).
+
+Correction validation: 89 focused runtime/lifecycle/deployment-effects tests
+passed (428 assertions); strict typecheck and diff check passed. Output is saved
+at `/tmp/rig-issue101-review-focused.log`. Parent owns the repeated independent
+reviews and final full gate.

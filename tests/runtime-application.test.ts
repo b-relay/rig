@@ -1618,3 +1618,82 @@ test("filesystem cleanup errors retain retry evidence until permissions are repa
     await f.cleanup();
   }
 });
+
+test("destroy checkpoint finalization failure reports retained inventory and bytes and permits retry", async () => {
+  const f = await destroyFixture();
+  const { createTargetLifecycle } = await import("../src/runtime/lifecycle");
+  let failCommit = true;
+  let rolledBack = false;
+  let started = false;
+  f.deps.lifecycle = createTargetLifecycle({
+    async checkpoint(target) {
+      return {
+        targetId: target.id,
+        async commit() {
+          if (failCommit) throw new Error("checkpoint unavailable");
+        },
+        async rollback() {
+          rolledBack = true;
+        },
+      };
+    },
+    async restoreEffects() {},
+    async commitEffects() {},
+    async retireSuperseded() {},
+    async retireArtifacts() {},
+    supervisor: () => ({
+      async observe() {
+        return { state: "stopped" };
+      },
+      async stop() {
+        return { outcome: "unchanged" };
+      },
+      async ensureRunning() {
+        started = true;
+        return { outcome: "started" };
+      },
+      async shutdown() {},
+    }),
+    async prepare() {},
+    async environment() {
+      return {};
+    },
+    async hook() {},
+    async health() {
+      return true;
+    },
+    async install() {
+      return { outcome: "unchanged" };
+    },
+    async route() {},
+    async removeRoute() {},
+  });
+  try {
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "RETIRE_COMMIT_PENDING",
+      message:
+        "The Target inventory is retained, but retirement checkpoint finalization failed.",
+      hint: "Preserve its effect checkpoint and retry the operation; the Target must not be restarted.",
+    });
+    expect(f.state.targets[0]).toMatchObject({
+      desired: "stopped",
+      destructionPending: true,
+    });
+    for (const path of [
+      f.target.plan.dataRoot,
+      f.target.logRoot,
+      f.target.plan.workspacePath,
+    ])
+      expect(await readFile(join(path, "precious"), "utf8")).toBe("review");
+    expect(rolledBack).toBe(false);
+    expect(started).toBe(false);
+    failCommit = false;
+    await f.destroy();
+    expect(f.state.targets.map((target) => target.name)).toEqual(["other"]);
+    expect(
+      await Bun.file(join(f.target.plan.dataRoot, "precious")).exists(),
+    ).toBe(false);
+  } finally {
+    await f.cleanup();
+  }
+});

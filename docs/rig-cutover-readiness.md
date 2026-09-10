@@ -1,8 +1,11 @@
 # Rig TypeScript Cutover Readiness
 
-Status: September 9 release validation and rollout to available Host Projects
-passed. [PR #74](https://github.com/b-relay/rig/pull/74) is the single review
-delivery. See [live results](reviews/2026-09-09-live-rollout-results.md) for
+The initial September 9 cutover passed; its historical evidence is below.
+The [September 10 rollout](reviews/2026-09-10-live-rollout-results.md) records the
+newer installed release and its current limitations, including unknown ownership
+observations for application wrappers retained from the prior release.
+[PR #74](https://github.com/b-relay/rig/pull/74) delivered the initial cutover.
+See [initial live results](reviews/2026-09-09-live-rollout-results.md) for
 backups, the Pantry resume exception, and the missing inactive source. The
 [prior Effect cutover record](rig-cutover-readiness-pre-typescript.md) is retained
 as historical evidence, not current instructions or a completion claim.
@@ -20,7 +23,7 @@ Only the default provider profile is supported. Tests use injected providers
 and isolated `RIG_ROOT`; a historical stub profile must never select real effects.
 User config is not automatically converted during runtime cutover.
 
-## Verified evidence and limits
+## September 9 baseline evidence and limits
 
 | Area | Final evidence | Limit |
 |---|---|---|

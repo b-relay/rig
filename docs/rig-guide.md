@@ -1,8 +1,9 @@
 # Rig Guide
 
-This guide describes the TypeScript implementation. The September 9 release
-validation, rollout results, and remaining limitations are recorded in
-[cutover readiness](rig-cutover-readiness.md). Product acceptance criteria live
+This guide describes the TypeScript implementation. The latest installed release,
+rollout checks, and legacy-wrapper monitoring limitation are recorded in the
+[September 10 rollout](reviews/2026-09-10-live-rollout-results.md). Initial migration
+evidence remains in [cutover readiness](rig-cutover-readiness.md). Product acceptance criteria live
 in the [PRD](PRD.md); predecessor plans are indexed in [history](history.md).
 
 ## Setup

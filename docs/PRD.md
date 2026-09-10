@@ -363,3 +363,8 @@ Target recording and CLI follow scheduling have separate explicit owners. Follow
 uses opaque reader cursors and a cancellation-aware 250 ms poll wait; cancellation
 does not hide a concurrent reader/daemon failure or trigger Target lifecycle work.
 See [the #92 evidence](reviews/2026-09-09-issue-92-log-time-cancellation.md).
+
+Raw managed-command validation accepts localhost bind ports expressed with
+component interpolation, such as `--addr 127.0.0.1:${server.port}`. Literal
+non-local hosts remain rejected before planning; resolved commands are validated
+again with their actual values. See [the #100 evidence](reviews/2026-09-09-issue-100-bind-port-interpolation.md).

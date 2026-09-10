@@ -33,7 +33,7 @@ export function localhostCommand(value: string): boolean {
 }
 const command = text
   .refine(
-    localhostCommand,
+    (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
     "Explicit network bindings must use 127.0.0.1 or localhost.",
   )
   .describe("Shell command; explicit bindings must be localhost only.");

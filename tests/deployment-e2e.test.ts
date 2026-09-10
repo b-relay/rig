@@ -112,3 +112,55 @@ test("offline doctor still reports daemon and independent config findings", asyn
     await f.cleanup();
   }
 });
+
+test("CLI Preview destroy removes owned storage after stopping the real process while down preserves it", async () => {
+  const f = await rigFixture();
+  try {
+    await f.git(["init", "-b", "main"]);
+    await writeFile(join(f.repo, "server.ts"), `setInterval(() => {}, 1000);`);
+    await writeFile(
+      join(f.repo, "rig.json"),
+      JSON.stringify({
+        name: "demo",
+        components: {
+          db: { uses: "sqlite" },
+          web: { mode: "managed", command: `'${process.execPath}' server.ts` },
+        },
+      }),
+    );
+    await f.commit();
+    await f.git(["checkout", "-b", "review"]);
+    expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["init"])).toMatchObject({ code: 0 });
+    expect(
+      await f.rig(["deploy", "preview", "review", "--deployment", "review"]),
+    ).toMatchObject({ code: 0 });
+    const target = JSON.parse(
+      await readFile(join(f.root, "runtime", "state.json"), "utf8"),
+    ).targets[0];
+    const database = target.plan.components.find(
+      (c: any) => c.kind === "persistent",
+    ).path;
+    await writeFile(database, "preview-owned bytes");
+    expect(
+      await f.rig(["down", "preview", "--deployment", "review"]),
+    ).toMatchObject({ code: 0 });
+    expect(await readFile(database, "utf8")).toBe("preview-owned bytes");
+    expect(
+      await f.rig(["up", "preview", "--deployment", "review"]),
+    ).toMatchObject({ code: 0 });
+    expect(
+      await f.rig(["down", "preview", "--deployment", "review", "--destroy"]),
+    ).toMatchObject({ code: 0 });
+    expect(await Bun.file(database).exists()).toBe(false);
+    expect(
+      await Bun.file(join(target.plan.workspacePath, "server.ts")).exists(),
+    ).toBe(false);
+    expect(
+      JSON.parse(await readFile(join(f.root, "runtime", "state.json"), "utf8"))
+        .targets,
+    ).toHaveLength(0);
+  } finally {
+    await f.cleanup();
+  }
+}, 30000);

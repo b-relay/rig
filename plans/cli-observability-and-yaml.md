@@ -422,3 +422,13 @@ Follow-up #89 adds flat allowlisted primary/recovery categories to correlated
 registration and Deployment failure diagnostics without changing pending,
 committing, blocked, no-up or same-Commit recovery policy. See
 [implementation evidence](../docs/reviews/2026-09-09-issue-89-safe-causal-evidence.md).
+
+## #101 Preview destroy refinement
+
+The approved CLI contract keeps ordinary down preservative. Explicit Preview
+`--destroy` confirms removal of the canonical owned Target root after verified
+shutdown, with no additional prompt. Runtime retains stopped pending-deletion
+inventory until filesystem cleanup succeeds; retries remain addressable and
+partial deletion cannot restart. Other/shared storage remains protected. This
+supersedes the prior destroy-retains-data guide sentence; historical cutover
+cleanup policy remains in force outside this narrowly owned Preview operation.

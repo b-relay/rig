@@ -58,6 +58,13 @@ export interface DeploymentSources {
   currentBranch(repository: string): Promise<string>;
 }
 export interface RuntimeFiles {
+  /** Delete only a canonical Preview root after verified retirement. Validates all
+   * inventory ownership before deletion, never follows symlinks, and rejects
+   * DESTROY_OWNERSHIP or DESTROY_CLEANUP. Missing owned bytes permit retry.
+   * Caller retains stopped inventory until success; partial deletion is irreversible.
+   */
+  inspectPreviewDeletion(input: PreviewDeletion): Promise<void>;
+  destroyPreview(input: PreviewDeletion): Promise<void>;
   /**
    * Select distinct localhost port numbers, excluding the supplied inventory.
    * `configured` requires preferred ports when present; otherwise choose dynamic
@@ -110,4 +117,11 @@ export interface RuntimeDependencies {
       errorCode?: string;
     },
   ): Promise<void>;
+}
+
+/** Borrowed inventory snapshot under the runtime mutation queue. */
+export interface PreviewDeletion {
+  root: string;
+  target: TargetRecord;
+  state: Pick<import("../domain/runtime").RuntimeState, "projects" | "targets">;
 }

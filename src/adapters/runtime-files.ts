@@ -1,3 +1,4 @@
+import { destroyPreview, inspectPreviewDeletion } from "./preview-storage";
 import { createServer } from "node:net";
 import { RigError } from "../domain/errors";
 import type { RuntimeFiles } from "../runtime/contracts";
@@ -5,6 +6,8 @@ import { readTargetLogs } from "./target-log-reader";
 /** Binds only localhost while choosing ports; process providers remain responsible for startup races. */
 export function createRuntimeFiles(): RuntimeFiles {
   return {
+    destroyPreview,
+    inspectPreviewDeletion,
     async selectPorts({ requests, occupied, policy }) {
       const dynamic = policy === "dynamic";
       const selected: Record<string, number> = {},

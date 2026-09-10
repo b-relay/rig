@@ -101,3 +101,30 @@ Absent journals alone never authorize deletion. Unknown entries, corrupt journal
 or claims, mismatched Target identities, and symlinked checkpoint paths remain
 unchanged and require inspection. Valid journals retain their existing rollback
 or committed-effect semantics.
+
+## Explicit Preview destruction (#101)
+
+The maintainer approved a narrow exception for explicit
+`rig down preview <branch> --destroy`. The flag itself confirms deletion, with no
+additional TTY or `--yes` step. After verified shutdown and committed retirement
+of owned routes/artifacts, Rig deletes the selected Preview's canonical
+`<RIG_ROOT>/targets/<project-id>/<target-id>/` root, including its owned data,
+logs, and all source revisions, then removes the inventory record. Ordinary
+`down` continues to preserve that state.
+
+This exception does not authorize bulk cleanup, deletion of historical orphaned
+roots, Project deletion, or removal of local/live/other Targets, repositories,
+unrelated Host state, and shared Persistent storage. Noncanonical recorded
+paths, symlinked ownership ancestors, mount boundaries, duplicate identities,
+and overlaps with another Target's recorded storage fail closed. Links inside
+an owned root are unlinked without following their destinations. External
+Persistent storage remains untouched. Historical retained roots without a
+current canonical ownership record still require the procedure above.
+
+Ownership is inspected before retirement and rechecked after verified shutdown.
+Cleanup is irreversible and can partially succeed. The stopped inventory record
+is retained with pending-destruction evidence until deletion and inventory
+publication both finish. Restart, redeploy, automatic replacement and daemon
+reconciliation cannot reactivate it; retry explicit destroy after correcting the
+reported problem. Effect-checkpoint failures prevent data deletion and retain
+recovery evidence. This scoped command does not create a backup automatically.

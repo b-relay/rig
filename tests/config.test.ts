@@ -550,3 +550,45 @@ test("complete accepted plans are independent of process cwd with portable paths
     { name: "stored", uses: "sqlite", path: "/persistent space/数据/sqlite/stored.sqlite" },
   ]);
 });
+
+
+test.each([
+  ["serve --addr 127.0.0.1:${server.port}", "serve --addr 127.0.0.1:3210"],
+  ["serve --addr=localhost:${server.port}", "serve --addr=localhost:3210"],
+  ['serve --addr "localhost:${server.port}"', 'serve --addr "localhost:3210"'],
+  ["serve --addr 127.0.0.1:3210", "serve --addr 127.0.0.1:3210"],
+])("Target resolution accepts localhost port binding %s", async (command, expected) => {
+  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
+  const config = parseProjectConfig({
+    name: "share",
+    components: { server: { mode: "managed", command, port: 3210 } },
+  });
+  const plan = resolveTargetPlan({ config, target: "local", workspacePath: "/repo", dataRoot: "/state/data" });
+  expect(plan.components[0]).toMatchObject({ command: expected });
+});
+
+test.each([
+  "serve --addr 0.0.0.0:${server.port}",
+  "serve --addr=192.168.1.2:${server.port}",
+  'serve --addr "[::]:${server.port}"',
+  "serve --addr ${server.port}:3210",
+])("raw config rejects non-local binding %s", async (command) => {
+  const { parseProjectConfig } = await import("../src/config/index.js");
+  expect(() => parseProjectConfig({
+    name: "share",
+    components: { server: { mode: "managed", command, port: 3210 } },
+  })).toThrow("Invalid Project configuration");
+});
+
+test("Target resolution validates actual interpolated bind values", async () => {
+  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
+  const config = parseProjectConfig({
+    name: "share",
+    components: {
+      server: { mode: "managed", command: "serve --addr 127.0.0.1:${db.path}", port: 3210 },
+      db: { uses: "sqlite" },
+    },
+  });
+  expect(() => resolveTargetPlan({ config, target: "local", workspacePath: "/repo", dataRoot: "/state/data" }))
+    .toThrow("Resolved command binds outside localhost");
+});

@@ -126,6 +126,8 @@ function fixture() {
       },
     },
     files: {
+      async destroyPreview() {},
+      async inspectPreviewDeletion() {},
       async selectPorts() {
         return { web: 4567 };
       },
@@ -389,36 +391,6 @@ test("explicit down restores interrupted non-process effects after verified stop
   ).rejects.toMatchObject({ code: "STOP_HOOKS" });
   expect(restored).toBe(true);
   expect(state.targets[0]?.desired).toBe("stopped");
-});
-
-test("Preview destruction passes inventory publication into the retirement transaction", async () => {
-  const { runtime, deps, state } = fixture();
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({
-    action: "deploy",
-    target: "preview",
-    branch: "feature",
-    project: "demo",
-    deployment: "review",
-  });
-  let retirementReceivedPublication = false;
-  deps.lifecycle.retire = async (_target, publishRemoval) => {
-    retirementReceivedPublication = !!publishRemoval;
-    await publishRemoval?.();
-  };
-  deps.store.update = async () => {
-    throw new Error("inventory unavailable");
-  };
-  await expect(
-    runtime.command({
-      action: "destroy",
-      target: "preview",
-      deployment: "review",
-      project: "demo",
-    }),
-  ).rejects.toThrow("inventory unavailable");
-  expect(retirementReceivedPublication).toBe(true);
-  expect(state.targets).toHaveLength(1);
 });
 
 test.each(["pending", "blocked", "committing"] as const)(
@@ -1311,19 +1283,417 @@ test("local and Preview planning use real selection with inventory exclusion and
   const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
   const { runtime, state, deps, config } = fixture();
   deps.files = createRuntimeFiles();
-  config.components.web = { mode: "managed", command: "serve --host 127.0.0.1" };
+  config.components.web = {
+    mode: "managed",
+    command: "serve --host 127.0.0.1",
+  };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   const local = state.targets.find((record) => record.kind === "local")!;
   const localWeb = local.plan.components[0]!;
   if (localWeb.kind !== "managed") throw new Error("Expected managed web");
   config.components.web.port = localWeb.port;
-  await runtime.command({ action: "deploy", project: "demo", target: "preview", branch: "feature/ports" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature/ports",
+  });
   const preview = state.targets.find((record) => record.kind === "preview")!;
   const previewWeb = preview.plan.components[0]!;
   if (previewWeb.kind !== "managed") throw new Error("Expected managed web");
   expect(previewWeb.port).not.toBe(localWeb.port);
   await runtime.command({ action: "down", project: "demo" });
   await runtime.command({ action: "up", project: "demo" });
-  expect(state.targets.find((record) => record.kind === "local")!.plan.components[0]).toMatchObject({ port: localWeb.port });
+  expect(
+    state.targets.find((record) => record.kind === "local")!.plan.components[0],
+  ).toMatchObject({ port: localWeb.port });
+});
+
+test("Preview down preserves bytes and explicit destroy removes its owned root", async () => {
+  const f = fixture();
+  const root = join(await mkdtemp(join(tmpdir(), "rig-destroy-")), ".rig");
+  f.deps.root = root;
+  const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
+  f.deps.files = {
+    ...createRuntimeFiles(),
+    selectPorts: f.deps.files.selectPorts,
+  };
+  try {
+    await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    await f.runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature",
+      deployment: "review",
+    });
+    const target = f.state.targets[0]!;
+    for (const path of [
+      target.plan.dataRoot,
+      target.logRoot,
+      target.plan.workspacePath,
+    ]) {
+      await mkdir(path, { recursive: true });
+      await writeFile(join(path, "precious"), "bytes");
+    }
+    await f.runtime.command({
+      action: "down",
+      project: "demo",
+      target: "preview",
+      deployment: "review",
+    });
+    expect(await readFile(join(target.plan.dataRoot, "precious"), "utf8")).toBe(
+      "bytes",
+    );
+    await f.runtime.command({
+      action: "destroy",
+      project: "demo",
+      target: "preview",
+      deployment: "review",
+    });
+    expect(f.state.targets).toHaveLength(0);
+    expect(
+      await Bun.file(join(target.plan.dataRoot, "precious")).exists(),
+    ).toBe(false);
+    expect(await Bun.file(join(target.logRoot, "precious")).exists()).toBe(
+      false,
+    );
+    expect(
+      await Bun.file(join(target.plan.workspacePath, "precious")).exists(),
+    ).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function destroyFixture() {
+  const f = fixture();
+  const base = await mkdtemp(join(tmpdir(), "rig-destroy-"));
+  const root = join(base, ".rig");
+  f.deps.root = root;
+  const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
+  f.deps.files = {
+    ...createRuntimeFiles(),
+    selectPorts: f.deps.files.selectPorts,
+  };
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  for (const deployment of ["review", "other"])
+    await f.runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: deployment,
+      deployment,
+    });
+  for (const target of f.state.targets) {
+    for (const path of [
+      target.plan.dataRoot,
+      target.logRoot,
+      target.plan.workspacePath,
+    ]) {
+      await mkdir(path, { recursive: true });
+      await writeFile(join(path, "precious"), target.name);
+    }
+  }
+  return {
+    ...f,
+    root,
+    target: f.state.targets[0]!,
+    other: f.state.targets[1]!,
+    destroy: () =>
+      f.runtime.command({
+        action: "destroy",
+        project: "demo",
+        target: "preview",
+        deployment: "review",
+      }),
+    cleanup: () => rm(base, { recursive: true, force: true }),
+  };
+}
+
+test("destroy preserves other Targets, external shared storage, and symlink destinations", async () => {
+  const f = await destroyFixture();
+  const { symlink } = await import("node:fs/promises");
+  try {
+    const shared = join(f.root, "shared");
+    await mkdir(shared);
+    await writeFile(join(shared, "database"), "shared database");
+    f.target.plan.preparedComponents.push({
+      name: "db",
+      uses: "sqlite",
+      path: join(shared, "database"),
+    });
+    await symlink(shared, join(f.target.plan.dataRoot, "linked-shared"));
+    await f.destroy();
+    expect(await readFile(join(shared, "database"), "utf8")).toBe(
+      "shared database",
+    );
+    expect(
+      await readFile(join(f.other.plan.dataRoot, "precious"), "utf8"),
+    ).toBe("other");
+    expect(f.state.targets.map((t) => t.name)).toEqual(["other"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test.each([
+  "root-symlink",
+  "overlapping-storage",
+  "escaped-data",
+  "duplicate-identity",
+])(
+  "destroy refuses ambiguous %s ownership without deleting bytes",
+  async (scenario) => {
+    const f = await destroyFixture();
+    const { symlink, rename } = await import("node:fs/promises");
+    let sentinel = join(f.target.plan.dataRoot, "precious");
+    try {
+      if (scenario === "escaped-data")
+        f.target.plan.dataRoot = f.other.plan.dataRoot;
+      if (scenario === "overlapping-storage")
+        f.other.plan.preparedComponents.push({
+          name: "shared",
+          uses: "sqlite",
+          path: sentinel,
+        });
+      if (scenario === "duplicate-identity")
+        f.state.targets.push(structuredClone(f.target));
+      if (scenario === "root-symlink") {
+        const path = join(f.root, "targets", f.target.projectId, f.target.id);
+        await rename(path, `${path}-retained`);
+        await symlink(`${path}-retained`, path);
+      }
+      let retired = false;
+      f.deps.lifecycle.retire = async () => {
+        retired = true;
+      };
+      await expect(f.destroy()).rejects.toMatchObject({
+        code: "DESTROY_OWNERSHIP",
+      });
+      expect(retired).toBe(false);
+      expect(await readFile(sentinel, "utf8")).toBe("review");
+      expect(await readFile(join(f.other.logRoot, "precious"), "utf8")).toBe(
+        "other",
+      );
+      expect(f.state.targets.some((t) => t.name === "review")).toBe(true);
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test("uncertain retirement preserves Preview bytes and inventory for retry", async () => {
+  const f = await destroyFixture();
+  try {
+    f.deps.lifecycle.retire = async () => {
+      throw new RigError("STOP_INCOMPLETE", "Stop uncertain", "Retry");
+    };
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "STOP_INCOMPLETE",
+    });
+    expect(
+      await readFile(join(f.target.plan.dataRoot, "precious"), "utf8"),
+    ).toBe("review");
+    expect(f.state.targets[0]).toMatchObject({
+      desired: "stopped",
+      destructionPending: true,
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("partial destroy failure survives daemon recreation, blocks restart, and retries missing bytes", async () => {
+  const f = await destroyFixture();
+  try {
+    const store = new FileStateStore(f.root);
+    await store.update((s) => {
+      Object.assign(s, structuredClone(f.state));
+    });
+    f.deps.store = store;
+    const remove = f.deps.files.destroyPreview;
+    f.deps.files.destroyPreview = async () => {
+      await rm(f.target.logRoot, { recursive: true });
+      throw new RigError(
+        "DESTROY_CLEANUP",
+        "Injected partial deletion",
+        "Retry",
+      );
+    };
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "DESTROY_CLEANUP",
+    });
+    const restarted = createRuntime(f.deps);
+    expect(
+      await restarted.command({ action: "doctor", project: "demo" }),
+    ).toMatchObject({
+      checks: expect.arrayContaining([
+        expect.objectContaining({ reason: "destruction-pending", ok: false }),
+      ]),
+    });
+    expect((await store.read()).targets[0]).toMatchObject({
+      desired: "stopped",
+      destructionPending: true,
+    });
+    for (const action of ["up", "restart", "deploy"] as const)
+      await expect(
+        restarted.command({
+          action,
+          project: "demo",
+          target: "preview",
+          branch: "review",
+          deployment: "review",
+        }),
+      ).rejects.toMatchObject({ code: "DESTROY_PENDING" });
+    let restartedTarget = false;
+    f.deps.lifecycle.up = async (target) => {
+      restartedTarget = target.id === f.target.id || restartedTarget;
+      return { outcome: "started" };
+    };
+    await restarted.reconcile();
+    expect(restartedTarget).toBe(false);
+    f.deps.files.destroyPreview = remove;
+    await restarted.command({
+      action: "destroy",
+      project: "demo",
+      target: "preview",
+      deployment: "review",
+    });
+    expect((await store.read()).targets.map((t) => t.name)).toEqual(["other"]);
+    expect(
+      await Bun.file(join(f.target.plan.dataRoot, "precious")).exists(),
+    ).toBe(false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("inventory publication failure after cleanup retains a retryable stopped Preview", async () => {
+  const f = await destroyFixture();
+  try {
+    const update = f.deps.store.update;
+    let writes = 0;
+    f.deps.store.update = async (change) => {
+      if (++writes === 2) throw new Error("inventory unavailable");
+      await update(change);
+    };
+    await expect(f.destroy()).rejects.toThrow("inventory unavailable");
+    expect(f.state.targets[0]).toMatchObject({
+      desired: "stopped",
+      destructionPending: true,
+    });
+    expect(
+      await Bun.file(join(f.target.plan.dataRoot, "precious")).exists(),
+    ).toBe(false);
+    f.deps.store.update = update;
+    await f.destroy();
+    expect(f.state.targets.map((t) => t.name)).toEqual(["other"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("filesystem cleanup errors retain retry evidence until permissions are repaired", async () => {
+  const f = await destroyFixture();
+  const { chmod } = await import("node:fs/promises");
+  try {
+    await chmod(f.target.plan.dataRoot, 0o500);
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "DESTROY_CLEANUP",
+    });
+    expect(f.state.targets[0]).toMatchObject({
+      desired: "stopped",
+      destructionPending: true,
+    });
+    await chmod(f.target.plan.dataRoot, 0o700);
+    await f.destroy();
+    expect(f.state.targets.map((t) => t.name)).toEqual(["other"]);
+    expect(
+      await Bun.file(join(f.target.plan.dataRoot, "precious")).exists(),
+    ).toBe(false);
+  } finally {
+    await chmod(f.target.plan.dataRoot, 0o700).catch(() => {});
+    await f.cleanup();
+  }
+});
+
+test("destroy checkpoint finalization failure reports retained inventory and bytes and permits retry", async () => {
+  const f = await destroyFixture();
+  const { createTargetLifecycle } = await import("../src/runtime/lifecycle");
+  let failCommit = true;
+  let rolledBack = false;
+  let started = false;
+  f.deps.lifecycle = createTargetLifecycle({
+    async checkpoint(target) {
+      return {
+        targetId: target.id,
+        async commit() {
+          if (failCommit) throw new Error("checkpoint unavailable");
+        },
+        async rollback() {
+          rolledBack = true;
+        },
+      };
+    },
+    async restoreEffects() {},
+    async commitEffects() {},
+    async retireSuperseded() {},
+    async retireArtifacts() {},
+    supervisor: () => ({
+      async observe() {
+        return { state: "stopped" };
+      },
+      async stop() {
+        return { outcome: "unchanged" };
+      },
+      async ensureRunning() {
+        started = true;
+        return { outcome: "started" };
+      },
+      async shutdown() {},
+    }),
+    async prepare() {},
+    async environment() {
+      return {};
+    },
+    async hook() {},
+    async health() {
+      return true;
+    },
+    async install() {
+      return { outcome: "unchanged" };
+    },
+    async route() {},
+    async removeRoute() {},
+  });
+  try {
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "RETIRE_COMMIT_PENDING",
+      message:
+        "The Target inventory is retained, but retirement checkpoint finalization failed.",
+      hint: "Preserve its effect checkpoint and retry the operation; the Target must not be restarted.",
+    });
+    expect(f.state.targets[0]).toMatchObject({
+      desired: "stopped",
+      destructionPending: true,
+    });
+    for (const path of [
+      f.target.plan.dataRoot,
+      f.target.logRoot,
+      f.target.plan.workspacePath,
+    ])
+      expect(await readFile(join(path, "precious"), "utf8")).toBe("review");
+    expect(rolledBack).toBe(false);
+    expect(started).toBe(false);
+    failCommit = false;
+    await f.destroy();
+    expect(f.state.targets.map((target) => target.name)).toEqual(["other"]);
+    expect(
+      await Bun.file(join(f.target.plan.dataRoot, "precious")).exists(),
+    ).toBe(false);
+  } finally {
+    await f.cleanup();
+  }
 });

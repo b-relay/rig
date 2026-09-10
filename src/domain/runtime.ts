@@ -22,6 +22,8 @@ export interface TargetRecord {
   /** Stable storage paths survive a Project rename. */
   logRoot: string;
   sourceRoot?: string;
+  /** Irreversible Preview cleanup is pending; retain stopped inventory for retry. */
+  destructionPending?: true;
   /** Present until deployment commits; absence retains legacy completion semantics. */
   deploymentIncomplete?: true;
   recovery?: {

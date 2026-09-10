@@ -89,18 +89,26 @@ const target = z.object({
   updatedAt: text,
   logRoot: text,
   sourceRoot: text.optional(),
-  deploymentIncomplete: z.literal(true).optional().describe(
-    "Deployment has not committed; matching source must be retried.",
-  ),
+  destructionPending: z
+    .literal(true)
+    .optional()
+    .describe(
+      "Preview deletion is pending; retain inventory and retry explicit destroy without restarting.",
+    ),
+  deploymentIncomplete: z
+    .literal(true)
+    .optional()
+    .describe("Deployment has not committed; matching source must be retried."),
   recovery: z
     .object({
       plan: targetPlanSchema,
       branch: text.optional(),
       commit: text.optional(),
       desired: z.enum(["running", "stopped"]),
-      deploymentIncomplete: z.literal(true).optional().describe(
-        "The rollback plan has not completed a deployment.",
-      ),
+      deploymentIncomplete: z
+        .literal(true)
+        .optional()
+        .describe("The rollback plan has not completed a deployment."),
       stage: z.enum(["pending", "blocked", "committing"]),
     })
     .optional(),

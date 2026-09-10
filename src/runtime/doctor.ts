@@ -90,6 +90,15 @@ export async function doctor(
     });
   }
   for (const target of targets) {
+    if (target.destructionPending)
+      checks.push({
+        name: `${target.name}/destruction`,
+        ok: false,
+        message:
+          "Preview destruction is incomplete; its stopped inventory is retained.",
+        reason: "destruction-pending",
+        hint: "Retry down preview --destroy for this Preview to finish cleanup.",
+      });
     if (target.recovery)
       checks.push({
         name: `${target.name}/recovery`,

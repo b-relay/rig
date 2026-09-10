@@ -185,9 +185,18 @@ rig restart preview feature/login
 If `rig up preview feature/login` names a Preview that has not been deployed,
 Rig should fail and tell the user to deploy it first.
 
-`down` stops a Target but does not remove it from inventory. Explicit
-`rig down preview <branch> --destroy` stops and removes a Preview's inventory
-and owned route while retaining its data, logs, and source history.
+`down` stops a Target and retains its inventory, data, logs, and source history.
+`rig down preview <branch> --destroy` verifies shutdown, retires the Preview's
+owned route and installed artifacts, deletes its canonical Target root (owned
+data, logs, and source history), and removes its inventory record. `--destroy`
+is the confirmation; there is no additional TTY prompt or `--yes` flag.
+
+Other Targets, Project repositories, unrelated Host state, and shared Persistent
+storage outside that owned root are preserved. Symlink destinations are never
+deleted. Uncertain shutdown or ambiguous ownership prevents deletion. A cleanup
+failure retains a stopped Preview with pending-destruction evidence; retry the
+same explicit destroy command to finish. It cannot be restarted or redeployed
+while deletion is pending. Already deleted bytes cannot be restored by retry.
 
 Logs:
 

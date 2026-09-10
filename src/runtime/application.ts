@@ -79,11 +79,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (!reads.has(command.action)) await deps.assertOwnershipReady();
       if (command.action === "prepare-uninstall") {
         const state = await deps.store.read();
-        if (state.targets.some((t) => t.recovery))
+        if (state.targets.some((t) => t.recovery || t.destructionPending))
           throw new RigError(
             "DEPLOY_RECOVERY",
-            "Cannot uninstall rigd while Targets have unresolved deployment recovery.",
-            "Run rig down for each affected Target to finish recovery, then retry uninstall.",
+            "Cannot uninstall rigd while Targets have unresolved recovery or destruction.",
+            "Finish recovery with rig down, or retry Preview --destroy when deletion is pending, then retry uninstall.",
           );
         const reports = await observeTargets(state.targets, deps.observations);
         if (
@@ -250,6 +250,15 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           "The selected Target kind does not match its recorded identity.",
           "Select the correct Target kind and name.",
         );
+      if (
+        target?.destructionPending &&
+        !["destroy", "logs", "down"].includes(command.action)
+      )
+        throw new RigError(
+          "DESTROY_PENDING",
+          "Preview destruction is incomplete.",
+          "Retry down preview --destroy for this Preview.",
+        );
       if (command.action === "logs") {
         if (!target) throw missingTarget(name);
         return {
@@ -317,7 +326,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             replacement = [...previews].sort((a, b) =>
               a.createdAt.localeCompare(b.createdAt),
             )[0];
-            if (replacement?.recovery)
+            if (replacement?.recovery || replacement?.destructionPending)
               throw new RigError(
                 "DEPLOY_RECOVERY",
                 "The oldest Preview has an unresolved transition.",
@@ -358,12 +367,26 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           );
         if (!target) throw missingTarget(name);
         if (target.recovery) target = await stopForRecovery(target, deps);
-        // Keep data, logs, and source history. Effect retirement spans inventory publication.
-        await deps.lifecycle.retire(target, () =>
-          deps.store.update((s) => {
-            s.targets = s.targets.filter((t) => t.id !== target!.id);
-          }),
-        );
+        await deps.files.inspectPreviewDeletion({
+          root: deps.root,
+          target,
+          state: await deps.store.read(),
+        });
+        target.desired = "stopped";
+        target.destructionPending = true;
+        target.updatedAt = deps.now();
+        await persistTarget(target, deps.store);
+        // Commit route/artifact retirement before irreversible storage cleanup.
+        // Inventory remains the retry handle until all owned bytes are gone.
+        await deps.lifecycle.retire(target);
+        await deps.files.destroyPreview({
+          root: deps.root,
+          target,
+          state: await deps.store.read(),
+        });
+        await deps.store.update((s) => {
+          s.targets = s.targets.filter((t) => t.id !== target!.id);
+        });
         return await finish("stopped");
       }
       if (!target) {
@@ -527,7 +550,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           const state = await deps.store.read();
           for (const target of state.targets) {
             if (draining) break;
-            if (target.recovery) continue;
+            if (target.recovery || target.destructionPending) continue;
             try {
               if (target.desired === "running") await deps.lifecycle.up(target);
               else await deps.lifecycle.down(target);

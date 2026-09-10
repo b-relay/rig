@@ -106,20 +106,24 @@ export function createTargetLifecycle(
     async retire(target, publishRemoval) {
       assertProviderProfile(target);
       const checkpoint = await effects.checkpoint(target);
-      let removalPublished = false;
+      let finalizationPending = false;
       try {
         await stopForTransition(target, lifecycle);
         await effects.removeRoute(target);
         await effects.retireArtifacts(target);
         await publishRemoval?.();
-        removalPublished = true;
+        finalizationPending = true;
         await checkpoint.commit();
       } catch (error) {
-        if (removalPublished)
+        if (finalizationPending)
           throw new RigError(
             "RETIRE_COMMIT_PENDING",
-            "The Target inventory was removed but checkpoint finalization failed.",
-            "Preserve its effect checkpoint; the retired Target must not be restarted.",
+            publishRemoval
+              ? "The Target inventory was removed but checkpoint finalization failed."
+              : "The Target inventory is retained, but retirement checkpoint finalization failed.",
+            publishRemoval
+              ? "Preserve its effect checkpoint; the retired Target must not be restarted."
+              : "Preserve its effect checkpoint and retry the operation; the Target must not be restarted.",
           );
         try {
           await checkpoint.rollback();

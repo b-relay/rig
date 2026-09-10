@@ -368,3 +368,15 @@ Raw managed-command validation accepts localhost bind ports expressed with
 component interpolation, such as `--addr 127.0.0.1:${server.port}`. Literal
 non-local hosts remain rejected before planning; resolved commands are validated
 again with their actual values. See [the #100 evidence](reviews/2026-09-09-issue-100-bind-port-interpolation.md).
+
+### Explicit Preview destruction (#101)
+
+`down` preserves Target inventory/data/logs/source history. Preview-only
+`down preview <branch> --destroy` is explicit confirmation to remove the Preview,
+including its canonical owned data/log/source root after verified shutdown and
+owned route/artifact retirement. No extra TTY prompt or confirmation flag is
+required. Preserve other Targets, repositories, unrelated Host state, and shared
+Persistent storage. Fail closed on uncertain stop or ambiguous ownership;
+retain a stopped pending-destruction record on cleanup failure, prevent restart
+or redeploy, and support explicit retry. See the
+[state preservation exception](state-preservation-policy.md#explicit-preview-destruction-101).

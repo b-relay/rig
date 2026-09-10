@@ -116,7 +116,7 @@ function addLifecycleCommands(
     if (action === "down")
       child.option(
         "--destroy",
-        "Remove a stopped Preview from inventory; preserve data and logs",
+        "Destroy a Preview including its owned data, logs, and source history",
       );
     child.action(
       async (

@@ -28,6 +28,8 @@ import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { createEffectTransactions } from "./effect-transactions";
 export interface TargetAdapterOptions {
   root: string;
+  /** Acquires an ISO timestamp per recorded output entry, after buffered execution. */
+  recordingTime: () => string;
   supervisors: ReadonlyMap<string, Supervisor>;
   run: CommandRunner;
   installer: ArtifactInstaller;
@@ -123,7 +125,7 @@ export function createTargetEffects(
         .filter((line, index, lines) => index < lines.length - 1 || line !== "")
         .map((line) =>
           JSON.stringify({
-            timestamp: new Date().toISOString(),
+            timestamp: options.recordingTime(),
             component: componentName,
             stream,
             line,

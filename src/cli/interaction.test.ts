@@ -55,6 +55,7 @@ function fixture() {
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "op",
     interaction: {
       async select(_message, options) {

@@ -68,7 +68,11 @@ export async function runRigCli(
     return exitCode;
   } catch (error) {
     if (isHelp(error)) return 0;
-    if (dependencies.signal?.aborted) return 0;
+    if (
+      dependencies.signal?.aborted &&
+      error instanceof RigError &&
+      error.code === "CANCELLED"
+    ) return 0;
     await reportFailure(error, {
       diagnostics: dependencies.diagnostics,
       output: dependencies.output,
@@ -88,7 +92,7 @@ async function followLogs(
 ): Promise<void> {
   let cursor = object(initial).cursor;
   while (!dependencies.signal?.aborted) {
-    await (dependencies.wait ?? wait)(250, dependencies.signal);
+    await dependencies.wait(250, dependencies.signal);
     if (dependencies.signal?.aborted) return;
     const result = await dependencies.client.command({
       ...request,
@@ -98,19 +102,6 @@ async function followLogs(
     cursor = object(result).cursor;
   }
 }
-async function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return;
-  await new Promise<void>((resolve) => {
-    const finish = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", finish);
-      resolve();
-    };
-    const timer = setTimeout(finish, milliseconds);
-    signal?.addEventListener("abort", finish, { once: true });
-  });
-}
-
 /** Error rendering follows the same scoped flag even when argument validation fails before execution. */
 function requestsStructuredOutput(args: readonly string[]): boolean {
   const end = args.indexOf("--");

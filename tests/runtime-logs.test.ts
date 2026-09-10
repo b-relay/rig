@@ -140,3 +140,25 @@ test("recent reading selects a bounded tail and does not parse ancient complete 
     (await files.logs(target, undefined, 2)).entries.map((value) => value.line),
   ).toEqual(["recent-one", "recent-two"]);
 });
+
+test("public follow reports reader truncation failure and preserves retained bytes", async () => {
+  const target = await fixture(), files = createRuntimeFiles();
+  const path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("preserved"));
+  const { runRigCli } = await import("../src/cli/rig");
+  let errors = "", polls = 0;
+  expect(await runRigCli(["logs", "live", "--follow"], {
+    root: target.logRoot, cwd: target.logRoot,
+    wait: async () => { await writeFile(path, "{}\n"); },
+    client: {
+      async status() { throw new Error("Unexpected status"); },
+      async command(request) { polls++; return files.logs(target, request.after, 100); },
+    },
+    output: { write() {}, error(value) { errors += value; } },
+    diagnostics: { async record() { return {}; } },
+    newOperationId: () => "reader-failure",
+  })).toBe(1);
+  expect(polls).toBe(2);
+  expect(errors).toContain("cursor is invalid or its files changed");
+  expect(await readFile(path, "utf8")).toBe("{}\n");
+});

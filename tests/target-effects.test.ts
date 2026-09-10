@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTargetEffects } from "../src/adapters/target-effects";
@@ -36,9 +36,10 @@ function target(root: string): TargetRecord {
     },
   };
 }
-function effects(root: string) {
+function effects(root: string, recordingTime = () => new Date().toISOString()) {
   return createTargetEffects({
     root,
+    recordingTime,
     supervisors: new Map(),
     run: runCommand,
     installer: createArtifactInstaller(),
@@ -291,4 +292,56 @@ test("explicit artifact adoption requires the exact backed-up bytes and then per
     ),
   ).rejects.toMatchObject({ code: "ARTIFACT_CONFLICT" });
   expect((await runCommand({ command: [destination] })).stdout).toBe("adopted");
+});
+
+test("setup recording acquires time for each retained line and reads unchanged streams and permissions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-record-time-"));
+  roots.push(root);
+  const record = target(root);
+  const timestamps = ["2026-09-09T12:00:00.001Z", "2026-09-09T12:00:00.002Z", "2026-09-09T12:00:00.003Z", "2026-09-09T12:00:00.004Z"];
+  let acquired = 0;
+  const adapter = effects(root, () => timestamps[acquired++]!);
+  await adapter.hook("printf 'one\\n\\ntwo\\n'; printf 'error\\n' >&2", record);
+  await adapter.hook("true", record);
+  const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
+  const page = await createRuntimeFiles().logs(record, undefined, 100);
+  expect(page.entries).toEqual([
+    { timestamp: timestamps[0], component: "setup", stream: "stdout", line: "one" },
+    { timestamp: timestamps[1], component: "setup", stream: "stdout", line: "" },
+    { timestamp: timestamps[2], component: "setup", stream: "stdout", line: "two" },
+    { timestamp: timestamps[3], component: "setup", stream: "stderr", line: "error" },
+  ]);
+  const { runRigCli } = await import("../src/cli/rig");
+  const controller = new AbortController();
+  let output = "", polls = 0, waits = 0;
+  const cursors: (string | undefined)[] = [];
+  const files = createRuntimeFiles();
+  expect(await runRigCli(["logs", "local", "--follow"], {
+    root, cwd: root, signal: controller.signal,
+    async wait() {
+      if (++waits === 2) controller.abort();
+    },
+    client: {
+      async status() { throw new Error("Unexpected status"); },
+      async command(request) {
+        expect(request.action).toBe("logs");
+        polls++;
+        cursors.push(request.after);
+        return { project: "demo", target: "local", ...await files.logs(record, request.after, 100) };
+      },
+    },
+    output: { write(value) { output += value; }, error(value) { throw new Error(value); } },
+    diagnostics: { async record() { return {}; } },
+    newOperationId: () => "recorded-follow",
+  })).toBe(0);
+  expect(polls).toBe(2);
+  expect(cursors[0]).toBeUndefined();
+  expect(typeof cursors[1]).toBe("string");
+  expect(output.match(/> one/g)).toHaveLength(1);
+  expect(output).toContain("! error");
+  expect(record.desired).toBe("running");
+  expect(acquired).toBe(4);
+  expect(await readdir(record.logRoot)).toEqual(["target.jsonl"]);
+  expect((await stat(record.logRoot)).mode & 0o777).toBe(0o700);
+  expect((await stat(join(record.logRoot, "target.jsonl"))).mode & 0o777).toBe(0o600);
 });

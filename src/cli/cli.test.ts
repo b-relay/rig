@@ -30,6 +30,7 @@ test("bare help exits successfully without contacting the daemon", async () => {
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "test-operation",
   });
   expect(exit).toBe(0);
@@ -72,6 +73,7 @@ test("status and scoped structured lifecycle output use one correlated daemon re
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "op-42",
   };
   expect(
@@ -152,6 +154,7 @@ test("status renders observed component states and keeps configured routes visib
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "op-status",
   });
   expect(exit).toBe(0);
@@ -198,6 +201,7 @@ test("usage errors never call runtime or advertise diagnostics; unexpected failu
         return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
       },
     },
+    wait: async () => {},
     newOperationId: () => "op-failed",
   };
   expect(await runRigCli(["up", "preview"], dependencies)).toBe(1);
@@ -246,6 +250,7 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "op-options",
   };
   expect(
@@ -350,6 +355,7 @@ test("every command supports both help flags without side effects; removed globa
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "help",
   };
   for (const path of [
@@ -403,7 +409,7 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
     cwd: "/workspace",
     signal: controller.signal,
     async wait() {
-      if (++waits === 2) controller.abort();
+      if (++waits === 3) controller.abort();
     },
     client: {
       async status(): Promise<ProjectStatusReport> {
@@ -414,8 +420,8 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
         return {
           project: "pantry",
           target: "live",
-          entries: [entry],
-          cursor: requests.length === 1 ? "cursor-a" : "cursor-b",
+          entries: requests.length === 2 ? [] : [entry],
+          cursor: ["cursor-a", "cursor-b", "cursor-c"][requests.length - 1],
         };
       },
     },
@@ -435,8 +441,9 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
     newOperationId: () => "op-logs",
   };
   expect(await runRigCli(["logs", "live", "--follow"], dependencies)).toBe(0);
-  expect(requests).toHaveLength(2);
+  expect(requests).toHaveLength(3);
   expect(requests[1]).toMatchObject({ action: "logs", after: "cursor-a" });
+  expect(requests[2]).toMatchObject({ action: "logs", after: "cursor-b" });
   expect(text.match(/same line/g)).toHaveLength(2);
   expect(text.match(/pantry live/g)).toHaveLength(1);
   expect(text).toContain("09:42:11  web  > same line");
@@ -471,6 +478,7 @@ test("sink failure preserves success and unexpected error while never advertisin
         throw new Error("write failed");
       },
     },
+    wait: async () => {},
     newOperationId: () => "op-no-log",
   };
   expect(await runRigCli(["up", "live"], dependencies)).toBe(0);
@@ -518,6 +526,7 @@ test("config and doctor expose user views while suppressing editor metadata and 
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "op-views",
   };
   expect(await runRigCli(["config"], dependencies)).toBe(0);
@@ -579,6 +588,7 @@ test("scoped JSON also renders usage failures before a daemon request is created
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "unused",
   };
   expect(await runRigCli(["up", "nonsense", "--json"], dependencies)).toBe(1);
@@ -614,8 +624,63 @@ test("cancellation during diagnostics prevents submission of the prepared mutati
         return {};
       },
     },
+    wait: async () => {},
     newOperationId: () => "cancelled",
   });
   expect(code).toBe(0);
   expect(calls).toBe(0);
 });
+
+test("follow reports daemon failure even when cancellation happens during the failed read", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  let errors = "";
+  const exit = await runRigCli(["logs", "live", "--follow"], {
+    root: "/isolated/.rig", cwd: "/workspace", signal: controller.signal,
+    wait: async () => {},
+    client: {
+      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      async command() {
+        if (++calls === 1) return { entries: [], cursor: "opaque-a" };
+        controller.abort();
+        throw new Error("daemon failed during read");
+      },
+    },
+    output: { write() {}, error(value) { errors += value; } },
+    diagnostics: { async record() { return {}; } },
+    newOperationId: () => "follow-failure",
+  });
+  expect(exit).toBe(1);
+  expect(calls).toBe(2);
+  expect(errors).toContain("Rig could not complete this operation.");
+});
+
+for (const when of ["before start", "during wait", "after page"] as const) {
+  test(`follow cancellation ${when} stops without another poll`, async () => {
+    const controller = new AbortController();
+    const { waitForLogPoll } = await import("../adapters/log-follow-scheduler");
+    let polls = 0, waits = 0;
+    if (when === "before start") controller.abort();
+    const start = performance.now();
+    expect(await runRigCli(["logs", "live", "--follow"], {
+      root: "/isolated/.rig", cwd: "/workspace", signal: controller.signal,
+      async wait(milliseconds, signal) {
+        waits++;
+        expect(milliseconds).toBe(250);
+        expect(signal).toBe(controller.signal);
+        queueMicrotask(() => controller.abort());
+        await waitForLogPoll(milliseconds, signal);
+      },
+      client: {
+        async status() { throw new Error("Unexpected status"); },
+        async command() { polls++; return { entries: [], cursor: "opaque" }; },
+      },
+      output: { write() { if (when === "after page") controller.abort(); }, error(value) { throw new Error(value); } },
+      diagnostics: { async record() { return {}; } },
+      newOperationId: () => "cancel-follow",
+    })).toBe(0);
+    expect(performance.now() - start).toBeLessThan(250);
+    expect(polls).toBe(when === "before start" ? 0 : 1);
+    expect(waits).toBe(when === "during wait" ? 1 : 0);
+  });
+}

@@ -57,6 +57,7 @@ export async function composeDaemon(
     ),
   );
   const effects = createTargetEffects({
+    recordingTime: () => new Date().toISOString(),
     root,
     supervisors,
     run: runCommand,

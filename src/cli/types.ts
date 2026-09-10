@@ -19,7 +19,8 @@ export interface CliDependencies {
   newOperationId: () => string;
   interaction?: CliInteraction;
   signal?: AbortSignal;
-  wait?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+  /** Resolves after the poll delay or cancellation; must release its wait resources. */
+  wait: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
 export interface DaemonAdmin {
   install(operationId?: string): Promise<unknown>;

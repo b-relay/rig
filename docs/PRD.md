@@ -356,3 +356,10 @@ malformed or failed evidence remains an inspection failure. A failed stop does
 not make status claim the process exited. Restart cancellation, owned output
 draining, and lease/capture-request cleanup remain part of stop's contract.
 See [the #91 evidence](reviews/2026-09-09-issue-91-process-inspection.md).
+
+Buffered setup/hook/build output acquires a recording timestamp for each retained
+line after the command finishes; it does not claim execution-time interleaving.
+Target recording and CLI follow scheduling have separate explicit owners. Follow
+uses opaque reader cursors and a cancellation-aware 250 ms poll wait; cancellation
+does not hide a concurrent reader/daemon failure or trigger Target lifecycle work.
+See [the #92 evidence](reviews/2026-09-09-issue-92-log-time-cancellation.md).

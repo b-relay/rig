@@ -288,8 +288,13 @@ Dependencies: slices 4 and 7.
 First test: two components interleave stdout/stderr; recent and follow views
 retain component identity and chronological output with `>`/`!` markers.
 
-- Capture timestamps/stream identity as output arrives, not after concatenating
-  whole stdout/stderr streams. Use the shared `rigd` log read model.
+- Managed application capture timestamps output as it arrives. Buffered setup,
+  hook and build output instead retains per-entry recording times after command
+  completion and stdout-before-stderr order; it cannot claim execution-time
+  interleaving. Use the shared `rigd` log read model.
+- Target recording time and CLI follow waits have separate explicit owners (#92).
+  Follow forwards cancellation to its required scheduler, preserves daemon/reader
+  failures and never interprets the reader-owned opaque cursor.
 - Preserve stable ordering for equal timestamps and repeated identical lines
   during follow. Test finite recent mode and cancellation without app shutdown.
 - Exercise each supported real process Adapter's capture path. Legacy combined

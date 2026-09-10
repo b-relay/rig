@@ -1,3 +1,4 @@
+import { waitForLogPoll } from "./adapters/log-follow-scheduler";
 import { createTerminalInteraction } from "./adapters/terminal-interaction";
 import { randomUUID } from "node:crypto";
 import { runRigCli } from "./cli/rig";
@@ -25,6 +26,7 @@ export async function main(args: readonly string[]): Promise<number> {
         now: () => new Date(),
       }),
       signal: controller.signal,
+      wait: waitForLogPoll,
       ...(process.stdin.isTTY && process.stderr.isTTY
         ? {
             interaction: createTerminalInteraction(

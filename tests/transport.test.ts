@@ -212,6 +212,7 @@ test("human Status and picker sanitize labels while JSON preserves evidence and 
           return {};
         },
       },
+      wait: async () => {},
       newOperationId: () => "status-op",
     };
     expect(await runRigCli(["status", "--project", "demo"], deps)).toBe(0);

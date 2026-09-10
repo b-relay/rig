@@ -46,6 +46,7 @@ async function fixture() {
   });
   const adapters = () =>
     createTargetEffects({
+      recordingTime: () => new Date().toISOString(),
       root,
       environment: {},
       supervisors: new Map([["child", supervisor]]),

@@ -31,6 +31,7 @@ const leaseSchema = z.object({
     .length(64)
     .describe("Digest of immutable process birth time and PID."),
 });
+const maximumSerializedLogRecordBytes = 1_048_576;
 interface OwnedProcess {
   pid: number;
   identity?: string;
@@ -406,23 +407,31 @@ function captureOutput(
         const decoder = new StringDecoder("utf8");
         let pending = "";
         const emit = (line: string) => {
-          const entry: TargetLogEntry = {
-            timestamp: now().toISOString(),
-            component: request.componentName,
-            stream,
+          const timestamp = now().toISOString();
+          for (const chunk of splitLogLine(
             line,
-          };
-          owned.writes = owned.writes
-            .then(() =>
-              appendFile(
-                join(request.logRoot, "target.jsonl"),
-                JSON.stringify(entry) + "\n",
-                { mode: 0o600 },
-              ),
-            )
-            .catch((error) => {
-              owned.writeError = error;
-            });
+            timestamp,
+            request.componentName,
+            stream,
+          )) {
+            const entry: TargetLogEntry = {
+              timestamp,
+              component: request.componentName,
+              stream,
+              line: chunk,
+            };
+            owned.writes = owned.writes
+              .then(() =>
+                appendFile(
+                  join(request.logRoot, "target.jsonl"),
+                  JSON.stringify(entry) + "\n",
+                  { mode: 0o600 },
+                ),
+              )
+              .catch((error) => {
+                owned.writeError = error;
+              });
+          }
         };
         pipe.on("data", (chunk: Buffer) => {
           pending += decoder.write(chunk);
@@ -445,4 +454,35 @@ function captureOutput(
       }),
     );
   }
+}
+
+function splitLogLine(
+  line: string,
+  timestamp: string,
+  component: string,
+  stream: TargetLogEntry["stream"],
+): string[] {
+  const emptyRecordBytes = Buffer.byteLength(
+    JSON.stringify({ timestamp, component, stream, line: "" }) + "\n",
+  );
+  const contentBudget = maximumSerializedLogRecordBytes - emptyRecordBytes;
+  const chunks: string[] = [];
+  let start = 0;
+  let cursor = 0;
+  let escapedBytes = 0;
+  while (cursor < line.length) {
+    const codePoint = line.codePointAt(cursor)!;
+    const next = cursor + (codePoint > 0xffff ? 2 : 1);
+    const encoded = JSON.stringify(String.fromCodePoint(codePoint))!.slice(1, -1);
+    const encodedBytes = Buffer.byteLength(encoded);
+    if (escapedBytes + encodedBytes > contentBudget && cursor > start) {
+      chunks.push(line.slice(start, cursor));
+      start = cursor;
+      escapedBytes = 0;
+    }
+    escapedBytes += encodedBytes;
+    cursor = next;
+  }
+  chunks.push(line.slice(start));
+  return chunks;
 }

@@ -57,6 +57,54 @@ test("a repeated up preserves the process and down confirms its exit with captur
   expect((await supervisor.observe(request.key)).state).toBe("stopped");
   expect(() => process.kill(started.pid!, 0)).toThrow();
 });
+test("captured output splits escaped records below the reader window without losing bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-log-record-limit-"));
+  roots.push(root);
+  let processGroupExists = true;
+  const supervisor = createChildSupervisor({
+    stateRoot: root,
+    processInspection: {
+      identity: async () => "a".repeat(64),
+      groupExists: async () => processGroupExists,
+      signalGroup: async () => {
+        processGroupExists = false;
+      },
+    },
+  });
+  supervisors.push(supervisor);
+  await supervisor.ensureRunning({
+    key: "large-output",
+    componentName: "web",
+    command: [
+      process.execPath,
+      "-e",
+      "process.stdout.write(String.fromCharCode(0).repeat(1100000),()=>process.exit(0))",
+    ],
+    cwd: root,
+    env: {},
+    logRoot: root,
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if ((await supervisor.observe("large-output")).state === "stopped") break;
+    await Bun.sleep(20);
+  }
+  await supervisor.stop("large-output");
+  const records = (await readFile(join(root, "target.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(records.length).toBeGreaterThan(1);
+  expect(
+    Math.max(
+      ...records.map((record) =>
+        Buffer.byteLength(JSON.stringify(record) + "\n"),
+      ),
+    ),
+  ).toBeLessThanOrEqual(1_048_576);
+  expect(records.map((record) => record.line).join("")).toBe(
+    String.fromCharCode(0).repeat(1_100_000),
+  );
+});
 test("down kills shell descendants and an aborted observation does not stop the app", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-tree-"));
   roots.push(root);

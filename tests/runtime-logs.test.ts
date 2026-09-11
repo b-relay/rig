@@ -109,7 +109,7 @@ test("limited follow merges dated sources without skipping another source or rep
   expect(second.entries.map((value) => value.line)).toEqual(["new-three"]);
   expect((await files.logs(target, second.cursor, 2)).entries).toEqual([]);
 });
-test("foreign cursors, truncated files and complete invalid JSON fail truthfully without modifying logs", async () => {
+test("foreign cursors and truncated files fail truthfully while corrupt records stay readable", async () => {
   const target = await fixture(),
     other = await fixture(),
     files = createRuntimeFiles(),
@@ -123,10 +123,38 @@ test("foreign cursors, truncated files and complete invalid JSON fail truthfully
   await expect(files.logs(target, initial.cursor, 2)).rejects.toMatchObject({
     code: "LOG_CURSOR",
   });
-  await expect(files.logs(target, undefined, 2)).rejects.toMatchObject({
-    code: "LOG_CORRUPT",
+  expect(await files.logs(target, undefined, 2)).toMatchObject({
+    entries: [
+      {
+        timestamp: "unknown",
+        component: "?",
+        stream: "unknown",
+        line: "1 unreadable record skipped",
+      },
+    ],
   });
   expect(await readFile(path, "utf8")).toBe("{}\n");
+});
+test("follow skips a glued corrupt record and advances its cursor to the next line", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("before"));
+  const initial = await files.logs(target, undefined, 10);
+  expect(initial.entries.map((value) => value.line)).toEqual(["before"]);
+  await appendFile(path, "{bad}\n" + entry("after"));
+  const corrupt = await files.logs(target, initial.cursor, 1);
+  expect(corrupt.entries).toEqual([
+    {
+      timestamp: "unknown",
+      component: "?",
+      stream: "unknown",
+      line: "1 unreadable record skipped",
+    },
+  ]);
+  const recovered = await files.logs(target, corrupt.cursor, 1);
+  expect(recovered.entries.map((value) => value.line)).toEqual(["after"]);
+  expect((await files.logs(target, recovered.cursor, 1)).entries).toEqual([]);
 });
 test("recent reading selects a bounded tail and does not parse ancient complete history outside its window", async () => {
   const target = await fixture(),
@@ -141,24 +169,36 @@ test("recent reading selects a bounded tail and does not parse ancient complete 
   ).toEqual(["recent-one", "recent-two"]);
 });
 
-test("public follow reports reader truncation failure and preserves retained bytes", async () => {
+test("public follow renders an unreadable record and continues without changing retained bytes", async () => {
   const target = await fixture(), files = createRuntimeFiles();
   const path = join(target.logRoot, "target.jsonl");
+  const controller = new AbortController();
   await writeFile(path, entry("preserved"));
   const { runRigCli } = await import("../src/cli/rig");
-  let errors = "", polls = 0;
+  let output = "", errors = "", polls = 0, appended = false;
   expect(await runRigCli(["logs", "live", "--follow"], {
-    root: target.logRoot, cwd: target.logRoot,
-    wait: async () => { await writeFile(path, "{}\n"); },
+    root: target.logRoot, cwd: target.logRoot, signal: controller.signal,
+    wait: async () => {
+      if (!appended) {
+        appended = true;
+        await appendFile(path, "{}\n");
+      }
+    },
     client: {
       async status() { throw new Error("Unexpected status"); },
-      async command(request) { polls++; return files.logs(target, request.after, 100); },
+      async command(request) {
+        polls++;
+        const result = await files.logs(target, request.after, 100);
+        if (polls === 2) controller.abort();
+        return result;
+      },
     },
-    output: { write() {}, error(value) { errors += value; } },
+    output: { write(value) { output += value; }, error(value) { errors += value; } },
     diagnostics: { async record() { return {}; } },
     newOperationId: () => "reader-failure",
-  })).toBe(1);
+  })).toBe(0);
   expect(polls).toBe(2);
-  expect(errors).toContain("cursor is invalid or its files changed");
-  expect(await readFile(path, "utf8")).toBe("{}\n");
+  expect(errors).toBe("");
+  expect(output).toContain("1 unreadable record skipped");
+  expect(await readFile(path, "utf8")).toBe(entry("preserved") + "{}\n");
 });

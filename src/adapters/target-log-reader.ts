@@ -245,11 +245,12 @@ function parseLine(name: string, line: string): TargetLogEntry | undefined {
       line: event.details.line,
     };
   } catch {
-    throw new RigError(
-      "LOG_CORRUPT",
-      "A complete Target log record is invalid.",
-      "Inspect the retained log file; incomplete final records are retried automatically.",
-    );
+    return {
+      timestamp: "unknown",
+      component: "?",
+      stream: "unknown",
+      line: "1 unreadable record skipped",
+    };
   }
 }
 function compareEntries(a: TargetLogEntry, b: TargetLogEntry): number {

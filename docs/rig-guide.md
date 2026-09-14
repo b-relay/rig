@@ -35,6 +35,12 @@ rigd status
 `rigd install` owns daemon setup and creates the local control-plane auth token.
 It only runs when no daemon process exists, and it issues a fresh token every
 time, so a credential left behind by a crashed daemon does not outlive it.
+A credential file that exists but is empty or unreadable is a `DAEMON_TOKEN`
+error naming `<RIG_ROOT>/auth/control-plane.token` and the cause, never "not
+installed": `rigd status` reports it as a warning with the daemon unreachable,
+`rigd install` refuses to replace a daemon it cannot verify (stop it with
+`rigd uninstall`, which signals the recorded pid, or restore the file), and with
+no daemon running `rigd install` simply reissues the credential.
 Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
 `rigd install`. Before sending the token anywhere, `rig`, `git-remote-rig`,

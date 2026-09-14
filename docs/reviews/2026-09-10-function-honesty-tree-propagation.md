@@ -239,7 +239,7 @@ owner carries only its own owner-level defects.
 
 | Finding | Issue |
 | --- | --- |
-| empty/unreadable token → `DAEMON_MISSING`; `rigd install` raw EEXIST | #121 (#116 concurrent) |
+| empty/unreadable token → `DAEMON_MISSING`; `rigd install` raw EEXIST | #121 (#116 concurrent) | (fixed: `readDaemonToken` raises `DAEMON_TOKEN` naming the path and cause for empty/unreadable files; status warns, install refuses with the path or reissues when no daemon runs) |
 | `RIG_ROOT=""` uses cwd | #122 | (fixed: `resolveRigRoot(RIG_ROOT, home)` treats empty as unset and refuses relative paths with USAGE) |
 | preview replacement: retire failure after commit | #123 |
 | replacement retires oldest preview without destroying storage | #124 |

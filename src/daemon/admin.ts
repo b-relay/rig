@@ -12,7 +12,12 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { DaemonClient } from "./client";
-import { readDaemonAddress, readDaemonOwner, readDaemonToken } from "./files";
+import {
+  daemonTokenPath,
+  readDaemonAddress,
+  readDaemonOwner,
+  readDaemonToken,
+} from "./files";
 import { RigError } from "../domain/errors";
 import { RIG_VERSION } from "../domain/version";
 import { processExists } from "./host";
@@ -102,6 +107,8 @@ export class DaemonAdmin {
     unverified?: string;
     /** The reachable daemon's pid and reported version, for an install deciding whether to replace it. */
     serving?: { pid: number; version?: string };
+    /** Why the recorded daemon could not be contacted: its credential is empty or unreadable. */
+    credential?: RigError;
   }> {
     let installed = true;
     try {
@@ -134,7 +141,10 @@ export class DaemonAdmin {
       ...(installed ? await this.installationWarnings() : []),
       ...(unverified ? [unverified] : []),
     ];
-    const status = (serving?: { pid: number; version?: string }) => {
+    const status = (
+      serving?: { pid: number; version?: string },
+      credential?: RigError,
+    ) => {
       // A serving daemon of another version is the one thing `rigd install` can change here.
       const skew =
         serving && serving.version !== RIG_VERSION
@@ -142,7 +152,11 @@ export class DaemonAdmin {
               `rigd ${serving.version ?? "of an older version"} is serving, but this rigd is ${RIG_VERSION}; run rigd install to upgrade the daemon.`,
             ]
           : [];
-      const all = [...warnings, ...skew];
+      const all = [
+        ...warnings,
+        ...skew,
+        ...(credential ? [`${credential.message} ${credential.hint}`] : []),
+      ];
       return {
         status: {
           installed,
@@ -154,6 +168,7 @@ export class DaemonAdmin {
         records,
         ...(unverified ? { unverified } : {}),
         ...(serving ? { serving } : {}),
+        ...(credential ? { credential } : {}),
       };
     };
     // Never offer the credential to a port whose recorded owner has exited or been replaced.
@@ -166,10 +181,18 @@ export class DaemonAdmin {
       addressLiveness === "replaced"
     )
       return status();
+    let token: string;
+    try {
+      token = await readDaemonToken(this.options.root);
+    } catch (error) {
+      if (error instanceof RigError && error.code === "DAEMON_TOKEN")
+        return status(undefined, error);
+      return status();
+    }
     try {
       const health = await new DaemonClient({
         port: address.port,
-        token: await readDaemonToken(this.options.root),
+        token,
       }).health();
       const ours =
         health.instanceId === address.instanceId &&
@@ -308,7 +331,12 @@ export class DaemonAdmin {
     };
   }
   private async performInstall(): Promise<DaemonStatus> {
-    const { status: prior, unverified, serving } = await this.inspect();
+    const {
+      status: prior,
+      unverified,
+      serving,
+      credential,
+    } = await this.inspect();
     let replaced: DaemonStatus["replaced"];
     if (prior.reachable && serving) {
       const recorded = prior.installed
@@ -337,19 +365,20 @@ export class DaemonAdmin {
     if (prior.running && !replaced)
       throw new RigError(
         "DAEMON_UNREACHABLE",
-        "A daemon process exists but is not reachable.",
-        unverified ?? "Inspect the existing daemon before reinstalling.",
+        credential
+          ? "A daemon process exists, but its credential is unusable, so it is not reachable and was not replaced."
+          : "A daemon process exists but is not reachable.",
+        credential
+          ? `${credential.message} Restore ${daemonTokenPath(this.options.root)} or stop the running rigd (rigd uninstall signals it), then retry rigd install.`
+          : (unverified ?? "Inspect the existing daemon before reinstalling."),
+        credential ? { credential: credential.details } : undefined,
       );
     const { root } = this.options;
     await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
     await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
     // No daemon is running here, so a fresh token strands nothing and retires
     // any credential a dead daemon's stale port may have exposed.
-    const tokenPath = join(root, "auth", "control-plane.token");
-    await writeFile(tokenPath, randomBytes(32).toString("base64url"), {
-      mode: 0o600,
-    });
-    await chmod(tokenPath, 0o600);
+    await this.issueToken();
     await this.writeInstallation();
     await clearStartupFailure(root);
     try {
@@ -506,12 +535,28 @@ export class DaemonAdmin {
       ],
     };
   }
+  /** A credential that cannot be written is named by path; a raw fs error would send the user to the diagnostic log. */
+  private async issueToken(): Promise<void> {
+    const tokenPath = daemonTokenPath(this.options.root);
+    try {
+      await writeFile(tokenPath, randomBytes(32).toString("base64url"), {
+        mode: 0o600,
+      });
+      await chmod(tokenPath, 0o600);
+    } catch (error) {
+      const cause = (error as NodeJS.ErrnoException).code ?? "UNKNOWN";
+      throw new RigError(
+        "DAEMON_TOKEN",
+        `The daemon credential at ${tokenPath} cannot be written (${cause}).`,
+        `Make ${tokenPath} and its directory writable by you, then retry rigd install.`,
+        { path: tokenPath, cause },
+      );
+    }
+  }
   private async removeInstallation(mode: "process" | "launchd"): Promise<void> {
     if (mode === "launchd") await rm(this.plistPath(), { force: true });
     await rm(this.marker, { force: true });
-    await rm(join(this.options.root, "auth", "control-plane.token"), {
-      force: true,
-    });
+    await rm(daemonTokenPath(this.options.root), { force: true });
   }
   private async spawnDetached(): Promise<void> {
     const [executable, ...args] = this.options.command;

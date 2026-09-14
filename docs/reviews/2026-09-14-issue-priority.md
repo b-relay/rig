@@ -85,7 +85,7 @@ testability and honesty refactors.
 62. ~~#213~~ (fixed) One global mutation queue: a slow hook in one Project blocks every other Project with no feedback. (#234.)
 63. ~~#145~~ (fixed) Legacy migration roots have no caller; adoption guard can wedge rigd with no command to finalize.
 64. ~~#122~~ (fixed) RIG_ROOT="" makes rig use the current working directory as the Rig root (caused a real incident on this machine).
-65. #121 Empty or unreadable control-plane token reported as "not installed"; install then crashes with raw EEXIST. (#224.)
+65. ~~#121~~ (fixed) Empty or unreadable control-plane token reported as "not installed"; install then crashes with raw EEXIST. (#224.)
 66. #116 Distinguish missing daemon tokens from invalid or unreadable token state.
 67. #158 Stale rig.yaml.lock after a crashed config edit blocks every later edit.
 68. #166 Deleting a Target log directory while a component runs silently drops all further output.

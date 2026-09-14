@@ -943,3 +943,40 @@ test("SIGTERM lets an in-flight command finish and answer before the daemon clos
     await rm(root, { recursive: true, force: true });
   }
 }, 20000);
+
+test("an unusable credential beside a live daemon is named by status and refuses install; with no daemon, install reissues it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-token-"));
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, await daemonScript(root)],
+    mode: "process",
+    userHome: root,
+  });
+  const tokenPath = join(root, "auth", "control-plane.token");
+  try {
+    await admin.install();
+    const issued = await readFile(tokenPath, "utf8");
+    await writeFile(tokenPath, "");
+    expect(await admin.status()).toMatchObject({
+      running: true,
+      reachable: false,
+      warnings: [expect.stringContaining(`The daemon credential at ${tokenPath} is empty.`)],
+    });
+    const refused = await admin.install().catch((error) => error);
+    expect(refused).toMatchObject({ code: "DAEMON_UNREACHABLE" });
+    expect(refused.message).toContain("credential");
+    expect(refused.hint).toContain(tokenPath);
+    expect(await readFile(tokenPath, "utf8")).toBe("");
+    await writeFile(tokenPath, issued);
+    await admin.uninstall();
+    // No daemon runs now, so an empty credential left behind is simply replaced.
+    await mkdir(join(root, "auth"), { recursive: true });
+    await writeFile(tokenPath, "");
+    expect(await admin.install()).toMatchObject({ outcome: "installed" });
+    expect((await readFile(tokenPath, "utf8")).length).toBeGreaterThan(20);
+    expect(await admin.status()).toMatchObject({ reachable: true });
+  } finally {
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);

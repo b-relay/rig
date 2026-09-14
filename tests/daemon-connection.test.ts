@@ -126,3 +126,37 @@ test("remote discovery never turns unavailable, rejected or acceptance-only repl
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("an empty or unreadable credential is reported by its path, never as a missing installation", async () => {
+  const { isDaemonUnavailable } = await import("../src/daemon/connection");
+  const { chmod } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "rig-token-"));
+  const root = join(directory, ".rig");
+  const tokenPath = join(root, "auth", "control-plane.token");
+  const received: string[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    received.push(request.url);
+    return Response.json({ result: {} });
+  }});
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true });
+    await mkdir(join(root, "auth"), { recursive: true });
+    await writeFile(join(root, "daemon/address.json"), JSON.stringify({ port: server.port, pid: process.pid, instanceId: "self" }));
+    await writeFile(tokenPath, "  \n");
+    const empty = await connectDaemon(root).catch((error) => error);
+    expect(empty).toMatchObject({ code: "DAEMON_TOKEN", details: { path: tokenPath } });
+    expect(empty.message).toBe(`The daemon credential at ${tokenPath} is empty.`);
+    expect(isDaemonUnavailable(empty)).toBe(false);
+    await writeFile(tokenPath, "secret");
+    await chmod(tokenPath, 0o000);
+    const unreadable = await connectDaemon(root).catch((error) => error);
+    expect(unreadable).toMatchObject({ code: "DAEMON_TOKEN", details: { path: tokenPath, cause: "EACCES" } });
+    expect(unreadable.message).toBe(`The daemon credential at ${tokenPath} cannot be read (EACCES).`);
+    expect(unreadable.hint).toContain("mode 600");
+    await chmod(tokenPath, 0o600);
+    expect(received).toEqual([]);
+  } finally {
+    await server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

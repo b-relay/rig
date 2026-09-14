@@ -13,6 +13,7 @@ const expectedCodes = new Set([
   "CANCELLED",
   "USAGE",
   "DAEMON_MISSING",
+  "DAEMON_TOKEN",
   "DAEMON_UNREACHABLE",
   "DAEMON_TIMEOUT",
   "PROJECT_REQUIRED",

@@ -58,18 +58,37 @@ export function readDaemonOwner(root: string) {
   return readRecord(join(root, "daemon", "owner.json"), ownerSchema);
 }
 
+export function daemonTokenPath(root: string): string {
+  return join(root, "auth", "control-plane.token");
+}
+/** Absence means no installation; an empty or unreadable credential is a defect in an existing one and is named by path. */
 export async function readDaemonToken(root: string): Promise<string> {
+  const path = daemonTokenPath(root);
+  let contents: string;
   try {
-    const value = (
-      await readFile(join(root, "auth", "control-plane.token"), "utf8")
-    ).trim();
-    if (!value) throw new Error("Empty token");
-    return value;
-  } catch {
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    const cause = (error as NodeJS.ErrnoException).code ?? "UNKNOWN";
+    if (cause === "ENOENT")
+      throw new RigError(
+        "DAEMON_MISSING",
+        "rigd is not installed.",
+        "Run 'rigd install' to set up the daemon.",
+      );
     throw new RigError(
-      "DAEMON_MISSING",
-      "rigd is not installed.",
-      "Run 'rigd install' to set up the daemon.",
+      "DAEMON_TOKEN",
+      `The daemon credential at ${path} cannot be read (${cause}).`,
+      `Make ${path} a file owned by you with mode 600. If no rigd is running for this root, 'rigd install' reissues it.`,
+      { path, cause },
     );
   }
+  const value = contents.trim();
+  if (!value)
+    throw new RigError(
+      "DAEMON_TOKEN",
+      `The daemon credential at ${path} is empty.`,
+      `If no rigd is running for this root, 'rigd install' reissues it; otherwise stop the running rigd first.`,
+      { path },
+    );
+  return value;
 }

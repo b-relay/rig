@@ -66,7 +66,7 @@ test("launchd reports application backoff, recovery identity, and terminal failu
     expect(started.pid).not.toBe(child!.pid);
     const firstPid = started.pid;
     const pending = await waitFor(value => value.restartPending === true);
-    expect(pending).toMatchObject({ state: "stopped", exitCode: 9, restartPending: true });
+    expect(pending).toMatchObject({ state: "stopped", exitCode: 9, restartPending: true, restartAt: expect.any(Number) });
     expect((await report())[0]!.components.map(component => component.state)).toEqual(["starting", "starting"]);
     const wrapperPid = child!.pid;
     const resumed = await supervisor.ensureRunning(request);

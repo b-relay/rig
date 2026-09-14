@@ -22,6 +22,8 @@ const observationSchema = z.object({
       .describe("Last application exit code."),
     restartPending: z.boolean().optional()
       .describe("Whether another application restart attempt is scheduled."),
+    restartAt: z.number().finite().optional()
+      .describe("Unix milliseconds of the next scheduled restart attempt."),
     reason: z.string().optional()
       .describe("Safe explanation of uncertain application state."),
   }).describe("Application observation owned by the capture supervisor."),

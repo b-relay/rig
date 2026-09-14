@@ -426,7 +426,11 @@ Host config owns machine capability:
 A lane's `providers.processSupervisor` selects `rigd` (default; the daemon
 owns child processes), `child` (alias of `rigd`), or `launchd` (one launchd
 agent per Component). Any other name is rejected when the config is parsed, so
-a typo can never be recorded in a Target plan.
+a typo can never be recorded in a Target plan. A launchd Component whose
+application crashed and is waiting out its restart backoff is not restarted
+again by `rig up` or `rig restart`; they wait for the restart the wrapper has
+scheduled, then for the application to appear, and only report
+`LAUNCHD_START` when it misses that schedule.
 
 ### Hooks and interpolation
 

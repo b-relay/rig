@@ -83,8 +83,16 @@ export function createChildSupervisor(
   const restarting = new Set<string>();
   const restarts = new Map<
     string,
-    { times: number[]; timer?: ReturnType<typeof setTimeout> }
+    { times: number[]; timer?: ReturnType<typeof setTimeout>; at?: number }
   >();
+  /** Restart evidence for an observation: pending while a restart is scheduled or in flight, with its advertised time. */
+  const restartEvidence = (key: string, owned: OwnedProcess) => {
+    const restart = restarts.get(key);
+    const pending = restarting.has(key) || (!owned.stopped && restart?.timer);
+    return pending
+      ? { restartPending: true, ...(restart?.at === undefined ? {} : { restartAt: restart.at }) }
+      : {};
+  };
   const now = options.now ?? (() => new Date());
   const inspection = options.processInspection ?? createProcessInspection();
   const inspect = inspection.identity;
@@ -166,9 +174,7 @@ export function createChildSupervisor(
       return {
         state: "stopped",
         ...(owned.exitCode === undefined ? {} : { exitCode: owned.exitCode }),
-        ...(restarting.has(key) || (!owned.stopped && restarts.get(key)?.timer)
-          ? { restartPending: true }
-          : {}),
+        ...restartEvidence(key, owned),
       };
     if (owned.child) {
       try {
@@ -196,12 +202,7 @@ export function createChildSupervisor(
         owned.exitObserved = true;
         scheduleRestart(key, owned);
       }
-      return {
-        state: "stopped",
-        ...(restarting.has(key) || (!owned.stopped && restarts.get(key)?.timer)
-          ? { restartPending: true }
-          : {}),
-      };
+      return { state: "stopped", ...restartEvidence(key, owned) };
     } catch {
       return {
         state: "unknown",
@@ -294,6 +295,9 @@ export function createChildSupervisor(
     );
     if (restart.times.length >= (options.restartLimit ?? 5)) return;
     restart.times.push(timestamp);
+    const delay =
+      (options.restartBackoffMs ?? 100) * 2 ** (restart.times.length - 1);
+    restart.at = timestamp + delay;
     const timer = setTimeout(
       () => {
         void serialized(key, async () => {
@@ -308,7 +312,7 @@ export function createChildSupervisor(
           })
           .catch(() => {});
       },
-      (options.restartBackoffMs ?? 100) * 2 ** (restart.times.length - 1),
+      delay,
     );
     restart.timer = timer;
     restarts.set(key, restart);

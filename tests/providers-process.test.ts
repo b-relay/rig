@@ -429,7 +429,10 @@ test("stop cancels an owned child's pending restart", async () => {
     if ((await supervisor.observe("restart")).restartPending) break;
     await Bun.sleep(10);
   }
-  expect((await supervisor.observe("restart")).restartPending).toBe(true);
+  const pending = await supervisor.observe("restart");
+  expect(pending.restartPending).toBe(true);
+  expect(pending.restartAt).toBeGreaterThan(Date.now() - 1000);
+  expect(pending.restartAt).toBeLessThanOrEqual(Date.now() + 500);
   expect(await supervisor.stop("restart")).toEqual({ outcome: "unchanged" });
   await Bun.sleep(650);
   expect((await supervisor.observe("restart")).restartPending).toBeUndefined();

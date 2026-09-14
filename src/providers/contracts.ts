@@ -13,6 +13,8 @@ export interface ProcessObservation {
   readonly pid?: number;
   readonly exitCode?: number;
   readonly restartPending?: boolean;
+  /** Unix milliseconds of the next scheduled restart attempt while restartPending. */
+  readonly restartAt?: number;
   readonly reason?: string;
 }
 export interface Supervisor {

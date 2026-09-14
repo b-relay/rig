@@ -126,3 +126,55 @@ test("real launchd capture stops its managed child and retains stdout and stderr
     await supervisor.stop(request.key);
   }
 }, 15000);
+
+test("ensureRunning waits for the wrapper's advertised restart instead of a fixed budget while the application is in backoff", async () => {
+  const { createHash } = await import("node:crypto");
+  const { writeFile } = await import("node:fs/promises");
+  const root = await mkdtemp(join(tmpdir(), "rig-launchd-"));
+  roots.push(root);
+  const key = "stable-id/web";
+  const requestPath = join(root, `test.rig.${createHash("sha256").update(key).digest("hex").slice(0, 24)}.json`);
+  const wrapper = { pid: 77, identity: "w".repeat(64) };
+  const application = { pid: 88, identity: "a".repeat(64) };
+  const restartAt = 3500;
+  let clock = 0;
+  const calls: string[] = [];
+  const run: CommandRunner = async ({ command }) => {
+    calls.push(command[1]!);
+    if (command[1] !== "print") return { exitCode: 0, stdout: "", stderr: "" };
+    clock += 100;
+    const restarted = clock >= restartAt;
+    await writeFile(`${requestPath}.observation.json`, JSON.stringify({
+      wrapperPid: wrapper.pid,
+      wrapperIdentity: wrapper.identity,
+      observedAt: clock,
+      ...(restarted ? { applicationIdentity: application.identity } : {}),
+      observation: restarted
+        ? { state: "running", pid: application.pid }
+        : { state: "stopped", exitCode: 1, restartPending: true, restartAt },
+    }));
+    return { exitCode: 0, stdout: `state = running\n\tpid = ${wrapper.pid}\n`, stderr: "" };
+  };
+  const supervisor = createLaunchdSupervisor({
+    root,
+    domain: "gui/99999",
+    labelPrefix: "test.rig",
+    captureCommand: ["/bin/true"],
+    run,
+    now: () => clock,
+    inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : "x".repeat(64)),
+  });
+  expect(
+    await supervisor.ensureRunning({
+      key,
+      command: ["/bin/sh", "-c", "serve"],
+      componentName: "web",
+      cwd: root,
+      env: {},
+      logRoot: root,
+      keepAlive: true,
+    }),
+  ).toEqual({ outcome: "unchanged", pid: application.pid });
+  expect(calls).not.toContain("bootstrap");
+  expect(clock).toBeGreaterThanOrEqual(restartAt);
+}, 15000);

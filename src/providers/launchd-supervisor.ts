@@ -28,6 +28,8 @@ export interface LaunchdOptions {
   readonly captureCommand?: readonly string[];
 }
 /** launchd owns persistent job lifetime; explicit up preserves already running jobs. */
+/** How long a launchd application may take to appear after bootstrap or after its advertised restart. */
+const APPLICATION_START_MS = 3000;
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const run = options.run ?? runCommand;
   const inspect = options.inspect ?? createProcessIdentityReader(run);
@@ -84,17 +86,32 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       };
     }
   };
-  const waitForApplication = async (key: string): Promise<number | undefined> => {
-    for (let attempt = 0; attempt < 30; attempt++) {
+  /** Waits for the application to run, giving it APPLICATION_START_MS after the latest restart the wrapper advertises. */
+  const waitForApplication = async (
+    key: string,
+    restartAt?: number,
+  ): Promise<number | undefined> => {
+    let deadline = Math.max(restartAt ?? 0, now()) + APPLICATION_START_MS;
+    let last: ProcessObservation | undefined;
+    do {
       const observation = await observe(key);
       if (observation.state === "running") return observation.pid;
+      if (observation.restartPending && observation.restartAt !== undefined)
+        deadline = Math.max(deadline, observation.restartAt + APPLICATION_START_MS);
+      last = observation;
       await Bun.sleep(100);
-    }
+    } while (now() < deadline);
     throw new RigError(
       "LAUNCHD_START",
-      "The managed job did not start.",
+      last?.restartPending
+        ? "The managed job did not restart its application on the schedule it advertised."
+        : "The managed job did not start.",
       "Inspect the Target logs and retry.",
-      { key },
+      {
+        key,
+        ...(last?.exitCode === undefined ? {} : { exitCode: last.exitCode }),
+        ...(last?.restartPending ? { restartPending: true } : {}),
+      },
     );
   };
   return {
@@ -104,7 +121,10 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       if (before.state === "running")
         return { outcome: "unchanged", pid: before.pid };
       if (before.restartPending)
-        return { outcome: "unchanged", pid: await waitForApplication(request.key) };
+        return {
+          outcome: "unchanged",
+          pid: await waitForApplication(request.key, before.restartAt),
+        };
       if (before.state === "unknown")
         throw new RigError(
           "LAUNCHD_UNKNOWN",

@@ -305,6 +305,38 @@ test("doctor reports drift on a running Working copy Target and names restart as
   });
 });
 
+test("a stopped Working copy Target frees its old port for a live deploy once rig config moves local to another port", async () => {
+  const { runtime, state, config, deps } = fixture();
+  deps.files.selectPorts = async ({ requests, occupied }) => {
+    for (const request of requests)
+      if (request.preferred && occupied.has(request.preferred))
+        throw new RigError(
+          "PORT_RESERVED",
+          `Port ${request.preferred} is reserved by another Target.`,
+          "Configure a distinct local/live port.",
+        );
+    return Object.fromEntries(
+      requests.map((request) => [request.name, request.preferred ?? 5000]),
+    );
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({ action: "down", project: "demo" });
+  const live = { action: "deploy", project: "demo", target: "live", branch: "main" } as const;
+  await expect(runtime.command(live)).rejects.toMatchObject({ code: "PORT_RESERVED" });
+  config.local = { components: { web: { port: 4570 } } } as typeof config.local;
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({ action: "down", project: "demo" });
+  expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4570 });
+  await expect(runtime.command(live)).resolves.toMatchObject({ outcome: "deployed" });
+  expect(
+    state.targets.map((t) => [t.kind, (t.plan.components[0] as { port?: number }).port]),
+  ).toEqual([
+    ["local", 4570],
+    ["live", 4567],
+  ]);
+});
+
 test("deploy plans a Target from the rig config committed on the deployed revision, not the working copy", async () => {
   const { runtime, state, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

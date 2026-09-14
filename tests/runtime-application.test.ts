@@ -197,6 +197,42 @@ test("deployed source policy survives down/up and same commit is no-op", async (
   ).toMatchObject({ project: "demo", repoPath: "/tmp/developer", productionBranch: "main" });
 });
 
+test("a Preview deploy stays deployed when retiring the oldest Preview fails, and the next Preview deploy retires enough to meet the cap", async () => {
+  const { runtime, state, deps } = fixture();
+  deps.documents.host = async () =>
+    parseHostConfig({ deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } } });
+  const preview = (branch: string) =>
+    runtime.command({ action: "deploy", project: "demo", target: "preview", branch });
+  const previews = () =>
+    state.targets.filter((t) => t.kind === "preview").map((t) => t.branch);
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await preview("feature/a");
+  deps.lifecycle.retire = async () => {
+    throw new RigError("STOP_INCOMPLETE", "web did not stop.", "Stop it by hand.");
+  };
+  expect(await preview("feature/b")).toMatchObject({
+    outcome: "deployed",
+    warnings: [
+      "Preview feature/a was not retired: web did not stop. Stop it by hand. The Project is over its Preview limit until it is destroyed or replaced.",
+    ],
+  });
+  expect(state.targets.find((t) => t.branch === "feature/b")).toMatchObject({
+    desired: "running",
+    commit: "abc",
+  });
+  expect(state.activity.at(-1)).toMatchObject({ action: "deploy", outcome: "deployed" });
+  expect(previews()).toEqual(["feature/a", "feature/b"]);
+  expect(await preview("feature/b")).toMatchObject({ outcome: "unchanged" });
+  const retired: string[] = [];
+  deps.lifecycle.retire = async (target, publishRemoval) => {
+    retired.push(target.branch!);
+    await publishRemoval?.();
+  };
+  expect(await preview("feature/c")).toMatchObject({ outcome: "deployed", warnings: [] });
+  expect(retired).toEqual(["feature/a", "feature/b"]);
+  expect(previews()).toEqual(["feature/c"]);
+});
+
 test("unsafe candidate rollback never restores an old plan over surviving candidate processes", async () => {
   const { runtime, state, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

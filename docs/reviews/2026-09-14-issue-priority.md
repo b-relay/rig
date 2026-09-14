@@ -44,7 +44,7 @@ testability and honesty refactors.
 24. ~~#160~~ (fixed) git push rig hangs forever when the helper hits a fatal error.
 25. ~~#136~~ (fixed) up/restart on an existing local Target never re-plans from current config; deploy local is rejected, so config changes cannot be applied.
 26. ~~#221~~ (fixed) Recorded local Target is never re-planned after a port change and cannot be dropped; live deploy hits PORT_RESERVED with no exit.
-27. #123 Preview replacement: retire failure after the new Preview is committed records the deploy failed and leaves the Project permanently over maxActive.
+27. ~~#123~~ (fixed) Preview replacement: retire failure after the new Preview is committed records the deploy failed and leaves the Project permanently over maxActive.
 28. #124 Preview replacement retires the oldest Preview without destroying its storage; orphaned data root with no cleanup handle.
 29. #188 Preview replacement is silent and state-blind: stopped and failed Previews count toward maxActive, the oldest running one is evicted.
 30. #220 Pre-#113 Preview records without sourceRoot can never be destroyed.

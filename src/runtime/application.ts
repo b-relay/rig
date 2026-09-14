@@ -362,28 +362,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             warnings: preflight.warnings,
             ...previous,
           });
-        let replacement: TargetRecord | undefined;
-        if (command.target === "preview" && !target) {
-          const policy = (await deps.documents.host()).deploy.generated;
-          const previews = targets.filter((t) => t.kind === "preview");
-          if (previews.length >= policy.maxActive) {
-            if (policy.replacePolicy === "reject")
-              throw new RigError(
-                "PREVIEW_LIMIT",
-                "The Project has reached its Preview limit.",
-                "Remove an existing Preview or change the Host Preview limit.",
-              );
-            replacement = [...previews].sort((a, b) =>
-              a.createdAt.localeCompare(b.createdAt),
-            )[0];
-            if (replacement?.recovery || replacement?.destructionPending)
-              throw new RigError(
-                "DEPLOY_RECOVERY",
-                "The oldest Preview has an unresolved transition.",
-                "Stop that Preview before replacing it.",
-              );
-          }
-        }
+        const replacements =
+          command.target === "preview" && !target
+            ? previewsToReplace(
+                targets,
+                (await deps.documents.host()).deploy.generated,
+              )
+            : [];
         const candidate = await planTarget(
           {
             command: { ...command, branch, commit },
@@ -400,16 +385,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           { activation: command.noUp ? "prepare" : "start", operationId },
           deps,
         );
-        const warnings = command.noUp
-          ? [...preflight.warnings, preparedWarning(target, wasRunning)]
-          : preflight.warnings;
-        if (replacement) {
-          await deps.lifecycle.retire(replacement, () =>
-            deps.store.update((s) => {
-              s.targets = s.targets.filter((t) => t.id !== replacement!.id);
-            }),
-          );
-        }
+        const warnings = [
+          ...preflight.warnings,
+          ...(command.noUp ? [preparedWarning(target, wasRunning)] : []),
+        ];
+        warnings.push(...(await retireReplacedPreviews(replacements, deps)));
         return await finish("deployed", { warnings, ...previous });
       }
       if (command.action === "destroy") {
@@ -682,4 +662,57 @@ async function replanWorkingCopy(
   );
   await persistTarget(replanned, deps.store);
   return replanned;
+}
+/** The oldest Previews that must leave so a new Preview fits under the Host limit; none while the Project is under it.
+ * Rejects PREVIEW_LIMIT under the reject policy and DEPLOY_RECOVERY when a chosen Preview is mid-transition. */
+function previewsToReplace(
+  targets: readonly TargetRecord[],
+  policy: { maxActive: number; replacePolicy: "oldest" | "reject" },
+): TargetRecord[] {
+  const previews = targets.filter((t) => t.kind === "preview");
+  const overflow = previews.length - policy.maxActive + 1;
+  if (overflow <= 0) return [];
+  if (policy.replacePolicy === "reject")
+    throw new RigError(
+      "PREVIEW_LIMIT",
+      "The Project has reached its Preview limit.",
+      "Remove an existing Preview or change the Host Preview limit.",
+    );
+  const oldest = [...previews]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .slice(0, overflow);
+  if (oldest.some((t) => t.recovery || t.destructionPending))
+    throw new RigError(
+      "DEPLOY_RECOVERY",
+      "The oldest Preview has an unresolved transition.",
+      "Stop that Preview before replacing it.",
+    );
+  return oldest;
+}
+/** Retire replaced Previews after the new one is committed; a retirement that fails leaves the new Preview deployed and is reported as a warning, so the next Preview deploy or a destroy retries it. */
+async function retireReplacedPreviews(
+  replacements: readonly TargetRecord[],
+  deps: RuntimeDependencies,
+): Promise<string[]> {
+  const warnings: string[] = [];
+  for (const replacement of replacements) {
+    try {
+      await deps.lifecycle.retire(replacement, () =>
+        deps.store.update((s) => {
+          s.targets = s.targets.filter((t) => t.id !== replacement.id);
+        }),
+      );
+    } catch (error) {
+      const failure =
+        error instanceof RigError
+          ? `${error.message} ${error.hint}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      warnings.push(
+        `Preview ${replacement.branch ?? replacement.name} was not retired: ${failure} The Project is over its Preview limit until it is destroyed or replaced.`,
+      );
+    }
+  }
+  return warnings;
 }

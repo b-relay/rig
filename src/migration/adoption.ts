@@ -191,12 +191,14 @@ export async function readLegacyAdoption(
 /** Runtime mutation/reconciliation guard; unknown ownership never becomes authorization to start or stop. */
 export function createAdoptionGuard(root: string): () => Promise<void> {
   return async () => {
-    const record = await readLegacyAdoption(root);
+    const record = await readLegacyAdoption(root),
+      manifest = pathFor(root);
     if (record?.manifest.status === "requires-adoption")
       throw new RigError(
         "LEGACY_ADOPTION_PENDING",
         "Legacy provider adoption is still pending.",
-        "Verify and finalize every legacy process and route before runtime control.",
+        `The adoption manifest at ${manifest} still lists legacy processes or routes to verify, and no rigd command finalizes it in this release. Verify each listed legacy owner yourself, then move the manifest aside (or delete it) to release runtime control.`,
+        { manifest },
       );
   };
 }

@@ -72,7 +72,10 @@ async function inspectRuntimeHost(
           ? error.message
           : "Runtime ownership is unknown.",
       reason: "ownership-pending",
-      hint: "Complete the explicit provider adoption before runtime control.",
+      hint:
+        error instanceof RigError
+          ? error.hint
+          : "Complete the explicit provider adoption before runtime control.",
     });
   }
   return checks;

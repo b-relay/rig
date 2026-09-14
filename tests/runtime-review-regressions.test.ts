@@ -105,7 +105,12 @@ test("host-only doctor exposes pending ownership while retaining independent Hos
     ok: false,
     checks: expect.arrayContaining([
       { name: "host-check", ok: true, message: "Host inspected." },
-      expect.objectContaining({ name: "runtime-ownership", ok: false }),
+      expect.objectContaining({
+        name: "runtime-ownership",
+        ok: false,
+        message: "Adoption is pending.",
+        hint: "Verify legacy owners.",
+      }),
     ]),
   });
 });

@@ -83,7 +83,7 @@ testability and honesty refactors.
 60. ~~#184~~ (fixed) rigd install cannot upgrade a running daemon; protocol skew reported as "Invalid Rig command".
 61. ~~#137~~ (fixed) rigd SIGTERM force-closes in-flight commands; client reports unreachable while the operation completes.
 62. ~~#213~~ (fixed) One global mutation queue: a slow hook in one Project blocks every other Project with no feedback. (#234.)
-63. #145 Legacy migration roots have no caller; adoption guard can wedge rigd with no command to finalize.
+63. ~~#145~~ (fixed) Legacy migration roots have no caller; adoption guard can wedge rigd with no command to finalize.
 64. #122 RIG_ROOT="" makes rig use the current working directory as the Rig root (caused a real incident on this machine).
 65. #121 Empty or unreadable control-plane token reported as "not installed"; install then crashes with raw EEXIST. (#224.)
 66. #116 Distinguish missing daemon tokens from invalid or unreadable token state.

@@ -461,6 +461,14 @@ as `state.json.bak`; the failure message points at that copy when it exists.
 `rigd uninstall` refuses until the file is repaired, because it cannot verify
 that Targets are stopped without it.
 
+A legacy adoption manifest at `<RIG_ROOT>/runtime/legacy-adoption.json` whose
+status is still `requires-adoption` blocks every mutating command and
+`rig status` with `LEGACY_ADOPTION_PENDING`, and `rig doctor` reports
+`runtime-ownership` as failed. The error and the doctor hint name that file.
+No `rigd` command produces or finalizes the manifest in this release: verify
+each legacy process and route it lists yourself, then move the file aside or
+delete it to release runtime control.
+
 The state file carries a format version (currently 3; version 2 files are
 read and rewritten as 3). A file written by a newer `rigd` is refused as
 `STATE_VERSION`, naming both versions, rather than loaded with fields dropped.

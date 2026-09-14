@@ -171,3 +171,15 @@ test("completed ownership cannot change source provenance or backup location fro
   await writeFile(path, JSON.stringify(completed));
   await expect(createAdoptionGuard(root)()).rejects.toThrow("invalid");
 });
+test("a pending adoption guard names the manifest that blocks runtime control and how it is cleared", async () => {
+  const root = await fixture(),
+    manifest = join(root, "runtime", "legacy-adoption.json");
+  await writeFile(manifest, JSON.stringify(pending()));
+  const error = await createAdoptionGuard(root)().catch((cause) => cause);
+  expect(error).toMatchObject({
+    code: "LEGACY_ADOPTION_PENDING",
+    details: { manifest },
+  });
+  expect(error.hint).toContain(manifest);
+  expect(error.hint).toContain("no rigd command finalizes");
+});

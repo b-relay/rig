@@ -262,7 +262,7 @@ owner carries only its own owner-level defects.
 | minor daemon messaging gaps | #142 |
 | capture wrapper catch-all rewrites `running` as `failed` | #143 |
 | launchd `ensureRunning` false `LAUNCHD_START` during backoff | #144 |
-| migration roots unreachable; adoption guard can wedge | #145 |
+| migration roots unreachable; adoption guard can wedge | #145 | (fixed: guard error and doctor `runtime-ownership` hint name `<root>/runtime/legacy-adoption.json` and state that no rigd command finalizes it; migration roots still unwired) |
 | provider minor hazards (non-atomic request JSON, `process.kill(0)` probe) | #146 |
 | bearer token sent to whatever owns a stale daemon port | #147 |
 | editing Project name in config leaves a circular dead end | #148 |

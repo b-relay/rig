@@ -62,6 +62,27 @@ test("daemon install starts a real service; status notices exit; uninstall prese
   }
 }, 15000);
 
+test("a process-mode install gives rigd the login basics plus its own variables, never the installer's secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-env-"));
+  const script = join(root, "child.ts");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; import {writeFile} from 'node:fs/promises'; await writeFile(process.env.RIG_ROOT+'/env.json', JSON.stringify(process.env)); await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
+  );
+  const admin = new DaemonAdmin({ root, command: [process.execPath, script], mode: "process", userHome: root });
+  process.env.RIG_TEST_INSTALLER_SECRET = "hunter2";
+  try {
+    await admin.install();
+    const env = JSON.parse(await readFile(join(root, "env.json"), "utf8")) as Record<string, string>;
+    expect(env).not.toHaveProperty("RIG_TEST_INSTALLER_SECRET");
+    expect(env).toMatchObject({ RIG_ROOT: root, RIG_DAEMON_CHILD: "1", PATH: process.env.PATH!, HOME: process.env.HOME! });
+  } finally {
+    delete process.env.RIG_TEST_INSTALLER_SECRET;
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);
+
 test("installation is reachable while initial Target reconciliation is still pending", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-slow-"));
   const script = join(root, "child.ts");

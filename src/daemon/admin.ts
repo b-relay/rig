@@ -15,6 +15,7 @@ import { DaemonClient } from "./client";
 import { readDaemonAddress, readDaemonOwner, readDaemonToken } from "./files";
 import { RigError } from "../domain/errors";
 import { processExists } from "./host";
+import { inheritedEnvironment } from "./environment";
 import { z } from "zod";
 import {
   createAdminActivityJournal,
@@ -310,7 +311,10 @@ export class DaemonAdmin {
         "bootout",
         this.labelDomain(),
       ]);
-      if (result.code !== 0 && !/No such process|Could not find/i.test(result.stderr))
+      if (
+        result.code !== 0 &&
+        !/No such process|Could not find/i.test(result.stderr)
+      )
         throw launchctlFailure(result);
     } else
       for (const pid of pids)
@@ -362,11 +366,7 @@ export class DaemonAdmin {
     try {
       const child = spawn(executable, args, {
         cwd: this.options.root,
-        env: {
-          ...process.env,
-          RIG_ROOT: this.options.root,
-          RIG_DAEMON_CHILD: "1",
-        },
+        env: this.daemonEnvironment(),
         detached: true,
         stdio: ["ignore", log.fd, log.fd],
       });
@@ -393,6 +393,15 @@ export class DaemonAdmin {
       `${this.label()}.plist`,
     );
   }
+  /** The daemon starts with the login basics from the installing shell plus its own variables, in both install modes. */
+  private daemonEnvironment(): Record<string, string> {
+    return {
+      PATH: "/usr/bin:/bin",
+      ...inheritedEnvironment(process.env),
+      RIG_ROOT: this.options.root,
+      RIG_DAEMON_CHILD: "1",
+    };
+  }
   private async launchctl(args: string[]): Promise<void> {
     const result = await (this.options.launchctl ?? runLaunchctl)(args);
     if (result.code !== 0) throw launchctlFailure(result);
@@ -401,7 +410,16 @@ export class DaemonAdmin {
     await mkdir(join(this.options.userHome, "Library", "LaunchAgents"), {
       recursive: true,
     });
-    const plist = `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>${xml(this.label())}</string><key>ProgramArguments</key><array>${this.options.command.map((v) => `<string>${xml(v)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict><key>RIG_ROOT</key><string>${xml(this.options.root)}</string><key>RIG_DAEMON_CHILD</key><string>1</string><key>PATH</key><string>${xml(process.env.PATH ?? "/usr/bin:/bin")}</string></dict><key>WorkingDirectory</key><string>${xml(this.options.root)}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string><key>StandardErrorPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string></dict></plist>`;
+    const plist = `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>${xml(this.label())}</string><key>ProgramArguments</key><array>${this.options.command.map((v) => `<string>${xml(v)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict>${Object.entries(
+      this.daemonEnvironment(),
+    )
+      .map(
+        ([name, value]) =>
+          `<key>${xml(name)}</key><string>${xml(value)}</string>`,
+      )
+      .join(
+        "",
+      )}</dict><key>WorkingDirectory</key><string>${xml(this.options.root)}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string><key>StandardErrorPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string></dict></plist>`;
     await writeFile(this.plistPath(), plist, { mode: 0o600 });
     await this.launchctl(["bootout", this.labelDomain()]).catch(() => {});
     await this.launchctl([

@@ -273,7 +273,7 @@ owner carries only its own owner-level defects.
 | superseded revisions/worktrees/markers never removed | #153 |
 | drift hint "Deploy to apply" is a same-Commit no-op | #154 |
 | up starts incomplete Deployment, flag never cleared | #155 |
-| installer shell environment inherited by rigd, components, hooks; persisted to capture JSON | #156 |
+| installer shell environment inherited by rigd, components, hooks; persisted to capture JSON | #156 (fixed: `inheritedEnvironment` picks the login basics in both install modes) |
 | sqlite path / envFile unconfined to workspace or data root | #157 (fixed: deployed Targets reject `path_outside_target`) |
 | stale `rig.yaml.lock` blocks every edit | #158 |
 | symlinked `rig.yaml`/Caddyfile replaced by a regular file on edit | #159 |

@@ -444,9 +444,14 @@ declare `hooks` at the top level; a managed, Convex, or Postgres Component may
 declare its own. Installed executables and SQLite paths have no process, so
 `hooks` on them is rejected when the config is parsed; use an installed
 Component's `build` for steps that must run before installation. Every hook
-runs under `/bin/sh -c` in the Target workspace with the daemon environment,
-the Project `envFile` and `env`, and, for a Component hook, the Component's
-own `envFile` and `env` layered on top. A hook has a two-minute budget and
+runs under `/bin/sh -c` in the Target workspace with the inherited base
+environment, the Project `envFile` and `env`, and, for a Component hook, the
+Component's own `envFile` and `env` layered on top. The inherited base is the
+same for hooks, builds, and managed processes in both install modes: only
+`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`,
+`LC_CTYPE`, and `TZ` from the shell that ran `rigd install`. Tokens and other
+variables in that shell never reach rigd or a Project's processes; declare
+what a process needs in `envFile` or `env`. A hook has a two-minute budget and
 writes its output to the Target's logs under the Component name, or `setup`
 for Project hooks.
 

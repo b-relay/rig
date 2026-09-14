@@ -5,6 +5,7 @@ import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
 import { createAdoptionGuard } from "../migration/adoption";
 import { randomUUID, createHash } from "node:crypto";
+import { inheritedEnvironment } from "./environment";
 import { join } from "node:path";
 import {
   readHostConfig,
@@ -52,17 +53,16 @@ export async function composeDaemon(
     ["child", child],
     ["launchd", launchd],
   ]);
-  const environment = Object.fromEntries(
-    Object.entries(process.env).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined,
-    ),
-  );
+  const environment = inheritedEnvironment(process.env);
   const effects = createTargetEffects({
     recordingTime: () => new Date().toISOString(),
     root,
     supervisors,
     run: runCommand,
-    installer: createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath }),
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
     router: createCaddyRouter({
       caddyfile:
         host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),

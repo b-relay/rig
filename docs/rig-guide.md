@@ -209,12 +209,15 @@ nothing serves until `rig up`; the deploy output warns and names that command.
 `--force` redeploys even when the same Commit is already deployed.
 
 The Host config's `deploy.generated.maxActive` caps Previews per Project. Under
-`replacePolicy: oldest`, a new Preview retires as many of the oldest Previews as
-needed to fit under the cap once the new one is committed. If a retirement
-fails (for example a process that will not stop), the new Preview stays
-deployed and the deploy result carries a warning naming the Preview that was
-not retired; the Project is over its cap until `rig down preview <branch>
---destroy` removes it or the next new Preview retries the retirement. Under
+`replacePolicy: oldest`, a new Preview destroys as many of the oldest Previews
+as needed to fit under the cap once the new one is committed, following the
+same verified-shutdown, retire, then delete sequence as `rig down preview
+--destroy`, so a replaced Preview's data root and source history do not linger
+on disk. If a removal fails (for example a process that will not stop, or a
+data root that cannot be deleted), the new Preview stays deployed, the old
+record is kept with pending-destruction evidence, and the deploy result carries
+a warning naming the Preview and the `rig down preview <branch> --destroy`
+command that finishes it; the Project is over its cap until then. Under
 `replacePolicy: reject`, a deploy at the cap fails with `PREVIEW_LIMIT`.
 
 A deploy whose activation fails (a build, hook, or health failure) leaves the

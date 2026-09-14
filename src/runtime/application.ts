@@ -389,7 +389,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           ...preflight.warnings,
           ...(command.noUp ? [preparedWarning(target, wasRunning)] : []),
         ];
-        warnings.push(...(await retireReplacedPreviews(replacements, deps)));
+        warnings.push(...(await destroyReplacedPreviews(replacements, deps)));
         return await finish("deployed", { warnings, ...previous });
       }
       if (command.action === "destroy") {
@@ -401,26 +401,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           );
         if (!target) throw missingTarget(name);
         if (target.recovery) target = await stopForRecovery(target, deps);
-        await deps.files.inspectPreviewDeletion({
-          root: deps.root,
-          target,
-          state: await deps.store.read(),
-        });
-        target.desired = "stopped";
-        target.destructionPending = true;
-        target.updatedAt = deps.now();
-        await persistTarget(target, deps.store);
-        // Commit route/artifact retirement before irreversible storage cleanup.
-        // Inventory remains the retry handle until all owned bytes are gone.
-        await retireForDestruction(target, deps);
-        await deps.files.destroyPreview({
-          root: deps.root,
-          target,
-          state: await deps.store.read(),
-        });
-        await deps.store.update((s) => {
-          s.targets = s.targets.filter((t) => t.id !== target!.id);
-        });
+        await destroyPreview(target, deps);
         return await finish("stopped");
       }
       if (!target) {
@@ -685,32 +666,58 @@ function previewsToReplace(
     throw new RigError(
       "DEPLOY_RECOVERY",
       "The oldest Preview has an unresolved transition.",
-      "Stop that Preview before replacing it.",
+      "Finish that Preview's pending down or destroy before replacing it.",
     );
   return oldest;
 }
-/** Retire replaced Previews after the new one is committed; a retirement that fails leaves the new Preview deployed and is reported as a warning, so the next Preview deploy or a destroy retries it. */
-async function retireReplacedPreviews(
+/** Verified shutdown, then committed route/artifact retirement, then deletion of the Preview's owned storage.
+ * Inventory (marked destructionPending) remains the retry handle until every owned byte is gone. */
+async function destroyPreview(
+  target: TargetRecord,
+  deps: RuntimeDependencies,
+): Promise<void> {
+  await deps.files.inspectPreviewDeletion({
+    root: deps.root,
+    target,
+    state: await deps.store.read(),
+  });
+  target.desired = "stopped";
+  target.destructionPending = true;
+  target.updatedAt = deps.now();
+  await persistTarget(target, deps.store);
+  await retireForDestruction(target, deps);
+  await deps.files.destroyPreview({
+    root: deps.root,
+    target,
+    state: await deps.store.read(),
+  });
+  await deps.store.update((s) => {
+    s.targets = s.targets.filter((t) => t.id !== target.id);
+  });
+}
+/** Destroy replaced Previews after the new one is committed. A removal that fails leaves the new Preview deployed
+ * and the old record in place for an explicit destroy, and is reported as a warning. */
+async function destroyReplacedPreviews(
   replacements: readonly TargetRecord[],
   deps: RuntimeDependencies,
 ): Promise<string[]> {
   const warnings: string[] = [];
   for (const replacement of replacements) {
     try {
-      await deps.lifecycle.retire(replacement, () =>
-        deps.store.update((s) => {
-          s.targets = s.targets.filter((t) => t.id !== replacement.id);
-        }),
-      );
+      await destroyPreview(replacement, deps);
     } catch (error) {
-      const failure =
+      const reason =
         error instanceof RigError
           ? `${error.message} ${error.hint}`
           : error instanceof Error
             ? error.message
             : String(error);
+      const failure = reason.endsWith(".") ? reason : `${reason}.`;
+      const selector = replacement.branch
+        ? `preview ${replacement.branch}`
+        : `preview --deployment ${replacement.name}`;
       warnings.push(
-        `Preview ${replacement.branch ?? replacement.name} was not retired: ${failure} The Project is over its Preview limit until it is destroyed or replaced.`,
+        `Preview ${replacement.branch ?? replacement.name} was not removed: ${failure} Run rig down ${selector} --destroy to finish; the Project is over its Preview limit until then.`,
       );
     }
   }

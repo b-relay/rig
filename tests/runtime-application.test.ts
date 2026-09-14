@@ -213,7 +213,7 @@ test("a Preview deploy stays deployed when retiring the oldest Preview fails, an
   expect(await preview("feature/b")).toMatchObject({
     outcome: "deployed",
     warnings: [
-      "Preview feature/a was not retired: web did not stop. Stop it by hand. The Project is over its Preview limit until it is destroyed or replaced.",
+      "Preview feature/a was not removed: web did not stop. Stop it by hand. Run rig down preview feature/a --destroy to finish; the Project is over its Preview limit until then.",
     ],
   });
   expect(state.targets.find((t) => t.branch === "feature/b")).toMatchObject({
@@ -231,6 +231,54 @@ test("a Preview deploy stays deployed when retiring the oldest Preview fails, an
   expect(await preview("feature/c")).toMatchObject({ outcome: "deployed", warnings: [] });
   expect(retired).toEqual(["feature/a", "feature/b"]);
   expect(previews()).toEqual(["feature/c"]);
+});
+
+test("replacing the oldest Preview destroys its owned storage after verified shutdown, and a failed deletion keeps its record as the retry handle", async () => {
+  const { runtime, state, deps } = fixture();
+  deps.documents.host = async () =>
+    parseHostConfig({ deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } } });
+  const preview = (branch: string) =>
+    runtime.command({ action: "deploy", project: "demo", target: "preview", branch });
+  const calls: string[] = [];
+  deps.files.inspectPreviewDeletion = async ({ target }) => {
+    calls.push(`inspect:${target.branch}`);
+  };
+  deps.lifecycle.retire = async (target, publishRemoval) => {
+    calls.push(`retire:${target.branch}:${publishRemoval ? "publish" : "retain"}`);
+  };
+  deps.files.destroyPreview = async ({ target }) => {
+    calls.push(`destroy:${target.branch}`);
+    if (target.branch === "feature/b") throw new Error("EBUSY: data root in use");
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await preview("feature/a");
+  const first = state.targets.find((t) => t.kind === "preview")!;
+  expect(await preview("feature/b")).toMatchObject({ outcome: "deployed", warnings: [] });
+  expect(calls).toEqual([
+    "inspect:feature/a",
+    "retire:feature/a:retain",
+    "destroy:feature/a",
+  ]);
+  expect(state.targets.some((t) => t.id === first.id)).toBe(false);
+  calls.length = 0;
+  expect(await preview("feature/c")).toMatchObject({
+    outcome: "deployed",
+    warnings: [
+      "Preview feature/b was not removed: EBUSY: data root in use. Run rig down preview feature/b --destroy to finish; the Project is over its Preview limit until then.",
+    ],
+  });
+  expect(calls).toEqual([
+    "inspect:feature/b",
+    "retire:feature/b:retain",
+    "destroy:feature/b",
+  ]);
+  expect(state.targets.find((t) => t.branch === "feature/b")).toMatchObject({
+    desired: "stopped",
+    destructionPending: true,
+  });
+  expect(state.targets.find((t) => t.branch === "feature/c")).toMatchObject({
+    desired: "running",
+  });
 });
 
 test("unsafe candidate rollback never restores an old plan over surviving candidate processes", async () => {

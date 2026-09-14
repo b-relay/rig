@@ -152,7 +152,10 @@ export async function doctor(
               message:
                 "Current configuration differs from the recorded Target policy.",
               reason: "config-drift",
-              hint: "Deploy to apply the current configuration; lifecycle commands preserve the recorded plan.",
+              hint:
+                target.kind === "local"
+                  ? "Run rig restart local (or rig down local, then rig up local) to apply the current configuration."
+                  : "Deploy to apply the current configuration; lifecycle commands preserve the recorded plan.",
             },
       );
     } catch {

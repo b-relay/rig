@@ -7,6 +7,7 @@ import { stopBeforeRestart, stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
 import { updateRegistration } from "./registration";
 import { ConfigError } from "../config/errors";
+import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type {
   OperationRecord,
@@ -445,16 +446,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (!target) {
         if (command.action !== "up" || (command.target ?? "local") !== "local")
           throw missingTarget(name);
-        const document = await deps.documents.read(project.repoPath);
-        if (document.config.name !== project.name)
-          throw new RigError(
-            "PROJECT_IDENTITY",
-            "Project config identity changed.",
-            "Use rig rename to update registration.",
-          );
-        target = await planTarget({ command, project, document }, deps);
+        target = await planTarget(
+          { command, project, document: await workingCopyDocument(project, deps) },
+          deps,
+        );
         await persistTarget(target, deps.store);
-      }
+      } else if (
+        command.action === "up" &&
+        target.kind === "local" &&
+        target.desired === "stopped"
+      )
+        target = await replanWorkingCopy(target, command, project, deps);
       if (target.recovery) {
         if (command.action !== "down")
           throw new RigError(
@@ -477,6 +479,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           target.updatedAt = deps.now();
           await persistTarget(target, deps.store);
           warnings = (await stopBeforeRestart(target, deps.lifecycle)).warnings;
+          if (target.kind === "local")
+            target = await replanWorkingCopy(target, command, project, deps);
         }
         outcome = (await deps.lifecycle.up(target)).outcome;
         // up installs, routes, and starts the recorded plan under its own
@@ -649,4 +653,33 @@ function preparedWarning(
   return wasRunning
     ? `${target.name} was running and is now stopped on the new deployment. Run ${up} to start it.`
     : `${target.name} is deployed but stopped. Run ${up} to start it.`;
+}
+/** The Working copy Target follows the registered repository's rig.yaml, whose name must still match the Project. */
+async function workingCopyDocument(
+  project: ProjectRecord,
+  deps: RuntimeDependencies,
+): Promise<ConfigDocument<ProjectConfig>> {
+  const document = await deps.documents.read(project.repoPath);
+  if (document.config.name !== project.name)
+    throw new RigError(
+      "PROJECT_IDENTITY",
+      "Project config identity changed.",
+      "Use rig rename to update registration.",
+    );
+  return document;
+}
+/** A stopped Working copy Target is re-planned from the current rig.yaml before it starts, keeping its id, data root, and recorded ports. */
+async function replanWorkingCopy(
+  target: TargetRecord,
+  command: RuntimeCommand,
+  project: ProjectRecord,
+  deps: RuntimeDependencies,
+): Promise<TargetRecord> {
+  const document = await workingCopyDocument(project, deps);
+  const replanned = await planTarget(
+    { command, project, document, existing: target },
+    deps,
+  );
+  await persistTarget(replanned, deps.store);
+  return replanned;
 }

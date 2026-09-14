@@ -144,19 +144,30 @@ function fixture() {
   };
   return { runtime: createRuntime(deps), state, plans, config, deps };
 }
-test("init config name is authoritative; local up uses actual repo and later lifecycle reuses recorded policy", async () => {
+test("init config name is authoritative; local up uses the actual repo and applies the current config once stopped", async () => {
   const { runtime, state, plans, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   expect(plans[0].plan.workspacePath).toBe("/tmp/developer");
+  const id = state.targets[0]!.id;
   config.components.web = { mode: "managed", command: "changed", port: 9999 };
+  // A running Working copy Target keeps the plan its processes were started from.
+  await runtime.command({ action: "up", project: "demo" });
+  expect(plans[1].plan.components[0].command).toBe("serve --host 127.0.0.1");
   await runtime.command({ action: "down", project: "demo" });
   await runtime.command({ action: "up", project: "demo" });
-  expect(plans[2].plan.components[0].command).toBe("serve --host 127.0.0.1");
+  expect(plans[3].plan.components[0]).toMatchObject({ command: "changed", port: 9999 });
+  expect(state.targets[0]).toMatchObject({ id, desired: "running" });
+  expect(state.targets[0]!.plan.components[0]).toMatchObject({ command: "changed", port: 9999 });
+  config.components.web = { mode: "managed", command: "restarted", port: 9999 };
+  await runtime.command({ action: "restart", project: "demo" });
+  expect(plans.at(-1).plan.components[0].command).toBe("restarted");
   expect(state.activity.map((a) => a.outcome)).toEqual([
     "registered",
     "started",
+    "started",
     "stopped",
+    "started",
     "started",
   ]);
 });
@@ -258,6 +269,33 @@ test("repoint uses the new config path and retains assigned ports, including Con
       expect.objectContaining({ name: "api", port: 4568, sitePort: 4569 }),
     ]),
   );
+  expect(
+    await runtime.command({ action: "doctor", project: "demo" }),
+  ).toMatchObject({
+    checks: expect.arrayContaining([
+      expect.objectContaining({ name: "local/config", ok: true }),
+    ]),
+  });
+});
+
+test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
+  const { runtime, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  config.components.web = { mode: "managed", command: "changed", port: 4567 };
+  expect(
+    await runtime.command({ action: "doctor", project: "demo" }),
+  ).toMatchObject({
+    checks: expect.arrayContaining([
+      expect.objectContaining({
+        name: "local/config",
+        ok: false,
+        reason: "config-drift",
+        hint: expect.stringContaining("rig restart local"),
+      }),
+    ]),
+  });
+  await runtime.command({ action: "restart", project: "demo" });
   expect(
     await runtime.command({ action: "doctor", project: "demo" }),
   ).toMatchObject({

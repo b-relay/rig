@@ -256,6 +256,14 @@ Lifecycle commands act only on existing Targets. They do not create missing
 Preview Deployments. `rig up local` may create the Working copy Target directly
 from the registered repository.
 
+The Working copy Target follows the repository's current `rig.yaml`: `rig up
+local` on a stopped Target and `rig restart local` re-plan it from the config
+on disk before starting, keeping its Target id, data root, and recorded ports
+where the config still allows them. `rig up local` on a Target that is already
+running keeps the plan its processes were started from; `rig doctor` reports
+`config-drift` for it and names `rig restart local` as the fix. Deployed
+Targets (`live`, `preview`) keep their recorded plan until the next deploy.
+
 ```bash
 rig up local
 rig down live

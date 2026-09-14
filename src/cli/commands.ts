@@ -401,6 +401,13 @@ function targetRequest(
       "Choose local, live, or preview <branch>.",
       `Run rig ${action} --help.`,
     );
+  // A Branch and --deployment can name different Previews; acting on one while the user typed the other is never safe.
+  if (target === "preview" && branch && options.deployment)
+    throw new RigError(
+      "USAGE",
+      "Pass a Preview Branch or --deployment, not both.",
+      `Use rig ${action} preview <branch> or rig ${action} preview --deployment <name>.`,
+    );
   return {
     action,
     repoPath: cwd,

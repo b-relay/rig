@@ -480,7 +480,11 @@ outside a Project unless `--project <name>` is provided.
 `rig doctor` always runs Host diagnostics. When a Project context is available,
 it also runs Project diagnostics. Outside a Project, it may succeed with
 Host-only checks and a note that Project checks were skipped. `doctor` is
-read-only by default.
+read-only by default. A failing component check carries what was observed
+(the exit code, an unverified lease, an expired status deadline) in its
+message, and its hint follows from that: an exit points at `rig logs
+<target>`, an unknown observation at daemon state, an expired deadline at
+running doctor again.
 
 An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
 or a malformed record) never makes `rigd` exit: startup records the failure in

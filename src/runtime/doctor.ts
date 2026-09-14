@@ -2,7 +2,9 @@ import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import { RigError } from "../domain/errors";
-import { observeTargets } from "./status";
+import { observeTargets, OBSERVATION_EXPIRED } from "./status";
+import type { ComponentReport } from "../domain/project-status";
+import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
 import { recordedPorts } from "./ports";
 import { transitionInProgress } from "./project-status";
@@ -204,29 +206,48 @@ export async function doctor(
       )
     : [];
   for (const report of reports)
-    for (const component of report.components) {
-      const ok = [
-        "running",
-        "healthy",
-        "ready",
-        "installed",
-        "stopped",
-      ].includes(component.state);
-      checks.push(
-        ok
-          ? {
-              name: `${report.name}/${component.name}`,
-              ok: true,
-              message: `Component is ${component.state}.`,
-            }
-          : {
-              name: `${report.name}/${component.name}`,
-              ok: false,
-              message: `Component is ${component.state}.`,
-              reason: component.state,
-              hint: "Inspect Target logs and provider configuration.",
-            },
-      );
-    }
+    for (const component of report.components)
+      checks.push(componentCheck(report.name, component));
   return { ok: checks.every((c) => c.ok), checks };
+}
+const HEALTHY_STATES = new Set([
+  "running",
+  "healthy",
+  "ready",
+  "installed",
+  "stopped",
+]);
+/** A failing component's check keeps the observation's own reason and exit code; the hint follows what was observed. */
+export function componentCheck(
+  targetName: string,
+  component: ComponentReport,
+): DoctorCheck {
+  const name = `${targetName}/${component.name}`;
+  if (HEALTHY_STATES.has(component.state))
+    return { name, ok: true, message: `Component is ${component.state}.` };
+  const reason =
+    component.reason ??
+    (component.exitCode === undefined
+      ? undefined
+      : `The process exited with code ${component.exitCode}.`);
+  return {
+    name,
+    ok: false,
+    message: `Component is ${component.state}.${reason ? ` ${reason}` : ""}`,
+    reason: component.state,
+    hint: componentHint(targetName, component),
+  };
+}
+function componentHint(targetName: string, component: ComponentReport): string {
+  if (component.reason === OBSERVATION_EXPIRED)
+    return "Run doctor again; the observation did not finish within the status budget.";
+  if (component.state === "unknown")
+    return "Inspect daemon state (rig activity, rigd status) before acting on this component.";
+  if (component.state === "failed" || component.exitCode !== undefined)
+    return `Inspect the Target logs (rig logs ${targetName}) for why it exited.`;
+  if (component.state === "unhealthy")
+    return `The health check failed; inspect the Target logs (rig logs ${targetName}) and the health URL.`;
+  if (component.state === "missing")
+    return "The installed artifact or storage is absent; run up or redeploy this Target.";
+  return "Inspect Target logs and provider configuration.";
 }

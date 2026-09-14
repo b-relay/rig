@@ -123,7 +123,7 @@ export async function observeTargets(
         state: "unknown",
         reason:
           result.kind === "expired"
-            ? "Observation did not complete before the status deadline."
+            ? OBSERVATION_EXPIRED
             : "Observation failed.",
       };
     });
@@ -139,6 +139,9 @@ export async function observeTargets(
     };
   });
 }
+/** The reason a component report carries when the shared status deadline expired before its observation finished. */
+export const OBSERVATION_EXPIRED =
+  "Observation did not complete before the status deadline.";
 /** Whether the recorded Commit is a completed deployment; callers such as git push must not treat an incomplete one as deployed. */
 export function deploymentFlags(
   target: Pick<

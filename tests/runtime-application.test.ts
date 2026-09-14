@@ -619,6 +619,51 @@ test("doctor reports drift on a running Working copy Target and names restart as
   });
 });
 
+test("doctor carries each failing component's observation reason and exit code and picks its hint from them", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  const check = async () =>
+    (
+      (await runtime.command({ action: "doctor", project: "demo" })) as {
+        checks: {
+          name: string;
+          ok: boolean;
+          message: string;
+          reason?: string;
+          hint?: string;
+        }[];
+      }
+    ).checks.find((c) => c.name === "local/web");
+  deps.observations.process = async () => ({ state: "stopped", exitCode: 137 });
+  expect(await check()).toEqual({
+    name: "local/web",
+    ok: false,
+    message: "Component is failed. The process exited with code 137.",
+    reason: "failed",
+    hint: "Inspect the Target logs (rig logs local) for why it exited.",
+  });
+  deps.observations.process = async () => ({
+    state: "unknown",
+    reason: "Process ownership could not be verified.",
+  });
+  expect(await check()).toMatchObject({
+    ok: false,
+    message: "Component is unknown. Process ownership could not be verified.",
+    reason: "unknown",
+    hint: "Inspect daemon state (rig activity, rigd status) before acting on this component.",
+  });
+  deps.observations.process = async () => ({
+    state: "unknown",
+    reason: "Observation did not complete before the status deadline.",
+  });
+  expect(await check()).toMatchObject({
+    message:
+      "Component is unknown. Observation did not complete before the status deadline.",
+    hint: "Run doctor again; the observation did not finish within the status budget.",
+  });
+});
+
 test("a stopped Working copy Target frees its old port for a live deploy once rig config moves local to another port", async () => {
   const { runtime, state, config, deps } = fixture();
   deps.files.selectPorts = async ({ requests, occupied }) => {

@@ -316,7 +316,7 @@ owner carries only its own owner-level defects.
 | hook/build timeout reported as generic COMMAND_TIMEOUT with output discarded; timeouts hard-coded | #197 | (fixed: `runCommand` resolves a timed-out command with its output and `timedOut`; `runTarget` records it; hook/build/install raise `HOOK_TIMEOUT`/`BUILD_TIMEOUT`/`DEPENDENCIES_TIMEOUT` with the budget from `hookTimeout`/`buildTimeout`/`installTimeout` config) |
 | envFile parser rejects `KEY="value" # comment`; ENV_FILE errors carry no path or line | #198 | (fixed: pure `parseEnvironmentFile(text, path)` accepts a comment after the closing quote and names path and line in every rejection) |
 | interpolated paths unquoted in shell commands: a space in workspace or RIG_ROOT breaks ${workspace}, ${db.path} | #199 |
-| doctor discards observation reason and exit code for failing components | #200 |
+| doctor discards observation reason and exit code for failing components | #200 (fixed: `componentCheck` in doctor.ts carries reason/exitCode into the message and picks the hint from them) |
 | status never reports destructionPending or deploymentIncomplete; doctor healthy on uncommitted deployment | #201 (fixed: `destructionPending` report flag, status warning naming the destroy command, doctor skips observing a destruction-pending Preview; deploymentIncomplete halves were already fixed by #155/#186) |
 | launchd capture freshness measured after two ps inspections: flaps to unknown, blocks uninstall | #202 |
 | doctor/status/list minors (aggregate never unhealthy, project note dead code, list observes for nothing, deployBranch not drift, caddy-reload check unreachable, no commit) | #203 |

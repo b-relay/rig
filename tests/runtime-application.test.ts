@@ -592,6 +592,37 @@ test("ports owned by a Target's unresolved recovery plan stay reserved while oth
   expect(occupiedSeen.at(-1)).toEqual([4567, 4600]);
 });
 
+test("doctor reports drift, not an invalid config, when a valid config adds a managed component whose port is not recorded yet", async () => {
+  const { runtime, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({ action: "down", project: "demo" });
+  config.components.worker = {
+    mode: "managed",
+    command: "work --host 127.0.0.1",
+  };
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as {
+    checks: {
+      name: string;
+      ok: boolean;
+      message: string;
+      reason?: string;
+      hint?: string;
+    }[];
+  };
+  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
+    name: "local/config",
+    ok: false,
+    message:
+      "Current configuration adds components the recorded Target policy does not have (worker).",
+    reason: "config-drift",
+    hint: "Run rig restart local (or rig down local, then rig up local) to apply the current configuration.",
+  });
+});
+
 test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

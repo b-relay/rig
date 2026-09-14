@@ -358,8 +358,12 @@ local` on a stopped Target and `rig restart local` re-plan it from the config
 on disk before starting, keeping its Target id, data root, and recorded ports
 where the config still allows them. `rig up local` on a Target that is already
 running keeps the plan its processes were started from; `rig doctor` reports
-`config-drift` for it and names `rig restart local` as the fix. Deployed
-Targets (`live`, `preview`) keep their recorded plan until the next deploy.
+`config-drift` for it and names `rig restart local` as the fix. A valid config
+that adds a component the recorded plan has no port for is also reported as
+`config-drift`, naming the added components; `config-invalid` is reserved for
+a config that does not parse or resolve, and carries the parser's message.
+Deployed Targets (`live`, `preview`) keep their recorded plan until the next
+deploy.
 
 ```bash
 rig up local

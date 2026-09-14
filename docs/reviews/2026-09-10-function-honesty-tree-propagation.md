@@ -244,7 +244,7 @@ owner carries only its own owner-level defects.
 | preview replacement: retire failure after commit | #123 |
 | replacement retires oldest preview without destroying storage | #124 |
 | Convex site port discarded for local/live | #125 |
-| doctor `config-invalid` instead of drift for new dynamic-port component | #126 (#119 concurrent) |
+| doctor `config-invalid` instead of drift for new dynamic-port component | #126 (#119 concurrent) (fixed: `configCheck` in doctor.ts treats `missing_port` with added components as drift and names them) |
 | doctor 5 s timeout → offline "not reachable" | #127 |
 | first Ctrl-C after submission consumed; Ctrl-C at prompt exits 1 | #128, #129 |
 | stale admin-activity lock never reclaimed | #130 (fixed: the lock records pid and start time; dead or replaced holders and minute-old unreadable locks are reclaimed; warnings name the lock and pid) |

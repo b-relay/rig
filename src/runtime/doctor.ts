@@ -150,48 +150,7 @@ export async function doctor(
         reason: "deployment-recovery",
         hint: "Run down for this Target to stop both recorded plans before retrying deployment.",
       });
-    try {
-      const document = await deps.documents.read(project.repoPath);
-      const current = deps.documents.resolve({
-        config: document.config,
-        target: target.kind,
-        workspacePath: target.plan.workspacePath,
-        dataRoot: target.plan.dataRoot,
-        deploymentName: target.name,
-        branchSlug: target.plan.branchSlug,
-        branch: target.branch,
-        commit: target.commit,
-        assignedPorts: recordedPorts(target.plan.components),
-      });
-      const ok = isDeepStrictEqual(current, target.plan);
-      checks.push(
-        ok
-          ? {
-              name: `${target.name}/config`,
-              ok: true,
-              message: "Recorded Target policy matches current configuration.",
-            }
-          : {
-              name: `${target.name}/config`,
-              ok: false,
-              message:
-                "Current configuration differs from the recorded Target policy.",
-              reason: "config-drift",
-              hint:
-                target.kind === "local"
-                  ? "Run rig restart local (or rig down local, then rig up local) to apply the current configuration."
-                  : "Deploy to apply the current configuration; lifecycle commands preserve the recorded plan.",
-            },
-      );
-    } catch {
-      checks.push({
-        name: `${target.name}/config`,
-        ok: false,
-        message: "Current Target policy could not be resolved.",
-        reason: "config-invalid",
-        hint: "Correct Project configuration before deploying.",
-      });
-    }
+    checks.push(await configCheck(project, target, deps));
   }
   const ownershipKnown = !checks.some(
     (check) => check.name === "runtime-ownership" && !check.ok,
@@ -209,6 +168,73 @@ export async function doctor(
     for (const component of report.components)
       checks.push(componentCheck(report.name, component));
   return { ok: checks.every((c) => c.ok), checks };
+}
+/** Compares the current config, resolved against the recorded ports, with the recorded plan.
+ * A config that parses but adds components the record has no port for is drift, not an invalid config. */
+async function configCheck(
+  project: Pick<ProjectRecord, "repoPath">,
+  target: TargetRecord,
+  deps: Pick<RuntimeDependencies, "documents">,
+): Promise<DoctorCheck> {
+  const name = `${target.name}/config`;
+  const drift = (message: string): DoctorCheck => ({
+    name,
+    ok: false,
+    message,
+    reason: "config-drift",
+    hint:
+      target.kind === "local"
+        ? "Run rig restart local (or rig down local, then rig up local) to apply the current configuration."
+        : "Deploy to apply the current configuration; lifecycle commands preserve the recorded plan.",
+  });
+  try {
+    const document = await deps.documents.read(project.repoPath);
+    const recorded = new Set(target.plan.components.map((c) => c.name));
+    const added = Object.keys(document.config.components).filter(
+      (component) => !recorded.has(component),
+    );
+    try {
+      const current = deps.documents.resolve({
+        config: document.config,
+        target: target.kind,
+        workspacePath: target.plan.workspacePath,
+        dataRoot: target.plan.dataRoot,
+        deploymentName: target.name,
+        branchSlug: target.plan.branchSlug,
+        branch: target.branch,
+        commit: target.commit,
+        assignedPorts: recordedPorts(target.plan.components),
+      });
+      return isDeepStrictEqual(current, target.plan)
+        ? {
+            name,
+            ok: true,
+            message: "Recorded Target policy matches current configuration.",
+          }
+        : drift(
+            "Current configuration differs from the recorded Target policy.",
+          );
+    } catch (error) {
+      if (
+        error instanceof ConfigError &&
+        error.code === "missing_port" &&
+        added.length
+      )
+        return drift(
+          `Current configuration adds components the recorded Target policy does not have (${added.join(", ")}).`,
+        );
+      throw error;
+    }
+  } catch (error) {
+    const failure = error instanceof ConfigError ? error : undefined;
+    return {
+      name,
+      ok: false,
+      message: `Current Target policy could not be resolved.${failure ? ` ${failure.message}` : ""}`,
+      reason: "config-invalid",
+      hint: failure?.hint ?? "Correct Project configuration before deploying.",
+    };
+  }
 }
 const HEALTHY_STATES = new Set([
   "running",

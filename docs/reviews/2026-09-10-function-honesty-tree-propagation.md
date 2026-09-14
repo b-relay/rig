@@ -278,7 +278,7 @@ owner carries only its own owner-level defects.
 | stale `rig.yaml.lock` blocks every edit | #158 | (fixed: shared `acquireProcessLock` records pid+start time, reclaims dead/stale holders, names the lock path) |
 | symlinked `rig.yaml`/Caddyfile replaced by a regular file on edit | #159 (fixed: both editors resolve the real path first and rename over it, keeping the link) |
 | `git push rig` hangs forever on fatal helper errors (readline never closed) | #160 |
-| push from a linked worktree rejected with `PROJECT_PATH_CONFLICT` | #161 |
+| push from a linked worktree rejected with `PROJECT_PATH_CONFLICT` | #161 | (fixed: `inspectProjectLocation` resolves the repository through `git worktree list --porcelain`, so a linked worktree discovers the main working tree and its production branch; the helper sends that path; the daemon's push conflict names both paths)
 | `init --domain` scaffolds one hostname for every Target → `ROUTE_CONFLICT` | #162 (fixed: scaffold composes `${subdomain}.<base>` with a bare `live.domain`) |
 | lane `hooks` override replaces the whole object; `env` merges per key | #163 (fixed: `mergeComponentOverride` merges env and hooks per key in resolver and schema) |
 | config validation gaps (union "Invalid input", spurious `base.` override error, interpolation without path, Caddy-invalid domains, `ports` namespace collision, `.bak` litter) | #164 |

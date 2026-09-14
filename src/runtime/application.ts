@@ -290,8 +290,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         if (command.repoPath !== project.repoPath)
           throw new RigError(
             "PROJECT_PATH_CONFLICT",
-            "The pushed repository is not the registered Project directory.",
-            "Push from the registered repository or use repoint first.",
+            `The pushed repository ${command.repoPath} is not the registered Project directory ${project.repoPath}.`,
+            "Push from the registered repository or one of its linked worktrees, or run rig repoint . there if the Project moved.",
           );
         if (!command.branch || !command.commit)
           throw new RigError(

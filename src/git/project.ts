@@ -128,14 +128,16 @@ export async function inspectProjectLocation(
     };
   }
   if (bare.stdout.trim() !== "false") throw discoveryFailure();
-  const root = await readGit(
+  // The Project is the repository: a linked worktree resolves to the main working tree it shares.
+  const worktrees = await readGit(
     location,
-    ["rev-parse", "--show-toplevel"],
+    ["worktree", "list", "--porcelain"],
     discovery,
   );
-  if (root.exitCode !== 0 || !isAbsolute(root.stdout.trim()))
+  const root = worktrees.stdout.match(/^worktree (.+)$/m)?.[1]?.trim();
+  if (worktrees.exitCode !== 0 || !root || !isAbsolute(root))
     throw discoveryFailure();
-  const repoPath = await canonicalPath(root.stdout.trim(), discovery);
+  const repoPath = await canonicalPath(root, discovery);
   const remoteHead = await readGit(
     repoPath,
     ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],

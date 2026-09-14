@@ -18,8 +18,8 @@ test("discovery controls canonical filesystem identity as well as Git without re
     },
     async run(input: { command: readonly string[] }) {
       commands.push(input.command);
-      const stdout = input.command.includes("--show-toplevel")
-        ? "/canonical/repo\n"
+      const stdout = input.command.includes("--porcelain")
+        ? "worktree /canonical/repo\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/trunk\n\nworktree /canonical/wt\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/feature\n\n"
         : input.command.includes("--is-bare-repository")
           ? "false\n"
           : "origin/trunk\n";
@@ -73,9 +73,14 @@ test("missing and unreadable paths and failed or malformed Git are distinct safe
     [ok("true")],
     [ok("unexpected secret")],
     [{ exitCode: 128, stdout: "", stderr: "private failure" }],
-    [ok("false"), ok("relative/root")],
-    [ok("false"), ok("/repo"), ok("origin/")],
-    [ok("false"), ok("/repo"), { exitCode: 128, stdout: "", stderr: "secret" }],
+    [ok("false"), ok("worktree relative/root\n")],
+    [ok("false"), ok("/repo\n")],
+    [ok("false"), ok("worktree /repo\n"), ok("origin/")],
+    [
+      ok("false"),
+      ok("worktree /repo\n"),
+      { exitCode: 128, stdout: "", stderr: "secret" },
+    ],
   ]) {
     const bare = responses[0]?.stdout === "true";
     await expect(
@@ -88,13 +93,18 @@ test("read-only discovery retains current, detached and configured initial Branc
   expect(
     await inspectProjectGit(
       "/repo",
-      controlled([ok("false"), ok("/repo"), absent, ok("feature/work")]),
+      controlled([
+        ok("false"),
+        ok("worktree /repo\n"),
+        absent,
+        ok("feature/work"),
+      ]),
     ),
   ).toEqual({ repoPath: "/repo", productionBranch: "feature/work" });
   expect(
     await inspectProjectGit(
       "/repo",
-      controlled([ok("false"), ok("/repo"), absent, absent]),
+      controlled([ok("false"), ok("worktree /repo\n"), absent, absent]),
     ),
   ).toEqual({ repoPath: "/repo", productionBranch: "main" });
   const notRepo = {

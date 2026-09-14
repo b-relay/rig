@@ -308,7 +308,7 @@ test("real unborn, origin default, detached and bare repositories preserve disco
     ).toBe("main");
     expect(
       commands.every((command) =>
-        ["rev-parse", "symbolic-ref"].includes(command[1]!),
+        ["rev-parse", "symbolic-ref", "worktree"].includes(command[1]!),
       ),
     ).toBe(true);
     const bare = join(directory, "bare");
@@ -345,6 +345,42 @@ test("explicit setup executes exactly init and missing remote add mutations", as
       ["git", "init"],
       ["git", "remote", "add", "rig", "rig://localhost/example"],
     ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a linked worktree is discovered as its main working tree, with the main tree's production branch", async () => {
+  const directory = await realpath(
+    await mkdtemp(join(tmpdir(), "rig-git-worktree-")),
+  );
+  const main = join(directory, "main"),
+    linked = join(directory, "wt");
+  await mkdir(main);
+  const git = (args: string[]) => run({ command: ["git", ...args], cwd: main });
+  try {
+    await git(["init", "-b", "main"]);
+    await git([
+      "-c",
+      "user.name=Rig Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "fixture",
+    ]);
+    expect(
+      (await git(["worktree", "add", "-b", "feature", linked])).exitCode,
+    ).toBe(0);
+    const discovery = createProjectDiscovery(run);
+    expect(await inspectProjectGit(linked, discovery)).toEqual({
+      repoPath: main,
+      productionBranch: "main",
+    });
+    expect(await inspectProjectGit(join(linked, "."), discovery)).toEqual(
+      await inspectProjectGit(main, discovery),
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

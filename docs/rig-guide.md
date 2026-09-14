@@ -768,6 +768,13 @@ tags, anchors, aliases, and merge keys. Existing config formats are never
 automatically converted, and supported structured edits preserve comments/order
 or refuse before mutation.
 
+A Project is its Git repository: `rig init`, `rig status` from the shell, and
+`git push rig` inside a linked worktree (`git worktree add ../wt feature`)
+resolve to the main working tree, so the registered path stays the main
+checkout and the production branch is the main tree's branch. A push from a
+directory that is not the registered repository or one of its worktrees fails
+with `PROJECT_PATH_CONFLICT`, naming both paths.
+
 `rig rename <name>` and `rig repoint <path>` require stopped Targets and validate
 registered identity/path conflicts. They do not delete Project data. `repoint`
 re-plans the Working copy Target from the new directory's config with the same

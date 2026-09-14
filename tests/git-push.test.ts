@@ -37,10 +37,10 @@ test("real git push invokes the helper and sends an authenticated exact Commit t
     GIT_COMMITTER_NAME: "Rig Test",
     GIT_COMMITTER_EMAIL: "rig@example.invalid",
   };
-  const git = async (args: string[]) =>
+  const git = async (args: string[], cwd = repo) =>
     await runCommand({
       command: [gitExecutable, ...args],
-      cwd: repo,
+      cwd,
       env,
       timeoutMs: 20000,
     });
@@ -106,6 +106,29 @@ test("real git push invokes the helper and sends an authenticated exact Commit t
     expect(await readFile(join(root, "logs/rig/rig.jsonl"), "utf8")).toContain(
       "git-push",
     );
+    // A linked worktree shares the repository, so a push from it names the registered main working tree.
+    const linked = join(directory, "wt");
+    expect(
+      (await git(["worktree", "add", "-b", "feature", linked])).exitCode,
+    ).toBe(0);
+    await writeFile(join(linked, "README.md"), "from the worktree\n");
+    expect(
+      (await git(["commit", "-am", "feat: worktree"], linked)).exitCode,
+    ).toBe(0);
+    const featureCommit = (
+      await git(["rev-parse", "HEAD"], linked)
+    ).stdout.trim();
+    const fromWorktree = await git(["push", "rig", "feature"], linked);
+    expect(fromWorktree.stderr).not.toContain("fatal:");
+    expect(fromWorktree.exitCode).toBe(0);
+    expect(
+      requests.filter((r) => r.action === "git-push").at(-1),
+    ).toMatchObject({
+      project: "example",
+      repoPath: repo,
+      branch: "feature",
+      commit: featureCommit,
+    });
     // A tag in the batch is rejected per ref; the helper must answer git instead of hanging.
     expect((await git(["tag", "v1"])).exitCode).toBe(0);
     const tagged = await git(["push", "rig", "main:preview/main", "v1"]);

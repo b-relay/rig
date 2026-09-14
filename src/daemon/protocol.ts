@@ -61,6 +61,8 @@ export const commandSchema = z
     force: z.boolean().optional(),
     noUp: z.boolean().optional(),
     lines: z.number().int().min(1).max(10000).optional(),
+    /** An Operation id (or unambiguous prefix) that activity narrows to; the id a failed command prints. */
+    operation: z.string().min(1).optional(),
     after: z.string().optional(),
     newName: z.string().optional(),
     newPath: z.string().optional(),

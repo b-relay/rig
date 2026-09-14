@@ -83,7 +83,9 @@ export async function reportFailure(
   } else {
     input.output.error(`${failure.message}\n${failure.hint}\n`);
     if (unexpected && input.operationId)
-      input.output.error(`Operation: ${input.operationId}\n`);
+      input.output.error(
+        `Operation: ${input.operationId} (rig activity ${input.operationId})\n`,
+      );
     if (unexpected && evidence.path)
       input.output.error(`Details: ${evidence.path}\n`);
   }

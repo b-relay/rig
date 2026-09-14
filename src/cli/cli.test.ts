@@ -745,3 +745,86 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
   expect(await run).toBe(0);
   expect(text).toContain("beta live started");
 });
+
+test("rig activity shows each record's message and Operation id, and rig activity <id> asks for that operation", async () => {
+  let text = "";
+  const requests: unknown[] = [];
+  let result: unknown = {
+    operations: [
+      {
+        id: "0b1f2c3d-op",
+        project: "app",
+        target: "local",
+        action: "up",
+        outcome: "failed",
+        occurredAt: "2026-09-10T22:14:03.120Z",
+        message: "PROCESS_START",
+      },
+      {
+        id: "crash-1",
+        project: "app",
+        target: "local",
+        action: "crash",
+        outcome: "failed",
+        occurredAt: "2026-09-10T22:15:11.004Z",
+        message: "web exited with code 137.",
+      },
+      {
+        id: "admin-1",
+        action: "daemon-install",
+        outcome: "installed",
+        occurredAt: "2026-09-10T22:16:00.000Z",
+      },
+    ],
+  };
+  const dependencies = {
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
+      async command(request: unknown) {
+        requests.push(request);
+        return result;
+      },
+    },
+    output: {
+      write(value: string) {
+        text += value;
+      },
+      error(value: string) {
+        text += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
+    wait: async () => {},
+    newOperationId: () => "op-activity",
+  };
+  expect(await runRigCli(["activity"], dependencies)).toBe(0);
+  expect(text).toBe(
+    [
+      "2026-09-10T22:14:03.120Z  app  local  up  failed  0b1f2c3d-op",
+      "    PROCESS_START",
+      "2026-09-10T22:15:11.004Z  app  local  crash  failed  crash-1",
+      "    web exited with code 137.",
+      "2026-09-10T22:16:00.000Z  daemon-install  installed  admin-1",
+      "",
+    ].join("\n"),
+  );
+  expect(requests).toMatchObject([{ action: "activity", repoPath: "/workspace" }]);
+  expect(requests[0]).not.toHaveProperty("operation");
+  text = "";
+  result = { operations: [], operation: "0b1f2c3d-op" };
+  expect(await runRigCli(["activity", "0b1f2c3d-op"], dependencies)).toBe(0);
+  expect(requests.at(-1)).toMatchObject({
+    action: "activity",
+    repoPath: "/workspace",
+    operation: "0b1f2c3d-op",
+  });
+  expect(text).toBe("No activity recorded for Operation 0b1f2c3d-op.\n");
+});

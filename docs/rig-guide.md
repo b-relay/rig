@@ -589,7 +589,12 @@ log until its retention expires. A request rigd refuses before an Operation
 begins (an unregistered Project, a missing Target, a deploy aimed at local, an
 init without a directory) is a usage mistake and is not listed; a refusal after
 the attempt began (a failed preflight, an unresolved transition) is listed as
-failed. Diagnostics live
+failed. Each line ends with the record's Operation id and is followed by its
+message: the error code for a failed Operation, or `web exited with code 137.`
+for a crash. A failure that prints `Operation: <id>` can be looked up with
+`rig activity <id>` (a unique prefix of the id also works), which shows only
+that record or reports that none was recorded, as happens when the request
+never reached rigd. Diagnostics live
 in separate `logs/rig/rig.jsonl` and `logs/rigd/rigd.jsonl` files beneath the Rig
 root, with daily rotation and 14-day retention by default. That retention does
 not delete Target logs, activity, or Persistent storage. A record cut short by

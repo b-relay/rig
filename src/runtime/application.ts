@@ -206,11 +206,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           deps.store.read(),
           deps.readAdminActivity(),
         ]);
-        return {
-          operations: [...state.activity, ...admin]
-            .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
-            .slice(-(command.lines ?? 100)),
-        };
+        return selectActivity(
+          [...state.activity, ...admin].sort((a, b) =>
+            a.occurredAt.localeCompare(b.occurredAt),
+          ),
+          command,
+        );
       }
       if (command.action === "initialization-info") {
         if (!command.repoPath)
@@ -272,11 +273,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (command.action === "config")
         return { project: project.name, ...selection.document };
       if (command.action === "activity")
-        return {
-          operations: state.activity
-            .filter((o) => o.projectId === project!.id)
-            .slice(-(command.lines ?? 100)),
-        };
+        return selectActivity(
+          state.activity.filter((o) => o.projectId === project!.id),
+          command,
+        );
       if (command.action === "doctor")
         return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
@@ -881,4 +881,18 @@ async function destroyReplacedPreviews(
     }
   }
   return { retired, warnings };
+}
+/** The most recent records, or every record the requested Operation id (or prefix) names. */
+function selectActivity(
+  records: readonly OperationRecord[],
+  command: Pick<RuntimeCommand, "operation" | "lines">,
+): { operations: OperationRecord[]; operation?: string } {
+  if (command.operation)
+    return {
+      operations: records.filter((record) =>
+        record.id.startsWith(command.operation!),
+      ),
+      operation: command.operation,
+    };
+  return { operations: records.slice(-(command.lines ?? 100)) };
 }

@@ -45,12 +45,30 @@ export function createRigCommand(
       child.option("--project <name>", "Registered Project identity");
     if (action === "status")
       child.option("--json", "Render the observed report as JSON");
-    child.action(async (options: ScopeOptions) =>
-      execute(
-        { action, repoPath: cwd, ...projectScope(options) },
-        { json: options.json },
-      ),
-    );
+    if (action === "activity")
+      child
+        .argument(
+          "[operation]",
+          "Show one Operation by the id a failed command printed",
+        )
+        .action(async (operation: string | undefined, options: ScopeOptions) =>
+          execute(
+            {
+              action,
+              repoPath: cwd,
+              ...projectScope(options),
+              ...(operation ? { operation } : {}),
+            },
+            { json: options.json },
+          ),
+        );
+    else
+      child.action(async (options: ScopeOptions) =>
+        execute(
+          { action, repoPath: cwd, ...projectScope(options) },
+          { json: options.json },
+        ),
+      );
   }
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);

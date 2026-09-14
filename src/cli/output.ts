@@ -144,11 +144,27 @@ export function renderLogs(value: unknown, heading: boolean): string {
   if (heading && !rows(report.entries).length) lines.push("No logs yet.");
   return lines.length ? `${lines.join("\n")}\n` : "";
 }
+/** One line per record ending in its Operation id, with the recorded message beneath it. */
 function renderActivity(report: Record<string, unknown>): string {
   const operations = rows(report.operations);
-  return operations.length
-    ? `${operations.map((operation) => [word(operation.occurredAt), word(operation.project), word(operation.target), word(operation.action), word(operation.outcome) || "incomplete"].filter(Boolean).join("  ")).join("\n")}\n`
-    : "No activity yet.\n";
+  if (!operations.length)
+    return word(report.operation)
+      ? `No activity recorded for Operation ${word(report.operation)}.\n`
+      : "No activity yet.\n";
+  const lines = operations.flatMap((operation) => [
+    [
+      word(operation.occurredAt),
+      word(operation.project),
+      word(operation.target),
+      word(operation.action),
+      word(operation.outcome) || "incomplete",
+      word(operation.id),
+    ]
+      .filter(Boolean)
+      .join("  "),
+    ...(word(operation.message) ? [`    ${word(operation.message)}`] : []),
+  ]);
+  return `${lines.join("\n")}\n`;
 }
 export function object(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)

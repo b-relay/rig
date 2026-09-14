@@ -1328,6 +1328,37 @@ test("host Activity merges final daemon administration chronologically without a
     await runtime.command({ action: "activity", project: "demo" }),
   ).toMatchObject({ operations: [{ outcome: "registered" }] });
   expect(state.activity).toHaveLength(1);
+  // The Operation id a failure prints selects that record, by full id or unambiguous prefix.
+  const registered = state.activity[0]!.id;
+  expect(
+    await runtime.command({ action: "activity", operation: registered }),
+  ).toEqual({ operations: [state.activity[0]], operation: registered });
+  expect(
+    await runtime.command({
+      action: "activity",
+      project: "demo",
+      operation: registered.slice(0, 4),
+    }),
+  ).toEqual({
+    operations: [state.activity[0]],
+    operation: registered.slice(0, 4),
+  });
+  expect(
+    await runtime.command({ action: "activity", operation: "admin" }),
+  ).toEqual({
+    operations: [
+      {
+        id: "admin",
+        action: "daemon-install",
+        outcome: "installed",
+        occurredAt: "2000-01-01T00:00:00.000Z",
+      },
+    ],
+    operation: "admin",
+  });
+  expect(
+    await runtime.command({ action: "activity", operation: "missing" }),
+  ).toEqual({ operations: [], operation: "missing" });
 });
 
 test("explicit down restores interrupted non-process effects after verified stop even when stop hooks fail", async () => {

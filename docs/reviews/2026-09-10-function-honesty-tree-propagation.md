@@ -284,7 +284,7 @@ owner carries only its own owner-level defects.
 | config validation gaps (union "Invalid input", spurious `base.` override error, interpolation without path, Caddy-invalid domains, `ports` namespace collision, `.bak` litter) | #164 |
 | Target log reader cannot skip one bad record (oversized newline-free line, glued partial line) | #165 | (fixed: unreadable or over-window records become one "Rig skipped an unreadable log record" entry and the cursor advances; the supervisor bounds records at 64 Ki characters; `LOG_LINE_LIMIT`/`LOG_CORRUPT` no longer thrown) |
 | deleted log directory silently drops output; status strips the recorded reason | #166 | (fixed: `recordLine` recreates the directory on ENOENT; the failure is named per log root, cleared on the next success, and carried through status and `renderStatus`) |
-| `rig activity` hides message and Operation id; no `rig result` | #167 |
+| `rig activity` hides message and Operation id; no `rig result` | #167 (fixed: `renderActivity` prints the id and message; `rig activity <id>` selects one Operation through `selectActivity`) |
 | diagnostic rotation disabled forever after a partial first record | #168 | (fixed: `segmentDay` scans for the first complete record and falls back to the file birthtime; `appendRecord` starts a new line after a partial one) |
 | minor logs gaps (UTC times, cursor error on unreadable file, wrapper logs invisible, no Target log rotation, build output burst) | #169 |
 | readiness never re-observes the process: foreign listener certifies, immediate exit reported started, dead process waits full readyTimeout | #171 |

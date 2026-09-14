@@ -62,7 +62,7 @@ export async function composeDaemon(
     root,
     supervisors,
     run: runCommand,
-    installer: createArtifactInstaller(),
+    installer: createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath }),
     router: createCaddyRouter({
       caddyfile:
         host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),

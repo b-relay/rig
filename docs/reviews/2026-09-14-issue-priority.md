@@ -55,7 +55,7 @@ testability and honesty refactors.
 35. ~~#144~~ (fixed) launchd ensureRunning fails LAUNCHD_START on a healthy job in restart backoff. (#227 is its honesty fix.)
 36. ~~#202~~ (fixed) launchd capture observation measures freshness after two ps inspections; loaded hosts flap to unknown and block uninstall. (#228, #237.)
 37. ~~#218~~ (fixed) launchd supervisor litter and the ~3 s unload budget fails `rig down` while the job is unloading. (#227, #226.)
-38. #229 Honesty and functional: installer resolves bun through `Bun.which` on the launchd PATH; every source-entrypoint install fails BUN_MISSING for a user-local bun.
+38. ~~#229~~ (fixed) Honesty and functional: installer resolves bun through `Bun.which` on the launchd PATH; every source-entrypoint install fails BUN_MISSING for a user-local bun.
 39. #231 Honesty and functional: git source store resolves relative repository/destination against rigd's cwd.
 40. #157 sqlite path and envFile are not confined; rigd creates directories and files at any user-writable absolute path.
 41. #135 Localhost-only binding check bypassed by a quoted shell wrapper; hooks and env not checked.

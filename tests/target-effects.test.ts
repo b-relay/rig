@@ -42,7 +42,7 @@ function effects(root: string, recordingTime = () => new Date().toISOString()) {
     recordingTime,
     supervisors: new Map(),
     run: runCommand,
-    installer: createArtifactInstaller(),
+    installer: createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath }),
     router: {
       async apply() {},
       async remove() {},

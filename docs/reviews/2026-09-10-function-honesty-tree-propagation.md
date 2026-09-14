@@ -100,8 +100,8 @@ rigd: main(args) [O+T] src/rigd.ts:10
       ensureRunning(request) [T] :102   ← waitForApplication, waitForCaptureStart
       observe(key) [H given run/inspect/now] :49 → readCaptureObservation [H]
       launchdPlist, xml, checked, shutdown [H]
-    createArtifactInstaller() [D+T] src/providers/artifact-installer.ts:29   (default run)
-      install(request) [D] :37   (Bun.which("bun") :66)
+    createArtifactInstaller(options) [H] src/providers/artifact-installer.ts:29   (FIXED #229: run and bunExecutable required; composeDaemon passes runCommand / process.execPath)
+      install(request) [H given run, bunExecutable] :36   (FIXED #229: no Bun.which)
       observe(path), shellQuote, isSourceEntrypoint [H]
     createCaddyRouter(options) [D] src/providers/caddy-router.ts:23   (default run); all methods [H given run]
     createGitSourceStore({root}) [D+T] src/providers/git-source-store.ts:20   (default run)
@@ -154,8 +154,8 @@ what would clear it.
 | 8 | launchd `waitForApplication` `launchd-supervisor.ts:88-91` 30 × `Bun.sleep(100)` | → launchd `ensureRunning` `[T]` → `createLaunchdSupervisor` `[D+T]` → `composeDaemon` → `rigd main` | yes with an injected sleep/poll budget (#144 shows the concrete false failure). |
 | 9 | launchd `stop` `launchd-supervisor.ts:171-184` 30 × `Bun.sleep(100)` | → `createLaunchdSupervisor` → owners | yes, same fix. |
 | 10 | `createLaunchdSupervisor` `launchd-supervisor.ts:32-34` defaults `run`, `inspect`, `now`; `composeDaemon:43-48` passes none | → `composeDaemon` → `rigd main` | own defect clears by requiring; stays `[T]` until 5, 8 clear. |
-| 11 | installer `install` `artifact-installer.ts:66` `Bun.which("bun")` when `bunExecutable` absent | → `createArtifactInstaller` `[D+T]` → `composeDaemon` → `rigd main` | yes, require `bunExecutable` (`composeDaemon` can pass `process.execPath`). |
-| 12 | `createArtifactInstaller` `artifact-installer.ts:35` default `run` | → owners | own defect clears by requiring; `[T]` until 11 clears. |
+| 11 | ~~installer `install` `artifact-installer.ts:66` `Bun.which("bun")` when `bunExecutable` absent~~ FIXED (#229): `bunExecutable` is required; `composeDaemon` passes `process.execPath`. | (cleared) | done. |
+| 12 | ~~`createArtifactInstaller` `artifact-installer.ts:35` default `run`~~ FIXED (#229): `run` is required; `composeDaemon` passes `runCommand`. | (cleared) | done. |
 | 13 | `createCaddyRouter` `caddy-router.ts:31` default `run`; `composeDaemon:65-79` passes none | → `composeDaemon` → `rigd main` | yes; every method is honest given `run`. |
 | 14 | store `prepare` `git-source-store.ts:70,:85,:103` `resolve()` against `process.cwd()` | → `createGitSourceStore` `[D+T]` → `createDeploymentSources` `[T]` → `composeDaemon` → `rigd main` | `prepare`: yes with absolute-path validation or a `cwd` input. `createDeploymentSources`: yes if 14 and 15 clear (it declares both capabilities). |
 | 15 | `createGitSourceStore` `git-source-store.ts:24` default `run`; `composeDaemon:96` passes only root | → `createDeploymentSources` `[T]` → owners | own defect clears by requiring; `[T]` until 14 clears. |
@@ -349,7 +349,7 @@ owner carries only its own owner-level defects.
 | [D] waitForCaptureStart Date.now/Bun.sleep (row 5) | #226 |
 | [D] launchd waitForApplication / stop 30 × Bun.sleep(100) (rows 8, 9) | #227 |
 | [D+T] createLaunchdSupervisor defaults run/inspect/now (row 10) | #228 |
-| [D] installer install Bun.which("bun") / [D+T] createArtifactInstaller default run (rows 11, 12) | #229 |
+| ~~[D] installer install Bun.which("bun") / [D+T] createArtifactInstaller default run (rows 11, 12)~~ fixed | #229 |
 | [D] createCaddyRouter default run (row 13) | #230 |
 | [D] store prepare resolve() against cwd / [D+T] createGitSourceStore default run (rows 14, 15) | #231 |
 | [D] createProjectDiscovery process.env (row 16) | #232 |
@@ -1196,13 +1196,10 @@ composeDaemon(root, captureCommand) [O fat] src/daemon/composition.ts:31   [B tr
       ↳ fix: accept `sleep` / poll budget option → [H]
       run(launchctl print) :156,:172 ; checked(["bootout"]) :170 ; rm plist/json under options.root :180-181
     shutdown() [H] :193   (no-op by design)
-  createArtifactInstaller() [D+T] src/providers/artifact-installer.ts:29   t: providers-installer.test.ts:15,:42 (defaults, real bun)
-    ↳ cause: `run ?? runCommand` :35 defaulted; composition.ts:64 passes nothing
-    ↳ fix: require run → still [T] via install
-    install(request) [D] :37
-      ↳ cause: `Bun.which("bun")` :66 — PATH lookup in the daemon's environment, taken only when
-        `bunExecutable` is absent (composition never sets it); BUN_MISSING :68
-      ↳ fix: require `bunExecutable` (composeDaemon can pass `process.execPath`) → [H]
+  createArtifactInstaller(options) [H] src/providers/artifact-installer.ts:29   t: providers-installer.test.ts (explicit run + bunExecutable)
+    ↳ FIXED #229: `run` and `bunExecutable` are required; composition.ts passes runCommand and process.execPath
+    install(request) [H given run, bunExecutable] :36
+      ↳ FIXED #229: the shim always names `bunExecutable`; no `Bun.which`, BUN_MISSING removed
       run(/bin/sh -c build, 600_000) :39-44 [H given run]   (BUILD_FAILED :46)
       stat/mkdir/copyFile/chmod/rename under request.destination :54-82 — declared
     observe(path) [H] :88   (stat :90, access X_OK :92; ENOENT/EACCES → "missing" :95-98)
@@ -1250,7 +1247,7 @@ Propagation, subtree A (leaf → owner):
 - `createProcessInspection [D] :32-35` → `createChildSupervisor [D+T] :67` → composeDaemon [O] (fails to override `processInspection`).
 - `waitForApplication [D] :91` → launchd `ensureRunning [T] :107,:153` → `createLaunchdSupervisor [D+T]` → composeDaemon [O] (fails to override `run`, `inspect`, `now`).
 - launchd `stop [D] :184` → `createLaunchdSupervisor [D+T]` → composeDaemon [O].
-- `install [D] :66` → `createArtifactInstaller [D+T]` → composeDaemon [O] (fails to override `run`, `bunExecutable`).
+- ~~`install [D] :66` → `createArtifactInstaller [D+T]` → composeDaemon [O] (fails to override `run`, `bunExecutable`).~~ FIXED #229.
 - `createCaddyRouter [D] :31` → composeDaemon [O] (fails to override `run`, `executable`).
 - store `prepare [D] :70,:85,:103` → `createGitSourceStore [D+T]` → `createDeploymentSources [T]` (tree B; it forwards `store.prepare` :22) → composeDaemon [O] (fails to override `run`).
 - Same child-supervisor chain also terminates at `runCapturedProcess [O]` (:23) — which additionally fails to override everything.
@@ -1545,10 +1542,10 @@ Subtrees C and D contribute no rows: every dishonest-looking behaviour there is 
 **installer.install(request) [D]** — :37
 - inputs: request (build command, cwd, env, entrypoint, destination)
 - outputs: shim/binary at `request.destination`; returns artifact descriptor
-- ambient: `Bun.which("bun")` :66 (PATH of the daemon) when `bunExecutable` absent
+- ambient: none (FIXED #229; `bunExecutable` is a required option)
 - prerequisites: build succeeds; entrypoint exists
-- failure: BUILD_FAILED :46, ARTIFACT_MISSING :56, BUN_MISSING :68
-- callees+trust: run [O via default], fs under destination
+- failure: BUILD_FAILED, ARTIFACT_MISSING (BUN_MISSING removed by #229)
+- callees+trust: run [caller-supplied], fs under destination
 
 **createCaddyRouter(options) [D]** — caddy-router.ts:23
 - inputs: caddyfile, reload, extraConfig, reloadCommand?, run?, executable? (:23-30)
@@ -1602,4 +1599,4 @@ Subtrees C and D contribute no rows: every dishonest-looking behaviour there is 
 8. **HAZARD-8 error details carry raw subprocess stderr** — git-source-store.ts:33, caddy-router.ts:117,:143 (validate/reload output), launchd-supervisor.ts:45. `RigError.details` is "bounded context" per domain/errors.ts:3; stderr from `git clone` of a remote can include the repository URL with embedded credentials, and Caddy validation echoes config lines. Not a crash, but a leak channel into diagnostics and CLI output.
 9. **HAZARD-9 composition.ts:45 — `process.getuid?.() ?? 501`.** On any platform where `getuid` is undefined the launchd domain silently becomes `gui/501`; there is no error path. Owner-level, but the fallback constant is a guess about the user, not evidence.
 10. **HAZARD-10 migration/files.ts:121,:145 and adoption.ts:262 have no callers in `src/`.** `readLegacyState`, `migrateLegacyState`, `finalizeLegacyAdoption` are test-only; the only migration behaviour a user can reach is `createAdoptionGuard` (composition.ts:92), which blocks `up`/`deploy` with LEGACY_ADOPTION_PENDING :196 when `runtime/legacy-adoption.json` is pending — with no command able to move it to `completed`. If a pending manifest ever exists on disk the daemon is wedged until the file is edited by hand.
-11. **NOTE-11 artifact-installer.ts:66 — `Bun.which("bun")` in the daemon's PATH.** Under launchd the daemon PATH is the launchd default (`/usr/bin:/bin:/usr/sbin:/sbin`), so a user-local `~/.bun/bin/bun` is not found and every source-entrypoint install fails BUN_MISSING :68 unless PATH was captured elsewhere. composeDaemon could pass `bunExecutable: process.execPath` (it is already bun).
+11. **FIXED (#229).** **NOTE-11 artifact-installer.ts:66 — `Bun.which("bun")` in the daemon's PATH.** Under launchd the daemon PATH is the launchd default (`/usr/bin:/bin:/usr/sbin:/sbin`), so a user-local `~/.bun/bin/bun` is not found and every source-entrypoint install fails BUN_MISSING :68 unless PATH was captured elsewhere. composeDaemon could pass `bunExecutable: process.execPath` (it is already bun).

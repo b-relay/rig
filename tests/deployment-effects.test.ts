@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
+import { runCommand } from "../src/providers/command-runner";
 import type { ArtifactInstaller } from "../src/providers/artifact-installer";
 import { createCaddyRouter } from "../src/providers/caddy-router";
 import type { Router } from "../src/providers/caddy-router";
@@ -57,7 +58,7 @@ async function fixture() {
       root,
       environment: {},
       supervisors: new Map([["child", supervisor]]),
-      installer: overrides.installer ?? createArtifactInstaller(),
+      installer: overrides.installer ?? createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath }),
       router: overrides.router ?? router,
       run: async () => ({
         exitCode: 1,
@@ -256,7 +257,7 @@ test("a crash between a published executable and its journal capture is rolled b
     "effect-checkpoints",
     createHash("sha256").update(f.candidate.id).digest("hex"),
   );
-  const installer = createArtifactInstaller();
+  const installer = createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath });
   const crashing: ArtifactInstaller = {
     ...installer,
     async install(request) {

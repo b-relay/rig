@@ -12,7 +12,6 @@ import {
 } from "node:fs/promises";
 import { dirname, resolve, extname } from "node:path";
 import { RigError } from "../domain/errors";
-import { runCommand } from "./command-runner";
 import type { CommandRunner } from "./contracts";
 export interface InstallRequest {
   readonly cwd: string;
@@ -25,14 +24,13 @@ export interface ArtifactInstaller {
   install(request: InstallRequest): Promise<{ path: string }>;
   observe(path: string): Promise<"installed" | "missing" | "unknown">;
 }
-/** Builds before replacing an installed artifact and publishes by atomic rename. */
-export function createArtifactInstaller(
-  options: {
-    readonly run?: CommandRunner;
-    readonly bunExecutable?: string;
-  } = {},
-): ArtifactInstaller {
-  const run = options.run ?? runCommand;
+/** Builds before replacing an installed artifact and publishes by atomic rename.
+ * Builds run through `run`; source entrypoints are shimmed to `bunExecutable`, never to a PATH lookup. */
+export function createArtifactInstaller(options: {
+  readonly run: CommandRunner;
+  readonly bunExecutable: string;
+}): ArtifactInstaller {
+  const { run, bunExecutable } = options;
   return {
     async install(request) {
       if (request.build) {
@@ -63,16 +61,9 @@ export function createArtifactInstaller(
       const temporary = `${request.destination}.${randomUUID()}.tmp`;
       try {
         if (isSourceEntrypoint(source)) {
-          const executable = options.bunExecutable ?? Bun.which("bun");
-          if (!executable)
-            throw new RigError(
-              "BUN_MISSING",
-              "Bun is required to install this source entrypoint.",
-              "Install Bun or configure its executable path.",
-            );
           await writeFile(
             temporary,
-            `#!/bin/sh\nexec ${shellQuote(executable)} ${shellQuote(source)} "$@"\n`,
+            `#!/bin/sh\nexec ${shellQuote(bunExecutable)} ${shellQuote(source)} "$@"\n`,
             { mode: 0o755 },
           );
         } else {

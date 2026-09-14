@@ -120,7 +120,7 @@ testability and honesty refactors.
 94. ~~#164~~ (fixed) Config validation gaps: "Invalid input" for common mistakes, no field path.
 95. ~~#176~~ (fixed) Health/readiness minor gaps: 3xx unhealthy with no reason, evidence discarded, readyTimeout overflow.
 96. ~~#115~~ (fixed) Validate inventory, Logs and Activity replies before rendering empty results.
-97. #128 First Ctrl-C after submit silently consumed; second hard-kills with no diagnostic.
+97. ~~#128~~ (fixed) First Ctrl-C after submit silently consumed; second hard-kills with no diagnostic.
 98. #129 Ctrl-C at an interactive prompt exits 1 with an error; elsewhere exits 0 silently.
 99. #134 Output strips fewer control characters than prompts.
 

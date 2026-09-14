@@ -23,6 +23,26 @@ export function resolveRigRoot(
     );
   return resolve(RIG_ROOT);
 }
+/** Ctrl-C policy for one command: the first interrupt cancels, the second
+ * detaches from a mutation rigd is still running, and a third ends the process
+ * with the conventional interrupt status in case neither was honoured. */
+export function interruptLadder(exit: (code: number) => void): {
+  cancel: AbortSignal;
+  detach: AbortSignal;
+  interrupt: () => void;
+} {
+  const cancel = new AbortController();
+  const detach = new AbortController();
+  return {
+    cancel: cancel.signal,
+    detach: detach.signal,
+    interrupt: () => {
+      if (!cancel.signal.aborted) cancel.abort();
+      else if (!detach.signal.aborted) detach.abort();
+      else exit(130);
+    },
+  };
+}
 /** A root problem is reported before any log or daemon record exists, so it goes straight to the terminal. */
 export function reportRootFailure(error: unknown, output: UserOutput): number {
   if (!(error instanceof RigError)) throw error;

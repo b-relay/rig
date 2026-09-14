@@ -939,3 +939,91 @@ test("an invalid --project or --deployment is refused by rig before any request,
   }
   expect(calls).toBe(0);
 });
+
+test("Ctrl-C after a mutation is submitted is acknowledged, and a second one detaches with exit 130", async () => {
+  const cancel = new AbortController();
+  const detach = new AbortController();
+  let text = "", errors = "";
+  const events: { event: string; operationId?: string }[] = [];
+  const submitted: (AbortSignal | undefined)[] = [];
+  const exit = await runRigCli(["up", "local"], {
+    root: "/isolated/.rig", cwd: "/workspace", signal: cancel.signal, detach: detach.signal,
+    wait: async () => {},
+    client: {
+      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      command(request, signal) {
+        if (request.action === "queue") return Promise.resolve({});
+        submitted.push(signal);
+        queueMicrotask(() => cancel.abort());
+        return new Promise(() => {});
+      },
+    },
+    output: {
+      write(value) { text += value; },
+      error(value) {
+        errors += value;
+        if (value.includes("Ctrl-C again")) setTimeout(() => detach.abort(), 5);
+      },
+    },
+    diagnostics: { async record(entry) { events.push({ event: entry.event, ...(entry.operationId ? { operationId: entry.operationId } : {}) }); return {}; } },
+    newOperationId: () => "slow-up",
+  });
+  expect(exit).toBe(130);
+  expect(errors).toContain("rigd is still running up (operation slow-up)");
+  expect(errors).toContain("Press Ctrl-C again to detach.");
+  expect(errors).toContain("Detached from operation slow-up");
+  expect(errors).toContain("rig activity slow-up");
+  expect(text).toBe("");
+  expect(submitted).toEqual([detach.signal]);
+  expect(events).toEqual([{ event: "command.started", operationId: "slow-up" }, { event: "command.detached", operationId: "slow-up" }]);
+});
+
+test("a mutation that finishes after the first Ctrl-C still renders its result and exits 0", async () => {
+  const cancel = new AbortController();
+  let text = "", errors = "";
+  const exit = await runRigCli(["up", "live", "--project", "beta"], {
+    root: "/isolated/.rig", cwd: "/workspace", signal: cancel.signal, detach: new AbortController().signal,
+    wait: async () => {},
+    client: {
+      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      async command(request) {
+        if (request.action === "queue") return {};
+        cancel.abort();
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { project: "beta", target: "live", action: "up", outcome: "started", operationId: "mine" };
+      },
+    },
+    output: { write(value) { text += value; }, error(value) { errors += value; } },
+    diagnostics: { async record() { return {}; } },
+    newOperationId: () => "mine",
+  });
+  expect(exit).toBe(0);
+  expect(errors).toContain("Press Ctrl-C again to detach.");
+  expect(text).toContain("beta live started");
+});
+
+test("Ctrl-C during a read is passed to the client, and the aborted read exits 0", async () => {
+  const cancel = new AbortController();
+  let text = "";
+  let received: AbortSignal | undefined;
+  const exit = await runRigCli(["list"], {
+    root: "/isolated/.rig", cwd: "/workspace", signal: cancel.signal,
+    wait: async () => {},
+    client: {
+      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      command(_request, signal) {
+        received = signal;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new RigError("CANCELLED", "The operation was cancelled.", "Retry.")));
+          queueMicrotask(() => cancel.abort());
+        });
+      },
+    },
+    output: { write(value) { text += value; }, error(value) { text += value; } },
+    diagnostics: { async record() { return {}; } },
+    newOperationId: () => "read",
+  });
+  expect(exit).toBe(0);
+  expect(received).toBe(cancel.signal);
+  expect(text).toBe("");
+});

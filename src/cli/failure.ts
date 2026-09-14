@@ -26,6 +26,27 @@ export function isHelp(error: unknown): boolean {
       error.code === "commander.version")
   );
 }
+/** The user detached from a mutation rigd is still running: not a failure, so
+ * it is recorded as its own event and points at the record rigd will finish. */
+export async function reportDetached(
+  operationId: string,
+  input: { diagnostics: DiagnosticLog; output: UserOutput; json?: boolean },
+): Promise<number> {
+  const message = `Detached from operation ${operationId}; rigd finishes it in the background.`;
+  const hint = `Run rig activity ${operationId} to see its outcome.`;
+  const evidence = await recordDiagnostic(input.diagnostics, {
+    event: "command.detached",
+    level: "info",
+    operationId,
+  });
+  if (input.json)
+    input.output.write(
+      `${JSON.stringify({ error: { code: "DETACHED", message, hint, operationId } })}\n`,
+    );
+  else input.output.error(`${message}\n${hint}\n`);
+  if (evidence.error) input.output.error(`${evidence.error}\n`);
+  return 130;
+}
 /** Owns terminal error policy; provider failure details never cross this Interface. */
 export async function reportFailure(
   error: unknown,

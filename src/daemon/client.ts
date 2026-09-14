@@ -68,6 +68,12 @@ const protocolFailure = () =>
   );
 
 const readDeadlineMs = 5000;
+const cancelled = () =>
+  new RigError(
+    "CANCELLED",
+    "The operation was cancelled.",
+    "rigd keeps running whatever it was asked; run rig activity to see it.",
+  );
 /** A list, logs, or activity reply must carry its collection, and a logs reply must name the Project asked for; other actions pass through as received. */
 function validated(command: RuntimeCommand, result: unknown): unknown {
   if (
@@ -120,7 +126,11 @@ export class DaemonClient {
       throw protocolFailure();
     return report.data;
   }
-  async command(command: RuntimeCommand): Promise<unknown> {
+  /** The signal abandons the request as CANCELLED; rigd is not told and finishes the command on its own. */
+  async command(
+    command: RuntimeCommand,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (command.action === "status") return this.status(command);
     const envelope = resultSchema.safeParse(
       await this.request(
@@ -129,6 +139,7 @@ export class DaemonClient {
         ["status", "list", "doctor"].includes(command.action)
           ? { ms: readDeadlineMs, subject: `${command.action} read` }
           : undefined,
+        signal,
       ),
     );
     if (!envelope.success) throw protocolFailure();
@@ -138,7 +149,12 @@ export class DaemonClient {
     path: string,
     body: RuntimeCommand | undefined,
     deadline: ReadDeadline | undefined,
+    signal?: AbortSignal,
   ): Promise<unknown> {
+    const limits = [
+      ...(deadline ? [AbortSignal.timeout(deadline.ms)] : []),
+      ...(signal ? [signal] : []),
+    ];
     let response: Response;
     try {
       response = await fetch(`http://127.0.0.1:${this.address.port}${path}`, {
@@ -148,10 +164,11 @@ export class DaemonClient {
           "content-type": "application/json",
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
-        ...(deadline ? { signal: AbortSignal.timeout(deadline.ms) } : {}),
+        ...(limits.length ? { signal: AbortSignal.any(limits) } : {}),
         redirect: "error",
       });
     } catch (error) {
+      if (signal?.aborted) throw cancelled();
       if (deadline && (error as { name?: string }).name === "TimeoutError")
         throw deadlineExpired(deadline, body?.operationId);
       throw new RigError(

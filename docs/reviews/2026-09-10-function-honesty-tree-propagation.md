@@ -246,7 +246,7 @@ owner carries only its own owner-level defects.
 | Convex site port discarded for local/live | #125 |
 | doctor `config-invalid` instead of drift for new dynamic-port component | #126 (#119 concurrent) (fixed: `configCheck` in doctor.ts treats `missing_port` with added components as drift and names them) |
 | doctor 5 s timeout → offline "not reachable" | #127 (fixed: `DAEMON_TIMEOUT` is distinct and never falls back to the offline report; the read timeout names the read and says the daemon may be busy) |
-| first Ctrl-C after submission consumed; Ctrl-C at prompt exits 1 | #128, #129 |
+| first Ctrl-C after submission consumed; Ctrl-C at prompt exits 1 | #128, #129 (#128 fixed: `main` installs an interrupt ladder; the first interrupt cancels and is acknowledged on stderr while a submitted mutation runs, the second detaches with exit 130 and a `command.detached` record, a third ends the process; reads and follow polls pass the cancel signal to `DaemonClient`, which abandons the request as `CANCELLED`) |
 | stale admin-activity lock never reclaimed | #130 (fixed: the lock records pid and start time; dead or replaced holders and minute-old unreadable locks are reclaimed; warnings name the lock and pid) |
 | `release()` throws on corrupt address/owner json | #131 (fixed: unreadable records are not ours and are skipped; release cannot mask the startup error; lease written atomically; corrupt lease reclaimed unless the address names a live process) |
 | reachable daemon without install marker uninstallable | #132 (fixed: install adopts a reachable daemon without a record; uninstall of a record-less daemon boots out the label and signals the pid) |

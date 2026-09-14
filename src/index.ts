@@ -3,6 +3,7 @@ import { createTerminalInteraction } from "./adapters/terminal-interaction";
 import { randomUUID } from "node:crypto";
 import { runRigCli } from "./cli/rig";
 import {
+  interruptLadder,
   reportRootFailure,
   rigRoot,
   userOutput,
@@ -12,10 +13,9 @@ import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
 import { inspectOfflineHost } from "./daemon/offline-doctor";
 export async function main(args: readonly string[]): Promise<number> {
-  const controller = new AbortController();
-  const cancel = () => controller.abort();
+  const interrupts = interruptLadder((code) => process.exit(code));
   // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked.
-  const output = userOutput(cancel);
+  const output = userOutput(interrupts.interrupt);
   let root: string;
   try {
     root = rigRoot();
@@ -23,8 +23,8 @@ export async function main(args: readonly string[]): Promise<number> {
     return reportRootFailure(error, output);
   }
   const cwd = process.cwd();
-  process.once("SIGINT", cancel);
-  process.once("SIGTERM", cancel);
+  process.on("SIGINT", interrupts.interrupt);
+  process.on("SIGTERM", interrupts.interrupt);
   try {
     return await runRigCli(args, {
       root,
@@ -36,22 +36,23 @@ export async function main(args: readonly string[]): Promise<number> {
         source: "rig",
         now: () => new Date(),
       }),
-      signal: controller.signal,
+      signal: interrupts.cancel,
+      detach: interrupts.detach,
       wait: waitForLogPoll,
       ...(process.stdin.isTTY && process.stderr.isTTY
         ? {
             interaction: createTerminalInteraction(
               process.stdin,
               process.stderr,
-              controller.signal,
+              interrupts.cancel,
             ),
           }
         : {}),
       client: createCliClient(root, cwd),
     });
   } finally {
-    process.removeListener("SIGINT", cancel);
-    process.removeListener("SIGTERM", cancel);
+    process.removeListener("SIGINT", interrupts.interrupt);
+    process.removeListener("SIGTERM", interrupts.interrupt);
   }
 }
 /** CLI policy: only Doctor continues with read-only Host inspection when unavailable. */
@@ -63,9 +64,9 @@ export function createCliClient(
     async status(selection) {
       return (await connectDaemon(root)).status(selection);
     },
-    async command(request) {
+    async command(request, signal) {
       try {
-        return await (await connectDaemon(root)).command(request);
+        return await (await connectDaemon(root)).command(request, signal);
       } catch (error) {
         if (request.action === "doctor" && isDaemonUnavailable(error))
           return inspectOfflineHost(root, request.repoPath ?? cwd);

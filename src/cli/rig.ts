@@ -4,44 +4,92 @@ import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { createRigCommand, type ExecuteCommand } from "./commands";
 import { renderResult, renderStatus, object, renderLogs } from "./output";
-import { isHelp, recordDiagnostic, reportFailure } from "./failure";
+import {
+  isHelp,
+  recordDiagnostic,
+  reportDetached,
+  reportFailure,
+} from "./failure";
 
 /** Parse and render one invocation; the injected client owns runtime effects. */
 /** How long a command may go unanswered before the user is told what rigd is doing instead. */
 const NOTICE_AFTER_MS = 2000;
 /** Sends the command and, when rigd has not answered in time, names the
- * operation it is running and how many wait ahead, so a hang has a cause. */
+ * operation it is running and how many wait ahead, so a hang has a cause.
+ * A cancellation after submission is acknowledged but not honoured, since rigd
+ * finishes the mutation either way; only detachment abandons the wait. */
 async function awaitMutation(
   request: RuntimeCommand,
-  dependencies: Pick<CliDependencies, "client" | "output" | "wait" | "signal">,
+  dependencies: Pick<
+    CliDependencies,
+    "client" | "output" | "wait" | "signal" | "detach"
+  >,
   operationId: string,
 ): Promise<unknown> {
   let settled = false;
-  const pending = dependencies.client.command(request).finally(() => {
-    settled = true;
-  });
-  await Promise.race([
-    pending.catch(() => {}),
-    dependencies.wait(NOTICE_AFTER_MS, dependencies.signal),
-  ]);
-  if (!settled && !dependencies.signal?.aborted) {
-    const queue = object(
-      await dependencies.client.command({ action: "queue" }).catch(() => ({})),
-    );
-    const running = object(queue.running);
-    if (running.operationId && running.operationId !== operationId) {
-      const ahead = Number(queue.waiting ?? 0) - 1;
-      const subject = [running.project, running.target, running.action]
-        .filter((part) => typeof part === "string")
-        .join(" ");
+  const acknowledge = () => {
+    if (!settled)
       dependencies.output.error(
-        `Waiting: rigd is running ${subject} (operation ${String(running.operationId)}, started ${String(running.startedAt ?? "")})${
-          ahead > 0 ? `; ${ahead} more ahead of this command` : ""
-        }.\n`,
+        `rigd is still running ${request.action} (operation ${operationId}); it finishes in the background. Press Ctrl-C again to detach.\n`,
       );
-    }
+  };
+  dependencies.signal?.addEventListener("abort", acknowledge, { once: true });
+  const pending = dependencies.client
+    .command(request, dependencies.detach)
+    .finally(() => {
+      settled = true;
+    });
+  try {
+    await Promise.race([
+      pending.catch(() => {}),
+      dependencies.wait(NOTICE_AFTER_MS, dependencies.signal),
+    ]);
+    if (!settled && !dependencies.signal?.aborted)
+      await reportQueuePosition(dependencies, operationId);
+    return await Promise.race([pending, untilDetached(dependencies.detach)]);
+  } catch (error) {
+    if (dependencies.detach?.aborted)
+      throw new RigError(
+        "DETACHED",
+        `Detached from operation ${operationId}.`,
+        `Run rig activity ${operationId}.`,
+        { operationId },
+      );
+    throw error;
+  } finally {
+    dependencies.signal?.removeEventListener("abort", acknowledge);
   }
-  return await pending;
+}
+/** Never settles unless the signal aborts; one command holds at most one such listener. */
+function untilDetached(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    if (!signal) return;
+    if (signal.aborted) reject(signal.reason);
+    else
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+  });
+}
+/** Names the operation rigd is running and how many wait ahead of this one. */
+async function reportQueuePosition(
+  dependencies: Pick<CliDependencies, "client" | "output">,
+  operationId: string,
+): Promise<void> {
+  const queue = object(
+    await dependencies.client.command({ action: "queue" }).catch(() => ({})),
+  );
+  const running = object(queue.running);
+  if (!running.operationId || running.operationId === operationId) return;
+  const ahead = Number(queue.waiting ?? 0) - 1;
+  const subject = [running.project, running.target, running.action]
+    .filter((part) => typeof part === "string")
+    .join(" ");
+  dependencies.output.error(
+    `Waiting: rigd is running ${subject} (operation ${String(running.operationId)}, started ${String(running.startedAt ?? "")})${
+      ahead > 0 ? `; ${ahead} more ahead of this command` : ""
+    }.\n`,
+  );
 }
 export async function runRigCli(
   args: readonly string[],
@@ -75,7 +123,7 @@ export async function runRigCli(
     const result =
       status ??
       (readActions.has(request.action)
-        ? await dependencies.client.command(correlated)
+        ? await dependencies.client.command(correlated, dependencies.signal)
         : await awaitMutation(correlated, dependencies, operationId));
     dependencies.output.write(
       json
@@ -108,6 +156,12 @@ export async function runRigCli(
     return exitCode;
   } catch (error) {
     if (isHelp(error)) return 0;
+    if (error instanceof RigError && error.code === "DETACHED" && operationId)
+      return reportDetached(operationId, {
+        diagnostics: dependencies.diagnostics,
+        output: dependencies.output,
+        json,
+      });
     if (
       dependencies.signal?.aborted &&
       error instanceof RigError &&
@@ -138,11 +192,14 @@ async function followLogs(
   while (!dependencies.signal?.aborted) {
     await dependencies.wait(250, dependencies.signal);
     if (dependencies.signal?.aborted) return;
-    const result = await dependencies.client.command({
-      ...request,
-      lines: FOLLOW_BATCH_LINES,
-      ...(typeof cursor === "string" ? { after: cursor } : {}),
-    });
+    const result = await dependencies.client.command(
+      {
+        ...request,
+        lines: FOLLOW_BATCH_LINES,
+        ...(typeof cursor === "string" ? { after: cursor } : {}),
+      },
+      dependencies.signal,
+    );
     dependencies.output.write(renderLogs(result, false));
     cursor = object(result).cursor;
   }

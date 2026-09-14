@@ -12,13 +12,17 @@ export interface CliDependencies {
   root: string;
   cwd: string;
   client: ProjectStatusReader & {
-    command(request: RuntimeCommand): Promise<unknown>;
+    /** The signal, when given, abandons the request; rigd keeps running whatever it was asked. */
+    command(request: RuntimeCommand, signal?: AbortSignal): Promise<unknown>;
   };
   output: UserOutput;
   diagnostics: DiagnosticLog;
   newOperationId: () => string;
   interaction?: CliInteraction;
+  /** Cancellation: honoured before a mutation is submitted and during reads and follows; acknowledged, not honoured, once a mutation is in flight. */
   signal?: AbortSignal;
+  /** Detachment: abandons a submitted mutation, which rigd finishes without rig. */
+  detach?: AbortSignal;
   /** Resolves after the poll delay or cancellation; must release its wait resources. */
   wait: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }

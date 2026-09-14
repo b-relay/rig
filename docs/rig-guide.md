@@ -591,6 +591,19 @@ which operation `rigd` is running (Project, Target, action, operation id, and
 start time) and how many more commands are ahead, so a wait always has a
 visible cause; the command then keeps waiting for its own result.
 
+Ctrl-C (or SIGTERM) before a lifecycle or deploy command is submitted cancels
+it: `rig` exits 0 and no runtime change was requested. Ctrl-C during a read
+such as `rig list` or a `rig logs --follow` poll abandons the read and exits
+0. Once a mutation is submitted the first Ctrl-C is acknowledged but not
+honoured, because `rigd` finishes the mutation either way: `rig` prints
+`rigd is still running up (operation <id>); it finishes in the background.
+Press Ctrl-C again to detach.` on stderr and keeps waiting, and a mutation
+that then completes renders its result as usual. A second Ctrl-C detaches:
+`rig` exits 130, records `command.detached` in its diagnostic log, and names
+`rig activity <id>` for the outcome (`--json` prints an `error` object with
+code `DETACHED` and the `operationId`). A third Ctrl-C ends the process with
+status 130 without waiting for anything.
+
 While a deploy is running, `rig status` and `rig doctor` report the Target
 as `deploy in progress (operation <id>)` and show whatever is observed at that
 moment. The "unresolved deployment transition; run down" warning is reserved

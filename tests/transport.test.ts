@@ -540,3 +540,27 @@ test("malformed list, logs and activity replies fail as protocol errors through 
     await server.stop(true);
   }
 });
+
+test("a read aborted by its signal fails as CANCELLED at once, without waiting for rigd or the read deadline", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    idleTimeout: 0,
+    async fetch() {
+      await Bun.sleep(4000);
+      return Response.json({ result: [] });
+    },
+  });
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test" });
+    const controller = new AbortController();
+    const start = performance.now();
+    setTimeout(() => controller.abort(), 20);
+    await expect(
+      client.command({ action: "list" }, controller.signal),
+    ).rejects.toMatchObject({ code: "CANCELLED" });
+    expect(performance.now() - start).toBeLessThan(1000);
+  } finally {
+    await server.stop(true);
+  }
+});

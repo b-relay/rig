@@ -356,3 +356,56 @@ test("validation and reload failures carry Caddy's last stderr line, the rejecte
   });
   expect(await readFile(file, "utf8")).toBe(unrelated);
 });
+
+test("the conflict check compares site addresses the way Caddy does: an explicit :443 is the same site, another port is not", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  await writeFile(
+    file,
+    "app.example.test:443 {\n reverse_proxy 127.0.0.1:8080\n}\nHTTPS://Other.Example.Test {\n respond ok\n}\nthird.example.test:8443 {\n respond ok\n}\n",
+  );
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+  });
+  for (const hostname of ["app.example.test", "other.example.test:443"])
+    await expect(
+      router.apply({
+        key: `t/${hostname}`,
+        hostname,
+        upstream: "127.0.0.1:3000",
+      }),
+    ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  await router.apply({
+    key: "t/third",
+    hostname: "third.example.test",
+    upstream: "127.0.0.1:3000",
+  });
+  expect(await readFile(file, "utf8")).toContain(
+    "third.example.test {\n  reverse_proxy 127.0.0.1:3000",
+  );
+});
+
+test("removing a route that was never applied neither rewrites the Caddyfile nor reloads Caddy, even without a trailing newline", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  const unrelated = "other.example.test {\n respond ok\n}";
+  await writeFile(file, unrelated);
+  const commands: string[][] = [];
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async ({ command }) => {
+      commands.push([...command]);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  await router.remove("never/applied");
+  expect(await readFile(file, "utf8")).toBe(unrelated);
+  expect(commands).toEqual([]);
+  await rm(file);
+  await router.remove("never/applied");
+  await expect(lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(commands).toEqual([]);
+});

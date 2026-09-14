@@ -559,3 +559,32 @@ test("a read aborted by its signal fails as CANCELLED at once, without waiting f
     await server.stop(true);
   }
 });
+
+test("a browser origin is accepted only for the daemon's own loopback address, whatever the Host header says", async () => {
+  const server = startControlPlane({
+    port: 0,
+    token: "test-secret",
+    instanceId: "instance-1",
+    handle: async () => ({}),
+  });
+  try {
+    const health = (headers: Record<string, string>) =>
+      fetch(`http://127.0.0.1:${server.port}/health`, {
+        headers: { authorization: "Bearer test-secret", ...headers },
+      });
+    const rebinding = await health({
+      host: `evil.test:${server.port}`,
+      origin: `http://evil.test:${server.port}`,
+    });
+    expect(rebinding.status).toBe(403);
+    expect(
+      (await health({ origin: `http://127.0.0.1:${server.port}` })).status,
+    ).toBe(200);
+    expect(
+      (await health({ origin: `http://localhost:${server.port}` })).status,
+    ).toBe(200);
+    expect((await health({ origin: "http://127.0.0.1:1" })).status).toBe(403);
+  } finally {
+    await server.stop(true);
+  }
+});

@@ -90,6 +90,8 @@ export function createCaddyRouter(options: {
       : route
         ? `${begin}\n${route.hostname} {\n  reverse_proxy ${route.upstream}\n${(options.extraConfig ?? []).map((line) => "  " + line + "\n").join("")}}\n${end}\n`
         : "";
+    // Nothing owned to remove and nothing to add leaves the file, and Caddy, untouched.
+    if (!block && existing === null) return;
     const after =
       without + (without && !without.endsWith("\n") ? "\n" : "") + block;
     if (after === before) return;
@@ -214,18 +216,25 @@ function describeStartFailure(error: unknown): string {
   }
   return error instanceof Error ? error.message : String(error);
 }
+/** Caddy serves one site per host and port; a bare address defaults to 443
+ * (80 under http://), so `example.com` and `example.com:443` are one site and
+ * `example.com:8443` is another. */
+function siteAddress(address: string): string {
+  const scheme = /^http:\/\//i.test(address) ? "http" : "https";
+  const bare = address.replace(/^https?:\/\//i, "").toLowerCase();
+  const match = /^(.*?)(?::(\d{1,5}))?$/.exec(bare)!;
+  return `${match[1]}:${match[2] ?? (scheme === "http" ? "80" : "443")}`;
+}
 function hostnamePresent(text: string, hostname: string): boolean {
-  const canonical = hostname.replace(/^https?:\/\//, "").toLowerCase();
+  const canonical = siteAddress(hostname);
   return text.split("\n").some((line) => {
     const header = line.trim().replace(/\s*#.*$/, "");
     if (!header.endsWith("{")) return false;
     return header
       .slice(0, -1)
       .split(/[\s,]+/)
-      .some(
-        (address) =>
-          address.replace(/^https?:\/\//, "").toLowerCase() === canonical,
-      );
+      .filter(Boolean)
+      .some((address) => siteAddress(address) === canonical);
   });
 }
 

@@ -21,8 +21,17 @@ export async function main(args: readonly string[]): Promise<number> {
     return reportRootFailure(error, userOutput());
   }
   if (args[0] === "capture") {
-    if (!args[1] || args.length !== 2) return 2;
-    return await runCapturedProcess(args[1]);
+    // A private entrypoint, but its failures are still read by a person in the launchd log.
+    const output = userOutput();
+    if (!args[1] || args.length !== 2) {
+      output.error("Usage: rigd capture <request-file>\n");
+      return 2;
+    }
+    try {
+      return await runCapturedProcess(args[1]);
+    } catch (error) {
+      return reportRootFailure(error, output);
+    }
   }
   if (process.env.RIG_DAEMON_CHILD === "1") {
     const command = await daemonCommand();

@@ -122,6 +122,12 @@ user:
 import /Users/deploy/.rig/proxy/Caddyfile
 ```
 
+Rig refuses to add a route whose hostname another block in the route file
+already serves (`ROUTE_CONFLICT`), comparing addresses the way Caddy does:
+`app.example.test`, `https://app.example.test` and `app.example.test:443` are
+one site, while `app.example.test:8443` is another. Removing a route that was
+never written leaves the file and Caddy untouched.
+
 Reload Caddy after adding the line. Until then every Rig route is inert:
 `rig doctor` reports `caddy-proxy` as failed and `rig status` marks routes
 `unpublished`. Rig looks for the import in `providers.caddy.hostCaddyfile`, or

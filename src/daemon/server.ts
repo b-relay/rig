@@ -17,6 +17,12 @@ function authenticated(request: Request, token: string): boolean {
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
+/** Only a page served by this daemon on its own loopback port could be a legitimate browser caller. */
+function ownLoopbackOrigin(origin: string, port: number): boolean {
+  return ["127.0.0.1", "localhost", "[::1]"].some(
+    (host) => origin.toLowerCase() === `http://${host}:${port}`,
+  );
+}
 /** HTTP effect owner; lifecycle remains owned by the injected runtime handler. */
 export function startControlPlane(options: ControlPlaneOptions) {
   if (options.token.length === 0)
@@ -28,7 +34,7 @@ export function startControlPlane(options: ControlPlaneOptions) {
     // Mutations legitimately run for minutes; the runtime owns their budgets.
     // Bun would otherwise reset a request that is still being handled after 10 s.
     idleTimeout: 0,
-    async fetch(request) {
+    async fetch(request, server) {
       if (!authenticated(request, options.token))
         return Response.json(
           {
@@ -40,8 +46,10 @@ export function startControlPlane(options: ControlPlaneOptions) {
           { status: 401 },
         );
       const url = new URL(request.url);
+      // The Bearer token is the protection; a browser page can only be this daemon's own
+      // loopback origin, so the comparison never trusts the Host header a rebinding attacker sets.
       const origin = request.headers.get("origin");
-      if (origin && origin !== url.origin)
+      if (origin && !ownLoopbackOrigin(origin, server.port ?? options.port))
         return Response.json(
           {
             error: {

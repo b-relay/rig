@@ -54,3 +54,32 @@ for (const [entry, args] of [
     expect(stderr).toContain("absolute directory");
     expect(await readdir(cwd)).toEqual([]);
   });
+test("rigd capture with a missing request file reports the failure in one line each for message and hint, and a bad arity prints usage", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "rig-entry-"));
+  roots.push(cwd);
+  const rigd = async (...args: string[]) => {
+    const proc = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "..", "src/rigd.ts"), ...args],
+      {
+        cwd,
+        env: { ...process.env, RIG_ROOT: cwd },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [code, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stderr).text(),
+    ]);
+    return { code, stderr };
+  };
+  const missing = await rigd("capture", join(cwd, "absent.json"));
+  expect(missing.code).toBe(1);
+  expect(missing.stderr).toBe(
+    `The capture request ${join(cwd, "absent.json")} is missing or not a capture request (ENOENT).\nStart the Target again so rigd rewrites its capture request.\n`,
+  );
+  const arity = await rigd("capture");
+  expect(arity.code).toBe(2);
+  expect(arity.stderr).toBe("Usage: rigd capture <request-file>\n");
+  expect(await readdir(cwd)).toEqual([]);
+});

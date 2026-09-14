@@ -5,6 +5,7 @@ import { startControlPlane } from "./server";
 import { readDaemonToken, ownerSchema } from "./files";
 import type { RuntimeCommand } from "./protocol";
 import { RigError } from "../domain/errors";
+import { processStartTime, recordedProcess } from "./process-identity";
 export interface DaemonHostOptions {
   root: string;
   port: number;
@@ -28,7 +29,13 @@ export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
       "Wait for startup; if interrupted, inspect daemon ownership before removing the acquisition lock.",
     );
   }
-  const owner = { pid: process.pid, instanceId: randomUUID() };
+  const owner = {
+    pid: process.pid,
+    instanceId: randomUUID(),
+    ...(await processStartTime(process.pid).then((startedAt) =>
+      startedAt ? { startedAt } : {},
+    )),
+  };
   let acquired = false;
   try {
     let prior: unknown;
@@ -50,11 +57,21 @@ export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
           "The daemon ownership record is invalid.",
           "Inspect daemon state before retrying.",
         );
-      if (processExists(parsed.data.pid))
+      // A pid alone is not identity: a lease whose pid was reused after a crash is stale.
+      const liveness = await recordedProcess(parsed.data);
+      if (liveness === "running")
         throw new RigError(
           "DAEMON_RUNNING",
           "Another rigd owns this state root.",
           "Run rigd status.",
+          { pid: parsed.data.pid },
+        );
+      if (liveness === "unverified")
+        throw new RigError(
+          "DAEMON_RUNNING",
+          "Another process may own this state root.",
+          `The lease at ${lease} records pid ${parsed.data.pid}, which is alive, but was written by an older rigd without process identity. If no rigd is running for this root, remove ${lease} and retry.`,
+          { pid: parsed.data.pid, lease },
         );
       await rm(lease);
     }
@@ -122,11 +139,4 @@ export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
     stop(1);
   }
 }
-export function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
+export { processExists } from "./process-identity";

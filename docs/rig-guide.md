@@ -35,9 +35,16 @@ Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
 `rigd install`. Before sending the token anywhere, `rig`, `git-remote-rig`,
 and `rigd status` check that the process recorded in the daemon's address file
-still exists. A record left by a daemon that died is reported as stale and its
-port is never contacted, so another local process that later binds that port
-does not receive the credential.
+still exists and is the same process: the daemon records its start time beside
+its pid, so a pid that was reused by an unrelated process after a crash or
+reboot counts as exited. A record left by a daemon that died is reported as
+stale and its port is never contacted, so another local process that later
+binds that port does not receive the credential. `rigd install` reclaims such
+a record; `rigd uninstall` signals only a process proven to be the recorded
+daemon. A record written by an older rigd carries no start time, so a live pid
+in it cannot be verified: `rigd status` warns, `rigd install` and `rigd
+uninstall` refuse, and a manual `rigd start` refuses, each naming the files
+under `<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.
 
 Stopping, restarting, or upgrading `rigd` is not a Target stop. Managed
 processes keep serving while the daemon is down, and the next daemon adopts

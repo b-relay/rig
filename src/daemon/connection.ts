@@ -1,6 +1,6 @@
 import { DaemonClient } from "./client";
 import { readDaemonAddress, readDaemonToken } from "./files";
-import { processExists } from "./host";
+import { recordedProcess } from "./process-identity";
 import { RigError } from "../domain/errors";
 
 /** Acquire fresh Host discovery and credentials for one transport operation. No probe or retry.
@@ -14,10 +14,11 @@ export async function connectDaemon(root: string): Promise<DaemonClient> {
       "rigd is not installed or reachable.",
       "Run rigd install to start the daemon.",
     );
-  if (!processExists(address.pid))
+  const liveness = await recordedProcess(address);
+  if (liveness === "exited" || liveness === "replaced")
     throw new RigError(
       "DAEMON_UNREACHABLE",
-      `rigd is not running; its address record is stale (pid ${address.pid} has exited).`,
+      `rigd is not running; its address record is stale (pid ${address.pid} ${liveness === "exited" ? "has exited" : "now belongs to another process"}).`,
       "Run 'rigd status'; 'rigd install' starts the daemon again.",
       { pid: address.pid, port: address.port },
     );
@@ -29,6 +30,8 @@ export async function connectDaemon(root: string): Promise<DaemonClient> {
 
 /** Missing setup and transport unreachability permit read-only offline diagnosis. */
 export function isDaemonUnavailable(error: unknown): boolean {
-  return error instanceof RigError &&
-    ["DAEMON_MISSING", "DAEMON_UNREACHABLE"].includes(error.code);
+  return (
+    error instanceof RigError &&
+    ["DAEMON_MISSING", "DAEMON_UNREACHABLE"].includes(error.code)
+  );
 }

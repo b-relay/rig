@@ -180,12 +180,13 @@ test("reinstalling with no daemon running rotates the control-plane token", asyn
   }
 }, 20000);
 
-test("owner evidence without an address reports a running but unreachable daemon", async () => {
+test("owner evidence recorded without process identity names the files to remove, and uninstall refuses to signal the pid", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-owner-"));
   try {
     await mkdir(join(root, "daemon"));
+    const owner = join(root, "daemon", "owner.json");
     await writeFile(
-      join(root, "daemon", "owner.json"),
+      owner,
       JSON.stringify({ pid: process.pid, instanceId: crypto.randomUUID() }),
     );
     const admin = new DaemonAdmin({
@@ -198,14 +199,124 @@ test("owner evidence without an address reports a running but unreachable daemon
       installed: false,
       running: true,
       reachable: false,
+      warnings: [expect.stringContaining(owner)],
     });
     await expect(admin.install()).rejects.toMatchObject({
       code: "DAEMON_UNREACHABLE",
+      hint: expect.stringContaining(owner),
+    });
+    await writeFile(
+      join(root, "daemon", "install.json"),
+      JSON.stringify({ mode: "process", command: [] }),
+    );
+    await expect(admin.uninstall()).rejects.toMatchObject({
+      code: "DAEMON_UNCERTAIN",
+      hint: expect.stringContaining(owner),
     });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+test("a recorded pid that now belongs to another process is a stopped daemon: nothing is contacted or signalled, and install and uninstall proceed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-reused-"));
+  const received: string[] = [];
+  const foreign = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      received.push(request.headers.get("authorization") ?? "none");
+      return Response.json({ instanceId: "fixture", pid: process.pid, running: true });
+    },
+  });
+  try {
+    await mkdir(join(root, "daemon"));
+    await mkdir(join(root, "auth"));
+    await writeFile(join(root, "auth", "control-plane.token"), "secret");
+    const reused = { pid: process.pid, instanceId: crypto.randomUUID(), startedAt: "Thu Jan  1 00:00:00 1970" };
+    await writeFile(join(root, "daemon", "owner.json"), JSON.stringify(reused));
+    await writeFile(
+      join(root, "daemon", "address.json"),
+      JSON.stringify({ ...reused, port: foreign.port }),
+    );
+    const admin = new DaemonAdmin({
+      root,
+      command: [],
+      mode: "process",
+      userHome: root,
+    });
+    expect(await admin.status()).toEqual({
+      installed: false,
+      running: false,
+      reachable: false,
+    });
+    expect(received).toEqual([]);
+    // Past the liveness check: the next failure is the empty command.
+    await expect(admin.install()).rejects.toMatchObject({ code: "DAEMON_COMMAND" });
+    await writeFile(
+      join(root, "daemon", "install.json"),
+      JSON.stringify({ mode: "process", command: [] }),
+    );
+    expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
+  } finally {
+    await foreign.stop(true);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("rigd startup reclaims a lease whose pid was reused, and refuses one recorded without identity by naming the file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-lease-"));
+  const script = join(root, "child.ts");
+  await mkdir(join(root, "daemon"));
+  await mkdir(join(root, "auth"));
+  await writeFile(join(root, "auth", "control-plane.token"), "test-secret");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; await runDaemonHost({root:process.env.RIG_ROOT!,port:0,handle:async()=>({}),shutdown:async()=>{}});`,
+  );
+  const start = () =>
+    Bun.spawn([process.execPath, script], {
+      cwd: root,
+      env: { ...process.env, RIG_ROOT: root },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+  const owner = join(root, "daemon", "owner.json");
+  try {
+    await writeFile(
+      owner,
+      JSON.stringify({ pid: process.pid, instanceId: crypto.randomUUID() }),
+    );
+    const refused = start();
+    expect(await refused.exited).not.toBe(0);
+    const stderr = await new Response(refused.stderr).text();
+    expect(stderr).toContain("DAEMON_RUNNING");
+    expect(stderr).toContain(owner);
+    await writeFile(
+      owner,
+      JSON.stringify({ pid: process.pid, instanceId: crypto.randomUUID(), startedAt: "Thu Jan  1 00:00:00 1970" }),
+    );
+    const child = start();
+    try {
+      const deadline = Date.now() + 10000;
+      let address: { pid: number } | undefined;
+      while (!address && Date.now() < deadline) {
+        address = await readFile(join(root, "daemon", "address.json"), "utf8")
+          .then((text) => JSON.parse(text) as { pid: number })
+          .catch(() => undefined);
+        if (!address) await Bun.sleep(50);
+      }
+      expect(address).toMatchObject({ pid: child.pid });
+      expect(JSON.parse(await readFile(owner, "utf8"))).toMatchObject({
+        pid: child.pid,
+        startedAt: expect.stringMatching(/\d{4}$/),
+      });
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);
 
 test("corrupt ownership evidence refuses installation without replacing evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-corrupt-"));

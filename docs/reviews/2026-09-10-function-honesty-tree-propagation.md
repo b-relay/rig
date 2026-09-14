@@ -255,7 +255,7 @@ owner carries only its own owner-level defects.
 | localhost bind check bypassed via `sh -c`; hooks/env unchecked | #135 (fixed: quoted sub-commands scanned, hooks validated, wildcard bind env rejected) |
 | `up`/`restart` on local never re-plans; `deploy local` rejected | #136 |
 | SIGTERM force-closes in-flight requests | #137 |
-| pid reuse bricks install/uninstall/start | #138 |
+| pid reuse bricks install/uninstall/start | #138 (fixed: owner/address records carry the process start time; `recordedProcess` tells running, exited, replaced, and unverified apart; only a verified process is signalled; unverified records name the files to remove) |
 | stale `acquiring` lock unrecoverable via CLI | #139 |
 | cleanly stopped daemon cannot be uninstalled | #140 |
 | `state.activity` unbounded; usage mistakes recorded | #141 |

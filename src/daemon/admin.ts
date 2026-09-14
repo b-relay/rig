@@ -15,6 +15,7 @@ import { DaemonClient } from "./client";
 import { readDaemonAddress, readDaemonOwner, readDaemonToken } from "./files";
 import { RigError } from "../domain/errors";
 import { processExists } from "./host";
+import { recordedProcess, type ProcessRecord } from "./process-identity";
 import { inheritedEnvironment } from "./environment";
 import { z } from "zod";
 import {
@@ -84,6 +85,15 @@ export class DaemonAdmin {
       });
   }
   async status(): Promise<DaemonStatus> {
+    return (await this.inspect()).status;
+  }
+  /** Status plus what a caller acting on it needs: the ownership records and
+   * the hint for records whose pid is alive but cannot be verified as rigd. */
+  private async inspect(): Promise<{
+    status: DaemonStatus;
+    records: ProcessRecord[];
+    unverified?: string;
+  }> {
     let installed = true;
     try {
       await access(this.marker);
@@ -98,18 +108,43 @@ export class DaemonAdmin {
     }
     const address = await readDaemonAddress(this.options.root);
     const owner = await readDaemonOwner(this.options.root);
-    const running = [owner?.pid, address?.pid].some(
-      (pid) => pid !== undefined && processExists(pid),
+    const records = [owner, address].filter(
+      (record): record is NonNullable<typeof record> => record !== undefined,
     );
-    const warnings = installed ? await this.installationWarnings() : [];
-    const status = (reachable: boolean): DaemonStatus => ({
-      installed,
-      running,
-      reachable,
-      ...(warnings.length ? { warnings } : {}),
+    // A pid alone is not identity: after a crash it may belong to any process.
+    const liveness = await Promise.all(records.map(recordedProcess));
+    const running = liveness.some(
+      (state) => state === "running" || state === "unverified",
+    );
+    const unverified = liveness.includes("unverified")
+      ? this.unverifiedHint(
+          records.filter((_, index) => liveness[index] === "unverified"),
+        )
+      : undefined;
+    const warnings = [
+      ...(installed ? await this.installationWarnings() : []),
+      ...(unverified ? [unverified] : []),
+    ];
+    const status = (reachable: boolean) => ({
+      status: {
+        installed,
+        running,
+        reachable,
+        ...(warnings.length ? { warnings } : {}),
+      },
+      records,
+      ...(unverified ? { unverified } : {}),
     });
-    // Never offer the credential to a port whose recorded owner has exited.
-    if (!address || !processExists(address.pid)) return status(false);
+    // Never offer the credential to a port whose recorded owner has exited or been replaced.
+    const addressLiveness = address
+      ? liveness[records.indexOf(address)]
+      : "exited";
+    if (
+      !address ||
+      addressLiveness === "exited" ||
+      addressLiveness === "replaced"
+    )
+      return status(false);
     try {
       const health = await new DaemonClient({
         port: address.port,
@@ -125,6 +160,15 @@ export class DaemonAdmin {
     } catch {
       return status(false);
     }
+  }
+  /** The escape hatch for a live pid that an older rigd recorded without identity. */
+  private unverifiedHint(records: ProcessRecord[]): string {
+    const files = [
+      join(this.options.root, "daemon", "owner.json"),
+      join(this.options.root, "daemon", "address.json"),
+    ];
+    const pids = [...new Set(records.map((record) => record.pid))].join(", ");
+    return `The recorded daemon pid ${pids} is alive but was recorded by an older rigd without process identity, so it cannot be verified as rigd. If no rigd is running for this root, remove ${files.join(" and ")} and retry.`;
   }
   /** A recorded program that no longer exists explains an unreachable daemon before anyone reads launchd logs. */
   private async installationWarnings(): Promise<string[]> {
@@ -203,13 +247,13 @@ export class DaemonAdmin {
     };
   }
   private async performInstall(): Promise<DaemonStatus> {
-    const prior = await this.status();
+    const { status: prior, unverified } = await this.inspect();
     if (prior.reachable) return { ...prior, outcome: "unchanged" };
     if (prior.running)
       throw new RigError(
         "DAEMON_UNREACHABLE",
         "A daemon process exists but is not reachable.",
-        "Inspect the existing daemon before reinstalling.",
+        unverified ?? "Inspect the existing daemon before reinstalling.",
       );
     const { root } = this.options;
     await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
@@ -252,16 +296,20 @@ export class DaemonAdmin {
   }
   private async performUninstall(): Promise<DaemonStatus> {
     const { root } = this.options;
-    const status = await this.status();
+    const { status, records, unverified } = await this.inspect();
     if (!status.installed && !status.running && !status.reachable)
       return { ...status, outcome: "unchanged" };
     const address = await readDaemonAddress(root);
     const installation = { data: await this.readInstallation() };
-    if (!address || !status.reachable)
-      return await this.removeUnreachable(installation.data.mode, [
-        address?.pid,
-        (await readDaemonOwner(root))?.pid,
-      ]);
+    if (!address || !status.reachable) {
+      if (unverified)
+        throw new RigError(
+          "DAEMON_UNCERTAIN",
+          "A recorded daemon process is alive but cannot be verified as rigd, so it was not signalled.",
+          unverified,
+        );
+      return await this.removeUnreachable(installation.data.mode, records);
+    }
     const client = new DaemonClient({
       port: address.port,
       token: await readDaemonToken(root),
@@ -304,8 +352,13 @@ export class DaemonAdmin {
   /** Managed processes are left running under their leases; the next install adopts them, so an unreachable daemon is not a dead end. */
   private async removeUnreachable(
     mode: "process" | "launchd",
-    pids: (number | undefined)[],
+    records: ProcessRecord[],
   ): Promise<DaemonStatus> {
+    // Only a process proven to be the recorded rigd is signalled or waited for.
+    const alive = async () => {
+      const liveness = await Promise.all(records.map(recordedProcess));
+      return records.filter((_, index) => liveness[index] === "running");
+    };
     if (mode === "launchd") {
       const result = await (this.options.launchctl ?? runLaunchctl)([
         "bootout",
@@ -317,16 +370,13 @@ export class DaemonAdmin {
       )
         throw launchctlFailure(result);
     } else
-      for (const pid of pids)
-        if (pid !== undefined && processExists(pid))
-          try {
-            process.kill(pid, "SIGTERM");
-          } catch {}
+      for (const { pid } of await alive())
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {}
     const deadline = Date.now() + (this.options.stopTimeoutMs ?? 5000);
-    const alive = () =>
-      pids.some((pid) => pid !== undefined && processExists(pid));
-    while (alive() && Date.now() < deadline) await pause(50);
-    if (alive())
+    while ((await alive()).length && Date.now() < deadline) await pause(50);
+    if ((await alive()).length)
       throw new RigError(
         "DAEMON_STOP",
         "rigd did not stop.",

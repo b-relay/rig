@@ -3,14 +3,18 @@ import { join } from "node:path";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
 
+/** Start time as ps reports it; absent in records written by an older rigd, whose pid alone cannot be verified. */
+const startedAt = z.string().min(1).optional();
 export const ownerSchema = z.object({
   pid: z.number().int().positive(),
   instanceId: z.string().uuid(),
+  startedAt,
 });
 export const addressSchema = z.object({
   port: z.number().int().min(1).max(65535),
   pid: z.number().int().positive(),
   instanceId: z.string().min(1),
+  startedAt,
 });
 
 /** Filesystem adapter: absence is distinct from unreadable or corrupt ownership evidence. */

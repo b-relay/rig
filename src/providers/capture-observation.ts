@@ -45,6 +45,8 @@ export async function writeCaptureObservation(
   }
 }
 
+/** Evidence older than this at read time no longer describes the application; the wrapper republishes every 50 ms. */
+const FRESHNESS_MS = 1000;
 /** Only fresh evidence from the current launchd wrapper can describe its application. */
 export async function readCaptureObservation(request: {
   requestPath: string;
@@ -62,6 +64,9 @@ export async function readCaptureObservation(request: {
     const evidence = observationSchema.parse(
       JSON.parse(await readFile(`${request.requestPath}.observation.json`, "utf8")),
     );
+    // Freshness is judged at read time; identity inspections that follow may be slow on a loaded Host.
+    const age = request.now() - evidence.observedAt;
+    if (age < 0 || age > FRESHNESS_MS) return unknown;
     if (
       evidence.wrapperPid !== request.wrapperPid ||
       await request.inspect(request.wrapperPid) !== evidence.wrapperIdentity
@@ -72,8 +77,7 @@ export async function readCaptureObservation(request: {
       (!observation.pid || !evidence.applicationIdentity ||
         await request.inspect(observation.pid) !== evidence.applicationIdentity)
     ) return unknown;
-    const age = request.now() - evidence.observedAt;
-    if (request.signal?.aborted || age < 0 || age > 1000) return unknown;
+    if (request.signal?.aborted) return unknown;
     return observation;
   } catch {
     return unknown;

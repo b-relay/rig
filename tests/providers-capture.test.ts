@@ -77,3 +77,49 @@ test("capture keeps the application restart budget alive and exits after that bu
     .map((line) => JSON.parse(line));
   expect(logs.filter((log) => log.line === "attempt")).toHaveLength(6);
 }, 12000);
+test("an observation failure after startup stops the running component deliberately and never reports a start failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-observe-"));
+  roots.push(root);
+  const requestPath = join(root, "request.json");
+  const pidFile = join(root, "child.pid");
+  await writeFile(
+    requestPath,
+    JSON.stringify({
+      key: "observe",
+      componentName: "web",
+      command: [
+        process.execPath,
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ],
+      cwd: root,
+      env: {},
+      logRoot: root,
+    }),
+  );
+  const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};
+import {createProcessIdentityReader} from ${JSON.stringify(resolve("src/providers/process-identity.ts"))};
+import {existsSync} from "node:fs";
+const real = createProcessIdentityReader(); let calls = 0;
+process.exitCode = await runCapturedProcess(process.argv[1], { inspect: async (pid) => {
+  if (++calls !== 2) return real(pid);
+  while (!existsSync(${JSON.stringify(pidFile)})) await Bun.sleep(20);
+  throw new Error("ps failed transiently");
+} });`;
+  const result = await runCommand({
+    command: [process.execPath, "-e", script, requestPath],
+    timeoutMs: 8000,
+  });
+  expect(result.exitCode).toBe(1);
+  const pid = Number(await readFile(pidFile, "utf8"));
+  expect(pid).toBeGreaterThan(0);
+  expect(() => process.kill(pid, 0)).toThrow();
+  const status = JSON.parse(await readFile(`${requestPath}.status.json`, "utf8"));
+  expect(status.state).not.toBe("failed");
+  expect(status).toMatchObject({ state: "stopped", pid });
+  expect(status.message).not.toContain("could not start");
+  expect(status.message).toContain("stopped");
+  const observation = JSON.parse(await readFile(`${requestPath}.observation.json`, "utf8"));
+  expect(observation.observation.state).toBe("stopped");
+  expect(observation.observation.reason).toContain("stopped");
+}, 12000);

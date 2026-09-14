@@ -13,6 +13,21 @@ const statusSchema = z.discriminatedUnion("state", [
     state: z.literal("failed").describe("The app could not start."),
     message: z.string().describe("Safe startup failure explanation."),
   }),
+  z.object({
+    state: z
+      .literal("stopped")
+      .describe(
+        "The app had started and the capture wrapper stopped it deliberately after it could no longer observe it.",
+      ),
+    pid: z
+      .number()
+      .int()
+      .positive()
+      .describe("The stopped app process identifier."),
+    message: z
+      .string()
+      .describe("Safe explanation of why the wrapper stopped the app."),
+  }),
 ]);
 export type CaptureStatus = z.infer<typeof statusSchema>;
 export async function clearCaptureStatus(requestPath: string): Promise<void> {
@@ -46,7 +61,7 @@ export async function waitForCaptureStart(
     );
     if (raw) {
       const status = statusSchema.parse(JSON.parse(raw));
-      if (status.state === "failed")
+      if (status.state !== "running")
         throw new RigError(
           "PROCESS_START",
           status.message,

@@ -75,6 +75,9 @@ const reads = new Set([
 export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   let queue: Promise<unknown> = Promise.resolve();
   let draining = false;
+  /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
+  const inFlight = new Set<string>();
+  const inProgress = (operationId: string) => inFlight.has(operationId);
   const status = async (
     selection: StatusSelection,
   ): Promise<ProjectStatusReport> => {
@@ -85,11 +88,23 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       project,
       state.targets.filter((target) => target.projectId === project.id),
       selection,
-      deps,
+      { ...deps, inProgress },
     );
   };
   const execute = async (command: RuntimeCommand): Promise<unknown> => {
     const operationId = command.operationId ?? deps.id();
+    if (reads.has(command.action)) return run(command, operationId);
+    inFlight.add(operationId);
+    try {
+      return await run(command, operationId);
+    } finally {
+      inFlight.delete(operationId);
+    }
+  };
+  const run = async (
+    command: RuntimeCommand,
+    operationId: string,
+  ): Promise<unknown> => {
     let project: ProjectRecord | undefined, target: TargetRecord | undefined;
     try {
       if (command.action === "cancel-uninstall") {
@@ -233,7 +248,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             .slice(-(command.lines ?? 100)),
         };
       if (command.action === "doctor")
-        return await doctor(project, targets, deps);
+        return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
         await updateRegistration(command, project, targets, deps);
         return await finish(
@@ -381,7 +396,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target = await activateDeployment(
           candidate,
           target,
-          { activation: command.noUp ? "prepare" : "start" },
+          { activation: command.noUp ? "prepare" : "start", operationId },
           deps,
         );
         const warnings = command.noUp

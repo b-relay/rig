@@ -5,6 +5,7 @@ import { RigError } from "../domain/errors";
 import { observeTargets } from "./status";
 import { ConfigError } from "../config/errors";
 import { recordedPorts } from "./ports";
+import { transitionInProgress } from "./project-status";
 
 /** Host checks and ownership evidence remain available when Project discovery fails. */
 export async function hostDoctor(
@@ -59,7 +60,7 @@ async function inspectRuntimeHost(
 export async function doctor(
   project: ProjectRecord,
   targets: TargetRecord[],
-  deps: RuntimeDependencies,
+  deps: RuntimeDependencies & { inProgress(operationId: string): boolean },
 ) {
   const checks = await inspectRuntimeHost(deps);
   try {
@@ -99,7 +100,14 @@ export async function doctor(
         reason: "destruction-pending",
         hint: "Retry down preview --destroy for this Preview to finish cleanup.",
       });
-    if (target.recovery)
+    if (transitionInProgress(target, deps.inProgress))
+      checks.push({
+        name: `${target.name}/deploy`,
+        ok: true,
+        message: `A deploy is in progress (operation ${target.recovery!.operationId}).`,
+        reason: "deployment-in-progress",
+      });
+    else if (target.recovery)
       checks.push({
         name: `${target.name}/recovery`,
         ok: false,

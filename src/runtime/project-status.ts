@@ -22,6 +22,8 @@ export async function projectStatus(
     "assertOwnershipReady" | "observations" | "inspectProxy"
   > & {
     documents: Pick<RuntimeDependencies["documents"], "read">;
+    /** Whether the daemon is executing this operation right now. */
+    inProgress(operationId: string): boolean;
   },
 ): Promise<ProjectStatusReport> {
   const selected =
@@ -89,7 +91,11 @@ export async function projectStatus(
     }
   }
   for (const target of selected)
-    if (target.recovery) {
+    if (transitionInProgress(target, deps.inProgress))
+      warnings.push(
+        `${target.name}: deploy in progress (operation ${target.recovery!.operationId}).`,
+      );
+    else if (target.recovery) {
       const report = reports.find((r) => r.name === target.name)!;
       report.state = "unknown";
       report.components = report.components.map((c) => ({
@@ -156,4 +162,15 @@ function configuredComponents(
         : {}),
     };
   });
+}
+
+/** A recovery record whose operation this daemon is still running is a live deploy, not an abandoned one. */
+export function transitionInProgress(
+  target: Pick<TargetRecord, "recovery">,
+  inProgress: (operationId: string) => boolean,
+): boolean {
+  return (
+    target.recovery?.operationId !== undefined &&
+    inProgress(target.recovery.operationId)
+  );
 }

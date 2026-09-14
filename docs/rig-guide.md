@@ -299,6 +299,12 @@ as `status`, `list`, and `doctor` give up after five seconds and report
 is distinct from `rigd is not reachable`. Check `rig activity` before
 retrying so the same operation is not queued twice.
 
+While a deploy is running, `rig status` and `rig doctor` report the Target
+as `deploy in progress (operation <id>)` and show whatever is observed at that
+moment. The "unresolved deployment transition; run down" warning is reserved
+for a transition that no live operation owns, such as one interrupted by a
+daemon crash.
+
 Status shares one two-second budget across concurrent observations. Managed
 components without health checks are running, not healthy; uncertain observations
 are unknown. Configured-only components are configured, installed-tool Targets

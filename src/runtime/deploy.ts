@@ -18,12 +18,13 @@ export function assertDeploymentRecovered(
 export async function activateDeployment(
   candidate: TargetRecord,
   previous: TargetRecord | undefined,
-  intent: { activation: "start" | "prepare" },
+  intent: { activation: "start" | "prepare"; operationId?: string },
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
   assertDeploymentRecovered(previous);
   candidate.deploymentIncomplete = true;
   candidate.recovery = {
+    ...(intent.operationId ? { operationId: intent.operationId } : {}),
     plan: previous?.plan ?? candidate.plan,
     branch: previous?.branch ?? candidate.branch,
     commit: previous?.commit ?? candidate.commit,

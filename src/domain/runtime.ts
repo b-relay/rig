@@ -34,6 +34,8 @@ export interface TargetRecord {
     /** Completion state of the plan restored by rollback. */
     deploymentIncomplete?: true;
     stage: "pending" | "blocked" | "committing";
+    /** Operation that opened the transition; live only inside the daemon that ran it. */
+    operationId?: string;
   };
 }
 

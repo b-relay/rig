@@ -781,6 +781,59 @@ test("one runtime Status report reaches localhost human output and the Target pi
   }
 });
 
+test("status and doctor report a live deploy as in progress instead of unresolved recovery", async () => {
+  const { runtime, deps, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const up = deps.lifecycle.up;
+  deps.lifecycle.up = async (target, checkpoint) => {
+    await gate;
+    return up(target, checkpoint);
+  };
+  const deploy = runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+    operationId: "op-deploy",
+  });
+  while (!state.targets[0]?.recovery) await Bun.sleep(5);
+  const live = (await runtime.command({ action: "status", project: "demo" })) as {
+    targets: { state: string }[];
+    warnings?: string[];
+  };
+  expect(live.targets[0]?.state).not.toBe("unknown");
+  expect(live.warnings?.join(" ")).toContain("deploy in progress (operation op-deploy)");
+  expect(live.warnings?.join(" ")).not.toContain("run down");
+  const { checks } = (await runtime.command({ action: "doctor", project: "demo" })) as {
+    checks: { ok: boolean; reason?: string; message: string }[];
+  };
+  expect(checks.find((c) => c.reason === "deployment-recovery")).toBeUndefined();
+  expect(checks.find((c) => c.reason === "deployment-in-progress")).toMatchObject({
+    ok: true,
+    message: expect.stringContaining("op-deploy"),
+  });
+  release();
+  expect(await deploy).toMatchObject({ outcome: "deployed" });
+  expect(state.targets[0]!.recovery).toBeUndefined();
+  // After a daemon restart the same record belongs to no live operation.
+  state.targets[0]!.recovery = {
+    stage: "pending",
+    plan: state.targets[0]!.plan,
+    desired: "running",
+    operationId: "op-deploy",
+  };
+  const stale = (await createRuntime(deps).command({ action: "status", project: "demo" })) as {
+    targets: { state: string }[];
+    warnings?: string[];
+  };
+  expect(stale.targets[0]?.state).toBe("unknown");
+  expect(stale.warnings?.join(" ")).toContain("unresolved deployment transition");
+});
+
 test("failed deploy records separate safe initiating and rollback categories", async () => {
   const { runtime, deps, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

@@ -64,7 +64,7 @@ testability and honesty refactors.
 44. ~~#195~~ (fixed) Installation receipt key hashes the whole daemon environment; a restart from another shell rebuilds every installed component.
 45. ~~#192~~ (fixed) Renaming a component while keeping its installName fails every later deploy with ARTIFACT_CONFLICT; on local, up never re-runs build.
 46. ~~#163~~ (fixed) Lane override replaces the whole hooks object while env merges per key.
-47. #162 `rig init --domain` scaffolds the same hostname for every Target; second Target fails ROUTE_CONFLICT.
+47. ~~#162~~ (fixed) `rig init --domain` scaffolds the same hostname for every Target; second Target fails ROUTE_CONFLICT.
 48. #159 Symlinked rig.yaml or Caddyfile silently replaced by a regular file on first edit.
 49. #153 Superseded revisions, worktrees and prepared markers never removed; disk grows every deploy. (#231.)
 

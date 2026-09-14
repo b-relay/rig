@@ -102,6 +102,11 @@ registration idempotently when the config still matches the workspace.
 New config uses `rig.yaml`; matching existing `rig.json` is preserved. Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
 identity comes from existing config when present, not a conflicting folder name.
+`--domain app.test --proxy web` scaffolds one hostname per Target: `live`
+serves `app.test`, `local` serves `local.app.test`, and each Preview serves
+`<branch-slug>.app.test`, so two Targets never contend for one route. The
+scaffold writes `domain: ${subdomain}.app.test` with a `live.domain`
+override; edit either to change the scheme.
 
 ## Project And Host Scope
 

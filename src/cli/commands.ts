@@ -31,17 +31,15 @@ export function createRigCommand(
     "config",
     "activity",
   ] as const) {
-    const child = command
-      .command(action)
-      .description(
-        {
-          list: "List registered Projects.",
-          status: "Observe all Targets for one Project.",
-          doctor: "Check Host and optional Project health.",
-          config: "Inspect validated Project configuration.",
-          activity: "Read recent Rig activity.",
-        }[action],
-      );
+    const child = command.command(action).description(
+      {
+        list: "List registered Projects.",
+        status: "Observe all Targets for one Project.",
+        doctor: "Check Host and optional Project health.",
+        config: "Inspect validated Project configuration.",
+        activity: "Read recent Rig activity.",
+      }[action],
+    );
     if (!["list", "activity"].includes(action))
       child.option("--project <name>", "Registered Project identity");
     if (action === "status")
@@ -86,12 +84,10 @@ export function createRigCommand(
   return command;
 }
 export function terminalCommand(name: string, output: UserOutput): Command {
-  return new Command(name)
-    .exitOverride()
-    .configureOutput({
-      writeOut: (text) => output.write(text),
-      writeErr: () => {},
-    });
+  return new Command(name).exitOverride().configureOutput({
+    writeOut: (text) => output.write(text),
+    writeErr: () => {},
+  });
 }
 function projectScope(options: ScopeOptions): { project?: string } {
   return options.project ? { project: options.project } : {};
@@ -273,7 +269,10 @@ function addInitCommand(
       "--create-git",
       "Explicitly initialize Git when the directory is not a repository",
     )
-    .option("--domain <domain>", "Base domain for configured routes")
+    .option(
+      "--domain <domain>",
+      "Base domain: live serves it, local and Previews get subdomains under it",
+    )
     .option("--proxy <component>", "Proxy upstream component")
     .option(
       "--uses <plugins>",

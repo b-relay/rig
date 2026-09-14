@@ -308,9 +308,11 @@ export async function editProjectConfig(
     try {
       await writeFile(backupPath, raw, { flag: "wx", mode: 0o600 });
     } catch (error) {
-      if (
-        !(error instanceof Error && "code" in error && error.code === "EEXIST")
-      )
+      if (!(
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "EEXIST"
+      ))
         throw error;
       if ((await readFile(backupPath, "utf8")) !== raw)
         throw new ConfigError(
@@ -386,12 +388,17 @@ export function scaffoldProjectConfig(
     components[name] = { mode: "installed", ...fields };
   }
   const proxy = input.proxy ? { proxy: { upstream: input.proxy } } : {};
+  // The base domain is the Stable Target's hostname; local and every Preview get their own subdomain under it.
   return parseProjectConfig({
     name: input.name,
-    ...(input.domain ? { domain: input.domain } : {}),
+    ...(input.domain ? { domain: `\${subdomain}.${input.domain}` } : {}),
     components,
     local: { ...proxy },
-    live: { deployBranch: input.productionBranch ?? "main", ...proxy },
+    live: {
+      deployBranch: input.productionBranch ?? "main",
+      ...(input.domain ? { domain: input.domain } : {}),
+      ...proxy,
+    },
     deployments: { subdomain: "${branchSlug}", ...proxy },
   });
 }

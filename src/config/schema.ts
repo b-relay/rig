@@ -238,7 +238,11 @@ const lane = z.strictObject({
     })
     .optional()
     .describe("Provider selections."),
-  domain: route.optional().describe("Target domain override."),
+  domain: route
+    .optional()
+    .describe(
+      "Hostname for this lane's Targets, replacing the Project domain; may use ${subdomain}.",
+    ),
   subdomain: route.optional().describe("Preview subdomain template."),
   deployBranch: text
     .optional()
@@ -254,7 +258,11 @@ export const projectConfigSchema = z
   .strictObject({
     name,
     description: z.string().optional().describe("Project description."),
-    domain: route.optional().describe("Base domain template."),
+    domain: route
+      .optional()
+      .describe(
+        "Hostname template for every Target. Use ${subdomain} (local, live, or the Preview branch slug) so Targets do not share a route.",
+      ),
     hooks: hooks.optional().describe("Project lifecycle hooks."),
     components: z
       .record(componentName, component)

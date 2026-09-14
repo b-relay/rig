@@ -338,13 +338,13 @@ test("Project init creates YAML with requested managed, installed, dependency an
   });
   expect(document.config).toMatchObject({
     name: "app",
-    domain: "app.example.com",
+    domain: "${subdomain}.app.example.com",
     components: {
       sqlite: { uses: "sqlite" },
       web: { mode: "managed", port: 3210 },
       tool: { mode: "installed", entrypoint: "bin/tool" },
     },
-    live: { deployBranch: "release", proxy: { upstream: "web" } },
+    live: { deployBranch: "release", domain: "app.example.com", proxy: { upstream: "web" } },
   });
   await expect(
     initializeProjectConfig(root, { name: "other" }),
@@ -847,4 +847,21 @@ test("a lane Component override merges hooks per key like env, so adding one hoo
     env: { A: "shared", B: "local" },
     hooks: { preStart: "echo pre", postStart: "echo post", preStop: "echo local-stop" },
   });
+});
+
+test("rig init --domain scaffolds a distinct hostname for local, live, and every Preview", async () => {
+  const { scaffoldProjectConfig } = await import("../src/config/documents.js");
+  const config = scaffoldProjectConfig({
+    name: "app",
+    domain: "app.test",
+    proxy: "web",
+    managed: { name: "web", command: "serve --port ${web.port}", port: 3000 },
+  });
+  const hostname = (target: "local" | "live" | "preview", branch?: string) =>
+    resolveTargetPlan({ config, target, workspacePath: "/work", dataRoot: "/data", assignedPorts: { web: 4100 }, ...(branch ? { branch, commit: "abc" } : {}) }).domain;
+  expect([hostname("local"), hostname("live"), hostname("preview", "feature/x")]).toEqual([
+    "local.app.test",
+    "app.test",
+    "feature-x.app.test",
+  ]);
 });

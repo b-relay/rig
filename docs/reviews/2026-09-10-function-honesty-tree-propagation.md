@@ -279,7 +279,7 @@ owner carries only its own owner-level defects.
 | symlinked `rig.yaml`/Caddyfile replaced by a regular file on edit | #159 |
 | `git push rig` hangs forever on fatal helper errors (readline never closed) | #160 |
 | push from a linked worktree rejected with `PROJECT_PATH_CONFLICT` | #161 |
-| `init --domain` scaffolds one hostname for every Target → `ROUTE_CONFLICT` | #162 |
+| `init --domain` scaffolds one hostname for every Target → `ROUTE_CONFLICT` | #162 (fixed: scaffold composes `${subdomain}.<base>` with a bare `live.domain`) |
 | lane `hooks` override replaces the whole object; `env` merges per key | #163 (fixed: `mergeComponentOverride` merges env and hooks per key in resolver and schema) |
 | config validation gaps (union "Invalid input", spurious `base.` override error, interpolation without path, Caddy-invalid domains, `ports` namespace collision, `.bak` litter) | #164 |
 | Target log reader cannot skip one bad record (oversized newline-free line, glued partial line) | #165 |

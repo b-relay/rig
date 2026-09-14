@@ -2,6 +2,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { resolve } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
+import { RIG_VERSION } from "../domain/version";
 import type { UserOutput } from "./types";
 
 export type ExecuteCommand = (
@@ -84,10 +85,13 @@ export function createRigCommand(
   return command;
 }
 export function terminalCommand(name: string, output: UserOutput): Command {
-  return new Command(name).exitOverride().configureOutput({
-    writeOut: (text) => output.write(text),
-    writeErr: () => {},
-  });
+  return new Command(name)
+    .version(RIG_VERSION, "-V, --version", "Print the version.")
+    .exitOverride()
+    .configureOutput({
+      writeOut: (text) => output.write(text),
+      writeErr: () => {},
+    });
 }
 function projectScope(options: ScopeOptions): { project?: string } {
   return options.project ? { project: options.project } : {};

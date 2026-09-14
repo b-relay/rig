@@ -300,7 +300,7 @@ owner carries only its own owner-level defects.
 | corrupt `state.json` → rigd exits silently; doctor says healthy | #181 (fixed: reconcile records STATE_CORRUPT and keeps serving; hint names the file and the first problem; hostDoctor reports `runtime-state`) |
 | state write has no fsync/backup; hint refers to a backup that never exists | #182 (fixed: fsync temp file and directory, keep one generation as `state.json.bak`, hint names it only when present) |
 | `state.json` strip-mode parse, unversioned per field → downgrade drops `destructionPending`/`deploymentIncomplete` | #183 (fixed: version 3 with STATE_VERSION refusal of newer files; the store returns the validated document as read, so unknown keys round-trip) |
-| `rigd install` cannot upgrade a running daemon; no binary identity; protocol skew rendered as usage error | #184 |
+| `rigd install` cannot upgrade a running daemon; no binary identity; protocol skew rendered as usage error | #184 (fixed: install records version and command and replaces a daemon of another version or command; health and status report the daemon version; INVALID_REQUEST is rendered as version skew naming both versions; `--version` on both CLIs) |
 | strict effect journal bricks Target on downgrade; orphan journals never reclaimed | #185 (fixed: versioned journal read loosely, newer versions refused naming both, invalid fields named with path; reconcile prunes checkpoints of absent Targets and records what it kept) |
 | failed/interrupted first Preview deploy → git "Everything up-to-date" forever | #186 |
 | deploys plan from the working-copy `rig.yaml`, not the pushed commit | #187 |

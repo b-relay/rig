@@ -74,4 +74,6 @@ export interface DaemonHealth {
   instanceId: string;
   pid: number;
   running: true;
+  /** Absent when an older rigd, which reported none, is serving. */
+  version?: string;
 }

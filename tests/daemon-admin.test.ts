@@ -415,6 +415,7 @@ test("failed daemon stop cancels uninstall quiescence and preserves installation
       installed: true,
       running: true,
       reachable: true,
+      version: expect.any(String),
     });
   } finally {
     try {
@@ -497,6 +498,7 @@ test("rejected recovery readiness preserves daemon installation and credentials"
       installed: true,
       running: true,
       reachable: true,
+      version: expect.any(String),
     });
     expect(await readFile(installationPath, "utf8")).toBe(installation);
     expect(await readFile(tokenPath, "utf8")).toBe(token);
@@ -835,3 +837,69 @@ test("corrupt daemon records never mask a startup error, never block a clean rel
     await rm(root, { recursive: true, force: true });
   }
 }, 20000);
+test("rigd install replaces a reachable daemon recorded by another version and reports it; a current daemon is unchanged", async () => {
+  const { RIG_VERSION } = await import("../src/domain/version");
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-upgrade-"));
+  const script = join(root, "child.ts");
+  const hostModule = join(import.meta.dir, "../src/daemon/host.ts");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
+  );
+  const marker = join(root, "daemon", "install.json");
+  const admin = new DaemonAdmin({ root, command: [process.execPath, script], mode: "process", userHome: root });
+  const recordedPid = async () =>
+    (JSON.parse(await readFile(join(root, "daemon", "address.json"), "utf8")) as { pid: number }).pid;
+  try {
+    await admin.install();
+    expect(JSON.parse(await readFile(marker, "utf8"))).toMatchObject({ version: RIG_VERSION });
+    const first = await recordedPid();
+    expect(await admin.install()).toMatchObject({ outcome: "unchanged" });
+    expect(await recordedPid()).toBe(first);
+
+    await writeFile(marker, JSON.stringify({ mode: "process", command: [process.execPath, script], version: "0.0.0" }));
+    expect(await admin.status()).toMatchObject({ installed: true, reachable: true, version: RIG_VERSION });
+    expect(await admin.install()).toMatchObject({
+      outcome: "installed",
+      reachable: true,
+      replaced: { pid: first, version: "0.0.0" },
+    });
+    expect(processExists(first)).toBe(false);
+    expect(await recordedPid()).not.toBe(first);
+    expect(JSON.parse(await readFile(marker, "utf8"))).toMatchObject({ version: RIG_VERSION });
+    expect(await admin.status()).toMatchObject({ installed: true, running: true, reachable: true, version: RIG_VERSION });
+  } finally {
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);
+test("status names a serving daemon of another version and tells the user to upgrade it", async () => {
+  const { RIG_VERSION } = await import("../src/domain/version");
+  const { processStartTime } = await import("../src/daemon/process-identity");
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-skew-"));
+  const instanceId = crypto.randomUUID();
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => Response.json({ instanceId, pid: process.pid, running: true, version: "0.0.0" }),
+  });
+  try {
+    await mkdir(join(root, "daemon"));
+    await mkdir(join(root, "auth"));
+    await writeFile(join(root, "auth", "control-plane.token"), "secret");
+    const owner = { pid: process.pid, instanceId, startedAt: await processStartTime(process.pid) };
+    await writeFile(join(root, "daemon", "owner.json"), JSON.stringify(owner));
+    await writeFile(join(root, "daemon", "address.json"), JSON.stringify({ ...owner, port: server.port }));
+    await writeFile(join(root, "daemon", "install.json"), JSON.stringify({ mode: "process", command: [], version: "0.0.0" }));
+    const admin = new DaemonAdmin({ root, command: [], mode: "process", userHome: root });
+    const status = await admin.status();
+    expect(status).toMatchObject({ installed: true, running: true, reachable: true, version: "0.0.0" });
+    expect(status.warnings).toEqual([expect.stringContaining("rigd install")]);
+    expect(status.warnings?.[0]).toContain("0.0.0");
+    expect(status.warnings?.[0]).toContain(RIG_VERSION);
+    expect(renderResult("daemon-status", status)).toContain("Version    0.0.0");
+  } finally {
+    server.stop(true);
+    await rm(root, { recursive: true, force: true });
+  }
+});

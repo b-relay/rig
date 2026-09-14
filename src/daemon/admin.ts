@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { DaemonClient } from "./client";
 import { readDaemonAddress, readDaemonOwner, readDaemonToken } from "./files";
 import { RigError } from "../domain/errors";
+import { RIG_VERSION } from "../domain/version";
 import { processExists } from "./host";
 import { recordedProcess, type ProcessRecord } from "./process-identity";
 import { clearStartupFailure, readStartupFailure } from "./startup-failure";
@@ -41,6 +42,7 @@ export type LaunchctlRunner = (
 const installationSchema = z.object({
   mode: z.enum(["process", "launchd"]),
   command: z.array(z.string()).optional(),
+  version: z.string().optional(),
 });
 async function runLaunchctl(
   args: readonly string[],
@@ -61,6 +63,10 @@ export interface DaemonStatus {
   running: boolean;
   reachable: boolean;
   outcome?: "installed" | "uninstalled" | "unchanged";
+  /** The version the reachable daemon reports; absent when unreachable or older than version reporting. */
+  version?: string;
+  /** The daemon this install stopped and replaced, when it was of another version or command. */
+  replaced?: { pid: number; version?: string };
   warnings?: string[];
 }
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -94,6 +100,8 @@ export class DaemonAdmin {
     status: DaemonStatus;
     records: ProcessRecord[];
     unverified?: string;
+    /** The reachable daemon's pid and reported version, for an install deciding whether to replace it. */
+    serving?: { pid: number; version?: string };
   }> {
     let installed = true;
     try {
@@ -126,16 +134,28 @@ export class DaemonAdmin {
       ...(installed ? await this.installationWarnings() : []),
       ...(unverified ? [unverified] : []),
     ];
-    const status = (reachable: boolean) => ({
-      status: {
-        installed,
-        running,
-        reachable,
-        ...(warnings.length ? { warnings } : {}),
-      },
-      records,
-      ...(unverified ? { unverified } : {}),
-    });
+    const status = (serving?: { pid: number; version?: string }) => {
+      // A serving daemon of another version is the one thing `rigd install` can change here.
+      const skew =
+        serving && serving.version !== RIG_VERSION
+          ? [
+              `rigd ${serving.version ?? "of an older version"} is serving, but this rigd is ${RIG_VERSION}; run rigd install to upgrade the daemon.`,
+            ]
+          : [];
+      const all = [...warnings, ...skew];
+      return {
+        status: {
+          installed,
+          running,
+          reachable: serving !== undefined,
+          ...(serving?.version ? { version: serving.version } : {}),
+          ...(all.length ? { warnings: all } : {}),
+        },
+        records,
+        ...(unverified ? { unverified } : {}),
+        ...(serving ? { serving } : {}),
+      };
+    };
     // Never offer the credential to a port whose recorded owner has exited or been replaced.
     const addressLiveness = address
       ? liveness[records.indexOf(address)]
@@ -145,21 +165,28 @@ export class DaemonAdmin {
       addressLiveness === "exited" ||
       addressLiveness === "replaced"
     )
-      return status(false);
+      return status();
     try {
       const health = await new DaemonClient({
         port: address.port,
         token: await readDaemonToken(this.options.root),
       }).health();
-      return status(
+      const ours =
         health.instanceId === address.instanceId &&
-          health.pid === address.pid &&
-          (!owner ||
-            (owner.pid === address.pid &&
-              owner.instanceId === address.instanceId)),
+        health.pid === address.pid &&
+        (!owner ||
+          (owner.pid === address.pid &&
+            owner.instanceId === address.instanceId));
+      return status(
+        ours
+          ? {
+              pid: health.pid,
+              ...(health.version ? { version: health.version } : {}),
+            }
+          : undefined,
       );
     } catch {
-      return status(false);
+      return status();
     }
   }
   /** The escape hatch for a live pid that an older rigd recorded without identity. */
@@ -185,6 +212,24 @@ export class DaemonAdmin {
       ];
     }
   }
+  /** Stops a serving daemon so a newer one can take its place; a daemon that will not stop keeps its installation. */
+  private async stopForReplacement(
+    mode: "process" | "launchd",
+    pid: number,
+  ): Promise<void> {
+    if (mode === "launchd")
+      await this.launchctl(["bootout", this.labelDomain()]);
+    else process.kill(pid, "SIGTERM");
+    const deadline = Date.now() + (this.options.stopTimeoutMs ?? 5000);
+    while (processExists(pid) && Date.now() < deadline) await pause(50);
+    if (processExists(pid))
+      throw new RigError(
+        "DAEMON_STOP",
+        "The running rigd did not stop, so it was not replaced.",
+        `rigd pid ${pid} is still running; inspect it, then run rigd install again to upgrade.`,
+        { pid },
+      );
+  }
   private async writeInstallation(): Promise<void> {
     await mkdir(join(this.options.root, "daemon"), {
       recursive: true,
@@ -195,6 +240,7 @@ export class DaemonAdmin {
       JSON.stringify({
         mode: this.options.mode,
         command: this.options.command,
+        version: RIG_VERSION,
       }),
       { mode: 0o600 },
     );
@@ -262,15 +308,33 @@ export class DaemonAdmin {
     };
   }
   private async performInstall(): Promise<DaemonStatus> {
-    const { status: prior, unverified } = await this.inspect();
-    if (prior.reachable) {
-      if (prior.installed) return { ...prior, outcome: "unchanged" };
-      // A daemon serving without its record (deleted by hand, or started manually)
-      // is adopted: recording it is what makes uninstall able to stop it.
-      await this.writeInstallation();
-      return { ...prior, installed: true, outcome: "installed" };
+    const { status: prior, unverified, serving } = await this.inspect();
+    let replaced: DaemonStatus["replaced"];
+    if (prior.reachable && serving) {
+      const recorded = prior.installed
+        ? await this.readInstallation()
+        : undefined;
+      const current =
+        recorded !== undefined &&
+        recorded.version === RIG_VERSION &&
+        serving.version === RIG_VERSION &&
+        (recorded.command ?? []).join("\0") === this.options.command.join("\0");
+      if (current) return { ...prior, outcome: "unchanged" };
+      if (recorded === undefined) {
+        // A daemon serving without its record (deleted by hand, or started manually)
+        // is adopted: recording it is what makes uninstall able to stop it.
+        await this.writeInstallation();
+        return { ...prior, installed: true, outcome: "installed" };
+      }
+      // Another version or command is serving: stop it and start this one. Managed
+      // processes keep serving under their leases and the new daemon adopts them.
+      await this.stopForReplacement(recorded.mode, serving.pid);
+      replaced = {
+        pid: serving.pid,
+        ...(recorded.version ? { version: recorded.version } : {}),
+      };
     }
-    if (prior.running)
+    if (prior.running && !replaced)
       throw new RigError(
         "DAEMON_UNREACHABLE",
         "A daemon process exists but is not reachable.",
@@ -300,7 +364,12 @@ export class DaemonAdmin {
     }
     for (let attempt = 0; attempt < 100; attempt++) {
       const status = await this.status();
-      if (status.reachable) return { ...status, outcome: "installed" };
+      if (status.reachable)
+        return {
+          ...status,
+          outcome: "installed",
+          ...(replaced ? { replaced } : {}),
+        };
       // The daemon reports its own failed start; waiting longer would not change it.
       const startup = await readStartupFailure(root);
       if (startup) {

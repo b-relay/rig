@@ -57,3 +57,22 @@ test("daemon administration uses observed state and never reveals private paths"
   expect(text).toBe("rigd installed\n");
   expect(await runRigdCli(["--log-level", "debug"], options)).toBe(1);
 });
+
+test("rigd --version prints the version without touching the daemon", async () => {
+  const { RIG_VERSION } = await import("../domain/version");
+  let text = "";
+  let calls = 0;
+  const count = async () => {
+    calls++;
+    return {};
+  };
+  const code = await runRigdCli(["--version"], {
+    admin: { install: count, status: count, uninstall: count },
+    output: { write: (value: string) => void (text += value), error: (value: string) => void (text += value) },
+    diagnostics: { async record() { return {}; } },
+    newOperationId: () => "version",
+  });
+  expect(code).toBe(0);
+  expect(text.trim()).toBe(RIG_VERSION);
+  expect(calls).toBe(0);
+});

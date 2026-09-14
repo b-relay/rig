@@ -5,20 +5,35 @@ import {
 } from "../domain/project-status";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
+import { RIG_VERSION } from "../domain/version";
 import type { DaemonAddress, DaemonHealth, RuntimeCommand } from "./protocol";
 
 const healthSchema = z.object({
   instanceId: z.string().min(1),
   pid: z.number().int().positive(),
   running: z.literal(true),
+  version: z.string().min(1).optional(),
 });
 const errorSchema = z.object({
   error: z.object({
     code: z.string().min(1),
     message: z.string().min(1),
     hint: z.string().optional(),
+    details: z.record(z.string(), z.unknown()).optional(),
   }),
 });
+/** rig only sends commands its own grammar accepts, so a daemon that rejects
+ * one as invalid is running a different version. */
+const versionSkew = (details: Record<string, unknown> | undefined) => {
+  const rigd =
+    typeof details?.version === "string" ? details.version : undefined;
+  return new RigError(
+    "DAEMON_PROTOCOL",
+    `rig ${RIG_VERSION} sent a command that rigd ${rigd ?? "of an older version"} does not accept.`,
+    "Run 'rigd install' to upgrade rigd to the same version as rig.",
+    { rig: RIG_VERSION, ...(rigd ? { rigd } : {}) },
+  );
+};
 const resultSchema = z
   .object({ result: z.unknown() })
   .refine((value) => Object.hasOwn(value, "result"));
@@ -119,6 +134,8 @@ export class DaemonClient {
     if (!response.ok) {
       const parsed = errorSchema.safeParse(payload);
       if (!parsed.success) throw protocolFailure();
+      if (parsed.data.error.code === "INVALID_REQUEST")
+        throw versionSkew(parsed.data.error.details);
       throw new RigError(
         parsed.data.error.code,
         parsed.data.error.message,

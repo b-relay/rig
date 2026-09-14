@@ -390,6 +390,10 @@ test("every command supports both help flags without side effects; removed globa
     }
   }
   expect(calls).toBe(0);
+  text = "";
+  expect(await runRigCli(["--version"], dependencies)).toBe(0);
+  expect(text.trim()).toBe((await import("../domain/version")).RIG_VERSION);
+  expect(calls).toBe(0);
   for (const args of [
     ["--log-level", "debug"],
     ["status", "--state-root", "/tmp/forbidden"],

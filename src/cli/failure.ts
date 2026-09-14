@@ -45,7 +45,8 @@ export function isHelp(error: unknown): boolean {
   return (
     error instanceof CommanderError &&
     (error.code === "commander.helpDisplayed" ||
-      error.code === "commander.help")
+      error.code === "commander.help" ||
+      error.code === "commander.version")
   );
 }
 /** Owns terminal error policy; provider failure details never cross this Interface. */

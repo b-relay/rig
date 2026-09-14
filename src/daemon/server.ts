@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { commandSchema, type RuntimeCommand } from "./protocol";
 import { asRigError } from "../domain/errors";
+import { RIG_VERSION } from "../domain/version";
 
 export interface ControlPlaneOptions {
   port: number;
@@ -55,6 +56,7 @@ export function startControlPlane(options: ControlPlaneOptions) {
           instanceId: options.instanceId,
           pid: process.pid,
           running: true,
+          version: RIG_VERSION,
         });
       if (
         url.pathname === "/v1/config" &&
@@ -102,7 +104,8 @@ export function startControlPlane(options: ControlPlaneOptions) {
             error: {
               code: "INVALID_REQUEST",
               message: "Invalid Rig command.",
-              hint: "Check the command arguments.",
+              hint: `Check the command arguments, and that rig and rigd are the same version (rigd is ${RIG_VERSION}).`,
+              details: { version: RIG_VERSION },
             },
           },
           { status: 400 },

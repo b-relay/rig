@@ -85,6 +85,17 @@ a ten second throttle, so a broken install does not spin. `rigd status` and
 `rigd install` again to record the current one. A failed `launchctl bootstrap`
 reports launchctl's reason and leaves nothing installed.
 
+`rig --version` and `rigd --version` print the version, and a serving daemon
+reports its own version to `rigd status`, which warns when it differs from the
+`rigd` you ran. Upgrading is `rigd install`: when the serving daemon reports
+another version, or the installation record names another version or command,
+the install stops that daemon, starts the current one, and reports what it
+replaced; managed processes keep serving under their leases and the new daemon
+adopts them. A daemon of the same version and command is reported `unchanged`.
+When `rig` sends a command that the daemon does not accept, the error names
+both versions and says to run `rigd install`, because `rig` only sends commands
+its own grammar allows.
+
 Connect the Host Caddy once. Rig writes its marked route blocks to
 `<RIG_ROOT>/proxy/Caddyfile` (or `providers.caddy.caddyfile`) and never edits
 the Caddyfile the running Caddy loads. That Caddyfile must import the route

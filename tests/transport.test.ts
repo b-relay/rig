@@ -80,7 +80,10 @@ test("a mutation that outlives Bun's default 10 s idle timeout still returns its
     },
   });
   try {
-    const client = new DaemonClient({ port: server.port!, token: "test-secret" });
+    const client = new DaemonClient({
+      port: server.port!,
+      token: "test-secret",
+    });
     expect(
       await client.command({ action: "up", project: "demo", target: "local" }),
     ).toEqual({ outcome: "started" });
@@ -376,6 +379,33 @@ test("status retains each observed state, source identity, and exit evidence acr
       };
       expect(result).toEqual(await client.status({ project: "demo" }));
     }
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("a command rigd does not accept is reported as version skew naming both versions, and health carries the daemon version", async () => {
+  const { RIG_VERSION } = await import("../src/domain/version");
+  const server = startControlPlane({
+    port: 0,
+    token: "test-secret",
+    instanceId: "instance-1",
+    handle: async () => ({}),
+  });
+  try {
+    const client = new DaemonClient({
+      port: server.port!,
+      token: "test-secret",
+    });
+    expect((await client.health()).version).toBe(RIG_VERSION);
+    await expect(
+      client.command({ action: "from-the-future" } as never),
+    ).rejects.toMatchObject({
+      code: "DAEMON_PROTOCOL",
+      message: expect.stringContaining(`rig ${RIG_VERSION}`),
+      hint: expect.stringContaining("rigd install"),
+      details: { rig: RIG_VERSION, rigd: RIG_VERSION },
+    });
   } finally {
     await server.stop(true);
   }

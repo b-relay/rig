@@ -10,6 +10,8 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "activity") return renderActivity(report);
   if (action === "daemon-status")
     return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n${
+      report.version ? `Version    ${word(report.version)}\n` : ""
+    }${
       Array.isArray(report.warnings)
         ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
         : ""
@@ -36,13 +38,18 @@ export function renderResult(action: string, value: unknown): string {
   const warnings = Array.isArray(report.warnings)
     ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
     : "";
+  const replaced = object(report.replaced);
+  const upgrade =
+    action === "daemon-install" && report.replaced
+      ? ` (replaced rigd ${word(replaced.version) || "of an older version"}, pid ${Number(replaced.pid)})`
+      : "";
   const retired = rows(report.retired)
     .map(
       (entry) =>
         `${word(report.project)} ${word(entry.target)} retired${entry.branch ? ` ${word(entry.branch)}` : ""} (${word(entry.reason)})\n`,
     )
     .join("");
-  return `${retired}${subject} ${outcome}${revision}${path}\n${warnings}`;
+  return `${retired}${subject} ${outcome}${upgrade}${revision}${path}\n${warnings}`;
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);

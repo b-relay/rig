@@ -80,6 +80,10 @@ test("Doctor uses captured or explicit repo paths and only falls back for missin
     await mkdir(join(root, "auth"), { recursive: true });
     await writeFile(join(root, "auth/control-plane.token"), "wrong-token");
     await expect(client.command({ action: "doctor" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    // An unusable credential is a daemon-state problem, not a missing installation: no offline fallback.
+    await writeFile(join(root, "auth/control-plane.token"), "");
+    await expect(client.command({ action: "doctor" })).rejects.toMatchObject({ code: "DAEMON_TOKEN" });
+    await writeFile(join(root, "auth/control-plane.token"), "wrong-token");
     response = Response.json({ accepted: true });
     await expect(client.command({ action: "doctor" })).rejects.toMatchObject({ code: "DAEMON_PROTOCOL" });
     await expect(client.status({ project: "demo" })).rejects.toMatchObject({ code: "DAEMON_PROTOCOL" });

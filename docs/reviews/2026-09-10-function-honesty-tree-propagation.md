@@ -59,7 +59,7 @@ listed once and not expanded.
 rig: main(args) [O+T] src/index.ts:10
   rigRoot, userOutput, createHostDiagnosticLog, waitForLogPoll, createTerminalInteraction  [O]
   createCliClient(root, cwd) [O+T] src/index.ts:47
-    connectDaemon → readDaemonAddress/readDaemonToken/DaemonClient  [O] (owner defects: token collapse #116/#121, timeout collapse #127)
+    connectDaemon → readDaemonAddress/readDaemonToken/DaemonClient  [O] (owner defects: token collapse #116/#121 (fixed: `DAEMON_TOKEN`), timeout collapse #127)
     inspectOfflineHost(root, cwd) [D] src/daemon/offline-doctor.ts:12
       inspectHost(root) [O] (fat), discoverProject [O]
   runRigCli(args, deps) [H] src/cli/rig.ts:10 — and its entire static subtree [H]

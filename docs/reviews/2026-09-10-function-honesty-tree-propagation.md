@@ -263,7 +263,7 @@ owner carries only its own owner-level defects.
 | capture wrapper catch-all rewrites `running` as `failed` | #143 |
 | launchd `ensureRunning` false `LAUNCHD_START` during backoff | #144 |
 | migration roots unreachable; adoption guard can wedge | #145 | (fixed: guard error and doctor `runtime-ownership` hint name `<root>/runtime/legacy-adoption.json` and state that no rigd command finalizes it; migration roots still unwired) |
-| provider minor hazards (non-atomic request JSON, `process.kill(0)` probe) | #146 |
+| provider minor hazards (non-atomic request JSON, `process.kill(0)` probe) | #146 (fixed: `writeCaptureRequest` temp+rename in `capture-request.ts`; child observe probes via injected `inspection.groupExists`; 1500 ms grace deferred to #120) |
 | bearer token sent to whatever owns a stale daemon port | #147 |
 | editing Project name in config leaves a circular dead end | #148 |
 | user-correctable failures rendered as unexpected; no CLI pre-validation | #149 |
@@ -344,7 +344,7 @@ owner carries only its own owner-level defects.
 | destroyed Previews leave stale git worktree entries in the mirror (addendum) | #153 (fixed: Preview destroy calls `sources.release`, which prunes the mirror) |
 | [D] inspectOfflineHost hard-wires inspectHost/discoverProject (row 1) | #224 |
 | [D+T] createChildSupervisor / [D] createProcessInspection defaults; composeDaemon passes none (rows 6, 7) | #225 |
-| [D] child observe process.kill(0) bypasses inspection (row 2) | #146 item 2 |
+| [D] child observe process.kill(0) bypasses inspection (row 2) | #146 item 2 (fixed: probe routed through `inspection.groupExists`) |
 | [D] child stop Date.now/Bun.sleep/1500 ms grace; scheduleRestart setTimeout (rows 3, 4) | #120 |
 | [D] waitForCaptureStart Date.now/Bun.sleep (row 5) | #226 |
 | [D] launchd waitForApplication / stop 30 × Bun.sleep(100) (rows 8, 9) | #227 |

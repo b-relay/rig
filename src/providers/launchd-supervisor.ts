@@ -4,6 +4,7 @@ import {
   type ProcessIdentityReader,
 } from "./process-identity";
 import { clearCaptureStatus, waitForCaptureStart } from "./capture-status";
+import { writeCaptureRequest } from "./capture-request";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -163,7 +164,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       let command = request.command;
       if (options.captureCommand) {
         await clearCaptureStatus(requestPath);
-        await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
+        await writeCaptureRequest(requestPath, request);
         command = [...options.captureCommand, requestPath];
       }
       const plist = join(options.root, `${jobLabel}.plist`);

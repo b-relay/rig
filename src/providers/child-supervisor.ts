@@ -198,20 +198,19 @@ export function createChildSupervisor(
         ...restartEvidence(key, owned),
       };
     if (owned.child) {
+      // Bun has not reported the exit yet; the group probe closes the gap between death and that report.
       try {
-        process.kill(owned.pid, 0);
+        if (!(await inspection.groupExists(owned.pid))) return { state: "stopped" };
         return {
           state: "running",
           pid: owned.pid,
           ...(owned.outputFailure ? { reason: owned.outputFailure } : {}),
         };
-      } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "ESRCH"
-          ? { state: "stopped" }
-          : {
-              state: "unknown",
-              reason: "Process presence could not be checked.",
-            };
+      } catch {
+        return {
+          state: "unknown",
+          reason: "Process presence could not be checked.",
+        };
       }
     }
     try {

@@ -96,7 +96,7 @@ testability and honesty refactors.
 73. ~~#197~~ (fixed) Hook, build or install timeout reported as generic COMMAND_TIMEOUT with all output discarded; timeouts hard-coded.
 74. ~~#172~~ (fixed) Missing envFile fails deploy with a raw ENOENT turned into UNEXPECTED; path lost.
 75. ~~#198~~ (fixed) envFile parser rejects `KEY="value" # comment`; ENV_FILE errors carry no path or line.
-76. #146 launchd request JSON non-atomic; child observe probes with process.kill(0) bypassing ProcessInspection. (#225.)
+76. ~~#146~~ (fixed) launchd request JSON non-atomic; child observe probes with process.kill(0) bypassing ProcessInspection. (#225.)
 77. #120 Make child-supervisor stop and restart timing explicitly controllable. (Honesty issue for child stop/scheduleRestart; #225, #226.)
 
 ## Tier 3 — diagnostics that mislead

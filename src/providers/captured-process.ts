@@ -8,28 +8,16 @@ import {
 } from "./process-identity";
 import { writeCaptureStatus } from "./capture-status";
 import type { Supervisor } from "./contracts";
-import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { RigError } from "../domain/errors";
-import { z } from "zod";
+import { readCaptureRequest } from "./capture-request";
 import { createChildSupervisor } from "./child-supervisor";
-const requestSchema = z.object({
-  key: z.string().min(1),
-  componentName: z.string().min(1),
-  command: z.array(z.string()).min(1),
-  cwd: z.string().min(1),
-  env: z.record(z.string(), z.string()),
-  logRoot: z.string().min(1),
-  keepAlive: z.boolean().optional(),
-});
 /** Private rigd entrypoint used by launchd; owns signal handlers and the captured child lifetime. */
 export async function runCapturedProcess(
   requestPath: string,
   dependencies: { inspect?: ProcessIdentityReader } = {},
 ): Promise<number> {
-  const request = requestSchema.parse(
-    JSON.parse(await readFile(requestPath, "utf8")),
-  );
+  const request = await readCaptureRequest(requestPath);
   const supervisor = createChildSupervisor({ stateRoot: dirname(requestPath) });
   let stopping: Promise<unknown> | undefined;
   const stop = () => {

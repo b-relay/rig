@@ -160,3 +160,32 @@ for (const changeAt of [1, 3]) {
     expect(identities).toBe(changeAt);
   });
 }
+
+test("observe of a live child probes presence through the injected inspection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-stop-"));
+  roots.push(root);
+  const probes: Array<[number, NodeJS.Signals | 0]> = [];
+  const supervisor = createChildSupervisor({
+    stateRoot: join(root, ".rig"),
+    stopTimeoutMs: 0,
+    processInspection: createProcessInspection({
+      kill: (target, signal) => { probes.push([target, signal]); process.kill(target, signal); },
+    }),
+  });
+  try {
+    const started = await supervisor.ensureRunning({
+      key: "live",
+      componentName: "web",
+      command: [process.execPath, "-e", "setInterval(()=>{},1000)"],
+      cwd: root,
+      env: { ...process.env } as Record<string, string>,
+      logRoot: root,
+    });
+    probes.length = 0;
+    expect(await supervisor.observe("live")).toEqual({ state: "running", pid: started.pid! });
+    expect(probes).toEqual([[-started.pid!, 0]]);
+  } finally {
+    await supervisor.stop("live");
+    await supervisor.shutdown();
+  }
+});

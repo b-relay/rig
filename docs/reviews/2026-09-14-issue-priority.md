@@ -50,7 +50,7 @@ testability and honesty refactors.
 30. ~~#220~~ (fixed) Pre-#113 Preview records without sourceRoot can never be destroyed.
 31. ~~#125~~ (fixed) Convex site port selected by the runtime is discarded for local/live; plan records port+1, which can collide.
 32. ~~#175~~ (fixed) Port reservation ignores the recovery.plan of a Target in recovery; two Targets can be planned onto the same port.
-33. #152 repoint re-plans local Targets without the port reservation check; two Targets can record the same port.
+33. ~~#152~~ (fixed) repoint re-plans local Targets without the port reservation check; two Targets can record the same port.
 34. #196 Hook semantics drift from the schema: hooks on installed components never run, postStart runs before readiness.
 35. #144 launchd ensureRunning fails LAUNCHD_START on a healthy job in restart backoff. (#227 is its honesty fix.)
 36. #202 launchd capture observation measures freshness after two ps inspections; loaded hosts flap to unknown and block uninstall. (#228, #237.)

@@ -456,7 +456,10 @@ automatically converted, and supported structured edits preserve comments/order
 or refuse before mutation.
 
 `rig rename <name>` and `rig repoint <path>` require stopped Targets and validate
-registered identity/path conflicts. They do not delete Project data.
+registered identity/path conflicts. They do not delete Project data. `repoint`
+re-plans the Working copy Target from the new directory's config with the same
+port reservation as `rig up`: a port that another Target records is refused
+with `PORT_RESERVED` and the registration is left unchanged.
 
 ## Provider Boundary
 

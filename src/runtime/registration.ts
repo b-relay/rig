@@ -3,7 +3,7 @@ import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import { RigError, failureCauses } from "../domain/errors";
 import { observeTargets } from "./status";
-import { recordedPorts } from "./ports";
+import { planTarget } from "./targets";
 export async function updateRegistration(
   command: RuntimeCommand,
   project: ProjectRecord,
@@ -99,29 +99,29 @@ export async function updateRegistration(
         "Another Project already owns the new directory.",
         "Choose an unregistered directory.",
       );
-    const plans = new Map(
-      targets
-        .filter((t) => t.kind === "local")
-        .map((target) => [
-          target.id,
-          deps.documents.resolve({
-            config: document.config,
-            target: "local",
-            workspacePath: repoPath,
-            dataRoot: target.plan.dataRoot,
-            deploymentName: target.name,
-            assignedPorts: recordedPorts(target.plan.components),
-          }),
-        ]),
-    );
+    // The same planning as `up`: the moved config's ports are reserved against
+    // every other Target, and recorded ports are kept where the config allows.
+    const replanned = new Map<string, TargetRecord>();
+    for (const target of targets.filter((t) => t.kind === "local"))
+      replanned.set(
+        target.id,
+        await planTarget(
+          {
+            command: { ...command, target: "local" },
+            project: { ...project, repoPath },
+            document,
+            existing: target,
+          },
+          deps,
+        ),
+      );
     await deps.store.update((state) => {
       const current = state.projects.find((p) => p.id === project.id)!;
       current.repoPath = repoPath;
       current.configPath = document.path;
-      for (const target of state.targets) {
-        const plan = plans.get(target.id);
-        if (plan) target.plan = plan;
-      }
+      state.targets = state.targets.map(
+        (target) => replanned.get(target.id) ?? target,
+      );
     });
   }
 }

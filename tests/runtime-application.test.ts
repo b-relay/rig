@@ -393,6 +393,39 @@ test("repoint uses the new config path and retains assigned ports, including Con
   });
 });
 
+test("repoint refuses a config whose port another Target records and leaves the registration unchanged", async () => {
+  const { runtime, state, deps, config } = fixture();
+  deps.files.selectPorts = async ({ requests, occupied }) => {
+    for (const request of requests)
+      if (request.preferred && occupied.has(request.preferred))
+        throw new RigError(
+          "PORT_RESERVED",
+          `Port ${request.preferred} is reserved by another Target.`,
+          "Configure a distinct local/live port.",
+        );
+    return Object.fromEntries(requests.map((request) => [request.name, request.preferred ?? 6000]));
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({ action: "down", project: "demo" });
+  const foreign = structuredClone(state.targets[0]!);
+  Object.assign(foreign, { id: "foreign", projectId: "other", name: "live", kind: "live" });
+  (foreign.plan.components[0] as { port: number }).port = 4600;
+  state.targets.push(foreign);
+  config.components.web = { mode: "managed", command: "serve --host 127.0.0.1", port: 4600 };
+  await expect(
+    runtime.command({ action: "repoint", project: "demo", newPath: "/tmp/moved" }),
+  ).rejects.toMatchObject({ code: "PORT_RESERVED" });
+  expect(state.projects[0]).toMatchObject({ repoPath: "/tmp/developer" });
+  expect(state.targets[0]!.plan).toMatchObject({ workspacePath: "/tmp/developer" });
+  expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4567 });
+  config.components.web = { mode: "managed", command: "serve --host 127.0.0.1", port: 4700 };
+  await runtime.command({ action: "repoint", project: "demo", newPath: "/tmp/moved" });
+  expect(state.targets[0]).toMatchObject({ id: state.targets[0]!.id, desired: "stopped" });
+  expect(state.targets[0]!.plan).toMatchObject({ workspacePath: "/tmp/moved" });
+  expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4700 });
+});
+
 test("a Convex site port is requested as port + 1 but the collision-checked selection is what gets recorded", async () => {
   const { runtime, state, deps } = fixture();
   const requests: { name: string; preferred?: number }[] = [];

@@ -372,12 +372,16 @@ export function createTargetEffects(
       );
       const receiptFile = receiptPath(target, component);
       const receipt = await readInstallReceipt(receiptFile);
-      if (
+      const published =
         receipt?.key === key &&
         (await options.installer.observe(destination)) === "installed" &&
-        (await installedSourceRevision(source)) === receipt.sourceRevision &&
-        (await digestFile(destination)) === receipt.installedRevision
-      )
+        (await digestFile(destination)) === receipt.installedRevision;
+      const unchanged = async () =>
+        published &&
+        (await installedSourceRevision(source)) === receipt!.sourceRevision;
+      // A deployed checkout is immutable, so a matching receipt proves the build is current. A local working copy's
+      // build inputs are unobservable here, so its build runs every time and only its output decides.
+      if (target.plan.target !== "local" && (await unchanged()))
         return { outcome: "unchanged" };
       if (component.build) {
         const result = await runTarget(
@@ -396,6 +400,7 @@ export function createTargetEffects(
             { exitCode: result.exitCode },
           );
       }
+      if (await unchanged()) return { outcome: "unchanged" };
       await transactions.withArtifactChange(
         target.id,
         [destination, ownership.ownerPath(destination), receiptFile],

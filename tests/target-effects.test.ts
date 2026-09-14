@@ -110,10 +110,11 @@ test("installed components build once per deployment and a failed replacement ke
   expect(await adapter.install(component, record)).toEqual({
     outcome: "installed",
   });
+  // local Targets run build on every up; identical output is reported unchanged and left in place.
   expect(await adapter.install(component, record)).toEqual({
     outcome: "unchanged",
   });
-  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\n");
+  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
   await expect(
     adapter.install(
       { ...component, build: "printf 'build failed\\n' >&2; exit 7" },
@@ -375,7 +376,8 @@ test("a health URL with an uppercase scheme is probed over HTTP rather than run 
 test("an installation receipt survives a change in the daemon's inherited environment but not in the Project's declared env", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-install-receipt-env-"));
   roots.push(root);
-  const record = target(root);
+  // A deployed Target relies on the receipt alone; local rebuilds every time regardless.
+  const record = { ...target(root), id: "live", kind: "live" as const, name: "live", plan: { ...target(root).plan, target: "live" as const } };
   const component = {
     name: "tool",
     kind: "installed" as const,
@@ -390,4 +392,54 @@ test("an installation receipt survives a change in the daemon's inherited enviro
   expect(await later.observations.artifact(record, component, new AbortController().signal)).toBe("installed");
   expect(await later.install({ ...component, env: { FLAVOR: "spicy" } }, record)).toEqual({ outcome: "installed" });
   expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
+});
+
+test("a local Target rebuilds on every install and republishes only when the build output changed; a deployed Target builds once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-install-local-rebuild-"));
+  roots.push(root);
+  const adapter = effects(root);
+  const component = {
+    name: "tool",
+    kind: "installed" as const,
+    entrypoint: "tool",
+    build: "printf 'built\\n' >> builds; cp src.txt tool; chmod +x tool",
+    env: {},
+    dependsOn: [],
+  };
+  await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v1\n");
+  const local = target(root);
+  expect(await adapter.install(component, local)).toEqual({ outcome: "installed" });
+  await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v2\n");
+  expect(await adapter.install(component, local)).toEqual({ outcome: "installed" });
+  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toContain("echo v2");
+  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
+  const live = { ...target(root), id: "live", kind: "live" as const, name: "live", plan: { ...target(root).plan, target: "live" as const } };
+  expect(await adapter.install(component, live)).toEqual({ outcome: "installed" });
+  await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v3\n");
+  expect(await adapter.install(component, live)).toEqual({ outcome: "unchanged" });
+  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\nbuilt\n");
+});
+
+test("a renamed Component takes over its own Target's installed executable, while another Target is still refused and told who owns it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-install-rename-"));
+  roots.push(root);
+  const adapter = effects(root), record = target(root);
+  const cli = {
+    name: "cli",
+    kind: "installed" as const,
+    entrypoint: "tool",
+    installName: "tool",
+    build: "printf '#!/bin/sh\\necho ready\\n' > tool",
+    env: {},
+    dependsOn: [],
+  };
+  expect(await adapter.install(cli, record)).toEqual({ outcome: "installed" });
+  const launcher = { ...cli, name: "launcher" };
+  expect(await adapter.install(launcher, record)).toEqual({ outcome: "installed" });
+  expect(await adapter.observations.artifact(record, launcher, new AbortController().signal)).toBe("installed");
+  const other = { ...record, id: "other" };
+  await expect(adapter.install(cli, other)).rejects.toMatchObject({
+    code: "ARTIFACT_CONFLICT",
+    details: { destination: join(root, "bin", "tool-dev"), owner: { targetId: "t", componentName: "launcher" } },
+  });
 });

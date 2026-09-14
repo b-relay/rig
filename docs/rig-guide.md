@@ -459,11 +459,18 @@ for Project hooks.
 
 1. Project `preStart`, only when at least one managed process is not already
    running. Installed executables are built and installed after it, so it may
-   prepare what a build needs. An installed executable is rebuilt only when
-   its `entrypoint`, `build`, destination, or declared environment
-   (`envFile`, lane `env`, Component `env`) changes, or when its source or
-   installed artifact no longer matches the receipt; a daemon restarted from
-   another shell does not rebuild anything.
+   prepare what a build needs. On `live` and Preview Targets the checkout is
+   immutable, so an installed executable is rebuilt only when its
+   `entrypoint`, `build`, destination, or declared environment (`envFile`,
+   lane `env`, Component `env`) changes, or when its source or installed
+   artifact no longer matches the receipt; a daemon restarted from another
+   shell does not rebuild anything. On `local`, Rig cannot see which files a
+   build reads, so `build` runs on every `rig up` and `rig restart`; the
+   executable is republished only when the build output actually changed,
+   and an identical output is reported `unchanged`. Renaming a Component
+   while keeping its `installName` hands the executable to the new name
+   within the same Target; only another Target's Component is refused with
+   `ARTIFACT_CONFLICT`, which names the owner.
 2. For each Component in dependency order: the Component's `preStart`, the
    process start, readiness, then the Component's `postStart`. Readiness means
    the `health` check passed, or, for a Component without `health`, that the

@@ -308,7 +308,7 @@ owner carries only its own owner-level defects.
 | preview push minors (recreated branch hint, ConfigError recorded as UNEXPECTED) | #189 |
 | processSupervisor typo accepted by schema; wedges the Target at deploy | #190 |
 | convex stateDir and relative sqlite paths resolved under the revision checkout: data lost per deploy | #191 |
-| rename keeping installName raises ARTIFACT_CONFLICT; local up never rebuilds after source change | #192 |
+| rename keeping installName raises ARTIFACT_CONFLICT; local up never rebuilds after source change | #192 (fixed: same-Target takeover; local builds every up, republishes on changed output) |
 | provider minors (PROVIDER_MISSING wording, redirect handling, sqlite path hint) | #193 |
 | rig restart aborts after the stop half on a preStop/postStop failure: outage, desired persisted stopped | #194 |
 | installation receipt key hashes the whole inherited daemon env: ambient changes rebuild everything, artifact unknown | #195 (fixed: keyed on declared env only) |

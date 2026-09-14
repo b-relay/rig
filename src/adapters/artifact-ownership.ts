@@ -53,16 +53,19 @@ export function createArtifactOwnership(root: string) {
   const inspect = async (identity: ArtifactIdentity) => {
     const saved = await owner(identity.destination),
       revision = await artifactRevision(identity.destination);
-    if (
-      saved &&
-      (saved.targetId !== identity.targetId ||
-        saved.componentName !== identity.componentName)
-    )
+    // A Target may hand its own executable to a renamed Component; only another Target is refused.
+    if (saved && saved.targetId !== identity.targetId)
       throw new RigError(
         "ARTIFACT_CONFLICT",
-        "Another Component owns this installed executable.",
+        "Another Target's Component owns this installed executable.",
         "Choose a different installName.",
-        { destination: identity.destination },
+        {
+          destination: identity.destination,
+          owner: {
+            targetId: saved.targetId,
+            componentName: saved.componentName,
+          },
+        },
       );
     if (!saved && revision !== undefined)
       throw new RigError(

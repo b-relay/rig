@@ -62,6 +62,32 @@ test("daemon install starts a real service; status notices exit; uninstall prese
   }
 }, 15000);
 
+test("a cleanly stopped daemon uninstalls without a running rigd: the installation and its credential are removed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-stopped-"));
+  const script = join(root, "child.ts");
+  const hostModule = join(import.meta.dir, "../src/daemon/host.ts");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
+  );
+  const admin = new DaemonAdmin({ root, command: [process.execPath, script], mode: "process", userHome: root });
+  try {
+    await admin.install();
+    const address = JSON.parse(await readFile(join(root, "daemon", "address.json"), "utf8")) as { pid: number };
+    process.kill(address.pid, "SIGTERM");
+    const deadline = Date.now() + 5000;
+    while (processExists(address.pid) && Date.now() < deadline) await Bun.sleep(50);
+    expect(processExists(address.pid)).toBe(false);
+    expect(await admin.status()).toMatchObject({ installed: true, running: false, reachable: false });
+    expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled", installed: false, running: false });
+    await expect(readFile(join(root, "daemon", "install.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, "auth", "control-plane.token"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await admin.status()).toMatchObject({ installed: false, running: false, reachable: false });
+  } finally {
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);
 test("a process-mode install gives rigd the login basics plus its own variables, never the installer's secrets", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-env-"));
   const script = join(root, "child.ts");

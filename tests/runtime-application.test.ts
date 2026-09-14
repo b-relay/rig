@@ -267,6 +267,47 @@ test("repoint uses the new config path and retains assigned ports, including Con
   });
 });
 
+test("deploy plans a Target from the rig config committed on the deployed revision, not the working copy", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const workingCopy = deps.documents.read.bind(deps.documents);
+  const committed = parseProjectConfig({
+    name: "demo",
+    components: {
+      web: { mode: "managed", command: "serve --host 127.0.0.1", port: 4567 },
+      api: { mode: "managed", command: "api --host 127.0.0.1", port: 4600 },
+    },
+  });
+  deps.documents.read = async (path) =>
+    path === "/tmp/developer"
+      ? await workingCopy(path)
+      : { path: `${path}/rig.yaml`, format: "yaml", revision: "committed", config: committed };
+  expect(
+    await runtime.command({ action: "deploy", project: "demo", target: "live" }),
+  ).toMatchObject({ outcome: "deployed", commit: "abc" });
+  const live = state.targets.find((target) => target.kind === "live")!;
+  expect(live.plan.workspacePath).toContain("/revisions/");
+  expect(live.plan.components.map((component) => component.name)).toEqual(["web", "api"]);
+  expect(live.plan.components).toEqual(
+    expect.arrayContaining([expect.objectContaining({ name: "api", port: 4600 })]),
+  );
+});
+
+test("deploy refuses a revision whose committed rig config names another Project", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const workingCopy = deps.documents.read.bind(deps.documents);
+  const renamed = parseProjectConfig({ name: "other", components: {} });
+  deps.documents.read = async (path) =>
+    path === "/tmp/developer"
+      ? await workingCopy(path)
+      : { path: `${path}/rig.yaml`, format: "yaml", revision: "committed", config: renamed };
+  await expect(
+    runtime.command({ action: "deploy", project: "demo", target: "live" }),
+  ).rejects.toMatchObject({ code: "PROJECT_IDENTITY" });
+  expect(state.targets.some((target) => target.kind === "live")).toBe(false);
+});
+
 test("authenticated callers cannot destroy the local or live Target", async () => {
   const { runtime } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

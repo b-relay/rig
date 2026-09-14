@@ -64,7 +64,8 @@ export async function planTarget(
   const base = join(deps.root, "targets", project.id, id);
   let workspacePath = project.repoPath,
     commit: string | undefined,
-    branch = command.branch;
+    branch = command.branch,
+    config = document.config;
   if (kind !== "local") {
     const host = await deps.documents.host();
     const production =
@@ -91,9 +92,11 @@ export async function planTarget(
     });
     workspacePath = prepared.workspacePath;
     commit = prepared.commit;
+    // The deployed revision serves its own committed config; the working copy only identified the Project.
+    config = await committedConfig(prepared.workspacePath, project, deps);
   }
   const planInput = {
-    config: document.config,
+    config,
     target: kind,
     workspacePath,
     dataRoot: existing?.plan.dataRoot ?? join(base, "data"),
@@ -116,11 +119,11 @@ export async function planTarget(
   );
   const lane =
     kind === "local"
-      ? document.config.local
+      ? config.local
       : kind === "live"
-        ? document.config.live
-        : document.config.deployments;
-  const requests = Object.entries(document.config.components).flatMap(
+        ? config.live
+        : config.deployments;
+  const requests = Object.entries(config.components).flatMap(
     ([name, base]) => {
       const component = { ...base, ...lane?.components?.[name] };
       if (
@@ -187,4 +190,20 @@ export async function persistTarget(
     if (index === -1) state.targets.push(target);
     else state.targets[index] = target;
   });
+}
+/** The rig config committed on a prepared revision; a revision that names another Project is never deployed here. */
+async function committedConfig(
+  workspacePath: string,
+  project: ProjectRecord,
+  deps: Pick<RuntimeDependencies, "documents">,
+): Promise<ProjectConfig> {
+  const revision = await deps.documents.read(workspacePath);
+  if (revision.config.name !== project.name)
+    throw new RigError(
+      "PROJECT_IDENTITY",
+      `The deployed revision's rig config names Project '${revision.config.name}', not '${project.name}'.`,
+      "Deploy a Commit whose rig config keeps this Project's name, or run rig rename.",
+      { revisionPath: revision.path },
+    );
+  return revision.config;
 }

@@ -169,6 +169,14 @@ detached HEAD because it does not deploy the current checkout. If the current
 checkout differs from the Production branch, interactive commands should make
 the deployed branch clear.
 
+A deployed Target is planned from the `rig.yaml` committed on the deployed
+revision, so its components, ports, and hooks match the code it serves. The
+working copy's config only identifies the Project (its name and the live
+deploy branch policy); uncommitted edits to it never reach a live or Preview
+plan. A revision whose committed config names a different Project is refused
+as `PROJECT_IDENTITY`, and an invalid committed config fails the deploy with
+the revision's path in the message.
+
 Every deploy resolves its Project from `--project` or the working directory
 and, before anything changes, prints a line such as
 `Deploying share (/Users/me/share) to live from main.` on stderr. A deploy run

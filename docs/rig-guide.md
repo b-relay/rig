@@ -29,9 +29,15 @@ rigd status
 ```
 
 `rigd install` owns daemon setup and creates the local control-plane auth token.
+It only runs when no daemon process exists, and it issues a fresh token every
+time, so a credential left behind by a crashed daemon does not outlive it.
 Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
-`rigd install`.
+`rigd install`. Before sending the token anywhere, `rig`, `git-remote-rig`,
+and `rigd status` check that the process recorded in the daemon's address file
+still exists. A record left by a daemon that died is reported as stale and its
+port is never contacted, so another local process that later binds that port
+does not receive the credential.
 
 Stopping, restarting, or upgrading `rigd` is not a Target stop. Managed
 processes keep serving while the daemon is down, and the next daemon adopts

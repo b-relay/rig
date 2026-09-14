@@ -30,6 +30,30 @@ test("discovery re-reads the address and credentials for each command after rest
   }
 });
 
+test("a stale address record is reported as a stopped daemon and its port never receives the token", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rig-stale-address-"));
+  const root = join(directory, ".rig");
+  const received: string[] = [];
+  const foreign = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    received.push(`${request.method} ${new URL(request.url).pathname} ${request.headers.get("authorization")}`);
+    return Response.json({ instanceId: "fixture", pid: 2147483647, running: true });
+  }});
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true });
+    await mkdir(join(root, "auth"), { recursive: true });
+    await writeFile(join(root, "daemon/address.json"), JSON.stringify({ port: foreign.port, pid: 2147483647, instanceId: "fixture" }));
+    await writeFile(join(root, "auth/control-plane.token"), "long-lived-secret");
+    await expect(connectDaemon(root)).rejects.toMatchObject({
+      code: "DAEMON_UNREACHABLE",
+      message: expect.stringContaining("stale"),
+    });
+    expect(received).toEqual([]);
+  } finally {
+    await foreign.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Doctor uses captured or explicit repo paths and only falls back for missing or unreachable setup", async () => {
   const { createCliClient } = await import("../src/index");
   const directory = await mkdtemp(join(tmpdir(), "rig-doctor-"));

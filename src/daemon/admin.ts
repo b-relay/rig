@@ -107,7 +107,8 @@ export class DaemonAdmin {
       reachable,
       ...(warnings.length ? { warnings } : {}),
     });
-    if (!address) return status(false);
+    // Never offer the credential to a port whose recorded owner has exited.
+    if (!address || !processExists(address.pid)) return status(false);
     try {
       const health = await new DaemonClient({
         port: address.port,
@@ -212,15 +213,12 @@ export class DaemonAdmin {
     const { root } = this.options;
     await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
     await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
+    // No daemon is running here, so a fresh token strands nothing and retires
+    // any credential a dead daemon's stale port may have exposed.
     const tokenPath = join(root, "auth", "control-plane.token");
-    try {
-      await readDaemonToken(root);
-    } catch {
-      await writeFile(tokenPath, randomBytes(32).toString("base64url"), {
-        mode: 0o600,
-        flag: "wx",
-      });
-    }
+    await writeFile(tokenPath, randomBytes(32).toString("base64url"), {
+      mode: 0o600,
+    });
     await chmod(tokenPath, 0o600);
     await writeFile(
       this.marker,

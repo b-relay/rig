@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DaemonAdmin } from "../src/daemon/admin";
+import { processExists } from "../src/daemon/host";
 
 test("an empty daemon command fails before acquiring a startup log", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-invalid-"));
@@ -90,6 +91,73 @@ test("installation is reachable while initial Target reconciliation is still pen
     await rm(root, { recursive: true, force: true });
   }
 }, 10000);
+
+test("status treats a dead recorded pid as a stopped daemon without contacting its port", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-stale-"));
+  const received: string[] = [];
+  const foreign = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      received.push(request.headers.get("authorization") ?? "none");
+      return Response.json({ instanceId: "fixture", pid: 2147483647, running: true });
+    },
+  });
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true });
+    await mkdir(join(root, "auth"), { recursive: true });
+    await writeFile(
+      join(root, "daemon", "address.json"),
+      JSON.stringify({ port: foreign.port, pid: 2147483647, instanceId: "fixture" }),
+    );
+    await writeFile(join(root, "auth", "control-plane.token"), "secret");
+    const admin = new DaemonAdmin({
+      root,
+      command: [process.execPath, "unused"],
+      mode: "process",
+      userHome: root,
+    });
+    expect(await admin.status()).toEqual({
+      installed: false,
+      running: false,
+      reachable: false,
+    });
+    expect(received).toEqual([]);
+  } finally {
+    await foreign.stop(true);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reinstalling with no daemon running rotates the control-plane token", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-rotate-"));
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, await daemonScript(root)],
+    mode: "process",
+    userHome: root,
+  });
+  const tokenPath = join(root, "auth", "control-plane.token");
+  try {
+    await admin.install();
+    const first = await readFile(tokenPath, "utf8");
+    expect(await admin.install()).toMatchObject({ outcome: "unchanged" });
+    expect(await readFile(tokenPath, "utf8")).toBe(first);
+    // The daemon dies without cleaning up; its address record goes stale.
+    const address = JSON.parse(
+      await readFile(join(root, "daemon", "address.json"), "utf8"),
+    ) as { pid: number };
+    process.kill(address.pid, "SIGKILL");
+    while (processExists(address.pid)) await Bun.sleep(20);
+    expect(await admin.status()).toMatchObject({ running: false, reachable: false });
+    await admin.install();
+    expect(await readFile(tokenPath, "utf8")).not.toBe(first);
+    expect(await admin.status()).toMatchObject({ reachable: true });
+  } finally {
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);
 
 test("owner evidence without an address reports a running but unreachable daemon", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-owner-"));

@@ -37,10 +37,30 @@ export async function hostDoctor(
 }
 
 async function inspectRuntimeHost(
-  deps: Pick<RuntimeDependencies, "inspectHost" | "assertOwnershipReady">,
+  deps: Pick<
+    RuntimeDependencies,
+    "inspectHost" | "assertOwnershipReady" | "store"
+  >,
 ) {
   const checks = await deps.inspectHost();
   checks.unshift({ name: "rigd", ok: true, message: "Daemon is reachable." });
+  try {
+    await deps.store.read();
+  } catch (error) {
+    checks.push({
+      name: "runtime-state",
+      ok: false,
+      message:
+        error instanceof RigError
+          ? error.message
+          : "Runtime state is unreadable.",
+      reason: "state-corrupt",
+      hint:
+        error instanceof RigError
+          ? error.hint
+          : "Inspect the runtime state file under the Rig root.",
+    });
+  }
   try {
     await deps.assertOwnershipReady();
   } catch (error) {

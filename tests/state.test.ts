@@ -105,7 +105,11 @@ test("a deployed Target recorded before sourceRoot existed is backfilled on read
   const root = await mkdtemp(join(tmpdir(), "rig-state-sourceroot-"));
   try {
     await mkdir(join(root, "runtime"), { recursive: true });
-    const record = (id: string, kind: "local" | "preview", workspacePath: string) => ({
+    const record = (
+      id: string,
+      kind: "local" | "preview",
+      workspacePath: string,
+    ) => ({
       id,
       projectId: "p",
       name: id,
@@ -133,10 +137,20 @@ test("a deployed Target recorded before sourceRoot existed is backfilled on read
       JSON.stringify({
         version: 2,
         projects: [
-          { id: "p", name: "demo", repoPath: "/tmp/demo", configPath: "/tmp/demo/rig.yaml", createdAt: "now" },
+          {
+            id: "p",
+            name: "demo",
+            repoPath: "/tmp/demo",
+            configPath: "/tmp/demo/rig.yaml",
+            createdAt: "now",
+          },
         ],
         targets: [
-          record("inside", "preview", join(root, "targets", "p", "inside", "revisions", "abc")),
+          record(
+            "inside",
+            "preview",
+            join(root, "targets", "p", "inside", "revisions", "abc"),
+          ),
           record("elsewhere", "preview", "/tmp/somewhere-else"),
           record("local", "local", "/tmp/demo"),
         ],
@@ -153,3 +167,37 @@ test("a deployed Target recorded before sourceRoot existed is backfilled on read
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.each([
+  ["{broken", "is not valid JSON"],
+  ["", "is not valid JSON"],
+  ["null", "at the top level"],
+  ['{"version":3,"projects":[],"targets":[],"activity":[]}', "at version:"],
+  [
+    '{"version":2,"projects":[],"targets":[{"id":"t","projectId":"p","name":"local","kind":"local","desired":"running","createdAt":"now","updatedAt":"now","logRoot":"/tmp/logs","plan":{"project":"demo","workspacePath":"/tmp/demo","dataRoot":"/tmp/data","components":[{"kind":"managed","name":"web"}]}}],"activity":[]}',
+    "at targets.0.plan.",
+  ],
+])(
+  "corrupt state %j names the file and the problem in its hint",
+  async (content, problem) => {
+    const root = await mkdtemp(join(tmpdir(), "rig-state-hint-"));
+    try {
+      await mkdir(join(root, "runtime"));
+      const path = join(root, "runtime", "state.json");
+      await writeFile(path, content);
+      const failure = await new FileStateStore(root).read().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toMatchObject({
+        code: "STATE_CORRUPT",
+        details: { path },
+      });
+      const hint = (failure as { hint: string }).hint;
+      expect(hint).toContain(path);
+      expect(hint).toContain(problem);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

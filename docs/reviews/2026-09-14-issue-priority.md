@@ -70,7 +70,7 @@ testability and honesty refactors.
 
 ## Tier 2 — daemon and state robustness, admin dead ends
 
-50. #181 Corrupt or empty state.json makes rigd exit silently; doctor says healthy; uninstall dead-ends.
+50. ~~#181~~ (fixed) Corrupt or empty state.json makes rigd exit silently; doctor says healthy; uninstall dead-ends.
 51. #182 state.json write has no fsync and no backup; the only recovery hint refers to a file that never exists.
 52. #183 state.json parses in strip mode; a downgrade silently drops destructionPending/deploymentIncomplete.
 53. #185 Effect journal schema is strict; a newer journal bricks the Target on downgrade; orphan journals never reclaimed.

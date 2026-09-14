@@ -394,6 +394,14 @@ it also runs Project diagnostics. Outside a Project, it may succeed with
 Host-only checks and a note that Project checks were skipped. `doctor` is
 read-only by default.
 
+An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
+or a malformed record) never makes `rigd` exit: startup records the failure in
+the daemon diagnostic log and keeps serving, `rig doctor` reports
+`runtime-state` as failed with the file path and the first problem, and every
+other command fails with that same message. `rigd uninstall` refuses until the
+file is repaired, because it cannot verify that Targets are stopped without
+it.
+
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (hooks, builds, `readyTimeout`). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report

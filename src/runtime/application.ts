@@ -609,7 +609,23 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               .catch(() => {});
             return;
           }
-          const state = await deps.store.read();
+          // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
+          let state;
+          try {
+            state = await deps.store.read();
+          } catch (error) {
+            await deps
+              .diagnostic({
+                operationId: deps.id(),
+                action: "reconcile",
+                outcome: "failed",
+                errorCode:
+                  error instanceof RigError ? error.code : "UNEXPECTED",
+                ...diagnosticCauses(error),
+              })
+              .catch(() => {});
+            return;
+          }
           for (const target of state.targets) {
             if (draining) break;
             if (target.recovery || target.destructionPending) continue;

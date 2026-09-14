@@ -2488,3 +2488,42 @@ test("a deploy releases the revision it supersedes or the candidate it rejects, 
   });
   expect(state.targets.find((t) => t.kind === "live")!.commit).toBe("jkl");
 });
+
+test("unreadable runtime state leaves the daemon serving: reconcile records the failure, commands report it, and doctor outside a Project flags runtime-state", async () => {
+  const { runtime, deps } = fixture();
+  const diagnostics: { action: string; outcome: string; errorCode?: string }[] =
+    [];
+  deps.diagnostic = async (event) => {
+    diagnostics.push(event);
+  };
+  deps.store.read = async () => {
+    throw new RigError(
+      "STATE_CORRUPT",
+      "Invalid runtime state; nothing was changed.",
+      "Runtime state at /tmp/isolated-rig/runtime/state.json is not valid JSON. Restore a known-good copy of the file, or repair it by hand, before retrying.",
+      { path: "/tmp/isolated-rig/runtime/state.json" },
+    );
+  };
+  await runtime.reconcile();
+  expect(diagnostics).toEqual([
+    expect.objectContaining({
+      action: "reconcile",
+      outcome: "failed",
+      errorCode: "STATE_CORRUPT",
+    }),
+  ]);
+  await expect(runtime.command({ action: "list" })).rejects.toMatchObject({
+    code: "STATE_CORRUPT",
+    hint: expect.stringContaining("/tmp/isolated-rig/runtime/state.json"),
+  });
+  const { ok, checks } = (await runtime.command({ action: "doctor" })) as {
+    ok: boolean;
+    checks: { name: string; ok: boolean; reason?: string; hint?: string }[];
+  };
+  expect(ok).toBe(false);
+  expect(checks.find((c) => c.name === "runtime-state")).toMatchObject({
+    ok: false,
+    reason: "state-corrupt",
+    hint: expect.stringContaining("/tmp/isolated-rig/runtime/state.json"),
+  });
+});

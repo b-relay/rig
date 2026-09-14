@@ -7,6 +7,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "zod";
 import { runtimeStateSchema as schema } from "./state-schema";
 import { backfillSourceRoots } from "./state-compat";
 import { RigError } from "../domain/errors";
@@ -52,12 +53,17 @@ export class FileStateStore implements StateStore {
     }
     try {
       return backfillSourceRoots(schema.parse(JSON.parse(raw)), this.root);
-    } catch {
+    } catch (error) {
       throw new RigError(
         "STATE_CORRUPT",
         "Invalid runtime state; nothing was changed.",
-        "Restore a known-good state backup before retrying.",
-        { path: this.path },
+        `Runtime state at ${this.path} ${describeCorruption(error)}. Restore a known-good copy of the file, or repair it by hand, before retrying.`,
+        {
+          path: this.path,
+          ...(error instanceof z.ZodError
+            ? { issues: error.issues.slice(0, 3) }
+            : {}),
+        },
       );
     }
   }
@@ -81,4 +87,16 @@ export class FileStateStore implements StateStore {
     this.queue = operation.catch(() => {});
     return operation;
   }
+}
+/** The first thing wrong with a state file, worded so the user can open it and look. */
+function describeCorruption(error: unknown): string {
+  if (error instanceof z.ZodError) {
+    const issue = error.issues[0];
+    if (!issue) return "does not match the runtime state schema";
+    const location = issue.path.length
+      ? issue.path.map(String).join(".")
+      : "the top level";
+    return `has an invalid value at ${location}: ${issue.message}`;
+  }
+  return `is not valid JSON${error instanceof Error ? ` (${error.message})` : ""}`;
 }

@@ -3,8 +3,10 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  parseProjectConfig,
   readProjectConfig,
   readProjectConfigSource,
+  resolveTargetPlan,
 } from "../src/config/index.js";
 const roots: string[] = [];
 afterEach(async () => {
@@ -266,7 +268,7 @@ test("Preview plans use assigned ports and bundled dependency defaults without l
       target: "preview",
       workspacePath: "/work",
       dataRoot: "/data",
-      assignedPorts: { convex: 5432, postgres: 5432 },
+      assignedPorts: { convex: 5432, "convex.site": 5433, postgres: 5432 },
     }),
   ).toThrow("more than one");
 });
@@ -664,4 +666,24 @@ test("paths interpolated into shell commands, hooks, health checks, and builds a
   expect(plan.hooks).toMatchObject({ preStart: "cd '/repos/my app' && bun install", postStop: 'echo "/repos/my app"' });
   const printed = Bun.spawnSync(["/bin/sh", "-c", `printf '%s\\n' ${web.kind === "managed" ? web.command.replace(/^node /, "") : ""}`]).stdout.toString();
   expect(printed.split("\n").filter(Boolean)).toEqual(["/repos/my app/server.js", "--db", "/state/it's data/sqlite/db.sqlite", "--port", "4000"]);
+});
+
+test("a runtime-selected Convex site port is honoured for local and live instead of being replaced by port + 1", () => {
+  const config = parseProjectConfig({
+    name: "demo",
+    components: { api: { uses: "convex", port: 4568 } },
+  });
+  for (const target of ["local", "live"] as const) {
+    const plan = resolveTargetPlan({
+      config,
+      target,
+      workspacePath: "/tmp/w",
+      dataRoot: "/tmp/d",
+      deploymentName: target,
+      assignedPorts: { api: 4568, "api.site": 5000 },
+    });
+    expect(
+      plan.components.find((component) => component.name === "api"),
+    ).toMatchObject({ port: 4568, sitePort: 5000 });
+  }
 });

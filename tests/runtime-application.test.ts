@@ -393,6 +393,34 @@ test("repoint uses the new config path and retains assigned ports, including Con
   });
 });
 
+test("a Convex site port is requested as port + 1 but the collision-checked selection is what gets recorded", async () => {
+  const { runtime, state, deps } = fixture();
+  const requests: { name: string; preferred?: number }[] = [];
+  deps.documents.read = async () => ({
+    path: "/tmp/developer/rig.yaml",
+    format: "yaml",
+    revision: "abc",
+    config: parseProjectConfig({
+      name: "demo",
+      components: { api: { uses: "convex", port: 3210 } },
+    }),
+  });
+  deps.files.selectPorts = async (input) => {
+    requests.push(...input.requests);
+    return { api: 3210, "api.site": 3999 };
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  expect(requests).toEqual([
+    { name: "api", preferred: 3210 },
+    { name: "api.site", preferred: 3211 },
+  ]);
+  expect(state.targets[0]!.plan.components.find((c) => c.name === "api")).toMatchObject({
+    port: 3210,
+    sitePort: 3999,
+  });
+});
+
 test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

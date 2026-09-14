@@ -248,12 +248,11 @@ function resolveComponentProperties(
       ("mode" in component && component.mode === "managed") ||
       ("uses" in component && component.uses !== "sqlite")
     ) {
-      const port = reserve(name, component.port);
+      reserve(name, component.port);
       if ("uses" in component && component.uses === "convex") {
-        const sitePort = reserve(
-          `${name}.site`,
-          component.sitePort ?? port + 1,
-        );
+        // The site port's port + 1 fallback is the runtime's preference when it
+        // requests ports; the resolver records only what was configured or assigned.
+        const sitePort = reserve(`${name}.site`, component.sitePort);
         Object.assign(properties, {
           [`${name}.sitePort`]: sitePort,
           [`${name}.siteUrl`]: `http://127.0.0.1:${sitePort}`,

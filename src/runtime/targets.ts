@@ -136,8 +136,7 @@ export async function planTarget(
             ? [
                 {
                   name: `${name}.site`,
-                  preferred:
-                    "sitePort" in component ? component.sitePort : undefined,
+                  preferred: preferredSitePort(component),
                 },
               ]
             : []),
@@ -206,4 +205,14 @@ async function committedConfig(
       { revisionPath: revision.path },
     );
   return revision.config;
+}
+/** A Convex site port prefers its configured value, then the port after the component's own; none when neither is configured. */
+function preferredSitePort(component: {
+  port?: number;
+  sitePort?: number;
+}): number | undefined {
+  return (
+    component.sitePort ??
+    (component.port !== undefined ? component.port + 1 : undefined)
+  );
 }

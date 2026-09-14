@@ -126,7 +126,11 @@ const component = z.union([
   z.strictObject({
     uses: z.literal("convex").describe("Convex Local dependency."),
     ...runtime,
-    sitePort: port.optional().describe("Convex site-proxy port."),
+    sitePort: port
+      .optional()
+      .describe(
+        "Convex site-proxy port. Defaults to the port after the component's own port; when another Target already records that port, a free port is selected and recorded instead.",
+      ),
     ...common,
   }),
   z.strictObject({

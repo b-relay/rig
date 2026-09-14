@@ -36,7 +36,11 @@ function target(root: string): TargetRecord {
     },
   };
 }
-function effects(root: string, recordingTime = () => new Date().toISOString()) {
+function effects(
+  root: string,
+  recordingTime = () => new Date().toISOString(),
+  environment: Record<string, string> = { PATH: process.env.PATH!, HOST: "host" },
+) {
   return createTargetEffects({
     root,
     recordingTime,
@@ -51,7 +55,7 @@ function effects(root: string, recordingTime = () => new Date().toISOString()) {
       },
       async restore() {},
     },
-    environment: { PATH: process.env.PATH!, HOST: "host" },
+    environment,
   });
 }
 test("global and component hooks receive their resolved environment and write raw output only to Target logs", async () => {
@@ -366,4 +370,24 @@ test("a health URL with an uppercase scheme is probed over HTTP rather than run 
   } finally {
     server.stop(true);
   }
+});
+
+test("an installation receipt survives a change in the daemon's inherited environment but not in the Project's declared env", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-install-receipt-env-"));
+  roots.push(root);
+  const record = target(root);
+  const component = {
+    name: "tool",
+    kind: "installed" as const,
+    entrypoint: "tool",
+    build: "printf 'built\\n' >> builds; printf '#!/bin/sh\\necho ready\\n' > tool",
+    env: { FLAVOR: "plain" },
+    dependsOn: [],
+  };
+  expect(await effects(root).install(component, record)).toEqual({ outcome: "installed" });
+  const later = effects(root, undefined, { PATH: process.env.PATH!, TERM_SESSION_ID: "another-tab", HOST: "other" });
+  expect(await later.install(component, record)).toEqual({ outcome: "unchanged" });
+  expect(await later.observations.artifact(record, component, new AbortController().signal)).toBe("installed");
+  expect(await later.install({ ...component, env: { FLAVOR: "spicy" } }, record)).toEqual({ outcome: "installed" });
+  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
 });

@@ -459,7 +459,11 @@ for Project hooks.
 
 1. Project `preStart`, only when at least one managed process is not already
    running. Installed executables are built and installed after it, so it may
-   prepare what a build needs.
+   prepare what a build needs. An installed executable is rebuilt only when
+   its `entrypoint`, `build`, destination, or declared environment
+   (`envFile`, lane `env`, Component `env`) changes, or when its source or
+   installed artifact no longer matches the receipt; a daemon restarted from
+   another shell does not rebuild anything.
 2. For each Component in dependency order: the Component's `preStart`, the
    process start, readiness, then the Component's `postStart`. Readiness means
    the `health` check passed, or, for a Component without `health`, that the

@@ -87,18 +87,26 @@ export function createTargetEffects(
       );
     return provider;
   };
-  const environment = async (
+  /** The environment the Project declares: envFile, lane env, and Component env. This is what a build's receipt is keyed on. */
+  const declaredEnvironment = async (
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent,
   ): Promise<Record<string, string>> => {
     const file = component?.envFile ?? target.plan.envFile;
     return {
-      ...options.environment,
       ...(file ? await readEnvironment(file) : {}),
       ...target.plan.env,
       ...component?.env,
     };
   };
+  /** The declared environment over the daemon's inherited base; what a process, hook, or build actually runs with. */
+  const environment = async (
+    target: TargetRecord,
+    component?: ManagedComponent | InstalledComponent,
+  ): Promise<Record<string, string>> => ({
+    ...options.environment,
+    ...(await declaredEnvironment(target, component)),
+  });
   const runTarget = async (
     command: string,
     target: TargetRecord,
@@ -354,12 +362,13 @@ export function createTargetEffects(
         destination,
       };
       await ownership.inspect(identity);
-      const env = await environment(target, component);
+      const declared = await declaredEnvironment(target, component);
+      const env = { ...options.environment, ...declared };
       const key = installationPolicyKey(
         target.plan.workspacePath,
         component,
         destination,
-        env,
+        declared,
       );
       const receiptFile = receiptPath(target, component);
       const receipt = await readInstallReceipt(receiptFile);
@@ -464,7 +473,7 @@ export function createTargetEffects(
             target.plan.workspacePath,
             component,
             destination,
-            await environment(target, component),
+            await declaredEnvironment(target, component),
           );
           if (
             !receipt ||
@@ -574,6 +583,8 @@ async function digestFile(path: string): Promise<string | undefined> {
   }
 }
 
+/** Keys a build receipt on the policy the Project declares; the daemon's inherited base (PATH, HOME, ...) is deliberately excluded
+ * so a daemon restarted from another shell does not rebuild every installed Component. */
 function installationPolicyKey(
   workspace: string,
   component: Pick<InstalledComponent, "entrypoint" | "build">,

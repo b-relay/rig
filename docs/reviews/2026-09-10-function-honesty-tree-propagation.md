@@ -311,7 +311,7 @@ owner carries only its own owner-level defects.
 | rename keeping installName raises ARTIFACT_CONFLICT; local up never rebuilds after source change | #192 |
 | provider minors (PROVIDER_MISSING wording, redirect handling, sqlite path hint) | #193 |
 | rig restart aborts after the stop half on a preStop/postStop failure: outage, desired persisted stopped | #194 |
-| installation receipt key hashes the whole inherited daemon env: ambient changes rebuild everything, artifact unknown | #195 |
+| installation receipt key hashes the whole inherited daemon env: ambient changes rebuild everything, artifact unknown | #195 (fixed: keyed on declared env only) |
 | hook semantics drift: installed-component hooks never run, postStart before readiness, preStart after builds, HOOK_FAILED unnamed, RIG_DAEMON_CHILD inherited, undocumented interpolation names | #196 |
 | hook/build timeout reported as generic COMMAND_TIMEOUT with output discarded; timeouts hard-coded | #197 |
 | envFile parser rejects `KEY="value" # comment`; ENV_FILE errors carry no path or line | #198 |

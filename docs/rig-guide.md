@@ -200,6 +200,13 @@ Target, the old process is stopped rather than left running on stale code, so
 nothing serves until `rig up`; the deploy output warns and names that command.
 `--force` redeploys even when the same Commit is already deployed.
 
+A deploy whose activation fails (a build, hook, or health failure) leaves the
+Target recorded at the new Commit but incomplete: its effects were rolled back
+and nothing is running. `rig status` and `rig doctor` say so. `rig up` finishes
+it, installing, routing, and starting the recorded plan under its own
+checkpoint, after which a deploy of the same Commit is `unchanged` again;
+redeploying the same Commit also works.
+
 CLI deploy uses local Branches only. It should warn, not block, when the Branch
 is ahead or behind its configured upstream. It should not fetch implicitly.
 

@@ -107,6 +107,11 @@ export async function projectStatus(
         `${target.name} has an unresolved deployment transition; run down to stop both recorded plans.`,
       );
     }
+  for (const target of selected)
+    if (target.deploymentIncomplete && !target.recovery)
+      warnings.push(
+        `${target.name}: the last deploy did not complete; run up to finish it or redeploy.`,
+      );
   warnings.push(...(await markUnpublishedRoutes(reports, deps.inspectProxy)));
   return { project: project.name, targets: reports, warnings };
 }

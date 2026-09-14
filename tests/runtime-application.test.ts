@@ -781,6 +781,42 @@ test("one runtime Status report reaches localhost human output and the Target pi
   }
 });
 
+test("a successful up completes an incomplete first deployment, which status and doctor named until then", async () => {
+  const { runtime, deps, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const up = deps.lifecycle.up;
+  deps.lifecycle.up = async () => {
+    throw new RigError("HEALTH_FAILED", "web never became healthy", "Inspect logs");
+  };
+  await expect(
+    runtime.command({ action: "deploy", project: "demo", target: "live", branch: "main" }),
+  ).rejects.toMatchObject({ code: "HEALTH_FAILED" });
+  expect(state.targets[0]).toMatchObject({ desired: "stopped", deploymentIncomplete: true });
+  const status = (await runtime.command({ action: "status", project: "demo" })) as {
+    warnings?: string[];
+  };
+  expect(status.warnings?.join(" ")).toContain("live: the last deploy did not complete");
+  const { checks } = (await runtime.command({ action: "doctor", project: "demo" })) as {
+    checks: { ok: boolean; reason?: string; hint?: string }[];
+  };
+  expect(checks.find((c) => c.reason === "deployment-incomplete")).toMatchObject({
+    ok: false,
+    hint: expect.stringContaining("up"),
+  });
+  deps.lifecycle.up = up;
+  expect(
+    await runtime.command({ action: "up", project: "demo", target: "live" }),
+  ).toMatchObject({ outcome: "started" });
+  expect(state.targets[0]!.deploymentIncomplete).toBeUndefined();
+  expect(
+    await runtime.command({ action: "deploy", project: "demo", target: "live", branch: "main" }),
+  ).toMatchObject({ outcome: "unchanged" });
+  const after = (await runtime.command({ action: "doctor", project: "demo" })) as {
+    checks: { reason?: string }[];
+  };
+  expect(after.checks.find((c) => c.reason === "deployment-incomplete")).toBeUndefined();
+});
+
 test("status and doctor report a live deploy as in progress instead of unresolved recovery", async () => {
   const { runtime, deps, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

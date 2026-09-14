@@ -91,6 +91,15 @@ export async function doctor(
     });
   }
   for (const target of targets) {
+    if (target.deploymentIncomplete && !target.recovery)
+      checks.push({
+        name: `${target.name}/deployment`,
+        ok: false,
+        message:
+          "The last deploy did not complete; its executables and route were not committed.",
+        reason: "deployment-incomplete",
+        hint: "Run up for this Target to finish it, or redeploy the same commit.",
+      });
     if (target.destructionPending)
       checks.push({
         name: `${target.name}/destruction`,

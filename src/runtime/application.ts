@@ -478,6 +478,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           await stopRecordedTarget(target, deps.lifecycle);
         }
         outcome = (await deps.lifecycle.up(target)).outcome;
+        // up installs, routes, and starts the recorded plan under its own
+        // committed checkpoint, which is everything an incomplete deployment lacked.
+        delete target.deploymentIncomplete;
         target.desired = "running";
       }
       target.updatedAt = deps.now();

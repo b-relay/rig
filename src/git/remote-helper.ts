@@ -71,6 +71,16 @@ const completed = z.object({
     .describe(
       "Final deployment outcome; transport acceptance is insufficient.",
     ),
+  retired: z
+    .array(
+      z.object({
+        target: z.string().describe("Recorded name of the removed Preview."),
+        branch: z.string().optional().describe("Branch the removed Preview served."),
+        reason: z.string().describe("Why it was removed, such as the Preview limit."),
+      }),
+    )
+    .optional()
+    .describe("Previews destroyed to make room for this deployment."),
 });
 
 /** Implements Git's push/option protocol. Stdout contains protocol frames only.
@@ -215,10 +225,15 @@ export async function runRemoteHelper(
                 operationId,
                 outcome: result.outcome,
               });
-              if (!quiet)
+              if (!quiet) {
+                for (const entry of result.retired ?? [])
+                  dependencies.output.error(
+                    `${project} ${entry.branch ?? entry.target} retired (${entry.reason})\n`,
+                  );
                 dependencies.output.error(
                   `${project} ${push.branch} ${result.outcome}\n`,
                 );
+              }
             }
             dependencies.output.write(`ok ${push.destination}\n`);
           } catch (error) {

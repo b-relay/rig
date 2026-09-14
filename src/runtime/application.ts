@@ -389,8 +389,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           ...preflight.warnings,
           ...(command.noUp ? [preparedWarning(target, wasRunning)] : []),
         ];
-        warnings.push(...(await destroyReplacedPreviews(replacements, deps)));
-        return await finish("deployed", { warnings, ...previous });
+        const replaced = await destroyReplacedPreviews(
+          replacements,
+          project,
+          operationId,
+          deps,
+        );
+        warnings.push(...replaced.warnings);
+        return await finish("deployed", {
+          warnings,
+          retired: replaced.retired,
+          ...previous,
+        });
       }
       if (command.action === "destroy") {
         if (command.target !== "preview")
@@ -660,7 +670,11 @@ function previewsToReplace(
       "Remove an existing Preview or change the Host Preview limit.",
     );
   const oldest = [...previews]
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .sort(
+      (a, b) =>
+        evictionRank(a) - evictionRank(b) ||
+        a.createdAt.localeCompare(b.createdAt),
+    )
     .slice(0, overflow);
   if (oldest.some((t) => t.recovery || t.destructionPending))
     throw new RigError(
@@ -695,16 +709,47 @@ async function destroyPreview(
     s.targets = s.targets.filter((t) => t.id !== target.id);
   });
 }
-/** Destroy replaced Previews after the new one is committed. A removal that fails leaves the new Preview deployed
- * and the old record in place for an explicit destroy, and is reported as a warning. */
+/** Previews leave in this order at the limit: ones whose deploy never completed, then stopped ones, then running ones. */
+function evictionRank(target: TargetRecord): number {
+  if (target.deploymentIncomplete) return 0;
+  return target.desired === "stopped" ? 1 : 2;
+}
+/** A Preview removed to make room for another, as reported to the user. */
+export interface RetiredPreview {
+  target: string;
+  branch?: string;
+  reason: "Preview limit";
+}
+/** Destroy replaced Previews after the new one is committed, recording each removal as its own destroy operation.
+ * A removal that fails leaves the new Preview deployed and the old record in place for an explicit destroy, and is reported as a warning. */
 async function destroyReplacedPreviews(
   replacements: readonly TargetRecord[],
+  project: ProjectRecord,
+  operationId: string,
   deps: RuntimeDependencies,
-): Promise<string[]> {
+): Promise<{ retired: RetiredPreview[]; warnings: string[] }> {
+  const retired: RetiredPreview[] = [];
   const warnings: string[] = [];
   for (const replacement of replacements) {
     try {
       await destroyPreview(replacement, deps);
+      retired.push({
+        target: replacement.name,
+        ...(replacement.branch ? { branch: replacement.branch } : {}),
+        reason: "Preview limit",
+      });
+      await deps.store.update((state) => {
+        state.activity.push({
+          id: `${operationId}:${replacement.id}`,
+          projectId: project.id,
+          project: project.name,
+          target: replacement.name,
+          action: "destroy",
+          outcome: "stopped",
+          occurredAt: deps.now(),
+          message: "Preview limit",
+        });
+      });
     } catch (error) {
       const reason =
         error instanceof RigError
@@ -721,5 +766,5 @@ async function destroyReplacedPreviews(
       );
     }
   }
-  return warnings;
+  return { retired, warnings };
 }

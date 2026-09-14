@@ -36,7 +36,13 @@ export function renderResult(action: string, value: unknown): string {
   const warnings = Array.isArray(report.warnings)
     ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
     : "";
-  return `${subject} ${outcome}${revision}${path}\n${warnings}`;
+  const retired = rows(report.retired)
+    .map(
+      (entry) =>
+        `${word(report.project)} ${word(entry.target)} retired${entry.branch ? ` ${word(entry.branch)}` : ""} (${word(entry.reason)})\n`,
+    )
+    .join("");
+  return `${retired}${subject} ${outcome}${revision}${path}\n${warnings}`;
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);

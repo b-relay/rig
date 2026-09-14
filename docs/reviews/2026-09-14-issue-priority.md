@@ -46,7 +46,7 @@ testability and honesty refactors.
 26. ~~#221~~ (fixed) Recorded local Target is never re-planned after a port change and cannot be dropped; live deploy hits PORT_RESERVED with no exit.
 27. ~~#123~~ (fixed) Preview replacement: retire failure after the new Preview is committed records the deploy failed and leaves the Project permanently over maxActive.
 28. ~~#124~~ (fixed) Preview replacement retires the oldest Preview without destroying its storage; orphaned data root with no cleanup handle.
-29. #188 Preview replacement is silent and state-blind: stopped and failed Previews count toward maxActive, the oldest running one is evicted.
+29. ~~#188~~ (fixed) Preview replacement is silent and state-blind: stopped and failed Previews count toward maxActive, the oldest running one is evicted.
 30. #220 Pre-#113 Preview records without sourceRoot can never be destroyed.
 31. #125 Convex site port selected by the runtime is discarded for local/live; plan records port+1, which can collide.
 32. #175 Port reservation ignores the recovery.plan of a Target in recovery; two Targets can be planned onto the same port.

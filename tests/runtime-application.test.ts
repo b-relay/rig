@@ -281,6 +281,37 @@ test("replacing the oldest Preview destroys its owned storage after verified shu
   });
 });
 
+test("Preview replacement evicts incomplete and stopped Previews before the oldest running one, reports each retirement, and records it in activity", async () => {
+  const { runtime, state, deps } = fixture();
+  deps.documents.host = async () =>
+    parseHostConfig({ deploy: { generated: { maxActive: 3, replacePolicy: "oldest" } } });
+  const preview = (branch: string) =>
+    runtime.command({ action: "deploy", project: "demo", target: "preview", branch });
+  const previews = () =>
+    state.targets.filter((t) => t.kind === "preview").map((t) => t.branch);
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await preview("feature/a");
+  await preview("feature/b");
+  await preview("feature/c");
+  await runtime.command({ action: "down", project: "demo", target: "preview", branch: "feature/b" });
+  const stoppedName = state.targets.find((t) => t.branch === "feature/b")!.name;
+  expect(await preview("feature/d")).toMatchObject({
+    outcome: "deployed",
+    warnings: [],
+    retired: [{ target: stoppedName, branch: "feature/b", reason: "Preview limit" }],
+  });
+  expect(previews()).toEqual(["feature/a", "feature/c", "feature/d"]);
+  expect(state.activity.slice(-2)).toMatchObject([
+    { action: "destroy", target: stoppedName, outcome: "stopped", message: "Preview limit" },
+    { action: "deploy", outcome: "deployed" },
+  ]);
+  state.targets.find((t) => t.branch === "feature/c")!.deploymentIncomplete = true;
+  await preview("feature/e");
+  expect(previews()).toEqual(["feature/a", "feature/d", "feature/e"]);
+  await preview("feature/f");
+  expect(previews()).toEqual(["feature/d", "feature/e", "feature/f"]);
+});
+
 test("unsafe candidate rollback never restores an old plan over surviving candidate processes", async () => {
   const { runtime, state, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

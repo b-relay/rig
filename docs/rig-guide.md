@@ -208,12 +208,18 @@ Target, the old process is stopped rather than left running on stale code, so
 nothing serves until `rig up`; the deploy output warns and names that command.
 `--force` redeploys even when the same Commit is already deployed.
 
-The Host config's `deploy.generated.maxActive` caps Previews per Project. Under
-`replacePolicy: oldest`, a new Preview destroys as many of the oldest Previews
-as needed to fit under the cap once the new one is committed, following the
-same verified-shutdown, retire, then delete sequence as `rig down preview
---destroy`, so a replaced Preview's data root and source history do not linger
-on disk. If a removal fails (for example a process that will not stop, or a
+The Host config's `deploy.generated.maxActive` caps Previews per Project;
+every recorded Preview counts, running or not. Under `replacePolicy: oldest`, a
+new Preview destroys as many Previews as needed to fit under the cap once the
+new one is committed, choosing Previews whose deploy never completed first,
+then stopped Previews, then running ones, oldest first within each group. Each
+removal follows the same verified-shutdown, retire, then delete sequence as
+`rig down preview --destroy`, so a replaced Preview's data root and source
+history do not linger on disk. Every removal is announced before the deploy's
+own outcome line (`share feature-b-9876fedc retired feature/b (Preview
+limit)`, or `share feature/b retired (Preview limit)` on a git push) and is
+recorded in `rig activity` as a `destroy` operation with the message
+`Preview limit`. If a removal fails (for example a process that will not stop, or a
 data root that cannot be deleted), the new Preview stays deployed, the old
 record is kept with pending-destruction evidence, and the deploy result carries
 a warning naming the Preview and the `rig down preview <branch> --destroy`

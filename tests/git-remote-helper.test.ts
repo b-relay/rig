@@ -33,7 +33,10 @@ test("remote helper advertises push and waits for a final deployment result befo
           return { project: "example", targets: [] };
         expect(output).not.toContain("ok refs/heads/main");
         resolved = true;
-        return { outcome: "deployed" };
+        return {
+          outcome: "deployed",
+          retired: [{ target: "feature-b-9876fedc", branch: "feature/b", reason: "Preview limit" }],
+        };
       },
     },
     source: {
@@ -55,7 +58,9 @@ test("remote helper advertises push and waits for a final deployment result befo
     commit: "a".repeat(40),
     operationId: "push-op",
   });
-  expect(error).toContain("example main deployed");
+  expect(error).toContain(
+    "example feature/b retired (Preview limit)\nexample main deployed",
+  );
 });
 
 test("dry-run and rejected deletions never deploy; destination Branch and force survive protocol conversion", async () => {

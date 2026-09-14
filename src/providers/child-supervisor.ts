@@ -197,22 +197,16 @@ export function createChildSupervisor(
         ...(owned.exitCode === undefined ? {} : { exitCode: owned.exitCode }),
         ...restartEvidence(key, owned),
       };
-    if (owned.child) {
-      // Bun has not reported the exit yet; the group probe closes the gap between death and that report.
-      try {
-        if (!(await inspection.groupExists(owned.pid))) return { state: "stopped" };
-        return {
-          state: "running",
-          pid: owned.pid,
-          ...(owned.outputFailure ? { reason: owned.outputFailure } : {}),
-        };
-      } catch {
-        return {
-          state: "unknown",
-          reason: "Process presence could not be checked.",
-        };
-      }
-    }
+    // A spawned child's handle is authoritative: Bun reports its exit within milliseconds and that report
+    // schedules any restart, so no OS probe second-guesses it. A probe that ran between the reap and the
+    // report answered "stopped" without restart evidence, which made the capture wrapper give up on a
+    // keepAlive component.
+    if (owned.child)
+      return {
+        state: "running",
+        pid: owned.pid,
+        ...(owned.outputFailure ? { reason: owned.outputFailure } : {}),
+      };
     try {
       if ((await inspect(owned.pid)) === owned.identity)
         return { state: "running", pid: owned.pid };

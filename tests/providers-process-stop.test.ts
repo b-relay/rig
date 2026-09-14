@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
 import { createProcessInspection } from "../src/providers/process-inspection";
+import { runCommand } from "../src/providers/command-runner";
 import type { CommandRequest, CommandResult } from "../src/providers/contracts";
 
 const roots: string[] = [];
@@ -161,29 +162,41 @@ for (const changeAt of [1, 3]) {
   });
 }
 
-test("observe of a live child probes presence through the injected inspection", async () => {
+test("observe trusts a spawned child's handle: no OS probe, and its exit is reported with restart evidence, never as a bare stop", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-stop-"));
   roots.push(root);
   const probes: Array<[number, NodeJS.Signals | 0]> = [];
+  const commands: CommandRequest[] = [];
   const supervisor = createChildSupervisor({
     stateRoot: join(root, ".rig"),
     stopTimeoutMs: 0,
+    restartBackoffMs: 60_000,
     processInspection: createProcessInspection({
       kill: (target, signal) => { probes.push([target, signal]); process.kill(target, signal); },
+      run: async request => { commands.push(request); return runCommand(request); },
     }),
   });
   try {
     const started = await supervisor.ensureRunning({
       key: "live",
       componentName: "web",
-      command: [process.execPath, "-e", "setInterval(()=>{},1000)"],
+      command: [process.execPath, "-e", "setTimeout(()=>process.exit(9), 150)"],
       cwd: root,
       env: { ...process.env } as Record<string, string>,
       logRoot: root,
+      keepAlive: true,
     });
     probes.length = 0;
+    commands.length = 0;
     expect(await supervisor.observe("live")).toEqual({ state: "running", pid: started.pid! });
-    expect(probes).toEqual([[-started.pid!, 0]]);
+    expect(probes).toEqual([]);
+    expect(commands).toEqual([]);
+    let observation = await supervisor.observe("live");
+    for (let i = 0; observation.state === "running" && i < 500; i++) {
+      await Bun.sleep(1);
+      observation = await supervisor.observe("live");
+    }
+    expect(observation).toMatchObject({ state: "stopped", exitCode: 9, restartPending: true });
   } finally {
     await supervisor.stop("live");
     await supervisor.shutdown();

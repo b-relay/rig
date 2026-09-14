@@ -10,6 +10,7 @@ import {
   observeTargets,
   type ComponentReport,
   type TargetReport,
+  deploymentFlags,
 } from "./status";
 import { targetName } from "./targets";
 /** Adds configured-only capabilities without interpreting configuration as runtime evidence. */
@@ -44,6 +45,7 @@ export async function projectStatus(
         kind: target.kind,
         branch: target.branch,
         commit: target.commit,
+        ...deploymentFlags(target),
         route: target.plan.domain,
         state: "unknown",
         components: target.plan.components.map((c) => ({

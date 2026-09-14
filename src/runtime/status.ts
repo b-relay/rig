@@ -130,11 +130,21 @@ export async function observeTargets(
       kind: target.kind,
       branch: target.branch,
       commit: target.commit,
+      ...deploymentFlags(target),
       route: target.plan.domain,
       components,
       state: aggregate(components),
     };
   });
+}
+/** Whether the recorded Commit is a completed deployment; callers such as git push must not treat an incomplete one as deployed. */
+export function deploymentFlags(
+  target: Pick<TargetRecord, "deploymentIncomplete" | "recovery">,
+): Pick<TargetReport, "deploymentIncomplete" | "transitionPending"> {
+  return {
+    ...(target.deploymentIncomplete ? { deploymentIncomplete: true } : {}),
+    ...(target.recovery ? { transitionPending: true } : {}),
+  };
 }
 
 function aggregate(components: ComponentReport[]): TargetReport["state"] {

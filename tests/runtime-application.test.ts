@@ -841,6 +841,7 @@ test("one runtime Status report reaches localhost human output and the Target pi
     };
     const recovery = await client.status({ project: "demo" });
     expect(recovery.targets[0]?.state).toBe("unknown");
+    expect(recovery.targets[0]).toMatchObject({ transitionPending: true });
     expect(recovery.warnings?.join(" ")).toContain(
       "unresolved deployment transition",
     );
@@ -862,8 +863,10 @@ test("a successful up completes an incomplete first deployment, which status and
   expect(state.targets[0]).toMatchObject({ desired: "stopped", deploymentIncomplete: true });
   const status = (await runtime.command({ action: "status", project: "demo" })) as {
     warnings?: string[];
+    targets: { name: string; deploymentIncomplete?: boolean }[];
   };
   expect(status.warnings?.join(" ")).toContain("live: the last deploy did not complete");
+  expect(status.targets.find((t) => t.name === "live")).toMatchObject({ deploymentIncomplete: true });
   const { checks } = (await runtime.command({ action: "doctor", project: "demo" })) as {
     checks: { ok: boolean; reason?: string; hint?: string }[];
   };

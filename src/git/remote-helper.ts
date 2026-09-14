@@ -26,6 +26,8 @@ export interface RemoteHelperDependencies {
   };
   newOperationId(): string;
   diagnostics?: DiagnosticLog;
+  /** Aborted when the user interrupts the push; the helper names the operation rigd may still be running. */
+  interrupt?: AbortSignal;
 }
 interface PushRequest {
   source: string;
@@ -47,6 +49,14 @@ const status = z.object({
           .describe("Recorded Target kind."),
         branch: z.string().optional().describe("Recorded destination Branch."),
         commit: commit.optional().describe("Recorded deployed Commit."),
+        deploymentIncomplete: z
+          .boolean()
+          .optional()
+          .describe("True when the recorded Commit's deploy never completed."),
+        transitionPending: z
+          .boolean()
+          .optional()
+          .describe("True while the Target's deployment transition is unresolved."),
       }),
     )
     .describe("Current recorded Targets."),
@@ -79,6 +89,13 @@ export async function runRemoteHelper(
   let forced = false;
   let quiet = false;
   let failed = false;
+  let inFlight: string | undefined;
+  dependencies.interrupt?.addEventListener("abort", () => {
+    if (inFlight)
+      dependencies.output.error(
+        `Interrupted while operation ${inFlight} was running; rigd may still finish it.\nCheck 'rig activity' or 'rig status' before pushing again.\n`,
+      );
+  });
   try {
     for await (const line of dependencies.input) {
       if (line === "capabilities") {
@@ -96,7 +113,13 @@ export async function runRemoteHelper(
         const references = new Map<string, string>();
         const ambiguous = new Set<string>();
         for (const target of report.targets)
-          if (target.branch && target.commit) {
+          if (
+            target.branch &&
+            target.commit &&
+            // An incomplete or transitioning deploy is not "up-to-date"; withholding it makes git send the push.
+            !target.deploymentIncomplete &&
+            !target.transitionPending
+          ) {
             const canonical =
               target.kind === "live"
                 ? target.name === "live"
@@ -148,6 +171,7 @@ export async function runRemoteHelper(
         if (!pending.length) break;
         for (const push of pending.splice(0)) {
           const operationId = dependencies.newOperationId();
+          inFlight = operationId;
           try {
             await dependencies.source.verifyBranch(push.branch);
             const resolved = commit.parse(
@@ -201,6 +225,8 @@ export async function runRemoteHelper(
             dependencies.output.error(
               `${failure.hint}\nOperation: ${operationId}\n`,
             );
+          } finally {
+            inFlight = undefined;
           }
         }
         dependencies.output.write("\n");
@@ -326,8 +352,14 @@ export async function main(args: readonly string[]): Promise<number> {
       createProjectDiscovery(runCommand),
     );
     const root = rigRoot();
+    const interrupt = new AbortController();
+    process.once("SIGINT", () => {
+      interrupt.abort();
+      process.exit(130);
+    });
     return await runRemoteHelper(url, {
       repoPath,
+      interrupt: interrupt.signal,
       input: createInterface({ input: process.stdin, crlfDelay: Infinity }),
       output,
       newOperationId: randomUUID,

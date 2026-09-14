@@ -70,6 +70,18 @@ const targetReportSchema = z
       ),
     branch: z.string().optional().describe("Recorded source Branch."),
     commit: z.string().optional().describe("Recorded source Commit."),
+    deploymentIncomplete: z
+      .boolean()
+      .optional()
+      .describe(
+        "True when the recorded Commit's deploy failed or was interrupted before completing; absent when complete.",
+      ),
+    transitionPending: z
+      .boolean()
+      .optional()
+      .describe(
+        "True while a deployment transition is unresolved (in progress or awaiting down); absent otherwise.",
+      ),
     route: z.string().optional().describe("Recorded Target route."),
     routePublished: z
       .boolean()

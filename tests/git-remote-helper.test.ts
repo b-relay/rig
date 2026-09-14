@@ -230,3 +230,81 @@ test("advertises only canonical deployment destinations, excluding custom Previe
     `${"c".repeat(40)} refs/heads/main\n${"d".repeat(40)} refs/heads/feature\n\n`,
   );
 });
+
+test("list for-push withholds incomplete or transitioning deployments so git sends the push again", async () => {
+  const { targetName } = await import("../src/runtime/targets");
+  let output = "";
+  const targets = [
+    { name: "live", kind: "live", branch: "main", commit: "a".repeat(40), deploymentIncomplete: true },
+    {
+      name: targetName({ target: "preview", branch: "fail1" }),
+      kind: "preview",
+      branch: "fail1",
+      commit: "b".repeat(40),
+      transitionPending: true,
+    },
+    { name: targetName({ target: "preview", branch: "done" }), kind: "preview", branch: "done", commit: "c".repeat(40) },
+  ];
+  const code = await runRemoteHelper("rig://localhost/example", {
+    repoPath: "/repo",
+    input: input(["list for-push", ""]),
+    output: {
+      write(value) {
+        output += value;
+      },
+      error() {},
+    },
+    client: {
+      async command() {
+        return { targets };
+      },
+    },
+    source: {
+      async resolve() {
+        throw Error("not pushing");
+      },
+      async verifyBranch() {},
+    },
+    newOperationId: () => "op",
+  });
+  expect(code).toBe(0);
+  expect(output).toBe(`${"c".repeat(40)} refs/heads/done\n\n`);
+});
+
+test("an interrupted push names the operation rigd may still be running", async () => {
+  let error = "";
+  let finish!: (value: unknown) => void;
+  const interrupt = new AbortController();
+  const run = runRemoteHelper("rig://localhost/example", {
+    repoPath: "/repo",
+    input: input(["list for-push", "push refs/heads/main:refs/heads/main", "", ""]),
+    output: {
+      write() {},
+      error(value) {
+        error += value;
+      },
+    },
+    client: {
+      async command(command) {
+        if (command.action === "status") return { project: "example", targets: [] };
+        return await new Promise((resolve) => {
+          finish = resolve;
+        });
+      },
+    },
+    source: {
+      async resolve() {
+        return "a".repeat(40);
+      },
+      async verifyBranch() {},
+    },
+    newOperationId: () => "push-op",
+    interrupt: interrupt.signal,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  interrupt.abort();
+  expect(error).toContain("operation push-op");
+  expect(error).toContain("rig activity");
+  finish({ outcome: "deployed" });
+  expect(await run).toBe(0);
+});

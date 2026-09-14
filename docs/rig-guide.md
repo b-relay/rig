@@ -228,6 +228,14 @@ git push rig feature/login
 git push rig main:preview/main
 ```
 
+The remote advertises only completed deployments. A Target whose last deploy
+failed or was interrupted, or whose transition is still unresolved, is
+withheld from `list for-push`, so a repeated `git push rig <branch>` sends the
+push again instead of reporting "Everything up-to-date"; rigd then finishes or
+refuses it with the usual deployment errors. Interrupting a push with Ctrl-C
+prints the operation id that rigd may still be running; check `rig activity`
+or `rig status` before pushing again.
+
 Rig remote classification uses the pushed destination Branch:
 
 - Production branch updates the Stable Target and brings it up by default.

@@ -1700,3 +1700,29 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     await f.cleanup();
   }
 });
+
+test("deploy --no-up says the Target is stopped and names the rig up command", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deploy = {
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  } as const;
+  expect(await runtime.command({ ...deploy, noUp: true })).toMatchObject({
+    outcome: "deployed",
+    warnings: ["live is deployed but stopped. Run rig up live to start it."],
+  });
+  await runtime.command({ action: "up", project: "demo", target: "live" });
+  expect(state.targets[0]?.desired).toBe("running");
+  expect(
+    await runtime.command({ ...deploy, noUp: true, force: true }),
+  ).toMatchObject({
+    outcome: "deployed",
+    warnings: [
+      "live was running and is now stopped on the new deployment. Run rig up live to start it.",
+    ],
+  });
+  expect(state.targets[0]?.desired).toBe("stopped");
+});

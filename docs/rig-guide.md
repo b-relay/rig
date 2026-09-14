@@ -167,7 +167,8 @@ rig deploy preview feature/login --force
 ```
 
 `--no-up` materializes without starting. If a new Commit replaces a running
-Target, the old process is stopped rather than left running on stale code.
+Target, the old process is stopped rather than left running on stale code, so
+nothing serves until `rig up`; the deploy output warns and names that command.
 `--force` redeploys even when the same Commit is already deployed.
 
 CLI deploy uses local Branches only. It should warn, not block, when the Branch

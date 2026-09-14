@@ -343,12 +343,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           },
           deps,
         );
+        const wasRunning = target?.desired === "running";
         target = await activateDeployment(
           candidate,
           target,
           { activation: command.noUp ? "prepare" : "start" },
           deps,
         );
+        const warnings = command.noUp
+          ? [...preflight.warnings, preparedWarning(target, wasRunning)]
+          : preflight.warnings;
         if (replacement) {
           await deps.lifecycle.retire(replacement, () =>
             deps.store.update((s) => {
@@ -356,7 +360,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             }),
           );
         }
-        return await finish("deployed", { warnings: preflight.warnings });
+        return await finish("deployed", { warnings });
       }
       if (command.action === "destroy") {
         if (command.target !== "preview")
@@ -579,4 +583,17 @@ function missingTarget(name: string): RigError {
     `Target '${name}' has no recorded deployment.`,
     "Use rig up for local, or deploy this Target first.",
   );
+}
+/** A --no-up deploy leaves nothing serving; the warning carries the exact command that starts the new deployment. */
+function preparedWarning(
+  target: Pick<TargetRecord, "name" | "kind">,
+  wasRunning: boolean,
+): string {
+  const up =
+    target.kind === "preview"
+      ? `rig up preview --deployment ${target.name}`
+      : `rig up ${target.name}`;
+  return wasRunning
+    ? `${target.name} was running and is now stopped on the new deployment. Run ${up} to start it.`
+    : `${target.name} is deployed but stopped. Run ${up} to start it.`;
 }

@@ -167,7 +167,10 @@ function addDeployCommands(
       )
       .option("--project <name>", "Registered Project identity")
       .option("--force", "Redeploy even when the selected Commit is unchanged")
-      .option("--no-up", "Prepare the deployment without starting it")
+      .option(
+        "--no-up",
+        "Deploy without starting; a running Target is stopped until rig up",
+      )
       .option("--json", "Render the final domain result as JSON");
     if (target === "preview")
       child.option("--deployment <name>", "Explicit Preview name");

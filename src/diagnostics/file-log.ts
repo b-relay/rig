@@ -1,4 +1,4 @@
-import { failureCategories } from "../domain/errors";
+import { boundedEvidence, failureCategories } from "../domain/errors";
 import { Database } from "bun:sqlite";
 import {
   appendFile,
@@ -58,6 +58,10 @@ export function diagnosticRecord(
       failureCategories.some((category) => category === value)
     )
       record[key] = value;
+  }
+  if (typeof entry.evidence === "string") {
+    const evidence = boundedEvidence(entry.evidence);
+    if (evidence !== undefined) record.evidence = evidence;
   }
   return record;
 }

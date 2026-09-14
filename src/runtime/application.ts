@@ -21,6 +21,7 @@ import {
   diagnosticCauses,
   failureReason,
   diagnosticErrorCode,
+  diagnosticEvidence,
   type FailureCauses,
 } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
@@ -527,14 +528,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (!reads.has(command.action)) {
         const errorCode = diagnosticErrorCode(error);
         const causes = diagnosticCauses(error);
+        const providerEvidence = diagnosticEvidence(error);
         const evidence = {
           operationId,
           action: command.action,
           errorCode,
           ...causes,
+          ...(providerEvidence ? { evidence: providerEvidence } : {}),
         };
         try {
-          if (attempted) await record("failed", errorCode, causes);
+          if (attempted)
+            await record("failed", errorCode, causes, providerEvidence);
           else await deps.diagnostic({ ...evidence, outcome: "rejected" });
         } catch {
           try {
@@ -550,6 +554,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       outcome: OperationRecord["outcome"],
       errorCode?: string,
       causes: FailureCauses = {},
+      providerEvidence?: string,
     ): Promise<void> {
       await deps.store.update((state) => {
         recordActivity(state, {
@@ -572,6 +577,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           target: target?.name,
           errorCode,
           ...causes,
+          ...(providerEvidence ? { evidence: providerEvidence } : {}),
         });
       } catch {
         /* Diagnostic failure cannot change an already recorded operation. */

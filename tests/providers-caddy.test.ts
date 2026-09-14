@@ -11,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCaddyRouter } from "../src/providers/caddy-router";
+import { RigError } from "../src/domain/errors";
+import { readdir, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 const roots: string[] = [];
 afterEach(async () => {
@@ -277,4 +279,80 @@ test("a symlinked Caddyfile is updated through the link, so the file Caddy reads
   await router.remove("t1");
   expect((await lstat(link)).isSymbolicLink()).toBe(true);
   expect(await readFile(real, "utf8")).toBe("# original\n");
+});
+
+test("validation and reload failures carry Caddy's last stderr line, the rejected file is kept, and a missing caddy is named", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-evidence-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  const unrelated = "# user-owned\n";
+  await writeFile(file, unrelated);
+  const rejected = `${await realpath(file)}.rejected`;
+  let mode: "reject" | "reload-fails" | "missing" = "reject";
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async ({ command }) => {
+      if (mode === "missing")
+        throw new RigError(
+          "COMMAND_START",
+          "Provider command 'caddy' could not start (spawn caddy ENOENT).",
+          "Check the executable.",
+          { executable: "caddy", cause: "spawn caddy ENOENT" },
+        );
+      if (command[1] === "validate" && mode === "reject")
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr:
+            "2026/09/14 10:00:00 adapting config\nError: adapting config using caddyfile: port 99999 is out of range\n\n",
+        };
+      if (command[1] === "reload" && mode === "reload-fails")
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr:
+            "Error: sending configuration to instance: connection refused\n",
+        };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  const route = {
+    key: "target/web",
+    hostname: "app.example.test:99999",
+    upstream: "127.0.0.1:3000",
+  };
+  await expect(router.apply(route)).rejects.toMatchObject({
+    code: "ROUTE_VALIDATE",
+    message:
+      "Caddy rejected the updated routes: Error: adapting config using caddyfile: port 99999 is out of range",
+    hint: `The rejected configuration is kept at ${rejected}; fix the route configuration and retry.`,
+    details: {
+      rejectedPath: rejected,
+      evidence:
+        "Error: adapting config using caddyfile: port 99999 is out of range",
+    },
+  });
+  expect(await readFile(file, "utf8")).toBe(unrelated);
+  expect(await readFile(rejected, "utf8")).toContain("app.example.test:99999");
+  expect((await readdir(root)).sort()).toEqual([
+    "Caddyfile",
+    "Caddyfile.rejected",
+  ]);
+  mode = "reload-fails";
+  await expect(router.apply(route)).rejects.toMatchObject({
+    code: "ROUTE_RELOAD",
+    message:
+      "Caddy could not reload (Error: sending configuration to instance: connection refused); the previous configuration was restored.",
+    details: {
+      evidence: "Error: sending configuration to instance: connection refused",
+    },
+  });
+  expect(await readFile(file, "utf8")).toBe(unrelated);
+  mode = "missing";
+  await expect(router.apply(route)).rejects.toMatchObject({
+    code: "CADDY_UNAVAILABLE",
+    message: "Caddy could not start (spawn caddy ENOENT).",
+    hint: "Install Caddy and make it available on the PATH rigd inherits, then run rig doctor.",
+  });
+  expect(await readFile(file, "utf8")).toBe(unrelated);
 });

@@ -173,6 +173,38 @@ export function diagnosticCauses(error: unknown): FailureCauses {
   return failureCauses(error);
 }
 
+/** The bounded, printable provider output a failure opted into sharing; anything else in its details stays out of diagnostics. */
+export function diagnosticEvidence(error: unknown): string | undefined {
+  try {
+    if (error instanceof RigError) {
+      const evidence = (error.details as { evidence?: unknown } | undefined)
+        ?.evidence;
+      if (typeof evidence === "string") return boundedEvidence(evidence);
+    }
+  } catch {
+    /* Diagnostic preparation is best effort, including property inspection. */
+  }
+  return undefined;
+}
+
+/** Collapses whitespace and control characters and caps the text so a log line stays one readable record. */
+export function boundedEvidence(text: string): string | undefined {
+  const collapsed = text
+    .replace(/[\u0000-\u001f\u007f\s]+/g, " ")
+    .trim()
+    .slice(0, 500);
+  return collapsed || undefined;
+}
+
+/** The last non-empty line of a command's output, which is where Caddy and most tools put the reason. */
+export function lastOutputLine(output: string): string | undefined {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1);
+}
+
 /** Inspect an untrusted failure without allowing its prototype or code getter to replace it. */
 export function diagnosticErrorCode(error: unknown): string {
   try {

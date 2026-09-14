@@ -9,6 +9,8 @@ export interface DiagnosticEntry extends FailureCauses {
   target?: string;
   outcome?: string;
   code?: string;
+  /** Bounded provider output the failure opted into sharing, such as Caddy's rejection line. */
+  evidence?: string;
 }
 export interface DiagnosticWriteResult {
   path?: string;

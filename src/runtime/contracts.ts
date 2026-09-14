@@ -136,6 +136,8 @@ export interface RuntimeDependencies {
       path?: string;
       /** Why something was left in place. */
       reason?: string;
+      /** Bounded provider output the failure opted into sharing. */
+      evidence?: string;
     },
   ): Promise<void>;
 }

@@ -355,3 +355,33 @@ test("a partial first record neither disables rotation nor corrupts the next rec
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("bounded provider evidence is recorded with control characters collapsed and its length capped", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-diagnostics-evidence-"));
+  try {
+    const log = createFileDiagnosticLog({
+      root,
+      source: "rigd",
+      now: () => new Date("2026-09-14T12:00:00Z"),
+    });
+    const result = await log.record({
+      event: "operation.completed",
+      action: "deploy",
+      outcome: "failed",
+      code: "ROUTE_VALIDATE",
+      evidence:
+        "line one\n\tError: port 99999 is out of range\u0007" +
+        "x".repeat(1000),
+    });
+    const record = JSON.parse(await readFile(result.path!, "utf8"));
+    expect(record.evidence).toBe(
+      ("line one Error: port 99999 is out of range " + "x".repeat(1000)).slice(
+        0,
+        500,
+      ),
+    );
+    expect(record.code).toBe("ROUTE_VALIDATE");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

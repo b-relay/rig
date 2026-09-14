@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname } from "node:path";
-import { RigError } from "../domain/errors";
+import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import { runCommand } from "./command-runner";
 import type { CommandRunner } from "./contracts";
 export interface RouteRequest {
@@ -108,56 +108,78 @@ export function createCaddyRouter(options: {
       "--adapter",
       "caddyfile",
     ];
+    const rejected = `${file}.rejected`;
     try {
       await writeFile(temporary, after, { mode });
-      const validation = await run({
-        command: [
-          executable,
-          "validate",
-          "--config",
-          temporary,
-          "--adapter",
-          "caddyfile",
-        ],
-      });
-      if (validation.exitCode !== 0)
+      const validation = await runCaddy([
+        executable,
+        "validate",
+        "--config",
+        temporary,
+        "--adapter",
+        "caddyfile",
+      ]);
+      if (validation.exitCode !== 0) {
+        // The rejected text is kept where the hint names it so the user can read what Caddy saw.
+        await rename(temporary, rejected);
+        const reason = lastOutputLine(validation.stderr);
         throw new RigError(
           "ROUTE_VALIDATE",
-          "Caddy rejected the updated routes.",
-          "Inspect the route configuration and retry.",
-          { stderr: validation.stderr },
+          `Caddy rejected the updated routes${reason ? `: ${reason}` : "."}`,
+          `The rejected configuration is kept at ${rejected}; fix the route configuration and retry.`,
+          {
+            stderr: validation.stderr,
+            rejectedPath: rejected,
+            evidence: boundedEvidence(reason ?? ""),
+          },
         );
+      }
       await writeFile(`${file}.rig-backup`, before, { mode });
       await rename(temporary, file);
       if (options.reload !== false) {
-        const reload = await run({
-          command: reloadCommand,
-        }).catch((error) => ({
+        const reload = await runCaddy(reloadCommand).catch((error) => ({
           exitCode: 1,
           stdout: "",
-          stderr: String(error),
+          stderr: describeStartFailure(error),
         }));
         if (reload.exitCode !== 0) {
           await writeFile(temporary, before, { mode });
           await rename(temporary, file);
-          const rollback = await run({
-            command: reloadCommand,
-          }).catch(() => ({ exitCode: 1 }));
+          const rollback = await runCaddy(reloadCommand).catch(() => ({
+            exitCode: 1,
+          }));
+          const reason = lastOutputLine(reload.stderr);
           throw new RigError(
             "ROUTE_RELOAD",
-            "Caddy could not reload; the previous configuration was restored.",
+            `Caddy could not reload${reason ? ` (${reason})` : ""}; the previous configuration was restored.`,
             rollback.exitCode
               ? "The rollback reload also failed. Inspect Caddy before retrying."
               : "Inspect Caddy diagnostics and retry.",
             {
               rollbackReloaded: rollback.exitCode === 0,
               stderr: reload.stderr,
+              evidence: boundedEvidence(reason ?? ""),
             },
           );
         }
       }
     } finally {
       await rm(temporary, { force: true });
+    }
+  }
+  /** A caddy that cannot start is a missing capability, not a route problem, so it is named as such. */
+  async function runCaddy(command: readonly string[]) {
+    try {
+      return await run({ command });
+    } catch (error) {
+      if (error instanceof RigError && error.code === "COMMAND_START")
+        throw new RigError(
+          "CADDY_UNAVAILABLE",
+          `Caddy could not start (${describeStartFailure(error)}).`,
+          "Install Caddy and make it available on the PATH rigd inherits, then run rig doctor.",
+          { executable: command[0], evidence: describeStartFailure(error) },
+        );
+      throw error;
     }
   }
   function serialized(key: string, route?: RouteRequest): Promise<void> {
@@ -184,6 +206,13 @@ export function createCaddyRouter(options: {
       return operation;
     },
   };
+}
+function describeStartFailure(error: unknown): string {
+  if (error instanceof RigError) {
+    const cause = (error.details as { cause?: unknown } | undefined)?.cause;
+    return typeof cause === "string" ? cause : error.message;
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 function hostnamePresent(text: string, hostname: string): boolean {
   const canonical = hostname.replace(/^https?:\/\//, "").toLowerCase();

@@ -109,7 +109,7 @@ testability and honesty refactors.
 83. ~~#119~~ (fixed) Make Doctor use one Project config snapshot and distinguish inspection failures.
 84. ~~#118~~ (fixed) Make runtime diagnostic and monitor failures observable without changing outcomes.
 85. ~~#117~~ (fixed) Preserve safe initiating and recovery causes in retirement failures.
-86. #205 Caddy validate/reload stderr discarded on every path; missing caddy executable is a generic COMMAND_START. (#230.)
+86. ~~#205~~ (fixed) Caddy validate/reload stderr discarded on every path; missing caddy executable is a generic COMMAND_START. (#230.)
 87. #177 Moving a registered repo is a dead end; conflicting path never shown. (#236.)
 88. #148 Editing the Project name in config after registration is a circular dead end. (#235.)
 89. #161 git push rig from a linked git worktree rejected with PROJECT_PATH_CONFLICT. (#232, #236.)

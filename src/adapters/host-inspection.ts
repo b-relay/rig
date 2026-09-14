@@ -51,7 +51,7 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
     });
   }
   checks.push(...(await inspectDaemonExecutable(root)));
-  for (const name of ["bun", "git"]) {
+  for (const name of ["bun", "git", "caddy"]) {
     const ok = Bun.which(name) !== null;
     checks.push(
       ok

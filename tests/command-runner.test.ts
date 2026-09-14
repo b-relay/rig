@@ -36,3 +36,19 @@ test("a cancelled command is distinguished from one that timed out", async () =>
     }),
   ).rejects.toMatchObject({ code: "COMMAND_CANCELLED" });
 });
+
+test("a command whose executable cannot start names the executable and the cause", async () => {
+  const executable = "/nonexistent/rig-missing-executable";
+  await expect(
+    runCommand({ command: [executable], env }),
+  ).rejects.toMatchObject({
+    code: "COMMAND_START",
+    message: expect.stringMatching(
+      new RegExp(
+        `^Provider command '${executable}' could not start \\(.*ENOENT.*\\)\\.$`,
+      ),
+    ),
+    hint: "Check that the executable exists and is on the PATH, and that the working directory exists.",
+    details: { executable, cause: expect.stringContaining("ENOENT") },
+  });
+});

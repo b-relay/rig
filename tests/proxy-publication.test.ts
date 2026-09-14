@@ -196,3 +196,15 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
   expect(published.targets[0]?.routePublished).toBeUndefined();
   expect(renderStatus(published)).not.toContain("unpublished");
 });
+
+test("rig doctor names the caddy executable as a provider capability", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-proxy-caddy-"));
+  try {
+    const check = (await inspectHost(root)).find((c) => c.name === "provider/caddy");
+    expect(check).toMatchObject({ name: "provider/caddy", ok: Bun.which("caddy") !== null });
+    if (!check?.ok)
+      expect(check).toMatchObject({ reason: "missing-capability", hint: "Install caddy and include it in PATH." });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

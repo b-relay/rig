@@ -134,6 +134,16 @@ writes the route file but leaves the reload to you. The route file and
 changes and the link stays in place, with the `.rig-backup` and `.bak` copies
 beside the linked file.
 
+When Caddy rejects a route change, the failure names Caddy's last error line,
+for example `Caddy rejected the updated routes: ... port 99999 is out of
+range`, and keeps the rejected text at `<route file>.rejected` so you can read
+what Caddy saw; the live route file is left unchanged. A reload that fails
+carries the same last line and restores the previous configuration. A `caddy`
+executable that cannot start is reported as `CADDY_UNAVAILABLE` rather than a
+route problem, and `rig doctor` lists `provider/caddy` beside `provider/bun`
+and `provider/git`. The diagnostic log records that last line under `evidence`;
+full command output never enters the log.
+
 ## Initialize A Project
 
 From inside a Git repository:

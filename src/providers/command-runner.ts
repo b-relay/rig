@@ -56,9 +56,9 @@ export const runCommand: CommandRunner = async ({
       reject(
         new RigError(
           "COMMAND_START",
-          "A provider command could not start.",
-          "Check the executable and working directory.",
-          { cause: error.message },
+          `Provider command '${command[0]}' could not start (${error.message}).`,
+          "Check that the executable exists and is on the PATH, and that the working directory exists.",
+          { executable: command[0], cause: error.message },
         ),
       );
     });

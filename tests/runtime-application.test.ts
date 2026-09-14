@@ -872,6 +872,37 @@ test("a failing diagnostic sink leaves operation outcomes alone and doctor repor
     hint: DIAGNOSTIC_SINK.hint,
   });
 });
+test("a failed operation's diagnostic carries the provider's opted-in evidence and nothing else from its details", async () => {
+  const { runtime, deps } = fixture();
+  const events: unknown[] = [];
+  deps.diagnostic = async (event) => {
+    events.push(event);
+  };
+  deps.lifecycle.up = async () => {
+    throw new RigError(
+      "ROUTE_VALIDATE",
+      "Caddy rejected the updated routes: port 99999 is out of range",
+      "hint",
+      {
+        stderr: "full-output-not-for-diagnostics",
+        evidence: "port 99999 is out of range",
+      },
+    );
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await expect(
+    runtime.command({ action: "up", project: "demo" }),
+  ).rejects.toMatchObject({ code: "ROUTE_VALIDATE" });
+  expect(events.at(-1)).toMatchObject({
+    action: "up",
+    outcome: "failed",
+    errorCode: "ROUTE_VALIDATE",
+    evidence: "port 99999 is out of range",
+  });
+  expect(JSON.stringify(events)).not.toContain(
+    "full-output-not-for-diagnostics",
+  );
+});
 test("doctor on a Project without Targets reports the config and Host checks only", async () => {
   const { runtime } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

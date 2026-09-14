@@ -275,7 +275,7 @@ owner carries only its own owner-level defects.
 | up starts incomplete Deployment, flag never cleared | #155 |
 | installer shell environment inherited by rigd, components, hooks; persisted to capture JSON | #156 (fixed: `inheritedEnvironment` picks the login basics in both install modes) |
 | sqlite path / envFile unconfined to workspace or data root | #157 (fixed: deployed Targets reject `path_outside_target`) |
-| stale `rig.yaml.lock` blocks every edit | #158 |
+| stale `rig.yaml.lock` blocks every edit | #158 | (fixed: shared `acquireProcessLock` records pid+start time, reclaims dead/stale holders, names the lock path) |
 | symlinked `rig.yaml`/Caddyfile replaced by a regular file on edit | #159 (fixed: both editors resolve the real path first and rename over it, keeping the link) |
 | `git push rig` hangs forever on fatal helper errors (readline never closed) | #160 |
 | push from a linked worktree rejected with `PROJECT_PATH_CONFLICT` | #161 |

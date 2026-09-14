@@ -1185,3 +1185,41 @@ test("editing a Project whose rig.yaml is a symlink writes through to the linked
     "name: demo\ncomponents: {}\n",
   );
 });
+test("a config lock left by a crashed edit is reclaimed; one held by a live process is refused by path", async () => {
+  const { editProjectConfig } = await import("../src/config/index.js");
+  const { utimes } = await import("node:fs/promises");
+  const root = await fixture(),
+    path = join(root, "rig.yaml");
+  await writeFile(path, "name: pantry\ncomponents: {}\n");
+  const lock = `${await realpath(path)}.lock`;
+  const edit = async () =>
+    editProjectConfig({
+      repoPath: root,
+      expectedRevision: (await readProjectConfig(root)).revision,
+      edits: [],
+    });
+  // A lock with no readable holder that is older than a minute belongs to a dead edit.
+  await writeFile(lock, "");
+  const old = new Date(Date.now() - 120_000);
+  await utimes(lock, old, old);
+  await edit();
+  await expect(lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  // So does one whose recorded pid has exited.
+  await writeFile(lock, JSON.stringify({ pid: 2147483647 }));
+  await edit();
+  // A fresh unreadable lock, or one whose holder is alive, is refused with the path.
+  await writeFile(lock, "");
+  const fresh = await edit().catch((error) => error);
+  expect(fresh).toMatchObject({ code: "config_locked" });
+  expect(fresh.hint).toContain(lock);
+  await writeFile(lock, JSON.stringify({ pid: process.pid }));
+  const held = await edit().catch((error) => error);
+  expect(held).toMatchObject({
+    code: "config_locked",
+    context: { lockPath: lock, pid: process.pid },
+  });
+  expect(held.hint).toContain(`held by pid ${process.pid}`);
+  expect(await readFile(lock, "utf8")).toBe(
+    JSON.stringify({ pid: process.pid }),
+  );
+});

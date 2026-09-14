@@ -87,7 +87,7 @@ testability and honesty refactors.
 64. ~~#122~~ (fixed) RIG_ROOT="" makes rig use the current working directory as the Rig root (caused a real incident on this machine).
 65. ~~#121~~ (fixed) Empty or unreadable control-plane token reported as "not installed"; install then crashes with raw EEXIST. (#224.)
 66. ~~#116~~ (fixed) Distinguish missing daemon tokens from invalid or unreadable token state.
-67. #158 Stale rig.yaml.lock after a crashed config edit blocks every later edit.
+67. ~~#158~~ (fixed) Stale rig.yaml.lock after a crashed config edit blocks every later edit.
 68. #166 Deleting a Target log directory while a component runs silently drops all further output.
 69. #168 Diagnostic log rotation permanently disabled after one partial record; log grows without bound.
 70. #165 Target log reader cannot get past one bad record; logs and --follow fail until >4 MiB of newer output.

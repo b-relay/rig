@@ -5,7 +5,6 @@ import {
   writeFile,
   rename,
   unlink,
-  open,
   realpath,
   stat,
 } from "node:fs/promises";
@@ -18,6 +17,7 @@ import {
   stringify,
   visit,
 } from "yaml";
+import { acquireProcessLock, type LockHeld } from "../adapters/process-lock";
 import { ConfigError } from "./errors.js";
 import { applyJsonEdits, applyYamlEdits, type ConfigEdit } from "./editor.js";
 export type { ConfigEdit } from "./editor.js";
@@ -290,17 +290,9 @@ export async function editProjectConfig(
   const document = await readProjectConfig(input.repoPath),
     file = await realpath(document.path),
     lockPath = `${file}.lock`;
-  let lock;
-  try {
-    lock = await open(lockPath, "wx");
-  } catch {
-    throw new ConfigError(
-      "Config is being edited by another operation.",
-      "config_locked",
-      { path: document.path },
-      "Retry after the other config edit completes.",
-    );
-  }
+  const acquired = await acquireProcessLock(lockPath);
+  if ("held" in acquired) throw configLocked(document.path, acquired.held);
+  const { lock } = acquired;
   let temporary: string | undefined;
   try {
     const raw = await readFile(file, "utf8");
@@ -345,6 +337,21 @@ export async function editProjectConfig(
     await lock.close();
     await unlink(lockPath);
   }
+}
+/** A lock held by a live edit, or too fresh to reclaim, is refused with the file an operator can inspect or remove. */
+function configLocked(path: string, held: LockHeld): ConfigError {
+  const cause =
+    held.reason === "alive"
+      ? `is held by pid ${held.pid}, which is alive. Wait for that edit to finish; if no rig config edit is running, remove ${held.lockPath} and retry.`
+      : held.reason === "fresh"
+        ? `was taken less than a minute ago by an edit that recorded no pid. Wait for it; if no rig config edit is running, remove ${held.lockPath} and retry.`
+        : "was taken again while it was being reclaimed. Retry.";
+  return new ConfigError(
+    "Config is being edited by another operation.",
+    "config_locked",
+    { path, lockPath: held.lockPath, ...(held.pid ? { pid: held.pid } : {}) },
+    `The config lock at ${held.lockPath} ${cause}`,
+  );
 }
 export interface InitializeProjectInput {
   name: string;

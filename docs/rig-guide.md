@@ -659,6 +659,11 @@ Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while
 `rig doctor` and preflight validate the result.
 
+Rig serializes its own config edits with `rig.yaml.lock` beside the file. The
+lock records the editing pid, so one left by a crashed edit is reclaimed once
+that process is gone (or, when it recorded nothing, after a minute). An edit
+refused as `config_locked` names the lock file and the live pid holding it.
+
 Current config surface:
 
 - `rig config` prints validated Project config and its source path.

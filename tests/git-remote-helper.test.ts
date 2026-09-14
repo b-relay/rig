@@ -308,3 +308,44 @@ test("an interrupted push names the operation rigd may still be running", async 
   finish({ outcome: "deployed" });
   expect(await run).toBe(0);
 });
+
+test("a tag or deletion in a push batch is rejected per ref while the Branch in the same batch still deploys", async () => {
+  let output = "";
+  const commands: unknown[] = [];
+  const code = await runRemoteHelper("rig://localhost/example", {
+    repoPath: "/repo",
+    input: input([
+      "list for-push",
+      "push refs/heads/main:refs/heads/main",
+      "push refs/tags/v1:refs/tags/v1",
+      "push :refs/heads/old",
+      "",
+      "",
+    ]),
+    output: {
+      write(value) {
+        output += value;
+      },
+      error() {},
+    },
+    client: {
+      async command(command) {
+        commands.push(command);
+        if (command.action === "status") return { project: "example", targets: [] };
+        return { outcome: "deployed" };
+      },
+    },
+    source: {
+      async resolve() {
+        return "a".repeat(40);
+      },
+      async verifyBranch() {},
+    },
+    newOperationId: () => "op",
+  });
+  expect(code).toBe(1);
+  expect(output).toBe(
+    "\nok refs/heads/main\nerror refs/tags/v1 Rig deploys Branches only; tags are not pushed.\nerror refs/heads/old Deleting a Branch is unsupported; use rig down --destroy.\n\n",
+  );
+  expect(commands.filter((c: any) => c.action === "git-push")).toHaveLength(1);
+});

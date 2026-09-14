@@ -236,6 +236,12 @@ refuses it with the usual deployment errors. Interrupting a push with Ctrl-C
 prints the operation id that rigd may still be running; check `rig activity`
 or `rig status` before pushing again.
 
+Each ref in a push batch is answered on its own: a tag or a Branch deletion is
+reported by git as `[remote rejected]` with Rig's reason, while a Branch in the
+same batch still deploys. A fatal helper error, such as rigd answering `status`
+with an invalid reply, is printed and ends the helper, so git reports the
+failure instead of waiting forever.
+
 Rig remote classification uses the pushed destination Branch:
 
 - Production branch updates the Stable Target and brings it up by default.

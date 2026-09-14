@@ -35,6 +35,10 @@ interface PushRequest {
   branch: string;
   force: boolean;
 }
+/** One `push` line of a batch: either a Branch deployment or a ref git must be told is rejected. */
+type PushLine =
+  | { kind: "deploy"; request: PushRequest }
+  | { kind: "rejected"; destination: string; reason: string };
 const commit = z
   .string()
   .refine(isGitCommit)
@@ -84,7 +88,7 @@ export async function runRemoteHelper(
     dependencies.output.error(`${asRigError(error).message}\n`);
     return 1;
   }
-  const pending: PushRequest[] = [];
+  const pending: PushLine[] = [];
   let dryRun = false;
   let forced = false;
   let quiet = false;
@@ -169,7 +173,16 @@ export async function runRemoteHelper(
       }
       if (line === "") {
         if (!pending.length) break;
-        for (const push of pending.splice(0)) {
+        for (const line of pending.splice(0)) {
+          if (line.kind === "rejected") {
+            // Git expects an answer for every ref in the batch; a tag or deletion must not abort the Branch beside it.
+            failed = true;
+            dependencies.output.write(
+              `error ${line.destination} ${oneLine(line.reason)}\n`,
+            );
+            continue;
+          }
+          const push = line.request;
           const operationId = dependencies.newOperationId();
           inFlight = operationId;
           try {
@@ -261,19 +274,37 @@ function projectFromRemote(value: string): string {
     );
   return match[1]!;
 }
-function parsePush(line: string): PushRequest {
-  const match = /^push (\+?)([^\s:]*):(refs\/heads\/[^\s:]+)$/.exec(line);
-  if (!match || !match[2])
+function parsePush(line: string): PushLine {
+  const match = /^push (\+?)([^\s:]*):([^\s:]+)$/.exec(line);
+  if (!match)
     throw new RigError(
-      "GIT_PUSH_REF",
-      "Rig pushes require a source Commit and a destination Branch; deletion is unsupported.",
+      "GIT_PROTOCOL",
+      "Git sent a push line Rig cannot read.",
       "Push a Branch, such as git push rig main.",
     );
+  const [, plus, source, destination] = match;
+  if (!source)
+    return {
+      kind: "rejected",
+      destination: destination!,
+      reason: "Deleting a Branch is unsupported; use rig down --destroy.",
+    };
+  if (!destination!.startsWith("refs/heads/"))
+    return {
+      kind: "rejected",
+      destination: destination!,
+      reason: destination!.startsWith("refs/tags/")
+        ? "Rig deploys Branches only; tags are not pushed."
+        : "Rig deploys Branches only; push a refs/heads/ destination.",
+    };
   return {
-    source: match[2]!,
-    destination: match[3]!,
-    branch: match[3]!.slice("refs/heads/".length),
-    force: match[1] === "+",
+    kind: "deploy",
+    request: {
+      source: source!,
+      destination: destination!,
+      branch: destination!.slice("refs/heads/".length),
+      force: plus === "+",
+    },
   };
 }
 function oneLine(value: string): string {
@@ -383,4 +414,14 @@ export async function main(args: readonly string[]): Promise<number> {
     return 1;
   }
 }
-if (import.meta.main) process.exitCode = await main(process.argv.slice(2));
+if (import.meta.main) {
+  const code = await main(process.argv.slice(2));
+  // Git waits for EOF on the helper's stdout after a fatal reply; the open stdin reader would otherwise keep the
+  // process alive until git gives up, so flush both streams and end explicitly.
+  await Promise.all(
+    [process.stdout, process.stderr].map(
+      (stream) => new Promise<void>((resolve) => stream.write("", () => resolve())),
+    ),
+  );
+  process.exit(code);
+}

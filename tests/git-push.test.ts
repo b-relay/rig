@@ -24,6 +24,7 @@ test("real git push invokes the helper and sends an authenticated exact Commit t
     repo = join(directory, "repo"),
     bin = join(directory, "bin");
   const requests: RuntimeCommand[] = [];
+  let invalidStatus = false;
   let server: ReturnType<typeof startControlPlane> | undefined;
   const env = {
     ...process.env,
@@ -51,7 +52,9 @@ test("real git push invokes the helper and sends an authenticated exact Commit t
       async handle(command) {
         requests.push(command);
         return command.action === "status"
-          ? { project: "example", targets: [] }
+          ? invalidStatus
+            ? { project: "example" }
+            : { project: "example", targets: [] }
           : { outcome: "deployed" };
       },
     });
@@ -103,6 +106,18 @@ test("real git push invokes the helper and sends an authenticated exact Commit t
     expect(await readFile(join(root, "logs/rig/rig.jsonl"), "utf8")).toContain(
       "git-push",
     );
+    // A tag in the batch is rejected per ref; the helper must answer git instead of hanging.
+    expect((await git(["tag", "v1"])).exitCode).toBe(0);
+    const tagged = await git(["push", "rig", "main:preview/main", "v1"]);
+    expect(tagged.exitCode).not.toBe(0);
+    expect(tagged.stderr).toContain("[remote rejected]");
+    expect(tagged.stderr).toContain("tags are not pushed");
+    expect(tagged.stderr).not.toContain("preview/main -> preview/main (Rig");
+    // A fatal helper error (rigd answering status with an invalid reply) must end the conversation, not hang git.
+    invalidStatus = true;
+    const fatal = await git(["push", "rig", "main"]);
+    expect(fatal.exitCode).not.toBe(0);
+    expect(fatal.stderr).toContain("invalid response");
   } finally {
     await server?.stop(true);
     await rm(directory, { recursive: true, force: true });

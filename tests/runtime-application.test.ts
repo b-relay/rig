@@ -1502,10 +1502,49 @@ test("uncertain retirement preserves Preview bytes and inventory for retry", asy
     expect(
       await readFile(join(f.target.plan.dataRoot, "precious"), "utf8"),
     ).toBe("review");
-    expect(f.state.targets[0]).toMatchObject({
-      desired: "stopped",
-      destructionPending: true,
-    });
+    expect(f.state.targets[0]).toMatchObject({ desired: "stopped" });
+    expect(f.state.targets[0]!.destructionPending).toBeUndefined();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a retirement refused before anything changed releases the Preview instead of wedging it", async () => {
+  const f = await destroyFixture();
+  const retire = f.deps.lifecycle.retire;
+  try {
+    f.deps.lifecycle.retire = async () => {
+      throw new RigError("PROVIDER_MISSING", "No supervisor", "Fix providers");
+    };
+    await expect(f.destroy()).rejects.toMatchObject({ code: "PROVIDER_MISSING" });
+    expect(f.state.targets[0]).toMatchObject({ desired: "stopped" });
+    expect(f.state.targets[0]!.destructionPending).toBeUndefined();
+    const uninstall = await f.runtime
+      .command({ action: "prepare-uninstall" })
+      .then(() => "allowed", (error: unknown) => (error as RigError).code);
+    expect(uninstall).not.toBe("DEPLOY_RECOVERY");
+    expect(
+      await f.runtime.command({ action: "up", project: "demo", target: "preview", deployment: "review" }),
+    ).toMatchObject({ outcome: "started" });
+    f.deps.lifecycle.retire = retire;
+    expect(await f.destroy()).toMatchObject({ outcome: "stopped" });
+    expect(f.state.targets.map((target) => target.name)).toEqual(["other"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a retirement whose finalization is unfinished keeps the Preview locked for retry", async () => {
+  const f = await destroyFixture();
+  try {
+    f.deps.lifecycle.retire = async () => {
+      throw new RigError("RETIRE_COMMIT_PENDING", "Finalization failed", "Retry");
+    };
+    await expect(f.destroy()).rejects.toMatchObject({ code: "RETIRE_COMMIT_PENDING" });
+    expect(f.state.targets[0]).toMatchObject({ desired: "stopped", destructionPending: true });
+    await expect(
+      f.runtime.command({ action: "up", project: "demo", target: "preview", deployment: "review" }),
+    ).rejects.toMatchObject({ code: "DESTROY_PENDING" });
   } finally {
     await f.cleanup();
   }

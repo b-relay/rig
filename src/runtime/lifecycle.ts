@@ -60,6 +60,10 @@ export interface TargetLifecycle {
     checkpoint?: TargetEffectCheckpoint,
   ): Promise<{ outcome: "started" | "unchanged" }>;
   down(target: TargetRecord): Promise<{ outcome: "stopped" | "unchanged" }>;
+  /** Stop, unroute, and uninstall a Target under one checkpoint.
+   * Fails with RETIRE_COMMIT_PENDING (retirement done, finalization unfinished)
+   * or RETIRE_ROLLBACK (rollback itself failed) when effects are left changed;
+   * any other failure has rolled back or never started, leaving the Target intact. */
   retire(
     target: TargetRecord,
     publishRemoval?: () => Promise<void>,

@@ -238,10 +238,13 @@ is the confirmation; there is no additional TTY prompt or `--yes` flag.
 
 Other Targets, Project repositories, unrelated Host state, and shared Persistent
 storage outside that owned root are preserved. Symlink destinations are never
-deleted. Uncertain shutdown or ambiguous ownership prevents deletion. A cleanup
-failure retains a stopped Preview with pending-destruction evidence; retry the
-same explicit destroy command to finish. It cannot be restarted or redeployed
-while deletion is pending. Already deleted bytes cannot be restored by retry.
+deleted. Uncertain shutdown or ambiguous ownership prevents deletion. A destroy
+refused before anything was retired (a missing provider, an unverified stop)
+leaves the Preview stopped but unlocked: fix the cause and destroy again, or
+bring it back up. A cleanup failure after retirement began retains a stopped
+Preview with pending-destruction evidence; retry the same explicit destroy
+command to finish. It cannot be restarted or redeployed while deletion is
+pending. Already deleted bytes cannot be restored by retry.
 
 Logs:
 

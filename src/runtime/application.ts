@@ -29,6 +29,32 @@ import {
   assertDeploymentRecovered,
   stopForRecovery,
 } from "./deploy";
+/**
+ * Retire a Preview marked for destruction. `retire` leaves effects changed only
+ * when it fails with RETIRE_COMMIT_PENDING or RETIRE_ROLLBACK; any other
+ * refusal (missing provider, uncertain stop, ...) leaves the Target intact, so
+ * the pending-destruction lock is released and the Preview may be restarted or
+ * redeployed. The refusal is rethrown unchanged.
+ */
+async function retireForDestruction(
+  target: TargetRecord,
+  deps: RuntimeDependencies,
+): Promise<void> {
+  try {
+    await deps.lifecycle.retire(target);
+  } catch (error) {
+    const effectsChanged =
+      error instanceof RigError &&
+      (error.code === "RETIRE_COMMIT_PENDING" ||
+        error.code === "RETIRE_ROLLBACK");
+    if (!effectsChanged) {
+      delete target.destructionPending;
+      target.updatedAt = deps.now();
+      await persistTarget(target, deps.store);
+    }
+    throw error;
+  }
+}
 export interface RigRuntime extends ProjectStatusReader {
   command(command: RuntimeCommand): Promise<unknown>;
   reconcile(): Promise<void>;
@@ -390,7 +416,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await persistTarget(target, deps.store);
         // Commit route/artifact retirement before irreversible storage cleanup.
         // Inventory remains the retry handle until all owned bytes are gone.
-        await deps.lifecycle.retire(target);
+        await retireForDestruction(target, deps);
         await deps.files.destroyPreview({
           root: deps.root,
           target,

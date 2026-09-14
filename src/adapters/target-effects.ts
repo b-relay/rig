@@ -200,16 +200,14 @@ export function createTargetEffects(
         componentName: component.name,
         destination,
       });
-      try {
-        for (const path of [destination, ownerFile, receiptFile])
-          await rm(path, { force: true });
-      } finally {
-        await transactions.captureArtifact(target.id, [
-          destination,
-          ownerFile,
-          receiptFile,
-        ]);
-      }
+      await transactions.withArtifactChange(
+        target.id,
+        [destination, ownerFile, receiptFile],
+        async () => {
+          for (const path of [destination, ownerFile, receiptFile])
+            await rm(path, { force: true });
+        },
+      );
     }
   };
   return {
@@ -384,59 +382,54 @@ export function createTargetEffects(
             { exitCode: result.exitCode },
           );
       }
-      try {
-        await ownership.publish(identity, async () => {
-          await options.installer.install({
-            cwd: target.plan.workspacePath,
-            entrypoint: component.entrypoint,
-            destination,
-            env,
+      await transactions.withArtifactChange(
+        target.id,
+        [destination, ownership.ownerPath(destination), receiptFile],
+        async () => {
+          await ownership.publish(identity, async () => {
+            await options.installer.install({
+              cwd: target.plan.workspacePath,
+              entrypoint: component.entrypoint,
+              destination,
+              env,
+            });
           });
-        });
-        await writeInstallReceipt(receiptFile, {
-          key,
-          sourceRevision: (await installedSourceRevision(source))!,
-          installedRevision: (await digestFile(destination))!,
-        });
-      } finally {
-        await transactions.captureArtifact(target.id, [
-          destination,
-          ownership.ownerPath(destination),
-          receiptFile,
-        ]);
-      }
+          await writeInstallReceipt(receiptFile, {
+            key,
+            sourceRevision: (await installedSourceRevision(source))!,
+            installedRevision: (await digestFile(destination))!,
+          });
+        },
+      );
       return { outcome: "installed" };
     },
     async route(target) {
-      try {
-        if (!target.plan.domain || !target.plan.proxy) {
-          await options.router.remove(target.id);
-          return;
-        }
-        const component = target.plan.components.find(
-          (c) => c.name === target.plan.proxy!.upstream,
+      if (!target.plan.domain || !target.plan.proxy)
+        return transactions.withRouteChange(target.id, () =>
+          options.router.remove(target.id),
         );
-        if (component?.kind !== "managed")
-          throw new RigError(
-            "ROUTE_UPSTREAM",
-            "The route upstream is not a managed Component.",
-            "Correct the Project proxy configuration.",
-          );
-        await options.router.apply({
+      const component = target.plan.components.find(
+        (c) => c.name === target.plan.proxy!.upstream,
+      );
+      if (component?.kind !== "managed")
+        throw new RigError(
+          "ROUTE_UPSTREAM",
+          "The route upstream is not a managed Component.",
+          "Correct the Project proxy configuration.",
+        );
+      const domain = target.plan.domain;
+      await transactions.withRouteChange(target.id, () =>
+        options.router.apply({
           key: target.id,
-          hostname: target.plan.domain,
+          hostname: domain,
           upstream: `127.0.0.1:${component.port}`,
-        });
-      } finally {
-        await transactions.captureRoute(target.id);
-      }
+        }),
+      );
     },
     async removeRoute(target) {
-      try {
-        await options.router.remove(target.id);
-      } finally {
-        await transactions.captureRoute(target.id);
-      }
+      await transactions.withRouteChange(target.id, () =>
+        options.router.remove(target.id),
+      );
     },
     observations: {
       process: (target, component, signal) =>

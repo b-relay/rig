@@ -42,6 +42,12 @@ const fileSchema = z
     expected: digest.describe(
       "Digest of the last bytes written by this transaction.",
     ),
+    applying: z
+      .boolean()
+      .optional()
+      .describe(
+        "A write was begun but not captured; current bytes may be this transaction's own unrecorded work.",
+      ),
   })
   .strict();
 const journalSchema = z
@@ -57,6 +63,12 @@ const journalSchema = z
       .object({
         before: routeSchema.describe("Route before activation."),
         expected: routeSchema.describe("Last route written by activation."),
+        applying: z
+          .boolean()
+          .optional()
+          .describe(
+            "A route change was begun but not captured; the current route may be this transaction's own unrecorded work.",
+          ),
       })
       .describe("Route compensation state."),
   })
@@ -145,8 +157,13 @@ export function createEffectTransactions(options: {
           "Preserve current files and inspect the checkpoint before recovery.",
         );
     }
+    // A write this transaction began but never captured is its own work:
+    // whatever is there now was put there by the interrupted daemon.
     for (const file of journal.files)
-      if (((await artifactRevision(file.path)) ?? null) !== file.expected)
+      if (
+        !file.applying &&
+        ((await artifactRevision(file.path)) ?? null) !== file.expected
+      )
         throw new RigError(
           "EFFECTS_CHANGED",
           "An executable or ownership record changed after its checkpoint.",
@@ -154,7 +171,8 @@ export function createEffectTransactions(options: {
           { path: file.path },
         );
     const route = await options.router.checkpoint(journal.targetId);
-    if (!sameRoute(route, journal.route.expected))
+    if (journal.route.applying) journal.route.expected = route;
+    else if (!sameRoute(route, journal.route.expected))
       throw new RigError(
         "EFFECTS_CHANGED",
         "The route changed after its checkpoint.",
@@ -169,10 +187,12 @@ export function createEffectTransactions(options: {
           file.mode,
         );
       file.expected = file.before;
+      delete file.applying;
       await save(journal);
     }
     await options.router.restore(journal.route.before, journal.route.expected);
     journal.route.expected = journal.route.before;
+    delete journal.route.applying;
     await save(journal);
     await removeCheckpoint(journal.targetId, { allowMissingDirectory: false });
     active.delete(journal.targetId);
@@ -253,10 +273,19 @@ export function createEffectTransactions(options: {
         rollback: () => rollback(journal),
       };
     },
-    async captureArtifact(targetId: string, paths: readonly string[]) {
+    /** Run a change to owned files. The journal records the intent before the
+     * change and the resulting bytes after it, so a crash in between is
+     * recognised as this transaction's own work. Without an active checkpoint
+     * the change simply runs. Rejects EFFECTS_SCOPE before changing anything
+     * when a path was not checkpointed. */
+    async withArtifactChange(
+      targetId: string,
+      paths: readonly string[],
+      change: () => Promise<void>,
+    ): Promise<void> {
       const journal = active.get(targetId);
-      if (!journal) return;
-      for (const path of paths) {
+      if (!journal) return change();
+      const files = paths.map((path) => {
         const file = journal.files.find((file) => file.path === path);
         if (!file)
           throw new RigError(
@@ -264,14 +293,34 @@ export function createEffectTransactions(options: {
             "The executable was not included in the effect checkpoint.",
             "Retry with the complete recorded Target plan.",
           );
-        file.expected = (await artifactRevision(path)) ?? null;
-      }
+        return file;
+      });
+      for (const file of files) file.applying = true;
       await save(journal);
+      try {
+        await change();
+      } finally {
+        for (const file of files) {
+          file.expected = (await artifactRevision(file.path)) ?? null;
+          delete file.applying;
+        }
+        await save(journal);
+      }
     },
-    async captureRoute(targetId: string) {
+    /** Run a change to the owned route with the same intent-then-capture record. */
+    async withRouteChange(
+      targetId: string,
+      change: () => Promise<void>,
+    ): Promise<void> {
       const journal = active.get(targetId);
-      if (journal) {
+      if (!journal) return change();
+      journal.route.applying = true;
+      await save(journal);
+      try {
+        await change();
+      } finally {
         journal.route.expected = await options.router.checkpoint(targetId);
+        delete journal.route.applying;
         await save(journal);
       }
     },
@@ -286,14 +335,19 @@ export function createEffectTransactions(options: {
           "Inspect the checkpoint before retrying recovery.",
         );
       // A durable runtime commit decision authorizes roll-forward, never rollback.
+      // Writes begun but never captured are this transaction's own work.
       for (const file of journal.files)
-        if (((await artifactRevision(file.path)) ?? null) !== file.expected)
+        if (
+          !file.applying &&
+          ((await artifactRevision(file.path)) ?? null) !== file.expected
+        )
           throw new RigError(
             "EFFECTS_CHANGED",
             "An executable changed before commit recovery.",
             "Preserve the external change and inspect the effect checkpoint.",
           );
       if (
+        !journal.route.applying &&
         !sameRoute(
           await options.router.checkpoint(targetId),
           journal.route.expected,

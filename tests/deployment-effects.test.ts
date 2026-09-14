@@ -1,10 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
+import type { ArtifactInstaller } from "../src/providers/artifact-installer";
 import { createCaddyRouter } from "../src/providers/caddy-router";
+import type { Router } from "../src/providers/caddy-router";
+import type { InstalledComponent } from "../src/config/types";
 import { createTargetLifecycle } from "../src/runtime/lifecycle";
 import { activateDeployment, stopForRecovery } from "../src/runtime/deploy";
 import type { TargetRecord, RuntimeState } from "../src/domain/runtime";
@@ -45,14 +49,16 @@ async function fixture() {
     caddyfile: join(root, "Caddyfile"),
     run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
   });
-  const adapters = () =>
+  const adapters = (
+    overrides: { installer?: ArtifactInstaller; router?: Router } = {},
+  ) =>
     createTargetEffects({
       recordingTime: () => new Date().toISOString(),
       root,
       environment: {},
       supervisors: new Map([["child", supervisor]]),
-      installer: createArtifactInstaller(),
-      router,
+      installer: overrides.installer ?? createArtifactInstaller(),
+      router: overrides.router ?? router,
       run: async () => ({
         exitCode: 1,
         stdout: "",
@@ -212,6 +218,62 @@ test("a new adapter restores durable executable and route checkpoints after inte
     "#!/bin/sh\necho old\n",
   );
   expect(await f.router.checkpoint(f.previous.id)).toEqual(route);
+  await recovered.up(f.previous);
+});
+test("a crash between an applied route and its journal capture is rolled back by the next daemon", async () => {
+  const f = await fixture();
+  await f.lifecycle.up(f.previous);
+  await f.lifecycle.down(f.previous);
+  const route = await f.router.checkpoint(f.previous.id);
+  let crashed = false;
+  const crashing: Router = {
+    ...f.router,
+    async checkpoint(key) {
+      if (crashed) throw new Error("rigd died before capture");
+      return f.router.checkpoint(key);
+    },
+  };
+  const effects = f.adapters({ router: crashing });
+  await effects.checkpoint(f.candidate);
+  crashed = true;
+  await expect(effects.route(f.candidate)).rejects.toThrow("rigd died");
+  expect((await f.router.checkpoint(f.candidate.id)).value).toContain("new.test");
+  const recovered = createTargetLifecycle(f.adapters());
+  await recovered.restoreEffects(f.candidate);
+  expect(await f.router.checkpoint(f.previous.id)).toEqual(route);
+  await recovered.up(f.previous);
+});
+test("a crash between a published executable and its journal capture is rolled back by the next daemon", async () => {
+  const f = await fixture();
+  await f.lifecycle.up(f.previous);
+  await f.lifecycle.down(f.previous);
+  const checkpoints = join(
+    f.root,
+    "effect-checkpoints",
+    createHash("sha256").update(f.candidate.id).digest("hex"),
+  );
+  const installer = createArtifactInstaller();
+  const crashing: ArtifactInstaller = {
+    ...installer,
+    async install(request) {
+      const result = await installer.install(request);
+      await chmod(checkpoints, 0o500);
+      return result;
+    },
+  };
+  const effects = f.adapters({ installer: crashing });
+  const tool = f.candidate.plan.components[0] as InstalledComponent;
+  await effects.checkpoint(f.candidate);
+  await expect(effects.install(tool, f.candidate)).rejects.toThrow();
+  await chmod(checkpoints, 0o700);
+  expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
+    "#!/bin/sh\necho new\n",
+  );
+  const recovered = createTargetLifecycle(f.adapters());
+  await recovered.restoreEffects(f.candidate);
+  expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
+    "#!/bin/sh\necho old\n",
+  );
   await recovered.up(f.previous);
 });
 test("rollback refuses an external artifact edit and retains blocked recovery evidence", async () => {

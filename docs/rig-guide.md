@@ -230,6 +230,14 @@ rig restart preview feature/login
 If `rig up preview feature/login` names a Preview that has not been deployed,
 Rig should fail and tell the user to deploy it first.
 
+Route and installed-executable changes run inside a durable effect
+checkpoint under `<RIG_ROOT>/effect-checkpoints`. The journal records each
+write before it starts and the result after it finishes, so a daemon killed in
+between is recovered by the next `rig down` (rollback) or the recorded commit
+decision (roll-forward) without treating its own half-finished write as an
+external edit. Only a change made to an owned file *after* the journal
+captured it is refused as `EFFECTS_CHANGED`.
+
 `down` stops a Target and retains its inventory, data, logs, and source history.
 `rig down preview <branch> --destroy` verifies shutdown, retires the Preview's
 owned route and installed artifacts, deletes its canonical Target root (owned

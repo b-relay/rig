@@ -903,3 +903,43 @@ test("status names a serving daemon of another version and tells the user to upg
     await rm(root, { recursive: true, force: true });
   }
 });
+test("SIGTERM lets an in-flight command finish and answer before the daemon closes its connections", async () => {
+  const { DaemonClient } = await import("../src/daemon/client");
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-graceful-"));
+  const script = join(root, "child.ts");
+  await mkdir(join(root, "daemon"), { recursive: true });
+  await mkdir(join(root, "auth"));
+  await writeFile(join(root, "auth", "control-plane.token"), "test-secret");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))};
+     await runDaemonHost({root:process.env.RIG_ROOT!,port:0,handle:async()=>{await Bun.sleep(1500);return {done:true};},shutdown:async()=>{}});`,
+  );
+  const child = Bun.spawn([process.execPath, script], {
+    cwd: root,
+    env: { ...process.env, RIG_ROOT: root },
+    stdout: "ignore",
+    stderr: "pipe",
+  });
+  try {
+    const deadline = Date.now() + 10000;
+    let address: { port: number } | undefined;
+    while (!address && Date.now() < deadline) {
+      address = await readFile(join(root, "daemon", "address.json"), "utf8")
+        .then((text) => JSON.parse(text) as { port: number })
+        .catch(() => undefined);
+      if (!address) await Bun.sleep(50);
+    }
+    const client = new DaemonClient({ port: address!.port, token: "test-secret" });
+    const inFlight = client.command({ action: "list" });
+    await Bun.sleep(300);
+    child.kill("SIGTERM");
+    expect(await inFlight).toEqual({ done: true });
+    expect(await child.exited).toBe(0);
+    await expect(readFile(join(root, "daemon", "address.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    child.kill();
+    await child.exited;
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);

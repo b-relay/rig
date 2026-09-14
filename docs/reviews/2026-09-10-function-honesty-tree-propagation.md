@@ -254,7 +254,7 @@ owner carries only its own owner-level defects.
 | `displayWord` sanitizer weaker than `terminalText` | #134 |
 | localhost bind check bypassed via `sh -c`; hooks/env unchecked | #135 (fixed: quoted sub-commands scanned, hooks validated, wildcard bind env rejected) |
 | `up`/`restart` on local never re-plans; `deploy local` rejected | #136 |
-| SIGTERM force-closes in-flight requests | #137 |
+| SIGTERM force-closes in-flight requests | #137 (fixed: stop refuses new connections, drains in-flight commands through shutdown, then force-closes the rest) |
 | pid reuse bricks install/uninstall/start | #138 (fixed: owner/address records carry the process start time; `recordedProcess` tells running, exited, replaced, and unverified apart; only a verified process is signalled; unverified records name the files to remove) |
 | stale `acquiring` lock unrecoverable via CLI | #139 (fixed: the lock records its holder; exited or replaced holders and minute-old holder-less locks are reclaimed; refusals name the lock and pid; the daemon writes `startup-failure.json` and `rigd install` reports it) |
 | cleanly stopped daemon cannot be uninstalled | #140 (fixed: an installed daemon with no live process is uninstalled via the unreachable path with a warning; pinned by test) |

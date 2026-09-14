@@ -201,9 +201,14 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
     if (stopping) return;
     stopping = true;
     void (async () => {
-      await server!.stop(true);
+      // Stop accepting connections but let in-flight commands answer: the runtime
+      // drains them during shutdown, so their callers learn the recorded outcome.
+      const closed = server!.stop(false);
       // Leave ownership evidence on failed shutdown; never publish a clean stop while children are uncertain.
       await options.shutdown();
+      // Whatever is still open now (a log follow, an idle connection) is closed.
+      await server!.stop(true);
+      await closed;
       await release();
     })().then(
       () => {

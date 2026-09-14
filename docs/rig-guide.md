@@ -72,6 +72,11 @@ names `startup.log` to inspect.
 Stopping, restarting, or upgrading `rigd` is not a Target stop. Managed
 processes keep serving while the daemon is down, and the next daemon adopts
 them through their recorded process leases without re-running start hooks.
+A stop signal (SIGTERM, `launchctl bootout`) first stops the daemon accepting
+new connections, then lets the commands already running finish and answer
+their callers, and only then closes what is still open, such as a log follow.
+A command sent after the stop began is refused as `DAEMON_DRAINING` or fails
+to connect.
 `rigd uninstall` is the exception: it refuses while any Target is running.
 When the daemon is not reachable at all, `rigd uninstall` still removes the
 launchd job and installation record and warns that Targets were left as they

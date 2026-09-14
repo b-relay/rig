@@ -282,7 +282,7 @@ owner carries only its own owner-level defects.
 | `init --domain` scaffolds one hostname for every Target → `ROUTE_CONFLICT` | #162 (fixed: scaffold composes `${subdomain}.<base>` with a bare `live.domain`) |
 | lane `hooks` override replaces the whole object; `env` merges per key | #163 (fixed: `mergeComponentOverride` merges env and hooks per key in resolver and schema) |
 | config validation gaps (union "Invalid input", spurious `base.` override error, interpolation without path, Caddy-invalid domains, `ports` namespace collision, `.bak` litter) | #164 |
-| Target log reader cannot skip one bad record (oversized newline-free line, glued partial line) | #165 |
+| Target log reader cannot skip one bad record (oversized newline-free line, glued partial line) | #165 | (fixed: unreadable or over-window records become one "Rig skipped an unreadable log record" entry and the cursor advances; the supervisor bounds records at 64 Ki characters; `LOG_LINE_LIMIT`/`LOG_CORRUPT` no longer thrown) |
 | deleted log directory silently drops output; status strips the recorded reason | #166 | (fixed: `recordLine` recreates the directory on ENOENT; the failure is named per log root, cleared on the next success, and carried through status and `renderStatus`) |
 | `rig activity` hides message and Operation id; no `rig result` | #167 |
 | diagnostic rotation disabled forever after a partial first record | #168 | (fixed: `segmentDay` scans for the first complete record and falls back to the file birthtime; `appendRecord` starts a new line after a partial one) |

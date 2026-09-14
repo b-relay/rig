@@ -576,3 +576,27 @@ test("a deleted log directory is recreated on the next line; output that cannot 
   expect((await stat(join(logRoot, "target.jsonl"))).isFile()).toBe(true);
   await supervisor.stop(request.key);
 });
+test("a newline-free output run is recorded as bounded records that reassemble losslessly", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-process-longline-"));
+  roots.push(root);
+  const supervisor = createChildSupervisor({ stateRoot: root });
+  supervisors.push(supervisor);
+  const request = {
+    key: "target/web",
+    componentName: "web",
+    command: [process.execPath, "-e", "process.stdout.write(Buffer.alloc(200000, 0)); process.stdout.write('\\ndone\\n'); setInterval(()=>{},1000)"],
+    cwd: root,
+    env: { ...process.env } as Record<string, string>,
+    logRoot: root,
+  };
+  await supervisor.ensureRunning(request);
+  const read = async () => (await readFile(join(root, "target.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean);
+  while (!(await read()).some((line) => line.includes('"done"'))) await Bun.sleep(20);
+  const lines = await read();
+  expect(lines.length).toBeGreaterThan(2);
+  for (const line of lines) expect(Buffer.byteLength(line)).toBeLessThan(1024 * 1024);
+  const records = lines.map((line) => JSON.parse(line) as { line: string });
+  expect(records.slice(0, -1).map((record) => record.line).join("")).toBe("\0".repeat(200000));
+  expect(records.at(-1)!.line).toBe("done");
+  await supervisor.stop(request.key);
+});

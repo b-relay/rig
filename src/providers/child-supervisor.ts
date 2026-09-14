@@ -69,6 +69,8 @@ async function recordLine(logRoot: string, entry: TargetLogEntry): Promise<void>
     await appendFile(file, line, { mode: 0o600 });
   }
 }
+/** Longest run of output characters recorded as one log record. */
+const MAX_RECORD_CHARS = 64 * 1024;
 interface OwnedProcess {
   pid: number;
   identity?: string;
@@ -477,7 +479,15 @@ function captureOutput(
       new Promise((resolve) => {
         const decoder = new StringDecoder("utf8");
         let pending = "";
-        const emit = (line: string) => {
+        // A newline-free run is recorded in bounded pieces: after JSON escaping
+        // (up to 6 characters per control byte) each stays far below the 4 MiB
+        // window the log reader can take in one read.
+        const emit = (text: string) => {
+          if (text.length <= MAX_RECORD_CHARS) return record(text);
+          for (let at = 0; at < text.length; at += MAX_RECORD_CHARS)
+            record(text.slice(at, at + MAX_RECORD_CHARS));
+        };
+        const record = (line: string) => {
           const entry: TargetLogEntry = {
             timestamp: now().toISOString(),
             component: request.componentName,
@@ -502,7 +512,7 @@ function captureOutput(
             emit(pending.slice(0, newline).replace(/\r$/, ""));
             pending = pending.slice(newline + 1);
           }
-          if (pending.length > 1_048_576) {
+          if (pending.length > MAX_RECORD_CHARS) {
             emit(pending);
             pending = "";
           }

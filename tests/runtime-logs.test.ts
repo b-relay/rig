@@ -123,10 +123,45 @@ test("foreign cursors, truncated files and complete invalid JSON fail truthfully
   await expect(files.logs(target, initial.cursor, 2)).rejects.toMatchObject({
     code: "LOG_CURSOR",
   });
-  await expect(files.logs(target, undefined, 2)).rejects.toMatchObject({
-    code: "LOG_CORRUPT",
-  });
+  expect((await files.logs(target, undefined, 2)).entries).toEqual([
+    { timestamp: "unknown", component: "unknown", stream: "unknown", line: "Rig skipped an unreadable log record (2 bytes)." },
+  ]);
   expect(await readFile(path, "utf8")).toBe("{}\n");
+});
+test("an unreadable complete record is reported in place and follow advances past it", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("one", "2026-09-09T12:00:01Z") + "{}\n" + entry("three", "2026-09-09T12:00:03Z"));
+  expect((await files.logs(target, undefined, 10)).entries.map((e) => [e.timestamp, e.stream, e.line])).toEqual([
+    ["2026-09-09T12:00:01Z", "stdout", "one"],
+    ["2026-09-09T12:00:01Z", "unknown", "Rig skipped an unreadable log record (2 bytes)."],
+    ["2026-09-09T12:00:03Z", "stdout", "three"],
+  ]);
+  const initial = await files.logs(target, undefined, 10);
+  // A record cut short and glued onto the next one is a single unreadable line.
+  await appendFile(path, "{\"timestamp\":\"2026-09-09T12:00:04Z\",\"glued" + entry("four", "2026-09-09T12:00:05Z") + entry("five", "2026-09-09T12:00:06Z"));
+  const followed = await files.logs(target, initial.cursor, 10);
+  expect(followed.entries.map((e) => e.line)).toEqual([expect.stringContaining("Rig skipped an unreadable log record ("), "five"]);
+  expect((await files.logs(target, followed.cursor, 10)).entries).toEqual([]);
+});
+test("a record larger than the reader window is skipped as one marked entry and reading continues", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("before", "2026-09-09T12:00:01Z"));
+  const initial = await files.logs(target, undefined, 10);
+  const huge = "x".repeat(5 * 1024 * 1024);
+  await appendFile(path, huge + "\n" + entry("after", "2026-09-09T12:00:02Z"));
+  const followed = await files.logs(target, initial.cursor, 10);
+  expect(followed.entries.map((e) => [e.stream, e.line])).toEqual([
+    ["unknown", `Rig skipped an unreadable log record (${huge.length} bytes).`],
+  ]);
+  const next = await files.logs(target, followed.cursor, 10);
+  expect(next.entries.map((e) => [e.stream, e.line])).toEqual([["stdout", "after"]]);
+  expect((await files.logs(target, next.cursor, 10)).entries).toEqual([]);
+  // The tail window holds the end of the huge record: recent reads still find what follows it.
+  expect((await files.logs(target, undefined, 1)).entries.map((e) => e.line)).toEqual(["after"]);
 });
 test("recent reading selects a bounded tail and does not parse ancient complete history outside its window", async () => {
   const target = await fixture(),

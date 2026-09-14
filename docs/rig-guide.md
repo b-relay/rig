@@ -441,6 +441,12 @@ rig logs preview feature/login --follow
 `--follow` streams. Logs may be read for stopped Targets when logs exist.
 Output identifies component, timestamp, and stream with `>` for stdout and `!`
 for stderr; legacy records with missing evidence must be marked unknown.
+A record that cannot be parsed (for example one cut short by a crash and glued
+onto the next), or a run longer than the reader's 4 MiB window, is shown in
+place as an unknown-stream line "Rig skipped an unreadable log record (N
+bytes)." and reading or following continues past it; Rig never edits the
+retained file. Rig's own writers record a newline-free run in pieces of at most
+64 Ki characters, so their records never exceed that window.
 A Target log directory removed while a component runs is recreated by the
 next line of output. While output cannot be recorded at all (the path is not a
 directory, or is not writable), `rig status` prints the reason under the still

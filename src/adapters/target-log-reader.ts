@@ -53,6 +53,8 @@ const cursorError = () =>
 
 /** Read-only current/legacy log view. Cursors belong to this Target and preserve per-source byte identity.
  * Each source reads at most 4 MiB per call; incomplete final lines wait for a later read.
+ * A complete record that cannot be parsed, or a run longer than the window, becomes one
+ * "unreadable record" entry so reading and following continue past it.
  * Unknown legacy timestamps/streams remain explicit, and diagnostic event details are never rendered.
  */
 export async function readTargetLogs(
@@ -185,9 +187,15 @@ async function readSource(
     const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
     const bytes = buffer.subarray(0, bytesRead);
     let begin = recent && start > 0 ? bytes.indexOf(10) + 1 : 0;
-    if (recent && start > 0 && begin === 0) throw lineLimit();
     let end = start + begin;
     const rows: LogRow[] = [];
+    let lastTimestamp: string | undefined;
+    const record = (line: string, size: number, at: number) => {
+      const entry = parseLine(name, line, size, lastTimestamp);
+      lastTimestamp = entry?.timestamp ?? lastTimestamp;
+      end = at;
+      rows.push({ end, entry });
+    };
     for (
       let newline = bytes.indexOf(10, begin);
       newline !== -1;
@@ -197,11 +205,16 @@ async function readSource(
         .subarray(begin, newline)
         .toString("utf8")
         .replace(/\r$/, "");
-      end = start + newline + 1;
-      rows.push({ end, entry: parseLine(name, line) });
+      record(line, newline - begin, start + newline + 1);
       begin = newline + 1;
     }
-    if (bytesRead === maximumReadBytes && !rows.length) throw lineLimit();
+    // A run longer than the window has no newline inside it: skip to the newline that
+    // ends it (or to the end of the file) as one unreadable record rather than stalling.
+    if (bytesRead === maximumReadBytes && !rows.length) {
+      const skipTo = await nextNewline(file, start + bytesRead, metadata.size);
+      record("", skipTo - start - 1, skipTo);
+      end = skipTo;
+    }
     return {
       name,
       position: { identity, offset: previous?.offset ?? start },
@@ -212,14 +225,40 @@ async function readSource(
     await file.close();
   }
 }
-function lineLimit(): RigError {
-  return new RigError(
-    "LOG_LINE_LIMIT",
-    "A log line exceeds the bounded reader window.",
-    "Inspect the retained file directly; Rig did not change its contents.",
-  );
+/** Byte offset just past the next newline at or after `from`, or the file size when none follows. */
+async function nextNewline(
+  file: Awaited<ReturnType<typeof open>>,
+  from: number,
+  size: number,
+): Promise<number> {
+  const chunk = Buffer.alloc(maximumReadBytes);
+  for (let at = from; at < size;) {
+    const { bytesRead } = await file.read(chunk, 0, chunk.length, at);
+    if (bytesRead === 0) break;
+    const newline = chunk.subarray(0, bytesRead).indexOf(10);
+    if (newline !== -1) return at + newline + 1;
+    at += bytesRead;
+  }
+  return size;
 }
-function parseLine(name: string, line: string): TargetLogEntry | undefined {
+/** A complete record that cannot be read is reported in place, at the last known time, so nothing after it is hidden. */
+function unreadable(
+  size: number,
+  timestamp: string | undefined,
+): TargetLogEntry {
+  return {
+    timestamp: timestamp ?? "unknown",
+    component: "unknown",
+    stream: "unknown",
+    line: `Rig skipped an unreadable log record (${size} bytes).`,
+  };
+}
+function parseLine(
+  name: string,
+  line: string,
+  size: number,
+  lastTimestamp: string | undefined,
+): TargetLogEntry | undefined {
   if (name.endsWith(".launchd.log"))
     return {
       timestamp: "unknown",
@@ -245,11 +284,7 @@ function parseLine(name: string, line: string): TargetLogEntry | undefined {
       line: event.details.line,
     };
   } catch {
-    throw new RigError(
-      "LOG_CORRUPT",
-      "A complete Target log record is invalid.",
-      "Inspect the retained log file; incomplete final records are retried automatically.",
-    );
+    return unreadable(size, lastTimestamp);
   }
 }
 function compareEntries(a: TargetLogEntry, b: TargetLogEntry): number {

@@ -14,7 +14,7 @@ import {
 } from "../src/config";
 function fixture() {
   const state: RuntimeState = {
-    version: 2,
+    version: 3,
     projects: [],
     targets: [],
     activity: [],

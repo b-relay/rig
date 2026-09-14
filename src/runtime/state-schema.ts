@@ -134,9 +134,13 @@ const operation = z.object({
   occurredAt: text,
   message: z.string().optional(),
 });
+/** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
+ * older rigd refuses the file instead of silently dropping what it does not know. Version 2 files differ
+ * only by the fields added since, all optional, so they are read as-is and rewritten as version 3. */
+export const STATE_VERSION = 3;
 export const runtimeStateSchema = z
   .object({
-    version: z.literal(2),
+    version: z.union([z.literal(2), z.literal(STATE_VERSION)]),
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),

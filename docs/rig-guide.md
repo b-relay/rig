@@ -404,6 +404,12 @@ as `state.json.bak`; the failure message points at that copy when it exists.
 `rigd uninstall` refuses until the file is repaired, because it cannot verify
 that Targets are stopped without it.
 
+The state file carries a format version (currently 3; version 2 files are
+read and rewritten as 3). A file written by a newer `rigd` is refused as
+`STATE_VERSION`, naming both versions, rather than loaded with fields dropped.
+Keys this `rigd` does not know are kept through every read and write, so a
+newer version's fields survive a temporary downgrade.
+
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (hooks, builds, `readyTimeout`). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report

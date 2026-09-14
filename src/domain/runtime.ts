@@ -61,7 +61,7 @@ export interface OperationRecord {
 }
 
 export interface RuntimeState {
-  version: 2;
+  version: 3;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];

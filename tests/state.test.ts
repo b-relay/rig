@@ -29,7 +29,7 @@ test("registration survives reopening and serialized concurrent updates preserve
     expect(
       JSON.parse(await readFile(join(root, "runtime", "state.json"), "utf8"))
         .version,
-    ).toBe(2);
+    ).toBe(3);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -172,7 +172,7 @@ test.each([
   ["{broken", "is not valid JSON"],
   ["", "is not valid JSON"],
   ["null", "at the top level"],
-  ['{"version":3,"projects":[],"targets":[],"activity":[]}', "at version:"],
+  ['{"version":1,"projects":[],"targets":[],"activity":[]}', "at version:"],
   [
     '{"version":2,"projects":[],"targets":[{"id":"t","projectId":"p","name":"local","kind":"local","desired":"running","createdAt":"now","updatedAt":"now","logRoot":"/tmp/logs","plan":{"project":"demo","workspacePath":"/tmp/demo","dataRoot":"/tmp/data","components":[{"kind":"managed","name":"web"}]}}],"activity":[]}',
     "at targets.0.plan.",
@@ -233,6 +233,94 @@ test("each update keeps the previous state as state.json.bak, and the corrupt-st
     expect(failure.code).toBe("STATE_CORRUPT");
     expect(failure.hint).toContain(backup);
     expect(await readFile(backup, "utf8")).toBe(first);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+const inventory = {
+  projects: [
+    {
+      id: "p",
+      name: "demo",
+      repoPath: "/tmp/demo",
+      configPath: "/tmp/demo/rig.yaml",
+      createdAt: "now",
+      futureProjectField: "kept",
+    },
+  ],
+  targets: [
+    {
+      id: "t",
+      projectId: "p",
+      name: "local",
+      kind: "local",
+      desired: "stopped",
+      createdAt: "now",
+      updatedAt: "now",
+      logRoot: "/tmp/logs",
+      futureTargetField: { nested: true },
+      plan: {
+        project: "demo",
+        target: "local",
+        workspacePath: "/tmp/demo",
+        dataRoot: "/tmp/data",
+        deploymentName: "local",
+        branchSlug: "local",
+        subdomain: "local",
+        providers: { processSupervisor: "child" },
+        providerProfile: "default",
+        components: [],
+        preparedComponents: [],
+      },
+    },
+  ],
+  activity: [],
+};
+
+test("keys this rigd does not know survive a read-modify-write round trip, so a newer version's fields are not lost through an older one", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-passthrough-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    await writeFile(
+      path,
+      JSON.stringify({ version: 3, futureTopLevel: [1], ...inventory }),
+    );
+    const store = new FileStateStore(root);
+    expect(await store.read()).toMatchObject({ futureTopLevel: [1] });
+    await store.update((s) => {
+      s.targets[0]!.desired = "running";
+    });
+    const written = JSON.parse(await readFile(path, "utf8"));
+    expect(written).toMatchObject({
+      version: 3,
+      futureTopLevel: [1],
+      projects: [{ futureProjectField: "kept" }],
+      targets: [{ desired: "running", futureTargetField: { nested: true } }],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a state file written by a newer rigd is refused with both versions named, and a version 2 file is read and rewritten as version 3", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-version-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const store = new FileStateStore(root);
+    await writeFile(path, JSON.stringify({ version: 4, ...inventory }));
+    await expect(store.read()).rejects.toMatchObject({
+      code: "STATE_VERSION",
+      hint: expect.stringMatching(/version 4.*version 3/s),
+      details: { path, version: 4, supported: 3 },
+    });
+    expect(await readFile(path, "utf8")).toContain('"version":4');
+    await writeFile(path, JSON.stringify({ version: 2, ...inventory }));
+    expect((await store.read()).version).toBe(3);
+    await store.update(() => {});
+    expect(JSON.parse(await readFile(path, "utf8")).version).toBe(3);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

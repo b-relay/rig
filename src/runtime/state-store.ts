@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { runtimeStateSchema as schema } from "./state-schema";
+import { STATE_VERSION, runtimeStateSchema as schema } from "./state-schema";
 import { backfillSourceRoots } from "./state-compat";
 import { RigError } from "../domain/errors";
 import type { RuntimeState, StateStore } from "../domain/runtime";
@@ -44,7 +44,12 @@ export class FileStateStore implements StateStore {
             "Complete the explicit backed-up compatibility cutover before starting the new runtime.",
           );
         }
-        return { version: 2, projects: [], targets: [], activity: [] };
+        return {
+          version: STATE_VERSION,
+          projects: [],
+          targets: [],
+          activity: [],
+        };
       }
       throw new RigError(
         "STATE_READ",
@@ -52,9 +57,13 @@ export class FileStateStore implements StateStore {
         "Check state directory permissions.",
       );
     }
+    let parsed: unknown;
     try {
-      return backfillSourceRoots(schema.parse(JSON.parse(raw)), this.root);
+      parsed = JSON.parse(raw);
+      this.assertSupportedVersion(parsed);
+      schema.parse(parsed);
     } catch (error) {
+      if (error instanceof RigError) throw error;
       const backup = (await exists(this.backupPath))
         ? this.backupPath
         : undefined;
@@ -75,6 +84,24 @@ export class FileStateStore implements StateStore {
         },
       );
     }
+    // The validated document is returned as read, not as the schema's stripped copy: keys a newer rigd
+    // wrote survive a round trip through this one, and the next write carries them along.
+    const state = parsed as RuntimeState;
+    return backfillSourceRoots({ ...state, version: STATE_VERSION }, this.root);
+  }
+  /** A file from a newer rigd is refused by version before its shape is judged. */
+  private assertSupportedVersion(parsed: unknown): void {
+    const version =
+      typeof parsed === "object" && parsed !== null && "version" in parsed
+        ? parsed.version
+        : undefined;
+    if (typeof version === "number" && version > STATE_VERSION)
+      throw new RigError(
+        "STATE_VERSION",
+        "Runtime state was written by a newer rigd; nothing was changed.",
+        `Runtime state at ${this.path} is version ${version}, but this rigd reads version ${STATE_VERSION}. Upgrade rigd, or restore the state that version wrote, before retrying.`,
+        { path: this.path, version, supported: STATE_VERSION },
+      );
   }
 
   /** Durable replace: the new state is flushed to disk before it becomes `state.json`, and the version it

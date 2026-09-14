@@ -16,7 +16,7 @@ const target = {
 } as TargetRecord;
 function fixture() {
   const state: RuntimeState = {
-    version: 2,
+    version: 3,
     projects: [
       {
         id: "p",

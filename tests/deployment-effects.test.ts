@@ -1,5 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  rm,
+} from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -58,7 +65,12 @@ async function fixture() {
       root,
       environment: {},
       supervisors: new Map([["child", supervisor]]),
-      installer: overrides.installer ?? createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath }),
+      installer:
+        overrides.installer ??
+        createArtifactInstaller({
+          run: runCommand,
+          bunExecutable: process.execPath,
+        }),
       router: overrides.router ?? router,
       run: async () => ({
         exitCode: 1,
@@ -111,7 +123,7 @@ async function fixture() {
   candidate.plan.workspacePath = join(root, "new");
   candidate.plan.domain = "new.test";
   const state: RuntimeState = {
-    version: 2,
+    version: 3,
     projects: [],
     targets: [previous],
     activity: [],
@@ -242,7 +254,9 @@ test("a crash between an applied route and its journal capture is rolled back by
   await effects.checkpoint(f.candidate);
   crashed = true;
   await expect(effects.route(f.candidate)).rejects.toThrow("rigd died");
-  expect((await f.router.checkpoint(f.candidate.id)).value).toContain("new.test");
+  expect((await f.router.checkpoint(f.candidate.id)).value).toContain(
+    "new.test",
+  );
   const recovered = createTargetLifecycle(f.adapters());
   await recovered.restoreEffects(f.candidate);
   expect(await f.router.checkpoint(f.previous.id)).toEqual(route);
@@ -257,7 +271,10 @@ test("a crash between a published executable and its journal capture is rolled b
     "effect-checkpoints",
     createHash("sha256").update(f.candidate.id).digest("hex"),
   );
-  const installer = createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath });
+  const installer = createArtifactInstaller({
+    run: runCommand,
+    bunExecutable: process.execPath,
+  });
   const crashing: ArtifactInstaller = {
     ...installer,
     async install(request) {

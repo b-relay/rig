@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 function fixture() {
   const state: RuntimeState = {
-    version: 2,
+    version: 3,
     projects: [],
     targets: [],
     activity: [],
@@ -38,7 +38,11 @@ function fixture() {
       return [{ name: "host-check", ok: true, message: "Host inspected." }];
     },
     async inspectProxy() {
-      return { proxyFile: "/tmp/proxy/Caddyfile", routes: 0, state: "unpublished" as const };
+      return {
+        proxyFile: "/tmp/proxy/Caddyfile",
+        routes: 0,
+        state: "unpublished" as const,
+      };
     },
     async assertOwnershipReady() {},
     store: {

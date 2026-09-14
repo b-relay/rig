@@ -1,35 +1,11 @@
 import { CommanderError } from "commander";
-import { RigError, asRigError } from "../domain/errors";
+import { RigError, asRigError, userCorrectable } from "../domain/errors";
 import type {
   DiagnosticEntry,
   DiagnosticLog,
   DiagnosticWriteResult,
 } from "../diagnostics/types";
 import type { UserOutput } from "./types";
-
-const expectedCodes = new Set([
-  "TARGET_REQUIRED",
-  "PRODUCTION_CONFIRMATION",
-  "CANCELLED",
-  "USAGE",
-  "DAEMON_MISSING",
-  "DAEMON_TOKEN",
-  "DAEMON_UNREACHABLE",
-  "DAEMON_TIMEOUT",
-  "PROJECT_REQUIRED",
-  "PROJECT_MISSING",
-  "TARGET_MISSING",
-  "PREVIEW_REQUIRED",
-  "DEPLOY_TARGET",
-  "BRANCH_POLICY",
-  "PROJECT_NAME",
-  "PROJECT_IDENTITY",
-  "PROJECT_CONFLICT",
-  "PROJECT_PATH_CONFLICT",
-  "TARGETS_RUNNING",
-  "PROJECT_ACTIVE",
-  "PATH_REQUIRED",
-]);
 
 /** Logging failure never replaces the user's command outcome. */
 export async function recordDiagnostic(
@@ -75,7 +51,7 @@ export async function reportFailure(
     ...(input.operationId ? { operationId: input.operationId } : {}),
     code: failure.code,
   });
-  const unexpected = !expectedCodes.has(failure.code);
+  const unexpected = !userCorrectable(failure.code);
   if (input.json) {
     input.output.write(
       `${JSON.stringify({ error: { code: failure.code, message: failure.message, hint: failure.hint, ...(unexpected && input.operationId ? { operationId: input.operationId } : {}), ...(unexpected && evidence.path ? { diagnosticPath: evidence.path } : {}) } })}\n`,

@@ -1,6 +1,9 @@
 import { z } from "zod";
 
 /** Only domain commands cross the local control plane, never arbitrary scripts. */
+/** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
+export const projectName = z.string().min(1).max(128);
+export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
 export const commandSchema = z
   .object({
     action: z.enum([
@@ -26,15 +29,12 @@ export const commandSchema = z
       "queue",
     ]),
     operationId: z.string().min(1).max(128).optional(),
-    project: z.string().min(1).max(128).optional(),
+    project: projectName.optional(),
     repoPath: z.string().min(1).optional(),
     target: z.enum(["local", "live", "preview"]).optional(),
     branch: z.string().optional(),
     commit: z.string().optional(),
-    deployment: z
-      .string()
-      .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/)
-      .optional(),
+    deployment: previewName.optional(),
     domain: z.string().optional(),
     proxy: z.string().optional(),
     uses: z.array(z.enum(["sqlite", "postgres", "convex"])).optional(),

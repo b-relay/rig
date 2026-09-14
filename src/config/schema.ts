@@ -3,10 +3,16 @@ import { mergeComponentOverride } from "./override.js";
 import { ConfigError } from "./errors.js";
 const text = z.string().min(1);
 const name = text
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/)
+  .regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/,
+    "must start with a letter or digit and contain only letters, digits, '_' or '-'",
+  )
   .describe("Stable registered Project name.");
 const componentName = text
-  .regex(/^[a-z0-9][a-z0-9-]*$/)
+  .regex(
+    /^[a-z0-9][a-z0-9-]*$/,
+    "must start with a lowercase letter or digit and contain only lowercase letters, digits or '-'",
+  )
   .describe("Component name used in dependencies and output.");
 const port = z
   .number()
@@ -516,14 +522,14 @@ export function parseHostConfig(value: unknown) {
   return result.data;
 }
 
-/** Human guidance contains field paths and schema messages, never input values. */
+/** Human guidance contains field paths and plain rules, never input values. */
 function validationError(
   scope: string,
-  issues: readonly { path: readonly PropertyKey[]; message: string }[],
+  issues: readonly z.core.$ZodIssue[],
 ): ConfigError {
   const safe = (value: string) =>
     value.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160);
-  const details = issues.map((issue) => ({
+  const details = issues.map(explainIssue).map((issue) => ({
     path: issue.path.map((part) => safe(String(part))),
     message: safe(issue.message),
   }));
@@ -540,4 +546,62 @@ function validationError(
     { issues: details },
     hint.slice(0, 900),
   );
+}
+/** A union failure is explained by the branch the input came closest to: the one whose
+ * discriminator matched and which raised the fewest problems, with the field path joined. */
+function explainIssue(issue: z.core.$ZodIssue): {
+  path: PropertyKey[];
+  message: string;
+} {
+  if (issue.code === "invalid_union" && issue.errors.length) {
+    const nearest = [...issue.errors]
+      .filter((branch) => branch.length)
+      .sort(
+        (a, b) =>
+          Number(a[0]!.code === "invalid_value") -
+            Number(b[0]!.code === "invalid_value") || a.length - b.length,
+      )[0];
+    if (nearest) {
+      const inner = explainIssue(nearest[0]!);
+      return { path: [...issue.path, ...inner.path], message: inner.message };
+    }
+  }
+  return { path: [...issue.path], message: describeIssue(issue) };
+}
+/** The rule a field broke, in words a user can act on; Zod's own text names patterns and internals. */
+function describeIssue(issue: z.core.$ZodIssue): string {
+  const quoted = (values: readonly unknown[]) =>
+    values.map((value) => JSON.stringify(value)).join(", ");
+  switch (issue.code) {
+    case "unrecognized_keys":
+      return `has no field named ${quoted(issue.keys)}`;
+    case "invalid_type":
+      return issue.expected === "nonoptional"
+        ? "is required"
+        : `must be ${/^[aeiou]/.test(issue.expected) ? "an" : "a"} ${issue.expected}`;
+    case "invalid_value":
+      return `must be one of ${quoted(issue.values)}`;
+    case "too_small":
+      return issue.origin === "string"
+        ? issue.minimum === 1
+          ? "must not be empty"
+          : `must have at least ${issue.minimum} characters`
+        : issue.origin === "array"
+          ? `must list at least ${issue.minimum} entries`
+          : `must be at least ${issue.minimum}`;
+    case "too_big":
+      return issue.origin === "string"
+        ? `must have at most ${issue.maximum} characters`
+        : issue.origin === "array"
+          ? `must list at most ${issue.maximum} entries`
+          : `must be at most ${issue.maximum}`;
+    case "invalid_key":
+      return issue.issues[0] ? describeIssue(issue.issues[0]) : issue.message;
+    case "invalid_format":
+      return /^Invalid /.test(issue.message)
+        ? "does not have the expected format"
+        : issue.message;
+    default:
+      return issue.message;
+  }
 }

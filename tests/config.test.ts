@@ -1274,3 +1274,34 @@ test("hook, build and dependency-install budgets are declared in seconds and res
     }),
   ).toThrow();
 });
+
+test("validation hints describe the rule in plain words, never Zod's pattern or key text", () => {
+  const hintOf = (input: unknown) => {
+    try {
+      parseProjectConfig(input);
+    } catch (error) {
+      return (error as { hint?: string }).hint;
+    }
+    return undefined;
+  };
+  expect(hintOf({ name: "-bad", components: {} })).toBe(
+    "Fix name: must start with a letter or digit and contain only letters, digits, '_' or '-'.",
+  );
+  expect(hintOf({ name: "app", components: {}, bogusField: 1 })).toBe(
+    'Fix config: has no field named "bogusField".',
+  );
+  expect(
+    hintOf({
+      name: "app",
+      components: { web: { mode: "managed", command: "serve", port: "4000" } },
+    }),
+  ).toBe("Fix components.web.port: must be a number.");
+  expect(
+    hintOf({
+      name: "app",
+      components: {
+        "Bad Name": { mode: "managed", command: "serve", port: 4000 },
+      },
+    }),
+  ).toContain("lowercase letters, digits or '-'");
+});

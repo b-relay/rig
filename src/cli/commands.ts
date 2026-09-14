@@ -1,7 +1,12 @@
 import { Command, InvalidArgumentError } from "commander";
 import { resolve } from "node:path";
-import type { RuntimeCommand } from "../daemon/protocol";
+import {
+  previewName,
+  projectName,
+  type RuntimeCommand,
+} from "../daemon/protocol";
 import { RigError } from "../domain/errors";
+import { terminalText } from "./terminal-text";
 import { RIG_VERSION } from "../domain/version";
 import type { UserOutput } from "./types";
 
@@ -112,7 +117,27 @@ export function terminalCommand(name: string, output: UserOutput): Command {
     });
 }
 function projectScope(options: ScopeOptions): { project?: string } {
-  return options.project ? { project: options.project } : {};
+  if (options.project === undefined) return {};
+  if (!projectName.safeParse(options.project).success)
+    throw new RigError(
+      "USAGE",
+      `The --project name is ${options.project.length} characters long; Project names have 1 to 128 characters.`,
+      "Pass the registered Project name shown by rig list.",
+    );
+  return { project: options.project };
+}
+/** A Preview name the daemon would accept; anything else is named here, before a request exists. */
+function previewScope(options: Pick<ScopeOptions, "deployment">): {
+  deployment?: string;
+} {
+  if (options.deployment === undefined) return {};
+  if (!previewName.safeParse(options.deployment).success)
+    throw new RigError(
+      "USAGE",
+      `The --deployment name '${terminalText(options.deployment)}' is not a valid Preview name.`,
+      "Use letters, digits, '_' or '-', starting with a letter or digit.",
+    );
+  return { deployment: options.deployment };
 }
 
 function addLifecycleCommands(
@@ -210,7 +235,7 @@ function addDeployCommands(
             ...(branch ? { branch } : {}),
             ...(options.force ? { force: true } : {}),
             ...(options.up === false ? { noUp: true } : {}),
-            ...(options.deployment ? { deployment: options.deployment } : {}),
+            ...previewScope(options),
           },
           { json: options.json },
         );
@@ -406,6 +431,7 @@ function targetRequest(
   cwd: string,
   options: ScopeOptions,
 ): RuntimeCommand {
+  const preview = previewScope(options);
   if (target === undefined) {
     if (branch || options.deployment)
       throw new RigError(
@@ -437,7 +463,7 @@ function targetRequest(
     repoPath: cwd,
     target: target as RuntimeCommand["target"],
     ...(branch ? { branch } : {}),
-    ...(options.deployment ? { deployment: options.deployment } : {}),
+    ...preview,
     ...projectScope(options),
   };
 }

@@ -594,7 +594,17 @@ message: the error code for a failed Operation, or `web exited with code 137.`
 for a crash. A failure that prints `Operation: <id>` can be looked up with
 `rig activity <id>` (a unique prefix of the id also works), which shows only
 that record or reports that none was recorded, as happens when the request
-never reached rigd. Diagnostics live
+never reached rigd. A failure the user can correct (a bad argument, a config
+problem, a missing branch or directory, a reserved port, a Component that
+never became ready, an unreachable or mismatched daemon) prints only its
+message and hint; the `Operation:` and `Details:` lines, and the
+`operationId`/`diagnosticPath` fields under `--json`, mark an internal fault.
+Config validation hints name the field and the rule in plain words
+(`Fix name: must start with a letter or digit and contain only letters,
+digits, '_' or '-'.`, `Fix config: has no field named "bogusField".`), and
+rig checks `--project` and `--deployment` before sending a request, so a
+name rigd would reject is named at the terminal instead of being reported
+as a version mismatch. Diagnostics live
 in separate `logs/rig/rig.jsonl` and `logs/rigd/rigd.jsonl` files beneath the Rig
 root, with daily rotation and 14-day retention by default. That retention does
 not delete Target logs, activity, or Persistent storage. A record cut short by

@@ -1,6 +1,7 @@
 import type { ProjectStatusReport } from "../domain/project-status";
 import { expect, test } from "bun:test";
 import { runRigCli } from "./rig";
+import { RigError } from "../domain/errors";
 
 test("bare help exits successfully without contacting the daemon", async () => {
   let text = "";
@@ -827,4 +828,114 @@ test("rig activity shows each record's message and Operation id, and rig activit
     operation: "0b1f2c3d-op",
   });
   expect(text).toBe("No activity recorded for Operation 0b1f2c3d-op.\n");
+});
+
+test.each([
+  "GIT_LOCAL_BRANCH",
+  "GIT_REQUIRED",
+  "GIT_PATH_MISSING",
+  "INVALID_CONFIG",
+  "MISSING_CONFIG",
+  "PORT_RESERVED",
+  "HEALTH_FAILED",
+  "HOOK_FAILED",
+  "UNAUTHORIZED",
+  "PROJECT_MOVED",
+  "PREVIEW_NAME",
+])(
+  "a %s failure the user can correct prints its message and hint without Operation or Details lines",
+  async (code) => {
+    let text = "";
+    const dependencies = {
+      root: "/isolated/.rig",
+      cwd: "/workspace",
+      client: {
+        async status(): Promise<ProjectStatusReport> {
+          throw new Error("Unexpected status read");
+        },
+        async command(): Promise<unknown> {
+          throw new RigError(code, "Something you can fix.", "Fix it this way.");
+        },
+      },
+      output: {
+        write(value: string) {
+          text += value;
+        },
+        error(value: string) {
+          text += value;
+        },
+      },
+      diagnostics: {
+        async record() {
+          return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
+        },
+      },
+      wait: async () => {},
+      newOperationId: () => "op-correctable",
+    };
+    expect(await runRigCli(["up", "live"], dependencies)).toBe(1);
+    expect(text).toBe("Something you can fix.\nFix it this way.\n");
+    text = "";
+    expect(await runRigCli(["up", "live", "--json"], dependencies)).toBe(1);
+    expect(JSON.parse(text)).toEqual({
+      error: {
+        code,
+        message: "Something you can fix.",
+        hint: "Fix it this way.",
+      },
+    });
+  },
+);
+
+test("an invalid --project or --deployment is refused by rig before any request, naming the flag and the rule", async () => {
+  let text = "",
+    calls = 0;
+  const dependencies = {
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    client: {
+      async status(): Promise<ProjectStatusReport> {
+        calls++;
+        throw new Error("Unexpected status read");
+      },
+      async command() {
+        calls++;
+        return {};
+      },
+    },
+    output: {
+      write(value: string) {
+        text += value;
+      },
+      error(value: string) {
+        text += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
+      },
+    },
+    wait: async () => {},
+    newOperationId: () => "op-invalid-flag",
+  };
+  expect(
+    await runRigCli(["status", "--project", "a".repeat(129)], dependencies),
+  ).toBe(1);
+  expect(text).toContain("--project");
+  expect(text).toContain("128");
+  expect(text).not.toContain("Operation:");
+  for (const args of [
+    ["deploy", "preview", "main", "--deployment", "bad name"],
+    ["up", "preview", "--deployment", "-lead"],
+    ["logs", "preview", "--deployment", "x y"],
+    ["down", "preview", "--deployment", ""],
+  ]) {
+    text = "";
+    expect(await runRigCli(args, dependencies)).toBe(1);
+    expect(text).toContain("--deployment");
+    expect(text).toContain("letters, digits");
+    expect(text).not.toContain("Operation:");
+  }
+  expect(calls).toBe(0);
 });

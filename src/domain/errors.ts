@@ -16,6 +16,76 @@ export class RigError extends Error {
   }
 }
 
+/** Failures whose message and hint already tell the user what to change: their own arguments,
+ * config, repository, host setup, or application. Everything else is an internal fault whose
+ * Operation id and diagnostic path are part of the report. */
+const userCorrectableCodes: ReadonlySet<string> = new Set([
+  "USAGE",
+  "CANCELLED",
+  "PRODUCTION_CONFIRMATION",
+  "TARGET_REQUIRED",
+  "TARGET_MISSING",
+  "TARGETS_RUNNING",
+  "PROJECT_REQUIRED",
+  "PROJECT_MISSING",
+  "PROJECT_NAME",
+  "PROJECT_IDENTITY",
+  "PROJECT_CONFLICT",
+  "PROJECT_PATH_CONFLICT",
+  "PROJECT_MOVED",
+  "PROJECT_PATH",
+  "PROJECT_ACTIVE",
+  "PATH_REQUIRED",
+  "PREVIEW_REQUIRED",
+  "PREVIEW_NAME",
+  "PREVIEW_LIMIT",
+  "DEPLOY_TARGET",
+  "DESTROY_TARGET",
+  "BRANCH_POLICY",
+  "GIT_REQUIRED",
+  "GIT_BARE",
+  "GIT_PATH_MISSING",
+  "GIT_PATH_UNREADABLE",
+  "GIT_LOCAL_BRANCH",
+  "GIT_BRANCH",
+  "GIT_DETACHED",
+  "GIT_COMMIT",
+  "GIT_REF",
+  "GIT_REMOTE_CONFLICT",
+  "GIT_REMOTE_MISSING",
+  "GIT_UPSTREAM",
+  "INVALID_CONFIG",
+  "INVALID_YAML",
+  "INVALID_EDIT",
+  "MISSING_CONFIG",
+  "MISSING_DIRECTORY",
+  "ENV_FILE",
+  "ENV_FILE_MISSING",
+  "PORT_RESERVED",
+  "PORT_UNAVAILABLE",
+  "HEALTH_FAILED",
+  "HOOK_FAILED",
+  "HOOK_TIMEOUT",
+  "BUILD_FAILED",
+  "BUILD_TIMEOUT",
+  "DEPENDENCIES_FAILED",
+  "DEPENDENCIES_TIMEOUT",
+  "LOG_LIMIT",
+  "DAEMON_MISSING",
+  "DAEMON_TOKEN",
+  "DAEMON_UNREACHABLE",
+  "DAEMON_TIMEOUT",
+  "DAEMON_PROTOCOL",
+  "DAEMON_RUNNING",
+  "DAEMON_DRAINING",
+  "UNAUTHORIZED",
+  "CADDY_UNAVAILABLE",
+  "PROVIDER_MISSING",
+]);
+export function userCorrectable(code: string): boolean {
+  return userCorrectableCodes.has(code);
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

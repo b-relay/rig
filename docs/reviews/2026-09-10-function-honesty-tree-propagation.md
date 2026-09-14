@@ -266,7 +266,7 @@ owner carries only its own owner-level defects.
 | provider minor hazards (non-atomic request JSON, `process.kill(0)` probe) | #146 (fixed: `writeCaptureRequest` temp+rename in `capture-request.ts`; child observe no longer probes a spawned child at all, its handle is authoritative; 1500 ms grace deferred to #120) |
 | bearer token sent to whatever owns a stale daemon port | #147 |
 | editing Project name in config leaves a circular dead end | #148 | (fixed: `selectProject` accepts `rename <new>` when the config already declares `<new>` at the registered path, by `--project` or by cwd (registered directory found by path); `identityDrift`/`identityDriftHint` name both names and the rename command in `PROJECT_IDENTITY`, doctor `identity-drift`, and the status warning)
-| user-correctable failures rendered as unexpected; no CLI pre-validation | #149 |
+| user-correctable failures rendered as unexpected; no CLI pre-validation | #149 (fixed: `userCorrectable(code)` owns the policy in the domain; `projectScope`/`previewScope` validate flags before a request; `explainIssue`/`describeIssue` turn Zod issues into plain rules) |
 | minor CLI gaps (Details without Operation, empty branch, hashed slug, no --version) | #150 |
 | crash between effect and journal capture bricks the Target | #151 |
 | repoint skips port reservation | #152 |

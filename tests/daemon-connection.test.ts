@@ -96,6 +96,35 @@ test("Doctor uses captured or explicit repo paths and only falls back for missin
   }
 });
 
+test("Doctor on a daemon that is alive but slow reports a read timeout, never the offline 'not reachable' report", async () => {
+  const { createCliClient } = await import("../src/index");
+  const directory = await mkdtemp(join(tmpdir(), "rig-doctor-slow-"));
+  const root = join(directory, ".rig");
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      await Bun.sleep(5500);
+      return Response.json({ result: { ok: true, checks: [] } });
+    },
+  });
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true });
+    await mkdir(join(root, "auth"), { recursive: true });
+    await writeFile(join(root, "daemon/address.json"), JSON.stringify({ port: server.port, pid: process.pid, instanceId: "fixture" }));
+    await writeFile(join(root, "auth/control-plane.token"), "test-token");
+    const client = createCliClient(root, directory);
+    await expect(client.command({ action: "doctor" })).rejects.toMatchObject({
+      code: "DAEMON_TIMEOUT",
+      message: "rigd did not answer the doctor read within 5 s; it may be busy.",
+      hint: "Run rig activity to see what rigd is doing, then retry; reads are answered without queueing.",
+    });
+  } finally {
+    await server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 10000);
+
 test("remote discovery never turns unavailable, rejected or acceptance-only replies into successful pushes", async () => {
   const { runRemoteHelper } = await import("../src/git/remote-helper");
   const directory = await mkdtemp(join(tmpdir(), "rig-remote-connection-"));

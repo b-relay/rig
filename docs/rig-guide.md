@@ -523,9 +523,10 @@ newer version's fields survive a temporary downgrade.
 it takes; `rigd` owns every budget (`hookTimeout`, `buildTimeout`,
 `installTimeout`, `readyTimeout`). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report
-`rigd did not answer within 5 s; operation <id> may still be running`, which
-is distinct from `rigd is not reachable`. Check `rig activity` before
-retrying so the same operation is not queued twice.
+`rigd did not answer the doctor read within 5 s; it may be busy`, which is
+distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
+into the offline host report. Reads are answered without queueing, so run
+`rig activity` to see what `rigd` is doing, then retry.
 
 `rigd` runs one mutation at a time across all Projects, so a slow hook or
 readiness wait in one Project delays `rig up` and `rig deploy` elsewhere. When

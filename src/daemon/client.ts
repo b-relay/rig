@@ -37,15 +37,24 @@ const versionSkew = (details: Record<string, unknown> | undefined) => {
 const resultSchema = z
   .object({ result: z.unknown() })
   .refine((value) => Object.hasOwn(value, "result"));
-const deadlineExpired = (timeoutMs: number, operationId: string | undefined) =>
+/** Only reads and the health probe carry a deadline; rigd answers them without queueing, so a late answer means a busy daemon, not a queued operation. */
+const deadlineExpired = (
+  deadline: ReadDeadline,
+  operationId: string | undefined,
+) =>
   new RigError(
     "DAEMON_TIMEOUT",
-    `rigd did not answer within ${timeoutMs / 1000} s; ${
-      operationId ? `operation ${operationId}` : "the operation"
-    } may still be running.`,
-    "Check 'rig activity' before retrying, so the same operation is not queued twice.",
-    { timeoutMs, ...(operationId ? { operationId } : {}) },
+    `rigd did not answer the ${deadline.subject} within ${deadline.ms / 1000} s; it may be busy${
+      operationId ? ` (operation ${operationId})` : ""
+    }.`,
+    "Run rig activity to see what rigd is doing, then retry; reads are answered without queueing.",
+    { timeoutMs: deadline.ms, ...(operationId ? { operationId } : {}) },
   );
+/** How long one read may go unanswered, and what to call it when it does. */
+interface ReadDeadline {
+  ms: number;
+  subject: string;
+}
 const protocolFailure = () =>
   new RigError(
     "DAEMON_PROTOCOL",
@@ -62,7 +71,10 @@ export class DaemonClient {
   constructor(private readonly address: DaemonAddress) {}
   async health(): Promise<DaemonHealth> {
     const health = healthSchema.safeParse(
-      await this.request("/health", undefined, 1500),
+      await this.request("/health", undefined, {
+        ms: 1500,
+        subject: "health probe",
+      }),
     );
     if (!health.success) throw protocolFailure();
     return health.data;
@@ -72,7 +84,7 @@ export class DaemonClient {
       await this.request(
         "/v1/command",
         { ...selection, action: "status" },
-        readDeadlineMs,
+        { ms: readDeadlineMs, subject: "status read" },
       ),
     );
     if (!envelope.success) throw protocolFailure();
@@ -92,7 +104,7 @@ export class DaemonClient {
         "/v1/command",
         command,
         ["status", "list", "doctor"].includes(command.action)
-          ? readDeadlineMs
+          ? { ms: readDeadlineMs, subject: `${command.action} read` }
           : undefined,
       ),
     );
@@ -102,7 +114,7 @@ export class DaemonClient {
   private async request(
     path: string,
     body: RuntimeCommand | undefined,
-    timeoutMs: number | undefined,
+    deadline: ReadDeadline | undefined,
   ): Promise<unknown> {
     let response: Response;
     try {
@@ -113,12 +125,12 @@ export class DaemonClient {
           "content-type": "application/json",
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
-        ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+        ...(deadline ? { signal: AbortSignal.timeout(deadline.ms) } : {}),
         redirect: "error",
       });
     } catch (error) {
-      if ((error as { name?: string }).name === "TimeoutError")
-        throw deadlineExpired(timeoutMs ?? 0, body?.operationId);
+      if (deadline && (error as { name?: string }).name === "TimeoutError")
+        throw deadlineExpired(deadline, body?.operationId);
       throw new RigError(
         "DAEMON_UNREACHABLE",
         "rigd is not reachable.",

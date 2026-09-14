@@ -59,7 +59,7 @@ listed once and not expanded.
 rig: main(args) [O+T] src/index.ts:10
   rigRoot, userOutput, createHostDiagnosticLog, waitForLogPoll, createTerminalInteraction  [O]
   createCliClient(root, cwd) [O+T] src/index.ts:47
-    connectDaemon → readDaemonAddress/readDaemonToken/DaemonClient  [O] (owner defects: token collapse #116/#121 (fixed: `DAEMON_TOKEN`), timeout collapse #127)
+    connectDaemon → readDaemonAddress/readDaemonToken/DaemonClient  [O] (owner defects: token collapse #116/#121 (fixed: `DAEMON_TOKEN`), timeout collapse #127 (fixed: `DAEMON_TIMEOUT` names the read))
     inspectOfflineHost(root, cwd) [D] src/daemon/offline-doctor.ts:12
       inspectHost(root) [O] (fat), discoverProject [O]
   runRigCli(args, deps) [H] src/cli/rig.ts:10 — and its entire static subtree [H]
@@ -245,7 +245,7 @@ owner carries only its own owner-level defects.
 | replacement retires oldest preview without destroying storage | #124 |
 | Convex site port discarded for local/live | #125 |
 | doctor `config-invalid` instead of drift for new dynamic-port component | #126 (#119 concurrent) (fixed: `configCheck` in doctor.ts treats `missing_port` with added components as drift and names them) |
-| doctor 5 s timeout → offline "not reachable" | #127 |
+| doctor 5 s timeout → offline "not reachable" | #127 (fixed: `DAEMON_TIMEOUT` is distinct and never falls back to the offline report; the read timeout names the read and says the daemon may be busy) |
 | first Ctrl-C after submission consumed; Ctrl-C at prompt exits 1 | #128, #129 |
 | stale admin-activity lock never reclaimed | #130 (fixed: the lock records pid and start time; dead or replaced holders and minute-old unreadable locks are reclaimed; warnings name the lock and pid) |
 | `release()` throws on corrupt address/owner json | #131 (fixed: unreadable records are not ours and are skipped; release cannot mask the startup error; lease written atomically; corrupt lease reclaimed unless the address names a live process) |

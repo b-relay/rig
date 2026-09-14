@@ -105,7 +105,7 @@ testability and honesty refactors.
 79. ~~#200~~ (fixed) doctor discards the observation reason and exit code for every failing component. (#234.)
 80. ~~#126~~ (fixed) doctor reports config-invalid for a valid config that adds a managed component without a port.
 81. ~~#154~~ (fixed) doctor config-drift hint says "Deploy to apply" but a same-Commit deploy is unchanged.
-82. #127 doctor treats a slow daemon (>5 s) as absent. (#224, #234.)
+82. ~~#127~~ (fixed) doctor treats a slow daemon (>5 s) as absent. (#224, #234.)
 83. #119 Make Doctor use one Project config snapshot and distinguish inspection failures.
 84. #118 Make runtime diagnostic and monitor failures observable without changing outcomes.
 85. #117 Preserve safe initiating and recovery causes in retirement failures.

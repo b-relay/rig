@@ -19,7 +19,7 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
       token: "test-secret",
     });
     expect((await client.health()).instanceId).toBe("instance-1");
-    expect(await client.command({ action: "list" })).toEqual({
+    expect(await client.command({ action: "doctor" })).toEqual({
       result: "registered",
     });
     const unauthorized = await fetch(`http://127.0.0.1:${server.port}/health`);
@@ -406,6 +406,136 @@ test("a command rigd does not accept is reported as version skew naming both ver
       hint: expect.stringContaining("rigd install"),
       details: { rig: RIG_VERSION, rigd: RIG_VERSION },
     });
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("malformed list, logs and activity replies fail as protocol errors through the CLI, valid empty collections still render, and a malformed follow page ends the follow", async () => {
+  const { runRigCli } = await import("../src/cli/rig");
+  let replies: unknown[] = [];
+  const bodies: Record<string, unknown>[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      bodies.push((await request.json()) as Record<string, unknown>);
+      return Response.json({
+        result: replies.length > 1 ? replies.shift() : replies[0],
+      });
+    },
+  });
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test" });
+    let output = "";
+    const run = (args: string[], ...results: unknown[]) => {
+      replies = results;
+      output = "";
+      bodies.length = 0;
+      return runRigCli(args, {
+        root: "/tmp/rig-115-transport/.rig",
+        cwd: "/repo",
+        client,
+        output: {
+          write(value: string) {
+            output += value;
+          },
+          error(value: string) {
+            output += value;
+          },
+        },
+        diagnostics: {
+          async record() {
+            return {};
+          },
+        },
+        wait: async () => {},
+        newOperationId: () => "read-op",
+      });
+    };
+    const logs = ["logs", "local", "--project", "demo"];
+    const malformed: [string[], unknown, string][] = [
+      [["list"], {}, "No Projects registered."],
+      [
+        ["list"],
+        { ownership: "ready", projects: null, runningTargets: 0 },
+        "No Projects registered.",
+      ],
+      [
+        ["list"],
+        { ownership: "ready", projects: [{ name: 1 }], runningTargets: 0 },
+        "Targets",
+      ],
+      [logs, {}, "No logs yet."],
+      [
+        logs,
+        { project: "demo", target: "local", entries: "none", cursor: "c" },
+        "No logs yet.",
+      ],
+      [
+        logs,
+        {
+          project: "demo",
+          target: "local",
+          entries: [{ line: 1 }],
+          cursor: "c",
+        },
+        "No logs yet.",
+      ],
+      [logs, { project: "demo", target: "local", entries: [] }, "No logs yet."],
+      [["activity"], {}, "No activity yet."],
+      [["activity"], { operations: null }, "No activity yet."],
+      [["activity"], { operations: [{}] }, "No activity yet."],
+    ];
+    for (const [args, reply, empty] of malformed) {
+      expect(await run(args, reply)).toBe(1);
+      expect(output).toContain("rigd returned an invalid response.");
+      expect(output).not.toContain(empty);
+    }
+    expect(
+      await run(["list"], {
+        ownership: "ready",
+        projects: [],
+        runningTargets: 0,
+      }),
+    ).toBe(0);
+    expect(output).toBe("No Projects registered.\n");
+    expect(
+      await run(logs, {
+        project: "demo",
+        target: "local",
+        entries: [],
+        cursor: "c1",
+      }),
+    ).toBe(0);
+    expect(output).toBe("demo local\n\nNo logs yet.\n");
+    expect(await run(["activity"], { operations: [] })).toBe(0);
+    expect(output).toBe("No activity yet.\n");
+    const entry = {
+      timestamp: "2026-09-14T10:00:00Z",
+      component: "web",
+      stream: "stdout",
+      line: "first page",
+    };
+    expect(
+      await run(
+        [...logs, "--follow"],
+        { project: "demo", target: "local", entries: [entry], cursor: "c1" },
+        {
+          project: "demo",
+          target: "local",
+          entries: [{ line: 2 }],
+          cursor: "c2",
+        },
+        { project: "demo", target: "local", entries: [entry], cursor: "c3" },
+      ),
+    ).toBe(1);
+    expect(output).toContain("10:00:00  web  > first page");
+    expect(output).toContain("rigd returned an invalid response.");
+    expect(output.match(/first page/g)).toHaveLength(1);
+    expect(bodies).toHaveLength(2);
+    expect(bodies.map((body) => body.action)).toEqual(["logs", "logs"]);
+    expect(bodies[1]).toMatchObject({ after: "c1" });
   } finally {
     await server.stop(true);
   }

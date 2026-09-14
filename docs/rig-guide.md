@@ -483,7 +483,10 @@ rig logs preview feature/login --follow
 ```
 
 `rig logs` prints recent stdout and stderr together by default and exits.
-`--follow` streams. Logs may be read for stopped Targets when logs exist.
+`--follow` streams. Logs may be read for stopped Targets when logs exist. Every
+follow page is validated the same way as the first; a malformed page ends the
+follow with `DAEMON_PROTOCOL` and no further poll, which is distinct from
+cancellation.
 `--lines` sizes the first page only; a follow then fetches up to 1000 new
 entries per poll so a busy Target is not throttled to the page size. A follow
 ends on Ctrl-C, SIGTERM, or when whatever reads its output goes away (for
@@ -518,6 +521,11 @@ rig doctor --project pantry
 outside a Project unless `--project <name>` is provided.
 
 `rig list` is Host-scoped and daemon-backed. It fails if `rigd` is unreachable.
+Like `rig logs` and `rig activity`, it validates the reply before rendering:
+a reply whose collection is missing or holds a malformed record fails as
+`DAEMON_PROTOCOL` ("rigd returned an invalid response") with a nonzero exit,
+so a version mismatch can never look like "No Projects registered", "No logs
+yet", or "No activity yet"; only a validated empty collection prints those.
 
 `rig doctor` always runs Host diagnostics. When a Project context is available,
 it also runs Project diagnostics. Outside a Project, it may succeed with

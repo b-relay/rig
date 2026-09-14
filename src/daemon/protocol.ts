@@ -81,6 +81,65 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "activity",
   "queue",
 ] as const);
+/** Replies to the reads whose collections rig renders. A missing or malformed
+ * collection is a protocol failure, never an empty page; unknown top-level keys
+ * are kept so a newer rigd can add evidence without breaking an older rig,
+ * while each collection item is reduced to the fields rig shows. */
+export const listResultSchema = z
+  .object({
+    ownership: z.enum(["ready", "unknown"]),
+    projects: z.array(
+      z.object({
+        name: z.string(),
+        repoPath: z.string(),
+        targetCount: z.number().int().nonnegative(),
+      }),
+    ),
+    /** Null when ownership of the state directory could not be confirmed. */
+    runningTargets: z.number().int().nonnegative().nullable(),
+  })
+  .passthrough();
+export const logsResultSchema = z
+  .object({
+    project: z.string(),
+    target: z.string(),
+    entries: z.array(
+      z.object({
+        timestamp: z.string(),
+        component: z.string(),
+        stream: z.enum(["stdout", "stderr", "health", "unknown"]),
+        line: z.string(),
+      }),
+    ),
+    /** Opaque; rig sends it back unchanged as `after` to read the next page. */
+    cursor: z.string(),
+  })
+  .passthrough();
+export const activityResultSchema = z
+  .object({
+    operations: z.array(
+      z.object({
+        id: z.string(),
+        action: z.string(),
+        outcome: z.string(),
+        occurredAt: z.string(),
+        project: z.string().optional(),
+        target: z.string().optional(),
+        message: z.string().optional(),
+      }),
+    ),
+    /** The Operation id (or prefix) the records were selected by, when one was. */
+    operation: z.string().optional(),
+  })
+  .passthrough();
+export type ListResult = z.infer<typeof listResultSchema>;
+export type LogsResult = z.infer<typeof logsResultSchema>;
+export type ActivityResult = z.infer<typeof activityResultSchema>;
+export const readResultSchemas = {
+  list: listResultSchema,
+  logs: logsResultSchema,
+  activity: activityResultSchema,
+} as const;
 export interface DaemonAddress {
   port: number;
   token: string;

@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileStateStore } from "../src/runtime/state-store";
 import { createRuntime } from "../src/runtime/application";
+import { startControlPlane } from "../src/daemon/server";
+import { DaemonClient } from "../src/daemon/client";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import {
@@ -3246,4 +3248,42 @@ test("activity retains the most recent 1000 Operations, dropping the oldest firs
       operations: [{ id: "old-999" }, { outcome: "registered" }],
     },
   );
+});
+
+test("runtime list, logs and activity replies satisfy the client contract end to end", async () => {
+  const { runtime } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  const server = startControlPlane({
+    port: 0,
+    token: "test-secret",
+    instanceId: "instance-115",
+    handle: (command) => runtime.command(command),
+  });
+  try {
+    const client = new DaemonClient({
+      port: server.port!,
+      token: "test-secret",
+    });
+    expect(await client.command({ action: "list" })).toMatchObject({
+      ownership: "ready",
+      projects: [{ name: "demo", repoPath: "/tmp/developer", targetCount: 1 }],
+    });
+    expect(
+      await client.command({
+        action: "logs",
+        project: "demo",
+        target: "local",
+      }),
+    ).toEqual({ project: "demo", target: "local", entries: [], cursor: "0" });
+    const activity = (await client.command({ action: "activity" })) as {
+      operations: { id: string; action: string; outcome: string }[];
+    };
+    expect(activity.operations.map((record) => record.action)).toEqual([
+      "init",
+      "up",
+    ]);
+  } finally {
+    await server.stop(true);
+  }
 });

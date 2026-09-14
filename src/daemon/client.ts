@@ -6,7 +6,12 @@ import {
 import { z } from "zod";
 import { RigError } from "../domain/errors";
 import { RIG_VERSION } from "../domain/version";
-import type { DaemonAddress, DaemonHealth, RuntimeCommand } from "./protocol";
+import {
+  readResultSchemas,
+  type DaemonAddress,
+  type DaemonHealth,
+  type RuntimeCommand,
+} from "./protocol";
 
 const healthSchema = z.object({
   instanceId: z.string().min(1),
@@ -63,6 +68,24 @@ const protocolFailure = () =>
   );
 
 const readDeadlineMs = 5000;
+/** A list, logs, or activity reply must carry its collection, and a logs reply must name the Project asked for; other actions pass through as received. */
+function validated(command: RuntimeCommand, result: unknown): unknown {
+  if (
+    command.action !== "list" &&
+    command.action !== "logs" &&
+    command.action !== "activity"
+  )
+    return result;
+  const report = readResultSchemas[command.action].safeParse(result);
+  if (!report.success) throw protocolFailure();
+  if (
+    command.action === "logs" &&
+    command.project !== undefined &&
+    (report.data as { project: string }).project !== command.project
+  )
+    throw protocolFailure();
+  return report.data;
+}
 /** Network adapter. Reads carry a deadline; mutations wait for rigd, which owns
  * every command budget. A deadline expiry is DAEMON_TIMEOUT (the operation may
  * still be running), a failed connection is DAEMON_UNREACHABLE. Replies are
@@ -109,7 +132,7 @@ export class DaemonClient {
       ),
     );
     if (!envelope.success) throw protocolFailure();
-    return envelope.data.result;
+    return validated(command, envelope.data.result);
   }
   private async request(
     path: string,

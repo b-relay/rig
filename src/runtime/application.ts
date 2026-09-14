@@ -9,7 +9,13 @@ import { updateRegistration } from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
-import { readActions, type RuntimeCommand } from "../daemon/protocol";
+import {
+  readActions,
+  type ActivityResult,
+  type ListResult,
+  type LogsResult,
+  type RuntimeCommand,
+} from "../daemon/protocol";
 import type {
   OperationRecord,
   ProjectRecord,
@@ -199,7 +205,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
                 ),
               ).length
             : null,
-        };
+        } satisfies ListResult;
       }
       if (command.action === "activity" && !command.project) {
         const [state, admin] = await Promise.all([
@@ -343,7 +349,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             command.after,
             command.lines ?? 100,
           )),
-        };
+        } satisfies LogsResult;
       }
       if (command.action === "deploy" || command.action === "git-push") {
         if ((command.target ?? "local") === "local")
@@ -893,6 +899,8 @@ function selectActivity(
         record.id.startsWith(command.operation!),
       ),
       operation: command.operation,
-    };
-  return { operations: records.slice(-(command.lines ?? 100)) };
+    } satisfies ActivityResult;
+  return {
+    operations: records.slice(-(command.lines ?? 100)),
+  } satisfies ActivityResult;
 }

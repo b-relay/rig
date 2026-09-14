@@ -185,6 +185,20 @@ export class DaemonAdmin {
       ];
     }
   }
+  private async writeInstallation(): Promise<void> {
+    await mkdir(join(this.options.root, "daemon"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await writeFile(
+      this.marker,
+      JSON.stringify({
+        mode: this.options.mode,
+        command: this.options.command,
+      }),
+      { mode: 0o600 },
+    );
+  }
   private async readInstallation(): Promise<
     z.infer<typeof installationSchema>
   > {
@@ -249,7 +263,13 @@ export class DaemonAdmin {
   }
   private async performInstall(): Promise<DaemonStatus> {
     const { status: prior, unverified } = await this.inspect();
-    if (prior.reachable) return { ...prior, outcome: "unchanged" };
+    if (prior.reachable) {
+      if (prior.installed) return { ...prior, outcome: "unchanged" };
+      // A daemon serving without its record (deleted by hand, or started manually)
+      // is adopted: recording it is what makes uninstall able to stop it.
+      await this.writeInstallation();
+      return { ...prior, installed: true, outcome: "installed" };
+    }
     if (prior.running)
       throw new RigError(
         "DAEMON_UNREACHABLE",
@@ -266,14 +286,7 @@ export class DaemonAdmin {
       mode: 0o600,
     });
     await chmod(tokenPath, 0o600);
-    await writeFile(
-      this.marker,
-      JSON.stringify({
-        mode: this.options.mode,
-        command: this.options.command,
-      }),
-      { mode: 0o600 },
-    );
+    await this.writeInstallation();
     await clearStartupFailure(root);
     try {
       if (this.options.mode === "process") await this.spawnDetached();
@@ -318,7 +331,17 @@ export class DaemonAdmin {
     if (!status.installed && !status.running && !status.reachable)
       return { ...status, outcome: "unchanged" };
     const address = await readDaemonAddress(root);
-    const installation = { data: await this.readInstallation() };
+    // Without a record the mode is unknown; the stop below then tries both
+    // launchd and the pid, so a daemon is never left that nothing can remove.
+    const installation = {
+      data: status.installed
+        ? await this.readInstallation()
+        : {
+            mode: this.options.mode,
+            command: this.options.command,
+            assumed: true,
+          },
+    };
     if (!address || !status.reachable) {
       if (unverified)
         throw new RigError(
@@ -343,7 +366,10 @@ export class DaemonAdmin {
         "Stop all Targets and retry.",
       );
     try {
-      if (installation.data.mode === "launchd")
+      if ("assumed" in installation.data) {
+        await this.launchctl(["bootout", this.labelDomain()]).catch(() => {});
+        if (processExists(address.pid)) process.kill(address.pid, "SIGTERM");
+      } else if (installation.data.mode === "launchd")
         await this.launchctl(["bootout", this.labelDomain()]);
       else process.kill(address.pid, "SIGTERM");
       const deadline = Date.now() + (this.options.stopTimeoutMs ?? 5000);

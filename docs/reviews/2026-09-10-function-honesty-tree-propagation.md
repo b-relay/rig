@@ -249,7 +249,7 @@ owner carries only its own owner-level defects.
 | first Ctrl-C after submission consumed; Ctrl-C at prompt exits 1 | #128, #129 |
 | stale admin-activity lock never reclaimed | #130 |
 | `release()` throws on corrupt address/owner json | #131 |
-| reachable daemon without install marker uninstallable | #132 |
+| reachable daemon without install marker uninstallable | #132 (fixed: install adopts a reachable daemon without a record; uninstall of a record-less daemon boots out the label and signals the pid) |
 | monitor swallows errors | #118 (#133 closed as duplicate) |
 | `displayWord` sanitizer weaker than `terminalText` | #134 |
 | localhost bind check bypassed via `sh -c`; hooks/env unchecked | #135 (fixed: quoted sub-commands scanned, hooks validated, wildcard bind env rejected) |

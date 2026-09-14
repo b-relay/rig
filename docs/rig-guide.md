@@ -41,7 +41,10 @@ reboot counts as exited. A record left by a daemon that died is reported as
 stale and its port is never contacted, so another local process that later
 binds that port does not receive the credential. `rigd install` reclaims such
 a record; `rigd uninstall` signals only a process proven to be the recorded
-daemon. A record written by an older rigd carries no start time, so a live pid
+daemon. A daemon that is reachable but has no installation record (deleted by
+hand, or started manually) is adopted by `rigd install`, which writes the
+record, and `rigd uninstall` can still stop it: it removes the launchd job if
+one exists and then signals the recorded pid. A record written by an older rigd carries no start time, so a live pid
 in it cannot be verified: `rigd status` warns, `rigd install` and `rigd
 uninstall` refuse, and a manual `rigd start` refuses, each naming the files
 under `<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.

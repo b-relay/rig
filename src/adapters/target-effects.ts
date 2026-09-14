@@ -1,9 +1,12 @@
 import {
   appendFile,
+  lstat,
   mkdir,
   open,
   readFile,
+  readlink,
   stat,
+  symlink,
   writeFile,
   rm,
 } from "node:fs/promises";
@@ -250,6 +253,8 @@ export function createTargetEffects(
               ? component.stateDir
               : component.dataDir;
         await mkdir(directory, { recursive: true, mode: 0o700 });
+        if (component.uses === "convex")
+          await linkConvexState(target.plan.workspacePath, component.stateDir);
         if (component.uses === "sqlite") {
           const file = await open(component.path, "a", 0o600);
           await file.close();
@@ -597,4 +602,28 @@ async function installedSourceRevision(
       ? "source-shim"
       : undefined
     : await digestFile(source);
+}
+/** Convex only knows `<cwd>/.convex/local/default`; a deployed checkout is pointed at the persistent state directory instead of growing its own. */
+async function linkConvexState(
+  workspacePath: string,
+  stateDir: string,
+): Promise<void> {
+  const expected = join(workspacePath, ".convex", "local", "default");
+  if (resolve(stateDir) === expected) return;
+  const current = await lstat(expected).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (current?.isSymbolicLink()) {
+    if ((await readlink(expected)) === stateDir) return;
+    await rm(expected);
+  } else if (current)
+    throw new RigError(
+      "CONVEX_STATE_CONFLICT",
+      "The deployment checkout already contains Convex local state.",
+      "Remove .convex/local/default from the repository so Rig can keep Convex state in Target storage.",
+      { path: expected, stateDir },
+    );
+  await mkdir(dirname(expected), { recursive: true, mode: 0o700 });
+  await symlink(stateDir, expected);
 }

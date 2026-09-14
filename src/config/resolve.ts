@@ -224,10 +224,7 @@ function resolveComponentProperties(
         Object.assign(properties, {
           [`${name}.sitePort`]: sitePort,
           [`${name}.siteUrl`]: `http://127.0.0.1:${sitePort}`,
-          [`${name}.stateDir`]: join(
-            input.workspacePath,
-            ".convex/local/default",
-          ),
+          [`${name}.stateDir`]: convexStateDir(input, name),
         });
         preparedComponents.push({
           name,
@@ -248,7 +245,7 @@ function resolveComponentProperties(
   for (const { name, component } of definitions)
     if ("uses" in component && component.uses === "sqlite") {
       const path = resolve(
-        input.workspacePath,
+        persistentRoot(input),
         interpolate(
           component.path ?? join(input.dataRoot, "sqlite", `${name}.sqlite`),
           properties,
@@ -260,6 +257,21 @@ function resolveComponentProperties(
   return { properties, preparedComponents };
 }
 
+/** Relative persistent paths live in the working copy for local and in Target storage for deployed Targets, whose checkouts are replaced on every deploy. */
+function persistentRoot(
+  input: Pick<ResolveTargetPlanInput, "target" | "workspacePath" | "dataRoot">,
+): string {
+  return input.target === "local" ? input.workspacePath : input.dataRoot;
+}
+/** Convex reads `<cwd>/.convex/local/default`; deployed Targets keep the state in Target storage and link the checkout to it at prepare time. */
+function convexStateDir(
+  input: Pick<ResolveTargetPlanInput, "target" | "workspacePath" | "dataRoot">,
+  name: string,
+): string {
+  return input.target === "local"
+    ? join(input.workspacePath, ".convex/local/default")
+    : join(input.dataRoot, "convex", name);
+}
 /** Resolves one Component's complete runtime policy from already resolved Target properties. */
 function resolvePlanComponent({
   name,

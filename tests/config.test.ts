@@ -543,10 +543,10 @@ test("complete accepted plans are independent of process cwd with portable paths
   expect(plan.components.map((component) => component.name)).toEqual(["tool", "db", "pg", "web", "stored"]);
   expect(plan.envFile).toBe("/work space/项目/env/preview.env");
   expect(plan.components[0]).toMatchObject({ entrypoint: "/work space/项目/bin/工具", envFile: "/work space/项目/env/tool.env" });
-  expect(plan.components[3]).toMatchObject({ port: 4100, command: "serve --port 4100 --db /work space/项目/relative/数据库.sqlite", env: { DATA: "/persistent space/数据", URL: "http://127.0.0.1:4100" } });
+  expect(plan.components[3]).toMatchObject({ port: 4100, command: "serve --port 4100 --db /persistent space/数据/relative/数据库.sqlite", env: { DATA: "/persistent space/数据", URL: "http://127.0.0.1:4100" } });
   expect(plan.preparedComponents).toEqual([
     { name: "pg", uses: "postgres", dataDir: "/persistent space/数据/postgres/pg" },
-    { name: "db", uses: "sqlite", path: "/work space/项目/relative/数据库.sqlite" },
+    { name: "db", uses: "sqlite", path: "/persistent space/数据/relative/数据库.sqlite" },
     { name: "stored", uses: "sqlite", path: "/persistent space/数据/sqlite/stored.sqlite" },
   ]);
 });

@@ -109,7 +109,9 @@ const component = z.union([
     uses: z.literal("sqlite").describe("Persistent SQLite dependency."),
     path: text
       .optional()
-      .describe("Database path; defaults to Target persistent storage."),
+      .describe(
+        "Database path; defaults to Target persistent storage. A relative path is inside the working copy for local and inside Target persistent storage for live and Previews, whose checkouts are replaced on every deploy.",
+      ),
   }),
   z.strictObject({
     uses: z.literal("convex").describe("Convex Local dependency."),

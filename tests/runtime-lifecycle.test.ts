@@ -85,6 +85,7 @@ test("readiness expires even when a health provider ignores cancellation, then r
         return { outcome: "stopped" };
       },
       async shutdown() {},
+      async detach() {},
     }),
     async prepare() {},
     async environment() {
@@ -134,6 +135,7 @@ test("up preserves running components and rollback stops only newly started comp
       return { state: key.endsWith(":api") ? "running" : "stopped" };
     },
     async shutdown() {},
+    async detach() {},
   };
   const lifecycle = createTargetLifecycle({
     async checkpoint(record) {
@@ -176,6 +178,7 @@ test("down uses recorded plan and reports no-op only when every process was stop
       return { state: "stopped" };
     },
     async shutdown() {},
+    async detach() {},
   };
   const lifecycle = createTargetLifecycle({
     async checkpoint(record) {
@@ -219,6 +222,7 @@ test("down attempts every process even when a hook or another process stop fails
       return { state: "running" };
     },
     async shutdown() {},
+    async detach() {},
   };
   const lifecycle = createTargetLifecycle({
     async checkpoint(record) {

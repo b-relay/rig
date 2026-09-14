@@ -193,6 +193,9 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
     async shutdown() {
       /* Persistent jobs remain owned by launchd when the daemon exits. */
     },
+    async detach() {
+      /* launchd keeps the jobs; nothing is held in memory. */
+    },
   };
 }
 function xml(text: string): string {

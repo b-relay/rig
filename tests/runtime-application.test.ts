@@ -1656,6 +1656,7 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
         return { outcome: "started" };
       },
       async shutdown() {},
+      async detach() {},
     }),
     async prepare() {},
     async environment() {

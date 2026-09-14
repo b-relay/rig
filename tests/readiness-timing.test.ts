@@ -45,7 +45,7 @@ function fixture(health: TargetEffects["health"]) {
     supervisor: () => ({
       async observe(key) { return { state: running.has(key) ? "running" : "stopped" }; },
       async ensureRunning(request) { running.add(request.key); events.push(`start:${request.key}`); return { outcome: "started" }; },
-      async stop(key) { running.delete(key); events.push(`stop:${key}`); return { outcome: "stopped" }; }, async shutdown() {},
+      async stop(key) { running.delete(key); events.push(`stop:${key}`); return { outcome: "stopped" }; }, async shutdown() {}, async detach() {},
     }),
     async hook(command) { events.push(command); }, async route() { events.push("route"); }, health,
   };

@@ -232,6 +232,15 @@ export function createChildSupervisor(
     if (options.captureCommand) await rm(capturePath(key), { force: true });
     return { outcome: before.state === "running" ? "stopped" : "unchanged" };
   }
+  /** Ends restart scheduling and waits for in-flight operations so ownership can be handed over or ended. */
+  async function quiesce(): Promise<void> {
+    shuttingDown = true;
+    for (const restart of restarts.values())
+      if (restart.timer) clearTimeout(restart.timer);
+    await Promise.all(
+      [...operations.values()].map((pending) => pending.catch(() => {})),
+    );
+  }
   function scheduleRestart(key: string, owned: OwnedProcess): void {
     if (
       !owned.request?.keepAlive ||
@@ -384,13 +393,16 @@ export function createChildSupervisor(
     observe,
     stop: (key) => serialized(key, () => stop(key)),
     async shutdown() {
-      shuttingDown = true;
-      for (const restart of restarts.values())
-        if (restart.timer) clearTimeout(restart.timer);
-      await Promise.all(
-        [...operations.values()].map((pending) => pending.catch(() => {})),
-      );
+      await quiesce();
       await Promise.all([...processes.keys()].map(stop));
+    },
+    async detach() {
+      await quiesce();
+      for (const owned of processes.values()) {
+        owned.child?.removeAllListeners("exit");
+        owned.child?.unref();
+      }
+      processes.clear();
     },
   };
 }

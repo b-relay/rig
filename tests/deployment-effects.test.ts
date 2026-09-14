@@ -39,6 +39,7 @@ async function fixture() {
       return { outcome: changed ? "stopped" : "unchanged" };
     },
     async shutdown() {},
+    async detach() {},
   };
   const router = createCaddyRouter({
     caddyfile: join(root, "Caddyfile"),

@@ -154,8 +154,9 @@ export async function composeDaemon(
       stopped = true;
       clearInterval(monitor);
       await runtime.drain();
-      await child.shutdown();
-      await launchd.shutdown();
+      // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
+      await child.detach();
+      await launchd.detach();
     },
   };
 }

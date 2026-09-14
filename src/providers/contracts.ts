@@ -21,7 +21,10 @@ export interface Supervisor {
   ): Promise<{ outcome: "started" | "unchanged"; pid?: number }>;
   stop(key: string): Promise<{ outcome: "stopped" | "unchanged" }>;
   observe(key: string, signal?: AbortSignal): Promise<ProcessObservation>;
+  /** Stops every owned process; used when the Host must end with nothing running. */
   shutdown(): Promise<void>;
+  /** Releases in-memory ownership and leaves processes running; recorded leases let the next daemon adopt them. */
+  detach(): Promise<void>;
 }
 export interface CommandRequest {
   readonly command: readonly string[];

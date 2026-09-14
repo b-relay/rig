@@ -33,6 +33,11 @@ Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
 `rigd install`.
 
+Stopping, restarting, or upgrading `rigd` is not a Target stop. Managed
+processes keep serving while the daemon is down, and the next daemon adopts
+them through their recorded process leases without re-running start hooks.
+`rigd uninstall` is the exception: it refuses while any Target is running.
+
 Connect the Host Caddy once. Rig writes its marked route blocks to
 `<RIG_ROOT>/proxy/Caddyfile` (or `providers.caddy.caddyfile`) and never edits
 the Caddyfile the running Caddy loads. That Caddyfile must import the route

@@ -436,3 +436,33 @@ test("stop cancels an owned child's pending restart", async () => {
   const entries = (await readFile(join(root, "target.jsonl"), "utf8")).trim().split("\n");
   expect(entries).toHaveLength(1);
 });
+test("a detached daemon leaves its processes running and the next daemon adopts them without restarting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-detach-"));
+  roots.push(root);
+  const first = createChildSupervisor({ stateRoot: root });
+  const request = {
+    key: "target/web",
+    componentName: "web",
+    command: [process.execPath, "-e", "setInterval(()=>{},1000)"],
+    cwd: root,
+    env: { ...process.env } as Record<string, string>,
+    logRoot: root,
+    keepAlive: true,
+  };
+  const started = await first.ensureRunning(request);
+  await first.detach();
+  expect(() => process.kill(started.pid!, 0)).not.toThrow();
+  const second = createChildSupervisor({ stateRoot: root });
+  supervisors.push(second);
+  expect(await second.observe(request.key)).toMatchObject({
+    state: "running",
+    pid: started.pid,
+  });
+  expect(await second.ensureRunning(request)).toEqual({
+    outcome: "unchanged",
+    pid: started.pid,
+  });
+  expect(await second.stop(request.key)).toEqual({ outcome: "stopped" });
+  expect(() => process.kill(started.pid!, 0)).toThrow();
+  expect((await second.observe(request.key)).state).toBe("stopped");
+});

@@ -35,6 +35,7 @@ export function stopHookFixture(active: string[] = []) {
         return { outcome: existed ? "unchanged" : "started" };
       },
       async shutdown() {},
+      async detach() {},
     }),
     async prepare() {},
     async environment() { return {}; },

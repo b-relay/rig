@@ -20,7 +20,7 @@ testability and honesty refactors.
 3. ~~#208~~ (fixed) `rig down preview <branch> --deployment other --destroy` destroys a different Preview than the one named. Destructive command hits the wrong target.
 4. ~~#174~~ (fixed) `deploy --no-up` on a running live Target stops and retires the previous build; nothing serves until `rig up`. Production outage from a documented flag.
 5. ~~#190~~ (fixed) A typo in `providers.processSupervisor` stops production on deploy and blocks rollback and down. Schema accepts it, no exit.
-6. #211 Clean rigd stop kills every managed child and restart re-runs every start hook. Daemon maintenance is an outage.
+6. ~~#211~~ (fixed) Clean rigd stop kills every managed child and restart re-runs every start hook. Daemon maintenance is an outage.
 7. #216 LaunchAgent records the version-specific bun path; a Homebrew bun upgrade bricks rigd and every command says unreachable.
 8. #217 LaunchAgent KeepAlive with no throttle: a failing rigd relaunches every 10 s forever, grows startup.log without bound, cannot be uninstalled through the CLI.
 9. #143 Capture wrapper rewrites a running component as failed and exits, orphaning the detached child. Unsupervised production process.

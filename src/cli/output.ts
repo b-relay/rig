@@ -47,11 +47,16 @@ export function renderStatus(report: ProjectStatusReport): string {
         .filter(Boolean)
         .join("  "),
     );
+    const unpublished = target.routePublished === false ? "unpublished" : "";
     if (target.route && !target.components.some((component) => component.route))
-      lines.push(`  Route  ${displayWord(target.route)}`);
+      lines.push(
+        `  Route  ${[displayWord(target.route), unpublished].filter(Boolean).join("  ")}`,
+      );
     for (const component of target.components) {
       const port = component.port !== undefined ? `:${component.port}` : "";
-      const route = displayWord(component.route);
+      const route = component.route
+        ? [displayWord(component.route), unpublished].filter(Boolean).join("  ")
+        : "";
       lines.push(
         `  ${[displayWord(component.name), displayWord(component.state), port, route].filter(Boolean).join("  ")}`,
       );

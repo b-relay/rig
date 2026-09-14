@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { readHostConfig } from "../config";
 import { ConfigError } from "../config/errors";
 import type { DoctorCheck } from "../daemon/offline-doctor";
+import { inspectHostProxy, proxyCheck } from "./proxy-publication";
 /** Observe local prerequisites without running repairs, writing probes, or contacting remotes. */
 export async function inspectHost(root: string): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
@@ -24,6 +25,15 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
         reason: "missing-reload-command",
         hint: "Set providers.caddy.reload.command or choose manual reload.",
       });
+    checks.push(
+      await inspectHostProxy(root, host, process.env).then(proxyCheck, (error) => ({
+        name: "caddy-proxy",
+        ok: false,
+        message: `Rig's route file or the host Caddyfile could not be read: ${String((error as Error).message ?? error)}`,
+        reason: "proxy-unreadable",
+        hint: "Make the Caddyfiles readable by the rigd user, or set providers.caddy.hostCaddyfile.",
+      })),
+    );
   } catch (error) {
     checks.push({
       name: "host-config",

@@ -2,6 +2,7 @@ import { createAdminActivityJournal } from "../adapters/admin-activity";
 import { monitorRuntimeFailures } from "../runtime/activity";
 import type { DaemonHostOptions } from "./host";
 import { inspectHost } from "../adapters/host-inspection";
+import { inspectHostProxy } from "../adapters/proxy-publication";
 import { createAdoptionGuard } from "../migration/adoption";
 import { randomUUID, createHash } from "node:crypto";
 import { join } from "node:path";
@@ -89,6 +90,7 @@ export async function composeDaemon(
     root,
     readAdminActivity: adminActivity.read,
     inspectHost: () => inspectHost(root),
+    inspectProxy: () => inspectHostProxy(root, host, environment),
     assertOwnershipReady: createAdoptionGuard(root),
     store,
     documents: createProjectDocuments(root, runCommand),

@@ -1,3 +1,4 @@
+import type { ProxyPublication } from "../domain/proxy-publication";
 import type { FailureCauses } from "../domain/errors";
 import type {
   ConfigDocument,
@@ -99,6 +100,7 @@ export interface RuntimeDependencies {
       hint?: string;
     }[]
   >;
+  inspectProxy(): Promise<ProxyPublication>;
   store: StateStore;
   documents: ProjectDocuments;
   sources: DeploymentSources;

@@ -71,6 +71,12 @@ const targetReportSchema = z
     branch: z.string().optional().describe("Recorded source Branch."),
     commit: z.string().optional().describe("Recorded source Commit."),
     route: z.string().optional().describe("Recorded Target route."),
+    routePublished: z
+      .boolean()
+      .optional()
+      .describe(
+        "False when the host Caddy does not load Rig's route file, so the route is inert; absent when published or unknown.",
+      ),
     components: z
       .array(componentReportSchema)
       .describe("Configured and observed component capabilities."),

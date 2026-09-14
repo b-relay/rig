@@ -315,7 +315,16 @@ export const hostConfigSchema = z.strictObject({
         ),
       caddy: z
         .strictObject({
-          caddyfile: text.optional().describe("Host Caddyfile path."),
+          caddyfile: text
+            .optional()
+            .describe(
+              "File Rig writes its marked route blocks into; defaults to proxy/Caddyfile under the Rig state directory.",
+            ),
+          hostCaddyfile: text
+            .optional()
+            .describe(
+              "Caddyfile the running Caddy loads; it must be the route file or import it. Defaults to the first of /usr/local/etc/Caddyfile, /opt/homebrew/etc/Caddyfile, /etc/caddy/Caddyfile that exists.",
+            ),
           extraConfig: z
             .array(text)
             .default([])

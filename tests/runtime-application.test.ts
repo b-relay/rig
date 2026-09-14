@@ -36,6 +36,9 @@ function fixture() {
     async inspectHost() {
       return [];
     },
+    async inspectProxy() {
+      return { proxyFile: "/tmp/isolated-rig/proxy/Caddyfile", routes: 0, state: "unpublished" as const };
+    },
     store: {
       async read() {
         return structuredClone(state);

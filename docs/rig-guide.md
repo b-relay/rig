@@ -33,6 +33,26 @@ Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
 `rigd install`.
 
+Connect the Host Caddy once. Rig writes its marked route blocks to
+`<RIG_ROOT>/proxy/Caddyfile` (or `providers.caddy.caddyfile`) and never edits
+the Caddyfile the running Caddy loads. That Caddyfile must import the route
+file, with an absolute path because the Host Caddy usually runs as another
+user:
+
+```caddyfile
+# /usr/local/etc/Caddyfile
+import /Users/deploy/.rig/proxy/Caddyfile
+```
+
+Reload Caddy after adding the line. Until then every Rig route is inert:
+`rig doctor` reports `caddy-proxy` as failed and `rig status` marks routes
+`unpublished`. Rig looks for the import in `providers.caddy.hostCaddyfile`, or
+in `/usr/local/etc/Caddyfile`, `/opt/homebrew/etc/Caddyfile`, and
+`/etc/caddy/Caddyfile` when unset. Host TLS or error snippets that every
+generated site block needs, such as `import cloudflare`, go in
+`providers.caddy.extraConfig`. With `providers.caddy.reload.mode: manual` Rig
+writes the route file but leaves the reload to you.
+
 ## Initialize A Project
 
 From inside a Git repository:
@@ -235,7 +255,8 @@ Status shares one two-second budget across concurrent observations. Managed
 components without health checks are running, not healthy; uncertain observations
 are unknown. Configured-only components are configured, installed-tool Targets
 can be ready, and partial runtime capability is degraded. Recorded routes stay
-visible when stopped. Doctor owns current-config drift and failed checks; it
+visible when stopped, and show `unpublished` when no Host Caddyfile loads Rig's
+route file (see Setup). Doctor owns current-config drift and failed checks; it
 does not repair or deploy configuration implicitly.
 
 `rig activity` displays final daemon Operations separately from Target output.

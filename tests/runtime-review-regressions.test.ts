@@ -37,6 +37,9 @@ function fixture() {
     async inspectHost() {
       return [{ name: "host-check", ok: true, message: "Host inspected." }];
     },
+    async inspectProxy() {
+      return { proxyFile: "/tmp/proxy/Caddyfile", routes: 0, state: "unpublished" as const };
+    },
     async assertOwnershipReady() {},
     store: {
       async read() {

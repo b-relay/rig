@@ -17,7 +17,10 @@ export async function projectStatus(
   project: Pick<ProjectRecord, "name" | "repoPath">,
   targets: readonly TargetRecord[],
   command: StatusSelection,
-  deps: Pick<RuntimeDependencies, "assertOwnershipReady" | "observations"> & {
+  deps: Pick<
+    RuntimeDependencies,
+    "assertOwnershipReady" | "observations" | "inspectProxy"
+  > & {
     documents: Pick<RuntimeDependencies["documents"], "read">;
   },
 ): Promise<ProjectStatusReport> {
@@ -98,7 +101,32 @@ export async function projectStatus(
         `${target.name} has an unresolved deployment transition; run down to stop both recorded plans.`,
       );
     }
+  warnings.push(...(await markUnpublishedRoutes(reports, deps.inspectProxy)));
   return { project: project.name, targets: reports, warnings };
+}
+/** A route the host Caddy never loads is shown, but never presented as served. */
+async function markUnpublishedRoutes(
+  reports: TargetReport[],
+  inspectProxy: RuntimeDependencies["inspectProxy"],
+): Promise<string[]> {
+  const routed = reports.filter(
+    (report) => report.route || report.components.some((c) => c.route),
+  );
+  if (!routed.length) return [];
+  try {
+    const publication = await inspectProxy();
+    if (publication.state !== "unpublished") return [];
+    for (const report of routed) report.routePublished = false;
+    return [
+      `Routes are unpublished: ${
+        publication.hostCaddyfile
+          ? `${publication.hostCaddyfile} does not import ${publication.proxyFile}`
+          : `no host Caddyfile loads ${publication.proxyFile}`
+      }. Run rig doctor.`,
+    ];
+  } catch (error) {
+    return [`Route publication could not be checked: ${asRigError(error).message}`];
+  }
 }
 function configuredComponents(
   config: ProjectConfig,

@@ -442,13 +442,9 @@ Production branch option is provided.
 
 Reading or changing Rig configuration through Rig commands.
 
-_Relationship_: User-authored Host and Project config use `.yaml` as the
-canonical YAML extension. Rig should not also accept `.yml`; the only alternate
-format is the supported legacy `.json` filename.
-
-_Relationship_: A valid legacy JSON config is supported rather than deprecated.
-`rig doctor` should not report a problem solely because a Host or Project still
-uses JSON. YAML preference means new files and documentation use YAML.
+_Decision history_: [ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md)
+supersedes the previous Project JSON compatibility decision. Host config is a
+separate scope in the #114 design interview.
 
 _Relationship_: YAML config should accept one ordinary YAML 1.2 document and
 comments. Rig should reject duplicate keys, custom tags, anchors, aliases,
@@ -703,9 +699,8 @@ The current committed `rig.yaml` policy for a Project.
 _Avoid_: using Project config to mean the recorded runtime state of an active
 Target
 
-_Relationship_: `rig.yaml` is the canonical Project config filename, and
-`rig init` should create YAML. Existing `rig.json` files remain readable for
-compatibility.
+_Decision history_: The accepted Project format boundary is recorded in
+[ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md).
 
 _Relationship_: If both `rig.yaml` and `rig.json` exist in one Project, Rig
 should fail with a clear ambiguity error rather than silently choosing or
@@ -752,6 +747,12 @@ Deploy should not expose a `--restart` flag.
 
 _Relationship_: `rig restart` may start an existing stopped Target, but it
 must not materialize a missing Target or change the deployed Commit.
+
+### Automatic restart policy
+
+A Service's policy for revival after it exits, distinct from an explicit
+Restart or start request.
+_Avoid_: once-per-deploy job, absence of supervision
 
 ### Logs
 

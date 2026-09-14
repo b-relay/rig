@@ -17,7 +17,7 @@ testability and honesty refactors.
 
 1. #222 Generated proxy Caddyfile is never loaded by the running Caddy; routes are inert while doctor says healthy. Rig's core promise is broken and nothing reports it.
 2. #191 Convex stateDir and relative sqlite paths resolve inside the per-deploy checkout; every live/preview deploy starts with an empty database. Silent data loss on every deploy.
-3. #208 `rig down preview <branch> --deployment other --destroy` destroys a different Preview than the one named. Destructive command hits the wrong target.
+3. ~~#208~~ (fixed) `rig down preview <branch> --deployment other --destroy` destroys a different Preview than the one named. Destructive command hits the wrong target.
 4. #174 `deploy --no-up` on a running live Target stops and retires the previous build; nothing serves until `rig up`. Production outage from a documented flag.
 5. #190 A typo in `providers.processSupervisor` stops production on deploy and blocks rollback and down. Schema accepts it, no exit.
 6. #211 Clean rigd stop kills every managed child and restart re-runs every start hook. Daemon maintenance is an outage.

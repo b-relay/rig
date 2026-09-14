@@ -82,6 +82,12 @@ const targetReportSchema = z
       .describe(
         "True while a deployment transition is unresolved (in progress or awaiting down); absent otherwise.",
       ),
+    destructionPending: z
+      .boolean()
+      .optional()
+      .describe(
+        "True when a Preview's destroy did not finish and its stopped inventory is retained until down --destroy is retried; absent otherwise.",
+      ),
     route: z.string().optional().describe("Recorded Target route."),
     routePublished: z
       .boolean()

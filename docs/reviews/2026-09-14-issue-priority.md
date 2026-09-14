@@ -101,7 +101,7 @@ testability and honesty refactors.
 
 ## Tier 3 — diagnostics that mislead
 
-78. #201 status never reports destructionPending or deploymentIncomplete; doctor reports an uncommitted deployment healthy.
+78. ~~#201~~ (fixed) status never reports destructionPending or deploymentIncomplete; doctor reports an uncommitted deployment healthy.
 79. #200 doctor discards the observation reason and exit code for every failing component. (#234.)
 80. #126 doctor reports config-invalid for a valid config that adds a managed component without a port.
 81. #154 doctor config-drift hint says "Deploy to apply" but a same-Commit deploy is unchanged.

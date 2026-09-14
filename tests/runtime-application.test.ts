@@ -2209,6 +2209,60 @@ test("a retirement whose finalization is unfinished keeps the Preview locked for
   }
 });
 
+test("status and doctor name a Preview whose destruction is pending instead of counting its retired inventory as failures", async () => {
+  const f = await destroyFixture();
+  try {
+    f.deps.lifecycle.retire = async () => {
+      throw new RigError(
+        "RETIRE_COMMIT_PENDING",
+        "Finalization failed",
+        "Retry",
+      );
+    };
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "RETIRE_COMMIT_PENDING",
+    });
+    const status = (await f.runtime.command({
+      action: "status",
+      project: "demo",
+    })) as {
+      warnings?: string[];
+      targets: { name: string; state: string; destructionPending?: boolean }[];
+    };
+    expect(status.targets.find((t) => t.name === f.target.name)).toMatchObject({
+      destructionPending: true,
+      state: "stopped",
+    });
+    expect(status.warnings).toEqual([
+      `${f.target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run down preview review --destroy to finish cleanup.`,
+    ]);
+    const report = (await f.runtime.command({
+      action: "doctor",
+      project: "demo",
+    })) as {
+      ok: boolean;
+      checks: { name: string; ok: boolean; reason?: string }[];
+    };
+    expect(report.ok).toBe(false);
+    const own = report.checks.filter(
+      (check) => check.name.startsWith(`${f.target.name}/`) && !check.ok,
+    );
+    expect(own).toEqual([
+      expect.objectContaining({
+        name: `${f.target.name}/destruction`,
+        ok: false,
+        reason: "destruction-pending",
+      }),
+    ]);
+    // The other Preview is still observed and reported as before.
+    expect(
+      report.checks.some((check) => check.name === `${f.other.name}/web`),
+    ).toBe(true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("partial destroy failure survives daemon recreation, blocks restart, and retries missing bytes", async () => {
   const f = await destroyFixture();
   try {

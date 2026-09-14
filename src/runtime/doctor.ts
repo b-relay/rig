@@ -194,9 +194,12 @@ export async function doctor(
   const ownershipKnown = !checks.some(
     (check) => check.name === "runtime-ownership" && !check.ok,
   );
+  // A Preview awaiting destruction has already retired its inventory; the destruction check names it, its components are not failures.
   const reports = ownershipKnown
     ? await observeTargets(
-        targets.filter((target) => !target.recovery),
+        targets.filter(
+          (target) => !target.recovery && !target.destructionPending,
+        ),
         deps.observations,
       )
     : [];

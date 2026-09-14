@@ -141,11 +141,18 @@ export async function observeTargets(
 }
 /** Whether the recorded Commit is a completed deployment; callers such as git push must not treat an incomplete one as deployed. */
 export function deploymentFlags(
-  target: Pick<TargetRecord, "deploymentIncomplete" | "recovery">,
-): Pick<TargetReport, "deploymentIncomplete" | "transitionPending"> {
+  target: Pick<
+    TargetRecord,
+    "deploymentIncomplete" | "recovery" | "destructionPending"
+  >,
+): Pick<
+  TargetReport,
+  "deploymentIncomplete" | "transitionPending" | "destructionPending"
+> {
   return {
     ...(target.deploymentIncomplete ? { deploymentIncomplete: true } : {}),
     ...(target.recovery ? { transitionPending: true } : {}),
+    ...(target.destructionPending ? { destructionPending: true } : {}),
   };
 }
 

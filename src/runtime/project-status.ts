@@ -114,6 +114,11 @@ export async function projectStatus(
       warnings.push(
         `${target.name}: the last deploy did not complete; run up to finish it or redeploy.`,
       );
+  for (const target of selected)
+    if (target.destructionPending)
+      warnings.push(
+        `${target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run down preview ${target.branch ?? target.name} --destroy to finish cleanup.`,
+      );
   warnings.push(...(await markUnpublishedRoutes(reports, deps.inspectProxy)));
   return { project: project.name, targets: reports, warnings };
 }
@@ -138,7 +143,9 @@ async function markUnpublishedRoutes(
       }. Run rig doctor.`,
     ];
   } catch (error) {
-    return [`Route publication could not be checked: ${asRigError(error).message}`];
+    return [
+      `Route publication could not be checked: ${asRigError(error).message}`,
+    ];
   }
 }
 function configuredComponents(

@@ -427,7 +427,11 @@ leaves the Preview stopped but unlocked: fix the cause and destroy again, or
 bring it back up. A cleanup failure after retirement began retains a stopped
 Preview with pending-destruction evidence; retry the same explicit destroy
 command to finish. It cannot be restarted or redeployed while deletion is
-pending. Already deleted bytes cannot be restored by retry.
+pending. Already deleted bytes cannot be restored by retry. Until then
+`rig status` marks the Preview `destructionPending` and warns with the
+destroy command that finishes it, and `rig doctor` fails its
+`<preview>/destruction` check without counting the retired components as
+separate failures.
 
 Logs:
 

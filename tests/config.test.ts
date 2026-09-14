@@ -1,5 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -35,24 +44,27 @@ test("Project config reads YAML comments and returns its source and revision", a
 test.each([
   ["yaml", "# Project\nname: pantry\ncomponents: {}\n"],
   ["json", '{"name":"pantry","components":{}}\n'],
-])("%s config inspection and editing read the same revision and errors", async (format, raw) => {
-  const root = await fixture();
-  const path = join(root, `rig.${format}`);
-  await writeFile(path, raw);
-  const source = await readProjectConfigSource(root);
-  const { raw: actual, ...document } = source;
-  expect(actual).toBe(raw);
-  expect(document).toEqual(await readProjectConfig(root));
+])(
+  "%s config inspection and editing read the same revision and errors",
+  async (format, raw) => {
+    const root = await fixture();
+    const path = join(root, `rig.${format}`);
+    await writeFile(path, raw);
+    const source = await readProjectConfigSource(root);
+    const { raw: actual, ...document } = source;
+    expect(actual).toBe(raw);
+    expect(document).toEqual(await readProjectConfig(root));
 
-  await writeFile(path, "{");
-  const readError = await readProjectConfig(root).catch(
-    (error: unknown) => error,
-  );
-  const sourceError = await readProjectConfigSource(root).catch(
-    (error: unknown) => error,
-  );
-  expect(sourceError).toEqual(readError);
-});
+    await writeFile(path, "{");
+    const readError = await readProjectConfig(root).catch(
+      (error: unknown) => error,
+    );
+    const sourceError = await readProjectConfigSource(root).catch(
+      (error: unknown) => error,
+    );
+    expect(sourceError).toEqual(readError);
+  },
+);
 
 test("Target resolution provides forward component interpolation, environment inheritance, persistent paths, and dependency order", async () => {
   const { parseProjectConfig, resolveTargetPlan } =
@@ -344,7 +356,11 @@ test("Project init creates YAML with requested managed, installed, dependency an
       web: { mode: "managed", port: 3210 },
       tool: { mode: "installed", entrypoint: "bin/tool" },
     },
-    live: { deployBranch: "release", domain: "app.example.com", proxy: { upstream: "web" } },
+    live: {
+      deployBranch: "release",
+      domain: "app.example.com",
+      proxy: { upstream: "web" },
+    },
   });
   await expect(
     initializeProjectConfig(root, { name: "other" }),
@@ -495,33 +511,64 @@ test.each([
   ["/work", "relative/data", "dataRoot"],
   ["relative/work", "relative/data", "workspacePath"],
   ["", "/data", "workspacePath"],
-])("Target resolution rejects unsupported roots %s and %s before policy calculation", async (workspacePath, dataRoot, field) => {
-  const { resolveTargetPlan, parseProjectConfig } = await import("../src/config/index.js");
-  const config = parseProjectConfig({ name: "app", components: {} });
-  // An invalid interpolation would fail if plan calculation started first.
-  expect(() => resolveTargetPlan({ config, target: "local", workspacePath, dataRoot, subdomain: "${unknown}" })).toThrow(
-    expect.objectContaining({ _tag: "ConfigError", code: "relative_root", context: { field }, hint: expect.stringContaining("absolute") }),
-  );
-});
+])(
+  "Target resolution rejects unsupported roots %s and %s before policy calculation",
+  async (workspacePath, dataRoot, field) => {
+    const { resolveTargetPlan, parseProjectConfig } =
+      await import("../src/config/index.js");
+    const config = parseProjectConfig({ name: "app", components: {} });
+    // An invalid interpolation would fail if plan calculation started first.
+    expect(() =>
+      resolveTargetPlan({
+        config,
+        target: "local",
+        workspacePath,
+        dataRoot,
+        subdomain: "${unknown}",
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        _tag: "ConfigError",
+        code: "relative_root",
+        context: { field },
+        hint: expect.stringContaining("absolute"),
+      }),
+    );
+  },
+);
 
 test("complete accepted plans are independent of process cwd with portable paths and Unicode roots", async () => {
-  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
+  const { parseProjectConfig, resolveTargetPlan } =
+    await import("../src/config/index.js");
   const { mkdir } = await import("node:fs/promises");
   const root = await fixture();
-  const cwdA = join(root, "cwd one"), cwdB = join(root, "cwd 二");
+  const cwdA = join(root, "cwd one"),
+    cwdB = join(root, "cwd 二");
   await Promise.all([mkdir(cwdA), mkdir(cwdB)]);
   const input = {
     config: parseProjectConfig({
       name: "app",
       hooks: { preStart: "echo ${workspace}" },
       components: {
-        tool: { mode: "installed", entrypoint: "bin/工具", envFile: "env/tool.env" },
-        web: { mode: "managed", command: "serve --port ${web.port} --db ${db.path}", dependsOn: ["db", "pg"], env: { DATA: "${dataRoot}", URL: "${web.url}" } },
+        tool: {
+          mode: "installed",
+          entrypoint: "bin/工具",
+          envFile: "env/tool.env",
+        },
+        web: {
+          mode: "managed",
+          command: "serve --port ${web.port} --db ${db.path}",
+          dependsOn: ["db", "pg"],
+          env: { DATA: "${dataRoot}", URL: "${web.url}" },
+        },
         db: { uses: "sqlite", path: "relative/数据库.sqlite" },
         stored: { uses: "sqlite" },
         pg: { uses: "postgres" },
       },
-      deployments: { envFile: "env/${target}.env", env: { ROOT: "${workspace}" } },
+      deployments: {
+        envFile: "env/${target}.env",
+        env: { ROOT: "${workspace}" },
+      },
     }),
     target: "preview" as const,
     workspacePath: "/work space/项目",
@@ -531,43 +578,86 @@ test("complete accepted plans are independent of process cwd with portable paths
     assignedPorts: { web: 4100, pg: 5433 },
   };
   const script = `import { resolveTargetPlan } from ${JSON.stringify(join(import.meta.dir, "../src/config/index.ts"))}; process.stdout.write(JSON.stringify(resolveTargetPlan(${JSON.stringify(input)})));`;
-  const plans = await Promise.all([cwdA, cwdB].map(async (cwd) => {
-    const child = Bun.spawn([process.execPath, "--eval", script], {
-      cwd, env: { ...process.env, RIG_ROOT: join(cwd, ".rig") }, stdout: "pipe", stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    return JSON.parse(stdout);
-  }));
+  const plans = await Promise.all(
+    [cwdA, cwdB].map(async (cwd) => {
+      const child = Bun.spawn([process.execPath, "--eval", script], {
+        cwd,
+        env: { ...process.env, RIG_ROOT: join(cwd, ".rig") },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      return JSON.parse(stdout);
+    }),
+  );
   const plan = resolveTargetPlan(input);
   expect(plans[0]).toEqual(plans[1]);
   expect(plans[0]).toEqual(JSON.parse(JSON.stringify(plan)));
-  expect(plan.components.map((component) => component.name)).toEqual(["tool", "db", "pg", "web", "stored"]);
+  expect(plan.components.map((component) => component.name)).toEqual([
+    "tool",
+    "db",
+    "pg",
+    "web",
+    "stored",
+  ]);
   expect(plan.envFile).toBe("/work space/项目/env/preview.env");
-  expect(plan.components[0]).toMatchObject({ entrypoint: "/work space/项目/bin/工具", envFile: "/work space/项目/env/tool.env" });
-  expect(plan.components[3]).toMatchObject({ port: 4100, command: "serve --port 4100 --db '/persistent space/数据/relative/数据库.sqlite'", env: { DATA: "/persistent space/数据", URL: "http://127.0.0.1:4100" } });
+  expect(plan.components[0]).toMatchObject({
+    entrypoint: "/work space/项目/bin/工具",
+    envFile: "/work space/项目/env/tool.env",
+  });
+  expect(plan.components[3]).toMatchObject({
+    port: 4100,
+    command:
+      "serve --port 4100 --db '/persistent space/数据/relative/数据库.sqlite'",
+    env: { DATA: "/persistent space/数据", URL: "http://127.0.0.1:4100" },
+  });
   expect(plan.preparedComponents).toEqual([
-    { name: "pg", uses: "postgres", dataDir: "/persistent space/数据/postgres/pg" },
-    { name: "db", uses: "sqlite", path: "/persistent space/数据/relative/数据库.sqlite" },
-    { name: "stored", uses: "sqlite", path: "/persistent space/数据/sqlite/stored.sqlite" },
+    {
+      name: "pg",
+      uses: "postgres",
+      dataDir: "/persistent space/数据/postgres/pg",
+    },
+    {
+      name: "db",
+      uses: "sqlite",
+      path: "/persistent space/数据/relative/数据库.sqlite",
+    },
+    {
+      name: "stored",
+      uses: "sqlite",
+      path: "/persistent space/数据/sqlite/stored.sqlite",
+    },
   ]);
 });
-
 
 test.each([
   ["serve --addr 127.0.0.1:${server.port}", "serve --addr 127.0.0.1:3210"],
   ["serve --addr=localhost:${server.port}", "serve --addr=localhost:3210"],
   ['serve --addr "localhost:${server.port}"', 'serve --addr "localhost:3210"'],
   ["serve --addr 127.0.0.1:3210", "serve --addr 127.0.0.1:3210"],
-])("Target resolution accepts localhost port binding %s", async (command, expected) => {
-  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
-  const config = parseProjectConfig({
-    name: "share",
-    components: { server: { mode: "managed", command, port: 3210 } },
-  });
-  const plan = resolveTargetPlan({ config, target: "local", workspacePath: "/repo", dataRoot: "/state/data" });
-  expect(plan.components[0]).toMatchObject({ command: expected });
-});
+])(
+  "Target resolution accepts localhost port binding %s",
+  async (command, expected) => {
+    const { parseProjectConfig, resolveTargetPlan } =
+      await import("../src/config/index.js");
+    const config = parseProjectConfig({
+      name: "share",
+      components: { server: { mode: "managed", command, port: 3210 } },
+    });
+    const plan = resolveTargetPlan({
+      config,
+      target: "local",
+      workspacePath: "/repo",
+      dataRoot: "/state/data",
+    });
+    expect(plan.components[0]).toMatchObject({ command: expected });
+  },
+);
 
 test.each([
   "serve --addr 0.0.0.0:${server.port}",
@@ -581,23 +671,36 @@ test.each([
   "sh -c 'sh -c \"serve --listen 0.0.0.0\"'",
 ])("raw config rejects non-local binding %s", async (command) => {
   const { parseProjectConfig } = await import("../src/config/index.js");
-  expect(() => parseProjectConfig({
-    name: "share",
-    components: { server: { mode: "managed", command, port: 3210 } },
-  })).toThrow("Invalid Project configuration");
+  expect(() =>
+    parseProjectConfig({
+      name: "share",
+      components: { server: { mode: "managed", command, port: 3210 } },
+    }),
+  ).toThrow("Invalid Project configuration");
 });
 
 test("Target resolution validates actual interpolated bind values", async () => {
-  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
+  const { parseProjectConfig, resolveTargetPlan } =
+    await import("../src/config/index.js");
   const config = parseProjectConfig({
     name: "share",
     components: {
-      server: { mode: "managed", command: "serve --addr 127.0.0.1:${db.path}", port: 3210 },
+      server: {
+        mode: "managed",
+        command: "serve --addr 127.0.0.1:${db.path}",
+        port: 3210,
+      },
       db: { uses: "sqlite" },
     },
   });
-  expect(() => resolveTargetPlan({ config, target: "local", workspacePath: "/repo", dataRoot: "/state/data" }))
-    .toThrow("Resolved command binds outside localhost");
+  expect(() =>
+    resolveTargetPlan({
+      config,
+      target: "local",
+      workspacePath: "/repo",
+      dataRoot: "/state/data",
+    }),
+  ).toThrow("Resolved command binds outside localhost");
 });
 
 test("an unknown process supervisor is rejected at parse time with the valid choices", async () => {
@@ -630,20 +733,33 @@ test("an unknown process supervisor is rejected at parse time with the valid cho
     ).toBe(processSupervisor);
 });
 test("paths interpolated into shell commands, hooks, health checks, and builds are shell-quoted unless the author already quoted them", async () => {
-  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
+  const { parseProjectConfig, resolveTargetPlan } =
+    await import("../src/config/index.js");
   const config = parseProjectConfig({
     name: "spaced",
-    hooks: { preStart: "cd ${workspace} && bun install", postStop: 'echo "${workspace}"' },
+    hooks: {
+      preStart: "cd ${workspace} && bun install",
+      postStop: 'echo "${workspace}"',
+    },
     components: {
       web: {
         mode: "managed",
-        command: "node ${workspace}/server.js --db ${db.path} --port ${web.port}",
+        command:
+          "node ${workspace}/server.js --db ${db.path} --port ${web.port}",
         health: "test -f ${workspace}/ready",
         dependsOn: ["db"],
         env: { DB: "${db.path}" },
       },
-      api: { mode: "managed", command: "node '${workspace}/api.js' --port ${api.port}", health: "http://127.0.0.1:${api.port}/" },
-      tool: { mode: "installed", entrypoint: "bin/tool", build: "bun build ${workspace}/src/tool.ts" },
+      api: {
+        mode: "managed",
+        command: "node '${workspace}/api.js' --port ${api.port}",
+        health: "http://127.0.0.1:${api.port}/",
+      },
+      tool: {
+        mode: "installed",
+        entrypoint: "bin/tool",
+        build: "bun build ${workspace}/src/tool.ts",
+      },
       db: { uses: "sqlite" },
     },
     local: { components: { web: { port: 4000 }, api: { port: 4001 } } },
@@ -661,16 +777,33 @@ test("paths interpolated into shell commands, hooks, health checks, and builds a
     health: "test -f '/repos/my app'/ready",
     env: { DB: "/state/it's data/sqlite/db.sqlite" },
   });
-  expect(plan.components.find((component) => component.name === "api")).toMatchObject({
+  expect(
+    plan.components.find((component) => component.name === "api"),
+  ).toMatchObject({
     command: "node '/repos/my app/api.js' --port 4001",
     health: "http://127.0.0.1:4001/",
   });
-  expect(plan.components.find((component) => component.name === "tool")).toMatchObject({
+  expect(
+    plan.components.find((component) => component.name === "tool"),
+  ).toMatchObject({
     build: "bun build '/repos/my app'/src/tool.ts",
   });
-  expect(plan.hooks).toMatchObject({ preStart: "cd '/repos/my app' && bun install", postStop: 'echo "/repos/my app"' });
-  const printed = Bun.spawnSync(["/bin/sh", "-c", `printf '%s\\n' ${web.kind === "managed" ? web.command.replace(/^node /, "") : ""}`]).stdout.toString();
-  expect(printed.split("\n").filter(Boolean)).toEqual(["/repos/my app/server.js", "--db", "/state/it's data/sqlite/db.sqlite", "--port", "4000"]);
+  expect(plan.hooks).toMatchObject({
+    preStart: "cd '/repos/my app' && bun install",
+    postStop: 'echo "/repos/my app"',
+  });
+  const printed = Bun.spawnSync([
+    "/bin/sh",
+    "-c",
+    `printf '%s\\n' ${web.kind === "managed" ? web.command.replace(/^node /, "") : ""}`,
+  ]).stdout.toString();
+  expect(printed.split("\n").filter(Boolean)).toEqual([
+    "/repos/my app/server.js",
+    "--db",
+    "/state/it's data/sqlite/db.sqlite",
+    "--port",
+    "4000",
+  ]);
 });
 
 test("a runtime-selected Convex site port is honoured for local and live instead of being replaced by port + 1", () => {
@@ -716,69 +849,172 @@ test("hooks are rejected on Components without a process, in the base definition
   expect(
     rejection({
       ...config({}),
-      components: { ...config({}).components, tool: { mode: "installed", entrypoint: "run", hooks } },
+      components: {
+        ...config({}).components,
+        tool: { mode: "installed", entrypoint: "run", hooks },
+      },
     }),
-  ).toContain("base.components.tool.hooks: Hooks run around a Component's process");
+  ).toContain(
+    "base.components.tool.hooks: Hooks run around a Component's process",
+  );
   expect(
     rejection(config({ live: { components: { tool: { hooks } } } })),
-  ).toContain("live.components.tool.hooks: Hooks run around a Component's process");
+  ).toContain(
+    "live.components.tool.hooks: Hooks run around a Component's process",
+  );
   expect(() =>
     parseProjectConfig(config({ local: { components: { db: { hooks } } } })),
   ).toThrow();
 });
 
 test.each([
-  ["preview", { db: { uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" } }, {}, { component: "db", field: "path" }, "/tmp/elsewhere/db.sqlite"],
-  ["live", { db: { uses: "sqlite", path: "../escape.sqlite" } }, {}, { component: "db", field: "path" }, "/escape.sqlite"],
-  ["preview", { db: { uses: "sqlite", path: "${workspace}/db.sqlite" } }, {}, { component: "db", field: "path" }, "/work/db.sqlite"],
-  ["live", { web: { mode: "managed", command: "serve --port ${web.port}", envFile: "/etc/app.env" } }, {}, { component: "web", field: "envFile" }, "/etc/app.env"],
-  ["preview", { web: { mode: "managed", command: "serve --port ${web.port}" } }, { envFile: "../shared/.env" }, { field: "envFile" }, "/shared/.env"],
-])("%s Targets reject a sqlite path or envFile that resolves outside the Target's storage, naming the field", async (target, components, lane, context, path) => {
-  const config = parseProjectConfig({
-    name: "app",
-    components,
-    ...(target === "live" ? { live: lane } : { deployments: lane }),
-  });
-  expect(() =>
-    resolveTargetPlan({ config, target: target as "live" | "preview", workspacePath: "/work", dataRoot: "/data", branch: "main", commit: "abc", assignedPorts: { web: 4100 } }),
-  ).toThrow(
-    expect.objectContaining({
-      _tag: "ConfigError",
-      code: "path_outside_target",
-      context: { ...context, path, root: context.field === "path" ? "/data" : "/work" },
-      hint: expect.stringContaining(context.field),
-    }),
-  );
-});
+  [
+    "preview",
+    { db: { uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" } },
+    {},
+    { component: "db", field: "path" },
+    "/tmp/elsewhere/db.sqlite",
+  ],
+  [
+    "live",
+    { db: { uses: "sqlite", path: "../escape.sqlite" } },
+    {},
+    { component: "db", field: "path" },
+    "/escape.sqlite",
+  ],
+  [
+    "preview",
+    { db: { uses: "sqlite", path: "${workspace}/db.sqlite" } },
+    {},
+    { component: "db", field: "path" },
+    "/work/db.sqlite",
+  ],
+  [
+    "live",
+    {
+      web: {
+        mode: "managed",
+        command: "serve --port ${web.port}",
+        envFile: "/etc/app.env",
+      },
+    },
+    {},
+    { component: "web", field: "envFile" },
+    "/etc/app.env",
+  ],
+  [
+    "preview",
+    { web: { mode: "managed", command: "serve --port ${web.port}" } },
+    { envFile: "../shared/.env" },
+    { field: "envFile" },
+    "/shared/.env",
+  ],
+])(
+  "%s Targets reject a sqlite path or envFile that resolves outside the Target's storage, naming the field",
+  async (target, components, lane, context, path) => {
+    const config = parseProjectConfig({
+      name: "app",
+      components,
+      ...(target === "live" ? { live: lane } : { deployments: lane }),
+    });
+    expect(() =>
+      resolveTargetPlan({
+        config,
+        target: target as "live" | "preview",
+        workspacePath: "/work",
+        dataRoot: "/data",
+        branch: "main",
+        commit: "abc",
+        assignedPorts: { web: 4100 },
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        _tag: "ConfigError",
+        code: "path_outside_target",
+        context: {
+          ...context,
+          path,
+          root: context.field === "path" ? "/data" : "/work",
+        },
+        hint: expect.stringContaining(context.field),
+      }),
+    );
+  },
+);
 
 test("local Targets keep the developer's absolute sqlite path and envFile", () => {
   const config = parseProjectConfig({
     name: "app",
     components: {
       db: { uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" },
-      web: { mode: "managed", command: "serve --port ${web.port}", envFile: "/etc/app.env" },
+      web: {
+        mode: "managed",
+        command: "serve --port ${web.port}",
+        envFile: "/etc/app.env",
+      },
     },
   });
-  const plan = resolveTargetPlan({ config, target: "local", workspacePath: "/work", dataRoot: "/data", assignedPorts: { web: 4100 } });
-  expect(plan.preparedComponents).toEqual([{ name: "db", uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" }]);
-  expect(plan.components.find((component) => component.name === "web")).toMatchObject({ envFile: "/etc/app.env" });
+  const plan = resolveTargetPlan({
+    config,
+    target: "local",
+    workspacePath: "/work",
+    dataRoot: "/data",
+    assignedPorts: { web: 4100 },
+  });
+  expect(plan.preparedComponents).toEqual([
+    { name: "db", uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" },
+  ]);
+  expect(
+    plan.components.find((component) => component.name === "web"),
+  ).toMatchObject({ envFile: "/etc/app.env" });
 });
 
 test.each([
   ["hooks.postStart", { hooks: { postStart: "node proxy.js --host 0.0.0.0" } }],
-  ["components.web.hooks.preStart", { components: { web: { mode: "managed", command: "serve", hooks: { preStart: 'sh -c "tunnel --listen 0.0.0.0:9000"' } } } }],
-  ["components.web.env.HOST", { components: { web: { mode: "managed", command: "serve", env: { HOST: "0.0.0.0" } } } }],
-  ["deployments.env.BIND_ADDR", { components: { web: { mode: "managed", command: "serve" } }, deployments: { env: { BIND_ADDR: "[::]:3000" } } }],
-])("hooks and bind-style env values are held to the localhost rule at %s", (path, extra) => {
-  let hint = "";
-  try {
-    parseProjectConfig({ name: "app", components: { web: { mode: "managed", command: "serve" } }, ...extra });
-  } catch (error) {
-    hint = (error as { hint: string }).hint;
-  }
-  expect(hint).toContain(`${path}: `);
-  expect(hint).toMatch(/localhost/);
-});
+  [
+    "components.web.hooks.preStart",
+    {
+      components: {
+        web: {
+          mode: "managed",
+          command: "serve",
+          hooks: { preStart: 'sh -c "tunnel --listen 0.0.0.0:9000"' },
+        },
+      },
+    },
+  ],
+  [
+    "components.web.env.HOST",
+    {
+      components: {
+        web: { mode: "managed", command: "serve", env: { HOST: "0.0.0.0" } },
+      },
+    },
+  ],
+  [
+    "deployments.env.BIND_ADDR",
+    {
+      components: { web: { mode: "managed", command: "serve" } },
+      deployments: { env: { BIND_ADDR: "[::]:3000" } },
+    },
+  ],
+])(
+  "hooks and bind-style env values are held to the localhost rule at %s",
+  (path, extra) => {
+    let hint = "";
+    try {
+      parseProjectConfig({
+        name: "app",
+        components: { web: { mode: "managed", command: "serve" } },
+        ...extra,
+      });
+    } catch (error) {
+      hint = (error as { hint: string }).hint;
+    }
+    expect(hint).toContain(`${path}: `);
+    expect(hint).toMatch(/localhost/);
+  },
+);
 
 test("env values that are not wildcard bindings are accepted, and a wrapped localhost command passes", () => {
   const config = parseProjectConfig({
@@ -787,12 +1023,18 @@ test("env values that are not wildcard bindings are accepted, and a wrapped loca
       web: {
         mode: "managed",
         command: 'sh -c "node s.js --host 127.0.0.1 --port ${web.port}"',
-        env: { HOST: "app.example.com", HOSTNAME: "mac.local", PUBLIC_URL: "http://0.0.0.0.nip.io" },
+        env: {
+          HOST: "app.example.com",
+          HOSTNAME: "mac.local",
+          PUBLIC_URL: "http://0.0.0.0.nip.io",
+        },
         hooks: { postStart: "curl -s http://localhost:${web.port}/warm" },
       },
     },
   });
-  expect(config.components.web).toMatchObject({ env: { HOST: "app.example.com" } });
+  expect(config.components.web).toMatchObject({
+    env: { HOST: "app.example.com" },
+  });
 });
 
 test.each([
@@ -801,23 +1043,32 @@ test.each([
   "HTTP://10.0.0.1/health",
   "http://user:secret@127.0.0.1/health",
   "https://127.0.0.1.nip.io/health",
-])("health URLs are parsed whole and case-insensitively, so %s is rejected", (health) => {
-  let hint = "";
-  try {
-    parseProjectConfig({ name: "app", components: { web: { mode: "managed", command: "serve", health } } });
-  } catch (error) {
-    hint = (error as { hint: string }).hint;
-  }
-  expect(hint).toContain("components.web.health: ");
-  expect(hint).toMatch(/127\.0\.0\.1 or localhost/);
-});
+])(
+  "health URLs are parsed whole and case-insensitively, so %s is rejected",
+  (health) => {
+    let hint = "";
+    try {
+      parseProjectConfig({
+        name: "app",
+        components: { web: { mode: "managed", command: "serve", health } },
+      });
+    } catch (error) {
+      hint = (error as { hint: string }).hint;
+    }
+    expect(hint).toContain("components.web.health: ");
+    expect(hint).toMatch(/127\.0\.0\.1 or localhost/);
+  },
+);
 
 test.each([
   "http://127.0.0.1:4000/?next=http://example.com",
   "HTTP://LOCALHOST:${web.port}/health",
   "curl -fsS http://example.com/ping",
 ])("health value %s is accepted", (health) => {
-  const config = parseProjectConfig({ name: "app", components: { web: { mode: "managed", command: "serve", health } } });
+  const config = parseProjectConfig({
+    name: "app",
+    components: { web: { mode: "managed", command: "serve", health } },
+  });
   expect(config.components.web).toMatchObject({ health });
 });
 
@@ -825,12 +1076,28 @@ test("Target resolution validates interpolated health values like commands", () 
   const config = parseProjectConfig({
     name: "share",
     components: {
-      server: { mode: "managed", command: "serve", health: "probe --addr 127.0.0.1:${db.path}", port: 3210 },
+      server: {
+        mode: "managed",
+        command: "serve",
+        health: "probe --addr 127.0.0.1:${db.path}",
+        port: 3210,
+      },
       db: { uses: "sqlite" },
     },
   });
-  expect(() => resolveTargetPlan({ config, target: "local", workspacePath: "/repo", dataRoot: "/state/data" })).toThrow(
-    expect.objectContaining({ _tag: "ConfigError", code: "invalid_binding", context: { component: "server", field: "health" } }),
+  expect(() =>
+    resolveTargetPlan({
+      config,
+      target: "local",
+      workspacePath: "/repo",
+      dataRoot: "/state/data",
+    }),
+  ).toThrow(
+    expect.objectContaining({
+      _tag: "ConfigError",
+      code: "invalid_binding",
+      context: { component: "server", field: "health" },
+    }),
   );
 });
 
@@ -838,14 +1105,36 @@ test("a lane Component override merges hooks per key like env, so adding one hoo
   const config = parseProjectConfig({
     name: "app",
     components: {
-      web: { mode: "managed", command: "serve", env: { A: "shared" }, hooks: { preStart: "echo pre", preStop: "echo stop" } },
+      web: {
+        mode: "managed",
+        command: "serve",
+        env: { A: "shared" },
+        hooks: { preStart: "echo pre", preStop: "echo stop" },
+      },
     },
-    local: { components: { web: { env: { B: "local" }, hooks: { postStart: "echo post", preStop: "echo local-stop" } } } },
+    local: {
+      components: {
+        web: {
+          env: { B: "local" },
+          hooks: { postStart: "echo post", preStop: "echo local-stop" },
+        },
+      },
+    },
   });
-  const plan = resolveTargetPlan({ config, target: "local", workspacePath: "/work", dataRoot: "/data", assignedPorts: { web: 4100 } });
+  const plan = resolveTargetPlan({
+    config,
+    target: "local",
+    workspacePath: "/work",
+    dataRoot: "/data",
+    assignedPorts: { web: 4100 },
+  });
   expect(plan.components[0]).toMatchObject({
     env: { A: "shared", B: "local" },
-    hooks: { preStart: "echo pre", postStart: "echo post", preStop: "echo local-stop" },
+    hooks: {
+      preStart: "echo pre",
+      postStart: "echo post",
+      preStop: "echo local-stop",
+    },
   });
 });
 
@@ -858,10 +1147,41 @@ test("rig init --domain scaffolds a distinct hostname for local, live, and every
     managed: { name: "web", command: "serve --port ${web.port}", port: 3000 },
   });
   const hostname = (target: "local" | "live" | "preview", branch?: string) =>
-    resolveTargetPlan({ config, target, workspacePath: "/work", dataRoot: "/data", assignedPorts: { web: 4100 }, ...(branch ? { branch, commit: "abc" } : {}) }).domain;
-  expect([hostname("local"), hostname("live"), hostname("preview", "feature/x")]).toEqual([
-    "local.app.test",
-    "app.test",
-    "feature-x.app.test",
-  ]);
+    resolveTargetPlan({
+      config,
+      target,
+      workspacePath: "/work",
+      dataRoot: "/data",
+      assignedPorts: { web: 4100 },
+      ...(branch ? { branch, commit: "abc" } : {}),
+    }).domain;
+  expect([
+    hostname("local"),
+    hostname("live"),
+    hostname("preview", "feature/x"),
+  ]).toEqual(["local.app.test", "app.test", "feature-x.app.test"]);
+});
+
+test("editing a Project whose rig.yaml is a symlink writes through to the linked document and keeps the link", async () => {
+  const { editProjectConfig } = await import("../src/config/index.js");
+  const base = await fixture();
+  const shared = join(base, "shared"),
+    repo = join(base, "repo");
+  await Promise.all([mkdir(shared), mkdir(repo)]);
+  await writeFile(join(shared, "rig.yaml"), "name: demo\ncomponents: {}\n");
+  await symlink(join(shared, "rig.yaml"), join(repo, "rig.yaml"));
+  const document = await readProjectConfig(repo);
+  const result = await editProjectConfig({
+    repoPath: repo,
+    expectedRevision: document.revision,
+    edits: [{ path: ["description"], value: "edited" }],
+  });
+  expect((await lstat(join(repo, "rig.yaml"))).isSymbolicLink()).toBe(true);
+  expect(await readFile(join(shared, "rig.yaml"), "utf8")).toContain("edited");
+  expect(
+    result.backupPath.startsWith(await realpath(join(shared, "rig.yaml"))),
+  ).toBe(true);
+  expect(await readFile(result.backupPath, "utf8")).toBe(
+    "name: demo\ncomponents: {}\n",
+  );
 });

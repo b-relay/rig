@@ -282,12 +282,14 @@ export async function previewProjectConfig(
 /** Optimistic revision checked filesystem editor. YAML edits preserve existing AST comments/order.
  * Serializes Rig writers via an exclusive lock; creates a content-addressed backup before atomic replace.
  * External editors do not honor the lock; a second revision check detects edits before replacement.
+ * A symlinked `rig.yaml` is written through: the linked file changes and the link stays in place.
  */
 export async function editProjectConfig(
   input: ConfigEditInput,
 ): Promise<ProjectConfigPreview & { backupPath: string }> {
   const document = await readProjectConfig(input.repoPath),
-    lockPath = `${document.path}.lock`;
+    file = await realpath(document.path),
+    lockPath = `${file}.lock`;
   let lock;
   try {
     lock = await open(lockPath, "wx");
@@ -301,10 +303,10 @@ export async function editProjectConfig(
   }
   let temporary: string | undefined;
   try {
-    const raw = await readFile(document.path, "utf8");
+    const raw = await readFile(file, "utf8");
     const prepared = prepareEdit(raw, document.path, input);
     const output = prepared.raw;
-    const backupPath = `${document.path}.${input.expectedRevision}.bak`;
+    const backupPath = `${file}.${input.expectedRevision}.bak`;
     try {
       await writeFile(backupPath, raw, { flag: "wx", mode: 0o600 });
     } catch (error) {
@@ -321,21 +323,18 @@ export async function editProjectConfig(
           { backupPath },
         );
     }
-    temporary = `${document.path}.${randomUUID()}.tmp`;
+    temporary = `${file}.${randomUUID()}.tmp`;
     await writeFile(temporary, output, {
       flag: "wx",
-      mode: (await stat(document.path)).mode,
+      mode: (await stat(file)).mode,
     });
-    if (
-      revisionOf(await readFile(document.path, "utf8")) !==
-      input.expectedRevision
-    )
+    if (revisionOf(await readFile(file, "utf8")) !== input.expectedRevision)
       throw new ConfigError(
         "Config changed during editing.",
         "revision_conflict",
         { path: document.path },
       );
-    await rename(temporary, document.path);
+    await rename(temporary, file);
     temporary = undefined;
     return {
       ...prepared,

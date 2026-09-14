@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCaddyRouter } from "../src/providers/caddy-router";
@@ -40,7 +48,10 @@ test("route checkpoints preserve CRLF and incomplete markers fail before publica
       code: "ROUTE_CORRUPT",
     });
     await expect(
-      router.restore({ key: "target", value: null }, { key: "other", value: null }),
+      router.restore(
+        { key: "target", value: null },
+        { key: "other", value: null },
+      ),
     ).rejects.toMatchObject({ code: "ROUTE_CHANGED" });
     expect(await readFile(caddyfile, "utf8")).toBe(malformed);
   }
@@ -240,4 +251,30 @@ test("a route checkpoint restores its exact owned block and refuses to overwrite
   expect(await router.checkpoint("target")).toEqual(previous);
   await router.restore(absent, previous);
   expect(await router.checkpoint("target")).toEqual(absent);
+});
+
+test("a symlinked Caddyfile is updated through the link, so the file Caddy reads changes and the link survives", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-symlink-"));
+  roots.push(root);
+  const real = join(root, "etc", "Caddyfile"),
+    link = join(root, "Caddyfile");
+  await mkdir(join(root, "etc"));
+  await writeFile(real, "# original\n");
+  await symlink(real, link);
+  const router = createCaddyRouter({
+    caddyfile: link,
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    reload: false,
+  });
+  await router.apply({
+    key: "t1",
+    hostname: "demo.localhost",
+    upstream: "127.0.0.1:3000",
+  });
+  expect((await lstat(link)).isSymbolicLink()).toBe(true);
+  expect(await readFile(real, "utf8")).toContain("demo.localhost");
+  expect(await readFile(`${real}.rig-backup`, "utf8")).toBe("# original\n");
+  await router.remove("t1");
+  expect((await lstat(link)).isSymbolicLink()).toBe(true);
+  expect(await readFile(real, "utf8")).toBe("# original\n");
 });

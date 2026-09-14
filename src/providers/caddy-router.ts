@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 import { RigError } from "../domain/errors";
 import { runCommand } from "./command-runner";
@@ -85,9 +93,12 @@ export function createCaddyRouter(options: {
     const after =
       without + (without && !without.endsWith("\n") ? "\n" : "") + block;
     if (after === before) return;
-    const mode =
-      (await stat(options.caddyfile).catch(() => undefined))?.mode ?? 0o600;
-    const temporary = `${options.caddyfile}.${randomUUID()}.tmp`;
+    // Write through a symlinked Caddyfile so the file Caddy reads changes and the link survives.
+    const file = await realpath(options.caddyfile).catch(
+      () => options.caddyfile,
+    );
+    const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
+    const temporary = `${file}.${randomUUID()}.tmp`;
     const executable = options.executable ?? "caddy";
     const reloadCommand = options.reloadCommand ?? [
       executable,
@@ -116,8 +127,8 @@ export function createCaddyRouter(options: {
           "Inspect the route configuration and retry.",
           { stderr: validation.stderr },
         );
-      await writeFile(`${options.caddyfile}.rig-backup`, before, { mode });
-      await rename(temporary, options.caddyfile);
+      await writeFile(`${file}.rig-backup`, before, { mode });
+      await rename(temporary, file);
       if (options.reload !== false) {
         const reload = await run({
           command: reloadCommand,
@@ -128,7 +139,7 @@ export function createCaddyRouter(options: {
         }));
         if (reload.exitCode !== 0) {
           await writeFile(temporary, before, { mode });
-          await rename(temporary, options.caddyfile);
+          await rename(temporary, file);
           const rollback = await run({
             command: reloadCommand,
           }).catch(() => ({ exitCode: 1 }));

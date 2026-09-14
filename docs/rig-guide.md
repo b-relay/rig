@@ -73,7 +73,10 @@ in `/usr/local/etc/Caddyfile`, `/opt/homebrew/etc/Caddyfile`, and
 `/etc/caddy/Caddyfile` when unset. Host TLS or error snippets that every
 generated site block needs, such as `import cloudflare`, go in
 `providers.caddy.extraConfig`. With `providers.caddy.reload.mode: manual` Rig
-writes the route file but leaves the reload to you.
+writes the route file but leaves the reload to you. The route file and
+`rig.yaml` may be symlinks: Rig writes through the link, so the linked file
+changes and the link stays in place, with the `.rig-backup` and `.bak` copies
+beside the linked file.
 
 ## Initialize A Project
 

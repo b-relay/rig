@@ -13,11 +13,14 @@ const port = z
   .min(1)
   .max(65535)
   .describe("Local TCP port from 1 to 65535.");
-/** Validates explicit bind flags; ordinary command URL arguments may reference remote services. */
+/** Validates explicit bind flags, descending into quoted sub-commands such as `sh -c "..."`;
+ * ordinary command URL arguments may reference remote services. */
 export function localhostCommand(value: string): boolean {
   const tokens = value.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
   for (let i = 0; i < tokens.length; i++) {
+    const quoted = /^(["']).*\1$/.test(tokens[i]!) && tokens[i]!.length > 1;
     const token = tokens[i]!.replace(/^['"]|['"]$/g, "");
+    if (quoted && /\s/.test(token) && !localhostCommand(token)) return false;
     const match =
       /^--(?:host|hostname|bind|bind-host|listen|listen-host|addr|address)(?:=(.+))?$/.exec(
         token,
@@ -29,8 +32,22 @@ export function localhostCommand(value: string): boolean {
       if (!["localhost", "127.0.0.1"].includes(host)) return false;
     }
   }
-  return !/(?:^|[\s=])(?:0\.0\.0\.0|\[?::\]?)(?=[:\s]|$)/.test(value);
+  return !/(?:^|[\s='"])(?:0\.0\.0\.0|\[?::\]?)(?=[:\s'"]|$)/.test(value);
 }
+/** Env keys servers commonly read for their bind address; a wildcard there opens the process to the network as surely as a flag. */
+const BIND_KEY =
+  /^(?:HOST|HOSTNAME|BIND|BIND_ADDR|BIND_ADDRESS|BIND_HOST|LISTEN|LISTEN_ADDR|LISTEN_ADDRESS|LISTEN_HOST|ADDR|ADDRESS)$/;
+const WILDCARD_ADDRESS = /^(?:0\.0\.0\.0|\[::\]|::)(?::\d+)?$/;
+/** Inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
+const environment = z.record(z.string(), z.string()).superRefine((env, ctx) => {
+  for (const [key, value] of Object.entries(env))
+    if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
+      });
+});
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -60,33 +77,31 @@ const route = text
   .regex(/^[^\s;"`{}]+$/)
   .or(text.regex(/^\$\{[^}]+\}[^\s;"`]*$/))
   .describe("Single domain token; interpolation is supported.");
-/** Hook commands run with /bin/sh -c; interpolated values are shell-quoted like component commands. */
+/** Hook commands run with /bin/sh -c and are held to the same localhost rule as Component commands; interpolated values are shell-quoted the same way. */
 const hooks = z.strictObject({
-  preStart: z
-    .string()
+  preStart: command
     .optional()
     .describe(
       "Run before starting; skipped when nothing needs to start. A Project preStart runs before installs and Component hooks.",
     ),
-  postStart: z
-    .string()
+  postStart: command
     .optional()
     .describe(
       "Run after readiness: after the health check passes, or after the start grace period when the Component has no health check. A Project postStart runs after routing.",
     ),
-  preStop: z
-    .string()
+  preStop: command
     .optional()
     .describe(
       "Run before stopping active managed processes; skipped when already stopped.",
     ),
-  postStop: z.string().optional().describe("Run after stopping."),
+  postStop: command.optional().describe("Run after stopping."),
 });
 const common = {
-  env: z
-    .record(z.string(), z.string())
+  env: environment
     .optional()
-    .describe("Inline process environment."),
+    .describe(
+      "Inline process environment. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+    ),
   envFile: text
     .optional()
     .describe(
@@ -169,10 +184,11 @@ const lane = z.strictObject({
     .record(componentName, override)
     .optional()
     .describe("Overrides keyed by shared Component name."),
-  env: z
-    .record(z.string(), z.string())
+  env: environment
     .optional()
-    .describe("Environment inherited by every Component."),
+    .describe(
+      "Environment inherited by every Component. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+    ),
   envFile: text
     .optional()
     .describe(

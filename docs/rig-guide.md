@@ -470,6 +470,19 @@ Component (or the Project) and the exit code, and rolls back the processes
 that command started. Stop-hook failures are reported as described above
 without leaving processes running.
 
+Every process Rig starts must listen on localhost only. Component
+commands, health checks, and hooks are checked when the config is parsed and
+again after interpolation: an explicit bind flag such as `--host`, `--bind`,
+`--listen`, or `--addr` must name `127.0.0.1` or `localhost`, and a wildcard
+address (`0.0.0.0`, `::`, `[::]`) is rejected anywhere in the command,
+including inside a quoted wrapper like `sh -c "..."`. In `env`, bind-style
+keys (`HOST`, `HOSTNAME`, `BIND`, `BIND_ADDR`, `BIND_ADDRESS`, `BIND_HOST`,
+`LISTEN`, `LISTEN_ADDR`, `LISTEN_ADDRESS`, `LISTEN_HOST`, `ADDR`, `ADDRESS`)
+may not hold a wildcard address; other env values are not inspected, because
+`HOST` often names a public hostname rather than a bind address. A process
+that reads its bind address from somewhere Rig cannot see is your
+responsibility.
+
 Commands, hooks, health checks, and build commands may use `${...}`
 placeholders. The available properties are:
 

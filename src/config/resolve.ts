@@ -67,16 +67,24 @@ function insideShellQuotes(prefix: string): boolean {
   }
   return quote !== undefined;
 }
+/** Interpolates hook commands and, like Component commands, rejects a resolved hook that binds outside localhost. */
 function resolveHooks(
   hooks: Hooks | undefined,
   properties: Properties,
+  owner: string | undefined,
 ): Hooks | undefined {
   return hooks
     ? Object.fromEntries(
-        Object.entries(hooks).map(([key, value]) => [
-          key,
-          interpolateShell(value, properties),
-        ]),
+        Object.entries(hooks).map(([key, value]) => {
+          const resolved = interpolateShell(value, properties);
+          if (!localhostCommand(resolved))
+            throw new ConfigError(
+              `Resolved ${key} hook binds outside localhost.`,
+              "invalid_binding",
+              { ...(owner ? { component: owner } : {}), hook: key },
+            );
+          return [key, resolved];
+        }),
       )
     : undefined;
 }
@@ -198,7 +206,9 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
     preparedComponents,
     ...(domain ? { domain: interpolate(domain, properties) } : {}),
     ...(lane?.proxy ? { proxy: lane.proxy } : {}),
-    ...(config.hooks ? { hooks: resolveHooks(config.hooks, properties) } : {}),
+    ...(config.hooks
+      ? { hooks: resolveHooks(config.hooks, properties, undefined) }
+      : {}),
     ...(envFile ? { envFile } : {}),
   };
 }
@@ -369,7 +379,7 @@ function resolvePlanComponent({
     dependsOn:
       ("dependsOn" in component ? component.dependsOn : undefined) ?? [],
     ...("hooks" in component && component.hooks
-      ? { hooks: resolveHooks(component.hooks, properties) }
+      ? { hooks: resolveHooks(component.hooks, properties, name) }
       : {}),
     ...(envFile
       ? {

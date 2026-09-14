@@ -252,7 +252,7 @@ owner carries only its own owner-level defects.
 | reachable daemon without install marker uninstallable | #132 |
 | monitor swallows errors | #118 (#133 closed as duplicate) |
 | `displayWord` sanitizer weaker than `terminalText` | #134 |
-| localhost bind check bypassed via `sh -c`; hooks/env unchecked | #135 |
+| localhost bind check bypassed via `sh -c`; hooks/env unchecked | #135 (fixed: quoted sub-commands scanned, hooks validated, wildcard bind env rejected) |
 | `up`/`restart` on local never re-plans; `deploy local` rejected | #136 |
 | SIGTERM force-closes in-flight requests | #137 |
 | pid reuse bricks install/uninstall/start | #138 |

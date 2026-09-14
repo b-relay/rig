@@ -574,6 +574,11 @@ test.each([
   "serve --addr=192.168.1.2:${server.port}",
   'serve --addr "[::]:${server.port}"',
   "serve --addr ${server.port}:3210",
+  'sh -c "node s.js --host 0.0.0.0"',
+  "sh -c 'node s.js --host 0.0.0.0'",
+  'sh -c "node s.js --host ::"',
+  'bash -c "exec node s.js --bind 192.168.1.2 --port ${server.port}"',
+  "sh -c 'sh -c \"serve --listen 0.0.0.0\"'",
 ])("raw config rejects non-local binding %s", async (command) => {
   const { parseProjectConfig } = await import("../src/config/index.js");
   expect(() => parseProjectConfig({
@@ -757,4 +762,35 @@ test("local Targets keep the developer's absolute sqlite path and envFile", () =
   const plan = resolveTargetPlan({ config, target: "local", workspacePath: "/work", dataRoot: "/data", assignedPorts: { web: 4100 } });
   expect(plan.preparedComponents).toEqual([{ name: "db", uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" }]);
   expect(plan.components.find((component) => component.name === "web")).toMatchObject({ envFile: "/etc/app.env" });
+});
+
+test.each([
+  ["hooks.postStart", { hooks: { postStart: "node proxy.js --host 0.0.0.0" } }],
+  ["components.web.hooks.preStart", { components: { web: { mode: "managed", command: "serve", hooks: { preStart: 'sh -c "tunnel --listen 0.0.0.0:9000"' } } } }],
+  ["components.web.env.HOST", { components: { web: { mode: "managed", command: "serve", env: { HOST: "0.0.0.0" } } } }],
+  ["deployments.env.BIND_ADDR", { components: { web: { mode: "managed", command: "serve" } }, deployments: { env: { BIND_ADDR: "[::]:3000" } } }],
+])("hooks and bind-style env values are held to the localhost rule at %s", (path, extra) => {
+  let hint = "";
+  try {
+    parseProjectConfig({ name: "app", components: { web: { mode: "managed", command: "serve" } }, ...extra });
+  } catch (error) {
+    hint = (error as { hint: string }).hint;
+  }
+  expect(hint).toContain(`${path}: `);
+  expect(hint).toMatch(/localhost/);
+});
+
+test("env values that are not wildcard bindings are accepted, and a wrapped localhost command passes", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    components: {
+      web: {
+        mode: "managed",
+        command: 'sh -c "node s.js --host 127.0.0.1 --port ${web.port}"',
+        env: { HOST: "app.example.com", HOSTNAME: "mac.local", PUBLIC_URL: "http://0.0.0.0.nip.io" },
+        hooks: { postStart: "curl -s http://localhost:${web.port}/warm" },
+      },
+    },
+  });
+  expect(config.components.web).toMatchObject({ env: { HOST: "app.example.com" } });
 });

@@ -36,7 +36,9 @@ const command = text
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
     "Explicit network bindings must use 127.0.0.1 or localhost.",
   )
-  .describe("Shell command; explicit bindings must be localhost only.");
+  .describe(
+    "Shell command run with /bin/sh -c; explicit bindings must be localhost only. Interpolated values with spaces or shell characters are single-quoted unless the placeholder is already quoted.",
+  );
 const health = text
   .refine((value) => {
     if (!localhostCommand(value)) return false;
@@ -51,11 +53,14 @@ const health = text
     }
     return true;
   }, "Health checks must address 127.0.0.1 or localhost.")
-  .describe("Local HTTP URL or shell command used to check readiness.");
+  .describe(
+    "Local HTTP URL or shell command used to check readiness; interpolated values are shell-quoted like command.",
+  );
 const route = text
   .regex(/^[^\s;"`{}]+$/)
   .or(text.regex(/^\$\{[^}]+\}[^\s;"`]*$/))
   .describe("Single domain token; interpolation is supported.");
+/** Hook commands run with /bin/sh -c; interpolated values are shell-quoted like component commands. */
 const hooks = z.strictObject({
   preStart: z.string().optional().describe("Run before starting."),
   postStart: z.string().optional().describe("Run after readiness."),
@@ -99,7 +104,12 @@ const component = z.union([
   z.strictObject({
     mode: z.literal("installed").describe("Installed executable."),
     entrypoint: text.describe("Executable path relative to the workspace."),
-    build: z.string().optional().describe("Build command before installation."),
+    build: z
+      .string()
+      .optional()
+      .describe(
+        "Build command before installation, run with /bin/sh -c; interpolated values are shell-quoted.",
+      ),
     installName: componentName
       .optional()
       .describe("Installed executable name."),

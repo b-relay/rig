@@ -307,6 +307,15 @@ owns child processes), `child` (alias of `rigd`), or `launchd` (one launchd
 agent per Component). Any other name is rejected when the config is parsed, so
 a typo can never be recorded in a Target plan.
 
+Commands, hooks, health checks, and build commands may use `${...}`
+placeholders such as `${workspace}`, `${dataRoot}`, `${web.port}`,
+`${db.path}`, `${pg.dataDir}`, and `${cx.stateDir}`. Because those strings run
+under `/bin/sh -c`, Rig single-quotes any substituted value that contains a
+space or other shell-special character, so a repository or `RIG_ROOT` under a
+path like `~/Projects/My App` still resolves to one argument. A placeholder
+the author already wrapped in quotes is substituted as is. Values substituted
+into `env`, `domain`, `envFile`, and `entrypoint` are never quoted.
+
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while
 `rig doctor` and preflight validate the result.

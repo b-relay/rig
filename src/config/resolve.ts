@@ -18,20 +18,53 @@ interface Definition {
 }
 
 const shellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]*$/;
 /** Pure substitution: unknown names fail instead of becoming empty strings; shell ${ENV} stays explicit only through env. */
 function interpolate(value: string, properties: Properties): string {
-  return value.replace(/\$\{([^}]+)\}/g, (_match, key: string) => {
-    const result = Object.hasOwn(properties, key.trim())
-      ? properties[key.trim()]
-      : undefined;
-    if (result === undefined)
-      throw new ConfigError(
-        `Unknown interpolation '${key}'.`,
-        "unknown_interpolation",
-        { key },
-      );
-    return String(result);
-  });
+  return substitute(value, properties, (result) => result);
+}
+/** Substitution for text that /bin/sh -c will run: a value that would split or expand is single-quoted unless the author already quoted the placeholder. */
+function interpolateShell(value: string, properties: Properties): string {
+  return substitute(value, properties, (result, offset) =>
+    shellSafe.test(result) || insideShellQuotes(value.slice(0, offset))
+      ? result
+      : shellArg(result),
+  );
+}
+function substitute(
+  value: string,
+  properties: Properties,
+  render: (result: string, offset: number) => string,
+): string {
+  return value.replace(
+    /\$\{([^}]+)\}/g,
+    (_match, key: string, offset: number) => {
+      const result = Object.hasOwn(properties, key.trim())
+        ? properties[key.trim()]
+        : undefined;
+      if (result === undefined)
+        throw new ConfigError(
+          `Unknown interpolation '${key}'.`,
+          "unknown_interpolation",
+          { key },
+        );
+      return render(String(result), offset);
+    },
+  );
+}
+/** Whether a position in shell text sits inside an open single or double quote. */
+function insideShellQuotes(prefix: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < prefix.length; i++) {
+    const char = prefix[i];
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+    } else if (char === "\\") i++;
+    else if (quote === '"') {
+      if (char === '"') quote = undefined;
+    } else if (char === "'" || char === '"') quote = char;
+  }
+  return quote !== undefined;
 }
 function resolveHooks(
   hooks: Hooks | undefined,
@@ -41,7 +74,7 @@ function resolveHooks(
     ? Object.fromEntries(
         Object.entries(hooks).map(([key, value]) => [
           key,
-          interpolate(value, properties),
+          interpolateShell(value, properties),
         ]),
       )
     : undefined;
@@ -329,7 +362,7 @@ function resolvePlanComponent({
         interpolate(component.entrypoint, properties),
       ),
       ...(component.build
-        ? { build: interpolate(component.build, properties) }
+        ? { build: interpolateShell(component.build, properties) }
         : {}),
       ...(component.installName ? { installName: component.installName } : {}),
     };
@@ -345,7 +378,7 @@ function resolvePlanComponent({
     command ??= `sh -c 'test -f "$1/PG_VERSION" || initdb -D "$1" || exit; exec postgres -D "$1" -h 127.0.0.1 -p "$2"' -- ${shellArg(String(properties[`${name}.dataDir`]))} ${port}`;
     health ??= `pg_isready -h 127.0.0.1 -p ${port}`;
   }
-  const resolvedCommand = interpolate(command!, properties);
+  const resolvedCommand = interpolateShell(command!, properties);
   if (!localhostCommand(resolvedCommand))
     throw new ConfigError(
       "Resolved command binds outside localhost.",
@@ -358,7 +391,7 @@ function resolvePlanComponent({
     port,
     command: resolvedCommand,
     readyTimeout: component.readyTimeout ?? (plugin ? 60 : 30),
-    ...(health ? { health: interpolate(health, properties) } : {}),
+    ...(health ? { health: interpolateShell(health, properties) } : {}),
     ...(plugin === "convex"
       ? { sitePort: Number(properties[`${name}.sitePort`]) }
       : {}),

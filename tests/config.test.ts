@@ -543,7 +543,7 @@ test("complete accepted plans are independent of process cwd with portable paths
   expect(plan.components.map((component) => component.name)).toEqual(["tool", "db", "pg", "web", "stored"]);
   expect(plan.envFile).toBe("/work space/项目/env/preview.env");
   expect(plan.components[0]).toMatchObject({ entrypoint: "/work space/项目/bin/工具", envFile: "/work space/项目/env/tool.env" });
-  expect(plan.components[3]).toMatchObject({ port: 4100, command: "serve --port 4100 --db /persistent space/数据/relative/数据库.sqlite", env: { DATA: "/persistent space/数据", URL: "http://127.0.0.1:4100" } });
+  expect(plan.components[3]).toMatchObject({ port: 4100, command: "serve --port 4100 --db '/persistent space/数据/relative/数据库.sqlite'", env: { DATA: "/persistent space/数据", URL: "http://127.0.0.1:4100" } });
   expect(plan.preparedComponents).toEqual([
     { name: "pg", uses: "postgres", dataDir: "/persistent space/数据/postgres/pg" },
     { name: "db", uses: "sqlite", path: "/persistent space/数据/relative/数据库.sqlite" },
@@ -621,4 +621,47 @@ test("an unknown process supervisor is rejected at parse time with the valid cho
         live: { providers: { processSupervisor } },
       }).live?.providers?.processSupervisor,
     ).toBe(processSupervisor);
+});
+test("paths interpolated into shell commands, hooks, health checks, and builds are shell-quoted unless the author already quoted them", async () => {
+  const { parseProjectConfig, resolveTargetPlan } = await import("../src/config/index.js");
+  const config = parseProjectConfig({
+    name: "spaced",
+    hooks: { preStart: "cd ${workspace} && bun install", postStop: 'echo "${workspace}"' },
+    components: {
+      web: {
+        mode: "managed",
+        command: "node ${workspace}/server.js --db ${db.path} --port ${web.port}",
+        health: "test -f ${workspace}/ready",
+        dependsOn: ["db"],
+        env: { DB: "${db.path}" },
+      },
+      api: { mode: "managed", command: "node '${workspace}/api.js' --port ${api.port}", health: "http://127.0.0.1:${api.port}/" },
+      tool: { mode: "installed", entrypoint: "bin/tool", build: "bun build ${workspace}/src/tool.ts" },
+      db: { uses: "sqlite" },
+    },
+    local: { components: { web: { port: 4000 }, api: { port: 4001 } } },
+  });
+  const plan = resolveTargetPlan({
+    config,
+    target: "local",
+    workspacePath: "/repos/my app",
+    dataRoot: "/state/it's data",
+    assignedPorts: { web: 4000, api: 4001 },
+  });
+  const web = plan.components.find((component) => component.name === "web")!;
+  expect(web).toMatchObject({
+    command: `node '/repos/my app'/server.js --db '/state/it'\\''s data/sqlite/db.sqlite' --port 4000`,
+    health: "test -f '/repos/my app'/ready",
+    env: { DB: "/state/it's data/sqlite/db.sqlite" },
+  });
+  expect(plan.components.find((component) => component.name === "api")).toMatchObject({
+    command: "node '/repos/my app/api.js' --port 4001",
+    health: "http://127.0.0.1:4001/",
+  });
+  expect(plan.components.find((component) => component.name === "tool")).toMatchObject({
+    build: "bun build '/repos/my app'/src/tool.ts",
+  });
+  expect(plan.hooks).toMatchObject({ preStart: "cd '/repos/my app' && bun install", postStop: 'echo "/repos/my app"' });
+  const printed = Bun.spawnSync(["/bin/sh", "-c", `printf '%s\\n' ${web.kind === "managed" ? web.command.replace(/^node /, "") : ""}`]).stdout.toString();
+  expect(printed.split("\n").filter(Boolean)).toEqual(["/repos/my app/server.js", "--db", "/state/it's data/sqlite/db.sqlite", "--port", "4000"]);
 });

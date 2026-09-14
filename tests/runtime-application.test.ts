@@ -179,8 +179,11 @@ test("deployed source policy survives down/up and same commit is no-op", async (
       target: "live",
       branch: "main",
     }),
-  ).toMatchObject({ outcome: "unchanged" });
+  ).toMatchObject({ outcome: "unchanged", branch: "main", commit: "abc", previousCommit: "abc" });
   expect(state.targets).toHaveLength(1);
+  expect(
+    await runtime.command({ action: "deployment-context", project: "demo" }),
+  ).toMatchObject({ project: "demo", repoPath: "/tmp/developer", productionBranch: "main" });
 });
 
 test("unsafe candidate rollback never restores an old plan over surviving candidate processes", async () => {

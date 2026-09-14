@@ -190,6 +190,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           currentBranch = null;
         }
         return {
+          project: project.name,
+          repoPath: project.repoPath,
           productionBranch:
             selection.document!.config.live?.deployBranch ??
             (await deps.documents.host()).deploy.productionBranch,
@@ -305,13 +307,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           ? await deps.sources.resolve(project.repoPath, command.commit)
           : preflight.commit;
         assertDeploymentRecovered(target);
+        const previous = target?.commit
+          ? { previousCommit: target.commit }
+          : {};
         if (
           target?.commit === commit &&
           target.branch === branch &&
           !target.deploymentIncomplete &&
           !command.force
         )
-          return await finish("unchanged", { warnings: preflight.warnings });
+          return await finish("unchanged", {
+            warnings: preflight.warnings,
+            ...previous,
+          });
         let replacement: TargetRecord | undefined;
         if (command.target === "preview" && !target) {
           const policy = (await deps.documents.host()).deploy.generated;
@@ -360,7 +368,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             }),
           );
         }
-        return await finish("deployed", { warnings });
+        return await finish("deployed", { warnings, ...previous });
       }
       if (command.action === "destroy") {
         if (command.target !== "preview")

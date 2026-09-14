@@ -163,6 +163,13 @@ detached HEAD because it does not deploy the current checkout. If the current
 checkout differs from the Production branch, interactive commands should make
 the deployed branch clear.
 
+Every deploy resolves its Project from `--project` or the working directory
+and, before anything changes, prints a line such as
+`Deploying share (/Users/me/share) to live from main.` on stderr. A deploy run
+from the wrong checkout is therefore visible in the first line of output, and
+the final line names the deployed revision, for example
+`share live deployed main@470a510 (was 83496f8)`.
+
 Preview deploy:
 
 ```bash

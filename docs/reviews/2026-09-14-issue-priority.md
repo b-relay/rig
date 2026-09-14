@@ -26,7 +26,7 @@ testability and honesty refactors.
 9. ~~#143~~ (fixed) Capture wrapper rewrites a running component as failed and exits, orphaning the detached child. Unsupervised production process.
 10. ~~#212~~ (fixed) Lease recovery binds to the sh group leader only and drops keepAlive: dead leader reads stopped, next up spawns a duplicate; recovered processes never restart.
 11. ~~#199~~ (fixed) Interpolated paths inserted into shell commands unquoted; a workspace or RIG_ROOT with a space breaks every component command.
-12. #223 `rig deploy live` resolves the Project from cwd with no echo or confirmation; running it in another checkout redeploys that project.
+12. ~~#223~~ (fixed) `rig deploy live` resolves the Project from cwd with no echo or confirmation; running it in another checkout redeploys that project.
 13. #219 `down preview --destroy` persists destructionPending before preconditions; a refused destroy wedges the Preview with processes running and blocks uninstall.
 14. #151 Crash between an applied effect and its journal capture bricks the Target: down, up, deploy, destroy all fail with hints pointing at each other.
 15. #147 CLI sends the bearer token to whatever process owns a stale daemon port.

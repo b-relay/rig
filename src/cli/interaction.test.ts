@@ -39,7 +39,12 @@ function fixture() {
             existing: false,
           };
         if (request.action === "deployment-context")
-          return { productionBranch: "main", currentBranch: "feature" };
+          return {
+            project: "demo",
+            repoPath: "/repo",
+            productionBranch: "main",
+            currentBranch: "feature",
+          };
         return {
           targets: [
             { name: "local", kind: "local", state: "configured" },
@@ -135,9 +140,28 @@ test("cancellation while a context query is pending prevents a deploy request fr
   deps.signal = controller.signal;
   deps.client.command = async () => {
     controller.abort();
-    return { productionBranch: "main", currentBranch: "main" };
+    return {
+      project: "demo",
+      repoPath: "/repo",
+      productionBranch: "main",
+      currentBranch: "main",
+    };
   };
   await expect(
     prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
   ).rejects.toMatchObject({ code: "CANCELLED" });
+});
+test("every deploy names the resolved Project, directory, Target, and Branch before the daemon acts", async () => {
+  const { deps, requests } = fixture();
+  const lines: string[] = [];
+  deps.output = { write() {}, error: (text) => void lines.push(text) };
+  await prepareInteractiveRequest(
+    { action: "deploy", target: "live", branch: "main", repoPath: "/elsewhere" },
+    deps,
+  );
+  expect(requests[0]).toMatchObject({ action: "deployment-context", repoPath: "/elsewhere" });
+  expect(lines).toEqual(["Deploying demo (/repo) to live from main.\n"]);
+  lines.length = 0;
+  await prepareInteractiveRequest({ action: "deploy", target: "preview", repoPath: "/repo" }, deps);
+  expect(lines).toEqual(["Deploying demo (/repo) to preview from feature.\n"]);
 });

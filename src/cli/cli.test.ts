@@ -234,8 +234,15 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
       async status(): Promise<ProjectStatusReport> {
         throw new Error("Unexpected status read");
       },
-      async command(request: unknown) {
+      async command(request: { action?: string }) {
         requests.push(request);
+        if (request.action === "deployment-context")
+          return {
+            project: "test",
+            repoPath: "/workspace",
+            productionBranch: "main",
+            currentBranch: "main",
+          };
         return { project: "test", outcome: "unchanged" };
       },
     },

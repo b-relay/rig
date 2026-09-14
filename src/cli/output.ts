@@ -25,10 +25,18 @@ export function renderResult(action: string, value: unknown): string {
   if (!outcome) return `${subject}: operation returned no final outcome.\n`;
   const path =
     action === "init" && report.path ? `\nConfig: ${word(report.path)}` : "";
+  const revision =
+    action === "deploy" && report.branch && report.commit
+      ? ` ${word(report.branch)}@${word(report.commit).slice(0, 7)}${
+          report.previousCommit && report.previousCommit !== report.commit
+            ? ` (was ${word(report.previousCommit).slice(0, 7)})`
+            : ""
+        }`
+      : "";
   const warnings = Array.isArray(report.warnings)
     ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
     : "";
-  return `${subject} ${outcome}${path}\n${warnings}`;
+  return `${subject} ${outcome}${revision}${path}\n${warnings}`;
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);

@@ -481,7 +481,11 @@ keys (`HOST`, `HOSTNAME`, `BIND`, `BIND_ADDR`, `BIND_ADDRESS`, `BIND_HOST`,
 may not hold a wildcard address; other env values are not inspected, because
 `HOST` often names a public hostname rather than a bind address. A process
 that reads its bind address from somewhere Rig cannot see is your
-responsibility.
+responsibility. A `health` value that starts with `http://` or `https://` in
+any letter case is an HTTP probe: the whole string must parse as a URL with
+no username or password and a hostname of `127.0.0.1` or `localhost`. Query
+strings may mention other hosts. Any other `health` value is a shell command
+and follows the command rule.
 
 Commands, hooks, health checks, and build commands may use `${...}`
 placeholders. The available properties are:

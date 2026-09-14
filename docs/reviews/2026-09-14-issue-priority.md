@@ -59,7 +59,7 @@ testability and honesty refactors.
 39. ~~#231~~ (fixed) Honesty and functional: git source store resolves relative repository/destination against rigd's cwd.
 40. ~~#157~~ (fixed) sqlite path and envFile are not confined; rigd creates directories and files at any user-writable absolute path.
 41. ~~#135~~ (fixed) Localhost-only binding check bypassed by a quoted shell wrapper; hooks and env not checked.
-42. #173 Health URL localhost validation bypassed by userinfo quote or uppercase scheme; rigd polls an arbitrary host.
+42. ~~#173~~ (fixed) Health URL localhost validation bypassed by userinfo quote or uppercase scheme; rigd polls an arbitrary host.
 43. #156 Installer shell environment inherited by rigd and every component and hook, persisted to capture/launchd JSON. (#229, #232.)
 44. #195 Installation receipt key hashes the whole daemon environment; a restart from another shell rebuilds every installed component.
 45. #192 Renaming a component while keeping its installName fails every later deploy with ARTIFACT_CONFLICT; on local, up never re-runs build.

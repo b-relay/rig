@@ -794,3 +794,42 @@ test("env values that are not wildcard bindings are accepted, and a wrapped loca
   });
   expect(config.components.web).toMatchObject({ env: { HOST: "app.example.com" } });
 });
+
+test.each([
+  "http://127.0.0.1'@evil.com/health",
+  'http://127.0.0.1"@evil.com/health',
+  "HTTP://10.0.0.1/health",
+  "http://user:secret@127.0.0.1/health",
+  "https://127.0.0.1.nip.io/health",
+])("health URLs are parsed whole and case-insensitively, so %s is rejected", (health) => {
+  let hint = "";
+  try {
+    parseProjectConfig({ name: "app", components: { web: { mode: "managed", command: "serve", health } } });
+  } catch (error) {
+    hint = (error as { hint: string }).hint;
+  }
+  expect(hint).toContain("components.web.health: ");
+  expect(hint).toMatch(/127\.0\.0\.1 or localhost/);
+});
+
+test.each([
+  "http://127.0.0.1:4000/?next=http://example.com",
+  "HTTP://LOCALHOST:${web.port}/health",
+  "curl -fsS http://example.com/ping",
+])("health value %s is accepted", (health) => {
+  const config = parseProjectConfig({ name: "app", components: { web: { mode: "managed", command: "serve", health } } });
+  expect(config.components.web).toMatchObject({ health });
+});
+
+test("Target resolution validates interpolated health values like commands", () => {
+  const config = parseProjectConfig({
+    name: "share",
+    components: {
+      server: { mode: "managed", command: "serve", health: "probe --addr 127.0.0.1:${db.path}", port: 3210 },
+      db: { uses: "sqlite" },
+    },
+  });
+  expect(() => resolveTargetPlan({ config, target: "local", workspacePath: "/repo", dataRoot: "/state/data" })).toThrow(
+    expect.objectContaining({ _tag: "ConfigError", code: "invalid_binding", context: { component: "server", field: "health" } }),
+  );
+});

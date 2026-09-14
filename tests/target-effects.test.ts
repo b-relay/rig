@@ -346,3 +346,24 @@ test("setup recording acquires time for each retained line and reads unchanged s
   expect((await stat(record.logRoot)).mode & 0o777).toBe(0o700);
   expect((await stat(join(record.logRoot, "target.jsonl"))).mode & 0o777).toBe(0o600);
 });
+
+test("a health URL with an uppercase scheme is probed over HTTP rather than run as a shell command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-scheme-"));
+  roots.push(root);
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+  try {
+    const component = {
+      name: "web",
+      kind: "managed" as const,
+      command: "serve",
+      port: server.port!,
+      readyTimeout: 1,
+      env: {},
+      dependsOn: [],
+      health: `HTTP://127.0.0.1:${server.port}/health`,
+    };
+    await expect(effects(root).observations.health(target(root), component, new AbortController().signal)).resolves.toBe(true);
+  } finally {
+    server.stop(true);
+  }
+});

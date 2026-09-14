@@ -15,6 +15,7 @@ import { createReadStream } from "node:fs";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { InstalledComponent, ManagedComponent } from "../config/types";
+import { isHealthUrl } from "../config/schema";
 import type { TargetRecord } from "../domain/runtime";
 import type {
   Supervisor,
@@ -149,7 +150,7 @@ export function createTargetEffects(
   ): Promise<boolean> => {
     if (!component.health) return false;
     try {
-      if (/^https?:\/\//.test(component.health)) {
+      if (isHealthUrl(component.health)) {
         const response = await fetch(component.health, {
           signal,
           redirect: "error",

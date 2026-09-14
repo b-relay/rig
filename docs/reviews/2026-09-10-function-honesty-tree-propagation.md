@@ -289,7 +289,7 @@ owner carries only its own owner-level defects.
 | minor logs gaps (UTC times, cursor error on unreadable file, wrapper logs invisible, no Target log rotation, build output burst) | #169 |
 | readiness never re-observes the process: foreign listener certifies, immediate exit reported started, dead process waits full readyTimeout | #171 |
 | missing envFile → raw ENOENT → `UNEXPECTED` | #172 |
-| health URL localhost check bypassed by userinfo quote / uppercase scheme | #173 |
+| health URL localhost check bypassed by userinfo quote / uppercase scheme | #173 (fixed: whole-URL parse, no userinfo, case-insensitive scheme shared with the adapter) |
 | `deploy --no-up` on a running live Target stops production | #174 |
 | `occupied` ignores `recovery.plan` ports | #175 |
 | health minors (3xx unhealthy without reason, evidence discarded, dependsOn readiness weaker than documented, readyTimeout overflow) | #176 |

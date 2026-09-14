@@ -1,6 +1,10 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { ConfigError } from "./errors.js";
-import { parseProjectConfig, localhostCommand } from "./schema.js";
+import {
+  parseProjectConfig,
+  localhostCommand,
+  localhostHealth,
+} from "./schema.js";
 import type {
   Hooks,
   ProjectConfig,
@@ -431,13 +435,22 @@ function resolvePlanComponent({
       "invalid_binding",
       { component: name },
     );
+  const resolvedHealth = health
+    ? interpolateShell(health, properties)
+    : undefined;
+  if (resolvedHealth !== undefined && !localhostHealth(resolvedHealth))
+    throw new ConfigError(
+      "Resolved health check addresses a host outside localhost.",
+      "invalid_binding",
+      { component: name, field: "health" },
+    );
   return {
     ...common,
     kind: "managed" as const,
     port,
     command: resolvedCommand,
     readyTimeout: component.readyTimeout ?? (plugin ? 60 : 30),
-    ...(health ? { health: interpolateShell(health, properties) } : {}),
+    ...(resolvedHealth !== undefined ? { health: resolvedHealth } : {}),
     ...(plugin === "convex"
       ? { sitePort: Number(properties[`${name}.sitePort`]) }
       : {}),

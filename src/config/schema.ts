@@ -56,20 +56,29 @@ const command = text
   .describe(
     "Shell command run with /bin/sh -c; explicit bindings must be localhost only. Interpolated values with spaces or shell characters are single-quoted unless the placeholder is already quoted.",
   );
+/** A health value is an HTTP probe when it starts with an http(s) scheme in any letter case; anything else runs as a shell command. */
+export function isHealthUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+/** A health URL must parse as a whole, carry no userinfo, and address 127.0.0.1 or localhost; a shell health command follows the command rule. */
+export function localhostHealth(value: string): boolean {
+  if (!isHealthUrl(value)) return localhostCommand(value);
+  try {
+    const url = new URL(value);
+    return (
+      url.username === "" &&
+      url.password === "" &&
+      ["127.0.0.1", "localhost"].includes(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
 const health = text
-  .refine((value) => {
-    if (!localhostCommand(value)) return false;
-    for (const match of value.matchAll(/https?:\/\/[^\s'"/]+/g)) {
-      try {
-        const hostname = new URL(match[0].replace(/\$\{[^}]+\}/g, "1234"))
-          .hostname;
-        if (!["127.0.0.1", "localhost"].includes(hostname)) return false;
-      } catch {
-        return false;
-      }
-    }
-    return true;
-  }, "Health checks must address 127.0.0.1 or localhost.")
+  .refine(
+    (value) => localhostHealth(value.replace(/\$\{[^}]+\}/g, "1234")),
+    "Health checks must address 127.0.0.1 or localhost.",
+  )
   .describe(
     "Local HTTP URL or shell command used to check readiness; interpolated values are shell-quoted like command.",
   );

@@ -164,13 +164,29 @@ export async function readProjectConfig(
   repoPath: string,
 ): Promise<ConfigDocument<ProjectConfig>> {
   const path = await locateConfig(resolve(repoPath), "rig");
-  if (!path)
+  if (!path) {
+    // A directory that is gone is a moved Project, not a Project that was never initialized.
+    const present = await stat(resolve(repoPath)).then(
+      () => true,
+      (error) => {
+        if (missing(error)) return false;
+        throw error;
+      },
+    );
+    if (!present)
+      throw new ConfigError(
+        `Project directory ${repoPath} does not exist.`,
+        "missing_directory",
+        { repoPath },
+        "Run rig repoint <new path> --project <name> to register the moved directory.",
+      );
     throw new ConfigError(
       "No rig.yaml or rig.json found.",
       "missing_config",
       { repoPath },
       "Run rig init from the Project repository.",
     );
+  }
   return readDocument(path, parseProjectConfig);
 }
 /** Searches upward from a directory or file. Ambiguous or invalid nearer config never falls through. */

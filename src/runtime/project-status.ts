@@ -13,6 +13,7 @@ import {
   deploymentFlags,
 } from "./status";
 import { targetName } from "./targets";
+import { movedProject, registeredDirectoryMissing } from "./projects";
 /** Adds configured-only capabilities without interpreting configuration as runtime evidence. */
 export async function projectStatus(
   project: Pick<ProjectRecord, "name" | "repoPath">,
@@ -66,7 +67,9 @@ export async function projectStatus(
       );
     }
   } catch (error) {
-    const failure = asRigError(error);
+    const failure = registeredDirectoryMissing(error)
+      ? movedProject(project)
+      : asRigError(error);
     warnings.push(`${failure.message} ${failure.hint}`);
   }
   if (document) {

@@ -774,6 +774,16 @@ re-plans the Working copy Target from the new directory's config with the same
 port reservation as `rig up`: a port that another Target records is refused
 with `PORT_RESERVED` and the registration is left unchanged.
 
+A moved repository is recovered from inside it: `cd <new path> && rig repoint .`
+selects the Project by the config's name, so the registered path may differ.
+Until then, a `--project` command whose registered directory no longer exists
+fails with `PROJECT_MOVED`, naming the old directory and the repoint command;
+`rig status` carries the same text as a warning and `rig doctor` reports
+`project-config` with reason `directory-missing`. Running another command from
+an unregistered copy fails with `PROJECT_PATH_CONFLICT`, which names both
+directories. `rig init` over a conflicting registration names the registered
+Project and path, and whether `repoint` or `rename` resolves it.
+
 ## Provider Boundary
 
 `rigd` resolves Host config and Project config into a runtime plan before

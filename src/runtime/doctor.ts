@@ -9,6 +9,7 @@ import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
 import { recordedPorts } from "./ports";
 import { transitionInProgress } from "./project-status";
+import { movedProject, registeredDirectoryMissing } from "./projects";
 
 /** Host checks and ownership evidence remain available when Project discovery fails. */
 export async function hostDoctor(
@@ -103,7 +104,7 @@ export async function doctor(
     project.name,
     deps.documents,
   );
-  checks.push(projectConfigCheck(repository));
+  checks.push(projectConfigCheck(project, repository));
   for (const target of targets) {
     if (target.deploymentIncomplete && !target.recovery)
       checks.push({
@@ -200,8 +201,24 @@ async function acquireDocument(
 }
 const UNREADABLE_HINT =
   "Inspect the Project directory and file permissions, then run doctor again.";
-function projectConfigCheck(repository: AcquiredDocument): DoctorCheck {
+function projectConfigCheck(
+  project: Pick<ProjectRecord, "name" | "repoPath">,
+  repository: AcquiredDocument,
+): DoctorCheck {
   const name = "project-config";
+  if (
+    repository.outcome === "invalid" &&
+    registeredDirectoryMissing(repository.failure)
+  ) {
+    const moved = movedProject(project);
+    return {
+      name,
+      ok: false,
+      message: moved.message,
+      reason: "directory-missing",
+      hint: moved.hint,
+    };
+  }
   switch (repository.outcome) {
     case "usable":
       return { name, ok: true, message: "Project config is valid." };

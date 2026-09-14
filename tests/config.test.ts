@@ -66,6 +66,19 @@ test.each([
   },
 );
 
+test("a registered directory that no longer exists is told apart from a directory without a config", async () => {
+  const root = await fixture();
+  await expect(readProjectConfig(root)).rejects.toMatchObject({
+    code: "missing_config",
+  });
+  const gone = join(root, "moved-away");
+  await expect(readProjectConfig(gone)).rejects.toMatchObject({
+    code: "missing_directory",
+    message: `Project directory ${gone} does not exist.`,
+    context: { repoPath: gone },
+  });
+});
+
 test("Target resolution provides forward component interpolation, environment inheritance, persistent paths, and dependency order", async () => {
   const { parseProjectConfig, resolveTargetPlan } =
     await import("../src/config/index.js");

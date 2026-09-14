@@ -3,6 +3,7 @@ import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError, failureCauses } from "../domain/errors";
+import { ConfigError } from "../config/errors";
 import type { RuntimeDependencies } from "./contracts";
 /** A current registration is authoritative; history is never a candidate path list. */
 export async function selectProject(
@@ -23,7 +24,12 @@ export async function selectProject(
         "Run rig init in the Project directory.",
       );
     if (!readConfig) return { project };
-    const document = await deps.documents.read(project.repoPath);
+    const document = await deps.documents
+      .read(project.repoPath)
+      .catch((error) => {
+        if (registeredDirectoryMissing(error)) throw movedProject(project);
+        throw error;
+      });
     assertIdentity(project, document);
     return { project, document };
   }
@@ -43,15 +49,34 @@ export async function selectProject(
       `Project '${found.document.config.name}' is not registered.`,
       "Run rig init in this Project directory.",
     );
-  if (resolve(project.repoPath) !== resolve(found.repoPath))
+  // repoint is how a registration follows a moved repository, so the config name alone selects it.
+  if (
+    command.action !== "repoint" &&
+    resolve(project.repoPath) !== resolve(found.repoPath)
+  )
     throw new RigError(
       "PROJECT_PATH_CONFLICT",
-      "This Project is registered at another directory.",
-      "Use rig repoint to update the registered directory.",
+      `Project '${project.name}' is registered at ${project.repoPath}, not ${found.repoPath}.`,
+      `Run rig repoint . from ${found.repoPath} to move the registration there, or run this command from ${project.repoPath}.`,
       { registeredPath: project.repoPath },
     );
   assertIdentity(project, found.document);
   return { project, document: found.document };
+}
+/** A config read that found no directory at all, as opposed to a directory without a config. */
+export function registeredDirectoryMissing(error: unknown): boolean {
+  return error instanceof ConfigError && error.code === "missing_directory";
+}
+/** The registration outlived its directory; only repoint can reconcile them. */
+export function movedProject(
+  project: Pick<ProjectRecord, "name" | "repoPath">,
+): RigError {
+  return new RigError(
+    "PROJECT_MOVED",
+    `Project '${project.name}' is registered at ${project.repoPath}, which no longer exists.`,
+    `Run rig repoint <new path> --project ${project.name}, or rig repoint . from the moved repository.`,
+    { registeredPath: project.repoPath },
+  );
 }
 /** Everything init checks before it touches the repository: a directory was given, the
  * Project it would create has an identity, and no registered Project conflicts with it. */
@@ -141,8 +166,11 @@ function assertRegistrationAvailable(
   )
     throw new RigError(
       "PROJECT_CONFLICT",
-      "A different Project registration already uses this name or path.",
-      "Use explicit rename or repoint to change an existing Project.",
+      `Project '${existing.name}' is already registered at ${existing.repoPath}.`,
+      existing.name === identity.name
+        ? `Run rig repoint ${identity.repoPath} --project ${existing.name} to move it here, or initialize with another Project name.`
+        : `Run rig rename ${identity.name} --project ${existing.name} to rename the registered Project, or restore its config name.`,
+      { registeredName: existing.name, registeredPath: existing.repoPath },
     );
   return existing;
 }

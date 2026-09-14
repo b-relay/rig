@@ -472,6 +472,85 @@ test("repoint uses the new config path and retains assigned ports, including Con
   });
 });
 
+test("rig repoint . from the moved repository selects the Project by config name, and other commands from elsewhere name the registered directory", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await expect(
+    runtime.command({ action: "config", repoPath: "/tmp/moved" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_PATH_CONFLICT",
+    message: "Project 'demo' is registered at /tmp/developer, not /tmp/moved.",
+    hint: "Run rig repoint . from /tmp/moved to move the registration there, or run this command from /tmp/developer.",
+  });
+  await runtime.command({
+    action: "repoint",
+    repoPath: "/tmp/moved",
+    newPath: "/tmp/moved",
+  });
+  expect(state.projects[0]?.repoPath).toBe("/tmp/moved");
+  expect(state.projects[0]?.configPath).toBe("/tmp/moved/rig.yaml");
+  await expect(
+    runtime.command({ action: "config", repoPath: "/tmp/moved" }),
+  ).resolves.toMatchObject({ project: "demo" });
+});
+
+test("a Project whose registered directory no longer exists is named with its path and the repoint command by config, status and doctor", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const originalRead = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => {
+    if (path === "/tmp/developer")
+      throw new ConfigError(
+        "Project directory /tmp/developer does not exist.",
+        "missing_directory",
+        { repoPath: path },
+      );
+    return await originalRead(path);
+  };
+  const message =
+    "Project 'demo' is registered at /tmp/developer, which no longer exists.";
+  const hint =
+    "Run rig repoint <new path> --project demo, or rig repoint . from the moved repository.";
+  await expect(
+    runtime.command({ action: "config", project: "demo" }),
+  ).rejects.toMatchObject({ code: "PROJECT_MOVED", message, hint });
+  expect((await runtime.status({ project: "demo" })).warnings).toContain(
+    `${message} ${hint}`,
+  );
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as DoctorReport;
+  expect(report.checks).toContainEqual({
+    name: "project-config",
+    ok: false,
+    message,
+    reason: "directory-missing",
+    hint,
+  });
+});
+
+test("init names the conflicting registration and the command that resolves it", async () => {
+  const { runtime, state, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await expect(
+    runtime.command({ action: "init", repoPath: "/tmp/elsewhere" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_CONFLICT",
+    message: "Project 'demo' is already registered at /tmp/developer.",
+    hint: "Run rig repoint /tmp/elsewhere --project demo to move it here, or initialize with another Project name.",
+  });
+  config.name = "renamed";
+  await expect(
+    runtime.command({ action: "init", repoPath: "/tmp/developer" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_CONFLICT",
+    message: "Project 'demo' is already registered at /tmp/developer.",
+    hint: "Run rig rename renamed --project demo to rename the registered Project, or restore its config name.",
+  });
+  expect(state.projects).toHaveLength(1);
+});
+
 test("repoint refuses a config whose port another Target records and leaves the registration unchanged", async () => {
   const { runtime, state, deps, config } = fixture();
   deps.files.selectPorts = async ({ requests, occupied }) => {

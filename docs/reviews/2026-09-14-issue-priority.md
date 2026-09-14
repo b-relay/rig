@@ -91,7 +91,7 @@ testability and honesty refactors.
 68. ~~#166~~ (fixed) Deleting a Target log directory while a component runs silently drops all further output.
 69. ~~#168~~ (fixed) Diagnostic log rotation permanently disabled after one partial record; log grows without bound.
 70. ~~#165~~ (fixed) Target log reader cannot get past one bad record; logs and --follow fail until >4 MiB of newer output.
-71. #207 `rig logs --follow` never exits when stdout is closed; orphan CLI polls rigd every 250 ms.
+71. ~~#207~~ (fixed) `rig logs --follow` never exits when stdout is closed; orphan CLI polls rigd every 250 ms.
 72. #141 state.activity grows without bound and records usage mistakes as failed Operations.
 73. #197 Hook, build or install timeout reported as generic COMMAND_TIMEOUT with all output discarded; timeouts hard-coded.
 74. #172 Missing envFile fails deploy with a raw ENOENT turned into UNEXPECTED; path lost.

@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -28,15 +29,31 @@ export function reportRootFailure(error: unknown, output: UserOutput): number {
   output.error(`${error.message}\n${error.hint}\n`);
   return 1;
 }
-export function userOutput(): UserOutput {
-  return {
-    write: (text) => {
-      process.stdout.write(text);
-    },
-    error: (text) => {
-      process.stderr.write(text);
-    },
+/** Terminal text is written synchronously so a reader that has gone away (a closed pipe, `| head`) is
+ * seen at the write that fails: that text is dropped, onClosed runs once, and later text to that stream is
+ * dropped silently. Bun's stream writes swallow EPIPE, which is why the file descriptors are written directly. */
+export function userOutput(onClosed?: () => void): UserOutput {
+  const closed = new Set<number>();
+  const write = (fd: 1 | 2, text: string): void => {
+    if (closed.has(fd)) return;
+    const bytes = Buffer.from(text);
+    let offset = 0;
+    try {
+      while (offset < bytes.length) offset += writeSync(fd, bytes, offset);
+    } catch (error) {
+      if (!isGoneReader(error)) throw error;
+      closed.add(fd);
+      if (closed.size === 1) onClosed?.();
+    }
   };
+  return {
+    write: (text) => write(1, text),
+    error: (text) => write(2, text),
+  };
+}
+function isGoneReader(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EPIPE" || code === "EBADF";
 }
 /** A launchd job must outlive package upgrades, so it records the PATH entry (usually a stable symlink) that resolves to the running executable rather than the resolved, version-specific path. */
 export async function stableExecutablePath(

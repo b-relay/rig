@@ -12,22 +12,24 @@ import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
 import { inspectOfflineHost } from "./daemon/offline-doctor";
 export async function main(args: readonly string[]): Promise<number> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked.
+  const output = userOutput(cancel);
   let root: string;
   try {
     root = rigRoot();
   } catch (error) {
-    return reportRootFailure(error, userOutput());
+    return reportRootFailure(error, output);
   }
   const cwd = process.cwd();
-  const controller = new AbortController();
-  const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
     return await runRigCli(args, {
       root,
       cwd,
-      output: userOutput(),
+      output,
       newOperationId: randomUUID,
       diagnostics: createHostDiagnosticLog({
         root,

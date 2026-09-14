@@ -125,7 +125,10 @@ export async function runRigCli(
   }
 }
 
-/** Follow consumes opaque daemon cursors; duplicate text is never used as identity. */
+/** Entries fetched per follow poll: --lines sizes the first page only, so a busy Target is not throttled to it. */
+const FOLLOW_BATCH_LINES = 1000;
+/** Follow consumes opaque daemon cursors; duplicate text is never used as identity.
+ * It ends on cancellation, which the entrypoint also raises when the terminal stops reading. */
 async function followLogs(
   request: RuntimeCommand,
   initial: unknown,
@@ -137,6 +140,7 @@ async function followLogs(
     if (dependencies.signal?.aborted) return;
     const result = await dependencies.client.command({
       ...request,
+      lines: FOLLOW_BATCH_LINES,
       ...(typeof cursor === "string" ? { after: cursor } : {}),
     });
     dependencies.output.write(renderLogs(result, false));

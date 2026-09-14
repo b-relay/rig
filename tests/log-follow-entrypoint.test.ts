@@ -64,3 +64,51 @@ test("compiled follow uses production scheduling and terminates on SIGTERM witho
     await rm(directory, { recursive: true, force: true });
   }
 }, 30000);
+
+test("follow exits 0 and stops polling once its stdout reader has gone away", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rig-closed-follow-"));
+  const root = join(directory, ".rig");
+  const target = { id: "closed-fixture", name: "live", desired: "stopped", logRoot: join(root, "logs") } as TargetRecord;
+  const requests: string[] = [];
+  const files = createRuntimeFiles();
+  const server = startControlPlane({
+    port: 0, token: "isolated-follow-token", instanceId: "closed-fixture",
+    async handle(request) {
+      requests.push(request.action);
+      if (request.action !== "logs") throw new Error("Unexpected lifecycle request");
+      // Every poll finds one more line, so the follow keeps writing after its reader has left.
+      await writeFile(join(target.logRoot, "target.jsonl"), JSON.stringify({ timestamp: `2026-09-09T12:00:${String(requests.length).padStart(2, "0")}Z`, component: "app", stream: "stdout", line: `line ${requests.length}` }) + "\n", { flag: "a" });
+      return { project: "fixture", target: "live", ...await files.logs(target, request.after, 100) };
+    },
+  });
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true });
+    await mkdir(join(root, "auth"));
+    await mkdir(target.logRoot);
+    await writeFile(join(root, "daemon/address.json"), JSON.stringify({ port: server.port, pid: process.pid, instanceId: "closed-fixture" }));
+    await writeFile(join(root, "auth/control-plane.token"), "isolated-follow-token");
+    const entry = join(import.meta.dir, "../src/index.ts");
+    // head closes the pipe after one line; the follow must notice at its next write and stop on its own.
+    const script = `"${process.execPath}" run "${entry}" logs live --project fixture --follow | head -n 1; echo "rig=\${PIPESTATUS[0]}"`;
+    const running = Bun.spawn(["bash", "-c", script], { cwd: directory, env: { ...process.env, RIG_ROOT: root }, stdout: "pipe", stderr: "pipe" });
+    child = running;
+    const output = new Response(running.stdout).text();
+    const error = new Response(running.stderr).text();
+    const exit = await Promise.race([child.exited, new Promise<never>((_, reject) => { watchdog = setTimeout(() => reject(new Error("Follow kept running after its reader closed")), 5000); })]);
+    clearTimeout(watchdog);
+    expect(exit).toBe(0);
+    expect(await output).toBe("fixture live\nrig=0\n");
+    expect(await error).toBe("");
+    const count = requests.length;
+    await Bun.sleep(400);
+    expect(requests.length).toBe(count);
+    expect(target.desired).toBe("stopped");
+  } finally {
+    clearTimeout(watchdog);
+    if (child && child.exitCode === null) { child.kill("SIGKILL"); await child.exited; }
+    server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30000);

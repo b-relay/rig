@@ -439,6 +439,12 @@ rig logs preview feature/login --follow
 
 `rig logs` prints recent stdout and stderr together by default and exits.
 `--follow` streams. Logs may be read for stopped Targets when logs exist.
+`--lines` sizes the first page only; a follow then fetches up to 1000 new
+entries per poll so a busy Target is not throttled to the page size. A follow
+ends on Ctrl-C, SIGTERM, or when whatever reads its output goes away (for
+example `rig logs live --follow | head`): the write that fails is dropped, the
+command exits 0, and rigd sees no further polls. A quiet follow notices the
+missing reader at its next line, not before.
 Output identifies component, timestamp, and stream with `>` for stdout and `!`
 for stderr; legacy records with missing evidence must be marked unknown.
 A record that cannot be parsed (for example one cut short by a crash and glued

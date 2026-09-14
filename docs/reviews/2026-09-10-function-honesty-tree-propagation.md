@@ -324,7 +324,7 @@ owner carries only its own owner-level defects.
 | Caddy validate/reload stderr discarded on every path, rejected file deleted; missing caddy generic COMMAND_START | #205 |
 | Caddy/daemon minors (port-unaware conflict, remove() no-op reload, capture raw stack, Origin check not a rebinding defence) | #206 |
 | empty RIG_ROOT flips rigd install into launchd mode rooted at cwd (addendum) | #122 | (fixed: empty RIG_ROOT now roots at `~/.rig`, which matches launchd mode) |
-| rig logs --follow never exits when stdout closes: pipelines hang, orphan CLI polls rigd; follow capped at --lines per poll | #207 |
+| rig logs --follow never exits when stdout closes: pipelines hang, orphan CLI polls rigd; follow capped at --lines per poll | #207 | (fixed: `userOutput` writes the descriptors synchronously and reports a gone reader through `onClosed`, which `main` wires to the cancel controller; follow polls use a fixed 1000-entry batch) |
 | preview Branch positional silently discarded when --deployment also passed: wrong Preview stopped or destroyed | #208 |
 | CLI minors (help unknown exit 0, usage hint, rigd capture --help ENOENT, list hides ownership, empty option values dropped) | #209 |
 | status/doctor during a normal in-flight deploy report unknown with a destructive "run down" hint | #210 |

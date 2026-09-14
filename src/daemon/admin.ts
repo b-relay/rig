@@ -16,6 +16,7 @@ import { readDaemonAddress, readDaemonOwner, readDaemonToken } from "./files";
 import { RigError } from "../domain/errors";
 import { processExists } from "./host";
 import { recordedProcess, type ProcessRecord } from "./process-identity";
+import { clearStartupFailure, readStartupFailure } from "./startup-failure";
 import { inheritedEnvironment } from "./environment";
 import { z } from "zod";
 import {
@@ -273,6 +274,7 @@ export class DaemonAdmin {
       }),
       { mode: 0o600 },
     );
+    await clearStartupFailure(root);
     try {
       if (this.options.mode === "process") await this.spawnDetached();
       else await this.installLaunchd();
@@ -286,12 +288,28 @@ export class DaemonAdmin {
     for (let attempt = 0; attempt < 100; attempt++) {
       const status = await this.status();
       if (status.reachable) return { ...status, outcome: "installed" };
+      // The daemon reports its own failed start; waiting longer would not change it.
+      const startup = await readStartupFailure(root);
+      if (startup) {
+        // A daemon that refused to start is not installed; a launchd job would only relaunch it.
+        if (this.options.mode === "launchd")
+          await this.launchctl(["bootout", this.labelDomain()]).catch(() => {});
+        await this.removeInstallation(this.options.mode);
+        throw new RigError(
+          "DAEMON_START",
+          `rigd did not start: ${startup.message}`,
+          startup.hint ??
+            "Inspect the daemon startup log and retry installation.",
+          { startup },
+        );
+      }
       await pause(50);
     }
     throw new RigError(
       "DAEMON_START",
       "rigd did not become reachable.",
-      "Inspect the daemon startup log and retry installation.",
+      `rigd did not answer within five seconds and recorded no failure. Inspect ${join(root, "daemon", "startup.log")} and retry installation.`,
+      { log: join(root, "daemon", "startup.log") },
     );
   }
   private async performUninstall(): Promise<DaemonStatus> {

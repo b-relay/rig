@@ -46,6 +46,19 @@ in it cannot be verified: `rigd status` warns, `rigd install` and `rigd
 uninstall` refuse, and a manual `rigd start` refuses, each naming the files
 under `<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.
 
+Daemon startup takes a lock directory, `<RIG_ROOT>/daemon/acquiring`, and
+records its own pid and start time inside it. A lock whose holder has exited or
+whose pid now belongs to another process is reclaimed on the next start, as is
+a lock with no holder record that is more than a minute old. A lock held by a
+live process, or a holder-less lock begun in the last minute, is refused as
+`DAEMON_START_LOCK` with the lock path and pid in the hint. When any start
+fails, the daemon writes `<RIG_ROOT>/daemon/startup-failure.json` before it
+exits, and `rigd install` reports that failure's message and hint as
+`DAEMON_START` as soon as it appears, instead of waiting out its timeout;
+the failed installation is removed so `rigd status` reports it not installed.
+When the daemon records nothing within five seconds, the `DAEMON_START` hint
+names `startup.log` to inspect.
+
 Stopping, restarting, or upgrading `rigd` is not a Target stop. Managed
 processes keep serving while the daemon is down, and the next daemon adopts
 them through their recorded process leases without re-running start hooks.

@@ -256,7 +256,7 @@ owner carries only its own owner-level defects.
 | `up`/`restart` on local never re-plans; `deploy local` rejected | #136 |
 | SIGTERM force-closes in-flight requests | #137 |
 | pid reuse bricks install/uninstall/start | #138 (fixed: owner/address records carry the process start time; `recordedProcess` tells running, exited, replaced, and unverified apart; only a verified process is signalled; unverified records name the files to remove) |
-| stale `acquiring` lock unrecoverable via CLI | #139 |
+| stale `acquiring` lock unrecoverable via CLI | #139 (fixed: the lock records its holder; exited or replaced holders and minute-old holder-less locks are reclaimed; refusals name the lock and pid; the daemon writes `startup-failure.json` and `rigd install` reports it) |
 | cleanly stopped daemon cannot be uninstalled | #140 |
 | `state.activity` unbounded; usage mistakes recorded | #141 |
 | minor daemon messaging gaps | #142 |

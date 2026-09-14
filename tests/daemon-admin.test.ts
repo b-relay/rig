@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DaemonAdmin } from "../src/daemon/admin";
@@ -616,3 +616,114 @@ test("the daemon command prefers the PATH entry that resolves to the running exe
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a startup lock left by a dead or replaced startup is reclaimed; a live or recent holder is refused with the lock named and the failure recorded", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-guard-"));
+  const script = join(root, "child.ts");
+  const guard = join(root, "daemon", "acquiring");
+  await mkdir(join(root, "daemon"), { recursive: true });
+  await mkdir(join(root, "auth"));
+  await writeFile(join(root, "auth", "control-plane.token"), "test-secret");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; await runDaemonHost({root:process.env.RIG_ROOT!,port:0,handle:async()=>({}),shutdown:async()=>{}});`,
+  );
+  const start = () =>
+    Bun.spawn([process.execPath, script], {
+      cwd: root,
+      env: { ...process.env, RIG_ROOT: root },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+  const startsAndServes = async () => {
+    const child = start();
+    try {
+      const deadline = Date.now() + 10000;
+      let address: { pid: number } | undefined;
+      while (!address && Date.now() < deadline) {
+        address = await readFile(join(root, "daemon", "address.json"), "utf8")
+          .then((text) => JSON.parse(text) as { pid: number })
+          .catch(() => undefined);
+        if (!address) await Bun.sleep(50);
+      }
+      expect(address).toMatchObject({ pid: child.pid });
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+    await rm(join(root, "daemon", "address.json"), { force: true });
+    await rm(join(root, "daemon", "owner.json"), { force: true });
+  };
+  const refused = async (pattern: RegExp) => {
+    const child = start();
+    expect(await child.exited).not.toBe(0);
+    const stderr = await new Response(child.stderr).text();
+    expect(stderr).toContain("DAEMON_START_LOCK");
+    expect(stderr).toContain(guard);
+    expect(stderr).toMatch(pattern);
+    expect(
+      JSON.parse(await readFile(join(root, "daemon", "startup-failure.json"), "utf8")),
+    ).toMatchObject({ code: "DAEMON_START_LOCK", hint: expect.stringContaining(guard) });
+    await rm(guard, { recursive: true, force: true });
+  };
+  try {
+    // Holder replaced by another process: reclaimed.
+    await mkdir(guard);
+    await writeFile(
+      join(guard, "holder.json"),
+      JSON.stringify({ pid: process.pid, startedAt: "Thu Jan  1 00:00:00 1970" }),
+    );
+    await startsAndServes();
+    // Holder exited: reclaimed.
+    await mkdir(guard);
+    await writeFile(join(guard, "holder.json"), JSON.stringify({ pid: 2147483647, startedAt: "x" }));
+    await startsAndServes();
+    // No holder record (older rigd) and old: reclaimed.
+    await mkdir(guard);
+    const old = new Date(Date.now() - 5 * 60 * 1000);
+    await utimes(guard, old, old);
+    await startsAndServes();
+    // Live holder: refused, naming pid and lock.
+    await mkdir(guard);
+    await writeFile(join(guard, "holder.json"), JSON.stringify({ pid: process.pid }));
+    await refused(new RegExp(`pid ${process.pid}`));
+    // No holder record and recent: refused.
+    await mkdir(guard);
+    await refused(/begun less than/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("install reports the daemon's own startup failure as soon as it is recorded instead of a generic timeout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-startfail-"));
+  const script = join(root, "child.ts");
+  const guard = join(root, "daemon", "acquiring");
+  await mkdir(guard, { recursive: true });
+  await writeFile(join(guard, "holder.json"), JSON.stringify({ pid: process.pid }));
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; await runDaemonHost({root:process.env.RIG_ROOT!,port:0,handle:async()=>({}),shutdown:async()=>{}});`,
+  );
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+  });
+  try {
+    const began = Date.now();
+    const error = await admin.install().then(() => undefined, (error: unknown) => error);
+    expect(Date.now() - began).toBeLessThan(4000);
+    expect(error).toMatchObject({
+      code: "DAEMON_START",
+      message: expect.stringContaining("Another startup owns the daemon acquisition lock"),
+      hint: expect.stringContaining(guard),
+      details: { startup: { code: "DAEMON_START_LOCK" } },
+    });
+    expect(await admin.status()).toMatchObject({ installed: false, running: false });
+  } finally {
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);

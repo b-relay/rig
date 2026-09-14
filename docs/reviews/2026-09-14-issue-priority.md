@@ -75,7 +75,7 @@ testability and honesty refactors.
 52. ~~#183~~ (fixed) state.json parses in strip mode; a downgrade silently drops destructionPending/deploymentIncomplete.
 53. ~~#185~~ (fixed) Effect journal schema is strict; a newer journal bricks the Target on downgrade; orphan journals never reclaimed.
 54. ~~#138~~ (fixed) Stale owner.json/address.json pid reused by another process bricks install, uninstall and start.
-55. #139 Stale daemon/acquiring lock is unrecoverable through the CLI.
+55. ~~#139~~ (fixed) Stale daemon/acquiring lock is unrecoverable through the CLI.
 56. #140 A cleanly stopped rigd cannot be uninstalled: DAEMON_UNCERTAIN with a dead-end hint.
 57. #132 A reachable daemon without install.json cannot be uninstalled.
 58. #131 runDaemonHost.release() throws on corrupt address/owner JSON, masking the startup error.

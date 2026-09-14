@@ -6,6 +6,7 @@ import { createHostDiagnosticLog } from "./diagnostics/host-log";
 import { DaemonAdmin } from "./daemon/admin";
 import { composeDaemon } from "./daemon/composition";
 import { runDaemonHost } from "./daemon/host";
+import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
 export async function main(args: readonly string[]): Promise<number> {
   const root = rigRoot();
@@ -15,7 +16,14 @@ export async function main(args: readonly string[]): Promise<number> {
   }
   if (process.env.RIG_DAEMON_CHILD === "1") {
     const command = await daemonCommand();
-    const runtime = await composeDaemon(root, [...command, "capture"]);
+    let runtime;
+    try {
+      runtime = await composeDaemon(root, [...command, "capture"]);
+    } catch (error) {
+      // runDaemonHost records its own failures; composition failures need the same record.
+      await writeStartupFailure(root, error);
+      throw error;
+    }
     await runDaemonHost({ root, port: 0, ...runtime });
     return 0;
   }

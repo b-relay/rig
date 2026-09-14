@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile, rm, readFile, rename } from "node:fs/promises";
+import { mkdir, writeFile, rm, readFile, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { writeStartupFailure } from "./startup-failure";
 import { startControlPlane } from "./server";
 import { readDaemonToken, ownerSchema } from "./files";
 import type { RuntimeCommand } from "./protocol";
@@ -14,21 +15,75 @@ export interface DaemonHostOptions {
   start?(): Promise<void>;
   editor?(input: unknown): Promise<unknown>;
 }
+/** A lock directory without a holder record is stale once older than this. */
+const GUARD_STALE_MS = 60_000;
 /** Exclusive startup guard serializes stale-lease reclamation. Ambiguous ownership fails closed. */
 export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
+  try {
+    await acquireAndServe(options);
+  } catch (error) {
+    // The installer cannot see this process's stderr; leave it the cause.
+    await writeStartupFailure(options.root, error);
+    throw error;
+  }
+}
+/** Takes the startup lock, reclaiming one whose holder is gone. Refuses a lock
+ * held by a live startup, or by an unknown one begun recently, naming the lock. */
+async function acquireGuard(
+  guard: string,
+  owner: { pid: number; startedAt?: string },
+): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await mkdir(guard, { mode: 0o700 });
+      await writeFile(join(guard, "holder.json"), JSON.stringify(owner), {
+        mode: 0o600,
+      });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const holder = await readFile(join(guard, "holder.json"), "utf8")
+      .then((text) =>
+        ownerSchema
+          .pick({ pid: true, startedAt: true })
+          .parse(JSON.parse(text)),
+      )
+      .catch(() => undefined);
+    if (holder) {
+      const liveness = await recordedProcess(holder);
+      if (liveness === "running" || liveness === "unverified")
+        throw new RigError(
+          "DAEMON_START_LOCK",
+          "Another startup owns the daemon acquisition lock.",
+          `The lock at ${guard} is held by pid ${holder.pid}, which is alive. Wait for that startup to finish; if no rigd is starting for this root, remove ${guard} and retry.`,
+          { guard, pid: holder.pid },
+        );
+    } else {
+      const age =
+        Date.now() - (await stat(guard).catch(() => undefined))?.mtimeMs!;
+      if (!(age >= GUARD_STALE_MS))
+        throw new RigError(
+          "DAEMON_START_LOCK",
+          "Another startup owns the daemon acquisition lock.",
+          `The lock at ${guard} was begun less than a minute ago by a startup that recorded no pid. Wait for it to finish; if no rigd is starting for this root, remove ${guard} and retry.`,
+          { guard },
+        );
+    }
+    await rm(guard, { recursive: true, force: true });
+  }
+  throw new RigError(
+    "DAEMON_START_LOCK",
+    "Another startup owns the daemon acquisition lock.",
+    `The lock at ${guard} was taken again while this startup reclaimed it. Retry.`,
+    { guard },
+  );
+}
+async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
   const directory = join(options.root, "daemon"),
     lease = join(directory, "owner.json"),
     guard = join(directory, "acquiring");
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  try {
-    await mkdir(guard, { mode: 0o700 });
-  } catch {
-    throw new RigError(
-      "DAEMON_START_LOCK",
-      "Another startup owns the daemon acquisition lock.",
-      "Wait for startup; if interrupted, inspect daemon ownership before removing the acquisition lock.",
-    );
-  }
   const owner = {
     pid: process.pid,
     instanceId: randomUUID(),
@@ -36,6 +91,7 @@ export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
       startedAt ? { startedAt } : {},
     )),
   };
+  await acquireGuard(guard, owner);
   let acquired = false;
   try {
     let prior: unknown;

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mergeComponentOverride } from "./override.js";
 import { ConfigError } from "./errors.js";
 const text = z.string().min(1);
 const name = text
@@ -86,7 +87,8 @@ const route = text
   .regex(/^[^\s;"`{}]+$/)
   .or(text.regex(/^\$\{[^}]+\}[^\s;"`]*$/))
   .describe("Single domain token; interpolation is supported.");
-/** Hook commands run with /bin/sh -c and are held to the same localhost rule as Component commands; interpolated values are shell-quoted the same way. */
+/** Hook commands run with /bin/sh -c and are held to the same localhost rule as Component commands; interpolated values are shell-quoted the same way.
+ * A lane override merges hooks per key, like env. */
 const hooks = z.strictObject({
   preStart: command
     .optional()
@@ -116,7 +118,11 @@ const common = {
     .describe(
       "Environment file relative to the workspace. live and Preview files must stay inside the workspace; only local may point elsewhere.",
     ),
-  hooks: hooks.optional().describe("Component lifecycle hooks."),
+  hooks: hooks
+    .optional()
+    .describe(
+      "Component lifecycle hooks; a lane override merges them per key.",
+    ),
 };
 const runtime = {
   command: command.optional(),
@@ -271,15 +277,15 @@ export const projectConfigSchema = z
         Record<string, unknown>
       > = Object.create(null);
       for (const [key, base] of Object.entries(config.components)) {
-        const patch = target.components?.[key] ?? {};
-        const result = component.safeParse({ ...base, ...patch });
+        const merged = mergeComponentOverride(base, target.components?.[key]);
+        const result = component.safeParse(merged);
         if (!result.success)
           ctx.addIssue({
             code: "custom",
             path: [laneName, "components", key],
             message: "Overrides must match the Component kind.",
           });
-        definitions[key] = { ...base, ...patch };
+        definitions[key] = merged;
         if (definitions[key].mode === "installed" && definitions[key].hooks)
           ctx.addIssue({
             code: "custom",

@@ -423,6 +423,12 @@ Host config owns machine capability:
 - daemon address and local auth token
 - installed provider defaults
 
+A lane (`local`, `live`, or `deployments`) may override a shared Component
+under `components.<name>`. Scalar fields such as `command`, `port`, or
+`envFile` replace the shared value, while `env` and `hooks` merge per key:
+a lane that adds `hooks.postStart` keeps the shared `preStart`, and a lane
+that repeats a key replaces just that entry.
+
 A lane's `providers.processSupervisor` selects `rigd` (default; the daemon
 owns child processes), `child` (alias of `rigd`), or `launchd` (one launchd
 agent per Component). Any other name is rejected when the config is parsed, so

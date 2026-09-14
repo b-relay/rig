@@ -1,5 +1,6 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { ConfigError } from "./errors.js";
+import { mergeComponentOverride } from "./override.js";
 import {
   parseProjectConfig,
   localhostCommand,
@@ -155,7 +156,10 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
   const definitions = Object.entries(config.components).map(
     ([name, component]) => ({
       name,
-      component: { ...component, ...lane?.components?.[name] } as Component,
+      component: mergeComponentOverride(
+        component,
+        lane?.components?.[name],
+      ) as Component,
     }),
   );
   const { properties: resolvedProperties, preparedComponents } =

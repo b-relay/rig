@@ -833,3 +833,18 @@ test("Target resolution validates interpolated health values like commands", () 
     expect.objectContaining({ _tag: "ConfigError", code: "invalid_binding", context: { component: "server", field: "health" } }),
   );
 });
+
+test("a lane Component override merges hooks per key like env, so adding one hook keeps the shared ones", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    components: {
+      web: { mode: "managed", command: "serve", env: { A: "shared" }, hooks: { preStart: "echo pre", preStop: "echo stop" } },
+    },
+    local: { components: { web: { env: { B: "local" }, hooks: { postStart: "echo post", preStop: "echo local-stop" } } } },
+  });
+  const plan = resolveTargetPlan({ config, target: "local", workspacePath: "/work", dataRoot: "/data", assignedPorts: { web: 4100 } });
+  expect(plan.components[0]).toMatchObject({
+    env: { A: "shared", B: "local" },
+    hooks: { preStart: "echo pre", postStart: "echo post", preStop: "echo local-stop" },
+  });
+});

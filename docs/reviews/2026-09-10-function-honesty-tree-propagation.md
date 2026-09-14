@@ -74,7 +74,7 @@ rigd: main(args) [O+T] src/rigd.ts:10
   DaemonAdmin (install/uninstall/status) [O] src/daemon/admin.ts   (owner defects: #121 #132 #138 #139 #140)
   runDaemonHost(options) [O] src/daemon/host.ts:17   (owner defects: #131 #137 #139)
     startControlPlane(options) [O] src/daemon/server.ts
-  composeDaemon(root, captureCommand) [O+T] src/daemon/composition.ts:31   (fat owner; monitor policy inline #118)
+  composeDaemon(root, captureCommand) [O+T] src/daemon/composition.ts:31   (fat owner; monitor policy inline #118 (fixed: moved to `startFailureMonitor`))
     readHostConfig, createFileDiagnosticLog, FileStateStore, createAdminActivityJournal, inspectHost, createRuntimeFiles  [O]
     createAdoptionGuard(root) [O] src/migration/adoption.ts:192 → readLegacyAdoption [O fs] → parseManifest, validateEvidence [H]
     createProjectDocuments(root, run) [O+T] src/adapters/project-documents.ts:22
@@ -250,7 +250,7 @@ owner carries only its own owner-level defects.
 | stale admin-activity lock never reclaimed | #130 (fixed: the lock records pid and start time; dead or replaced holders and minute-old unreadable locks are reclaimed; warnings name the lock and pid) |
 | `release()` throws on corrupt address/owner json | #131 (fixed: unreadable records are not ours and are skipped; release cannot mask the startup error; lease written atomically; corrupt lease reclaimed unless the address names a live process) |
 | reachable daemon without install marker uninstallable | #132 (fixed: install adopts a reachable daemon without a record; uninstall of a record-less daemon boots out the label and signals the pid) |
-| monitor swallows errors | #118 (#133 closed as duplicate) |
+| monitor swallows errors | #118 (#133 closed as duplicate) (fixed: `startFailureMonitor` and `recordingDiagnostic` in `src/daemon/notices.ts` note failures on a bounded board that doctor reports as `rigd/monitor` and `rigd/diagnostics`) |
 | `displayWord` sanitizer weaker than `terminalText` | #134 |
 | localhost bind check bypassed via `sh -c`; hooks/env unchecked | #135 (fixed: quoted sub-commands scanned, hooks validated, wildcard bind env rejected) |
 | `up`/`restart` on local never re-plans; `deploy local` rejected | #136 |

@@ -501,6 +501,15 @@ message, and its hint follows from that: an exit points at `rig logs
 <target>`, an unknown observation at daemon state, an expired deadline at
 running doctor again.
 
+Background failures inside `rigd` are not dropped. When the diagnostic log
+cannot be written, or a pass of the crash monitor fails, `rigd` keeps one
+bounded notice per channel (a count, the first and last time, and the latest
+message; never log contents) and `rig doctor` reports it as a failing
+`rigd/diagnostics` or `rigd/monitor` check with what it means: operation
+outcomes are never changed by a logging failure, and crashes are not recorded
+as Activity until a monitor pass succeeds again, which clears the notice. The
+notices live in memory and reset when `rigd` restarts.
+
 An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
 or a malformed record) never makes `rigd` exit: startup records the failure in
 the daemon diagnostic log and keeps serving, `rig doctor` reports

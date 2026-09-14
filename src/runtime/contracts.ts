@@ -90,8 +90,20 @@ export interface RuntimeFiles {
     lines: number,
   ): Promise<{ entries: TargetLogEntry[]; cursor: string }>;
 }
+/** Bounded evidence of a background channel that is failing inside the daemon. */
+export interface RuntimeNotice {
+  channel: string;
+  count: number;
+  firstAt: string;
+  lastAt: string;
+  message: string;
+  consequence: string;
+  hint: string;
+}
 export interface RuntimeDependencies {
   root: string;
+  /** Background failures the daemon has noted since it started; doctor reports each one. */
+  notices?(): RuntimeNotice[];
   assertOwnershipReady(): Promise<void>;
   readAdminActivity(): Promise<OperationRecord[]>;
   inspectHost(): Promise<

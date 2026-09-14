@@ -1,5 +1,10 @@
 import { RigError } from "../src/domain/errors";
 import { ConfigError } from "../src/config/errors";
+import {
+  createNoticeBoard,
+  recordingDiagnostic,
+  DIAGNOSTIC_SINK,
+} from "../src/daemon/notices";
 import { test, expect } from "bun:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -833,6 +838,39 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     hint: "Use rig rename.",
   });
   independent(report);
+});
+test("a failing diagnostic sink leaves operation outcomes alone and doctor reports it as a bounded rigd/diagnostics check", async () => {
+  const { runtime, deps } = fixture();
+  const board = createNoticeBoard(() => "2026-09-14T00:00:00Z");
+  deps.diagnostic = recordingDiagnostic(
+    {
+      async record() {
+        throw new Error("EACCES: logs/rigd is not writable");
+      },
+    },
+    board,
+  );
+  deps.notices = board.list;
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  expect(
+    await runtime.command({ action: "up", project: "demo" }),
+  ).toMatchObject({ outcome: "started" });
+  await expect(
+    runtime.command({ action: "up", project: "ghost" }),
+  ).rejects.toMatchObject({ code: "PROJECT_MISSING" });
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as DoctorReport;
+  expect(report.ok).toBe(false);
+  expect(report.checks.find((c) => c.name === "rigd/diagnostics")).toEqual({
+    name: "rigd/diagnostics",
+    ok: false,
+    message:
+      "Diagnostic evidence was not recorded: EACCES: logs/rigd is not writable (3 times since 2026-09-14T00:00:00Z, last 2026-09-14T00:00:00Z). Operation outcomes were not affected.",
+    reason: "diagnostics-failing",
+    hint: DIAGNOSTIC_SINK.hint,
+  });
 });
 test("doctor on a Project without Targets reports the config and Host checks only", async () => {
   const { runtime } = fixture();

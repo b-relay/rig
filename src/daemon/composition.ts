@@ -1,5 +1,10 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
 import { monitorRuntimeFailures } from "../runtime/activity";
+import {
+  createNoticeBoard,
+  recordingDiagnostic,
+  startFailureMonitor,
+} from "./notices";
 import type { DaemonHostOptions } from "./host";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
@@ -81,6 +86,7 @@ export async function composeDaemon(
     environment,
   });
   const store = new FileStateStore(root);
+  const notices = createNoticeBoard(() => new Date().toISOString());
   const adminActivity = createAdminActivityJournal({
     root,
     now: () => new Date().toISOString(),
@@ -88,6 +94,7 @@ export async function composeDaemon(
   });
   const runtime = createRuntime({
     root,
+    notices: notices.list,
     readAdminActivity: adminActivity.read,
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
@@ -103,13 +110,7 @@ export async function composeDaemon(
     files: createRuntimeFiles(),
     now: () => new Date().toISOString(),
     id: randomUUID,
-    async diagnostic(event) {
-      await diagnostic.record({
-        event: "operation.completed",
-        ...event,
-        code: event.errorCode,
-      });
-    },
+    diagnostic: recordingDiagnostic(diagnostic, notices),
   });
   const editor = createConfigEditor({
     async resolveProject(name) {
@@ -124,35 +125,30 @@ export async function composeDaemon(
     },
     exclusive: runtime.exclusive,
   });
-  let stopped = false,
-    monitoring = false;
-  let monitor: ReturnType<typeof setInterval> | undefined;
+  let stopped = false;
+  let stopMonitor: (() => void) | undefined;
   return {
     handle: runtime.command,
     editor,
     async start() {
       await runtime.reconcile();
       if (stopped) return;
-      monitor = setInterval(() => {
-        if (monitoring || stopped) return;
-        monitoring = true;
-        void runtime
-          .exclusive(() =>
+      stopMonitor = startFailureMonitor({
+        intervalMs: 5000,
+        notices,
+        run: () =>
+          runtime.exclusive(() =>
             monitorRuntimeFailures({
               store,
               observations: effects.observations,
               now: () => new Date().toISOString(),
             }),
-          )
-          .catch(() => {})
-          .finally(() => {
-            monitoring = false;
-          });
-      }, 5000);
+          ),
+      });
     },
     async shutdown() {
       stopped = true;
-      clearInterval(monitor);
+      stopMonitor?.();
       await runtime.drain();
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();

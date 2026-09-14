@@ -42,11 +42,19 @@ export async function hostDoctor(
 async function inspectRuntimeHost(
   deps: Pick<
     RuntimeDependencies,
-    "inspectHost" | "assertOwnershipReady" | "store"
+    "inspectHost" | "assertOwnershipReady" | "store" | "notices"
   >,
 ) {
   const checks = await deps.inspectHost();
   checks.unshift({ name: "rigd", ok: true, message: "Daemon is reachable." });
+  for (const notice of deps.notices?.() ?? [])
+    checks.push({
+      name: `rigd/${notice.channel}`,
+      ok: false,
+      message: `${notice.message} (${notice.count} ${notice.count === 1 ? "time" : "times"} since ${notice.firstAt}, last ${notice.lastAt}). ${notice.consequence}`,
+      reason: `${notice.channel}-failing`,
+      hint: notice.hint,
+    });
   try {
     await deps.store.read();
   } catch (error) {

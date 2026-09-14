@@ -217,6 +217,8 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
     ...(config.hooks
       ? { hooks: resolveHooks(config.hooks, properties, undefined) }
       : {}),
+    ...(config.hookTimeout ? { hookTimeout: config.hookTimeout } : {}),
+    ...(config.installTimeout ? { installTimeout: config.installTimeout } : {}),
     ...(envFile ? { envFile } : {}),
   };
 }
@@ -389,6 +391,9 @@ function resolvePlanComponent({
     ...("hooks" in component && component.hooks
       ? { hooks: resolveHooks(component.hooks, properties, name) }
       : {}),
+    ...("hookTimeout" in component && component.hookTimeout
+      ? { hookTimeout: component.hookTimeout }
+      : {}),
     ...(envFile
       ? {
           envFile: targetPath(
@@ -417,6 +422,9 @@ function resolvePlanComponent({
       ),
       ...(component.build
         ? { build: interpolateShell(component.build, properties) }
+        : {}),
+      ...(component.buildTimeout
+        ? { buildTimeout: component.buildTimeout }
         : {}),
       ...(component.installName ? { installName: component.installName } : {}),
     };

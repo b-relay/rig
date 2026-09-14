@@ -629,3 +629,107 @@ test("dependency installation runs once per deployed revision and its marker lea
   await adapter.prepare(record);
   expect(installs).toHaveLength(2);
 });
+
+test("a hook past its budget fails as HOOK_TIMEOUT naming the hook and budget, with its output so far in the Target logs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-hook-timeout-"));
+  roots.push(root);
+  const record = target(root);
+  record.plan.hookTimeout = 1;
+  const web = {
+    name: "web",
+    kind: "managed" as const,
+    command: "serve",
+    port: 4000,
+    readyTimeout: 30,
+    env: {},
+    dependsOn: [],
+  };
+  await expect(
+    effects(root).hook("echo before; sleep 30", record, undefined, "preStart"),
+  ).rejects.toMatchObject({
+    code: "HOOK_TIMEOUT",
+    message:
+      "Hook preStart for the Project did not finish within 1 s and was killed.",
+    details: { hook: "preStart", timeoutSeconds: 1 },
+  });
+  // A Component inherits the Project budget unless it sets its own.
+  await expect(
+    effects(root).hook("sleep 30", record, { ...web, hookTimeout: 2 }, "postStart"),
+  ).rejects.toMatchObject({
+    code: "HOOK_TIMEOUT",
+    message: "Hook postStart for web did not finish within 2 s and was killed.",
+    details: { hook: "postStart", component: "web", timeoutSeconds: 2 },
+  });
+  const log = await readFile(join(root, "logs", "target.jsonl"), "utf8");
+  expect(log).toContain('"component":"setup","stream":"stdout","line":"before"');
+});
+
+test("a build past its budget fails as BUILD_TIMEOUT and dependency installation past its budget as DEPENDENCIES_TIMEOUT", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-build-timeout-"));
+  roots.push(root);
+  const record = target(root);
+  await expect(
+    effects(root).install(
+      {
+        name: "tool",
+        kind: "installed" as const,
+        entrypoint: "tool",
+        build: "echo building; sleep 30",
+        buildTimeout: 1,
+        env: {},
+        dependsOn: [],
+      },
+      record,
+    ),
+  ).rejects.toMatchObject({
+    code: "BUILD_TIMEOUT",
+    message: "The tool build did not finish within 1 s and was killed.",
+    details: { component: "tool", timeoutSeconds: 1 },
+  });
+  expect(await readFile(join(root, "logs", "target.jsonl"), "utf8")).toContain(
+    '"component":"tool","stream":"stdout","line":"building"',
+  );
+  const workspace = join(root, "targets", "p", "t", "revisions", "r1");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(join(workspace, "package.json"), "{}\n");
+  const requests: number[] = [];
+  const adapter = createTargetEffects({
+    root,
+    recordingTime: () => "now",
+    supervisors: new Map(),
+    run: async ({ timeoutMs }) => {
+      requests.push(timeoutMs!);
+      return { exitCode: 1, stdout: "installing\n", stderr: "", timedOut: true };
+    },
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: {
+      async apply() {},
+      async remove() {},
+      async checkpoint(key) {
+        return { key, value: null };
+      },
+      async restore() {},
+    },
+    environment: { PATH: process.env.PATH! },
+  });
+  const live: TargetRecord = {
+    ...target(root),
+    kind: "live",
+    name: "live",
+    sourceRoot: join(root, "targets", "p", "t", "revisions"),
+    plan: { ...target(root).plan, target: "live", workspacePath: workspace, installTimeout: 7 },
+  };
+  await expect(adapter.prepare(live)).rejects.toMatchObject({
+    code: "DEPENDENCIES_TIMEOUT",
+    message:
+      "Project dependency installation (bun install) did not finish within 7 s and was killed.",
+    details: { command: "bun install", timeoutSeconds: 7 },
+  });
+  expect(requests).toEqual([7000]);
+  expect(await readFile(join(root, "logs", "target.jsonl"), "utf8")).toContain(
+    '"component":"setup","stream":"stdout","line":"installing"',
+  );
+});

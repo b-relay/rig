@@ -503,7 +503,8 @@ Keys this `rigd` does not know are kept through every read and write, so a
 newer version's fields survive a temporary downgrade.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
-it takes; `rigd` owns every budget (hooks, builds, `readyTimeout`). Reads such
+it takes; `rigd` owns every budget (`hookTimeout`, `buildTimeout`,
+`installTimeout`, `readyTimeout`). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report
 `rigd did not answer within 5 s; operation <id> may still be running`, which
 is distinct from `rigd is not reachable`. Check `rig activity` before
@@ -604,9 +605,19 @@ same for hooks, builds, and managed processes in both install modes: only
 `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`,
 `LC_CTYPE`, and `TZ` from the shell that ran `rigd install`. Tokens and other
 variables in that shell never reach rigd or a Project's processes; declare
-what a process needs in `envFile` or `env`. A hook has a two-minute budget and
-writes its output to the Target's logs under the Component name, or `setup`
-for Project hooks.
+what a process needs in `envFile` or `env`. A hook writes its output to the
+Target's logs under the Component name, or `setup` for Project hooks.
+
+Every hook, build, and dependency install runs within a budget in seconds:
+`hookTimeout` on the Project (default 120) sets Project hooks and the default
+for Component hooks, which may set their own `hookTimeout`; an installed
+Component's `buildTimeout` bounds its `build` (default 600); the Project's
+`installTimeout` bounds dependency installation on `live` and Preview Targets
+(default 600). A command past its budget is killed together with anything it
+started, what it printed until then is kept in the Target logs, and the
+command fails as `HOOK_TIMEOUT`, `BUILD_TIMEOUT`, or `DEPENDENCIES_TIMEOUT`,
+naming the hook or Component and the budget that ran out. A build that times
+out leaves the previous installed artifact in place.
 
 `rig up`, `rig restart`, and every deploy run hooks in this order:
 

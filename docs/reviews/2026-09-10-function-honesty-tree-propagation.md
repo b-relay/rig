@@ -313,7 +313,7 @@ owner carries only its own owner-level defects.
 | rig restart aborts after the stop half on a preStop/postStop failure: outage, desired persisted stopped | #194 |
 | installation receipt key hashes the whole inherited daemon env: ambient changes rebuild everything, artifact unknown | #195 (fixed: keyed on declared env only) |
 | hook semantics drift: installed-component hooks never run, postStart before readiness, preStart after builds, HOOK_FAILED unnamed, RIG_DAEMON_CHILD inherited, undocumented interpolation names | #196 |
-| hook/build timeout reported as generic COMMAND_TIMEOUT with output discarded; timeouts hard-coded | #197 |
+| hook/build timeout reported as generic COMMAND_TIMEOUT with output discarded; timeouts hard-coded | #197 | (fixed: `runCommand` resolves a timed-out command with its output and `timedOut`; `runTarget` records it; hook/build/install raise `HOOK_TIMEOUT`/`BUILD_TIMEOUT`/`DEPENDENCIES_TIMEOUT` with the budget from `hookTimeout`/`buildTimeout`/`installTimeout` config) |
 | envFile parser rejects `KEY="value" # comment`; ENV_FILE errors carry no path or line | #198 |
 | interpolated paths unquoted in shell commands: a space in workspace or RIG_ROOT breaks ${workspace}, ${db.path} | #199 |
 | doctor discards observation reason and exit code for failing components | #200 |

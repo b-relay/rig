@@ -20,6 +20,8 @@ interface ComponentContext {
   env: Record<string, string>;
   envFile?: string;
   hooks?: Hooks;
+  /** Seconds; absent means the Project hookTimeout, then 120. */
+  hookTimeout?: number;
   dependsOn: string[];
 }
 export interface ManagedComponent extends ComponentContext {
@@ -34,6 +36,8 @@ export interface InstalledComponent extends ComponentContext {
   kind: "installed";
   entrypoint: string;
   build?: string;
+  /** Seconds; absent means 600. */
+  buildTimeout?: number;
   installName?: string;
 }
 export interface PersistentComponent extends ComponentContext {
@@ -68,6 +72,10 @@ export interface TargetPlan {
   domain?: string;
   proxy?: { upstream: string };
   hooks?: Hooks;
+  /** Seconds for Project hooks and the Component default; absent means 120. */
+  hookTimeout?: number;
+  /** Seconds for dependency installation; absent means 600. */
+  installTimeout?: number;
   envFile?: string;
 }
 /** Roots are caller-acquired strings; resolveTargetPlan validates absolute identity before calculation. */

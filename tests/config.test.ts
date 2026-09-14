@@ -1223,3 +1223,41 @@ test("a config lock left by a crashed edit is reclaimed; one held by a live proc
     JSON.stringify({ pid: process.pid }),
   );
 });
+
+test("hook, build and dependency-install budgets are declared in seconds and resolve into the Target plan", () => {
+  const config = parseProjectConfig({
+    name: "budgets",
+    hookTimeout: 30,
+    installTimeout: 900,
+    components: {
+      web: { mode: "managed", command: "serve", port: 4000, hookTimeout: 45 },
+      tool: {
+        mode: "installed",
+        entrypoint: "tool",
+        build: "make",
+        buildTimeout: 1200,
+      },
+    },
+    live: { components: { tool: { buildTimeout: 1800 } } },
+  });
+  const plan = resolveTargetPlan({
+    config,
+    target: "live",
+    workspacePath: "/work",
+    dataRoot: "/data",
+    assignedPorts: { web: 4000 },
+  });
+  expect(plan).toMatchObject({ hookTimeout: 30, installTimeout: 900 });
+  expect(plan.components).toMatchObject([
+    { name: "web", hookTimeout: 45 },
+    { name: "tool", buildTimeout: 1800 },
+  ]);
+  expect(() =>
+    parseProjectConfig({
+      name: "budgets",
+      components: {
+        web: { mode: "managed", command: "serve", port: 4000, hookTimeout: 0 },
+      },
+    }),
+  ).toThrow();
+});

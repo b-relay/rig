@@ -11,6 +11,7 @@ const common = {
   env: z.record(z.string(), z.string()),
   envFile: text.optional(),
   hooks: hooks.optional(),
+  hookTimeout: z.number().positive().optional(),
   dependsOn: z.array(text),
 };
 const component = z.discriminatedUnion("kind", [
@@ -28,6 +29,7 @@ const component = z.discriminatedUnion("kind", [
     kind: z.literal("installed"),
     entrypoint: text,
     build: z.string().optional(),
+    buildTimeout: z.number().positive().optional(),
     installName: text.optional(),
   }),
   z.object({
@@ -67,6 +69,8 @@ export const targetPlanSchema = z.object({
   domain: text.optional(),
   proxy: z.object({ upstream: text }).optional(),
   hooks: hooks.optional(),
+  hookTimeout: z.number().positive().optional(),
+  installTimeout: z.number().positive().optional(),
   envFile: text.optional(),
 });
 const project = z.object({

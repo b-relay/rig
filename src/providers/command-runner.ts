@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
-/** Runs a bounded command, cancels its whole process group, and captures at most 1 MiB per stream. */
+/** Runs a bounded command and captures at most 1 MiB per stream. A command past its budget has its
+ * whole process group killed and resolves with what it printed, marked timedOut; one cancelled through
+ * the signal rejects with COMMAND_CANCELLED. */
 export const runCommand: CommandRunner = async ({
   command,
   cwd,
@@ -25,9 +27,9 @@ export const runCommand: CommandRunner = async ({
     });
     let stdout = "",
       stderr = "",
-      cancelled = false;
-    const abort = () => {
-      cancelled = true;
+      ended: "timed-out" | "cancelled" | undefined;
+    const kill = (reason: "timed-out" | "cancelled") => {
+      ended ??= reason;
       if (child.pid) {
         try {
           process.kill(-child.pid, "SIGKILL");
@@ -36,11 +38,12 @@ export const runCommand: CommandRunner = async ({
         }
       }
     };
-    const timer = setTimeout(abort, timeoutMs);
-    signal?.addEventListener("abort", abort, { once: true });
+    const cancel = () => kill("cancelled");
+    const timer = setTimeout(() => kill("timed-out"), timeoutMs);
+    signal?.addEventListener("abort", cancel, { once: true });
     const cleanup = () => {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", abort);
+      signal?.removeEventListener("abort", cancel);
     };
     child.stdout.on("data", (data) => {
       stdout = (stdout + data.toString()).slice(-1_048_576);
@@ -61,14 +64,17 @@ export const runCommand: CommandRunner = async ({
     });
     child.on("close", (code) => {
       cleanup();
-      if (cancelled)
+      if (ended === "cancelled")
         reject(
           new RigError(
-            "COMMAND_TIMEOUT",
-            "A provider command was cancelled or timed out.",
-            "Check the command and retry.",
+            "COMMAND_CANCELLED",
+            "A provider command was cancelled before it finished.",
+            "Retry the operation.",
+            { command: command[0] },
           ),
         );
+      else if (ended === "timed-out")
+        resolve({ exitCode: 1, stdout, stderr, timedOut: true });
       else resolve({ exitCode: code ?? 1, stdout, stderr });
     });
   });

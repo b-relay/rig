@@ -57,6 +57,10 @@ export function installedPath(
     `${component.installName ?? component.name}${suffix}`,
   );
 }
+/** Budgets in seconds when the Project config declares none. */
+const DEFAULT_HOOK_TIMEOUT_SECONDS = 120;
+const DEFAULT_BUILD_TIMEOUT_SECONDS = 600;
+const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
   options: TargetAdapterOptions,
@@ -107,20 +111,20 @@ export function createTargetEffects(
     ...options.environment,
     ...(await declaredEnvironment(target, component)),
   });
+  /** Runs a shell command in the Target workspace within a budget in seconds and records its output,
+   * including what a killed command printed before its budget ran out, under the Component name. */
   const runTarget = async (
     command: string,
     target: TargetRecord,
     env: Record<string, string>,
-    signal?: AbortSignal,
-    timeoutMs = 120000,
+    timeoutSeconds: number,
     componentName = "setup",
   ) => {
     const result = await options.run({
       command: ["/bin/sh", "-c", command],
       cwd: target.plan.workspacePath,
       env,
-      signal,
-      timeoutMs,
+      timeoutMs: timeoutSeconds * 1000,
     });
     await recordOutput(result, target, componentName);
     return result;
@@ -313,13 +317,21 @@ export function createTargetEffects(
       else if (await exists(join(target.plan.workspacePath, "package.json")))
         command = ["bun", "install"];
       if (command) {
+        const timeoutSeconds =
+          target.plan.installTimeout ?? DEFAULT_INSTALL_TIMEOUT_SECONDS;
         const result = await runTarget(
           command.join(" "),
           target,
           await environment(target),
-          undefined,
-          600000,
+          timeoutSeconds,
         );
+        if (result.timedOut)
+          throw new RigError(
+            "DEPENDENCIES_TIMEOUT",
+            `Project dependency installation (${command.join(" ")}) did not finish within ${timeoutSeconds} s and was killed.`,
+            "Inspect Target setup logs for its output so far; set installTimeout in the Project config if it needs longer.",
+            { command: command.join(" "), timeoutSeconds },
+          );
         if (result.exitCode)
           throw new RigError(
             "DEPENDENCIES_FAILED",
@@ -330,14 +342,28 @@ export function createTargetEffects(
       await writeFile(marker, "prepared\n", { mode: 0o600 });
     },
     async hook(command, target, component, name) {
+      const timeoutSeconds =
+        component?.hookTimeout ??
+        target.plan.hookTimeout ??
+        DEFAULT_HOOK_TIMEOUT_SECONDS;
       const result = await runTarget(
         command,
         target,
         await environment(target, component),
-        undefined,
-        120000,
+        timeoutSeconds,
         component?.name ?? "setup",
       );
+      if (result.timedOut)
+        throw new RigError(
+          "HOOK_TIMEOUT",
+          `Hook ${name} for ${component ? component.name : "the Project"} did not finish within ${timeoutSeconds} s and was killed.`,
+          `Inspect the ${component?.name ?? "setup"} Target logs for its output so far; set hookTimeout on the ${component ? "Component" : "Project"} if it needs longer.`,
+          {
+            hook: name,
+            ...(component ? { component: component.name } : {}),
+            timeoutSeconds,
+          },
+        );
       if (result.exitCode)
         throw new RigError(
           "HOOK_FAILED",
@@ -381,14 +407,22 @@ export function createTargetEffects(
       if (target.plan.target !== "local" && (await unchanged()))
         return { outcome: "unchanged" };
       if (component.build) {
+        const timeoutSeconds =
+          component.buildTimeout ?? DEFAULT_BUILD_TIMEOUT_SECONDS;
         const result = await runTarget(
           component.build,
           target,
           env,
-          undefined,
-          600000,
+          timeoutSeconds,
           component.name,
         );
+        if (result.timedOut)
+          throw new RigError(
+            "BUILD_TIMEOUT",
+            `The ${component.name} build did not finish within ${timeoutSeconds} s and was killed.`,
+            "Inspect Target logs for its output so far; set buildTimeout on the Component if it needs longer. The previous installed artifact is unchanged.",
+            { component: component.name, timeoutSeconds },
+          );
         if (result.exitCode)
           throw new RigError(
             "BUILD_FAILED",

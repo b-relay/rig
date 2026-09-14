@@ -39,6 +39,8 @@ export interface CommandResult {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
+  /** The command was killed at its budget: exitCode is 1 and the streams hold what it produced before then. */
+  readonly timedOut?: true;
 }
 export type CommandRunner = (request: CommandRequest) => Promise<CommandResult>;
 export interface TargetLogEntry {

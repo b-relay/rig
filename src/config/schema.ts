@@ -123,6 +123,13 @@ const common = {
     .describe(
       "Component lifecycle hooks; a lane override merges them per key.",
     ),
+  hookTimeout: z
+    .number()
+    .min(1)
+    .optional()
+    .describe(
+      "Budget in seconds for this Component's hooks; a hook past it is killed and its output so far is kept in the Target logs. Defaults to the Project hookTimeout, then 120.",
+    ),
 };
 const runtime = {
   command: command.optional(),
@@ -157,6 +164,13 @@ const component = z.union([
     installName: componentName
       .optional()
       .describe("Installed executable name."),
+    buildTimeout: z
+      .number()
+      .min(1)
+      .optional()
+      .describe(
+        "Budget in seconds for build; a build past it is killed, its output so far is kept in the Target logs, and the previous installed artifact stays (default 600).",
+      ),
     ...common,
   }),
   z.strictObject({
@@ -191,6 +205,11 @@ const override = z.strictObject({
   installName: componentName
     .optional()
     .describe("Installed executable name override."),
+  buildTimeout: z
+    .number()
+    .min(1)
+    .optional()
+    .describe("Build budget override in seconds."),
   path: text.optional().describe("SQLite path override."),
   ...common,
 });
@@ -264,6 +283,20 @@ export const projectConfigSchema = z
         "Hostname template for every Target. Use ${subdomain} (local, live, or the Preview branch slug) so Targets do not share a route.",
       ),
     hooks: hooks.optional().describe("Project lifecycle hooks."),
+    hookTimeout: z
+      .number()
+      .min(1)
+      .optional()
+      .describe(
+        "Budget in seconds for Project hooks, and the default for Component hooks; a hook past it is killed and its output so far is kept in the Target logs (default 120).",
+      ),
+    installTimeout: z
+      .number()
+      .min(1)
+      .optional()
+      .describe(
+        "Budget in seconds for dependency installation on live and Preview Targets; an install past it is killed and its output so far is kept in the Target logs (default 600).",
+      ),
     components: z
       .record(componentName, component)
       .describe("Shared Component definitions."),

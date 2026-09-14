@@ -40,7 +40,7 @@ testability and honesty refactors.
 20. ~~#194~~ (fixed) `rig restart` aborts after the stop half when a stop hook fails; desired persisted as stopped, up never runs.
 21. ~~#187~~ (fixed) git push rig / rig deploy plan the Target from the working-copy rig.yaml, not the pushed commit.
 22. ~~#186~~ (fixed) After a failed first Preview deploy, git push rig reports "Everything up-to-date" forever, even with --force.
-23. #214 git push interrupted mid-deploy: helper has no signal handling, in-flight commit advertised as the remote ref, re-push says up-to-date.
+23. ~~#214~~ (fixed) git push interrupted mid-deploy: helper has no signal handling, in-flight commit advertised as the remote ref, re-push says up-to-date.
 24. #160 git push rig hangs forever when the helper hits a fatal error.
 25. #136 up/restart on an existing local Target never re-plans from current config; deploy local is rejected, so config changes cannot be applied.
 26. #221 Recorded local Target is never re-planned after a port change and cannot be dropped; live deploy hits PORT_RESERVED with no exit.

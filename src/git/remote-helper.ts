@@ -353,10 +353,12 @@ export async function main(args: readonly string[]): Promise<number> {
     );
     const root = rigRoot();
     const interrupt = new AbortController();
-    process.once("SIGINT", () => {
-      interrupt.abort();
-      process.exit(130);
-    });
+    // Ctrl-C, a killed git, or a closed terminal all end the helper; rigd keeps running the operation.
+    for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const)
+      process.once(signal, () => {
+        interrupt.abort();
+        process.exit(code);
+      });
     return await runRemoteHelper(url, {
       repoPath,
       interrupt: interrupt.signal,

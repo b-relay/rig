@@ -2,13 +2,22 @@ import { waitForLogPoll } from "./adapters/log-follow-scheduler";
 import { createTerminalInteraction } from "./adapters/terminal-interaction";
 import { randomUUID } from "node:crypto";
 import { runRigCli } from "./cli/rig";
-import { rigRoot, userOutput } from "./cli/entry-environment";
+import {
+  reportRootFailure,
+  rigRoot,
+  userOutput,
+} from "./cli/entry-environment";
 import { createHostDiagnosticLog } from "./diagnostics/host-log";
 import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
 import { inspectOfflineHost } from "./daemon/offline-doctor";
 export async function main(args: readonly string[]): Promise<number> {
-  const root = rigRoot();
+  let root: string;
+  try {
+    root = rigRoot();
+  } catch (error) {
+    return reportRootFailure(error, userOutput());
+  }
   const cwd = process.cwd();
   const controller = new AbortController();
   const cancel = () => controller.abort();
@@ -44,7 +53,10 @@ export async function main(args: readonly string[]): Promise<number> {
   }
 }
 /** CLI policy: only Doctor continues with read-only Host inspection when unavailable. */
-export function createCliClient(root: string, cwd: string): CliDependencies["client"] {
+export function createCliClient(
+  root: string,
+  cwd: string,
+): CliDependencies["client"] {
   return {
     async status(selection) {
       return (await connectDaemon(root)).status(selection);

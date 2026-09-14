@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { runRigdCli } from "./cli/rigd";
-import { daemonCommand, rigRoot, userOutput } from "./cli/entry-environment";
+import {
+  daemonCommand,
+  reportRootFailure,
+  rigRoot,
+  userOutput,
+} from "./cli/entry-environment";
 import { createHostDiagnosticLog } from "./diagnostics/host-log";
 import { DaemonAdmin } from "./daemon/admin";
 import { composeDaemon } from "./daemon/composition";
@@ -9,7 +14,12 @@ import { runDaemonHost } from "./daemon/host";
 import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
 export async function main(args: readonly string[]): Promise<number> {
-  const root = rigRoot();
+  let root: string;
+  try {
+    root = rigRoot();
+  } catch (error) {
+    return reportRootFailure(error, userOutput());
+  }
   if (args[0] === "capture") {
     if (!args[1] || args.length !== 2) return 2;
     return await runCapturedProcess(args[1]);

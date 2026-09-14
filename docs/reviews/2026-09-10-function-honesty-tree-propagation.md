@@ -240,7 +240,7 @@ owner carries only its own owner-level defects.
 | Finding | Issue |
 | --- | --- |
 | empty/unreadable token → `DAEMON_MISSING`; `rigd install` raw EEXIST | #121 (#116 concurrent) |
-| `RIG_ROOT=""` uses cwd | #122 |
+| `RIG_ROOT=""` uses cwd | #122 | (fixed: `resolveRigRoot(RIG_ROOT, home)` treats empty as unset and refuses relative paths with USAGE) |
 | preview replacement: retire failure after commit | #123 |
 | replacement retires oldest preview without destroying storage | #124 |
 | Convex site port discarded for local/live | #125 |
@@ -323,7 +323,7 @@ owner carries only its own owner-level defects.
 | client deadline expiry reported as DAEMON_UNREACHABLE while rigd keeps executing; retry queues a duplicate | #204 |
 | Caddy validate/reload stderr discarded on every path, rejected file deleted; missing caddy generic COMMAND_START | #205 |
 | Caddy/daemon minors (port-unaware conflict, remove() no-op reload, capture raw stack, Origin check not a rebinding defence) | #206 |
-| empty RIG_ROOT flips rigd install into launchd mode rooted at cwd (addendum) | #122 |
+| empty RIG_ROOT flips rigd install into launchd mode rooted at cwd (addendum) | #122 | (fixed: empty RIG_ROOT now roots at `~/.rig`, which matches launchd mode) |
 | rig logs --follow never exits when stdout closes: pipelines hang, orphan CLI polls rigd; follow capped at --lines per poll | #207 |
 | preview Branch positional silently discarded when --deployment also passed: wrong Preview stopped or destroyed | #208 |
 | CLI minors (help unknown exit 0, usage hint, rigd capture --help ENOENT, list hides ownership, empty option values dropped) | #209 |

@@ -20,6 +20,10 @@ The build produces `rig`, `rigd`, and `git-remote-rig`. Put all three in the
 chosen executable directory for Git push deployment. Source development and
 tests must set an isolated `RIG_ROOT`; do not install into the real Host simply
 to try the rewrite. Existing Host state needs the explicit backed-up cutover.
+`RIG_ROOT` must be an absolute path: an empty value means the default
+`~/.rig`, and a relative value makes `rig`, `rigd`, and `git-remote-rig` exit
+with a usage error before they create or read anything, rather than rooting
+Rig in the current working directory.
 
 Install the daemon:
 

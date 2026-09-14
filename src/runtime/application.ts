@@ -6,6 +6,7 @@ import type {
 import { stopBeforeRestart, stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
 import { updateRegistration } from "./registration";
+import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { readActions, type RuntimeCommand } from "../daemon/protocol";
@@ -23,7 +24,11 @@ import {
   type FailureCauses,
 } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
-import { registerProject, selectProject } from "./projects";
+import {
+  prepareRegistration,
+  registerProject,
+  selectProject,
+} from "./projects";
 import { persistTarget, planTarget, targetName } from "./targets";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
@@ -122,6 +127,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     operationId: string,
   ): Promise<unknown> => {
     let project: ProjectRecord | undefined, target: TargetRecord | undefined;
+    // Set once selection and argument checks are done: a failure after this point is an
+    // Operation outcome and is recorded in activity; one before it is a usage mistake and is not.
+    let attempted = false;
     try {
       if (command.action === "cancel-uninstall") {
         draining = false;
@@ -212,7 +220,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         return await deps.documents.initializationInfo(command.repoPath);
       }
       if (command.action === "init") {
-        project = await registerProject(command, deps);
+        const identity = await prepareRegistration(command, deps);
+        attempted = true;
+        project = await registerProject(command, identity, deps);
         return await finish("registered", { path: project.configPath });
       }
       if (command.action === "doctor" && !command.project) {
@@ -268,6 +278,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (command.action === "doctor")
         return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
+        attempted = true;
         await updateRegistration(command, project, targets, deps);
         return await finish(
           command.action === "rename" ? "renamed" : "repointed",
@@ -346,6 +357,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             ? (document.config.live?.deployBranch ??
               (await deps.documents.host()).deploy.productionBranch)
             : await deps.sources.currentBranch(project.repoPath));
+        attempted = true;
         const preflight =
           command.action === "git-push"
             ? {
@@ -450,13 +462,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             "Use down to stop local or live.",
           );
         if (!target) throw missingTarget(name);
+        attempted = true;
         if (target.recovery) target = await stopForRecovery(target, deps);
         await destroyPreview(target, deps);
         return await finish("stopped");
       }
+      if (
+        !target &&
+        (command.action !== "up" || (command.target ?? "local") !== "local")
+      )
+        throw missingTarget(name);
+      attempted = true;
       if (!target) {
-        if (command.action !== "up" || (command.target ?? "local") !== "local")
-          throw missingTarget(name);
         target = await planTarget(
           {
             command,
@@ -510,17 +527,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (!reads.has(command.action)) {
         const errorCode = diagnosticErrorCode(error);
         const causes = diagnosticCauses(error);
+        const evidence = {
+          operationId,
+          action: command.action,
+          errorCode,
+          ...causes,
+        };
         try {
-          await record("failed", errorCode, causes);
+          if (attempted) await record("failed", errorCode, causes);
+          else await deps.diagnostic({ ...evidence, outcome: "rejected" });
         } catch {
           try {
-            await deps.diagnostic({
-              operationId,
-              action: command.action,
-              outcome: "failed",
-              errorCode,
-              ...causes,
-            });
+            await deps.diagnostic({ ...evidence, outcome: "failed" });
           } catch {
             /* Neither synchronous nor asynchronous diagnostic failures replace the operation outcome. */
           }
@@ -534,7 +552,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       causes: FailureCauses = {},
     ): Promise<void> {
       await deps.store.update((state) => {
-        state.activity.push({
+        recordActivity(state, {
           id: operationId,
           projectId: project?.id,
           project: project?.name,
@@ -839,7 +857,7 @@ async function destroyReplacedPreviews(
         reason: "Preview limit",
       });
       await deps.store.update((state) => {
-        state.activity.push({
+        recordActivity(state, {
           id: `${operationId}:${replacement.id}`,
           projectId: project.id,
           project: project.name,

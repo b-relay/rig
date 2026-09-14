@@ -2613,3 +2613,58 @@ test("the queue read names the mutation rigd is running and how many wait behind
   await second;
   expect(await runtime.command({ action: "queue" })).toEqual({ waiting: 0 });
 });
+
+test("usage mistakes that never reached an Operation leave activity untouched; a refused attempt is recorded", async () => {
+  const { runtime, state, deps } = fixture();
+  await expect(runtime.command({ action: "init" })).rejects.toMatchObject({
+    code: "PATH_REQUIRED",
+  });
+  await expect(
+    runtime.command({ action: "up", project: "nobody" }),
+  ).rejects.toMatchObject({ code: "PROJECT_MISSING" });
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await expect(
+    runtime.command({ action: "down", project: "demo", target: "live" }),
+  ).rejects.toMatchObject({ code: "TARGET_MISSING" });
+  await expect(
+    runtime.command({ action: "deploy", project: "demo", target: "local" }),
+  ).rejects.toMatchObject({ code: "DEPLOY_TARGET" });
+  await expect(
+    runtime.command({ action: "destroy", project: "demo", target: "live" }),
+  ).rejects.toMatchObject({ code: "DESTROY_TARGET" });
+  expect(state.activity.map((entry) => entry.outcome)).toEqual(["registered"]);
+  deps.sources.preflight = async () => {
+    throw new RigError("DIRTY", "Uncommitted changes.", "Commit first.");
+  };
+  await expect(
+    runtime.command({ action: "deploy", project: "demo", target: "live" }),
+  ).rejects.toMatchObject({ code: "DIRTY" });
+  expect(state.activity.map((entry) => entry.outcome)).toEqual([
+    "registered",
+    "failed",
+  ]);
+  expect(state.activity.at(-1)).toMatchObject({
+    action: "deploy",
+    project: "demo",
+    message: "DIRTY",
+  });
+});
+
+test("activity retains the most recent 1000 Operations, dropping the oldest first", async () => {
+  const { runtime, state } = fixture();
+  state.activity = Array.from({ length: 1000 }, (_, index) => ({
+    id: `old-${index}`,
+    action: "up",
+    outcome: "started" as const,
+    occurredAt: "2000-01-01T00:00:00.000Z",
+  }));
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  expect(state.activity).toHaveLength(1000);
+  expect(state.activity[0]!.id).toBe("old-1");
+  expect(state.activity.at(-1)).toMatchObject({ outcome: "registered" });
+  expect(await runtime.command({ action: "activity", lines: 2 })).toMatchObject(
+    {
+      operations: [{ id: "old-999" }, { outcome: "registered" }],
+    },
+  );
+});

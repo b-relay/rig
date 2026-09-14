@@ -11,7 +11,15 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createProjectDocuments } from "../src/adapters/project-documents";
-import { registerProject } from "../src/runtime/projects";
+import {
+  prepareRegistration,
+  registerProject as register,
+} from "../src/runtime/projects";
+import type { RuntimeCommand } from "../src/daemon/protocol";
+const registerProject = async (
+  command: RuntimeCommand,
+  deps: Pick<RuntimeDependencies, "documents" | "store" | "id" | "now">,
+) => register(command, await prepareRegistration(command, deps), deps);
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { CommandRunner } from "../src/providers/contracts";

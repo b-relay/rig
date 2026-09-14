@@ -531,7 +531,13 @@ route file (see Setup). Doctor owns current-config drift and failed checks; it
 does not repair or deploy configuration implicitly.
 
 `rig activity` displays final daemon Operations separately from Target output.
-It includes daemon administration and terminal crash evidence. Diagnostics live
+It includes daemon administration and terminal crash evidence. rigd keeps the
+most recent 1000 Operations in its state; older ones remain in the diagnostic
+log until its retention expires. A request rigd refuses before an Operation
+begins (an unregistered Project, a missing Target, a deploy aimed at local, an
+init without a directory) is a usage mistake and is not listed; a refusal after
+the attempt began (a failed preflight, an unresolved transition) is listed as
+failed. Diagnostics live
 in separate `logs/rig/rig.jsonl` and `logs/rigd/rigd.jsonl` files beneath the Rig
 root, with daily rotation and 14-day retention by default. That retention does
 not delete Target logs, activity, or Persistent storage. A record cut short by

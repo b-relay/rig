@@ -53,10 +53,12 @@ export async function selectProject(
   assertIdentity(project, found.document);
   return { project, document: found.document };
 }
-export async function registerProject(
+/** Everything init checks before it touches the repository: a directory was given, the
+ * Project it would create has an identity, and no registered Project conflicts with it. */
+export async function prepareRegistration(
   command: RuntimeCommand,
-  deps: Pick<RuntimeDependencies, "documents" | "store" | "id" | "now">,
-): Promise<ProjectRecord> {
+  deps: Pick<RuntimeDependencies, "documents" | "store">,
+): Promise<ProjectIdentity> {
   if (!command.repoPath)
     throw new RigError(
       "PATH_REQUIRED",
@@ -68,7 +70,19 @@ export async function registerProject(
     command,
   );
   assertRegistrationAvailable((await deps.store.read()).projects, identity);
-  const document = await deps.documents.initialize(command.repoPath, command);
+  return identity;
+}
+export interface ProjectIdentity {
+  repoPath: string;
+  name: string;
+}
+/** Writes the Project files and records the registration for an identity prepareRegistration accepted. */
+export async function registerProject(
+  command: RuntimeCommand,
+  identity: ProjectIdentity,
+  deps: Pick<RuntimeDependencies, "documents" | "store" | "id" | "now">,
+): Promise<ProjectRecord> {
+  const document = await deps.documents.initialize(command.repoPath!, command);
   const name = document.config.name;
   const repoPath = dirname(document.path);
   let result: ProjectRecord | undefined;

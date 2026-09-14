@@ -166,9 +166,12 @@ const lane = z.strictObject({
     .describe("Legacy supervision policy."),
   providers: z
     .strictObject({
-      processSupervisor: text
+      processSupervisor: z
+        .enum(["rigd", "child", "launchd"])
         .optional()
-        .describe("Selected process-supervisor provider identifier."),
+        .describe(
+          "Process supervisor for managed Components: rigd (default; child processes owned by the daemon), child (alias of rigd), or launchd (per-Component launchd agents). Unknown names are rejected before any plan is recorded.",
+        ),
     })
     .optional()
     .describe("Provider selections."),

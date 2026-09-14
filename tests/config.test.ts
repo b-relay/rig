@@ -592,3 +592,33 @@ test("Target resolution validates actual interpolated bind values", async () => 
   expect(() => resolveTargetPlan({ config, target: "local", workspacePath: "/repo", dataRoot: "/state/data" }))
     .toThrow("Resolved command binds outside localhost");
 });
+
+test("an unknown process supervisor is rejected at parse time with the valid choices", async () => {
+  const { parseProjectConfig } = await import("../src/config/index.js");
+  const parse = () =>
+    parseProjectConfig({
+      name: "app",
+      components: { web: { mode: "managed", command: "serve", port: 4000 } },
+      live: { providers: { processSupervisor: "launchdd" } },
+    });
+  let failure: unknown;
+  try {
+    parse();
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({
+    code: "invalid_config",
+    hint: expect.stringMatching(
+      /live\.providers\.processSupervisor:.*"rigd".*"child".*"launchd"/,
+    ),
+  });
+  for (const processSupervisor of ["rigd", "child", "launchd"] as const)
+    expect(
+      parseProjectConfig({
+        name: "app",
+        components: {},
+        live: { providers: { processSupervisor } },
+      }).live?.providers?.processSupervisor,
+    ).toBe(processSupervisor);
+});

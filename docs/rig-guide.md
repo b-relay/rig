@@ -286,6 +286,11 @@ Host config owns machine capability:
 - daemon address and local auth token
 - installed provider defaults
 
+A lane's `providers.processSupervisor` selects `rigd` (default; the daemon
+owns child processes), `child` (alias of `rigd`), or `launchd` (one launchd
+agent per Component). Any other name is rejected when the config is parsed, so
+a typo can never be recorded in a Target plan.
+
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while
 `rig doctor` and preflight validate the result.

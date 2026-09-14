@@ -363,7 +363,12 @@ that adds a component the recorded plan has no port for is also reported as
 `config-drift`, naming the added components; `config-invalid` is reserved for
 a config that does not parse or resolve, and carries the parser's message.
 Deployed Targets (`live`, `preview`) keep their recorded plan until the next
-deploy.
+deploy. They are planned from the committed config in their checkout, so `rig
+doctor` compares a deployed Target with that revision's config, not with the
+working copy; uncommitted edits are not drift for it. When the checkout's
+config resolves to a different plan than the recorded one, doctor names `rig
+deploy <target> --force` as the fix, because a same-Commit deploy without
+`--force` is `unchanged`.
 
 ```bash
 rig up local

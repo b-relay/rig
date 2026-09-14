@@ -271,7 +271,7 @@ owner carries only its own owner-level defects.
 | crash between effect and journal capture bricks the Target | #151 |
 | repoint skips port reservation | #152 |
 | superseded revisions/worktrees/markers never removed | #153 (fixed: `releaseUnreferencedRevisions` after each deploy decision; the prepare marker now lives in the workspace) |
-| drift hint "Deploy to apply" is a same-Commit no-op | #154 |
+| drift hint "Deploy to apply" is a same-Commit no-op | #154 (fixed: doctor compares a deployed Target with its checkout's committed config and names `rig deploy <target> --force`) |
 | up starts incomplete Deployment, flag never cleared | #155 |
 | installer shell environment inherited by rigd, components, hooks; persisted to capture JSON | #156 (fixed: `inheritedEnvironment` picks the login basics in both install modes) |
 | sqlite path / envFile unconfined to workspace or data root | #157 (fixed: deployed Targets reject `path_outside_target`) |

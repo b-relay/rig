@@ -177,6 +177,14 @@ async function configCheck(
   deps: Pick<RuntimeDependencies, "documents">,
 ): Promise<DoctorCheck> {
   const name = `${target.name}/config`;
+  // A deployed Target is planned from the committed config in its checkout; the working copy never reaches it.
+  const source =
+    target.kind === "local"
+      ? { path: project.repoPath, label: "Current configuration" }
+      : {
+          path: target.plan.workspacePath,
+          label: "The deployed revision's configuration",
+        };
   const drift = (message: string): DoctorCheck => ({
     name,
     ok: false,
@@ -185,10 +193,10 @@ async function configCheck(
     hint:
       target.kind === "local"
         ? "Run rig restart local (or rig down local, then rig up local) to apply the current configuration."
-        : "Deploy to apply the current configuration; lifecycle commands preserve the recorded plan.",
+        : `Run rig deploy ${deployArguments(target)} --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
   });
   try {
-    const document = await deps.documents.read(project.repoPath);
+    const document = await deps.documents.read(source.path);
     const recorded = new Set(target.plan.components.map((c) => c.name));
     const added = Object.keys(document.config.components).filter(
       (component) => !recorded.has(component),
@@ -209,11 +217,12 @@ async function configCheck(
         ? {
             name,
             ok: true,
-            message: "Recorded Target policy matches current configuration.",
+            message:
+              target.kind === "local"
+                ? "Recorded Target policy matches current configuration."
+                : "Recorded Target policy matches the deployed revision's configuration.",
           }
-        : drift(
-            "Current configuration differs from the recorded Target policy.",
-          );
+        : drift(`${source.label} differs from the recorded Target policy.`);
     } catch (error) {
       if (
         error instanceof ConfigError &&
@@ -221,7 +230,7 @@ async function configCheck(
         added.length
       )
         return drift(
-          `Current configuration adds components the recorded Target policy does not have (${added.join(", ")}).`,
+          `${source.label} adds components the recorded Target policy does not have (${added.join(", ")}).`,
         );
       throw error;
     }
@@ -235,6 +244,14 @@ async function configCheck(
       hint: failure?.hint ?? "Correct Project configuration before deploying.",
     };
   }
+}
+/** The deploy arguments that select this deployed Target again. */
+function deployArguments(
+  target: Pick<TargetRecord, "kind" | "name" | "branch">,
+): string {
+  return target.kind === "live"
+    ? "live"
+    : `preview ${target.branch ?? target.name}`;
 }
 const HEALTHY_STATES = new Set([
   "running",

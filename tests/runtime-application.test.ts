@@ -623,6 +623,73 @@ test("doctor reports drift, not an invalid config, when a valid config adds a ma
   });
 });
 
+test("doctor checks a deployed Target against its deployed revision's config, not the working copy, and names deploy --force for a stale plan", async () => {
+  const { runtime, config, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  });
+  const committed = structuredClone(config);
+  const read = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => ({
+    ...(await read(path)),
+    config: path === "/tmp/developer" ? config : committed,
+  });
+  const check = async () =>
+    (
+      (await runtime.command({ action: "doctor", project: "demo" })) as {
+        checks: {
+          name: string;
+          ok: boolean;
+          message: string;
+          hint?: string;
+          reason?: string;
+        }[];
+      }
+    ).checks.find((c) => c.name === "live/config");
+  config.components.web = { mode: "managed", command: "edited", port: 4567 };
+  expect(await check()).toEqual({
+    name: "live/config",
+    ok: true,
+    message:
+      "Recorded Target policy matches the deployed revision's configuration.",
+  });
+  committed.components.web = {
+    mode: "managed",
+    command: "changed",
+    port: 4567,
+  };
+  expect(await check()).toEqual({
+    name: "live/config",
+    ok: false,
+    message:
+      "The deployed revision's configuration differs from the recorded Target policy.",
+    reason: "config-drift",
+    hint: "Run rig deploy live --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
+  });
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+    }),
+  ).toMatchObject({ outcome: "unchanged" });
+  expect((await check())?.ok).toBe(false);
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+      force: true,
+    }),
+  ).toMatchObject({ outcome: "deployed" });
+  expect((await check())?.ok).toBe(true);
+});
 test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

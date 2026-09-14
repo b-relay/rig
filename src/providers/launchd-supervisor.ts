@@ -15,6 +15,7 @@ import type {
   Supervisor,
 } from "./contracts";
 import { runCommand } from "./command-runner";
+import { DEFAULT_SHUTDOWN_BUDGET_MS } from "./child-supervisor";
 export interface LaunchdOptions {
   readonly root: string;
   readonly domain: string;
@@ -30,6 +31,10 @@ export interface LaunchdOptions {
 /** launchd owns persistent job lifetime; explicit up preserves already running jobs. */
 /** How long a launchd application may take to appear after bootstrap or after its advertised restart. */
 const APPLICATION_START_MS = 3000;
+/** Unload polling cadence. */
+const UNLOAD_POLL_MS = 100;
+/** The wrapper's own SIGTERM then SIGKILL shutdown, plus headroom for output drains and launchctl latency. */
+const UNLOAD_BUDGET_MS = DEFAULT_SHUTDOWN_BUDGET_MS + 2000;
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const run = options.run ?? runCommand;
   const inspect = options.inspect ?? createProcessIdentityReader(run);
@@ -37,17 +42,36 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
   const service = (key: string) => `${options.domain}/${label(key)}`;
-  const checked = async (args: readonly string[]) => {
+  const checked = async (args: readonly string[], key: string) => {
     const result = await run({ command: ["launchctl", ...args] });
     if (result.exitCode !== 0)
       throw new RigError(
         "LAUNCHD_FAILED",
-        "launchd could not complete the requested action.",
+        `launchd could not ${args[0]} job ${label(key)}.`,
         "Check daemon diagnostics and the Target logs.",
-        { action: args[0], exitCode: result.exitCode, stderr: result.stderr },
+        {
+          action: args[0],
+          label: label(key),
+          exitCode: result.exitCode,
+          stderr: result.stderr,
+        },
       );
     return result;
   };
+  /** Every file this supervisor writes for a job: plist, request, and the wrapper's status and observation evidence. */
+  const removeJobFiles = async (key: string) => {
+    const requestPath = join(options.root, `${label(key)}.json`);
+    for (const file of [
+      join(options.root, `${label(key)}.plist`),
+      requestPath,
+      `${requestPath}.status.json`,
+      `${requestPath}.observation.json`,
+    ])
+      await rm(file, { force: true });
+  };
+  const unloaded = (result: { exitCode: number; stderr: string }) =>
+    result.exitCode !== 0 &&
+    /could not find service|service not found/i.test(result.stderr);
   const observe = async (
     key: string,
     signal?: AbortSignal,
@@ -159,14 +183,20 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         command: ["launchctl", "print", service(request.key)],
         timeoutMs: 2000,
       });
-      if (existing.exitCode === 0)
-        await checked(["bootout", service(request.key)]);
-      await checked(["bootstrap", options.domain, plist]);
+      try {
+        if (existing.exitCode === 0)
+          await checked(["bootout", service(request.key)], request.key);
+        await checked(["bootstrap", options.domain, plist], request.key);
+      } catch (error) {
+        await removeJobFiles(request.key);
+        throw error;
+      }
       if (options.captureCommand) {
         try {
           await waitForCaptureStart(requestPath);
         } catch (error) {
-          await checked(["bootout", service(request.key)]);
+          await checked(["bootout", service(request.key)], request.key);
+          await removeJobFiles(request.key);
           throw error;
         }
       }
@@ -178,8 +208,10 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         timeoutMs: 2000,
       });
       if (existing.exitCode !== 0) {
-        if (/could not find service|service not found/i.test(existing.stderr))
+        if (unloaded(existing)) {
+          await removeJobFiles(key);
           return { outcome: "unchanged" };
+        }
         throw new RigError(
           "LAUNCHD_UNKNOWN",
           "The existing job could not be inspected.",
@@ -187,27 +219,24 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           { key },
         );
       }
-      await checked(["bootout", service(key)]);
-      for (let attempt = 0; attempt < 30; attempt++) {
+      await checked(["bootout", service(key)], key);
+      const deadline = now() + UNLOAD_BUDGET_MS;
+      do {
         const result = await run({
           command: ["launchctl", "print", service(key)],
           timeoutMs: 2000,
         });
-        if (
-          result.exitCode !== 0 &&
-          /could not find service|service not found/i.test(result.stderr)
-        ) {
-          await rm(join(options.root, `${label(key)}.plist`), { force: true });
-          await rm(join(options.root, `${label(key)}.json`), { force: true });
+        if (unloaded(result)) {
+          await removeJobFiles(key);
           return { outcome: "stopped" };
         }
-        await Bun.sleep(100);
-      }
+        await Bun.sleep(UNLOAD_POLL_MS);
+      } while (now() < deadline);
       throw new RigError(
         "LAUNCHD_STOP",
-        "The managed job did not unload.",
-        "Inspect launchd state before retrying.",
-        { key },
+        `The managed job ${label(key)} did not unload within ${UNLOAD_BUDGET_MS / 1000} s.`,
+        "Inspect launchd state, then run the stop again once the job is gone.",
+        { key, label: label(key) },
       );
     },
     async shutdown() {

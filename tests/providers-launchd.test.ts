@@ -178,3 +178,73 @@ test("ensureRunning waits for the wrapper's advertised restart instead of a fixe
   expect(calls).not.toContain("bootstrap");
   expect(clock).toBeGreaterThanOrEqual(restartAt);
 }, 15000);
+
+test("launchd stop and a failed bootstrap remove every job file, a vanished job is cleaned as unchanged, and unloading may take the wrapper's whole shutdown budget", async () => {
+  const { createHash } = await import("node:crypto");
+  const { readdir, writeFile } = await import("node:fs/promises");
+  const { writeCaptureStatus } = await import("../src/providers/capture-status");
+  const { writeCaptureObservation } = await import("../src/providers/capture-observation");
+  const root = await mkdtemp(join(tmpdir(), "rig-launchd-"));
+  roots.push(root);
+  const key = "target-1:web";
+  const jobLabel = `test.rig.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+  const requestPath = join(root, `${jobLabel}.json`);
+  const wrapper = { pid: 4242, identity: "w".repeat(64) };
+  const application = { pid: 5000, identity: "a".repeat(64) };
+  let loaded = false;
+  let bootstrapExit = 0;
+  let unloadPrints = 0;
+  const run: CommandRunner = async ({ command }) => {
+    const action = command[1];
+    if (action === "bootstrap") {
+      if (bootstrapExit) return { exitCode: bootstrapExit, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" };
+      loaded = true;
+      await writeCaptureStatus(requestPath, { state: "running", pid: application.pid });
+      await writeCaptureObservation(requestPath, {
+        wrapperPid: wrapper.pid,
+        wrapperIdentity: wrapper.identity,
+        observedAt: Date.now(),
+        applicationIdentity: application.identity,
+        observation: { state: "running", pid: application.pid },
+      });
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (action === "bootout") {
+      unloadPrints = 40;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (unloadPrints > 0 && --unloadPrints === 0) loaded = false;
+    return loaded
+      ? { exitCode: 0, stdout: `\tstate = running\n\tpid = ${wrapper.pid}\n`, stderr: "" }
+      : { exitCode: 113, stdout: "", stderr: 'Could not find service "x" in domain for user gui: 502' };
+  };
+  const supervisor = createLaunchdSupervisor({
+    root,
+    domain: "gui/99999",
+    labelPrefix: "test.rig",
+    captureCommand: ["/fake/rigd", "capture"],
+    run,
+    inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : undefined),
+  });
+  const request = { key, componentName: "web", command: ["/bin/sh", "-c", "serve"], cwd: root, env: { SECRET: "s3cret" }, logRoot: root, keepAlive: true };
+  const files = async () => (await readdir(root)).filter((name) => name.startsWith(jobLabel)).sort();
+
+  expect((await supervisor.ensureRunning(request)).outcome).toBe("started");
+  expect(await files()).toEqual([`${jobLabel}.json`, `${jobLabel}.json.observation.json`, `${jobLabel}.json.status.json`, `${jobLabel}.plist`]);
+  // The wrapper needs 40 polls (about 4 s) to finish its SIGTERM then SIGKILL shutdown; the unload wait must cover it.
+  expect(await supervisor.stop(key)).toEqual({ outcome: "stopped" });
+  expect(await files()).toEqual([]);
+
+  expect((await supervisor.ensureRunning(request)).outcome).toBe("started");
+  loaded = false; // logout: jobs bootstrapped from a private plist are gone
+  expect(await supervisor.stop(key)).toEqual({ outcome: "unchanged" });
+  expect(await files()).toEqual([]);
+
+  bootstrapExit = 5;
+  await expect(supervisor.ensureRunning(request)).rejects.toMatchObject({
+    code: "LAUNCHD_FAILED",
+    details: { action: "bootstrap", label: jobLabel, exitCode: 5 },
+  });
+  expect(await files()).toEqual([]);
+  await writeFile(join(root, "unrelated"), "");
+}, 20000);

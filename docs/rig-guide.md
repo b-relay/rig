@@ -430,7 +430,12 @@ a typo can never be recorded in a Target plan. A launchd Component whose
 application crashed and is waiting out its restart backoff is not restarted
 again by `rig up` or `rig restart`; they wait for the restart the wrapper has
 scheduled, then for the application to appear, and only report
-`LAUNCHD_START` when it misses that schedule.
+`LAUNCHD_START` when it misses that schedule. Stopping a launchd Component
+waits for the wrapper's full shutdown budget (SIGTERM, then SIGKILL, plus
+headroom) before reporting `LAUNCHD_STOP`, and every stop that finds the job
+gone, including one after a logout that already unloaded it, removes the
+job's plist, request, and evidence files from `$RIG_ROOT/launchd`; a failed
+bootstrap removes them too.
 
 ### Hooks and interpolation
 

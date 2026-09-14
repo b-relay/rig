@@ -23,6 +23,12 @@ import {
   createProcessInspection,
   type ProcessInspection,
 } from "./process-inspection";
+/** SIGTERM grace before SIGKILL when no stopTimeoutMs is configured. */
+const DEFAULT_STOP_TIMEOUT_MS = 1500;
+/** How long a killed process group may take to disappear. */
+const KILL_WAIT_MS = 1500;
+/** Worst-case shutdown of a supervisor with default timing, as the launchd capture wrapper runs it. */
+export const DEFAULT_SHUTDOWN_BUDGET_MS = DEFAULT_STOP_TIMEOUT_MS + KILL_WAIT_MS;
 const leaseSchema = z.object({
   key: z.string().describe("Stable component ownership key."),
   pid: z
@@ -249,12 +255,12 @@ export function createChildSupervisor(
       await inspection.signalGroup(owned.pid, "SIGTERM");
       const deadline =
         Date.now() +
-        (options.stopTimeoutMs ?? (options.captureCommand ? 4000 : 1500));
+        (options.stopTimeoutMs ?? (options.captureCommand ? 4000 : DEFAULT_STOP_TIMEOUT_MS));
       while ((await inspection.groupExists(owned.pid)) && Date.now() < deadline)
         await Bun.sleep(20);
       if (await inspection.groupExists(owned.pid))
         await inspection.signalGroup(owned.pid, "SIGKILL");
-      const killDeadline = Date.now() + 1500;
+      const killDeadline = Date.now() + KILL_WAIT_MS;
       while ((await inspection.groupExists(owned.pid)) && Date.now() < killDeadline)
         await Bun.sleep(20);
       if (await inspection.groupExists(owned.pid))

@@ -1,4 +1,4 @@
-import { RigError } from "../domain/errors";
+import { RigError, cancelled } from "../domain/errors";
 import { prepareInteractiveRequest } from "./interaction";
 import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
@@ -110,12 +110,7 @@ export async function runRigCli(
       project: request.project,
       target: request.target,
     });
-    if (dependencies.signal?.aborted)
-      throw new RigError(
-        "CANCELLED",
-        "The operation was cancelled.",
-        "No runtime change was requested.",
-      );
+    if (dependencies.signal?.aborted) throw cancelled();
     const status =
       request.action === "status"
         ? await dependencies.client.status(correlated)

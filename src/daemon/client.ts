@@ -4,7 +4,7 @@ import {
   type StatusSelection,
 } from "../domain/project-status";
 import { z } from "zod";
-import { RigError } from "../domain/errors";
+import { RigError, cancelled } from "../domain/errors";
 import { RIG_VERSION } from "../domain/version";
 import {
   readResultSchemas,
@@ -68,10 +68,8 @@ const protocolFailure = () =>
   );
 
 const readDeadlineMs = 5000;
-const cancelled = () =>
-  new RigError(
-    "CANCELLED",
-    "The operation was cancelled.",
+const abandoned = () =>
+  cancelled(
     "rigd keeps running whatever it was asked; run rig activity to see it.",
   );
 /** A list, logs, or activity reply must carry its collection, and a logs reply must name the Project asked for; other actions pass through as received. */
@@ -168,7 +166,7 @@ export class DaemonClient {
         redirect: "error",
       });
     } catch (error) {
-      if (signal?.aborted) throw cancelled();
+      if (signal?.aborted) throw abandoned();
       if (deadline && (error as { name?: string }).name === "TimeoutError")
         throw deadlineExpired(deadline, body?.operationId);
       throw new RigError(

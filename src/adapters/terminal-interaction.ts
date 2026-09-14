@@ -2,25 +2,24 @@ import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 import type { CliInteraction } from "../cli/interaction";
 import { terminalText } from "../cli/terminal-text";
-import { RigError } from "../domain/errors";
+import { cancelled } from "../domain/errors";
 
-const cancelled = () =>
-  new RigError(
-    "CANCELLED",
-    "The operation was cancelled.",
-    "No runtime change was requested.",
-  );
-/** Owns terminal lifetime. SIGINT, EOF and AbortSignal all settle the pending question. */
+/** Owns terminal lifetime. A terminal-mode readline turns Ctrl-C into its own
+ * event instead of a process signal, so a prompt-time Ctrl-C (and EOF) is
+ * reported through `interrupt`, making it the same cancellation as Ctrl-C
+ * anywhere else; the signal settles a pending question too. */
 export function createTerminalInteraction(
   input: Readable,
   output: Writable,
-  signal: AbortSignal,
+  interrupts: { signal: AbortSignal; interrupt: () => void },
 ): CliInteraction {
+  const { signal, interrupt } = interrupts;
   const question = async (prompt: string): Promise<string> => {
     if (signal.aborted || input.readableEnded || input.destroyed)
       throw cancelled();
     const terminal = createInterface({ input, output });
     let cancel: () => void = () => {};
+    let interrupted: () => void = () => {};
     try {
       return await new Promise<string>((resolve, reject) => {
         let settled = false;
@@ -30,8 +29,12 @@ export function createTerminalInteraction(
             reject(cancelled());
           }
         };
-        terminal.once("SIGINT", cancel);
-        terminal.once("close", cancel);
+        interrupted = () => {
+          interrupt();
+          cancel();
+        };
+        terminal.once("SIGINT", interrupted);
+        terminal.once("close", interrupted);
         signal.addEventListener("abort", cancel, { once: true });
         terminal.question(prompt).then(
           (answer) => {
@@ -50,8 +53,8 @@ export function createTerminalInteraction(
       });
     } finally {
       signal.removeEventListener("abort", cancel);
-      terminal.removeListener("SIGINT", cancel);
-      terminal.removeListener("close", cancel);
+      terminal.removeListener("SIGINT", interrupted);
+      terminal.removeListener("close", interrupted);
       terminal.close();
     }
   };

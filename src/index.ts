@@ -44,7 +44,7 @@ export async function main(args: readonly string[]): Promise<number> {
             interaction: createTerminalInteraction(
               process.stdin,
               process.stderr,
-              interrupts.cancel,
+              { signal: interrupts.cancel, interrupt: interrupts.interrupt },
             ),
           }
         : {}),

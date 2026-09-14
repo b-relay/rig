@@ -82,6 +82,10 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "CADDY_UNAVAILABLE",
   "PROVIDER_MISSING",
 ]);
+/** The user ended the command before it changed anything; the hint says what, if anything, still runs. */
+export function cancelled(hint = "No runtime change was requested."): RigError {
+  return new RigError("CANCELLED", "The operation was cancelled.", hint);
+}
 export function userCorrectable(code: string): boolean {
   return userCorrectableCodes.has(code);
 }

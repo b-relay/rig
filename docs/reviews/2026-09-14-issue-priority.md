@@ -121,7 +121,7 @@ testability and honesty refactors.
 95. ~~#176~~ (fixed) Health/readiness minor gaps: 3xx unhealthy with no reason, evidence discarded, readyTimeout overflow.
 96. ~~#115~~ (fixed) Validate inventory, Logs and Activity replies before rendering empty results.
 97. ~~#128~~ (fixed) First Ctrl-C after submit silently consumed; second hard-kills with no diagnostic.
-98. #129 Ctrl-C at an interactive prompt exits 1 with an error; elsewhere exits 0 silently.
+98. ~~#129~~ (fixed) Ctrl-C at an interactive prompt exits 1 with an error; elsewhere exits 0 silently.
 99. #134 Output strips fewer control characters than prompts.
 
 ## Tier 4 — minors

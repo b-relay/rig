@@ -602,7 +602,11 @@ that then completes renders its result as usual. A second Ctrl-C detaches:
 `rig` exits 130, records `command.detached` in its diagnostic log, and names
 `rig activity <id>` for the outcome (`--json` prints an `error` object with
 code `DETACHED` and the `operationId`). A third Ctrl-C ends the process with
-status 130 without waiting for anything.
+status 130 without waiting for anything. Ctrl-C or EOF at an interactive
+prompt (a Target picker, an `init` question, a Production confirmation) is
+the same cancellation: exit 0, no message, no diagnostic record. Answering no
+to a confirmation is an explicit decision and is reported as `The operation
+was cancelled.` with exit 1.
 
 While a deploy is running, `rig status` and `rig doctor` report the Target
 as `deploy in progress (operation <id>)` and show whatever is observed at that

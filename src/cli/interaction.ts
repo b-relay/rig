@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { terminalText } from "./terminal-text";
-import { RigError } from "../domain/errors";
+import { RigError, cancelled } from "../domain/errors";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 export interface CliInteraction {
@@ -157,13 +157,6 @@ export async function prepareInteractiveRequest(
   }
   assertActive(deps.signal);
   return request;
-}
-function cancelled(): RigError {
-  return new RigError(
-    "CANCELLED",
-    "The operation was cancelled.",
-    "No runtime change was requested.",
-  );
 }
 
 function readReply<T>(schema: z.ZodType<T>, value: unknown): T {

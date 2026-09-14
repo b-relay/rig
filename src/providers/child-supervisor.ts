@@ -23,12 +23,16 @@ import {
   createProcessInspection,
   type ProcessInspection,
 } from "./process-inspection";
+import { createProcessTiming, type ProcessTiming } from "./process-timing";
 /** SIGTERM grace before SIGKILL when no stopTimeoutMs is configured. */
 const DEFAULT_STOP_TIMEOUT_MS = 1500;
-/** How long a killed process group may take to disappear. */
-const KILL_WAIT_MS = 1500;
+/** How often stop asks whether the signalled group is gone. */
+const STOP_POLL_MS = 20;
+/** How long a killed process group may take to disappear when no killWaitMs is configured. */
+const DEFAULT_KILL_WAIT_MS = 1500;
 /** Worst-case shutdown of a supervisor with default timing, as the launchd capture wrapper runs it. */
-export const DEFAULT_SHUTDOWN_BUDGET_MS = DEFAULT_STOP_TIMEOUT_MS + KILL_WAIT_MS;
+export const DEFAULT_SHUTDOWN_BUDGET_MS =
+  DEFAULT_STOP_TIMEOUT_MS + DEFAULT_KILL_WAIT_MS;
 const leaseSchema = z.object({
   key: z.string().describe("Stable component ownership key."),
   pid: z
@@ -87,8 +91,12 @@ interface OwnedProcess {
 }
 export interface ChildSupervisorOptions {
   readonly stateRoot: string;
+  /** SIGTERM grace before SIGKILL; 1500 ms, or 4000 ms under a capture wrapper. */
   readonly stopTimeoutMs?: number;
-  readonly now?: () => Date;
+  /** How long a killed group may take to disappear before stop fails as STOP_TIMEOUT; 1500 ms. */
+  readonly killWaitMs?: number;
+  /** Clock and timers; the platform's unless a test scripts them. */
+  readonly timing?: ProcessTiming;
   readonly processInspection?: ProcessInspection;
   readonly captureCommand?: readonly string[];
   readonly restartLimit?: number;
@@ -104,17 +112,18 @@ export function createChildSupervisor(
   const restarting = new Set<string>();
   const restarts = new Map<
     string,
-    { times: number[]; timer?: ReturnType<typeof setTimeout>; at?: number }
+    { times: number[]; cancel?: () => void; at?: number }
   >();
   /** Restart evidence for an observation: pending while a restart is scheduled or in flight, with its advertised time. */
   const restartEvidence = (key: string, owned: OwnedProcess) => {
     const restart = restarts.get(key);
-    const pending = restarting.has(key) || (!owned.stopped && restart?.timer);
+    const pending = restarting.has(key) || (!owned.stopped && restart?.cancel);
     return pending
       ? { restartPending: true, ...(restart?.at === undefined ? {} : { restartAt: restart.at }) }
       : {};
   };
-  const now = options.now ?? (() => new Date());
+  const timing = options.timing ?? createProcessTiming();
+  const now = timing.now;
   const inspection = options.processInspection ?? createProcessInspection();
   const inspect = inspection.identity;
   const leaseRoot = join(options.stateRoot, "process-leases");
@@ -226,9 +235,9 @@ export function createChildSupervisor(
     key: string,
   ): Promise<{ outcome: "stopped" | "unchanged" }> {
     const restart = restarts.get(key);
-    if (restart?.timer) {
-      clearTimeout(restart.timer);
-      restart.timer = undefined;
+    if (restart?.cancel) {
+      restart.cancel();
+      restart.cancel = undefined;
     }
     const owned = await recover(key);
     if (!owned) return { outcome: "unchanged" };
@@ -260,15 +269,15 @@ export function createChildSupervisor(
     if (verified) {
       await inspection.signalGroup(owned.pid, "SIGTERM");
       const deadline =
-        Date.now() +
+        now().getTime() +
         (options.stopTimeoutMs ?? (options.captureCommand ? 4000 : DEFAULT_STOP_TIMEOUT_MS));
-      while ((await inspection.groupExists(owned.pid)) && Date.now() < deadline)
-        await Bun.sleep(20);
+      while ((await inspection.groupExists(owned.pid)) && now().getTime() < deadline)
+        await timing.wait(STOP_POLL_MS);
       if (await inspection.groupExists(owned.pid))
         await inspection.signalGroup(owned.pid, "SIGKILL");
-      const killDeadline = Date.now() + KILL_WAIT_MS;
-      while ((await inspection.groupExists(owned.pid)) && Date.now() < killDeadline)
-        await Bun.sleep(20);
+      const killDeadline = now().getTime() + (options.killWaitMs ?? DEFAULT_KILL_WAIT_MS);
+      while ((await inspection.groupExists(owned.pid)) && now().getTime() < killDeadline)
+        await timing.wait(STOP_POLL_MS);
       if (await inspection.groupExists(owned.pid))
         throw new RigError(
           "STOP_TIMEOUT",
@@ -286,8 +295,10 @@ export function createChildSupervisor(
   /** Ends restart scheduling and waits for in-flight operations so ownership can be handed over or ended. */
   async function quiesce(): Promise<void> {
     shuttingDown = true;
-    for (const restart of restarts.values())
-      if (restart.timer) clearTimeout(restart.timer);
+    for (const restart of restarts.values()) {
+      restart.cancel?.();
+      restart.cancel = undefined;
+    }
     await Promise.all(
       [...operations.values()].map((pending) => pending.catch(() => {})),
     );
@@ -310,23 +321,22 @@ export function createChildSupervisor(
     const delay =
       (options.restartBackoffMs ?? 100) * 2 ** (restart.times.length - 1);
     restart.at = timestamp + delay;
-    const timer = setTimeout(
-      () => {
-        void serialized(key, async () => {
-          if (!owned.stopped && !shuttingDown) {
-            restarting.add(key);
-            await ensureRunning(owned.request!);
-          }
+    const cancel = timing.schedule(delay, () => {
+      // A callback the platform queued before its cancellation is ignored; the process is only revived by a live schedule.
+      if (restart.cancel !== cancel) return;
+      restart.cancel = undefined;
+      void serialized(key, async () => {
+        if (!owned.stopped && !shuttingDown) {
+          restarting.add(key);
+          await ensureRunning(owned.request!);
+        }
+      })
+        .finally(() => {
+          restarting.delete(key);
         })
-          .finally(() => {
-            restarting.delete(key);
-            if (restart.timer === timer) restart.timer = undefined;
-          })
-          .catch(() => {});
-      },
-      delay,
-    );
-    restart.timer = timer;
+        .catch(() => {});
+    });
+    restart.cancel = cancel;
     restarts.set(key, restart);
   }
   async function ensureRunning(

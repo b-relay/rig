@@ -159,7 +159,12 @@ rig init
   registered instead, so `rig init --path packages/web` and `rig status` from
   `packages/web` agree on the Project
 - choose a Project identity, defaulting to a slug from the repo directory
-- confirm the Production branch interactively
+- confirm the Production branch interactively; the default is, in order,
+  `--production-branch`, the branch `origin/HEAD` names, the host
+  `deploy.productionBranch` default, then `main`. The checked-out branch is
+  never assumed to be Production: a non-interactive `rig init` on `feature/wip`
+  records the host default, and the interactive prompt names the differing
+  checkout so a deliberate answer can override it
 - write committed Project config at the repo root
 - configure the `rig` Git remote when possible
 - register the Project with `rigd`

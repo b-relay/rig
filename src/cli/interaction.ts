@@ -14,6 +14,7 @@ export interface CliInteraction {
 const initialization = z.object({
   name: z.string(),
   productionBranch: z.string(),
+  currentBranch: z.string().optional(),
   gitRequired: z.boolean(),
   existing: z.boolean(),
 });
@@ -102,7 +103,9 @@ export async function prepareInteractiveRequest(
         request = {
           ...request,
           productionBranch: await interaction.text(
-            "Production branch",
+            info.currentBranch && info.currentBranch !== info.productionBranch
+              ? `Production branch (the checkout is on '${terminalText(info.currentBranch)}')`
+              : "Production branch",
             info.productionBranch,
           ),
         };
@@ -124,10 +127,10 @@ export async function prepareInteractiveRequest(
       (request.target === "live" ? info.productionBranch : info.currentBranch);
     if (!options.json)
       deps.output.error(
-      `Deploying ${terminalText(info.project)} (${terminalText(info.repoPath)}) to ${terminalText(
-        request.deployment ?? request.target ?? "preview",
-      )} from ${branch === null ? "a detached HEAD" : terminalText(branch)}.\n`,
-    );
+        `Deploying ${terminalText(info.project)} (${terminalText(info.repoPath)}) to ${terminalText(
+          request.deployment ?? request.target ?? "preview",
+        )} from ${branch === null ? "a detached HEAD" : terminalText(branch)}.\n`,
+      );
     if (request.target !== "live" || request.branch) return request;
     if (
       info.currentBranch !== null &&

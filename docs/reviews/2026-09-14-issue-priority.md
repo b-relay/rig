@@ -114,7 +114,7 @@ testability and honesty refactors.
 88. ~~#148~~ (fixed) Editing the Project name in config after registration is a circular dead end. (#235.)
 89. ~~#161~~ (fixed) git push rig from a linked git worktree rejected with PROJECT_PATH_CONFLICT. (#232, #236.)
 90. ~~#178~~ (fixed) `rig init --path <dir>` registers the Git toplevel and ignores a nearer rig.yaml. (#233.)
-91. #179 Non-interactive init records the checked-out branch as Production; host default never consulted. (#233.)
+91. ~~#179~~ (fixed) Non-interactive init records the checked-out branch as Production; host default never consulted. (#233.)
 92. #167 `rig activity` hides the message and Operation id.
 93. #149 User-correctable failures rendered as unexpected; raw Zod text; no CLI pre-validation.
 94. #164 Config validation gaps: "Invalid input" for common mistakes, no field path.

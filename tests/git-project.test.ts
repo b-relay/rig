@@ -279,9 +279,10 @@ test("real unborn, origin default, detached and bare repositories preserve disco
     run({ command: ["git", ...args], cwd: directory });
   try {
     await git(["init", "-b", "work"]);
-    expect(
-      (await inspectProjectGit(directory, discovery)).productionBranch,
-    ).toBe("work");
+    expect(await inspectProjectGit(directory, discovery)).toEqual({
+      repoPath: directory,
+      currentBranch: "work",
+    });
     await git([
       "-c",
       "user.name=Rig Test",
@@ -298,14 +299,16 @@ test("real unborn, origin default, detached and bare repositories preserve disco
       "refs/remotes/origin/HEAD",
       "refs/remotes/origin/trunk",
     ]);
-    expect(
-      (await inspectProjectGit(directory, discovery)).productionBranch,
-    ).toBe("trunk");
+    expect(await inspectProjectGit(directory, discovery)).toEqual({
+      repoPath: directory,
+      productionBranch: "trunk",
+      currentBranch: "work",
+    });
     await git(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
     await git(["checkout", "--detach"]);
-    expect(
-      (await inspectProjectGit(directory, discovery)).productionBranch,
-    ).toBe("main");
+    expect(await inspectProjectGit(directory, discovery)).toEqual({
+      repoPath: directory,
+    });
     expect(
       commands.every((command) =>
         ["rev-parse", "symbolic-ref", "worktree"].includes(command[1]!),
@@ -350,7 +353,7 @@ test("explicit setup executes exactly init and missing remote add mutations", as
   }
 });
 
-test("a linked worktree is discovered as its main working tree, with the main tree's production branch", async () => {
+test("a linked worktree is discovered as its main working tree, reporting its own checkout", async () => {
   const directory = await realpath(
     await mkdtemp(join(tmpdir(), "rig-git-worktree-")),
   );
@@ -376,11 +379,15 @@ test("a linked worktree is discovered as its main working tree, with the main tr
     const discovery = createProjectDiscovery(run);
     expect(await inspectProjectGit(linked, discovery)).toEqual({
       repoPath: main,
-      productionBranch: "main",
+      currentBranch: "feature",
     });
     expect(await inspectProjectGit(join(linked, "."), discovery)).toEqual(
-      await inspectProjectGit(main, discovery),
+      await inspectProjectGit(linked, discovery),
     );
+    expect(await inspectProjectGit(main, discovery)).toEqual({
+      repoPath: main,
+      currentBranch: "main",
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

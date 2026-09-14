@@ -4,6 +4,7 @@ import type { CliDependencies } from "./types";
 function fixture() {
   const requests: unknown[] = [];
   const choices: unknown[] = [];
+  const prompts: string[] = [];
   const deps: CliDependencies = {
     root: "/isolated",
     cwd: "/repo",
@@ -35,6 +36,7 @@ function fixture() {
           return {
             name: "demo",
             productionBranch: "trunk",
+            currentBranch: "feature/wip",
             gitRequired: true,
             existing: false,
           };
@@ -67,7 +69,8 @@ function fixture() {
         choices.push(options);
         return "old-preview";
       },
-      async text(_message, defaultValue) {
+      async text(message, defaultValue) {
+        prompts.push(message);
         return defaultValue;
       },
       async confirm() {
@@ -75,7 +78,7 @@ function fixture() {
       },
     },
   };
-  return { deps, requests, choices };
+  return { deps, requests, choices, prompts };
 }
 test("missing Target prompts among observed configured and stopped Targets, never creates a Preview", async () => {
   const { deps, choices } = fixture();
@@ -92,8 +95,8 @@ test("noninteractive lifecycle requires an explicit Target without reading state
   ).rejects.toMatchObject({ code: "TARGET_REQUIRED" });
   expect(requests).toHaveLength(0);
 });
-test("init presents identity and detected Production branch, and Git creation requires affirmative choice", async () => {
-  const { deps } = fixture();
+test("init presents identity and the default Production branch, naming a differing checkout, and Git creation requires affirmative choice", async () => {
+  const { deps, prompts } = fixture();
   expect(
     await prepareInteractiveRequest(
       { action: "init", repoPath: "/repo" },
@@ -104,6 +107,10 @@ test("init presents identity and detected Production branch, and Git creation re
     productionBranch: "trunk",
     createGit: true,
   });
+  expect(prompts).toEqual([
+    "Project name",
+    "Production branch (the checkout is on 'feature/wip')",
+  ]);
   deps.interaction!.confirm = async () => false;
   await expect(
     prepareInteractiveRequest({ action: "init", repoPath: "/repo" }, deps),

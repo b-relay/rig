@@ -6,7 +6,10 @@ import { ensureRigRemote, rigRemoteUrl } from "./remotes";
 
 export interface ProjectGit {
   repoPath: string;
-  productionBranch: string;
+  /** The branch origin/HEAD names; absent when the repository has no such remote head. */
+  productionBranch?: string;
+  /** The checked-out branch, or init.defaultBranch for a repository not yet created; absent when detached. */
+  currentBranch?: string;
 }
 export interface EnsureProjectGitInput {
   path: string;
@@ -122,8 +125,9 @@ export async function inspectProjectLocation(
       throw discoveryFailure();
     return {
       repoPath: location,
-      productionBranch:
-        initial.exitCode === 0 ? branchValue(initial.stdout) : "main",
+      ...(initial.exitCode === 0
+        ? { currentBranch: branchValue(initial.stdout) }
+        : {}),
       gitRequired: true,
     };
   }
@@ -143,18 +147,17 @@ export async function inspectProjectLocation(
     ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
     discovery,
   );
-  if (remoteHead.exitCode === 0) {
-    if (!remoteHead.stdout.trim().startsWith("origin/"))
-      throw discoveryFailure();
-    return {
-      repoPath,
-      productionBranch: branchValue(remoteHead.stdout.trim().slice(7)),
-      gitRequired: false,
-    };
-  }
-  if (remoteHead.exitCode !== 1) throw discoveryFailure();
+  if (remoteHead.exitCode !== 0 && remoteHead.exitCode !== 1)
+    throw discoveryFailure();
+  if (
+    remoteHead.exitCode === 0 &&
+    !remoteHead.stdout.trim().startsWith("origin/")
+  )
+    throw discoveryFailure();
+  // The checkout at the inspected path (a linked worktree keeps its own) is reported
+  // separately: it is never the Production branch by itself.
   const current = await readGit(
-    repoPath,
+    location,
     ["symbolic-ref", "--quiet", "--short", "HEAD"],
     discovery,
   );
@@ -162,8 +165,12 @@ export async function inspectProjectLocation(
     throw discoveryFailure();
   return {
     repoPath,
-    productionBranch:
-      current.exitCode === 0 ? branchValue(current.stdout) : "main",
+    ...(remoteHead.exitCode === 0
+      ? { productionBranch: branchValue(remoteHead.stdout.trim().slice(7)) }
+      : {}),
+    ...(current.exitCode === 0
+      ? { currentBranch: branchValue(current.stdout) }
+      : {}),
     gitRequired: false,
   };
 }

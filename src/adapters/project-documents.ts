@@ -35,10 +35,12 @@ export function createProjectDocuments(
         path,
         { action: "init", createGit: true },
         discovery,
+        root,
       );
       return {
         name: info.name,
         productionBranch: info.productionBranch,
+        ...(info.currentBranch ? { currentBranch: info.currentBranch } : {}),
         gitRequired: info.gitRequired,
         existing: !!info.existing,
       };
@@ -48,12 +50,13 @@ export function createProjectDocuments(
         path,
         command,
         discovery,
+        root,
       );
       return { repoPath, name };
     },
     async initialize(path, command) {
       const { repoPath, name, existing, productionBranch } =
-        await inspectInitialization(path, command, discovery);
+        await inspectInitialization(path, command, discovery, root);
       await ensureProjectGit(
         { path: repoPath, project: name, createGit: command.createGit },
         discovery,
@@ -62,7 +65,7 @@ export function createProjectDocuments(
       return await initializeProjectConfig(repoPath, {
         ...command,
         name,
-        productionBranch: command.productionBranch ?? productionBranch,
+        productionBranch,
       });
     },
     async rename(project, name) {
@@ -88,9 +91,10 @@ async function inspectInitialization(
   path: string,
   command: RuntimeCommand,
   discovery: ProjectDiscovery,
+  root: string,
 ) {
   const location = await inspectProjectLocation(path, discovery);
-  const { productionBranch, gitRequired } = location;
+  const { gitRequired } = location;
   if (gitRequired && !command.createGit)
     throw new RigError(
       "GIT_REQUIRED",
@@ -109,11 +113,18 @@ async function inspectInitialization(
       "The requested name conflicts with Project config.",
       "Use the name declared by Project config.",
     );
+  // The checked-out branch is never assumed to be Production; the host default stands in for origin/HEAD.
+  const productionBranch =
+    existing?.config.live?.deployBranch ??
+    command.productionBranch ??
+    location.productionBranch ??
+    (await readHostConfig(root)).deploy.productionBranch;
   return {
     repoPath,
     name,
     existing,
-    productionBranch: existing?.config.live?.deployBranch ?? productionBranch,
+    productionBranch,
+    currentBranch: location.currentBranch,
     gitRequired,
   };
 }

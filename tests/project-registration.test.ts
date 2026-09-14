@@ -240,3 +240,58 @@ test("store failure reports preserved initialization and rerunning completes the
   expect(f.state.projects).toEqual([project]);
   expect(await readFile(join(f.repo, "rig.yaml"), "utf8")).toBe(config);
 });
+test("init records the host's Production branch default, never the checked-out branch, unless --production-branch is given", async () => {
+  const f = await fixture();
+  for (const command of [
+    ["git", "init", "-b", "feature/wip"],
+    [
+      "git",
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "start",
+    ],
+  ])
+    expect((await run({ command, cwd: f.repo })).exitCode).toBe(0);
+  expect(await f.deps.documents.initializationInfo(f.repo)).toMatchObject({
+    productionBranch: "main",
+    currentBranch: "feature/wip",
+  });
+  await writeFile(
+    join(f.root, "config.yaml"),
+    "deploy:\n  productionBranch: trunk\n",
+  );
+  expect(await f.deps.documents.initializationInfo(f.repo)).toMatchObject({
+    productionBranch: "trunk",
+    currentBranch: "feature/wip",
+  });
+  const project = await registerProject(
+    { action: "init", repoPath: f.repo, project: "demo" },
+    f.deps,
+  );
+  expect(await readFile(project.configPath, "utf8")).toContain(
+    "deployBranch: trunk",
+  );
+  const other = join(f.root, "other");
+  await mkdir(other);
+  expect(
+    (await run({ command: ["git", "init", "-b", "feature/wip"], cwd: other }))
+      .exitCode,
+  ).toBe(0);
+  const explicit = await registerProject(
+    {
+      action: "init",
+      repoPath: other,
+      project: "other",
+      productionBranch: "release",
+    },
+    f.deps,
+  );
+  expect(await readFile(explicit.configPath, "utf8")).toContain(
+    "deployBranch: release",
+  );
+});

@@ -22,13 +22,16 @@ test("discovery controls canonical filesystem identity as well as Git without re
         ? "worktree /canonical/repo\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/trunk\n\nworktree /canonical/wt\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/feature\n\n"
         : input.command.includes("--is-bare-repository")
           ? "false\n"
-          : "origin/trunk\n";
+          : input.command.includes("refs/remotes/origin/HEAD")
+            ? "origin/trunk\n"
+            : "feature\n";
       return { exitCode: 0, stdout, stderr: "" };
     },
   });
   expect(project).toEqual({
     repoPath: "/canonical/repo",
     productionBranch: "trunk",
+    currentBranch: "feature",
   });
   expect(paths).toEqual(["/fictional/link/nested", "/canonical/repo"]);
   expect(
@@ -89,7 +92,7 @@ test("missing and unreadable paths and failed or malformed Git are distinct safe
   }
 });
 
-test("read-only discovery retains current, detached and configured initial Branch defaults", async () => {
+test("read-only discovery reports origin/HEAD as Production and the checkout separately, never as Production", async () => {
   expect(
     await inspectProjectGit(
       "/repo",
@@ -100,13 +103,28 @@ test("read-only discovery retains current, detached and configured initial Branc
         ok("feature/work"),
       ]),
     ),
-  ).toEqual({ repoPath: "/repo", productionBranch: "feature/work" });
+  ).toEqual({ repoPath: "/repo", currentBranch: "feature/work" });
+  expect(
+    await inspectProjectGit(
+      "/repo",
+      controlled([
+        ok("false"),
+        ok("worktree /repo\n"),
+        ok("origin/trunk"),
+        ok("feature/work"),
+      ]),
+    ),
+  ).toEqual({
+    repoPath: "/repo",
+    productionBranch: "trunk",
+    currentBranch: "feature/work",
+  });
   expect(
     await inspectProjectGit(
       "/repo",
       controlled([ok("false"), ok("worktree /repo\n"), absent, absent]),
     ),
-  ).toEqual({ repoPath: "/repo", productionBranch: "main" });
+  ).toEqual({ repoPath: "/repo" });
   const notRepo = {
     exitCode: 128,
     stdout: "",
@@ -116,7 +134,7 @@ test("read-only discovery retains current, detached and configured initial Branc
     await inspectProjectLocation("/repo", controlled([notRepo, ok("trunk")])),
   ).toEqual({
     repoPath: "/repo",
-    productionBranch: "trunk",
+    currentBranch: "trunk",
     gitRequired: true,
   });
   await expect(

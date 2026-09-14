@@ -24,7 +24,10 @@ export interface ProjectDocuments {
   read(path: string): Promise<ConfigDocument<ProjectConfig>>;
   initializationInfo(path: string): Promise<{
     name: string;
+    /** The branch init would record: an existing config's, origin/HEAD, or the host default. */
     productionBranch: string;
+    /** The checked-out branch, when there is one; shown so a confirmation can name it. */
+    currentBranch?: string;
     gitRequired: boolean;
     existing: boolean;
   }>;

@@ -489,7 +489,13 @@ outside a Project unless `--project <name>` is provided.
 `rig doctor` always runs Host diagnostics. When a Project context is available,
 it also runs Project diagnostics. Outside a Project, it may succeed with
 Host-only checks and a note that Project checks were skipped. `doctor` is
-read-only by default. A failing component check carries what was observed
+read-only by default. One report reads the repository config once, so the
+identity check and every Working copy comparison see the same revision even
+while the file is being edited. A config the parser rejects is
+`config-invalid` and carries the parser's message; a config that could not be
+read at all (permissions, I/O) is `config-unreadable`; a config that names
+another Project is `identity-drift` and is not compared. Host, ownership,
+recovery and deployed-Target checks still run in each of these cases. A failing component check carries what was observed
 (the exit code, an unverified lease, an expired status deadline) in its
 message, and its hint follows from that: an exit points at `rig logs
 <target>`, an unknown observation at daemon state, an expired deadline at

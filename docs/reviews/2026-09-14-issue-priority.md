@@ -106,7 +106,7 @@ testability and honesty refactors.
 80. ~~#126~~ (fixed) doctor reports config-invalid for a valid config that adds a managed component without a port.
 81. ~~#154~~ (fixed) doctor config-drift hint says "Deploy to apply" but a same-Commit deploy is unchanged.
 82. ~~#127~~ (fixed) doctor treats a slow daemon (>5 s) as absent. (#224, #234.)
-83. #119 Make Doctor use one Project config snapshot and distinguish inspection failures.
+83. ~~#119~~ (fixed) Make Doctor use one Project config snapshot and distinguish inspection failures.
 84. #118 Make runtime diagnostic and monitor failures observable without changing outcomes.
 85. #117 Preserve safe initiating and recovery causes in retirement failures.
 86. #205 Caddy validate/reload stderr discarded on every path; missing caddy executable is a generic COMMAND_START. (#230.)

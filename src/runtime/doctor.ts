@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
+import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { RuntimeDependencies } from "./contracts";
 import { RigError } from "../domain/errors";
 import { observeTargets, OBSERVATION_EXPIRED } from "./status";
@@ -88,33 +89,13 @@ export async function doctor(
   deps: RuntimeDependencies & { inProgress(operationId: string): boolean },
 ) {
   const checks = await inspectRuntimeHost(deps);
-  try {
-    const document = await deps.documents.read(project.repoPath);
-    const ok = document.config.name === project.name;
-    checks.push(
-      ok
-        ? {
-            name: "project-config",
-            ok: true,
-            message: "Project config is valid.",
-          }
-        : {
-            name: "project-config",
-            ok: false,
-            message: "Project identity differs from registration.",
-            reason: "identity-drift",
-            hint: "Use rig rename.",
-          },
-    );
-  } catch {
-    checks.push({
-      name: "project-config",
-      ok: false,
-      message: "Project config is missing or invalid.",
-      reason: "config-invalid",
-      hint: "Correct the registered Project configuration.",
-    });
-  }
+  // One acquisition serves identity and every Working copy comparison, so a concurrent edit cannot split one report across revisions.
+  const repository = await acquireDocument(
+    project.repoPath,
+    project.name,
+    deps.documents,
+  );
+  checks.push(projectConfigCheck(repository));
   for (const target of targets) {
     if (target.deploymentIncomplete && !target.recovery)
       checks.push({
@@ -150,7 +131,21 @@ export async function doctor(
         reason: "deployment-recovery",
         hint: "Run down for this Target to stop both recorded plans before retrying deployment.",
       });
-    checks.push(await configCheck(project, target, deps));
+    checks.push(
+      await configCheck(
+        project,
+        target,
+        target.kind === "local"
+          ? repository
+          : // A deployed Target is planned from the committed config in its checkout; the working copy never reaches it.
+            await acquireDocument(
+              target.plan.workspacePath,
+              project.name,
+              deps.documents,
+            ),
+        deps,
+      ),
+    );
   }
   const ownershipKnown = !checks.some(
     (check) => check.name === "runtime-ownership" && !check.ok,
@@ -169,80 +164,151 @@ export async function doctor(
       checks.push(componentCheck(report.name, component));
   return { ok: checks.every((c) => c.ok), checks };
 }
-/** Compares the current config, resolved against the recorded ports, with the recorded plan.
+/** One read of a config document, kept apart by why it cannot serve a comparison. */
+type AcquiredDocument =
+  | { outcome: "usable"; document: ConfigDocument<ProjectConfig> }
+  | { outcome: "foreign"; document: ConfigDocument<ProjectConfig> }
+  | { outcome: "invalid"; failure: ConfigError }
+  | { outcome: "unreadable"; failure: Error };
+/** Reads one config document once; a parser rejection and a failed read are different findings. */
+async function acquireDocument(
+  path: string,
+  projectName: string,
+  documents: Pick<RuntimeDependencies["documents"], "read">,
+): Promise<AcquiredDocument> {
+  try {
+    const document = await documents.read(path);
+    return document.config.name === projectName
+      ? { outcome: "usable", document }
+      : { outcome: "foreign", document };
+  } catch (error) {
+    if (error instanceof ConfigError)
+      return { outcome: "invalid", failure: error };
+    return {
+      outcome: "unreadable",
+      failure: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+const UNREADABLE_HINT =
+  "Inspect the Project directory and file permissions, then run doctor again.";
+function projectConfigCheck(repository: AcquiredDocument): DoctorCheck {
+  const name = "project-config";
+  switch (repository.outcome) {
+    case "usable":
+      return { name, ok: true, message: "Project config is valid." };
+    case "foreign":
+      return {
+        name,
+        ok: false,
+        message: "Project identity differs from registration.",
+        reason: "identity-drift",
+        hint: "Use rig rename.",
+      };
+    case "invalid":
+      return {
+        name,
+        ok: false,
+        message: repository.failure.message,
+        reason: "config-invalid",
+        hint: repository.failure.hint,
+      };
+    case "unreadable":
+      return {
+        name,
+        ok: false,
+        message: `Project config could not be read. ${repository.failure.message}`,
+        reason: "config-unreadable",
+        hint: UNREADABLE_HINT,
+      };
+  }
+}
+/** Compares the acquired config, resolved against the recorded ports, with the recorded plan.
  * A config that parses but adds components the record has no port for is drift, not an invalid config. */
 async function configCheck(
-  project: Pick<ProjectRecord, "repoPath">,
+  project: Pick<ProjectRecord, "name">,
   target: TargetRecord,
+  source: AcquiredDocument,
   deps: Pick<RuntimeDependencies, "documents">,
 ): Promise<DoctorCheck> {
   const name = `${target.name}/config`;
-  // A deployed Target is planned from the committed config in its checkout; the working copy never reaches it.
-  const source =
+  const label =
     target.kind === "local"
-      ? { path: project.repoPath, label: "Current configuration" }
-      : {
-          path: target.plan.workspacePath,
-          label: "The deployed revision's configuration",
-        };
-  const drift = (message: string): DoctorCheck => ({
-    name,
-    ok: false,
-    message,
-    reason: "config-drift",
-    hint:
+      ? "Current configuration"
+      : "The deployed revision's configuration";
+  const failing = (
+    message: string,
+    reason: string,
+    hint: string,
+  ): DoctorCheck => ({ name, ok: false, message, reason, hint });
+  const drift = (message: string) =>
+    failing(
+      message,
+      "config-drift",
       target.kind === "local"
         ? "Run rig restart local (or rig down local, then rig up local) to apply the current configuration."
         : `Run rig deploy ${deployArguments(target)} --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
-  });
-  try {
-    const document = await deps.documents.read(source.path);
-    const recorded = new Set(target.plan.components.map((c) => c.name));
-    const added = Object.keys(document.config.components).filter(
-      (component) => !recorded.has(component),
     );
-    try {
-      const current = deps.documents.resolve({
-        config: document.config,
-        target: target.kind,
-        workspacePath: target.plan.workspacePath,
-        dataRoot: target.plan.dataRoot,
-        deploymentName: target.name,
-        branchSlug: target.plan.branchSlug,
-        branch: target.branch,
-        commit: target.commit,
-        assignedPorts: recordedPorts(target.plan.components),
-      });
-      return isDeepStrictEqual(current, target.plan)
-        ? {
-            name,
-            ok: true,
-            message:
-              target.kind === "local"
-                ? "Recorded Target policy matches current configuration."
-                : "Recorded Target policy matches the deployed revision's configuration.",
-          }
-        : drift(`${source.label} differs from the recorded Target policy.`);
-    } catch (error) {
-      if (
-        error instanceof ConfigError &&
-        error.code === "missing_port" &&
-        added.length
-      )
-        return drift(
-          `${source.label} adds components the recorded Target policy does not have (${added.join(", ")}).`,
-        );
-      throw error;
-    }
+  const invalid = (failure: ConfigError) =>
+    failing(
+      `Current Target policy could not be resolved. ${failure.message}`,
+      "config-invalid",
+      failure.hint,
+    );
+  switch (source.outcome) {
+    case "unreadable":
+      return failing(
+        `${label} could not be read. ${source.failure.message}`,
+        "config-unreadable",
+        target.kind === "local"
+          ? UNREADABLE_HINT
+          : `Inspect the Target's checkout at ${target.plan.workspacePath}, or run rig deploy ${deployArguments(target)} --force to prepare it again.`,
+      );
+    case "invalid":
+      return invalid(source.failure);
+    case "foreign":
+      return failing(
+        `${label} names Project '${source.document.config.name}', not '${project.name}'; its policy was not compared.`,
+        "identity-drift",
+        "Use rig rename.",
+      );
+    case "usable":
+      break;
+  }
+  const { config } = source.document;
+  const recorded = new Set(target.plan.components.map((c) => c.name));
+  const added = Object.keys(config.components).filter(
+    (component) => !recorded.has(component),
+  );
+  try {
+    const current = deps.documents.resolve({
+      config,
+      target: target.kind,
+      workspacePath: target.plan.workspacePath,
+      dataRoot: target.plan.dataRoot,
+      deploymentName: target.name,
+      branchSlug: target.plan.branchSlug,
+      branch: target.branch,
+      commit: target.commit,
+      assignedPorts: recordedPorts(target.plan.components),
+    });
+    return isDeepStrictEqual(current, target.plan)
+      ? {
+          name,
+          ok: true,
+          message:
+            target.kind === "local"
+              ? "Recorded Target policy matches current configuration."
+              : "Recorded Target policy matches the deployed revision's configuration.",
+        }
+      : drift(`${label} differs from the recorded Target policy.`);
   } catch (error) {
-    const failure = error instanceof ConfigError ? error : undefined;
-    return {
-      name,
-      ok: false,
-      message: `Current Target policy could not be resolved.${failure ? ` ${failure.message}` : ""}`,
-      reason: "config-invalid",
-      hint: failure?.hint ?? "Correct Project configuration before deploying.",
-    };
+    if (!(error instanceof ConfigError)) throw error;
+    return error.code === "missing_port" && added.length
+      ? drift(
+          `${label} adds components the recorded Target policy does not have (${added.join(", ")}).`,
+        )
+      : invalid(error);
   }
 }
 /** The deploy arguments that select this deployed Target again. */

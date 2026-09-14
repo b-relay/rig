@@ -1,4 +1,5 @@
 import { RigError } from "../src/domain/errors";
+import { ConfigError } from "../src/config/errors";
 import { test, expect } from "bun:test";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -689,6 +690,162 @@ test("doctor checks a deployed Target against its deployed revision's config, no
     }),
   ).toMatchObject({ outcome: "deployed" });
   expect((await check())?.ok).toBe(true);
+});
+type DoctorReport = {
+  ok: boolean;
+  checks: {
+    name: string;
+    ok: boolean;
+    message: string;
+    reason?: string;
+    hint?: string;
+  }[];
+};
+test("doctor acquires the Project config once per report, so identity and every Working copy comparison see one revision", async () => {
+  const { runtime, config, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  });
+  const original = structuredClone(config);
+  const edited = structuredClone(config);
+  edited.components.web = { mode: "managed", command: "edited", port: 4567 };
+  let repoReads = 0;
+  const read = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => ({
+    ...(await read(path)),
+    // A reader that alternates revisions: a second read inside one report would see the edit.
+    config:
+      path === "/tmp/developer"
+        ? repoReads++ % 2
+          ? edited
+          : original
+        : original,
+  });
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as DoctorReport;
+  expect(repoReads).toBe(1);
+  expect(report.checks).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ name: "project-config", ok: true }),
+      expect.objectContaining({ name: "local/config", ok: true }),
+      expect.objectContaining({ name: "live/config", ok: true }),
+    ]),
+  );
+});
+test("doctor tells an unreadable Project config from an invalid or foreign one, and independent checks still run", async () => {
+  const { runtime, config, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  });
+  const committed = structuredClone(config);
+  const read = deps.documents.read.bind(deps.documents);
+  let repoFailure: Error | undefined;
+  deps.documents.read = async (path) => {
+    if (path === "/tmp/developer" && repoFailure) throw repoFailure;
+    return {
+      ...(await read(path)),
+      config: path === "/tmp/developer" ? config : committed,
+    };
+  };
+  const doctor = async () =>
+    (await runtime.command({
+      action: "doctor",
+      project: "demo",
+    })) as DoctorReport;
+  const independent = (report: DoctorReport) =>
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "rigd", ok: true }),
+        expect.objectContaining({ name: "live/config", ok: true }),
+        expect.objectContaining({ name: "local/web" }),
+        expect.objectContaining({ name: "live/web" }),
+      ]),
+    );
+  repoFailure = new Error(
+    "EACCES: permission denied, open '/tmp/developer/rig.yaml'",
+  );
+  let report = await doctor();
+  expect(report.checks.find((c) => c.name === "project-config")).toEqual({
+    name: "project-config",
+    ok: false,
+    message:
+      "Project config could not be read. EACCES: permission denied, open '/tmp/developer/rig.yaml'",
+    reason: "config-unreadable",
+    hint: "Inspect the Project directory and file permissions, then run doctor again.",
+  });
+  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
+    name: "local/config",
+    ok: false,
+    message:
+      "Current configuration could not be read. EACCES: permission denied, open '/tmp/developer/rig.yaml'",
+    reason: "config-unreadable",
+    hint: "Inspect the Project directory and file permissions, then run doctor again.",
+  });
+  independent(report);
+  repoFailure = new ConfigError(
+    "rig.yaml line 3: bad indentation",
+    "parse",
+    {},
+    "Fix the YAML and retry.",
+  );
+  report = await doctor();
+  expect(report.checks.find((c) => c.name === "project-config")).toEqual({
+    name: "project-config",
+    ok: false,
+    message: "rig.yaml line 3: bad indentation",
+    reason: "config-invalid",
+    hint: "Fix the YAML and retry.",
+  });
+  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
+    name: "local/config",
+    ok: false,
+    message:
+      "Current Target policy could not be resolved. rig.yaml line 3: bad indentation",
+    reason: "config-invalid",
+    hint: "Fix the YAML and retry.",
+  });
+  independent(report);
+  repoFailure = undefined;
+  config.name = "other";
+  report = await doctor();
+  expect(report.checks.find((c) => c.name === "project-config")).toMatchObject({
+    ok: false,
+    reason: "identity-drift",
+  });
+  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
+    name: "local/config",
+    ok: false,
+    message:
+      "Current configuration names Project 'other', not 'demo'; its policy was not compared.",
+    reason: "identity-drift",
+    hint: "Use rig rename.",
+  });
+  independent(report);
+});
+test("doctor on a Project without Targets reports the config and Host checks only", async () => {
+  const { runtime } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as DoctorReport;
+  expect(report.ok).toBe(true);
+  expect(report.checks.map((c) => c.name)).toEqual(
+    expect.arrayContaining(["rigd", "project-config"]),
+  );
+  expect(report.checks.some((c) => c.name.includes("/"))).toBe(false);
 });
 test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
   const { runtime, config } = fixture();

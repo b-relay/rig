@@ -79,7 +79,7 @@ testability and honesty refactors.
 56. ~~#140~~ (fixed) A cleanly stopped rigd cannot be uninstalled: DAEMON_UNCERTAIN with a dead-end hint.
 57. ~~#132~~ (fixed) A reachable daemon without install.json cannot be uninstalled.
 58. ~~#131~~ (fixed) runDaemonHost.release() throws on corrupt address/owner JSON, masking the startup error.
-59. #130 Stale admin-activity.jsonl.lock silently disables administration Activity forever.
+59. ~~#130~~ (fixed) Stale admin-activity.jsonl.lock silently disables administration Activity forever.
 60. #184 rigd install cannot upgrade a running daemon; protocol skew reported as "Invalid Rig command".
 61. #137 rigd SIGTERM force-closes in-flight commands; client reports unreachable while the operation completes.
 62. #213 One global mutation queue: a slow hook in one Project blocks every other Project with no feedback. (#234.)

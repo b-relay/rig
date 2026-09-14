@@ -247,7 +247,7 @@ owner carries only its own owner-level defects.
 | doctor `config-invalid` instead of drift for new dynamic-port component | #126 (#119 concurrent) |
 | doctor 5 s timeout → offline "not reachable" | #127 |
 | first Ctrl-C after submission consumed; Ctrl-C at prompt exits 1 | #128, #129 |
-| stale admin-activity lock never reclaimed | #130 |
+| stale admin-activity lock never reclaimed | #130 (fixed: the lock records pid and start time; dead or replaced holders and minute-old unreadable locks are reclaimed; warnings name the lock and pid) |
 | `release()` throws on corrupt address/owner json | #131 (fixed: unreadable records are not ours and are skipped; release cannot mask the startup error; lease written atomically; corrupt lease reclaimed unless the address names a live process) |
 | reachable daemon without install marker uninstallable | #132 (fixed: install adopts a reachable daemon without a record; uninstall of a record-less daemon boots out the label and signals the pid) |
 | monitor swallows errors | #118 (#133 closed as duplicate) |

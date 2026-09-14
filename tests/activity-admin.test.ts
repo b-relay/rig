@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAdminActivityJournal } from "../src/adapters/admin-activity";
@@ -161,3 +161,35 @@ test("verified daemon installation and shutdown persist activity after the daemo
     await admin.uninstall().catch(() => {});
   }
 }, 15000);
+
+test("a journal lock left by a dead or replaced writer is reclaimed; a live holder or a fresh unreadable lock is reported by path", async () => {
+  const root = await fixture(),
+    lock = join(root, "runtime", "admin-activity.jsonl.lock"),
+    journal = createAdminActivityJournal({
+      root,
+      now: () => "2026-09-14T00:00:00.000Z",
+      id: () => "op-lock",
+    }),
+    entry = { action: "daemon-install" as const, outcome: "installed" as const };
+  await mkdir(join(root, "runtime"), { recursive: true });
+
+  await writeFile(lock, JSON.stringify({ pid: 2147483647 }));
+  expect(await journal.append(entry)).toEqual({});
+  await writeFile(lock, JSON.stringify({ pid: process.pid, startedAt: "Thu Jan  1 00:00:00 1970" }));
+  expect(await journal.append(entry)).toEqual({});
+  await writeFile(lock, "{torn");
+  await utimes(lock, new Date(Date.now() - 300_000), new Date(Date.now() - 300_000));
+  expect(await journal.append(entry)).toEqual({});
+  expect((await journal.read()).map((record) => record.outcome)).toEqual(["installed", "installed", "installed"]);
+  await expect(readFile(lock)).rejects.toMatchObject({ code: "ENOENT" });
+
+  await writeFile(lock, JSON.stringify({ pid: process.pid }));
+  const live = await journal.append(entry);
+  expect(live.warning).toContain(lock);
+  expect(live.warning).toContain(`pid ${process.pid}`);
+  await writeFile(lock, "{torn");
+  const fresh = await journal.append(entry);
+  expect(fresh.warning).toContain(lock);
+  expect(await readFile(lock, "utf8")).toBe("{torn");
+  expect(await journal.read()).toHaveLength(3);
+});

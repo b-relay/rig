@@ -608,6 +608,16 @@ variables in that shell never reach rigd or a Project's processes; declare
 what a process needs in `envFile` or `env`. A hook writes its output to the
 Target's logs under the Component name, or `setup` for Project hooks.
 
+An `envFile` holds one `KEY=value` per line, with an optional `export`, single
+or double quotes, and a `# comment` after the value (after the closing quote of
+a quoted one; a `#` inside quotes is part of the value). Anything else, such as
+a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
+`ENV_FILE` naming the file and line. A deployed Target reads its `envFile` from
+the checked-out revision, so a gitignored `.env` is absent there and the
+command fails as `ENV_FILE_MISSING` naming the path before any hook or process
+runs: commit the file, declare the values in that lane's `env`, or remove
+`envFile`.
+
 Every hook, build, and dependency install runs within a budget in seconds:
 `hookTimeout` on the Project (default 120) sets Project hooks and the default
 for Component hooks, which may set their own `hookTimeout`; an installed

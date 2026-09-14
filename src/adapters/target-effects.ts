@@ -16,6 +16,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { InstalledComponent, ManagedComponent } from "../config/types";
 import { isHealthUrl } from "../config/schema";
+import { readEnvironmentFile } from "./env-file";
 import type { TargetRecord } from "../domain/runtime";
 import type {
   Supervisor,
@@ -98,7 +99,7 @@ export function createTargetEffects(
   ): Promise<Record<string, string>> => {
     const file = component?.envFile ?? target.plan.envFile;
     return {
-      ...(file ? await readEnvironment(file) : {}),
+      ...(file ? await readEnvironmentFile(file) : {}),
       ...target.plan.env,
       ...component?.env,
     };
@@ -539,44 +540,6 @@ async function exists(path: string): Promise<boolean> {
     throw error;
   }
 }
-/** dotenv-style single-line assignments; unsupported syntax fails instead of silently altering secrets. */
-async function readEnvironment(path: string): Promise<Record<string, string>> {
-  const text = await readFile(path, "utf8"),
-    values: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim() || line.trimStart().startsWith("#")) continue;
-    const match =
-      /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
-    if (!match)
-      throw new RigError(
-        "ENV_FILE",
-        "An environment file contains an unsupported assignment.",
-        "Use one KEY=value assignment per line.",
-        { path },
-      );
-    let value = match[2]!.trim();
-    if (value.startsWith('"') || value.startsWith("'")) {
-      const quote = value[0]!;
-      if (!value.endsWith(quote))
-        throw new RigError(
-          "ENV_FILE",
-          "An environment value has an unmatched quote.",
-          "Use single-line quoted values.",
-          { path },
-        );
-      value = value.slice(1, -1);
-      if (quote === '"')
-        value = value
-          .replaceAll("\\n", "\n")
-          .replaceAll("\\r", "\r")
-          .replaceAll('\\"', '"')
-          .replaceAll("\\\\", "\\");
-    } else value = value.replace(/\s+#.*$/, "").trimEnd();
-    values[match[1]!] = value;
-  }
-  return values;
-}
-
 /** Written at a deployed workspace root once its dependencies are installed. */
 const PREPARED_MARKER = ".rig-prepared";
 const installReceiptSchema = z.object({

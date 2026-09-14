@@ -733,3 +733,18 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
     '"component":"setup","stream":"stdout","line":"installing"',
   );
 });
+
+test("a missing envFile fails as ENV_FILE_MISSING naming the path, before any hook runs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-env-missing-"));
+  roots.push(root);
+  const record = target(root);
+  record.plan.envFile = join(root, ".env");
+  await expect(
+    effects(root).hook("touch ran", record, undefined, "preStart"),
+  ).rejects.toMatchObject({
+    code: "ENV_FILE_MISSING",
+    message: `The environment file ${join(root, ".env")} does not exist.`,
+    details: { path: join(root, ".env") },
+  });
+  expect(await Bun.file(join(root, "ran")).exists()).toBe(false);
+});

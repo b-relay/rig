@@ -288,7 +288,7 @@ owner carries only its own owner-level defects.
 | diagnostic rotation disabled forever after a partial first record | #168 | (fixed: `segmentDay` scans for the first complete record and falls back to the file birthtime; `appendRecord` starts a new line after a partial one) |
 | minor logs gaps (UTC times, cursor error on unreadable file, wrapper logs invisible, no Target log rotation, build output burst) | #169 |
 | readiness never re-observes the process: foreign listener certifies, immediate exit reported started, dead process waits full readyTimeout | #171 |
-| missing envFile → raw ENOENT → `UNEXPECTED` | #172 |
+| missing envFile → raw ENOENT → `UNEXPECTED` | #172 | (fixed: `readEnvironmentFile` in `src/adapters/env-file.ts` raises `ENV_FILE_MISSING` with the path) |
 | health URL localhost check bypassed by userinfo quote / uppercase scheme | #173 (fixed: whole-URL parse, no userinfo, case-insensitive scheme shared with the adapter) |
 | `deploy --no-up` on a running live Target stops production | #174 |
 | `occupied` ignores `recovery.plan` ports | #175 |
@@ -314,7 +314,7 @@ owner carries only its own owner-level defects.
 | installation receipt key hashes the whole inherited daemon env: ambient changes rebuild everything, artifact unknown | #195 (fixed: keyed on declared env only) |
 | hook semantics drift: installed-component hooks never run, postStart before readiness, preStart after builds, HOOK_FAILED unnamed, RIG_DAEMON_CHILD inherited, undocumented interpolation names | #196 |
 | hook/build timeout reported as generic COMMAND_TIMEOUT with output discarded; timeouts hard-coded | #197 | (fixed: `runCommand` resolves a timed-out command with its output and `timedOut`; `runTarget` records it; hook/build/install raise `HOOK_TIMEOUT`/`BUILD_TIMEOUT`/`DEPENDENCIES_TIMEOUT` with the budget from `hookTimeout`/`buildTimeout`/`installTimeout` config) |
-| envFile parser rejects `KEY="value" # comment`; ENV_FILE errors carry no path or line | #198 |
+| envFile parser rejects `KEY="value" # comment`; ENV_FILE errors carry no path or line | #198 | (fixed: pure `parseEnvironmentFile(text, path)` accepts a comment after the closing quote and names path and line in every rejection) |
 | interpolated paths unquoted in shell commands: a space in workspace or RIG_ROOT breaks ${workspace}, ${db.path} | #199 |
 | doctor discards observation reason and exit code for failing components | #200 |
 | status never reports destructionPending or deploymentIncomplete; doctor healthy on uncommitted deployment | #201 |

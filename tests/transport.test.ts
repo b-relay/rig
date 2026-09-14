@@ -275,7 +275,7 @@ test("human Status and picker sanitize labels while JSON preserves evidence and 
             _message: string,
             choices: readonly { value: string; label: string }[],
           ) {
-            expect(choices[0]?.label).toBe("branchname (unknown)");
+            expect(choices[0]?.label).toBe("branch name (unknown)");
             return choices[0]!.value;
           },
           async text(_message: string, value: string) {

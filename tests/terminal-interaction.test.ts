@@ -67,13 +67,13 @@ test("terminal displays defaults and choices without executing terminal control 
     );
   f.input.write("\n");
   await question;
-  expect(f.text()).toBe("Name [demoforged]: ");
+  expect(f.text()).toBe("Name [demo forged]: ");
   const choices = f.interaction.select("Target\rforged", [
     { value: "live", label: "live\x1b[2J" },
   ]);
   f.input.write("1\n");
   expect(await choices).toBe("live");
-  expect(f.text()).toContain("Targetforged\n  1. live\nNumber: ");
+  expect(f.text()).toContain("Target forged\n  1. live\nNumber: ");
   f.input.destroy();
 });
 test("terminal cancellation before a question creates no prompt and returns a cancellation", async () => {

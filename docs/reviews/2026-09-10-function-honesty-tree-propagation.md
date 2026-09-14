@@ -251,7 +251,7 @@ owner carries only its own owner-level defects.
 | `release()` throws on corrupt address/owner json | #131 (fixed: unreadable records are not ours and are skipped; release cannot mask the startup error; lease written atomically; corrupt lease reclaimed unless the address names a live process) |
 | reachable daemon without install marker uninstallable | #132 (fixed: install adopts a reachable daemon without a record; uninstall of a record-less daemon boots out the label and signals the pid) |
 | monitor swallows errors | #118 (#133 closed as duplicate) (fixed: `startFailureMonitor` and `recordingDiagnostic` in `src/daemon/notices.ts` note failures on a bounded board that doctor reports as `rigd/monitor` and `rigd/diagnostics`) |
-| `displayWord` sanitizer weaker than `terminalText` | #134 |
+| `displayWord` sanitizer weaker than `terminalText` | #134 (fixed: `displayWord` removed; `terminalText` is the one owner for prompts and output, stripping 7/8-bit escapes, zero-width and bidi controls and turning other C0/C1 controls into a space) |
 | localhost bind check bypassed via `sh -c`; hooks/env unchecked | #135 (fixed: quoted sub-commands scanned, hooks validated, wildcard bind env rejected) |
 | `up`/`restart` on local never re-plans; `deploy local` rejected | #136 |
 | SIGTERM force-closes in-flight requests | #137 (fixed: stop refuses new connections, drains in-flight commands through shutdown, then force-closes the rest) |

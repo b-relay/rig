@@ -493,6 +493,13 @@ ends on Ctrl-C, SIGTERM, or when whatever reads its output goes away (for
 example `rig logs live --follow | head`): the write that fails is dropped, the
 command exits 0, and rigd sees no further polls. A quiet follow notices the
 missing reader at its next line, not before.
+
+Every value `rig` prints on one terminal line (Project, Target, Branch and
+Component names, warnings, log lines, prompt labels) is shown as terminal-safe
+text: escape sequences (7- and 8-bit), zero-width characters and bidi
+controls are dropped, and any other control character becomes a space, so an
+untrusted repository cannot rewrite, hide, or reorder what `rig status`,
+`rig list`, `rig logs`, or a prompt displays. `--json` output is not altered.
 Output identifies component, timestamp, and stream with `>` for stdout, `!`
 for stderr, and `~` for health-check evidence; legacy records with missing
 evidence must be marked unknown.

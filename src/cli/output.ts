@@ -1,4 +1,5 @@
 import type { ProjectStatusReport } from "../domain/project-status";
+import { terminalText } from "./terminal-text";
 /** Human presenters consume the same domain report returned by structured commands. */
 export function renderResult(action: string, value: unknown): string {
   const report = object(value);
@@ -58,16 +59,15 @@ function renderProjects(report: Record<string, unknown>): string {
     : "No Projects registered.\n";
 }
 export function renderStatus(report: ProjectStatusReport): string {
-  const lines = [displayWord(report.project)];
+  const lines = [word(report.project)];
   const failures: string[] = [];
   for (const target of report.targets) {
     lines.push(
       "",
       [
-        displayWord(target.name),
-        displayWord(target.state),
-        displayWord(target.branch) ||
-          (target.kind === "local" ? "working copy" : ""),
+        word(target.name),
+        word(target.state),
+        word(target.branch) || (target.kind === "local" ? "working copy" : ""),
       ]
         .filter(Boolean)
         .join("  "),
@@ -75,25 +75,25 @@ export function renderStatus(report: ProjectStatusReport): string {
     const unpublished = target.routePublished === false ? "unpublished" : "";
     if (target.route && !target.components.some((component) => component.route))
       lines.push(
-        `  Route  ${[displayWord(target.route), unpublished].filter(Boolean).join("  ")}`,
+        `  Route  ${[word(target.route), unpublished].filter(Boolean).join("  ")}`,
       );
     for (const component of target.components) {
       const port = component.port !== undefined ? `:${component.port}` : "";
       const route = component.route
-        ? [displayWord(component.route), unpublished].filter(Boolean).join("  ")
+        ? [word(component.route), unpublished].filter(Boolean).join("  ")
         : "";
       lines.push(
-        `  ${[displayWord(component.name), displayWord(component.state), port, route].filter(Boolean).join("  ")}`,
+        `  ${[word(component.name), word(component.state), port, route].filter(Boolean).join("  ")}`,
       );
       if (["failed", "unhealthy", "missing"].includes(component.state))
         failures.push(
-          `${displayWord(target.name)} ${displayWord(component.name)}: ${displayWord(component.reason) || displayWord(component.state)}`,
+          `${word(target.name)} ${word(component.name)}: ${word(component.reason) || word(component.state)}`,
         );
       if (
         component.reason &&
         !["failed", "unhealthy", "missing"].includes(component.state)
       )
-        lines.push(`    ${displayWord(component.reason)}`);
+        lines.push(`    ${word(component.reason)}`);
     }
   }
   if (!report.targets.length) lines.push("", "No Targets configured.");
@@ -109,7 +109,7 @@ export function renderStatus(report: ProjectStatusReport): string {
   )
     lines.push("Some observations are unknown.");
   for (const warning of report.warnings ?? [])
-    lines.push(`Warning: ${displayWord(warning)}`);
+    lines.push(`Warning: ${word(warning)}`);
   return `${lines.join("\n")}\n`;
 }
 function renderDoctor(report: Record<string, unknown>): string {
@@ -180,12 +180,7 @@ export function object(value: unknown): Record<string, unknown> {
 function rows(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.map(object) : [];
 }
-/** Terminal fields cannot inject another line or an ANSI terminal command. */
+/** A reply field is shown only when it is a string, and then only as terminal-safe text. */
 function word(value: unknown): string {
-  return typeof value === "string" ? displayWord(value) : "";
-}
-function displayWord(value = ""): string {
-  return value
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/[\x00-\x1f\x7f]/g, " ");
+  return typeof value === "string" ? terminalText(value) : "";
 }

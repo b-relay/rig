@@ -46,6 +46,49 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
   }
 });
 
+test("a reply slower than the read deadline is reported as a timeout naming the operation, not as unreachable", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      await Bun.sleep(5500);
+      return Response.json({ result: [] });
+    },
+  });
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test" });
+    await expect(
+      client.command({ action: "list", operationId: "op-slow" }),
+    ).rejects.toMatchObject({
+      code: "DAEMON_TIMEOUT",
+      message: expect.stringContaining("op-slow"),
+      hint: expect.stringContaining("rig activity"),
+    });
+  } finally {
+    await server.stop(true);
+  }
+}, 10000);
+
+test("a mutation that outlives Bun's default 10 s idle timeout still returns its result", async () => {
+  const server = startControlPlane({
+    port: 0,
+    token: "test-secret",
+    instanceId: "instance-1",
+    handle: async () => {
+      await Bun.sleep(12000);
+      return { outcome: "started" };
+    },
+  });
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test-secret" });
+    expect(
+      await client.command({ action: "up", project: "demo", target: "local" }),
+    ).toEqual({ outcome: "started" });
+  } finally {
+    await server.stop(true);
+  }
+}, 20000);
+
 test("client rejects malformed health and command envelopes as protocol failures", async () => {
   const server = Bun.serve({
     hostname: "127.0.0.1",

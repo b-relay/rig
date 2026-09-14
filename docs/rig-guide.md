@@ -292,6 +292,13 @@ it also runs Project diagnostics. Outside a Project, it may succeed with
 Host-only checks and a note that Project checks were skipped. `doctor` is
 read-only by default.
 
+`rig` waits for `rigd` to answer a lifecycle or deploy command however long
+it takes; `rigd` owns every budget (hooks, builds, `readyTimeout`). Reads such
+as `status`, `list`, and `doctor` give up after five seconds and report
+`rigd did not answer within 5 s; operation <id> may still be running`, which
+is distinct from `rigd is not reachable`. Check `rig activity` before
+retrying so the same operation is not queued twice.
+
 Status shares one two-second budget across concurrent observations. Managed
 components without health checks are running, not healthy; uncertain observations
 are unknown. Configured-only components are configured, installed-tool Targets

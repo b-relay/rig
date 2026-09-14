@@ -22,6 +22,15 @@ const errorSchema = z.object({
 const resultSchema = z
   .object({ result: z.unknown() })
   .refine((value) => Object.hasOwn(value, "result"));
+const deadlineExpired = (timeoutMs: number, operationId: string | undefined) =>
+  new RigError(
+    "DAEMON_TIMEOUT",
+    `rigd did not answer within ${timeoutMs / 1000} s; ${
+      operationId ? `operation ${operationId}` : "the operation"
+    } may still be running.`,
+    "Check 'rig activity' before retrying, so the same operation is not queued twice.",
+    { timeoutMs, ...(operationId ? { operationId } : {}) },
+  );
 const protocolFailure = () =>
   new RigError(
     "DAEMON_PROTOCOL",
@@ -29,7 +38,11 @@ const protocolFailure = () =>
     "Check that rig and rigd use the same version.",
   );
 
-/** Network adapter. Deadlines abort requests; callers own retry policy. Replies are untrusted input. */
+const readDeadlineMs = 5000;
+/** Network adapter. Reads carry a deadline; mutations wait for rigd, which owns
+ * every command budget. A deadline expiry is DAEMON_TIMEOUT (the operation may
+ * still be running), a failed connection is DAEMON_UNREACHABLE. Replies are
+ * untrusted input. */
 export class DaemonClient {
   constructor(private readonly address: DaemonAddress) {}
   async health(): Promise<DaemonHealth> {
@@ -44,7 +57,7 @@ export class DaemonClient {
       await this.request(
         "/v1/command",
         { ...selection, action: "status" },
-        5000,
+        readDeadlineMs,
       ),
     );
     if (!envelope.success) throw protocolFailure();
@@ -63,7 +76,9 @@ export class DaemonClient {
       await this.request(
         "/v1/command",
         command,
-        ["status", "list", "doctor"].includes(command.action) ? 5000 : 300000,
+        ["status", "list", "doctor"].includes(command.action)
+          ? readDeadlineMs
+          : undefined,
       ),
     );
     if (!envelope.success) throw protocolFailure();
@@ -72,7 +87,7 @@ export class DaemonClient {
   private async request(
     path: string,
     body: RuntimeCommand | undefined,
-    timeoutMs: number,
+    timeoutMs: number | undefined,
   ): Promise<unknown> {
     let response: Response;
     try {
@@ -83,10 +98,12 @@ export class DaemonClient {
           "content-type": "application/json",
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(timeoutMs),
+        ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
         redirect: "error",
       });
-    } catch {
+    } catch (error) {
+      if ((error as { name?: string }).name === "TimeoutError")
+        throw deadlineExpired(timeoutMs ?? 0, body?.operationId);
       throw new RigError(
         "DAEMON_UNREACHABLE",
         "rigd is not reachable.",

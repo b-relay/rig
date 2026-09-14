@@ -24,6 +24,9 @@ export function startControlPlane(options: ControlPlaneOptions) {
     hostname: "127.0.0.1",
     port: options.port,
     maxRequestBodySize: 1024 * 1024,
+    // Mutations legitimately run for minutes; the runtime owns their budgets.
+    // Bun would otherwise reset a request that is still being handled after 10 s.
+    idleTimeout: 0,
     async fetch(request) {
       if (!authenticated(request, options.token))
         return Response.json(

@@ -314,23 +314,11 @@ export async function editProjectConfig(
     const raw = await readFile(file, "utf8");
     const prepared = prepareEdit(raw, document.path, input);
     const output = prepared.raw;
-    const backupPath = `${file}.${input.expectedRevision}.bak`;
-    try {
-      await writeFile(backupPath, raw, { flag: "wx", mode: 0o600 });
-    } catch (error) {
-      if (!(
-        error instanceof Error &&
-        "code" in error &&
-        error.code === "EEXIST"
-      ))
-        throw error;
-      if ((await readFile(backupPath, "utf8")) !== raw)
-        throw new ConfigError(
-          "Existing config backup does not match the revision.",
-          "backup_conflict",
-          { backupPath },
-        );
-    }
+    // One backup per file, replaced on every edit: the text before the latest change, never a growing set.
+    const backupPath = `${file}.bak`;
+    const backupTemporary = `${file}.${randomUUID()}.bak.tmp`;
+    await writeFile(backupTemporary, raw, { flag: "wx", mode: 0o600 });
+    await rename(backupTemporary, backupPath);
     temporary = `${file}.${randomUUID()}.tmp`;
     await writeFile(temporary, output, {
       flag: "wx",

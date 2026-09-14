@@ -5,6 +5,7 @@ import {
   parseProjectConfig,
   localhostCommand,
   localhostHealth,
+  validHostname,
 } from "./schema.js";
 import type {
   Hooks,
@@ -25,13 +26,21 @@ interface Definition {
 
 const shellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]*$/;
-/** Pure substitution: unknown names fail instead of becoming empty strings; shell ${ENV} stays explicit only through env. */
-function interpolate(value: string, properties: Properties): string {
-  return substitute(value, properties, (result) => result);
+/** Pure substitution: unknown names fail, naming the config field `at`, instead of becoming empty strings; shell ${ENV} stays explicit only through env. */
+function interpolate(
+  value: string,
+  properties: Properties,
+  at: string,
+): string {
+  return substitute(value, properties, at, (result) => result);
 }
 /** Substitution for text that /bin/sh -c will run: a value that would split or expand is single-quoted unless the author already quoted the placeholder. */
-function interpolateShell(value: string, properties: Properties): string {
-  return substitute(value, properties, (result, offset) =>
+function interpolateShell(
+  value: string,
+  properties: Properties,
+  at: string,
+): string {
+  return substitute(value, properties, at, (result, offset) =>
     shellSafe.test(result) || insideShellQuotes(value.slice(0, offset))
       ? result
       : shellArg(result),
@@ -40,19 +49,21 @@ function interpolateShell(value: string, properties: Properties): string {
 function substitute(
   value: string,
   properties: Properties,
+  at: string,
   render: (result: string, offset: number) => string,
 ): string {
   return value.replace(
     /\$\{([^}]+)\}/g,
-    (_match, key: string, offset: number) => {
+    (match: string, key: string, offset: number) => {
       const result = Object.hasOwn(properties, key.trim())
         ? properties[key.trim()]
         : undefined;
       if (result === undefined)
         throw new ConfigError(
-          `Unknown interpolation '${key}'.`,
+          `Unknown interpolation '${match}' in ${at}.`,
           "unknown_interpolation",
-          { key },
+          { key, path: at },
+          "Interpolation names a Rig property such as ${web.port} or ${subdomain}; shell expansion such as ${VAR:-default} belongs in env, an envFile, or a script the command runs.",
         );
       return render(String(result), offset);
     },
@@ -81,7 +92,11 @@ function resolveHooks(
   return hooks
     ? Object.fromEntries(
         Object.entries(hooks).map(([key, value]) => {
-          const resolved = interpolateShell(value, properties);
+          const resolved = interpolateShell(
+            value,
+            properties,
+            `${owner ? `components.${owner}.` : ""}hooks.${key}`,
+          );
           if (!localhostCommand(resolved))
             throw new ConfigError(
               `Resolved ${key} hook binds outside localhost.`,
@@ -151,6 +166,7 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
   const subdomain = interpolate(
     input.subdomain ?? lane?.subdomain ?? branchSlug,
     properties,
+    "subdomain",
   );
   properties.subdomain = subdomain;
   const definitions = Object.entries(config.components).map(
@@ -169,7 +185,7 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
     ? targetPath(
         input.target,
         input.workspacePath,
-        interpolate(lane.envFile, properties),
+        interpolate(lane.envFile, properties, "envFile"),
         { field: "envFile" },
       )
     : undefined;
@@ -185,6 +201,16 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
     }),
   );
   const domain = lane?.domain ?? config.domain;
+  const resolvedDomain = domain
+    ? interpolate(domain, properties, "domain")
+    : undefined;
+  if (resolvedDomain !== undefined && !validHostname(resolvedDomain))
+    throw new ConfigError(
+      `Domain '${resolvedDomain}' is not a hostname.`,
+      "invalid_domain",
+      { domain: resolvedDomain, path: "domain" },
+      "Use a hostname such as app.test or ${subdomain}.app.test; schemes, ports, paths, wildcards and lists are not allowed.",
+    );
   return {
     project: config.name,
     target: input.target,
@@ -201,7 +227,7 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
           env: Object.fromEntries(
             Object.entries(lane.env).map(([key, value]) => [
               key,
-              interpolate(value, properties),
+              interpolate(value, properties, `env.${key}`),
             ]),
           ),
         }
@@ -212,7 +238,7 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
     },
     components: dependencyOrder(components),
     preparedComponents,
-    ...(domain ? { domain: interpolate(domain, properties) } : {}),
+    ...(resolvedDomain !== undefined ? { domain: resolvedDomain } : {}),
     ...(lane?.proxy ? { proxy: lane.proxy } : {}),
     ...(config.hooks
       ? { hooks: resolveHooks(config.hooks, properties, undefined) }
@@ -330,6 +356,7 @@ function resolveComponentProperties(
         interpolate(
           component.path ?? join(input.dataRoot, "sqlite", `${name}.sqlite`),
           properties,
+          `components.${name}.path`,
         ),
         { component: name, field: "path" },
       );
@@ -377,7 +404,10 @@ function resolvePlanComponent({
       ...lane?.env,
       ...("env" in shared ? shared.env : {}),
       ...lane?.components?.[name]?.env,
-    }).map(([key, value]) => [key, interpolate(value, properties)]),
+    }).map(([key, value]) => [
+      key,
+      interpolate(value, properties, `components.${name}.env.${key}`),
+    ]),
   );
   const envFile =
     "envFile" in component
@@ -399,7 +429,7 @@ function resolvePlanComponent({
           envFile: targetPath(
             target,
             workspacePath,
-            interpolate(envFile, properties),
+            interpolate(envFile, properties, `components.${name}.envFile`),
             { component: name, field: "envFile" },
           ),
         }
@@ -418,10 +448,20 @@ function resolvePlanComponent({
       kind: "installed" as const,
       entrypoint: resolve(
         workspacePath,
-        interpolate(component.entrypoint, properties),
+        interpolate(
+          component.entrypoint,
+          properties,
+          `components.${name}.entrypoint`,
+        ),
       ),
       ...(component.build
-        ? { build: interpolateShell(component.build, properties) }
+        ? {
+            build: interpolateShell(
+              component.build,
+              properties,
+              `components.${name}.build`,
+            ),
+          }
         : {}),
       ...(component.buildTimeout
         ? { buildTimeout: component.buildTimeout }
@@ -440,7 +480,11 @@ function resolvePlanComponent({
     command ??= `sh -c 'test -f "$1/PG_VERSION" || initdb -D "$1" || exit; exec postgres -D "$1" -h 127.0.0.1 -p "$2"' -- ${shellArg(String(properties[`${name}.dataDir`]))} ${port}`;
     health ??= `pg_isready -h 127.0.0.1 -p ${port}`;
   }
-  const resolvedCommand = interpolateShell(command!, properties);
+  const resolvedCommand = interpolateShell(
+    command!,
+    properties,
+    `components.${name}.command`,
+  );
   if (!localhostCommand(resolvedCommand))
     throw new ConfigError(
       "Resolved command binds outside localhost.",
@@ -448,7 +492,7 @@ function resolvePlanComponent({
       { component: name },
     );
   const resolvedHealth = health
-    ? interpolateShell(health, properties)
+    ? interpolateShell(health, properties, `components.${name}.health`)
     : undefined;
   if (resolvedHealth !== undefined && !localhostHealth(resolvedHealth))
     throw new ConfigError(

@@ -89,9 +89,25 @@ const health = text
   .describe(
     "Local HTTP URL or shell command used to check readiness; interpolated values are shell-quoted like command.",
   );
+/** A hostname Caddy will serve as one site: labels of letters, digits and '-', joined by dots.
+ * Schemes, ports, paths, wildcards and comma lists would be rejected by Caddy at deploy time
+ * or, for a catch-all, would take every request on the Host. */
+export function validHostname(value: string): boolean {
+  return (
+    value.length <= 253 &&
+    /^[a-zA-Z0-9-]{1,63}(\.[a-zA-Z0-9-]{1,63})*$/.test(value)
+  );
+}
+const hostnameRule =
+  "must be a hostname such as app.test or ${subdomain}.app.test; schemes, ports, paths, wildcards and lists are not allowed";
 const route = text
-  .regex(/^[^\s;"`{}]+$/)
-  .or(text.regex(/^\$\{[^}]+\}[^\s;"`]*$/))
+  .refine(
+    (value) =>
+      value.includes("${")
+        ? /^\$\{[^}]+\}[^\s;"`]*$/.test(value)
+        : validHostname(value),
+    hostnameRule,
+  )
   .describe("Single domain token; interpolation is supported.");
 /** Hook commands run with /bin/sh -c and are held to the same localhost rule as Component commands; interpolated values are shell-quoted the same way.
  * A lane override merges hooks per key, like env. */
@@ -151,6 +167,8 @@ const runtime = {
     .optional()
     .describe("Components that must become ready first."),
 };
+/** `ports.<name>` and `port.<name>` are property namespaces; a Component of that name would publish `<name>.port` into them. */
+const reservedComponentNames: ReadonlySet<string> = new Set(["port", "ports"]);
 const component = z.union([
   z.strictObject({
     mode: z.literal("managed").describe("Supervised long-running process."),
@@ -305,6 +323,16 @@ export const projectConfigSchema = z
       ),
     components: z
       .record(componentName, component)
+      .superRefine((components, ctx) => {
+        for (const name of Object.keys(components))
+          if (reservedComponentNames.has(name))
+            ctx.addIssue({
+              code: "custom",
+              path: [name],
+              message:
+                "is reserved for the port properties; choose another Component name",
+            });
+      })
       .describe("Shared Component definitions."),
     local: lane.optional().describe("Working copy Target overrides."),
     live: lane.optional().describe("Stable Target overrides."),
@@ -326,11 +354,12 @@ export const projectConfigSchema = z
       for (const [key, base] of Object.entries(config.components)) {
         const merged = mergeComponentOverride(base, target.components?.[key]);
         const result = component.safeParse(merged);
-        if (!result.success)
+        // A base Component that fails on its own is reported by its own parse; only a real override can mismatch the kind.
+        if (!result.success && target.components?.[key])
           ctx.addIssue({
             code: "custom",
             path: [laneName, "components", key],
-            message: "Overrides must match the Component kind.",
+            message: "Overrides must match the Component kind",
           });
         definitions[key] = merged;
         if (definitions[key].mode === "installed" && definitions[key].hooks)
@@ -554,13 +583,33 @@ function explainIssue(issue: z.core.$ZodIssue): {
   message: string;
 } {
   if (issue.code === "invalid_union" && issue.errors.length) {
-    const nearest = [...issue.errors]
-      .filter((branch) => branch.length)
-      .sort(
-        (a, b) =>
-          Number(a[0]!.code === "invalid_value") -
-            Number(b[0]!.code === "invalid_value") || a.length - b.length,
-      )[0];
+    const branches = issue.errors.filter((branch) => branch.length);
+    const discriminators = branches.map((branch) =>
+      branch[0]!.code === "invalid_value" ? branch[0] : undefined,
+    );
+    // Every branch rejected its own kind marker: the input chose no kind at all.
+    if (branches.length && discriminators.every(Boolean)) {
+      const choices = new Map<string, Set<string>>();
+      for (const marker of discriminators) {
+        const field = marker!.path.join(".");
+        const values = choices.get(field) ?? new Set<string>();
+        for (const value of marker!.values) values.add(JSON.stringify(value));
+        choices.set(field, values);
+      }
+      return {
+        path: [...issue.path],
+        message: `must set ${[...choices]
+          .map(
+            ([field, values]) => `${field} to one of ${[...values].join(", ")}`,
+          )
+          .join(" or ")}`,
+      };
+    }
+    const nearest = [...branches].sort(
+      (a, b) =>
+        Number(a[0]!.code === "invalid_value") -
+          Number(b[0]!.code === "invalid_value") || a.length - b.length,
+    )[0];
     if (nearest) {
       const inner = explainIssue(nearest[0]!);
       return { path: [...issue.path, ...inner.path], message: inner.message };

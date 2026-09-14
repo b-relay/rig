@@ -1305,3 +1305,188 @@ test("validation hints describe the rule in plain words, never Zod's pattern or 
     }),
   ).toContain("lowercase letters, digits or '-'");
 });
+
+test("config mistakes name the field and rule: missing kind, env value type, a lane check only for real overrides", async () => {
+  const { parseProjectConfig } = await import("../src/config/index.js");
+  const hintOf = (input: unknown) => {
+    try {
+      parseProjectConfig(input);
+    } catch (error) {
+      return (error as { hint?: string }).hint ?? "";
+    }
+    return "";
+  };
+  const kindless = hintOf({
+    name: "app",
+    components: { web: { command: "serve", port: 3000 } },
+  });
+  expect(kindless).toContain("components.web");
+  expect(kindless).toContain("mode");
+  expect(kindless).toContain("uses");
+  expect(
+    hintOf({
+      name: "app",
+      components: {
+        web: {
+          mode: "managed",
+          command: "serve",
+          port: 3000,
+          env: { PORT: 3000 },
+        },
+      },
+    }),
+  ).toBe("Fix components.web.env.PORT: must be a string.");
+  const binding = hintOf({
+    name: "app",
+    components: {
+      web: { mode: "managed", command: "serve --host 0.0.0.0", port: 3000 },
+    },
+    live: { env: { A: "b" } },
+  });
+  expect(binding).toContain("components.web.command");
+  expect(binding).not.toContain("base.");
+  expect(binding).not.toContain("Overrides must match");
+  expect(
+    hintOf({
+      name: "app",
+      components: { web: { mode: "managed", command: "serve", port: 3000 } },
+      live: { components: { web: { entrypoint: "bin/web" } } },
+    }),
+  ).toBe("Fix live.components.web: Overrides must match the Component kind.");
+});
+
+test("an unknown interpolation names its field and tells shell expansion to move into env", async () => {
+  const { parseProjectConfig, resolveTargetPlan } =
+    await import("../src/config/index.js");
+  const config = parseProjectConfig({
+    name: "app",
+    components: {
+      web: {
+        mode: "managed",
+        command: "serve --port ${PORT:-3000}",
+        port: 3000,
+      },
+    },
+  });
+  let failure: unknown;
+  try {
+    resolveTargetPlan({
+      config,
+      target: "local",
+      workspacePath: "/work",
+      dataRoot: "/data",
+    });
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({
+    code: "unknown_interpolation",
+    message: "Unknown interpolation '${PORT:-3000}' in components.web.command.",
+    context: { key: "PORT:-3000", path: "components.web.command" },
+    hint: expect.stringContaining("env"),
+  });
+});
+
+test("a domain must be a hostname: schemes, ports, paths, wildcards and lists are refused at parse or after interpolation", async () => {
+  const { parseProjectConfig, resolveTargetPlan } =
+    await import("../src/config/index.js");
+  const components = { web: { mode: "managed", command: "serve", port: 3000 } };
+  for (const domain of [
+    "*",
+    ":80",
+    "*.app.test",
+    "app.test/admin",
+    "app.test,other.test",
+    "http://0.0.0.0",
+    "app.test:8080",
+    ".app.test",
+  ]) {
+    let failure: unknown;
+    try {
+      parseProjectConfig({ name: "app", components, domain });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: "invalid_config",
+      hint: expect.stringContaining("domain: must be a hostname"),
+    });
+  }
+  const config = parseProjectConfig({
+    name: "app",
+    components,
+    domain: "${subdomain}.app.test",
+  });
+  expect(
+    resolveTargetPlan({
+      config,
+      target: "local",
+      workspacePath: "/work",
+      dataRoot: "/data",
+    }).domain,
+  ).toBe("local.app.test");
+  let failure: unknown;
+  try {
+    resolveTargetPlan({
+      config,
+      target: "preview",
+      branch: "feature",
+      subdomain: "*",
+      workspacePath: "/work",
+      dataRoot: "/data",
+    });
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({
+    code: "invalid_domain",
+    message: "Domain '*.app.test' is not a hostname.",
+    context: { domain: "*.app.test", path: "domain" },
+  });
+});
+
+test("Component names that shadow the port property namespaces are refused", async () => {
+  const { parseProjectConfig } = await import("../src/config/index.js");
+  for (const name of ["ports", "port"]) {
+    let failure: unknown;
+    try {
+      parseProjectConfig({
+        name: "app",
+        components: {
+          [name]: { mode: "managed", command: "serve", port: 3000 },
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: "invalid_config",
+      hint: `Fix components.${name}: is reserved for the port properties; choose another Component name.`,
+    });
+  }
+});
+
+test("config edits keep one .bak beside the file, holding the text before the latest edit", async () => {
+  const { editProjectConfig } = await import("../src/config/index.js");
+  const { readFile, readdir } = await import("node:fs/promises");
+  const root = await fixture(),
+    path = join(root, "rig.yaml"),
+    original = "name: pantry\ncomponents: {}\n";
+  await writeFile(path, original);
+  const first = await editProjectConfig({
+    repoPath: root,
+    expectedRevision: (await readProjectConfig(root)).revision,
+    edits: [{ path: ["name"], value: "food" }],
+  });
+  const second = await editProjectConfig({
+    repoPath: root,
+    expectedRevision: first.revision,
+    edits: [{ path: ["name"], value: "drink" }],
+  });
+  expect(second.backupPath).toBe(`${await realpath(path)}.bak`);
+  expect(first.backupPath).toBe(second.backupPath);
+  expect(await readFile(second.backupPath, "utf8")).toBe(first.raw);
+  expect(
+    (await readdir(root)).filter((entry) => entry.includes("bak")),
+  ).toEqual(["rig.yaml.bak"]);
+});

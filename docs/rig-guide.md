@@ -132,7 +132,9 @@ generated site block needs, such as `import cloudflare`, go in
 writes the route file but leaves the reload to you. The route file and
 `rig.yaml` may be symlinks: Rig writes through the link, so the linked file
 changes and the link stays in place, with the `.rig-backup` and `.bak` copies
-beside the linked file.
+beside the linked file. A config edit keeps exactly one `rig.yaml.bak`, the
+text as it was before the latest edit, replacing the previous copy rather than
+adding a file per revision.
 
 When Caddy rejects a route change, the failure names Caddy's last error line,
 for example `Caddy rejected the updated routes: ... port 99999 is out of
@@ -183,7 +185,11 @@ identity comes from existing config when present, not a conflicting folder name.
 serves `app.test`, `local` serves `local.app.test`, and each Preview serves
 `<branch-slug>.app.test`, so two Targets never contend for one route. The
 scaffold writes `domain: ${subdomain}.app.test` with a `live.domain`
-override; edit either to change the scheme.
+override; edit either to change the scheme. A `domain` or `subdomain` value
+must be a hostname such as `app.test` or `${subdomain}.app.test`: a scheme,
+port, path, wildcard, or comma-separated list is rejected when the config is
+parsed, and a Preview whose resolved hostname is still invalid is rejected
+when the Target is planned, before anything reaches Caddy.
 
 ## Project And Host Scope
 
@@ -755,13 +761,20 @@ placeholders. The available properties are:
   or `..` path that escapes them is rejected when the config is resolved,
   naming the Component and field. `local` keeps whatever path you wrote.
 - Per Component `<name>`: `<name>.port` (also `ports.<name>` and
-  `port.<name>`) and `<name>.url` for any Component with a port;
+  `port.<name>`) and `<name>.url` for any Component with a port; because of
+  those aliases a Component may not be named `port` or `ports`;
   `<name>.sitePort`, `<name>.siteUrl`, and `<name>.stateDir` for Convex;
   `<name>.dataDir` for Postgres; `<name>.path` for SQLite.
 
 `branch`, `commit`, `domain`, and `project` are not interpolation properties,
 and an unknown placeholder is rejected when the config is resolved so a typo
-never reaches a shell. Because those strings run
+never reaches a shell. That rejection names the field, such as
+`components.web.command`, and the hint points shell expansion like
+`${VAR:-default}` to `env`, an `envFile`, or a script the command runs.
+Config mistakes are reported the same way: a Component without `mode` or
+`uses` is told which values it may set, a non-string `env` value names its
+key, and an override in `live` or `preview` is checked against the shared
+Component only when the lane actually overrides it. Because those strings run
 under `/bin/sh -c`, Rig single-quotes any substituted value that contains a
 space or other shell-special character, so a repository or `RIG_ROOT` under a
 path like `~/Projects/My App` still resolves to one argument. A placeholder

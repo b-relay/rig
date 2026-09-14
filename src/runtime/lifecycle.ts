@@ -5,7 +5,7 @@ import type {
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import type { ProcessObservation, Supervisor } from "../providers/contracts";
-import { RigError } from "../domain/errors";
+import { RigError, failureCauses } from "../domain/errors";
 
 export interface TargetEffectCheckpoint {
   readonly targetId: string;
@@ -175,15 +175,19 @@ export function createTargetLifecycle(
             publishRemoval
               ? "Preserve its effect checkpoint; the retired Target must not be restarted."
               : "Preserve its effect checkpoint and retry the operation; the Target must not be restarted.",
+            {},
+            failureCauses(error),
           );
         try {
           await checkpoint.rollback();
           if (target.desired === "running") await lifecycle.up(target);
-        } catch {
+        } catch (recovery) {
           throw new RigError(
             "RETIRE_ROLLBACK",
             "Target retirement failed and its saved effects could not be restored.",
             "Run down for this Target and inspect its effect checkpoint.",
+            {},
+            failureCauses(error, recovery),
           );
         }
         throw error;

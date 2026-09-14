@@ -22,6 +22,7 @@ import { activateDeployment, stopForRecovery } from "../src/runtime/deploy";
 import type { TargetRecord, RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { Supervisor } from "../src/providers/contracts";
+import { RigError, diagnosticCauses } from "../src/domain/errors";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -555,6 +556,102 @@ test("failed retirement inventory publication restores owned effects and previou
   expect(f.running.size).toBe(1);
 });
 
+/** A fixture whose checkpoint commit and rollback fail on demand. */
+async function faultyCheckpointFixture() {
+  const f = await fixture();
+  f.previous.desired = "running";
+  await f.lifecycle.up(f.previous);
+  const create = f.effects.checkpoint.bind(f.effects);
+  const faults: { commit?: unknown; rollback?: unknown } = {};
+  f.effects.checkpoint = async (target) => {
+    const checkpoint = await create(target);
+    return {
+      ...checkpoint,
+      async commit() {
+        if (faults.commit !== undefined) throw faults.commit;
+        await checkpoint.commit();
+      },
+      async rollback() {
+        if (faults.rollback !== undefined) throw faults.rollback;
+        await checkpoint.rollback();
+      },
+    };
+  };
+  return { ...f, faults };
+}
+/** An untrusted throwable whose properties reject even inspection. */
+const malformedThrowable = () =>
+  Object.create(null, {
+    message: {
+      get() {
+        throw new Error("property read failure");
+      },
+    },
+  }) as unknown;
+test("a retirement whose rollback succeeds rethrows the initiating failure unchanged and can be retried", async () => {
+  const f = await faultyCheckpointFixture();
+  const initiating = new Error("inventory failure");
+  await expect(
+    f.lifecycle.retire(f.previous, async () => {
+      throw initiating;
+    }),
+  ).rejects.toBe(initiating);
+  expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
+    "#!/bin/sh\necho old\n",
+  );
+  expect(f.running.size).toBe(1);
+  await f.lifecycle.retire(f.previous);
+  expect(f.running.size).toBe(0);
+});
+test.each([
+  ["without a publication callback", undefined, { odd: true }, "non-error"],
+  [
+    "with a publication callback",
+    async () => {},
+    new RigError("STATE_CORRUPT", "state is corrupt", "hint"),
+    "storage",
+  ],
+] as const)(
+  "a retirement commit failure %s keeps the safe initiating category and leaves the unfinished transaction for recovery",
+  async (_, publish, failure, category) => {
+    const f = await faultyCheckpointFixture();
+    f.faults.commit = failure;
+    const error: unknown = await f.lifecycle
+      .retire(f.previous, publish)
+      .catch((e) => e);
+    expect(error).toMatchObject({
+      code: "RETIRE_COMMIT_PENDING",
+      causes: { primaryCause: category },
+    });
+    expect(diagnosticCauses(error)).toEqual({ primaryCause: category });
+    expect(f.running.size).toBe(0);
+    await expect(f.lifecycle.retire(f.previous)).rejects.toMatchObject({
+      code: expect.stringMatching(/^EFFECTS_/),
+    });
+  },
+);
+test("a retirement whose rollback also fails keeps both categories, projects malformed throwables safely, and preserves the transaction", async () => {
+  const f = await faultyCheckpointFixture();
+  f.faults.rollback = malformedThrowable();
+  const targets = structuredClone(f.state.targets);
+  const error: unknown = await f.lifecycle
+    .retire(f.previous, async () => {
+      throw new RigError("STATE_CORRUPT", "state is corrupt", "hint");
+    })
+    .catch((e) => e);
+  expect(error).toMatchObject({
+    code: "RETIRE_ROLLBACK",
+    causes: { primaryCause: "storage", recoveryCause: "non-error" },
+  });
+  expect(diagnosticCauses(error)).toEqual({
+    primaryCause: "storage",
+    recoveryCause: "non-error",
+  });
+  expect(f.state.targets).toEqual(targets);
+  await expect(f.lifecycle.retire(f.previous)).rejects.toMatchObject({
+    code: expect.stringMatching(/^EFFECTS_/),
+  });
+});
 test("failed retirement finalization never restores executables after inventory removal committed", async () => {
   const f = await fixture();
   await f.lifecycle.up(f.previous);

@@ -951,8 +951,8 @@ createRuntime(deps: RuntimeDependencies) [O] src/runtime/application.ts:49
       effects.removeRoute(target) [O] target-effects.ts:429 (router.remove :431; captureRoute :433)
       effects.retireArtifacts(target) [O] target-effects.ts:239 → retireComponents [O] :186
       publishRemoval() → deps.store.update [B]   (:114)
-      checkpoint.commit() [O] :116 → RETIRE_COMMIT_PENDING :119 (drops caught cause — finding F3, re-verified)
-      checkpoint.rollback() [O] :129; lifecycle.up(target) [H] :130 → RETIRE_ROLLBACK :133 (drops both causes)
+      checkpoint.commit() [O] :116 → RETIRE_COMMIT_PENDING :119 (drops caught cause — finding F3, re-verified; #117 fixed: carries `failureCauses(error)`)
+      checkpoint.rollback() [O] :129; lifecycle.up(target) [H] :130 → RETIRE_ROLLBACK :133 (drops both causes; #117 fixed: carries `failureCauses(error, recovery)`)
     finish("deployed") — owner :359
 
   ── status ── application.ts:168 → status closure :52 (tree above)

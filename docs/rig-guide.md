@@ -233,6 +233,11 @@ it, installing, routing, and starting the recorded plan under its own
 checkpoint, after which a deploy of the same Commit is `unchanged` again;
 redeploying the same Commit also works.
 
+Every port recorded by any Target in any Project is reserved while that record
+exists, whether the Target is running or stopped. A Target whose deployment
+transition is unresolved also keeps the ports of the plan that `rig down` may
+restore, so no other Target can be planned onto them in the meantime.
+
 CLI deploy uses local Branches only. It should warn, not block, when the Branch
 is ahead or behind its configured upstream. It should not fetch implicitly.
 

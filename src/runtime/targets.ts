@@ -9,7 +9,7 @@ import type {
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
-import { recordedPorts } from "./ports";
+import { occupiedPorts, recordedPorts } from "./ports";
 export function targetName(
   command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
 ): string {
@@ -105,18 +105,7 @@ export async function planTarget(
     ...(branch ? { branch } : {}),
     ...(commit ? { commit } : {}),
   };
-  const state = await deps.store.read();
-  const occupied = new Set(
-    state.targets
-      .filter((t) => t.id !== id)
-      .flatMap((t) =>
-        t.plan.components.flatMap((c) =>
-          c.kind === "managed"
-            ? [c.port, ...(c.sitePort ? [c.sitePort] : [])]
-            : [],
-        ),
-      ),
-  );
+  const occupied = occupiedPorts((await deps.store.read()).targets, id);
   const lane =
     kind === "local"
       ? config.local

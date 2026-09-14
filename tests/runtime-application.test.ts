@@ -421,6 +421,29 @@ test("a Convex site port is requested as port + 1 but the collision-checked sele
   });
 });
 
+test("ports owned by a Target's unresolved recovery plan stay reserved while other Targets are planned", async () => {
+  const { runtime, state, deps } = fixture();
+  const occupiedSeen: number[][] = [];
+  deps.files.selectPorts = async ({ requests, occupied }) => {
+    occupiedSeen.push([...occupied].sort((a, b) => a - b));
+    return Object.fromEntries(requests.map((request) => [request.name, request.preferred ?? 6000]));
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "deploy", project: "demo", target: "live", branch: "main" });
+  const live = state.targets[0]!;
+  const previousPlan = structuredClone(live.plan);
+  (previousPlan.components[0] as { port: number }).port = 4600;
+  live.recovery = {
+    plan: previousPlan,
+    branch: "main",
+    commit: "old",
+    desired: "running",
+    stage: "blocked",
+  };
+  await runtime.command({ action: "deploy", project: "demo", target: "preview", branch: "feature/x" });
+  expect(occupiedSeen.at(-1)).toEqual([4567, 4600]);
+});
+
 test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

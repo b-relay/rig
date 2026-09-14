@@ -1,11 +1,18 @@
 import { createEffectPreparation } from "./effect-preparation";
 import { createHash } from "node:crypto";
-import { copyFile, lstat, readFile, rm } from "node:fs/promises";
+import { copyFile, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { RigError } from "../domain/errors";
+import {
+  RigError,
+  describeInvalidDocument,
+  failureReason,
+} from "../domain/errors";
 import type { Router, RouteCheckpoint } from "../providers/caddy-router";
-import type { TargetEffectCheckpoint } from "../runtime/lifecycle";
+import type {
+  PrunedCheckpoint,
+  TargetEffectCheckpoint,
+} from "../runtime/lifecycle";
 import {
   artifactRevision,
   atomicFile,
@@ -20,7 +27,7 @@ const routeSchema = z
       .nullable()
       .describe("Opaque owned route checkpoint; null means no route."),
   })
-  .strict();
+  .strip();
 const digest = z
   .string()
   .regex(/^[a-f0-9]{64}$/)
@@ -49,9 +56,18 @@ const fileSchema = z
         "A write was begun but not captured; current bytes may be this transaction's own unrecorded work.",
       ),
   })
-  .strict();
+  .loose();
+/** Bump only when a field changes meaning or a new field must be understood to act
+ * safely. Adding a field older rigds may ignore is not a bump: they keep unknown keys. */
+export const JOURNAL_VERSION = 1;
 const journalSchema = z
   .object({
+    version: z
+      .literal(JOURNAL_VERSION)
+      .optional()
+      .describe(
+        "Journal format version; absent in journals written before it existed.",
+      ),
     targetId: z.string().describe("Stable Target effect owner."),
     phase: z
       .enum(["pending", "committed"])
@@ -70,10 +86,23 @@ const journalSchema = z
             "A route change was begun but not captured; the current route may be this transaction's own unrecorded work.",
           ),
       })
+      .loose()
       .describe("Route compensation state."),
   })
-  .strict();
+  .loose();
 type Journal = z.infer<typeof journalSchema>;
+const versionSchema = z.object({ version: z.number().optional() }).loose();
+const CHECKPOINTS = "effect-checkpoints";
+/** A pending journal whose recorded state still equals its captured state has nothing to undo. */
+function recordedChange(journal: Journal): boolean {
+  return (
+    journal.files.some(
+      (file) => file.applying || file.expected !== file.before,
+    ) ||
+    journal.route.applying === true ||
+    !sameRoute(journal.route.before, journal.route.expected)
+  );
+}
 export interface ArtifactCheckpointInput extends ArtifactIdentity {
   receiptPath: string;
 }
@@ -83,37 +112,145 @@ export function createEffectTransactions(options: {
   ownership: ReturnType<typeof createArtifactOwnership>;
   router: Router;
 }) {
+  const hash = (targetId: string) =>
+    createHash("sha256").update(targetId).digest("hex");
   const directory = (targetId: string) =>
-    join(
-      options.root,
-      "effect-checkpoints",
-      createHash("sha256").update(targetId).digest("hex"),
-    );
+    join(options.root, CHECKPOINTS, hash(targetId));
   const preparation = createEffectPreparation(options.root, directory);
   const active = new Map<string, Journal>();
   const save = (journal: Journal) =>
     atomicFile(
       join(directory(journal.targetId), "journal.json"),
-      JSON.stringify(journal),
+      JSON.stringify({ ...journal, version: JOURNAL_VERSION }),
     );
-  const load = async (targetId: string): Promise<Journal | undefined> => {
-    await preparation.validateLayout(targetId);
+  /** The saved journal, or undefined when none exists. Refuses a journal from a
+   * newer rigd or one with an invalid value, naming the file and the problem. */
+  const readJournal = async (path: string): Promise<Journal | undefined> => {
+    let text: string;
     try {
-      const journal = journalSchema.parse(
-        JSON.parse(
-          await readFile(join(directory(targetId), "journal.json"), "utf8"),
-        ),
-      );
-      if (journal.targetId !== targetId) throw new Error("Wrong Target");
-      return journal;
+      text = await readFile(path, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+      const { version } = versionSchema.parse(parsed);
+      if (version !== undefined && version > JOURNAL_VERSION)
+        throw new RigError(
+          "EFFECTS_CHECKPOINT",
+          "The Target effect checkpoint was written by a newer rigd; nothing was changed.",
+          `The effect checkpoint at ${path} is version ${version}, but this rigd reads version ${JOURNAL_VERSION}. Upgrade rigd, or restore the checkpoint that version wrote, before retrying.`,
+          { path, version, supported: JOURNAL_VERSION },
+        );
+      return journalSchema.parse(parsed);
+    } catch (error) {
+      if (error instanceof RigError) throw error;
       throw new RigError(
         "EFFECTS_CHECKPOINT",
-        "The Target effect checkpoint is invalid.",
-        "Inspect the saved checkpoint before retrying recovery.",
+        "The Target effect checkpoint is invalid; nothing was changed.",
+        `The effect checkpoint at ${path} ${describeInvalidDocument(error, "effect checkpoint")}. Inspect it before retrying recovery.`,
+        {
+          path,
+          ...(error instanceof z.ZodError
+            ? { issues: error.issues.slice(0, 3) }
+            : {}),
+        },
       );
     }
+  };
+  const load = async (targetId: string): Promise<Journal | undefined> => {
+    await preparation.validateLayout(targetId);
+    const path = join(directory(targetId), "journal.json");
+    const journal = await readJournal(path);
+    if (journal && journal.targetId !== targetId)
+      throw new RigError(
+        "EFFECTS_CHECKPOINT",
+        "The checkpoint belongs to a different Target.",
+        `The effect checkpoint at ${path} names Target ${journal.targetId}. Inspect it before retrying recovery.`,
+        { path, targetId: journal.targetId },
+      );
+    return journal;
+  };
+  /** What one entry under effect-checkpoints/ is: a checkpoint directory, a
+   * preparation claim, or evidence preserved for inspection (never pruned). */
+  const classify = (name: string) => {
+    const match = /^([a-f0-9]{64})(\.preparing\.json)?$/.exec(name);
+    if (!match) return undefined;
+    return { hash: match[1]!, kind: match[2] ? "claim" : "directory" } as const;
+  };
+  const claimedTarget = async (path: string): Promise<string | undefined> => {
+    try {
+      const claim = z
+        .object({ targetId: z.string() })
+        .loose()
+        .parse(JSON.parse(await readFile(path, "utf8")));
+      return claim.targetId;
+    } catch {
+      return undefined;
+    }
+  };
+  const pruneCheckpoints = async (
+    live: ReadonlySet<string>,
+  ): Promise<PrunedCheckpoint[]> => {
+    const root = join(options.root, CHECKPOINTS);
+    let names: string[];
+    try {
+      names = await readdir(root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const retained = new Set([...live].map(hash));
+    const orphans = new Map<string, { directory?: string; claim?: string }>();
+    for (const name of names) {
+      const entry = classify(name);
+      if (!entry || retained.has(entry.hash)) continue;
+      const found = orphans.get(entry.hash) ?? {};
+      found[entry.kind] = join(root, name);
+      orphans.set(entry.hash, found);
+    }
+    const pruned: PrunedCheckpoint[] = [];
+    for (const { directory, claim } of orphans.values()) {
+      // A claim beside its directory leaves with it; alone, it is the whole orphan.
+      if (!directory) {
+        const targetId = await claimedTarget(claim!);
+        await rm(claim!, { force: true });
+        pruned.push({
+          path: claim!,
+          ...(targetId ? { targetId } : {}),
+          outcome: "removed",
+        });
+        continue;
+      }
+      const read = await readJournal(join(directory, "journal.json")).then(
+        (journal) => ({ journal }),
+        (error: unknown) => ({ journal: undefined, error }),
+      );
+      const journal = read.journal;
+      const targetId = journal ? { targetId: journal.targetId } : {};
+      // Unreadable evidence and undone changes are kept; only what nothing depends on leaves.
+      const reason =
+        "error" in read
+          ? `its journal could not be read: ${failureReason(read.error)}`
+          : journal?.phase === "pending" && recordedChange(journal)
+            ? "its pending journal recorded a change that only rollback can undo"
+            : undefined;
+      if (reason) {
+        pruned.push({
+          path: directory,
+          ...targetId,
+          outcome: "retained",
+          reason,
+        });
+        continue;
+      }
+      await rm(directory, { recursive: true, force: true });
+      if (claim) await rm(claim, { force: true });
+      pruned.push({ path: directory, ...targetId, outcome: "removed" });
+    }
+    return pruned;
   };
   const removeCheckpoint = async (
     targetId: string,
@@ -198,6 +335,7 @@ export function createEffectTransactions(options: {
     active.delete(journal.targetId);
   };
   return {
+    pruneCheckpoints,
     async checkpoint(
       targetId: string,
       artifacts: readonly ArtifactCheckpointInput[],
@@ -225,6 +363,7 @@ export function createEffectTransactions(options: {
       const route = await options.router.checkpoint(targetId);
       await preparation.begin(targetId);
       const journal: Journal = {
+        version: JOURNAL_VERSION,
         targetId,
         phase: "pending",
         files: [],
@@ -328,12 +467,6 @@ export function createEffectTransactions(options: {
       await preparation.validateLayout(targetId);
       const journal = active.get(targetId) ?? (await load(targetId));
       if (!journal) return preparation.recover(targetId);
-      if (journal.targetId !== targetId)
-        throw new RigError(
-          "EFFECTS_CHECKPOINT",
-          "The checkpoint belongs to a different Target.",
-          "Inspect the checkpoint before retrying recovery.",
-        );
       // A durable runtime commit decision authorizes roll-forward, never rollback.
       // Writes begun but never captured are this transaction's own work.
       for (const file of journal.files)
@@ -369,12 +502,6 @@ export function createEffectTransactions(options: {
       await preparation.validateLayout(targetId);
       const journal = active.get(targetId) ?? (await load(targetId));
       if (!journal) return preparation.recover(targetId);
-      if (journal.targetId !== targetId)
-        throw new RigError(
-          "EFFECTS_CHECKPOINT",
-          "The checkpoint belongs to a different Target.",
-          "Inspect the checkpoint before retrying recovery.",
-        );
       if (journal.phase === "committed") {
         await removeCheckpoint(targetId, { allowMissingDirectory: true });
         active.delete(targetId);

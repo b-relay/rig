@@ -120,6 +120,10 @@ export interface RuntimeDependencies {
       project?: string;
       target?: string;
       errorCode?: string;
+      /** A filesystem path the outcome concerns, such as a pruned checkpoint. */
+      path?: string;
+      /** Why something was left in place. */
+      reason?: string;
     },
   ): Promise<void>;
 }

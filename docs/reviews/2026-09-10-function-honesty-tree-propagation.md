@@ -301,7 +301,7 @@ owner carries only its own owner-level defects.
 | state write has no fsync/backup; hint refers to a backup that never exists | #182 (fixed: fsync temp file and directory, keep one generation as `state.json.bak`, hint names it only when present) |
 | `state.json` strip-mode parse, unversioned per field → downgrade drops `destructionPending`/`deploymentIncomplete` | #183 (fixed: version 3 with STATE_VERSION refusal of newer files; the store returns the validated document as read, so unknown keys round-trip) |
 | `rigd install` cannot upgrade a running daemon; no binary identity; protocol skew rendered as usage error | #184 |
-| strict effect journal bricks Target on downgrade; orphan journals never reclaimed | #185 |
+| strict effect journal bricks Target on downgrade; orphan journals never reclaimed | #185 (fixed: versioned journal read loosely, newer versions refused naming both, invalid fields named with path; reconcile prunes checkpoints of absent Targets and records what it kept) |
 | failed/interrupted first Preview deploy → git "Everything up-to-date" forever | #186 |
 | deploys plan from the working-copy `rig.yaml`, not the pushed commit | #187 |
 | Preview replacement silent and state-blind | #188 |

@@ -223,6 +223,7 @@ export function createTargetEffects(
     supervisor,
     environment,
     health,
+    pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
     checkpoint: (target, previous) =>
       transactions.checkpoint(
         target.id,

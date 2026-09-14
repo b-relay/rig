@@ -333,6 +333,17 @@ decision (roll-forward) without treating its own half-finished write as an
 external edit. Only a change made to an owned file *after* the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
+Each journal carries a format version (currently 1). A journal written by a
+newer rigd whose version this one does not read is refused as
+`EFFECTS_CHECKPOINT` with both versions named and nothing changed; a journal of
+the same version with fields this rigd does not know is read normally and those
+fields survive any rewrite, so a downgrade cannot strand a Target. A journal
+with an invalid value is refused with the file path and the offending field in
+the hint. When rigd starts, it reclaims checkpoints and preparation claims whose
+Target no longer exists in state; a pending journal that recorded a change, or
+one that cannot be read, is left in place and recorded in the diagnostic log
+with its reason, since only rollback or a person should decide about it.
+
 `down` stops a Target and retains its inventory, data, logs, and source history.
 When every process is verified stopped but a `preStop` or `postStop` hook
 fails, `down` reports `STOP_HOOKS` with the Target stopped. `restart` treats

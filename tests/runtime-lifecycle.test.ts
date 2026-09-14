@@ -71,6 +71,7 @@ test("readiness expires even when a health provider ignores cancellation, then r
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
+    async pruneCheckpoints() { return []; },
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {
@@ -144,6 +145,7 @@ test("up preserves running components and rollback stops only newly started comp
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
+    async pruneCheckpoints() { return []; },
     async retireArtifacts() {},
     supervisor: () => supervisor,
     async prepare() {},
@@ -187,6 +189,7 @@ test("down uses recorded plan and reports no-op only when every process was stop
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
+    async pruneCheckpoints() { return []; },
     async retireArtifacts() {},
     supervisor: () => supervisor,
     async prepare() {},
@@ -231,6 +234,7 @@ test("down attempts every process even when a hook or another process stop fails
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
+    async pruneCheckpoints() { return []; },
     async retireArtifacts() {},
     supervisor: () => supervisor,
     async prepare() {},
@@ -365,6 +369,7 @@ test("port contention after selection fails startup and preserves an already run
   const effects: TargetEffects = {
     async checkpoint(record) { return { targetId: record.id, async commit() {}, async rollback() { rollback = true; } }; },
     async restoreEffects() {}, async commitEffects() {}, async retireSuperseded() {}, async retireArtifacts() {},
+    async pruneCheckpoints() { return []; },
     supervisor: () => supervisor, async prepare() {}, async environment(_target, component) { return component.env; },
     async hook() {}, async health(component) {
       try { return (await fetch(component.health!)).ok; } catch { return false; }
@@ -413,6 +418,7 @@ test("the Project preStart hook runs before installs and Component hooks, and on
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
+    async pruneCheckpoints() { return []; },
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {

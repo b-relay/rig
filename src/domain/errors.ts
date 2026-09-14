@@ -1,4 +1,5 @@
 import { ConfigError } from "../config/errors";
+import { z } from "zod";
 
 /** Expected failures carry a stable code, safe user guidance, and bounded context. */
 export class RigError extends Error {
@@ -20,6 +21,22 @@ export function errorMessage(error: unknown): string {
 }
 
 /** One sentence a user can act on: message and hint for a RigError, the message otherwise; always ends with a period. */
+/** The first problem in a JSON document that failed validation, as a predicate for a hint:
+ * "has an invalid value at targets.0.plan: …" or "is not valid JSON (…)". */
+export function describeInvalidDocument(
+  error: unknown,
+  schemaName: string,
+): string {
+  if (error instanceof z.ZodError) {
+    const issue = error.issues[0];
+    if (!issue) return `does not match the ${schemaName} schema`;
+    const location = issue.path.length
+      ? issue.path.map(String).join(".")
+      : "the top level";
+    return `has an invalid value at ${location}: ${issue.message}`;
+  }
+  return `is not valid JSON${error instanceof Error ? ` (${error.message})` : ""}`;
+}
 export function failureReason(error: unknown): string {
   const reason =
     error instanceof RigError

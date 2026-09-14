@@ -12,6 +12,7 @@ import type { RuntimeCommand } from "../daemon/protocol";
 import type {
   OperationRecord,
   ProjectRecord,
+  RuntimeState,
   TargetRecord,
 } from "../domain/runtime";
 import {
@@ -626,6 +627,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               .catch(() => {});
             return;
           }
+          await pruneCheckpoints(state, deps);
           for (const target of state.targets) {
             if (draining) break;
             if (target.recovery || target.destructionPending) continue;
@@ -650,6 +652,35 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       await operation;
     },
   };
+}
+/** Effect checkpoints of Targets no longer in state are reclaimed; each result and any failure is recorded, never raised. */
+async function pruneCheckpoints(
+  state: Pick<RuntimeState, "targets">,
+  deps: Pick<RuntimeDependencies, "lifecycle" | "diagnostic" | "id">,
+): Promise<void> {
+  const operationId = deps.id();
+  const record = (event: Parameters<RuntimeDependencies["diagnostic"]>[0]) =>
+    deps.diagnostic(event).catch(() => {});
+  try {
+    const live = new Set(state.targets.map((target) => target.id));
+    for (const pruned of await deps.lifecycle.pruneCheckpoints(live))
+      await record({
+        operationId,
+        action: "reconcile",
+        outcome: `checkpoint-${pruned.outcome}`,
+        ...(pruned.targetId ? { target: pruned.targetId } : {}),
+        path: pruned.path,
+        ...(pruned.reason ? { reason: pruned.reason } : {}),
+      });
+  } catch (error) {
+    await record({
+      operationId,
+      action: "reconcile",
+      outcome: "failed",
+      errorCode: diagnosticErrorCode(error),
+      ...diagnosticCauses(error),
+    });
+  }
 }
 function missingTarget(name: string): RigError {
   return new RigError(

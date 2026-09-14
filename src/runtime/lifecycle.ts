@@ -1,4 +1,8 @@
-import type { Hooks, InstalledComponent, ManagedComponent } from "../config/types";
+import type {
+  Hooks,
+  InstalledComponent,
+  ManagedComponent,
+} from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import type { ProcessObservation, Supervisor } from "../providers/contracts";
 import { RigError } from "../domain/errors";
@@ -8,7 +12,19 @@ export interface TargetEffectCheckpoint {
   commit(): Promise<void>;
   rollback(): Promise<void>;
 }
+/** One effect checkpoint found without a live Target during pruning. */
+export interface PrunedCheckpoint {
+  path: string;
+  /** Known when the journal or claim could be read. */
+  targetId?: string;
+  outcome: "removed" | "retained";
+  /** Why a checkpoint was kept: only a pending journal that recorded a change is retained. */
+  reason?: string;
+}
 export interface TargetEffects {
+  /** Remove effect checkpoints and preparation claims whose Target id is not in `live`.
+   * A pending journal that recorded a change is retained, since only rollback may undo it. */
+  pruneCheckpoints(live: ReadonlySet<string>): Promise<PrunedCheckpoint[]>;
   checkpoint(
     target: TargetRecord,
     previous?: TargetRecord,
@@ -47,6 +63,7 @@ export interface TargetEffects {
   removeRoute(target: TargetRecord): Promise<void>;
 }
 export interface TargetLifecycle {
+  pruneCheckpoints(live: ReadonlySet<string>): Promise<PrunedCheckpoint[]>;
   checkpoint(
     target: TargetRecord,
     previous?: TargetRecord,
@@ -99,7 +116,9 @@ async function observeManaged(
   const observations = new Map<string, ProcessObservation>();
   for (const component of target.plan.components) {
     if (component.kind !== "managed") continue;
-    const observation = await supervisor.observe(`${target.id}:${component.name}`);
+    const observation = await supervisor.observe(
+      `${target.id}:${component.name}`,
+    );
     if (observation.state === "unknown")
       throw new RigError(
         "PROCESS_UNKNOWN",
@@ -117,6 +136,7 @@ export function createTargetLifecycle(
   timing: ReadinessTiming = readinessTiming,
 ): TargetLifecycle {
   const lifecycle: TargetLifecycle = {
+    pruneCheckpoints: (live) => effects.pruneCheckpoints(live),
     async checkpoint(target, previous) {
       assertProviderProfile(target);
       return await effects.checkpoint(target, previous);
@@ -188,7 +208,12 @@ export function createTargetLifecycle(
         const observations = await observeManaged(target, supervisor);
         began = [...observations.values()].some((o) => o.state === "stopped");
         if (began && target.plan.hooks?.preStart)
-          await effects.hook(target.plan.hooks.preStart, target, undefined, "preStart");
+          await effects.hook(
+            target.plan.hooks.preStart,
+            target,
+            undefined,
+            "preStart",
+          );
         // Dependencies are ordered during plan resolution, before any process starts.
         for (const component of target.plan.components) {
           if (component.kind === "persistent") continue;
@@ -200,7 +225,12 @@ export function createTargetLifecycle(
           const key = `${target.id}:${component.name}`;
           if (observations.get(key)!.state === "running") continue;
           if (component.hooks?.preStart)
-            await effects.hook(component.hooks.preStart, target, component, "preStart");
+            await effects.hook(
+              component.hooks.preStart,
+              target,
+              component,
+              "preStart",
+            );
           const result = await supervisor.ensureRunning({
             key,
             componentName: component.name,
@@ -212,14 +242,25 @@ export function createTargetLifecycle(
           });
           if (result.outcome === "started") started.push(key);
           const process = { observe: () => supervisor.observe(key) };
-          if (component.health) await awaitReady(component, target, effects, timing, process);
+          if (component.health)
+            await awaitReady(component, target, effects, timing, process);
           else await awaitSurvival(component, timing, process);
           if (component.hooks?.postStart && result.outcome === "started")
-            await effects.hook(component.hooks.postStart, target, component, "postStart");
+            await effects.hook(
+              component.hooks.postStart,
+              target,
+              component,
+              "postStart",
+            );
         }
         await effects.route(target);
         if (began && target.plan.hooks?.postStart)
-          await effects.hook(target.plan.hooks.postStart, target, undefined, "postStart");
+          await effects.hook(
+            target.plan.hooks.postStart,
+            target,
+            undefined,
+            "postStart",
+          );
         if (!providedCheckpoint) await checkpoint.commit();
         return {
           outcome: started.length || installed ? "started" : "unchanged",
@@ -270,18 +311,31 @@ export function createTargetLifecycle(
             `${target.id}:${component.name}`,
           );
           needsPreStop =
-            observation.state !== "stopped" || observation.restartPending === true;
+            observation.state !== "stopped" ||
+            observation.restartPending === true;
         } catch {
           // Failed observation is not proof of absence; stop still verifies shutdown.
         }
         if (needsPreStop && !began) {
           began = true;
           if (target.plan.hooks?.preStop)
-            await attempt(() => effects.hook(target.plan.hooks!.preStop!, target, undefined, "preStop"));
+            await attempt(() =>
+              effects.hook(
+                target.plan.hooks!.preStop!,
+                target,
+                undefined,
+                "preStop",
+              ),
+            );
         }
         if (needsPreStop && component.hooks?.preStop)
           await attempt(() =>
-            effects.hook(component.hooks!.preStop!, target, component, "preStop"),
+            effects.hook(
+              component.hooks!.preStop!,
+              target,
+              component,
+              "preStop",
+            ),
           );
         let stopped = false;
         await attempt(async () => {
@@ -293,11 +347,23 @@ export function createTargetLifecycle(
         }, true);
         if (component.hooks?.postStop && stopped)
           await attempt(() =>
-            effects.hook(component.hooks!.postStop!, target, component, "postStop"),
+            effects.hook(
+              component.hooks!.postStop!,
+              target,
+              component,
+              "postStop",
+            ),
           );
       }
       if (changed && target.plan.hooks?.postStop)
-        await attempt(() => effects.hook(target.plan.hooks!.postStop!, target, undefined, "postStop"));
+        await attempt(() =>
+          effects.hook(
+            target.plan.hooks!.postStop!,
+            target,
+            undefined,
+            "postStop",
+          ),
+        );
       if (processFailures.length)
         throw new RigError(
           "STOP_INCOMPLETE",
@@ -399,7 +465,12 @@ async function awaitSurvival(
 /** Poll instants within the grace period at the observation cadence, always ending at the grace itself. */
 function observationTimes(graceMs: number): number[] {
   const times: number[] = [];
-  for (let at = OBSERVATION_INTERVAL_MS; at < graceMs; at += OBSERVATION_INTERVAL_MS) times.push(at);
+  for (
+    let at = OBSERVATION_INTERVAL_MS;
+    at < graceMs;
+    at += OBSERVATION_INTERVAL_MS
+  )
+    times.push(at);
   if (graceMs > 0) times.push(graceMs);
   return times;
 }

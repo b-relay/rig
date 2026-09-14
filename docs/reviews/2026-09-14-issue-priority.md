@@ -73,7 +73,7 @@ testability and honesty refactors.
 50. ~~#181~~ (fixed) Corrupt or empty state.json makes rigd exit silently; doctor says healthy; uninstall dead-ends.
 51. ~~#182~~ (fixed) state.json write has no fsync and no backup; the only recovery hint refers to a file that never exists.
 52. ~~#183~~ (fixed) state.json parses in strip mode; a downgrade silently drops destructionPending/deploymentIncomplete.
-53. #185 Effect journal schema is strict; a newer journal bricks the Target on downgrade; orphan journals never reclaimed.
+53. ~~#185~~ (fixed) Effect journal schema is strict; a newer journal bricks the Target on downgrade; orphan journals never reclaimed.
 54. #138 Stale owner.json/address.json pid reused by another process bricks install, uninstall and start.
 55. #139 Stale daemon/acquiring lock is unrecoverable through the CLI.
 56. #140 A cleanly stopped rigd cannot be uninstalled: DAEMON_UNCERTAIN with a dead-end hint.

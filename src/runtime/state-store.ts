@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { STATE_VERSION, runtimeStateSchema as schema } from "./state-schema";
 import { backfillSourceRoots } from "./state-compat";
-import { RigError } from "../domain/errors";
+import { RigError, describeInvalidDocument } from "../domain/errors";
 import type { RuntimeState, StateStore } from "../domain/runtime";
 
 /** Filesystem Adapter; caller supplies isolated root. One daemon is the writer. */
@@ -70,7 +70,7 @@ export class FileStateStore implements StateStore {
       throw new RigError(
         "STATE_CORRUPT",
         "Invalid runtime state; nothing was changed.",
-        `Runtime state at ${this.path} ${describeCorruption(error)}. ${
+        `Runtime state at ${this.path} ${describeInvalidDocument(error, "runtime state")}. ${
           backup
             ? `The previous version is kept at ${backup}; copy it back over the file, or repair the file by hand, before retrying.`
             : "Repair the file by hand, or restore it from your own backup, before retrying."
@@ -166,14 +166,3 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 /** The first thing wrong with a state file, worded so the user can open it and look. */
-function describeCorruption(error: unknown): string {
-  if (error instanceof z.ZodError) {
-    const issue = error.issues[0];
-    if (!issue) return "does not match the runtime state schema";
-    const location = issue.path.length
-      ? issue.path.map(String).join(".")
-      : "the top level";
-    return `has an invalid value at ${location}: ${issue.message}`;
-  }
-  return `is not valid JSON${error instanceof Error ? ` (${error.message})` : ""}`;
-}

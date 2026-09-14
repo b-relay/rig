@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { createEffectTransactions } from "../src/adapters/effect-transactions";
 import { createArtifactOwnership } from "../src/adapters/artifact-ownership";
 import { createCaddyRouter } from "../src/providers/caddy-router";
+import type { RouteCheckpoint } from "../src/providers/caddy-router";
+import type { PrunedCheckpoint } from "../src/runtime/lifecycle";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -250,4 +252,155 @@ test("unrelated files beside a valid committed journal remain protected", async 
     code: "EFFECTS_CHECKPOINT",
   });
   expect(await readFile(join(f.directory, "precious"), "utf8")).toBe("keep");
+});
+test("a journal carrying keys this rigd does not know is still rolled back, and the keys survive its rewrite", async () => {
+  const f = await fixture();
+  await f.transactions().checkpoint("target", []);
+  const path = join(f.directory, "journal.json");
+  const journal = JSON.parse(await readFile(path, "utf8"));
+  journal.future = { added: "by a newer rigd" };
+  journal.route.future = true;
+  await writeFile(path, JSON.stringify(journal));
+  let failures = 1;
+  const router = {
+    ...f.router,
+    async restore(saved: RouteCheckpoint, expected: RouteCheckpoint) {
+      if (failures-- > 0) throw new Error("caddy is not answering");
+      return f.router.restore(saved, expected);
+    },
+  };
+  const transactions = createEffectTransactions({
+    root: f.root,
+    ownership: createArtifactOwnership(f.root),
+    router,
+  });
+  await expect(transactions.restore("target")).rejects.toThrow(
+    "caddy is not answering",
+  );
+  expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+    version: 1,
+    future: { added: "by a newer rigd" },
+    route: { future: true },
+  });
+  await transactions.restore("target");
+  expect(await readdir(join(f.root, "effect-checkpoints"))).toEqual([]);
+});
+test.each([
+  {
+    shape: "a newer format version",
+    edit: (journal: Record<string, unknown>) => ({ ...journal, version: 2 }),
+    hint: [/version 2/, /version 1/],
+    details: { version: 2 },
+  },
+  {
+    shape: "an invalid field",
+    edit: (journal: Record<string, unknown>) => ({
+      ...journal,
+      phase: "later",
+    }),
+    hint: [/journal\.json/, /at phase:/],
+    details: { issues: [{ path: ["phase"] }] },
+  },
+])(
+  "a journal with $shape is refused with the file and the problem named, and nothing is changed",
+  async ({ edit, hint, details }) => {
+    const f = await fixture();
+    await f.transactions().checkpoint("target", []);
+    const path = join(f.directory, "journal.json");
+    const bytes = JSON.stringify(
+      edit(JSON.parse(await readFile(path, "utf8"))),
+    );
+    await writeFile(path, bytes);
+    for (const operation of ["restore", "commit", "checkpoint"] as const) {
+      const error = await f
+        .transactions()
+        [operation]("target", [])
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(error).toMatchObject({
+        code: "EFFECTS_CHECKPOINT",
+        details: { path, ...details },
+      });
+      for (const pattern of hint)
+        expect((error as { hint: string }).hint).toMatch(pattern);
+    }
+    expect(await readFile(path, "utf8")).toBe(bytes);
+  },
+);
+test("pruning removes checkpoints and claims of Targets absent from state, keeps live ones, and retains a pending journal that recorded a change", async () => {
+  const f = await fixture();
+  const hash = (targetId: string) =>
+    createHash("sha256").update(targetId).digest("hex");
+  const checkpoints = join(f.root, "effect-checkpoints");
+  await f.transactions().checkpoint("target", []);
+  await f.transactions().checkpoint("gone", []);
+  const gone = JSON.parse(
+    await readFile(join(checkpoints, hash("gone"), "journal.json"), "utf8"),
+  );
+  gone.phase = "committed";
+  await writeFile(
+    join(checkpoints, hash("gone"), "journal.json"),
+    JSON.stringify(gone),
+  );
+  await writeFile(
+    join(checkpoints, `${hash("stale")}.preparing.json`),
+    JSON.stringify({
+      version: 1,
+      targetId: "stale",
+      directory: join(checkpoints, hash("stale")),
+    }),
+  );
+  await f.transactions().checkpoint("changed", []);
+  const changed = JSON.parse(
+    await readFile(join(checkpoints, hash("changed"), "journal.json"), "utf8"),
+  );
+  changed.route.expected = { key: "changed", value: "written" };
+  await writeFile(
+    join(checkpoints, hash("changed"), "journal.json"),
+    JSON.stringify(changed),
+  );
+  await mkdir(join(checkpoints, hash("garbled")));
+  await writeFile(join(checkpoints, hash("garbled"), "journal.json"), "{nope");
+  const pruned = await f.transactions().pruneCheckpoints(new Set(["target"]));
+  const expected: PrunedCheckpoint[] = [
+    {
+      path: join(checkpoints, hash("gone")),
+      targetId: "gone",
+      outcome: "removed",
+    },
+    {
+      path: join(checkpoints, `${hash("stale")}.preparing.json`),
+      targetId: "stale",
+      outcome: "removed",
+    },
+    {
+      path: join(checkpoints, hash("changed")),
+      targetId: "changed",
+      outcome: "retained",
+      reason: expect.stringMatching(/rollback/),
+    },
+    {
+      path: join(checkpoints, hash("garbled")),
+      outcome: "retained",
+      reason: expect.stringMatching(
+        /could not be read: .*journal\.json is not valid JSON/,
+      ),
+    },
+  ];
+  const byPath = (a: PrunedCheckpoint, b: PrunedCheckpoint) =>
+    a.path.localeCompare(b.path);
+  expect(pruned.sort(byPath)).toEqual(expected.sort(byPath));
+  expect((await readdir(checkpoints)).sort()).toEqual(
+    [
+      hash("target"),
+      `${hash("target")}.preparing.json`,
+      hash("changed"),
+      `${hash("changed")}.preparing.json`,
+      hash("garbled"),
+    ].sort(),
+  );
+  await f.transactions().restore("target");
+  expect(await f.transactions().pruneCheckpoints(new Set())).toHaveLength(2);
 });

@@ -17,6 +17,7 @@ export function stopHookFixture(active: string[] = []) {
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
+    async pruneCheckpoints() { return []; },
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {

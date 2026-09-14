@@ -101,6 +101,9 @@ function fixture() {
       async release() {},
     },
     lifecycle: {
+      async pruneCheckpoints() {
+        return [];
+      },
       async checkpoint(target) {
         return { targetId: target.id, async commit() {}, async rollback() {} };
       },
@@ -2327,6 +2330,9 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
   let rolledBack = false;
   let started = false;
   f.deps.lifecycle = createTargetLifecycle({
+    async pruneCheckpoints() {
+      return [];
+    },
     async checkpoint(target) {
       return {
         targetId: target.id,
@@ -2526,4 +2532,49 @@ test("unreadable runtime state leaves the daemon serving: reconcile records the 
     reason: "state-corrupt",
     hint: expect.stringContaining("/tmp/isolated-rig/runtime/state.json"),
   });
+});
+test("reconcile prunes effect checkpoints whose Target is absent from state and records each result", async () => {
+  const { runtime, deps, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  const retained: string[][] = [];
+  deps.lifecycle.pruneCheckpoints = async (live) => {
+    retained.push([...live]);
+    return [
+      {
+        path: "/root/effect-checkpoints/aa",
+        targetId: "old",
+        outcome: "removed",
+      },
+      {
+        path: "/root/effect-checkpoints/bb",
+        outcome: "retained",
+        reason:
+          "its pending journal recorded a change that only rollback can undo",
+      },
+    ];
+  };
+  const diagnostics: unknown[] = [];
+  deps.diagnostic = async (event) => {
+    diagnostics.push(event);
+  };
+  await runtime.reconcile();
+  expect(retained).toEqual([[state.targets[0]!.id]]);
+  expect(diagnostics).toEqual([
+    {
+      operationId: expect.any(String),
+      action: "reconcile",
+      outcome: "checkpoint-removed",
+      target: "old",
+      path: "/root/effect-checkpoints/aa",
+    },
+    {
+      operationId: expect.any(String),
+      action: "reconcile",
+      outcome: "checkpoint-retained",
+      path: "/root/effect-checkpoints/bb",
+      reason:
+        "its pending journal recorded a change that only rollback can undo",
+    },
+  ]);
 });

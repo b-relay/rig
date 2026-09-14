@@ -42,7 +42,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
   const checkpoint = { targetId: record.id, async commit() { events.push("commit"); }, async rollback() { events.push("rollback"); } };
   const effects: TargetEffects = {
     async checkpoint() { return checkpoint; }, async restoreEffects() {}, async commitEffects() {},
-    async retireSuperseded() {}, async retireArtifacts() {}, async prepare() {}, async environment() { return {}; },
+    async retireSuperseded() {}, async retireArtifacts() {}, async pruneCheckpoints() { return []; }, async prepare() {}, async environment() { return {}; },
     async install() { return { outcome: "unchanged" }; }, async removeRoute() {},
     supervisor: () => ({
       async observe(key) {

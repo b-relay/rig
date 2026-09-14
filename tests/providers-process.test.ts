@@ -466,3 +466,67 @@ test("a detached daemon leaves its processes running and the next daemon adopts 
   expect(() => process.kill(started.pid!, 0)).toThrow();
   expect((await second.observe(request.key)).state).toBe("stopped");
 });
+test("after a daemon restart, a dead group leader with live members is stopped as a group and up does not spawn a duplicate", async () => {
+  const { createProcessInspection } = await import("../src/providers/process-inspection");
+  const root = await mkdtemp(join(tmpdir(), "rig-orphan-group-"));
+  roots.push(root);
+  const request = {
+    key: "orphans",
+    componentName: "web",
+    command: ["/bin/sh", "-c", "sleep 300 & sleep 300 & wait"],
+    cwd: root,
+    env: { PATH: "/usr/bin:/bin" },
+    logRoot: join(root, "logs"),
+  };
+  const first = createChildSupervisor({ stateRoot: root });
+  const leader = (await first.ensureRunning(request)).pid!;
+  await first.detach();
+  const inspection = createProcessInspection();
+  await Bun.sleep(300); // let sh fork its members before the leader dies
+  process.kill(leader, "SIGKILL");
+  await Bun.sleep(200);
+  expect(await inspection.groupExists(leader)).toBe(true);
+  const second = createChildSupervisor({ stateRoot: root });
+  supervisors.push(second);
+  expect((await second.observe(request.key)).state).toBe("stopped");
+  await second.stop(request.key);
+  expect(await inspection.groupExists(leader)).toBe(false);
+  const again = (await second.ensureRunning(request)).pid!;
+  await second.detach();
+  await Bun.sleep(300);
+  process.kill(again, "SIGKILL");
+  await Bun.sleep(200);
+  expect(await inspection.groupExists(again)).toBe(true);
+  const third = createChildSupervisor({ stateRoot: root });
+  supervisors.push(third);
+  const restarted = await third.ensureRunning(request);
+  expect(restarted.outcome).toBe("started");
+  expect(await inspection.groupExists(again)).toBe(false);
+  expect((await third.observe(request.key))).toMatchObject({ state: "running", pid: restarted.pid });
+});
+test("a lease-recovered keepAlive process is restarted by the next daemon when it exits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-recovered-keepalive-"));
+  roots.push(root);
+  const request = {
+    key: "keepalive",
+    componentName: "web",
+    command: [process.execPath, "-e", "setInterval(()=>{},1000)"],
+    cwd: root,
+    env: {},
+    logRoot: join(root, "logs"),
+    keepAlive: true,
+  };
+  const first = createChildSupervisor({ stateRoot: root });
+  const pid = (await first.ensureRunning(request)).pid!;
+  await first.detach();
+  const second = createChildSupervisor({ stateRoot: root, restartBackoffMs: 50 });
+  supervisors.push(second);
+  expect(await second.observe(request.key)).toMatchObject({ state: "running", pid });
+  process.kill(pid, "SIGKILL");
+  await Bun.sleep(200);
+  expect(await second.observe(request.key)).toMatchObject({ state: "stopped", restartPending: true });
+  await Bun.sleep(600);
+  const after = await second.observe(request.key);
+  expect(after.state).toBe("running");
+  expect(after.pid).not.toBe(pid);
+});

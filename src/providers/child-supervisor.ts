@@ -25,11 +25,31 @@ import {
 } from "./process-inspection";
 const leaseSchema = z.object({
   key: z.string().describe("Stable component ownership key."),
-  pid: z.number().int().min(2).describe("Owned process group leader."),
+  pid: z
+    .number()
+    .int()
+    .min(2)
+    .describe(
+      "Owned process group leader; the group id equals this PID, so the group can outlive the leader.",
+    ),
   identity: z
     .string()
     .length(64)
     .describe("Digest of immutable process birth time and PID."),
+  request: z
+    .object({
+      key: z.string(),
+      componentName: z.string(),
+      command: z.array(z.string()),
+      cwd: z.string(),
+      env: z.record(z.string(), z.string()),
+      logRoot: z.string(),
+      keepAlive: z.boolean().optional(),
+    })
+    .optional()
+    .describe(
+      "The start request, so a daemon that adopts the lease can restart the process under its keepAlive policy.",
+    ),
 });
 interface OwnedProcess {
   pid: number;
@@ -37,6 +57,8 @@ interface OwnedProcess {
   child?: ChildProcess;
   request?: ManagedProcess;
   exitCode?: number;
+  /** A recovered process has no child handle; its exit is noticed by observation and recorded once. */
+  exitObserved?: boolean;
   stopped: boolean;
   drains: Promise<void>[];
   writes: Promise<void>;
@@ -103,11 +125,15 @@ export function createChildSupervisor(
         "Inspect the daemon state before retrying.",
         { key },
       );
-    if ((await inspect(parsed.data.pid)) !== parsed.data.identity)
-      return undefined;
+    const current = await inspect(parsed.data.pid);
+    // A dead leader whose group still runs is still ours: the group id stays reserved while any member lives.
+    if (current !== parsed.data.identity)
+      if (current !== undefined || !(await inspection.groupExists(parsed.data.pid)))
+        return undefined;
     const owned: OwnedProcess = {
       pid: parsed.data.pid,
       identity: parsed.data.identity,
+      ...(parsed.data.request ? { request: parsed.data.request } : {}),
       stopped: false,
       drains: [],
       writes: Promise.resolve(),
@@ -164,9 +190,18 @@ export function createChildSupervisor(
       }
     }
     try {
-      return (await inspect(owned.pid)) === owned.identity
-        ? { state: "running", pid: owned.pid }
-        : { state: "stopped" };
+      if ((await inspect(owned.pid)) === owned.identity)
+        return { state: "running", pid: owned.pid };
+      if (!owned.exitObserved) {
+        owned.exitObserved = true;
+        scheduleRestart(key, owned);
+      }
+      return {
+        state: "stopped",
+        ...(restarting.has(key) || (!owned.stopped && restarts.get(key)?.timer)
+          ? { restartPending: true }
+          : {}),
+      };
     } catch {
       return {
         state: "unknown",
@@ -201,11 +236,14 @@ export function createChildSupervisor(
     const currentIdentity = liveChild
       ? owned.identity
       : await inspect(owned.pid);
+    // A gone leader (undefined identity) leaves only our group members behind, so a surviving group is still ours to signal.
     const verified =
       Boolean(liveChild) ||
       (owned.child
         ? currentIdentity === undefined || currentIdentity === owned.identity
-        : currentIdentity === owned.identity);
+        : currentIdentity === owned.identity ||
+          (currentIdentity === undefined &&
+            (await inspection.groupExists(owned.pid))));
     if (verified) {
       await inspection.signalGroup(owned.pid, "SIGTERM");
       const deadline =
@@ -371,6 +409,7 @@ export function createChildSupervisor(
               key: request.key,
               pid: owned.pid,
               identity: owned.identity,
+              request: owned.request,
             }),
             { mode: 0o600 },
           );

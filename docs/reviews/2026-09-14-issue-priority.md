@@ -24,7 +24,7 @@ testability and honesty refactors.
 7. ~~#216~~ (fixed) LaunchAgent records the version-specific bun path; a Homebrew bun upgrade bricks rigd and every command says unreachable.
 8. ~~#217~~ (fixed) LaunchAgent KeepAlive with no throttle: a failing rigd relaunches every 10 s forever, grows startup.log without bound, cannot be uninstalled through the CLI.
 9. ~~#143~~ (fixed) Capture wrapper rewrites a running component as failed and exits, orphaning the detached child. Unsupervised production process.
-10. #212 Lease recovery binds to the sh group leader only and drops keepAlive: dead leader reads stopped, next up spawns a duplicate; recovered processes never restart.
+10. ~~#212~~ (fixed) Lease recovery binds to the sh group leader only and drops keepAlive: dead leader reads stopped, next up spawns a duplicate; recovered processes never restart.
 11. #199 Interpolated paths inserted into shell commands unquoted; a workspace or RIG_ROOT with a space breaks every component command.
 12. #223 `rig deploy live` resolves the Project from cwd with no echo or confirmation; running it in another checkout redeploys that project.
 13. #219 `down preview --destroy` persists destructionPending before preconditions; a refused destroy wedges the Preview with processes running and blocks uninstall.

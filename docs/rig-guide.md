@@ -243,6 +243,17 @@ rig restart preview feature/login
 If `rig up preview feature/login` names a Preview that has not been deployed,
 Rig should fail and tell the user to deploy it first.
 
+`up` reports `started` only for processes Rig has confirmed alive. A component
+with a `health` URL is polled until it answers or `readyTimeout` expires, and
+between polls Rig asks its supervisor whether the process still exists: a
+process that exits fails the start at once as `PROCESS_EXITED`, naming the exit
+code, instead of waiting out the timeout. A health answer counts only while
+Rig's own process is running, so a foreign listener on the port cannot certify
+a dead component. A component without a health check must survive a short
+start grace period (half a second) before it counts as started; a command that
+exits earlier, such as a missing binary or a port already in use, fails `up`
+and rolls the start back.
+
 Route and installed-executable changes run inside a durable effect
 checkpoint under `<RIG_ROOT>/effect-checkpoints`. The journal records each
 write before it starts and the result after it finishes, so a daemon killed in

@@ -27,16 +27,16 @@ testability and honesty refactors.
 10. ~~#212~~ (fixed) Lease recovery binds to the sh group leader only and drops keepAlive: dead leader reads stopped, next up spawns a duplicate; recovered processes never restart.
 11. ~~#199~~ (fixed) Interpolated paths inserted into shell commands unquoted; a workspace or RIG_ROOT with a space breaks every component command.
 12. ~~#223~~ (fixed) `rig deploy live` resolves the Project from cwd with no echo or confirmation; running it in another checkout redeploys that project.
-13. #219 `down preview --destroy` persists destructionPending before preconditions; a refused destroy wedges the Preview with processes running and blocks uninstall.
-14. #151 Crash between an applied effect and its journal capture bricks the Target: down, up, deploy, destroy all fail with hints pointing at each other.
-15. #147 CLI sends the bearer token to whatever process owns a stale daemon port.
-16. #204 Every client deadline expiry is reported as DAEMON_UNREACHABLE while rigd keeps executing; retry queues a duplicate deploy.
-17. #210 status/doctor during a normal in-flight deploy say "run down to stop both recorded plans"; following the hint stops the freshly deployed build.
-18. #155 `up` starts a Deployment whose commit never completed and never clears deploymentIncomplete; next same-Commit deploy restarts a healthy Target.
+13. ~~#219~~ (fixed) `down preview --destroy` persists destructionPending before preconditions; a refused destroy wedges the Preview with processes running and blocks uninstall.
+14. ~~#151~~ (fixed) Crash between an applied effect and its journal capture bricks the Target: down, up, deploy, destroy all fail with hints pointing at each other.
+15. ~~#147~~ (fixed) CLI sends the bearer token to whatever process owns a stale daemon port.
+16. ~~#204~~ (fixed) Every client deadline expiry is reported as DAEMON_UNREACHABLE while rigd keeps executing; retry queues a duplicate deploy.
+17. ~~#210~~ (fixed) status/doctor during a normal in-flight deploy say "run down to stop both recorded plans"; following the hint stops the freshly deployed build.
+18. ~~#155~~ (fixed) `up` starts a Deployment whose commit never completed and never clears deploymentIncomplete; next same-Commit deploy restarts a healthy Target.
 
 ## Tier 1 — core flows silently wrong or wedged
 
-19. #171 `rig up` certifies readiness without re-observing the process: crashed component reported started, foreign listener passes health.
+19. ~~#171~~ (fixed) `rig up` certifies readiness without re-observing the process: crashed component reported started, foreign listener passes health.
 20. #194 `rig restart` aborts after the stop half when a stop hook fails; desired persisted as stopped, up never runs.
 21. #187 git push rig / rig deploy plan the Target from the working-copy rig.yaml, not the pushed commit.
 22. #186 After a failed first Preview deploy, git push rig reports "Everything up-to-date" forever, even with --force.

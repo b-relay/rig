@@ -92,6 +92,7 @@ export function failureCategory(error: unknown): FailureCategory {
           return "health";
         case "STOP_INCOMPLETE":
         case "PROCESS_UNKNOWN":
+        case "PROCESS_EXITED":
         case "START_ROLLBACK_FAILED":
           return "process";
         case "EFFECTS_SCOPE":

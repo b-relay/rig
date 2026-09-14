@@ -1,6 +1,6 @@
 import type { InstalledComponent, ManagedComponent } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import type { Supervisor } from "../providers/contracts";
+import type { ProcessObservation, Supervisor } from "../providers/contracts";
 import { RigError } from "../domain/errors";
 
 export interface TargetEffectCheckpoint {
@@ -74,6 +74,8 @@ export interface ReadinessTiming {
    * Callbacks and cancellation must not throw. Elapsed callbacks run in deadline order.
    */
   schedule(delayMs: number, fire: () => void): () => void;
+  /** How long a component without a health check must stay alive before up counts it as started; default 500 ms. */
+  readonly startGraceMs?: number;
 }
 
 /** Production scheduling effect owner; lifecycle callers may substitute controlled time. */
@@ -83,6 +85,9 @@ const readinessTiming: ReadinessTiming = {
     return () => clearTimeout(timer);
   },
 };
+const DEFAULT_START_GRACE_MS = 500;
+/** Cadence for health retries and for confirming the supervised process is still alive. */
+const OBSERVATION_INTERVAL_MS = 100;
 
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
 export function createTargetLifecycle(
@@ -192,7 +197,9 @@ export function createTargetLifecycle(
             keepAlive: target.plan.daemon?.keepAlive ?? true,
           });
           if (result.outcome === "started") started.push(key);
-          if (component.health) await awaitReady(component, target, effects, timing);
+          const process = { observe: () => supervisor.observe(key) };
+          if (component.health) await awaitReady(component, target, effects, timing, process);
+          else await awaitSurvival(component, timing, process);
           if (component.hooks?.postStart && result.outcome === "started")
             await effects.hook(component.hooks.postStart, target, component);
         }
@@ -300,11 +307,18 @@ export function createTargetLifecycle(
   };
   return lifecycle;
 }
+/** The supervised process behind one component; readiness only counts while it is alive. */
+interface SupervisedProcess {
+  observe(): Promise<ProcessObservation>;
+}
+/** Health passes only while rig's own process is running: a foreign listener on the port never certifies a dead
+ * component, and a process that exits fails fast with its exit code instead of waiting for readyTimeout. */
 async function awaitReady(
   component: ManagedComponent,
   target: TargetRecord,
   effects: Pick<TargetEffects, "health">,
   timing: ReadinessTiming,
+  process: SupervisedProcess,
 ): Promise<void> {
   const controller = new AbortController();
   let cancelDeadline = () => {};
@@ -318,15 +332,19 @@ async function awaitReady(
   });
   try {
     while (!controller.signal.aborted) {
+      await assertAlive(component, process);
       const healthy = await Promise.race([
         effects.health(component, target, controller.signal),
         expired,
       ]);
       if (controller.signal.aborted) break;
-      if (healthy) return;
+      if (healthy) {
+        await assertAlive(component, process);
+        return;
+      }
       await Promise.race([
         new Promise<void>((resolve) => {
-          cancelRetry = timing.schedule(100, resolve);
+          cancelRetry = timing.schedule(OBSERVATION_INTERVAL_MS, resolve);
         }),
         expired,
       ]);
@@ -340,6 +358,55 @@ async function awaitReady(
     `${component.name} did not become ready.`,
     "Inspect Target logs and the configured health check.",
     { component: component.name },
+  );
+}
+/** Without a health check, a component counts as started only once it has outlived the start grace period. */
+async function awaitSurvival(
+  component: ManagedComponent,
+  timing: ReadinessTiming,
+  process: SupervisedProcess,
+): Promise<void> {
+  const grace = timing.startGraceMs ?? DEFAULT_START_GRACE_MS;
+  const cancels: (() => void)[] = [];
+  const checks: Promise<void>[] = [];
+  // Every observation is scheduled up front so a crash-and-restart loop cannot hide between polls.
+  for (const at of observationTimes(grace))
+    checks.push(
+      new Promise<void>((resolve) => {
+        cancels.push(timing.schedule(at, resolve));
+      }).then(() => assertAlive(component, process)),
+    );
+  try {
+    await Promise.all(checks);
+  } finally {
+    for (const cancel of cancels) cancel();
+  }
+}
+/** Poll instants within the grace period at the observation cadence, always ending at the grace itself. */
+function observationTimes(graceMs: number): number[] {
+  const times: number[] = [];
+  for (let at = OBSERVATION_INTERVAL_MS; at < graceMs; at += OBSERVATION_INTERVAL_MS) times.push(at);
+  if (graceMs > 0) times.push(graceMs);
+  return times;
+}
+async function assertAlive(
+  component: ManagedComponent,
+  process: SupervisedProcess,
+): Promise<void> {
+  const observation = await process.observe();
+  if (observation.state !== "stopped") return;
+  const exitCode = observation.exitCode;
+  throw new RigError(
+    "PROCESS_EXITED",
+    exitCode === undefined
+      ? `${component.name} exited before it became ready.`
+      : `${component.name} exited with code ${exitCode} before it became ready.`,
+    "Inspect Target logs for the start-up failure before retrying.",
+    {
+      component: component.name,
+      ...(exitCode === undefined ? {} : { exitCode }),
+      ...(observation.restartPending ? { restartPending: true } : {}),
+    },
   );
 }
 

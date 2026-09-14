@@ -21,7 +21,8 @@ function scheduleFixture() {
   };
 }
 async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
-function fixture(health: TargetEffects["health"]) {
+/** crashes: keys whose process exits with the given code as soon as it is started. */
+function fixture(health: TargetEffects["health"], options: { healthChecks?: boolean; crashes?: Record<string, number> } = {}) {
   const root = process.env.RIG_ROOT!;
   const record: TargetRecord = {
     id: "readiness", projectId: "project", name: "local", kind: "local",
@@ -32,10 +33,11 @@ function fixture(health: TargetEffects["health"]) {
       providers: { processSupervisor: "child" }, providerProfile: "default", preparedComponents: [],
       hooks: { postStart: "target-post" },
       components: ["prior", "new"].map(name => ({ name, kind: "managed", command: "serve", port: 4000, readyTimeout: 1,
-        env: {}, dependsOn: [], health: "http://127.0.0.1/health", hooks: { postStart: `${name}-post` } })),
+        env: {}, dependsOn: [], ...(options.healthChecks === false ? {} : { health: "http://127.0.0.1/health" }), hooks: { postStart: `${name}-post` } })),
     },
   };
   const running = new Set(["readiness:prior"]);
+  const exitCodes = new Map<string, number>();
   const events: string[] = [];
   const checkpoint = { targetId: record.id, async commit() { events.push("commit"); }, async rollback() { events.push("rollback"); } };
   const effects: TargetEffects = {
@@ -43,15 +45,82 @@ function fixture(health: TargetEffects["health"]) {
     async retireSuperseded() {}, async retireArtifacts() {}, async prepare() {}, async environment() { return {}; },
     async install() { return { outcome: "unchanged" }; }, async removeRoute() {},
     supervisor: () => ({
-      async observe(key) { return { state: running.has(key) ? "running" : "stopped" }; },
-      async ensureRunning(request) { running.add(request.key); events.push(`start:${request.key}`); return { outcome: "started" }; },
+      async observe(key) {
+        if (running.has(key)) return { state: "running" };
+        const exitCode = exitCodes.get(key);
+        return exitCode === undefined ? { state: "stopped" } : { state: "stopped", exitCode };
+      },
+      async ensureRunning(request) {
+        events.push(`start:${request.key}`);
+        const crash = options.crashes?.[request.key];
+        if (crash === undefined) running.add(request.key);
+        else exitCodes.set(request.key, crash);
+        return { outcome: "started" };
+      },
       async stop(key) { running.delete(key); events.push(`stop:${key}`); return { outcome: "stopped" }; }, async shutdown() {}, async detach() {},
     }),
     async hook(command) { events.push(command); }, async route() { events.push("route"); }, health,
   };
   const timing = scheduleFixture();
-  return { record, running, events, checkpoint, timing, lifecycle: createTargetLifecycle(effects, timing) };
+  return { record, running, exitCodes, events, checkpoint, timing, lifecycle: createTargetLifecycle(effects, timing) };
 }
+
+test("a process that has exited is reported with its exit code before the first health poll instead of after readyTimeout", async () => {
+  let polls = 0;
+  const f = fixture(async () => { polls++; return false; }, { crashes: { "readiness:new": 127 } });
+  await expect(f.lifecycle.up(f.record)).rejects.toMatchObject({
+    code: "PROCESS_EXITED",
+    message: "new exited with code 127 before it became ready.",
+    details: { component: "new", exitCode: 127 },
+  });
+  expect(polls).toBe(0);
+  expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
+  expect(f.timing.pending).toBe(0);
+});
+
+test("a passing health check does not certify a component whose own process has exited", async () => {
+  const f = fixture(async () => {
+    // A foreign listener answers on the port while rig's process dies.
+    f.running.delete("readiness:new");
+    f.exitCodes.set("readiness:new", 1);
+    return true;
+  });
+  await expect(f.lifecycle.up(f.record)).rejects.toMatchObject({
+    code: "PROCESS_EXITED",
+    details: { component: "new", exitCode: 1 },
+  });
+  expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
+  expect(f.timing.pending).toBe(0);
+});
+
+test("a component with no health check counts as started only after surviving the start grace period", async () => {
+  const f = fixture(async () => true, { healthChecks: false });
+  let settled = false;
+  const result = f.lifecycle.up(f.record).then((outcome) => { settled = true; return outcome; });
+  await flush();
+  expect(settled).toBe(false);
+  expect(f.events).toEqual(["start:readiness:new"]);
+  f.timing.advance(500);
+  expect(await result).toEqual({ outcome: "started" });
+  expect(f.events).toEqual(["start:readiness:new", "new-post", "route", "target-post", "commit"]);
+  expect(f.timing.pending).toBe(0);
+});
+
+test("a component with no health check that exits during the start grace period is a failed start", async () => {
+  const f = fixture(async () => true, { healthChecks: false, crashes: { "readiness:new": 99 } });
+  let failure: unknown;
+  const result = f.lifecycle.up(f.record).catch((error) => { failure = error; });
+  await flush();
+  expect(failure).toBeUndefined();
+  f.timing.advance(100);
+  await result;
+  expect(failure).toMatchObject({
+    code: "PROCESS_EXITED",
+    details: { component: "new", exitCode: 99 },
+  });
+  expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
+  expect(f.timing.pending).toBe(0);
+});
 
 test("controlled deadline bounds uncooperative health and prevents late revival", async () => {
   let signal: AbortSignal | undefined;

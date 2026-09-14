@@ -378,7 +378,8 @@ test("port contention after selection fails startup and preserves an already run
   try {
     await lifecycle.up(prior);
     competitor = Bun.serve({ hostname: "127.0.0.1", port: ports.web!, fetch: () => new Response("competitor", { status: 503 }) });
-    await expect(lifecycle.up(record)).rejects.toMatchObject({ code: "HEALTH_FAILED", hint: expect.any(String) });
+    // The competitor answers on the port, but rig's own process died on EADDRINUSE: fail fast with its exit code.
+    await expect(lifecycle.up(record)).rejects.toMatchObject({ code: "PROCESS_EXITED", hint: expect.any(String), details: { component: "web", exitCode: 1 } });
     expect(rollback).toBe(true);
     expect(await supervisor.observe("t1:api")).toMatchObject({ state: "running" });
     expect(await supervisor.observe("t1:web")).toMatchObject({ state: "stopped" });

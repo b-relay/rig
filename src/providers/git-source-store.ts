@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { RigError } from "../domain/errors";
 import { isGitCommit } from "../domain/git";
 import type { CommandRunner } from "./contracts";
-import { runCommand } from "./command-runner";
+/** Repository and destination are absolute paths; the store never resolves against a working directory. */
 export interface SourceRequest {
   readonly project: string;
   readonly repository: string;
@@ -16,12 +16,12 @@ export interface SourceStore {
     request: SourceRequest,
   ): Promise<{ workspacePath: string; commit: string }>;
 }
-/** Rig owns all Git objects and worktree administration; developer repositories are inputs only. */
+/** Rig owns all Git objects and worktree administration; developer repositories are inputs only. Git runs through `run`. */
 export function createGitSourceStore(options: {
   readonly root: string;
-  readonly run?: CommandRunner;
+  readonly run: CommandRunner;
 }): SourceStore {
-  const run = options.run ?? runCommand;
+  const { run } = options;
   const pending = new Map<string, Promise<unknown>>();
   async function git(args: readonly string[], cwd?: string): Promise<string> {
     const result = await run({ command: ["git", ...args], cwd });
@@ -37,6 +37,17 @@ export function createGitSourceStore(options: {
   async function prepare(
     request: SourceRequest,
   ): Promise<{ workspacePath: string; commit: string }> {
+    for (const [name, value] of [
+      ["repository", request.repository],
+      ["destination", request.destination],
+    ] as const)
+      if (!isAbsolute(value))
+        throw new RigError(
+          "SOURCE_PATH",
+          `The deployment source ${name} must be an absolute path.`,
+          "Pass an absolute path; rigd does not resolve paths against its working directory.",
+          { [name]: value },
+        );
     if (!request.ref || request.ref.startsWith("-"))
       throw new RigError(
         "GIT_REF",
@@ -67,7 +78,7 @@ export function createGitSourceStore(options: {
           "--no-hardlinks",
           "--dissociate",
           "--",
-          resolve(request.repository),
+          request.repository,
           temporary,
         ]);
         await rename(temporary, mirror);
@@ -82,7 +93,7 @@ export function createGitSourceStore(options: {
       "fetch",
       "--no-tags",
       "--",
-      resolve(request.repository),
+      request.repository,
       commit,
     ]);
     await mkdir(dirname(request.destination), { recursive: true });
@@ -100,7 +111,7 @@ export function createGitSourceStore(options: {
       "add",
       "--detach",
       "--",
-      resolve(request.destination),
+      request.destination,
       commit,
     ]);
     return { workspacePath: request.destination, commit };

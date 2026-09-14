@@ -95,7 +95,7 @@ export async function composeDaemon(
     store,
     documents: createProjectDocuments(root, runCommand),
     sources: createDeploymentSources(
-      createGitSourceStore({ root: join(root, "sources") }),
+      createGitSourceStore({ root: join(root, "sources"), run: runCommand }),
       runCommand,
     ),
     lifecycle: createTargetLifecycle(effects),

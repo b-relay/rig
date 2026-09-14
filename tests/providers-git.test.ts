@@ -128,3 +128,23 @@ test("a borrowed source clone does not leave deployment Git objects dependent on
     ).exitCode,
   ).toBe(0);
 });
+test("a relative repository or destination is rejected as SOURCE_PATH before any Git command runs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-git-relative-"));
+  roots.push(root);
+  const commands: string[][] = [];
+  const store = createGitSourceStore({
+    root: join(root, "sources"),
+    run: async ({ command }) => {
+      commands.push([...command]);
+      return { exitCode: 0, stdout: "a".repeat(40), stderr: "" };
+    },
+  });
+  for (const request of [
+    { repository: "repo", destination: join(root, "deployment") },
+    { repository: root, destination: "deployment" },
+  ])
+    await expect(
+      store.prepare({ project: "demo", ref: "main", ...request }),
+    ).rejects.toMatchObject({ code: "SOURCE_PATH", hint: expect.any(String) });
+  expect(commands).toEqual([]);
+});

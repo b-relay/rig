@@ -11,6 +11,7 @@ import {
   createAdoptionGuard,
 } from "../src/migration";
 import { createGitSourceStore } from "../src/providers/git-source-store";
+import { runCommand } from "../src/providers/command-runner";
 import {
   adoptInstalledArtifact,
   artifactRevision,
@@ -44,7 +45,7 @@ test("legacy migration, explicit ownership and real daemon preserve recorded sou
     );
     await f.git(["init", "-b", "main"]);
     const commit = await f.commit();
-    await createGitSourceStore({ root: join(f.root, "sources") }).prepare({
+    await createGitSourceStore({ root: join(f.root, "sources"), run: runCommand }).prepare({
       project: "demo",
       repository: f.repo,
       ref: commit,

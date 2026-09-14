@@ -104,7 +104,7 @@ rigd: main(args) [O+T] src/rigd.ts:10
       install(request) [H given run, bunExecutable] :36   (FIXED #229: no Bun.which)
       observe(path), shellQuote, isSourceEntrypoint [H]
     createCaddyRouter(options) [D] src/providers/caddy-router.ts:23   (default run); all methods [H given run]
-    createGitSourceStore({root}) [D+T] src/providers/git-source-store.ts:20   (default run)
+    createGitSourceStore({root, run}) [H] src/providers/git-source-store.ts:20   (FIXED #231: run required; prepare rejects relative paths as SOURCE_PATH)
       prepare(request) [D] :37   (resolve() against process.cwd :70,:85,:103)
       git(args), exists [H]
     createDeploymentSources(store, run) [T] src/adapters/deployment-sources.ts:6   ← store.prepare
@@ -157,8 +157,8 @@ what would clear it.
 | 11 | ~~installer `install` `artifact-installer.ts:66` `Bun.which("bun")` when `bunExecutable` absent~~ FIXED (#229): `bunExecutable` is required; `composeDaemon` passes `process.execPath`. | (cleared) | done. |
 | 12 | ~~`createArtifactInstaller` `artifact-installer.ts:35` default `run`~~ FIXED (#229): `run` is required; `composeDaemon` passes `runCommand`. | (cleared) | done. |
 | 13 | `createCaddyRouter` `caddy-router.ts:31` default `run`; `composeDaemon:65-79` passes none | → `composeDaemon` → `rigd main` | yes; every method is honest given `run`. |
-| 14 | store `prepare` `git-source-store.ts:70,:85,:103` `resolve()` against `process.cwd()` | → `createGitSourceStore` `[D+T]` → `createDeploymentSources` `[T]` → `composeDaemon` → `rigd main` | `prepare`: yes with absolute-path validation or a `cwd` input. `createDeploymentSources`: yes if 14 and 15 clear (it declares both capabilities). |
-| 15 | `createGitSourceStore` `git-source-store.ts:24` default `run`; `composeDaemon:96` passes only root | → `createDeploymentSources` `[T]` → owners | own defect clears by requiring; `[T]` until 14 clears. |
+| 14 | ~~store `prepare` `git-source-store.ts:70,:85,:103` `resolve()` against `process.cwd()`~~ FIXED (#231): relative `repository`/`destination` are rejected as `SOURCE_PATH` before any Git call; no `resolve()`. | (cleared; `createDeploymentSources` is `[H]`) | done. |
+| 15 | ~~`createGitSourceStore` `git-source-store.ts:24` default `run`; `composeDaemon:96` passes only root~~ FIXED (#231): `run` is required; `composeDaemon` passes `runCommand`. | (cleared) | done. |
 | 16 | `createProjectDiscovery` `git/project.ts:33` reads `process.env` in the factory | → `createProjectDocuments` `[O+T]` → `composeDaemon` → `rigd main`; → `git-remote-rig main` `[O+T]` | yes, accept `env` (`composeDaemon` already builds a filtered environment at `:54-58`). |
 | 17 | `inspectInitialization` `adapters/project-documents.ts:101` hidden `readProjectConfig` outside the `discovery` provider | → `initializationInfo`/`identifyInitialization`/`initialize` → `createProjectDocuments` `[O+T]` → `composeDaemon` → `rigd main` | yes, add `readConfig` to `ProjectDiscovery` or pass the document. |
 | 18 | `projectStatus` `runtime/project-status.ts:51` observation deadline chosen by omission | → `createRuntime.status` `[T]` → `createRuntime` `[D+T]` → `composeDaemon` → `rigd main` | yes once `RuntimeDependencies` carries `deadline`/`budgetMs` and `:51` passes them. `status`: yes if 18 and 22 clear. |
@@ -351,7 +351,7 @@ owner carries only its own owner-level defects.
 | [D+T] createLaunchdSupervisor defaults run/inspect/now (row 10) | #228 |
 | ~~[D] installer install Bun.which("bun") / [D+T] createArtifactInstaller default run (rows 11, 12)~~ fixed | #229 |
 | [D] createCaddyRouter default run (row 13) | #230 |
-| [D] store prepare resolve() against cwd / [D+T] createGitSourceStore default run (rows 14, 15) | #231 |
+| ~~[D] store prepare resolve() against cwd / [D+T] createGitSourceStore default run (rows 14, 15)~~ fixed | #231 |
 | [D] createProjectDiscovery process.env (row 16) | #232 |
 | [D] inspectInitialization hidden readProjectConfig (row 17) | #233 |
 | [D] observation deadline by omission: projectStatus, doctor, updateRegistration, createRuntime list/prepare-uninstall (rows 18-21) | #234 |
@@ -853,7 +853,7 @@ createRuntime(deps: RuntimeDependencies) [O] src/runtime/application.ts:49
         finding, not dishonesty. Re-reads inventory at :105 (second snapshot under the queue).
       targetName(command) [H] targets.ts:13
       deps.documents.host() [B] :69
-      deps.sources.currentBranch(repoPath) [B] :76 → createDeploymentSources → createGitSourceStore [O] (default `run ?? runCommand` git-source-store.ts:24)
+      deps.sources.currentBranch(repoPath) [B] :76 → createDeploymentSources → createGitSourceStore [H] (FIXED #231: `run` required, passed at composition)
       deps.sources.prepare({...}) [B] :86
       deps.store.read() [B] :105
       recordedPorts(existing.plan.components) [H] src/runtime/ports.ts:4   (:146)
@@ -1212,14 +1212,11 @@ composeDaemon(root, captureCommand) [O fat] src/daemon/composition.ts:31   [B tr
         validate :102-111 ROUTE_VALIDATE :113, `.rig-backup` :119, reload :122-128, rollback :130-134, ROUTE_RELOAD :135)
     serialized(work) [H] :152 ; checkpoint(key) [H] :160 ; restore(saved, expected) [H] :168
     hostnamePresent [H] :177 ; routeMarkers [H] :192 ; ownedBlock [H] :198 (ROUTE_CORRUPT :203)
-  createGitSourceStore({ root }) [D+T] src/providers/git-source-store.ts:20   t: providers-git.test.ts:30-32,:65-67,:110-112 (injects run)
-    ↳ cause: `run ?? runCommand` :24 defaulted; composition.ts:96 passes only root
-    ↳ fix: require run → still [T] via prepare
-    git(args, cwd?) [H given run] :26   (GIT_FAILED :29-34, raw stderr in details :33)
-    prepare(request) [D] :37   (queued per project :108-120)
-      ↳ cause: `resolve(request.repository)` :70,:85 and `resolve(request.destination)` :103 —
-        resolution against `process.cwd()` when a caller passes a relative path; cwd is not a parameter
-      ↳ fix: validate `isAbsolute(...)` at the boundary (GIT_REF-style error) or accept `cwd` → [H]
+  createGitSourceStore({ root, run }) [H] src/providers/git-source-store.ts:20   t: providers-git.test.ts (injects run; SOURCE_PATH test)
+    ↳ FIXED #231: `run` is required; composition.ts passes runCommand
+    git(args, cwd?) [H given run] :26   (GIT_FAILED, raw stderr in details)
+    prepare(request) [H given run] :37   (queued per project)
+      ↳ FIXED #231: relative `repository`/`destination` rejected as SOURCE_PATH before any Git call; `resolve()` removed
       exists(path) [H] :122 ; mkdir/rename/rm under options.root :60-88 — declared
   runCommand(request) [O] src/providers/command-runner.ts:5   (passed explicitly at composition.ts:63)
 
@@ -1249,7 +1246,7 @@ Propagation, subtree A (leaf → owner):
 - launchd `stop [D] :184` → `createLaunchdSupervisor [D+T]` → composeDaemon [O].
 - ~~`install [D] :66` → `createArtifactInstaller [D+T]` → composeDaemon [O] (fails to override `run`, `bunExecutable`).~~ FIXED #229.
 - `createCaddyRouter [D] :31` → composeDaemon [O] (fails to override `run`, `executable`).
-- store `prepare [D] :70,:85,:103` → `createGitSourceStore [D+T]` → `createDeploymentSources [T]` (tree B; it forwards `store.prepare` :22) → composeDaemon [O] (fails to override `run`).
+- ~~store `prepare [D] :70,:85,:103` → `createGitSourceStore [D+T]` → `createDeploymentSources [T]` (tree B; it forwards `store.prepare` :22) → composeDaemon [O] (fails to override `run`).~~ FIXED #231.
 - Same child-supervisor chain also terminates at `runCapturedProcess [O]` (:23) — which additionally fails to override everything.
 
 ##### B. git-remote-rig and the git/adapters boundary
@@ -1299,8 +1296,8 @@ createProjectDocuments(root, run) [O] src/adapters/project-documents.ts:22   [B 
       replaceUrl(repoPath, expected, next, push, run) [H] remotes.ts:137   (positional boolean `push` — style, not honesty)
     editProjectConfig(input) [O fs] documents.ts:286   (:74-78)
 
-createDeploymentSources(store, run) [T] src/adapters/deployment-sources.ts:6   t: effect-preparation.test.ts (fake store), providers-git.test.ts (store)
-  ↳ would be honest if: store.prepare — i.e. createGitSourceStore [D+T] as composed (composition.ts:96, no run)
+createDeploymentSources(store, run) [H] src/adapters/deployment-sources.ts:6   t: effect-preparation.test.ts (fake store), providers-git.test.ts (store)
+  ↳ FIXED #231: the composed store is honest (run passed, absolute paths validated)
     (the adapter itself declares both capabilities; with an honest store it is [H])
   git(repository, args) [H] :10   (GIT_SOURCE :13)
   preflight(input) → preflightDeployment(input, run) [H] src/git/preflight.ts:6   t: git-preflight.test.ts (fake run :7)
@@ -1592,7 +1589,7 @@ Subtrees C and D contribute no rows: every dishonest-looking behaviour there is 
    `writeFile(requestPath, …)` overwrites in place while the child supervisor uses tmp+rename (:299-309) and the wrapper reads `requestPath` on start (captured-process.ts:21). Scenario: a `bootout`→`bootstrap` race or a crash mid-write leaves a truncated request; the new wrapper fails `requestSchema.parse` and reports `failed` (BUG-5 path), and `waitForCaptureStart` surfaces PROCESS_START with the generic message.
 5. **BUG-5 captured-process.ts:68-73 — catch-all rewrites a `running` status as `failed`.**
    Scenario: the application started (`writeCaptureStatus({ state: "running" })` :43-46), then any later exception in the observation loop (e.g. `inspect(state.pid)` throwing PROCESS_INSPECT :51, or a transient EIO in `writeCaptureObservation`) drops to the catch, which overwrites the status file with `{ state: "failed", message: "The managed component could not start." }` and exits 1 — while the child may still be running detached under the wrapper's group. launchd then shows a failed job whose application keeps running with nobody supervising it.
-6. **BUG-6 git-source-store.ts:70,:85,:103 — relative `repository`/`destination` resolve against rigd's cwd.**
+6. **FIXED (#231).** **BUG-6 git-source-store.ts:70,:85,:103 — relative `repository`/`destination` resolve against rigd's cwd.**
    Scenario: a deploy request whose project `repoPath` is relative (nothing in `SourceStore`'s contract forbids it) is cloned from `<rigd cwd>/<path>`; under launchd the daemon cwd is `/`. The error would be GIT_FAILED with git's stderr, not a validation message.
 7. **BUG-7 config/documents.ts:166,:240 vs :212,:220-222 — inconsistent path normalisation.**
    `readProjectConfig`/`readProjectConfigSource` call `locateConfig(resolve(repoPath))` but `initializeProjectConfig` calls `locateConfig(repoPath)` and `join(repoPath, "rig.yaml")`. Scenario: relative `repoPath` from a caller whose cwd differs from rigd's — initialisation checks/writes one directory and the immediate re-read at :222 resolves another; the write succeeds (`wx`) and the re-read throws `missing_config`, leaving a stray `rig.yaml`.

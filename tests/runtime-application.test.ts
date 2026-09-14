@@ -133,7 +133,7 @@ function fixture() {
         return { state: "stopped" };
       },
       async health() {
-        return false;
+        return { ready: false, reason: "probe failed" };
       },
       async artifact() {
         return "missing";
@@ -2947,7 +2947,7 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     },
     async hook() {},
     async health() {
-      return true;
+      return { ready: true };
     },
     async install() {
       return { outcome: "unchanged" };

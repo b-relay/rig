@@ -118,7 +118,7 @@ testability and honesty refactors.
 92. ~~#167~~ (fixed) `rig activity` hides the message and Operation id.
 93. ~~#149~~ (fixed) User-correctable failures rendered as unexpected; raw Zod text; no CLI pre-validation.
 94. ~~#164~~ (fixed) Config validation gaps: "Invalid input" for common mistakes, no field path.
-95. #176 Health/readiness minor gaps: 3xx unhealthy with no reason, evidence discarded, readyTimeout overflow.
+95. ~~#176~~ (fixed) Health/readiness minor gaps: 3xx unhealthy with no reason, evidence discarded, readyTimeout overflow.
 96. #115 Validate inventory, Logs and Activity replies before rendering empty results.
 97. #128 First Ctrl-C after submit silently consumed; second hard-kills with no diagnostic.
 98. #129 Ctrl-C at an interactive prompt exits 1 with an error; elsewhere exits 0 silently.

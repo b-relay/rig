@@ -136,7 +136,13 @@ export function renderLogs(value: unknown, heading: boolean): string {
       ? timestamp.slice(11, 19)
       : timestamp;
     const marker =
-      entry.stream === "stderr" ? "!" : entry.stream === "stdout" ? ">" : "?";
+      entry.stream === "stderr"
+        ? "!"
+        : entry.stream === "stdout"
+          ? ">"
+          : entry.stream === "health"
+            ? "~"
+            : "?";
     lines.push(
       `${time}  ${word(entry.component)}  ${marker} ${word(entry.line)}`,
     );

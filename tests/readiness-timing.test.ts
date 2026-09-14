@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { createTargetLifecycle, type TargetEffects } from "../src/runtime/lifecycle";
 import type { TargetRecord } from "../src/domain/runtime";
+import type { HealthCheck } from "../src/providers/contracts";
+const ready: HealthCheck = { ready: true };
+const notReady = (reason = "not yet"): HealthCheck => ({ ready: false, reason });
 
 function scheduleFixture() {
   let now = 0;
@@ -22,7 +25,7 @@ function scheduleFixture() {
 }
 async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
 /** crashes: keys whose process exits with the given code as soon as it is started. */
-function fixture(health: TargetEffects["health"], options: { healthChecks?: boolean; crashes?: Record<string, number> } = {}) {
+function fixture(health: TargetEffects["health"], options: { healthChecks?: boolean; crashes?: Record<string, number>; dependsOn?: Record<string, string[]> } = {}) {
   const root = process.env.RIG_ROOT!;
   const record: TargetRecord = {
     id: "readiness", projectId: "project", name: "local", kind: "local",
@@ -33,7 +36,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
       providers: { processSupervisor: "child" }, providerProfile: "default", preparedComponents: [],
       hooks: { postStart: "target-post" },
       components: ["prior", "new"].map(name => ({ name, kind: "managed", command: "serve", port: 4000, readyTimeout: 1,
-        env: {}, dependsOn: [], ...(options.healthChecks === false ? {} : { health: "http://127.0.0.1/health" }), hooks: { postStart: `${name}-post` } })),
+        env: {}, dependsOn: options.dependsOn?.[name] ?? [], ...(options.healthChecks === false ? {} : { health: "http://127.0.0.1/health" }), hooks: { postStart: `${name}-post` } })),
     },
   };
   const running = new Set(["readiness:prior"]);
@@ -67,7 +70,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
 
 test("a process that has exited is reported with its exit code before the first health poll instead of after readyTimeout", async () => {
   let polls = 0;
-  const f = fixture(async () => { polls++; return false; }, { crashes: { "readiness:new": 127 } });
+  const f = fixture(async () => { polls++; return notReady(); }, { crashes: { "readiness:new": 127 } });
   await expect(f.lifecycle.up(f.record)).rejects.toMatchObject({
     code: "PROCESS_EXITED",
     message: "new exited with code 127 before it became ready.",
@@ -83,7 +86,7 @@ test("a passing health check does not certify a component whose own process has 
     // A foreign listener answers on the port while rig's process dies.
     f.running.delete("readiness:new");
     f.exitCodes.set("readiness:new", 1);
-    return true;
+    return ready;
   });
   await expect(f.lifecycle.up(f.record)).rejects.toMatchObject({
     code: "PROCESS_EXITED",
@@ -94,7 +97,7 @@ test("a passing health check does not certify a component whose own process has 
 });
 
 test("a component with no health check counts as started only after surviving the start grace period", async () => {
-  const f = fixture(async () => true, { healthChecks: false });
+  const f = fixture(async () => ready, { healthChecks: false });
   let settled = false;
   const result = f.lifecycle.up(f.record).then((outcome) => { settled = true; return outcome; });
   await flush();
@@ -107,7 +110,7 @@ test("a component with no health check counts as started only after surviving th
 });
 
 test("a component with no health check that exits during the start grace period is a failed start", async () => {
-  const f = fixture(async () => true, { healthChecks: false, crashes: { "readiness:new": 99 } });
+  const f = fixture(async () => ready, { healthChecks: false, crashes: { "readiness:new": 99 } });
   let failure: unknown;
   const result = f.lifecycle.up(f.record).catch((error) => { failure = error; });
   await flush();
@@ -124,7 +127,7 @@ test("a component with no health check that exits during the start grace period 
 
 test("controlled deadline bounds uncooperative health and prevents late revival", async () => {
   let signal: AbortSignal | undefined;
-  let finish!: (healthy: boolean) => void;
+  let finish!: (healthy: HealthCheck) => void;
   const f = fixture((_component, _target, abort) => { signal = abort; return new Promise(resolve => { finish = resolve; }); });
   let failure: unknown;
   const result = f.lifecycle.up(f.record).catch(error => { failure = error; });
@@ -137,14 +140,14 @@ test("controlled deadline bounds uncooperative health and prevents late revival"
   expect(signal?.aborted).toBe(true);
   expect([...f.running]).toEqual(["readiness:prior"]);
   expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
-  finish(true);
+  finish(ready);
   await flush();
   expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
   expect(f.timing.pending).toBe(0);
 });
 
 test("immediate health permits post-start and route publication and cancels the deadline", async () => {
-  const f = fixture(async () => true);
+  const f = fixture(async () => ready);
   expect(await f.lifecycle.up(f.record)).toEqual({ outcome: "started" });
   expect(f.events).toEqual(["start:readiness:new", "new-post", "route", "target-post", "commit"]);
   expect(f.timing.pending).toBe(0);
@@ -154,7 +157,7 @@ test("immediate health permits post-start and route publication and cancels the 
 
 test("unhealthy readiness retries after 100ms, then proceeds promptly on success", async () => {
   let calls = 0;
-  const f = fixture(async () => ++calls === 2);
+  const f = fixture(async () => (++calls === 2 ? ready : notReady()));
   const result = f.lifecycle.up(f.record);
   await flush();
   f.timing.advance(99);
@@ -169,7 +172,7 @@ test("unhealthy readiness retries after 100ms, then proceeds promptly on success
 
 test.each([0.05, 0.1, 0.25])("unhealthy readiness expires at %ss even during a retry delay", async timeout => {
   let calls = 0;
-  const f = fixture(async () => { calls++; return false; });
+  const f = fixture(async () => { calls++; return notReady(); });
   const component = f.record.plan.components[1]!;
   if (component.kind !== "managed") throw new Error("Expected managed fixture");
   component.readyTimeout = timeout;
@@ -209,19 +212,19 @@ test("a supplied checkpoint remains owned by the deploy caller after expiry", as
 });
 
 test("foreign checkpoint identity fails before any Target effects or scheduling", async () => {
-  const f = fixture(async () => true);
+  const f = fixture(async () => ready);
   await expect(f.lifecycle.up(f.record, { ...f.checkpoint, targetId: "other" })).rejects.toMatchObject({ code: "EFFECTS_SCOPE" });
   expect(f.events).toEqual([]);
   expect(f.timing.pending).toBe(0);
 });
 
 test("deadline wins health success delivered after expiry in the same turn", async () => {
-  let finish!: (healthy: boolean) => void;
+  let finish!: (healthy: HealthCheck) => void;
   const f = fixture(() => new Promise(resolve => { finish = resolve; }));
   const result = f.lifecycle.up(f.record).catch(error => error);
   await flush();
   f.timing.advance(1000);
-  finish(true);
+  finish(ready);
   expect(await result).toMatchObject({ code: "HEALTH_FAILED" });
   expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
 });
@@ -237,4 +240,35 @@ test("provider rejection queued before deadline retains its failure meaning", as
   expect(await result).toBe(failure);
   expect(f.timing.pending).toBe(0);
   expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
+});
+
+test("HEALTH_FAILED names the last health observation", async () => {
+  const f = fixture(async () => ({ ready: false, reason: "HTTP 302 to /login" }));
+  let failure: unknown;
+  const result = f.lifecycle.up(f.record).catch(error => { failure = error; });
+  await flush();
+  f.timing.advance(1000);
+  await flush();
+  await result;
+  expect(failure).toMatchObject({
+    code: "HEALTH_FAILED",
+    message: "new did not become ready (last check: HTTP 302 to /login).",
+    details: { component: "new", lastCheck: "HTTP 302 to /login" },
+  });
+});
+
+test("an already running dependency must pass its health check before a dependent starts", async () => {
+  const f = fixture(async component => component.name === "prior" ? { ready: false, reason: "HTTP 500" } : { ready: true }, { dependsOn: { new: ["prior"] } });
+  let failure: unknown;
+  const result = f.lifecycle.up(f.record).catch(error => { failure = error; });
+  await flush();
+  f.timing.advance(1000);
+  await flush();
+  await result;
+  expect(failure).toMatchObject({ code: "HEALTH_FAILED", details: { component: "prior", lastCheck: "HTTP 500" } });
+  expect(f.events).not.toContain("start:readiness:new");
+  expect([...f.running]).toEqual(["readiness:prior"]);
+  const healthy = fixture(async () => ({ ready: true }), { dependsOn: { new: ["prior"] } });
+  expect(await healthy.lifecycle.up(healthy.record)).toEqual({ outcome: "started" });
+  expect(healthy.events).toEqual(["start:readiness:new", "new-post", "route", "target-post", "commit"]);
 });

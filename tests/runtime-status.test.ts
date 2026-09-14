@@ -29,7 +29,7 @@ test("fresh status distinguishes failed health from running without health and r
         return { state: "running", pid: 22 };
       },
       async health() {
-        return false;
+        return { ready: false, reason: "probe failed" };
       },
       async artifact() {
         return "installed";
@@ -61,7 +61,7 @@ test("one deadline bounds every concurrent probe and timeouts are unknown", asyn
         return await new Promise(() => {});
       },
       async health() {
-        return true;
+        return { ready: true as const };
       },
       async artifact() {
         return "installed";
@@ -90,7 +90,7 @@ test("a crashed desired-running process is failed with exit evidence while an in
       return { state: "stopped" as const, exitCode: 1 };
     },
     async health() {
-      return false;
+      return { ready: false, reason: "probe failed" };
     },
     async artifact() {
       return "installed" as const;
@@ -136,7 +136,7 @@ test("managed capabilities own mixed Target health and installed observations re
       return { state: "running" as const, pid: 22 };
     },
     async health() {
-      return true;
+      return { ready: true as const };
     },
     async artifact() {
       return "unknown" as const;
@@ -184,7 +184,7 @@ test("timed out observations retain the configured port and route without claimi
         return await new Promise(() => {});
       },
       async health() {
-        return false;
+        return { ready: false, reason: "probe failed" };
       },
       async artifact() {
         return "unknown";
@@ -212,7 +212,7 @@ test("immediate observation rejection is unknown with a safe failure reason", as
       throw new Error("provider unavailable: TOKEN=private-credential");
     },
     async health() {
-      return true;
+      return { ready: true as const };
     },
     async artifact() {
       return "installed";
@@ -251,7 +251,7 @@ test("controlled common expiry settles every Target and ignores late provider re
         return work;
       },
       async health() {
-        return true;
+        return { ready: true as const };
       },
       async artifact() {
         return "installed";
@@ -292,7 +292,7 @@ for (const outcome of ["completed", "rejected", "empty"] as const) {
           return { state: "stopped", exitCode: 2 };
         },
         async health() {
-          return true;
+          return { ready: true as const };
         },
         async artifact() {
           return "installed";
@@ -334,7 +334,7 @@ test("expiry before the queued completion handler wins exactly once", async () =
         return work;
       },
       async health() {
-        return true;
+        return { ready: true as const };
       },
       async artifact() {
         return "installed";
@@ -407,7 +407,7 @@ test("a running component keeps the reason its provider attached, and the render
         };
       },
       async health() {
-        return true;
+        return { ready: true as const };
       },
       async artifact() {
         return "installed";

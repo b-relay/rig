@@ -4,7 +4,11 @@ import type {
   ManagedComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import type { ProcessObservation, Supervisor } from "../providers/contracts";
+import type {
+  HealthCheck,
+  ProcessObservation,
+  Supervisor,
+} from "../providers/contracts";
 import { RigError, failureCauses } from "../domain/errors";
 
 export interface TargetEffectCheckpoint {
@@ -49,12 +53,12 @@ export interface TargetEffects {
     component: ManagedComponent | undefined,
     name: keyof Hooks,
   ): Promise<void>;
-  /** May block or ignore cancellation. False retries after 100ms; rejection fails startup. */
+  /** May block or ignore cancellation. A not-ready result retries after 100ms and its reason is kept for the failure; rejection fails startup. */
   health(
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
-  ): Promise<boolean>;
+  ): Promise<HealthCheck>;
   install(
     component: InstalledComponent,
     target: TargetRecord,
@@ -227,7 +231,14 @@ export function createTargetLifecycle(
             continue;
           }
           const key = `${target.id}:${component.name}`;
-          if (observations.get(key)!.state === "running") continue;
+          if (observations.get(key)!.state === "running") {
+            // A dependency that is already running must still be ready before a dependent starts against it.
+            if (component.health && hasDependents(target, component.name))
+              await awaitReady(component, target, effects, timing, {
+                observe: () => supervisor.observe(key),
+              });
+            continue;
+          }
           if (component.hooks?.preStart)
             await effects.hook(
               component.hooks.preStart,
@@ -414,18 +425,20 @@ async function awaitReady(
       controller.abort();
     });
   });
+  let lastCheck: string | undefined;
   try {
     while (!controller.signal.aborted) {
       await assertAlive(component, process);
-      const healthy = await Promise.race([
+      const check = await Promise.race([
         effects.health(component, target, controller.signal),
         expired,
       ]);
-      if (controller.signal.aborted) break;
-      if (healthy) {
+      if (controller.signal.aborted || check === false) break;
+      if (check.ready) {
         await assertAlive(component, process);
         return;
       }
+      lastCheck = check.reason;
       await Promise.race([
         new Promise<void>((resolve) => {
           cancelRetry = timing.schedule(OBSERVATION_INTERVAL_MS, resolve);
@@ -439,9 +452,21 @@ async function awaitReady(
   }
   throw new RigError(
     "HEALTH_FAILED",
-    `${component.name} did not become ready.`,
+    lastCheck === undefined
+      ? `${component.name} did not become ready.`
+      : `${component.name} did not become ready (last check: ${lastCheck}).`,
     "Inspect Target logs and the configured health check.",
-    { component: component.name },
+    {
+      component: component.name,
+      ...(lastCheck === undefined ? {} : { lastCheck }),
+    },
+  );
+}
+/** Whether another Component in the plan lists `name` in dependsOn. */
+function hasDependents(target: TargetRecord, name: string): boolean {
+  return target.plan.components.some(
+    (component) =>
+      component.kind === "managed" && component.dependsOn.includes(name),
   );
 }
 /** Without a health check, a component counts as started only once it has outlived the start grace period. */

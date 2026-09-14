@@ -17,6 +17,9 @@ export interface ProcessObservation {
   readonly restartAt?: number;
   readonly reason?: string;
 }
+/** One readiness probe. A failed probe carries what was observed: an HTTP status, a connection error, or a command's exit code and last output line. */
+export type HealthCheck =
+  { readonly ready: true } | { readonly ready: false; readonly reason: string };
 export interface Supervisor {
   ensureRunning(
     request: ManagedProcess,
@@ -46,6 +49,7 @@ export type CommandRunner = (request: CommandRequest) => Promise<CommandResult>;
 export interface TargetLogEntry {
   readonly timestamp: string;
   readonly component: string;
-  readonly stream: "stdout" | "stderr" | "unknown";
+  /** health lines are readiness probe evidence written when the observation changes. */
+  readonly stream: "stdout" | "stderr" | "health" | "unknown";
   readonly line: string;
 }

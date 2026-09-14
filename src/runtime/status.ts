@@ -11,7 +11,7 @@ import type {
   PersistentComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import type { ProcessObservation } from "../providers/contracts";
+import type { HealthCheck, ProcessObservation } from "../providers/contracts";
 export interface ObservationEffects {
   process(
     target: TargetRecord,
@@ -22,7 +22,7 @@ export interface ObservationEffects {
     target: TargetRecord,
     component: ManagedComponent,
     signal: AbortSignal,
-  ): Promise<boolean>;
+  ): Promise<HealthCheck>;
   artifact(
     target: TargetRecord,
     component: InstalledComponent,
@@ -100,7 +100,7 @@ export async function observeTargets(
             port: component.port,
             pid: observed.pid,
             state: component.health
-              ? (await effects.health(target, component, signal))
+              ? (await effects.health(target, component, signal)).ready
                 ? "healthy"
                 : "unhealthy"
               : "running",

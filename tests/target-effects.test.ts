@@ -451,7 +451,7 @@ test("a health URL with an uppercase scheme is probed over HTTP rather than run 
         component,
         new AbortController().signal,
       ),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ ready: true });
   } finally {
     server.stop(true);
   }
@@ -747,4 +747,80 @@ test("a missing envFile fails as ENV_FILE_MISSING naming the path, before any ho
     details: { path: join(root, ".env") },
   });
   expect(await Bun.file(join(root, "ran")).exists()).toBe(false);
+});
+
+test("an HTTP health probe treats a redirect as ready, reports a failed status, a refused connection, or a command's exit, and records each change in the Target log", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-evidence-"));
+  roots.push(root);
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) =>
+      new URL(request.url).pathname === "/login"
+        ? new Response(null, { status: 302, headers: { location: "/signin" } })
+        : new Response("down", { status: 503 }),
+  });
+  const closed = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(""),
+  });
+  const closedPort = closed.port!;
+  closed.stop(true);
+  try {
+    const adapter = effects(root);
+    const record = target(root);
+    const probe = (health: string) =>
+      adapter.observations.health(
+        record,
+        {
+          name: "web",
+          kind: "managed" as const,
+          command: "serve",
+          port: server.port!,
+          readyTimeout: 1,
+          env: {},
+          dependsOn: [],
+          health,
+        },
+        new AbortController().signal,
+      );
+    expect(await probe(`http://127.0.0.1:${server.port}/login`)).toEqual({
+      ready: true,
+    });
+    expect(await probe(`http://127.0.0.1:${server.port}/down`)).toEqual({
+      ready: false,
+      reason: "HTTP 503",
+    });
+    expect(await probe(`http://127.0.0.1:${server.port}/down`)).toEqual({
+      ready: false,
+      reason: "HTTP 503",
+    });
+    expect(await probe(`http://127.0.0.1:${closedPort}/`)).toMatchObject({
+      ready: false,
+      reason: expect.stringMatching(/refused|connect/i),
+    });
+    expect(await probe("echo probing >&2; exit 3")).toEqual({
+      ready: false,
+      reason: "exit code 3: probing",
+    });
+    expect(await probe("exit 0")).toEqual({ ready: true });
+    const entries = (
+      await readFile(join(record.logRoot, "target.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      entries.map((entry) => [entry.component, entry.stream, entry.line]),
+    ).toEqual([
+      ["web", "health", "ready"],
+      ["web", "health", "HTTP 503"],
+      ["web", "health", expect.stringMatching(/refused|connect/i)],
+      ["web", "health", "exit code 3: probing"],
+      ["web", "health", "ready"],
+    ]);
+  } finally {
+    server.stop(true);
+  }
 });

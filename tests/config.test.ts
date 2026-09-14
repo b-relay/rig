@@ -1490,3 +1490,42 @@ test("config edits keep one .bak beside the file, holding the text before the la
     (await readdir(root)).filter((entry) => entry.includes("bak")),
   ).toEqual(["rig.yaml.bak"]);
 });
+
+test("timeouts are bounded to one day so they fit the timer they arm", async () => {
+  const { parseProjectConfig } = await import("../src/config/index.js");
+  let failure: unknown;
+  try {
+    parseProjectConfig({
+      name: "app",
+      hookTimeout: 2147484,
+      components: {
+        web: {
+          mode: "managed",
+          command: "serve",
+          port: 3000,
+          readyTimeout: 2147484,
+        },
+      },
+    });
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({
+    code: "invalid_config",
+    hint: "Fix hookTimeout: must be at most 86400; components.web.readyTimeout: must be at most 86400.",
+  });
+  expect(
+    parseProjectConfig({
+      name: "app",
+      hookTimeout: 86400,
+      components: {
+        web: {
+          mode: "managed",
+          command: "serve",
+          port: 3000,
+          readyTimeout: 86400,
+        },
+      },
+    }).components.web,
+  ).toMatchObject({ readyTimeout: 86400 });
+});

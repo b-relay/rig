@@ -10,7 +10,7 @@ const maximumReadBytes = 4 * 1024 * 1024;
 const currentEntry = z.object({
   timestamp: z.string(),
   component: z.string(),
-  stream: z.enum(["stdout", "stderr"]),
+  stream: z.enum(["stdout", "stderr", "health"]),
   line: z.string(),
 });
 const legacyEvent = z.object({

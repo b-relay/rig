@@ -44,7 +44,7 @@ export function stopHookFixture(active: string[] = []) {
       hooks.push(command);
       if (hookFailures.has(command)) throw new Error(`Hook failed: ${command}`);
     },
-    async health() { return true; },
+    async health() { return { ready: true }; },
     async install() { return { outcome: "unchanged" }; },
     async route() {},
     async removeRoute() {},

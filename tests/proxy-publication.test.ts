@@ -158,7 +158,7 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
       return { state: "running" as const, pid: 1 };
     },
     async health() {
-      return true;
+      return { ready: true as const };
     },
     async artifact() {
       return "installed" as const;

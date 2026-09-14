@@ -22,11 +22,28 @@ import type {
   Supervisor,
   CommandRunner,
   CommandResult,
+  HealthCheck,
+  TargetLogEntry,
 } from "../providers/contracts";
 import { isSourceEntrypoint } from "../providers/artifact-installer";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
 import type { TargetEffects } from "../runtime/lifecycle";
+/** The last non-empty output line, trimmed to fit one log line, or undefined. */
+function lastLine(output: string): string | undefined {
+  const lines = output.split("\n").filter((line) => line.trim() !== "");
+  return lines.length
+    ? lines[lines.length - 1]!.trim().slice(0, 160)
+    : undefined;
+}
+/** A probe transport failure named by its error code when it has one, else its message. */
+function failureReason(error: unknown): string {
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" && code ? code : error.message;
+  }
+  return String(error);
+}
 import type { ObservationEffects } from "../runtime/status";
 import { RigError } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
@@ -135,11 +152,29 @@ export function createTargetEffects(
     target: TargetRecord,
     componentName: string,
   ) => {
+    for (const stream of ["stdout", "stderr"] as const)
+      await recordLines(
+        target,
+        componentName,
+        stream,
+        result[stream]
+          .split("\n")
+          .filter(
+            (line, index, lines) => index < lines.length - 1 || line !== "",
+          ),
+      );
+  };
+  const recordLines = async (
+    target: TargetRecord,
+    componentName: string,
+    stream: TargetLogEntry["stream"],
+    lines: readonly string[],
+  ) => {
+    if (!lines.length) return;
     await mkdir(target.logRoot, { recursive: true, mode: 0o700 });
-    const entries = (["stdout", "stderr"] as const).flatMap((stream) =>
-      result[stream]
-        .split("\n")
-        .filter((line, index, lines) => index < lines.length - 1 || line !== "")
+    await appendFile(
+      join(target.logRoot, "target.jsonl"),
+      lines
         .map((line) =>
           JSON.stringify({
             timestamp: options.recordingTime(),
@@ -147,41 +182,61 @@ export function createTargetEffects(
             stream,
             line,
           }),
-        ),
+        )
+        .join("\n") + "\n",
+      { mode: 0o600 },
     );
-    if (entries.length)
-      await appendFile(
-        join(target.logRoot, "target.jsonl"),
-        entries.join("\n") + "\n",
-        { mode: 0o600 },
-      );
   };
+  /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. */
+  const lastHealth = new Map<string, string>();
   const health = async (
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
-  ): Promise<boolean> => {
-    if (!component.health) return false;
+  ): Promise<HealthCheck> => {
+    if (!component.health) return { ready: false, reason: "no health check" };
+    const check = await probe(component, target, signal);
+    const evidence = check.ready ? "ready" : check.reason;
+    const key = `${target.id}:${component.name}`;
+    if (lastHealth.get(key) !== evidence) {
+      lastHealth.set(key, evidence);
+      await recordLines(target, component.name, "health", [evidence]);
+    }
+    return check;
+  };
+  /** An HTTP answer below 400, a redirect included, means the process is serving; a shell probe passes on exit 0. */
+  const probe = async (
+    component: ManagedComponent,
+    target: TargetRecord,
+    signal: AbortSignal,
+  ): Promise<HealthCheck> => {
     try {
-      if (isHealthUrl(component.health)) {
-        const response = await fetch(component.health, {
+      if (isHealthUrl(component.health!)) {
+        const response = await fetch(component.health!, {
           signal,
-          redirect: "error",
+          redirect: "manual",
         });
         await response.body?.cancel();
-        return response.ok;
+        return response.status < 400
+          ? { ready: true }
+          : { ready: false, reason: `HTTP ${response.status}` };
       }
       const result = await options.run({
-        command: ["/bin/sh", "-c", component.health],
+        command: ["/bin/sh", "-c", component.health!],
         cwd: target.plan.workspacePath,
         env: await environment(target, component),
         signal,
         timeoutMs: 2000,
       });
-      return result.exitCode === 0;
+      if (result.exitCode === 0) return { ready: true };
+      const detail = lastLine(result.stderr) ?? lastLine(result.stdout);
+      return {
+        ready: false,
+        reason: `${result.timedOut ? "timed out after 2s" : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
+      };
     } catch (error) {
       if (signal.aborted) throw error;
-      return false;
+      return { ready: false, reason: failureReason(error) };
     }
   };
   const installedComponents = (target: TargetRecord) =>

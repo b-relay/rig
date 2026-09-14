@@ -50,7 +50,7 @@ test("launchd reports application backoff, recovery identity, and terminal failu
   ] } } as TargetRecord;
   const report = () => observeTargets([target], {
     process: (_target, _component, signal) => supervisor.observe(request.key, signal),
-    health: async () => true, artifact: async () => "installed", persistent: async () => true,
+    health: async () => ({ ready: true }), artifact: async () => "installed", persistent: async () => true,
   });
   const waitFor = async (predicate: (value: ProcessObservation) => boolean) => {
     const deadline = Date.now() + 10_000;

@@ -2,6 +2,8 @@ import { z } from "zod";
 import { mergeComponentOverride } from "./override.js";
 import { ConfigError } from "./errors.js";
 const text = z.string().min(1);
+/** A budget in seconds; one day is the most a timer can be asked to hold without overflowing. */
+const seconds = z.number().min(1).max(86400);
 const name = text
   .regex(
     /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/,
@@ -145,9 +147,7 @@ const common = {
     .describe(
       "Component lifecycle hooks; a lane override merges them per key.",
     ),
-  hookTimeout: z
-    .number()
-    .min(1)
+  hookTimeout: seconds
     .optional()
     .describe(
       "Budget in seconds for this Component's hooks; a hook past it is killed and its output so far is kept in the Target logs. Defaults to the Project hookTimeout, then 120.",
@@ -157,9 +157,7 @@ const runtime = {
   command: command.optional(),
   port: port.optional(),
   health: health.optional(),
-  readyTimeout: z
-    .number()
-    .min(1)
+  readyTimeout: seconds
     .optional()
     .describe("Startup readiness timeout in seconds."),
   dependsOn: z
@@ -188,9 +186,7 @@ const component = z.union([
     installName: componentName
       .optional()
       .describe("Installed executable name."),
-    buildTimeout: z
-      .number()
-      .min(1)
+    buildTimeout: seconds
       .optional()
       .describe(
         "Budget in seconds for build; a build past it is killed, its output so far is kept in the Target logs, and the previous installed artifact stays (default 600).",
@@ -229,9 +225,7 @@ const override = z.strictObject({
   installName: componentName
     .optional()
     .describe("Installed executable name override."),
-  buildTimeout: z
-    .number()
-    .min(1)
+  buildTimeout: seconds
     .optional()
     .describe("Build budget override in seconds."),
   path: text.optional().describe("SQLite path override."),
@@ -307,16 +301,12 @@ export const projectConfigSchema = z
         "Hostname template for every Target. Use ${subdomain} (local, live, or the Preview branch slug) so Targets do not share a route.",
       ),
     hooks: hooks.optional().describe("Project lifecycle hooks."),
-    hookTimeout: z
-      .number()
-      .min(1)
+    hookTimeout: seconds
       .optional()
       .describe(
         "Budget in seconds for Project hooks, and the default for Component hooks; a hook past it is killed and its output so far is kept in the Target logs (default 120).",
       ),
-    installTimeout: z
-      .number()
-      .min(1)
+    installTimeout: seconds
       .optional()
       .describe(
         "Budget in seconds for dependency installation on live and Preview Targets; an install past it is killed and its output so far is kept in the Target logs (default 600).",

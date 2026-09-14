@@ -409,7 +409,15 @@ between polls Rig asks its supervisor whether the process still exists: a
 process that exits fails the start at once as `PROCESS_EXITED`, naming the exit
 code, instead of waiting out the timeout. A health answer counts only while
 Rig's own process is running, so a foreign listener on the port cannot certify
-a dead component. A component without a health check must survive a short
+a dead component. An HTTP probe is ready on any answer below 400, a redirect
+included, since a process that redirects is serving; a status of 400 or more,
+a refused connection, or a shell check that exits non-zero is not ready. When
+`readyTimeout` expires, `HEALTH_FAILED` names the last observation, for
+example `web did not become ready (last check: HTTP 503).` or `(last check:
+exit code 3: probing)`, and the Target log records each change in that
+observation as a `health` line, so a probe that never answers, a 5xx, or a
+check command's last output line is visible in `rig logs` rather than
+discarded. A component without a health check must survive a short
 start grace period (half a second) before it counts as started; a command that
 exits earlier, such as a missing binary or a port already in use, fails `up`
 and rolls the start back.
@@ -482,8 +490,9 @@ ends on Ctrl-C, SIGTERM, or when whatever reads its output goes away (for
 example `rig logs live --follow | head`): the write that fails is dropped, the
 command exits 0, and rigd sees no further polls. A quiet follow notices the
 missing reader at its next line, not before.
-Output identifies component, timestamp, and stream with `>` for stdout and `!`
-for stderr; legacy records with missing evidence must be marked unknown.
+Output identifies component, timestamp, and stream with `>` for stdout, `!`
+for stderr, and `~` for health-check evidence; legacy records with missing
+evidence must be marked unknown.
 A record that cannot be parsed (for example one cut short by a crash and glued
 onto the next), or a run longer than the reader's 4 MiB window, is shown in
 place as an unknown-stream line "Rig skipped an unreadable log record (N
@@ -560,7 +569,7 @@ newer version's fields survive a temporary downgrade.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`hookTimeout`, `buildTimeout`,
-`installTimeout`, `readyTimeout`). Reads such
+`installTimeout`, `readyTimeout`, each at most 86400 seconds). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report
 `rigd did not answer the doctor read within 5 s; it may be busy`, which is
 distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
@@ -721,7 +730,9 @@ out leaves the previous installed artifact in place.
    process start, readiness, then the Component's `postStart`. Readiness means
    the `health` check passed, or, for a Component without `health`, that the
    process survived the start grace period. A Component that was already
-   running is skipped along with its hooks.
+   running is skipped along with its hooks, except that one another Component
+   lists in `dependsOn` must pass its `health` check first, so a dependent
+   never starts against a running but unhealthy dependency.
 3. Routing, then Project `postStart` (again only when something started).
 
 `rig down` runs Project `preStop`, then each active Component's `preStop`,

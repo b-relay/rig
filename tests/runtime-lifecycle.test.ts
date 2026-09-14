@@ -95,7 +95,7 @@ test("readiness expires even when a health provider ignores cancellation, then r
     async hook() {},
     health(_component, _target, signal) {
       healthSignal = signal;
-      return new Promise<boolean>(() => {});
+      return new Promise<never>(() => {});
     },
     async install() {
       return { outcome: "unchanged" };
@@ -154,7 +154,7 @@ test("up preserves running components and rollback stops only newly started comp
     },
     async hook() {},
     async health() {
-      return true;
+      return { ready: true };
     },
     async install() {
       return { outcome: "unchanged" };
@@ -198,7 +198,7 @@ test("down uses recorded plan and reports no-op only when every process was stop
     },
     async hook() {},
     async health() {
-      return true;
+      return { ready: true };
     },
     async install() {
       return { outcome: "unchanged" };
@@ -245,7 +245,7 @@ test("down attempts every process even when a hook or another process stop fails
       throw new Error("hook failed");
     },
     async health() {
-      return true;
+      return { ready: true };
     },
     async install() {
       return { outcome: "unchanged" };
@@ -372,7 +372,7 @@ test("port contention after selection fails startup and preserves an already run
     async pruneCheckpoints() { return []; },
     supervisor: () => supervisor, async prepare() {}, async environment(_target, component) { return component.env; },
     async hook() {}, async health(component) {
-      try { return (await fetch(component.health!)).ok; } catch { return false; }
+      try { return (await fetch(component.health!)).ok ? { ready: true } : { ready: false, reason: "not ok" }; } catch { return { ready: false, reason: "unreachable" }; }
     }, async install() { return { outcome: "unchanged" }; },
     async route() {}, async removeRoute() {},
   };
@@ -446,7 +446,7 @@ test("the Project preStart hook runs before installs and Component hooks, and on
       events.push(`${name}:${component?.name ?? "project"}:${command}`);
     },
     async health() {
-      return true;
+      return { ready: true };
     },
     async install(component) {
       events.push(`install:${component.name}`);

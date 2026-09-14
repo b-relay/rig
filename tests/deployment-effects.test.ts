@@ -154,7 +154,11 @@ test("failed candidate restores stopped previous binaries and route before resto
       { activation: "start" },
       f.deps,
     ),
-  ).rejects.toMatchObject({ code: "HOOK_FAILED" });
+  ).rejects.toMatchObject({
+    code: "HOOK_FAILED",
+    message: "Hook postStart for the Project exited with code 1.",
+    details: { hook: "postStart", exitCode: 1 },
+  });
   expect(f.state.targets[0]).toMatchObject({
     commit: "old",
     desired: "stopped",

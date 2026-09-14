@@ -687,3 +687,37 @@ test("a runtime-selected Convex site port is honoured for local and live instead
     ).toMatchObject({ port: 4568, sitePort: 5000 });
   }
 });
+
+test("hooks are rejected on Components without a process, in the base definition and in lane overrides", async () => {
+  const hooks = { preStart: "echo before" };
+  const config = (extra: Record<string, unknown>) => ({
+    name: "app",
+    components: {
+      tool: { mode: "installed", entrypoint: "run" },
+      db: { uses: "sqlite" },
+      web: { mode: "managed", command: "serve", hooks },
+    },
+    ...extra,
+  });
+  expect(() => parseProjectConfig(config({}))).not.toThrow();
+  const rejection = (value: unknown) => {
+    try {
+      parseProjectConfig(value);
+    } catch (error) {
+      return (error as { hint?: string }).hint ?? "";
+    }
+    return "";
+  };
+  expect(
+    rejection({
+      ...config({}),
+      components: { ...config({}).components, tool: { mode: "installed", entrypoint: "run", hooks } },
+    }),
+  ).toContain("base.components.tool.hooks: Hooks run around a Component's process");
+  expect(
+    rejection(config({ live: { components: { tool: { hooks } } } })),
+  ).toContain("live.components.tool.hooks: Hooks run around a Component's process");
+  expect(() =>
+    parseProjectConfig(config({ local: { components: { db: { hooks } } } })),
+  ).toThrow();
+});

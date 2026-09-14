@@ -1,4 +1,4 @@
-import type { InstalledComponent, ManagedComponent } from "../config/types";
+import type { Hooks, InstalledComponent, ManagedComponent } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import type { ProcessObservation, Supervisor } from "../providers/contracts";
 import { RigError } from "../domain/errors";
@@ -26,10 +26,12 @@ export interface TargetEffects {
     target: TargetRecord,
     component: ManagedComponent | InstalledComponent,
   ): Promise<Record<string, string>>;
+  /** Runs one hook command for the Project (no component) or a Component; name identifies the hook in failures. */
   hook(
     command: string,
     target: TargetRecord,
-    component?: ManagedComponent | InstalledComponent,
+    component: ManagedComponent | undefined,
+    name: keyof Hooks,
   ): Promise<void>;
   /** May block or ignore cancellation. False retries after 100ms; rejection fails startup. */
   health(
@@ -88,6 +90,26 @@ const readinessTiming: ReadinessTiming = {
 const DEFAULT_START_GRACE_MS = 500;
 /** Cadence for health retries and for confirming the supervised process is still alive. */
 const OBSERVATION_INTERVAL_MS = 100;
+
+/** Observes every managed Component before anything starts; an unknown owner aborts before hooks or installs run. */
+async function observeManaged(
+  target: TargetRecord,
+  supervisor: Supervisor,
+): Promise<Map<string, ProcessObservation>> {
+  const observations = new Map<string, ProcessObservation>();
+  for (const component of target.plan.components) {
+    if (component.kind !== "managed") continue;
+    const observation = await supervisor.observe(`${target.id}:${component.name}`);
+    if (observation.state === "unknown")
+      throw new RigError(
+        "PROCESS_UNKNOWN",
+        `Cannot safely start ${component.name}.`,
+        "Run rig doctor to inspect process ownership.",
+      );
+    observations.set(`${target.id}:${component.name}`, observation);
+  }
+  return observations;
+}
 
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
 export function createTargetLifecycle(
@@ -163,6 +185,10 @@ export function createTargetLifecycle(
       let began = false;
       try {
         await effects.prepare(target);
+        const observations = await observeManaged(target, supervisor);
+        began = [...observations.values()].some((o) => o.state === "stopped");
+        if (began && target.plan.hooks?.preStart)
+          await effects.hook(target.plan.hooks.preStart, target, undefined, "preStart");
         // Dependencies are ordered during plan resolution, before any process starts.
         for (const component of target.plan.components) {
           if (component.kind === "persistent") continue;
@@ -172,21 +198,9 @@ export function createTargetLifecycle(
             continue;
           }
           const key = `${target.id}:${component.name}`;
-          const observation = await supervisor.observe(key);
-          if (observation.state === "running") continue;
-          if (observation.state === "unknown")
-            throw new RigError(
-              "PROCESS_UNKNOWN",
-              `Cannot safely start ${component.name}.`,
-              "Run rig doctor to inspect process ownership.",
-            );
-          if (!began) {
-            began = true;
-            if (target.plan.hooks?.preStart)
-              await effects.hook(target.plan.hooks.preStart, target);
-          }
+          if (observations.get(key)!.state === "running") continue;
           if (component.hooks?.preStart)
-            await effects.hook(component.hooks.preStart, target, component);
+            await effects.hook(component.hooks.preStart, target, component, "preStart");
           const result = await supervisor.ensureRunning({
             key,
             componentName: component.name,
@@ -201,11 +215,11 @@ export function createTargetLifecycle(
           if (component.health) await awaitReady(component, target, effects, timing, process);
           else await awaitSurvival(component, timing, process);
           if (component.hooks?.postStart && result.outcome === "started")
-            await effects.hook(component.hooks.postStart, target, component);
+            await effects.hook(component.hooks.postStart, target, component, "postStart");
         }
         await effects.route(target);
         if (began && target.plan.hooks?.postStart)
-          await effects.hook(target.plan.hooks.postStart, target);
+          await effects.hook(target.plan.hooks.postStart, target, undefined, "postStart");
         if (!providedCheckpoint) await checkpoint.commit();
         return {
           outcome: started.length || installed ? "started" : "unchanged",
@@ -263,11 +277,11 @@ export function createTargetLifecycle(
         if (needsPreStop && !began) {
           began = true;
           if (target.plan.hooks?.preStop)
-            await attempt(() => effects.hook(target.plan.hooks!.preStop!, target));
+            await attempt(() => effects.hook(target.plan.hooks!.preStop!, target, undefined, "preStop"));
         }
         if (needsPreStop && component.hooks?.preStop)
           await attempt(() =>
-            effects.hook(component.hooks!.preStop!, target, component),
+            effects.hook(component.hooks!.preStop!, target, component, "preStop"),
           );
         let stopped = false;
         await attempt(async () => {
@@ -279,11 +293,11 @@ export function createTargetLifecycle(
         }, true);
         if (component.hooks?.postStop && stopped)
           await attempt(() =>
-            effects.hook(component.hooks!.postStop!, target, component),
+            effects.hook(component.hooks!.postStop!, target, component, "postStop"),
           );
       }
       if (changed && target.plan.hooks?.postStop)
-        await attempt(() => effects.hook(target.plan.hooks!.postStop!, target));
+        await attempt(() => effects.hook(target.plan.hooks!.postStop!, target, undefined, "postStop"));
       if (processFailures.length)
         throw new RigError(
           "STOP_INCOMPLETE",

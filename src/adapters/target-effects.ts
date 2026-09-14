@@ -323,7 +323,7 @@ export function createTargetEffects(
       await mkdir(dirname(marker), { recursive: true, mode: 0o700 });
       await writeFile(marker, "prepared\n", { mode: 0o600 });
     },
-    async hook(command, target, component) {
+    async hook(command, target, component, name) {
       const result = await runTarget(
         command,
         target,
@@ -335,9 +335,13 @@ export function createTargetEffects(
       if (result.exitCode)
         throw new RigError(
           "HOOK_FAILED",
-          "A lifecycle hook failed.",
-          "Inspect Target setup logs.",
-          { exitCode: result.exitCode },
+          `Hook ${name} for ${component ? component.name : "the Project"} exited with code ${result.exitCode}.`,
+          `Inspect the ${component?.name ?? "setup"} Target logs.`,
+          {
+            hook: name,
+            ...(component ? { component: component.name } : {}),
+            exitCode: result.exitCode,
+          },
         );
     },
     async install(component, target) {

@@ -396,3 +396,76 @@ test("port contention after selection fails startup and preserves an already run
     probe.stop();
   }
 }, 15000);
+
+test("the Project preStart hook runs before installs and Component hooks, and only when a process will start", async () => {
+  const record = structuredClone(target);
+  record.plan.hooks = { preStart: "project-pre", postStart: "project-post" };
+  record.plan.components = [
+    { name: "tool", kind: "installed", entrypoint: "tool", env: {}, dependsOn: [] },
+    { ...record.plan.components[0]!, hooks: { preStart: "api-pre" } },
+  ];
+  const events: string[] = [];
+  const running = new Set<string>();
+  const effects: TargetEffects = {
+    async checkpoint(r) {
+      return { targetId: r.id, async commit() {}, async rollback() {} };
+    },
+    async restoreEffects() {},
+    async commitEffects() {},
+    async retireSuperseded() {},
+    async retireArtifacts() {},
+    supervisor: () => ({
+      async observe(key) {
+        return { state: running.has(key) ? "running" : "stopped" };
+      },
+      async ensureRunning(request) {
+        events.push(`start:${request.componentName}`);
+        running.add(request.key);
+        return { outcome: "started" };
+      },
+      async stop(key) {
+        running.delete(key);
+        return { outcome: "stopped" };
+      },
+      async shutdown() {},
+      async detach() {},
+    }),
+    async prepare() {
+      events.push("prepare");
+    },
+    async environment() {
+      return {};
+    },
+    async hook(command, _target, component, name) {
+      events.push(`${name}:${component?.name ?? "project"}:${command}`);
+    },
+    async health() {
+      return true;
+    },
+    async install(component) {
+      events.push(`install:${component.name}`);
+      return { outcome: "installed" };
+    },
+    async route() {},
+    async removeRoute() {},
+  };
+  const lifecycle = createTargetLifecycle(effects, {
+    schedule(delayMs, fire) {
+      const timer = setTimeout(fire, delayMs);
+      return () => clearTimeout(timer);
+    },
+    startGraceMs: 0,
+  });
+  expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
+  expect(events).toEqual([
+    "prepare",
+    "preStart:project:project-pre",
+    "install:tool",
+    "preStart:api:api-pre",
+    "start:api",
+    "postStart:project:project-post",
+  ]);
+  events.length = 0;
+  expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
+  expect(events).toEqual(["prepare", "install:tool"]);
+});

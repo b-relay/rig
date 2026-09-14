@@ -72,11 +72,12 @@ test("global and component hooks receive their resolved environment and write ra
     dependsOn: [],
   };
   const adapter = effects(root);
-  await adapter.hook('printf "%s:%s\\n" "$HOST" "$VALUE"', record);
+  await adapter.hook('printf "%s:%s\\n" "$HOST" "$VALUE"', record, undefined, "preStart");
   await adapter.hook(
     'printf "%s:%s:%s\\n" "$HOST" "$VALUE" "$OVERRIDE"',
     record,
     component,
+    "preStart",
   );
   const entries = (await readFile(join(record.logRoot, "target.jsonl"), "utf8"))
     .trim()
@@ -301,8 +302,8 @@ test("setup recording acquires time for each retained line and reads unchanged s
   const timestamps = ["2026-09-09T12:00:00.001Z", "2026-09-09T12:00:00.002Z", "2026-09-09T12:00:00.003Z", "2026-09-09T12:00:00.004Z"];
   let acquired = 0;
   const adapter = effects(root, () => timestamps[acquired++]!);
-  await adapter.hook("printf 'one\\n\\ntwo\\n'; printf 'error\\n' >&2", record);
-  await adapter.hook("true", record);
+  await adapter.hook("printf 'one\\n\\ntwo\\n'; printf 'error\\n' >&2", record, undefined, "preStart");
+  await adapter.hook("true", record, undefined, "postStart");
   const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
   const page = await createRuntimeFiles().logs(record, undefined, 100);
   expect(page.entries).toEqual([

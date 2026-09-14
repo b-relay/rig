@@ -62,8 +62,18 @@ const route = text
   .describe("Single domain token; interpolation is supported.");
 /** Hook commands run with /bin/sh -c; interpolated values are shell-quoted like component commands. */
 const hooks = z.strictObject({
-  preStart: z.string().optional().describe("Run before starting."),
-  postStart: z.string().optional().describe("Run after readiness."),
+  preStart: z
+    .string()
+    .optional()
+    .describe(
+      "Run before starting; skipped when nothing needs to start. A Project preStart runs before installs and Component hooks.",
+    ),
+  postStart: z
+    .string()
+    .optional()
+    .describe(
+      "Run after readiness: after the health check passes, or after the start grace period when the Component has no health check. A Project postStart runs after routing.",
+    ),
   preStop: z
     .string()
     .optional()
@@ -237,6 +247,13 @@ export const projectConfigSchema = z
             message: "Overrides must match the Component kind.",
           });
         definitions[key] = { ...base, ...patch };
+        if (definitions[key].mode === "installed" && definitions[key].hooks)
+          ctx.addIssue({
+            code: "custom",
+            path: [laneName, "components", key, "hooks"],
+            message:
+              "Hooks run around a Component's process; an installed executable has none. Use build for steps before installation.",
+          });
       }
       for (const key of Object.keys(target.components ?? {}))
         if (!Object.hasOwn(config.components, key))

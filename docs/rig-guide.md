@@ -428,9 +428,54 @@ owns child processes), `child` (alias of `rigd`), or `launchd` (one launchd
 agent per Component). Any other name is rejected when the config is parsed, so
 a typo can never be recorded in a Target plan.
 
+### Hooks and interpolation
+
+Hooks are shell commands that run around a Target's processes. A Project may
+declare `hooks` at the top level; a managed, Convex, or Postgres Component may
+declare its own. Installed executables and SQLite paths have no process, so
+`hooks` on them is rejected when the config is parsed; use an installed
+Component's `build` for steps that must run before installation. Every hook
+runs under `/bin/sh -c` in the Target workspace with the daemon environment,
+the Project `envFile` and `env`, and, for a Component hook, the Component's
+own `envFile` and `env` layered on top. A hook has a two-minute budget and
+writes its output to the Target's logs under the Component name, or `setup`
+for Project hooks.
+
+`rig up`, `rig restart`, and every deploy run hooks in this order:
+
+1. Project `preStart`, only when at least one managed process is not already
+   running. Installed executables are built and installed after it, so it may
+   prepare what a build needs.
+2. For each Component in dependency order: the Component's `preStart`, the
+   process start, readiness, then the Component's `postStart`. Readiness means
+   the `health` check passed, or, for a Component without `health`, that the
+   process survived the start grace period. A Component that was already
+   running is skipped along with its hooks.
+3. Routing, then Project `postStart` (again only when something started).
+
+`rig down` runs Project `preStop`, then each active Component's `preStop`,
+stops it, and runs its `postStop`; Project `postStop` runs last. Stop hooks
+are skipped for Components that are already stopped. A start hook that exits
+non-zero fails the command with `HOOK_FAILED`, which names the hook and the
+Component (or the Project) and the exit code, and rolls back the processes
+that command started. Stop-hook failures are reported as described above
+without leaving processes running.
+
 Commands, hooks, health checks, and build commands may use `${...}`
-placeholders such as `${workspace}`, `${dataRoot}`, `${web.port}`,
-`${db.path}`, `${pg.dataDir}`, and `${cx.stateDir}`. Because those strings run
+placeholders. The available properties are:
+
+- `lane` (`local`, `live`, or `deployment`), `target` (`local`, `live`, or
+  `preview`), `deployment` (the Target's deployment name), `branchSlug`, and
+  `subdomain`.
+- `workspace` and `dataRoot`: the Target's checkout and persistent storage.
+- Per Component `<name>`: `<name>.port` (also `ports.<name>` and
+  `port.<name>`) and `<name>.url` for any Component with a port;
+  `<name>.sitePort`, `<name>.siteUrl`, and `<name>.stateDir` for Convex;
+  `<name>.dataDir` for Postgres; `<name>.path` for SQLite.
+
+`branch`, `commit`, `domain`, and `project` are not interpolation properties,
+and an unknown placeholder is rejected when the config is resolved so a typo
+never reaches a shell. Because those strings run
 under `/bin/sh -c`, Rig single-quotes any substituted value that contains a
 space or other shell-special character, so a repository or `RIG_ROOT` under a
 path like `~/Projects/My App` still resolves to one argument. A placeholder

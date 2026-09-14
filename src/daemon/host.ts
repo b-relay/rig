@@ -6,6 +6,7 @@ import { startControlPlane } from "./server";
 import { readDaemonToken, ownerSchema } from "./files";
 import type { RuntimeCommand } from "./protocol";
 import { RigError } from "../domain/errors";
+import type { z } from "zod";
 import { processStartTime, recordedProcess } from "./process-identity";
 export interface DaemonHostOptions {
   root: string;
@@ -79,6 +80,57 @@ async function acquireGuard(
     { guard },
   );
 }
+/** The prior lease, or undefined when there is none or it is unreadable and no
+ * recorded address names a live process. A torn or corrupt lease cannot identify
+ * a daemon; the address record is the only other evidence, so it decides. */
+async function readLease(
+  lease: string,
+  address: string,
+): Promise<z.infer<typeof ownerSchema> | undefined> {
+  const parse = async (path: string) =>
+    ownerSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
+  const prior = await parse(lease).catch((error: NodeJS.ErrnoException) =>
+    error.code === "ENOENT" ? undefined : { success: false as const },
+  );
+  if (!prior) return undefined;
+  if (prior.success) return prior.data;
+  const recorded = await parse(address).catch(() => undefined);
+  if (recorded?.success) {
+    const liveness = await recordedProcess(recorded.data);
+    if (liveness === "running" || liveness === "unverified")
+      throw new RigError(
+        "DAEMON_LEASE",
+        "The daemon ownership record is invalid, and its address record names a live process.",
+        `The lease at ${lease} cannot be read, but ${address} records pid ${recorded.data.pid}, which is alive. If no rigd is running for this root, remove both and retry.`,
+        { lease, address, pid: recorded.data.pid },
+      );
+  }
+  return undefined;
+}
+/** The instanceId a record names, or undefined when it is absent or unreadable. */
+async function recordedInstance(path: string): Promise<string | undefined> {
+  try {
+    const saved: unknown = JSON.parse(await readFile(path, "utf8"));
+    return typeof saved === "object" &&
+      saved !== null &&
+      "instanceId" in saved &&
+      typeof saved.instanceId === "string"
+      ? saved.instanceId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+/** Writes the record through a sibling temp file so readers see the old record or the new one. */
+async function writeAtomically(
+  path: string,
+  record: object,
+  instanceId: string,
+): Promise<void> {
+  const next = `${path}.${instanceId}.next`;
+  await writeFile(next, JSON.stringify(record), { mode: 0o600 });
+  await rename(next, path);
+}
 async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
   const directory = join(options.root, "daemon"),
     lease = join(directory, "owner.json"),
@@ -94,58 +146,36 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
   await acquireGuard(guard, owner);
   let acquired = false;
   try {
-    let prior: unknown;
-    try {
-      prior = JSON.parse(await readFile(lease, "utf8"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-        throw new RigError(
-          "DAEMON_LEASE",
-          "The daemon ownership record is invalid.",
-          "Inspect daemon state before retrying.",
-        );
-    }
-    if (prior !== undefined) {
-      const parsed = ownerSchema.safeParse(prior);
-      if (!parsed.success)
-        throw new RigError(
-          "DAEMON_LEASE",
-          "The daemon ownership record is invalid.",
-          "Inspect daemon state before retrying.",
-        );
+    const prior = await readLease(lease, join(directory, "address.json"));
+    if (prior) {
       // A pid alone is not identity: a lease whose pid was reused after a crash is stale.
-      const liveness = await recordedProcess(parsed.data);
+      const liveness = await recordedProcess(prior);
       if (liveness === "running")
         throw new RigError(
           "DAEMON_RUNNING",
           "Another rigd owns this state root.",
           "Run rigd status.",
-          { pid: parsed.data.pid },
+          { pid: prior.pid },
         );
       if (liveness === "unverified")
         throw new RigError(
           "DAEMON_RUNNING",
           "Another process may own this state root.",
-          `The lease at ${lease} records pid ${parsed.data.pid}, which is alive, but was written by an older rigd without process identity. If no rigd is running for this root, remove ${lease} and retry.`,
-          { pid: parsed.data.pid, lease },
+          `The lease at ${lease} records pid ${prior.pid}, which is alive, but was written by an older rigd without process identity. If no rigd is running for this root, remove ${lease} and retry.`,
+          { pid: prior.pid, lease },
         );
-      await rm(lease);
     }
-    await writeFile(lease, JSON.stringify(owner), { mode: 0o600, flag: "wx" });
+    // Written whole, so a crash here leaves the previous record or a valid one, never a torn one.
+    await writeAtomically(lease, owner, owner.instanceId);
     acquired = true;
   } finally {
     await rm(guard, { recursive: true });
   }
   let server: ReturnType<typeof startControlPlane> | undefined;
+  // A record that no longer names this instance, or cannot be read at all, is not ours to remove.
   const release = async () => {
-    for (const path of [join(directory, "address.json"), lease]) {
-      try {
-        const saved = JSON.parse(await readFile(path, "utf8"));
-        if (saved.instanceId === owner.instanceId) await rm(path);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
+    for (const path of [join(directory, "address.json"), lease])
+      if ((await recordedInstance(path)) === owner.instanceId) await rm(path);
   };
   try {
     server = startControlPlane({
@@ -155,16 +185,15 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       handle: options.handle,
       ...(options.editor ? { editor: options.editor } : {}),
     });
-    const nextAddress = join(directory, `address.${owner.instanceId}.next`);
-    await writeFile(
-      nextAddress,
-      JSON.stringify({ ...owner, port: server.port }),
-      { mode: 0o600 },
+    await writeAtomically(
+      join(directory, "address.json"),
+      { ...owner, port: server.port },
+      owner.instanceId,
     );
-    await rename(nextAddress, join(directory, "address.json"));
   } catch (error) {
     await server?.stop(true);
-    if (acquired) await release();
+    // Release failing must not replace the error that stopped startup.
+    if (acquired) await release().catch(() => {});
     throw error;
   }
   let stopping = false;

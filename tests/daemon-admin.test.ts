@@ -778,3 +778,60 @@ test("install reports the daemon's own startup failure as soon as it is recorded
     await rm(root, { recursive: true, force: true });
   }
 }, 20000);
+test("corrupt daemon records never mask a startup error, never block a clean release of this daemon's own records, and a corrupt lease with nothing running is reclaimed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-corrupt-records-"));
+  const script = join(root, "child.ts");
+  const daemon = join(root, "daemon");
+  await mkdir(daemon, { recursive: true });
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; await runDaemonHost({root:process.env.RIG_ROOT!,port:0,handle:async()=>({}),shutdown:async()=>{}});`,
+  );
+  const start = () =>
+    Bun.spawn([process.execPath, script], {
+      cwd: root,
+      env: { ...process.env, RIG_ROOT: root },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+  const awaitAddress = async (pid: number) => {
+    const deadline = Date.now() + 10000;
+    let address: { pid: number } | undefined;
+    while (!address && Date.now() < deadline) {
+      address = await readFile(join(daemon, "address.json"), "utf8")
+        .then((text) => JSON.parse(text) as { pid: number })
+        .catch(() => undefined);
+      if (!address) await Bun.sleep(50);
+    }
+    expect(address).toMatchObject({ pid });
+  };
+  try {
+    // No token: startup fails after the lease is taken, while address.json is corrupt.
+    await writeFile(join(daemon, "address.json"), "null");
+    let child = start();
+    expect(await child.exited).not.toBe(0);
+    let stderr = await new Response(child.stderr).text();
+    expect(stderr).toContain("DAEMON_MISSING");
+    expect(stderr).not.toMatch(/TypeError|SyntaxError/);
+    await expect(readFile(join(daemon, "owner.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(daemon, "address.json"), "utf8")).toBe("null");
+    await rm(join(daemon, "address.json"));
+
+    // A corrupt lease with nothing running is reclaimed, and the new lease is valid.
+    await mkdir(join(root, "auth"));
+    await writeFile(join(root, "auth", "control-plane.token"), "test-secret");
+    await writeFile(join(daemon, "owner.json"), "{broken");
+    child = start();
+    await awaitAddress(child.pid);
+    expect(JSON.parse(await readFile(join(daemon, "owner.json"), "utf8"))).toMatchObject({ pid: child.pid });
+
+    // Records corrupted while running are left alone; this daemon still releases its own and exits cleanly.
+    await writeFile(join(daemon, "owner.json"), "null");
+    child.kill("SIGTERM");
+    expect(await child.exited).toBe(0);
+    await expect(readFile(join(daemon, "address.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(daemon, "owner.json"), "utf8")).toBe("null");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);

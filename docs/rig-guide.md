@@ -49,6 +49,13 @@ in it cannot be verified: `rigd status` warns, `rigd install` and `rigd
 uninstall` refuse, and a manual `rigd start` refuses, each naming the files
 under `<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.
 
+Both records are written whole (through a sibling temp file and rename), so a
+crash never leaves a torn record. A lease that still cannot be read is
+reclaimed at the next start unless the address record names a live process, in
+which case startup refuses and names both files. A daemon releases only records
+that still name its own instance on shutdown; a record corrupted or replaced
+while it ran is left alone and never turns a clean stop into a failure.
+
 Daemon startup takes a lock directory, `<RIG_ROOT>/daemon/acquiring`, and
 records its own pid and start time inside it. A lock whose holder has exited or
 whose pid now belongs to another process is reclaimed on the next start, as is

@@ -14,7 +14,7 @@ export async function main(args: readonly string[]): Promise<number> {
     return await runCapturedProcess(args[1]);
   }
   if (process.env.RIG_DAEMON_CHILD === "1") {
-    const command = daemonCommand();
+    const command = await daemonCommand();
     const runtime = await composeDaemon(root, [...command, "capture"]);
     await runDaemonHost({ root, port: 0, ...runtime });
     return 0;
@@ -22,7 +22,7 @@ export async function main(args: readonly string[]): Promise<number> {
   return await runRigdCli(args, {
     admin: new DaemonAdmin({
       root,
-      command: daemonCommand(),
+      command: await daemonCommand(),
       mode: process.env.RIG_ROOT ? "process" : "launchd",
       userHome: homedir(),
     }),

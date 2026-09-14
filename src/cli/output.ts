@@ -9,7 +9,11 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "logs") return renderLogs(report, true);
   if (action === "activity") return renderActivity(report);
   if (action === "daemon-status")
-    return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n`;
+    return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n${
+      Array.isArray(report.warnings)
+        ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
+        : ""
+    }`;
   const subject =
     [word(report.project), word(report.target)].filter(Boolean).join(" ") ||
     "rigd";

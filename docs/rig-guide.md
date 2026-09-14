@@ -37,6 +37,17 @@ Stopping, restarting, or upgrading `rigd` is not a Target stop. Managed
 processes keep serving while the daemon is down, and the next daemon adopts
 them through their recorded process leases without re-running start hooks.
 `rigd uninstall` is the exception: it refuses while any Target is running.
+When the daemon is not reachable at all, `rigd uninstall` still removes the
+launchd job and installation record and warns that Targets were left as they
+are; the next `rigd install` adopts them.
+
+The launchd job records the `PATH` entry that resolves to the running
+executable (for example `~/.bun/bin/bun` rather than a versioned Cellar path),
+so package upgrades do not strand it. The job restarts only after a crash, with
+a ten second throttle, so a broken install does not spin. `rigd status` and
+`rig doctor` name the recorded program when it no longer exists; run
+`rigd install` again to record the current one. A failed `launchctl bootstrap`
+reports launchctl's reason and leaves nothing installed.
 
 Connect the Host Caddy once. Rig writes its marked route blocks to
 `<RIG_ROOT>/proxy/Caddyfile` (or `providers.caddy.caddyfile`) and never edits

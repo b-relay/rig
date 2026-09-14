@@ -1,4 +1,5 @@
-import { access, constants } from "node:fs/promises";
+import { access, constants, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { dirname } from "node:path";
 import { readHostConfig } from "../config";
 import { ConfigError } from "../config/errors";
@@ -49,6 +50,7 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
           : "Inspect Host configuration.",
     });
   }
+  checks.push(...(await inspectDaemonExecutable(root)));
   for (const name of ["bun", "git"]) {
     const ok = Bun.which(name) !== null;
     checks.push(
@@ -93,4 +95,33 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
     }
   }
   return checks;
+}
+/** An installed daemon whose recorded program is gone (for example after a package upgrade) can never start; naming it beats "unreachable". */
+async function inspectDaemonExecutable(root: string): Promise<DoctorCheck[]> {
+  let executable: string | undefined;
+  try {
+    const installation = JSON.parse(
+      await readFile(join(root, "daemon", "install.json"), "utf8"),
+    ) as { command?: unknown };
+    executable = Array.isArray(installation.command)
+      ? String(installation.command[0] ?? "")
+      : undefined;
+  } catch {
+    return [];
+  }
+  if (!executable) return [];
+  try {
+    await access(executable, constants.X_OK);
+    return [];
+  } catch {
+    return [
+      {
+        name: "daemon-executable",
+        ok: false,
+        message: `The installed daemon program ${executable} is missing or not executable.`,
+        reason: "missing-executable",
+        hint: "Run rigd install again to record the current executable.",
+      },
+    ];
+  }
 }

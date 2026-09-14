@@ -262,3 +262,157 @@ test("rejected recovery readiness preserves daemon installation and credentials"
     await rm(root, { recursive: true, force: true });
   }
 }, 15000);
+
+import { spawn, type ChildProcess } from "node:child_process";
+import { symlink } from "node:fs/promises";
+import { inspectHost } from "../src/adapters/host-inspection";
+import { renderResult } from "../src/cli/output";
+import { stableExecutablePath } from "../src/cli/entry-environment";
+
+async function daemonScript(root: string): Promise<string> {
+  const script = join(root, "child.ts");
+  const hostModule = join(import.meta.dir, "../src/daemon/host.ts");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
+  );
+  return script;
+}
+/** Stands in for launchd: bootstrap starts the job's program, bootout stops it; nothing touches the real launchd. */
+function fakeLaunchd(root: string, script: string, failure?: string) {
+  const calls: string[][] = [];
+  let child: ChildProcess | undefined;
+  return {
+    calls,
+    async launchctl(args: readonly string[]) {
+      calls.push([...args]);
+      if (args[0] === "bootstrap") {
+        if (failure) return { code: 5, stderr: failure };
+        child = spawn(process.execPath, [script], {
+          env: { ...process.env, RIG_ROOT: root, RIG_DAEMON_CHILD: "1" },
+          detached: true,
+          stdio: "ignore",
+        });
+        await new Promise((resolve) => child!.once("spawn", resolve));
+        child.unref();
+        return { code: 0, stderr: "" };
+      }
+      if (args[0] === "bootout") {
+        if (!child) return { code: 3, stderr: "Boot-out failed: 3: No such process" };
+        try {
+          process.kill(child.pid!, "SIGTERM");
+        } catch {}
+        child = undefined;
+        return { code: 0, stderr: "" };
+      }
+      return { code: 0, stderr: "" };
+    },
+  };
+}
+const label = (root: string) => `com.b-relay.rigd.${Bun.hash(root).toString(16)}`;
+
+test("launchd install is crash-only and throttled, and a failed bootstrap reports launchctl's reason and leaves nothing installed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-launchd-"));
+  const script = await daemonScript(root);
+  const plist = join(root, "Library", "LaunchAgents", `${label(root)}.plist`);
+  try {
+    const broken = fakeLaunchd(root, script, "Bootstrap failed: 5: Input/output error");
+    const failing = new DaemonAdmin({
+      root,
+      command: [process.execPath, script],
+      mode: "launchd",
+      userHome: root,
+      uid: 501,
+      launchctl: broken.launchctl,
+    });
+    await expect(failing.install()).rejects.toMatchObject({
+      code: "LAUNCHD",
+      message: expect.stringContaining("Input/output error"),
+      details: { code: 5, stderr: expect.stringContaining("Input/output error") },
+    });
+    await expect(readFile(plist)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await failing.status()).toMatchObject({ installed: false, running: false, reachable: false });
+
+    const launchd = fakeLaunchd(root, script);
+    const admin = new DaemonAdmin({
+      root,
+      command: [process.execPath, script],
+      mode: "launchd",
+      userHome: root,
+      uid: 501,
+      launchctl: launchd.launchctl,
+    });
+    try {
+      expect(await admin.install()).toMatchObject({ outcome: "installed", reachable: true });
+      const content = await readFile(plist, "utf8");
+      expect(content).toContain("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>");
+      expect(content).toContain("<key>ThrottleInterval</key><integer>10</integer>");
+      expect(content).toContain(`<string>${process.execPath}</string><string>${script}</string>`);
+      expect(launchd.calls.at(-1)).toEqual(["bootstrap", "gui/501", plist]);
+      expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled", installed: false });
+      expect(launchd.calls.at(-1)).toEqual(["bootout", `gui/501/${label(root)}`]);
+      await expect(readFile(plist)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await launchd.launchctl(["bootout", `gui/501/${label(root)}`]);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a launchd job that never became reachable can be uninstalled and status names its missing executable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-stuck-"));
+  const plist = join(root, "Library", "LaunchAgents", `${label(root)}.plist`);
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true });
+    await mkdir(join(root, "Library", "LaunchAgents"), { recursive: true });
+    const command = [join(root, "Cellar", "bun"), join(root, "rigd.ts")];
+    await writeFile(join(root, "daemon", "install.json"), JSON.stringify({ mode: "launchd", command }));
+    await writeFile(plist, "<plist/>");
+    const launchd = fakeLaunchd(root, "");
+    const admin = new DaemonAdmin({
+      root,
+      command,
+      mode: "launchd",
+      userHome: root,
+      uid: 501,
+      launchctl: launchd.launchctl,
+    });
+    const status = await admin.status();
+    expect(status).toMatchObject({ installed: true, running: false, reachable: false });
+    expect(status.warnings).toHaveLength(1);
+    expect(status.warnings?.[0]).toContain(command[0]!);
+    expect(renderResult("daemon-status", status)).toContain(`Warning: ${status.warnings?.[0]}`);
+    const doctor = (await inspectHost(root)).find((check) => check.name === "daemon-executable");
+    expect(doctor).toMatchObject({ ok: false, reason: "missing-executable" });
+    expect(doctor?.message).toContain(command[0]!);
+
+    expect(await admin.uninstall()).toMatchObject({
+      outcome: "uninstalled",
+      installed: false,
+      warnings: [expect.stringContaining("not reachable")],
+    });
+    expect(launchd.calls).toEqual([["bootout", `gui/501/${label(root)}`]]);
+    await expect(readFile(plist)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, "daemon", "install.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the daemon command prefers the PATH entry that resolves to the running executable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-exec-"));
+  try {
+    await mkdir(join(root, "cellar"));
+    await mkdir(join(root, "bin"));
+    await mkdir(join(root, "other"));
+    await symlink(process.execPath, join(root, "cellar", "bun"));
+    await symlink(join(root, "cellar", "bun"), join(root, "bin", "bun"));
+    await writeFile(join(root, "other", "bun"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(await stableExecutablePath(process.execPath, join(root, "bin"))).toBe(join(root, "bin", "bun"));
+    expect(await stableExecutablePath(process.execPath, join(root, "other"))).toBe(process.execPath);
+    expect(await stableExecutablePath(process.execPath, join(root, "empty"))).toBe(process.execPath);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

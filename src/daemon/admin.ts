@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   access,
+  constants,
   mkdir,
   readFile,
   writeFile,
@@ -28,6 +29,29 @@ export interface DaemonAdminOptions {
   uid?: number;
   stopTimeoutMs?: number;
   activity?: AdminActivityJournal;
+  /** Runs launchctl with the given arguments; defaults to /bin/launchctl. */
+  launchctl?: LaunchctlRunner;
+}
+export type LaunchctlRunner = (
+  args: readonly string[],
+) => Promise<{ code: number; stderr: string }>;
+const installationSchema = z.object({
+  mode: z.enum(["process", "launchd"]),
+  command: z.array(z.string()).optional(),
+});
+async function runLaunchctl(
+  args: readonly string[],
+): Promise<{ code: number; stderr: string }> {
+  const child = Bun.spawn(["/bin/launchctl", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, , stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { code, stderr };
 }
 export interface DaemonStatus {
   installed: boolean;
@@ -76,22 +100,65 @@ export class DaemonAdmin {
     const running = [owner?.pid, address?.pid].some(
       (pid) => pid !== undefined && processExists(pid),
     );
-    if (!address) return { installed, running, reachable: false };
+    const warnings = installed ? await this.installationWarnings() : [];
+    const status = (reachable: boolean): DaemonStatus => ({
+      installed,
+      running,
+      reachable,
+      ...(warnings.length ? { warnings } : {}),
+    });
+    if (!address) return status(false);
     try {
       const health = await new DaemonClient({
         port: address.port,
         token: await readDaemonToken(this.options.root),
       }).health();
-      const reachable =
+      return status(
         health.instanceId === address.instanceId &&
-        health.pid === address.pid &&
-        (!owner ||
-          (owner.pid === address.pid &&
-            owner.instanceId === address.instanceId));
-      return { installed, running, reachable };
+          health.pid === address.pid &&
+          (!owner ||
+            (owner.pid === address.pid &&
+              owner.instanceId === address.instanceId)),
+      );
     } catch {
-      return { installed, running, reachable: false };
+      return status(false);
     }
+  }
+  /** A recorded program that no longer exists explains an unreachable daemon before anyone reads launchd logs. */
+  private async installationWarnings(): Promise<string[]> {
+    const installation = await this.readInstallation().catch(() => undefined);
+    const executable = installation?.command?.[0];
+    if (!executable) return [];
+    try {
+      await access(executable, constants.X_OK);
+      return [];
+    } catch {
+      return [
+        `The installed daemon program ${executable} is missing or not executable; run rigd install again.`,
+      ];
+    }
+  }
+  private async readInstallation(): Promise<
+    z.infer<typeof installationSchema>
+  > {
+    let saved: unknown;
+    try {
+      saved = JSON.parse(await readFile(this.marker, "utf8"));
+    } catch {
+      throw new RigError(
+        "DAEMON_INSTALL_STATE",
+        "The installation record is unreadable.",
+        "Inspect the daemon installation before retrying.",
+      );
+    }
+    const installation = installationSchema.safeParse(saved);
+    if (!installation.success)
+      throw new RigError(
+        "DAEMON_INSTALL_STATE",
+        "The installation record is invalid.",
+        "Inspect the daemon installation before retrying.",
+      );
+    return installation.data;
   }
   async install(operationId?: string): Promise<DaemonStatus> {
     return this.recordAdministration("daemon-install", operationId, () =>
@@ -163,8 +230,16 @@ export class DaemonAdmin {
       }),
       { mode: 0o600 },
     );
-    if (this.options.mode === "process") await this.spawnDetached();
-    else await this.installLaunchd();
+    try {
+      if (this.options.mode === "process") await this.spawnDetached();
+      else await this.installLaunchd();
+    } catch (error) {
+      // A job that never started must not be reported installed or auto-loaded at the next login.
+      await rm(this.marker, { force: true });
+      if (this.options.mode === "launchd")
+        await rm(this.plistPath(), { force: true });
+      throw error;
+    }
     for (let attempt = 0; attempt < 100; attempt++) {
       const status = await this.status();
       if (status.reachable) return { ...status, outcome: "installed" };
@@ -182,31 +257,12 @@ export class DaemonAdmin {
     if (!status.installed && !status.running && !status.reachable)
       return { ...status, outcome: "unchanged" };
     const address = await readDaemonAddress(root);
+    const installation = { data: await this.readInstallation() };
     if (!address || !status.reachable)
-      throw new RigError(
-        "DAEMON_UNCERTAIN",
-        "Cannot verify that rigd and its Targets can be removed safely.",
-        "Restore daemon reachability and stop Targets before uninstalling.",
-      );
-    let savedInstallation: unknown;
-    try {
-      savedInstallation = JSON.parse(await readFile(this.marker, "utf8"));
-    } catch {
-      throw new RigError(
-        "DAEMON_INSTALL_STATE",
-        "The installation record is unreadable.",
-        "Inspect the daemon installation before retrying.",
-      );
-    }
-    const installation = z
-      .object({ mode: z.enum(["process", "launchd"]) })
-      .safeParse(savedInstallation);
-    if (!installation.success)
-      throw new RigError(
-        "DAEMON_INSTALL_STATE",
-        "The installation record is invalid.",
-        "Inspect the daemon installation before retrying.",
-      );
+      return await this.removeUnreachable(installation.data.mode, [
+        address?.pid,
+        (await readDaemonOwner(root))?.pid,
+      ]);
     const client = new DaemonClient({
       port: address.port,
       token: await readDaemonToken(root),
@@ -238,16 +294,59 @@ export class DaemonAdmin {
       await client.command({ action: "cancel-uninstall" }).catch(() => {});
       throw error;
     }
-    if (installation.data.mode === "launchd")
-      await rm(this.plistPath(), { force: true });
-    await rm(this.marker, { force: true });
-    await rm(join(root, "auth", "control-plane.token"), { force: true });
+    await this.removeInstallation(installation.data.mode);
     return {
       installed: false,
       running: false,
       reachable: false,
       outcome: "uninstalled",
     };
+  }
+  /** Managed processes are left running under their leases; the next install adopts them, so an unreachable daemon is not a dead end. */
+  private async removeUnreachable(
+    mode: "process" | "launchd",
+    pids: (number | undefined)[],
+  ): Promise<DaemonStatus> {
+    if (mode === "launchd") {
+      const result = await (this.options.launchctl ?? runLaunchctl)([
+        "bootout",
+        this.labelDomain(),
+      ]);
+      if (result.code !== 0 && !/No such process|Could not find/i.test(result.stderr))
+        throw launchctlFailure(result);
+    } else
+      for (const pid of pids)
+        if (pid !== undefined && processExists(pid))
+          try {
+            process.kill(pid, "SIGTERM");
+          } catch {}
+    const deadline = Date.now() + (this.options.stopTimeoutMs ?? 5000);
+    const alive = () =>
+      pids.some((pid) => pid !== undefined && processExists(pid));
+    while (alive() && Date.now() < deadline) await pause(50);
+    if (alive())
+      throw new RigError(
+        "DAEMON_STOP",
+        "rigd did not stop.",
+        "Inspect daemon state before retrying.",
+      );
+    await this.removeInstallation(mode);
+    return {
+      installed: false,
+      running: false,
+      reachable: false,
+      outcome: "uninstalled",
+      warnings: [
+        "rigd was not reachable, so its Targets could not be verified stopped; any running managed processes keep running and the next rigd install adopts them.",
+      ],
+    };
+  }
+  private async removeInstallation(mode: "process" | "launchd"): Promise<void> {
+    if (mode === "launchd") await rm(this.plistPath(), { force: true });
+    await rm(this.marker, { force: true });
+    await rm(join(this.options.root, "auth", "control-plane.token"), {
+      force: true,
+    });
   }
   private async spawnDetached(): Promise<void> {
     const [executable, ...args] = this.options.command;
@@ -297,28 +396,14 @@ export class DaemonAdmin {
     );
   }
   private async launchctl(args: string[]): Promise<void> {
-    const child = Bun.spawn(["/bin/launchctl", ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [code] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    if (code !== 0)
-      throw new RigError(
-        "LAUNCHD",
-        "Unable to administer the rigd launchd job.",
-        "Inspect daemon installation and retry.",
-        { code },
-      );
+    const result = await (this.options.launchctl ?? runLaunchctl)(args);
+    if (result.code !== 0) throw launchctlFailure(result);
   }
   private async installLaunchd(): Promise<void> {
     await mkdir(join(this.options.userHome, "Library", "LaunchAgents"), {
       recursive: true,
     });
-    const plist = `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>${xml(this.label())}</string><key>ProgramArguments</key><array>${this.options.command.map((v) => `<string>${xml(v)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict><key>RIG_ROOT</key><string>${xml(this.options.root)}</string><key>RIG_DAEMON_CHILD</key><string>1</string><key>PATH</key><string>${xml(process.env.PATH ?? "/usr/bin:/bin")}</string></dict><key>WorkingDirectory</key><string>${xml(this.options.root)}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string><key>StandardErrorPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string></dict></plist>`;
+    const plist = `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>${xml(this.label())}</string><key>ProgramArguments</key><array>${this.options.command.map((v) => `<string>${xml(v)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict><key>RIG_ROOT</key><string>${xml(this.options.root)}</string><key>RIG_DAEMON_CHILD</key><string>1</string><key>PATH</key><string>${xml(process.env.PATH ?? "/usr/bin:/bin")}</string></dict><key>WorkingDirectory</key><string>${xml(this.options.root)}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string><key>StandardErrorPath</key><string>${xml(join(this.options.root, "daemon", "startup.log"))}</string></dict></plist>`;
     await writeFile(this.plistPath(), plist, { mode: 0o600 });
     await this.launchctl(["bootout", this.labelDomain()]).catch(() => {});
     await this.launchctl([
@@ -327,4 +412,15 @@ export class DaemonAdmin {
       this.plistPath(),
     ]);
   }
+}
+function launchctlFailure(result: { code: number; stderr: string }): RigError {
+  const reason = result.stderr.trim().split("\n").filter(Boolean).at(-1);
+  return new RigError(
+    "LAUNCHD",
+    reason
+      ? `Unable to administer the rigd launchd job: ${reason}`
+      : "Unable to administer the rigd launchd job.",
+    "Inspect daemon installation and retry.",
+    { code: result.code, stderr: result.stderr },
+  );
 }

@@ -21,8 +21,8 @@ testability and honesty refactors.
 4. ~~#174~~ (fixed) `deploy --no-up` on a running live Target stops and retires the previous build; nothing serves until `rig up`. Production outage from a documented flag.
 5. ~~#190~~ (fixed) A typo in `providers.processSupervisor` stops production on deploy and blocks rollback and down. Schema accepts it, no exit.
 6. ~~#211~~ (fixed) Clean rigd stop kills every managed child and restart re-runs every start hook. Daemon maintenance is an outage.
-7. #216 LaunchAgent records the version-specific bun path; a Homebrew bun upgrade bricks rigd and every command says unreachable.
-8. #217 LaunchAgent KeepAlive with no throttle: a failing rigd relaunches every 10 s forever, grows startup.log without bound, cannot be uninstalled through the CLI.
+7. ~~#216~~ (fixed) LaunchAgent records the version-specific bun path; a Homebrew bun upgrade bricks rigd and every command says unreachable.
+8. ~~#217~~ (fixed) LaunchAgent KeepAlive with no throttle: a failing rigd relaunches every 10 s forever, grows startup.log without bound, cannot be uninstalled through the CLI.
 9. #143 Capture wrapper rewrites a running component as failed and exits, orphaning the detached child. Unsupervised production process.
 10. #212 Lease recovery binds to the sh group leader only and drops keepAlive: dead leader reads stopped, next up spawns a duplicate; recovered processes never restart.
 11. #199 Interpolated paths inserted into shell commands unquoted; a workspace or RIG_ROOT with a space breaks every component command.

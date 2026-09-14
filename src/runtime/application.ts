@@ -17,6 +17,7 @@ import type {
 import {
   RigError,
   diagnosticCauses,
+  failureReason,
   diagnosticErrorCode,
   type FailureCauses,
 } from "../domain/errors";
@@ -28,6 +29,8 @@ import { projectStatus } from "./project-status";
 import {
   activateDeployment,
   assertDeploymentRecovered,
+  ownedRevision,
+  releaseUnreferencedRevisions,
   stopForRecovery,
 } from "./deploy";
 /**
@@ -379,15 +382,38 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           deps,
         );
         const wasRunning = target?.desired === "running";
-        target = await activateDeployment(
-          candidate,
-          target,
-          { activation: command.noUp ? "prepare" : "start", operationId },
-          deps,
-        );
+        const revisions = [...(target ? [target] : []), candidate];
+        try {
+          target = await activateDeployment(
+            candidate,
+            target,
+            { activation: command.noUp ? "prepare" : "start", operationId },
+            deps,
+          );
+        } catch (error) {
+          // A rejected candidate's checkout is reclaimed; the deployment failure stays the outcome.
+          for (const retained of await releaseUnreferencedRevisions(
+            revisions,
+            deps,
+          ))
+            await deps
+              .diagnostic({
+                operationId,
+                action: command.action,
+                outcome: "revision-retained",
+                project: project.name,
+                target: candidate.name,
+                ...retained.causes,
+              })
+              .catch(() => {});
+          throw error;
+        }
         const warnings = [
           ...preflight.warnings,
           ...(command.noUp ? [preparedWarning(target, wasRunning)] : []),
+          ...(await releaseUnreferencedRevisions(revisions, deps)).map(
+            (retained) => retained.warning,
+          ),
         ];
         const replaced = await destroyReplacedPreviews(
           replacements,
@@ -418,7 +444,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         if (command.action !== "up" || (command.target ?? "local") !== "local")
           throw missingTarget(name);
         target = await planTarget(
-          { command, project, document: await workingCopyDocument(project, deps) },
+          {
+            command,
+            project,
+            document: await workingCopyDocument(project, deps),
+          },
           deps,
         );
         await persistTarget(target, deps.store);
@@ -705,6 +735,10 @@ async function destroyPreview(
     target,
     state: await deps.store.read(),
   });
+  // The checkout left with the Preview root; this drops its worktree registration from the mirror.
+  const workspacePath = ownedRevision(target);
+  if (workspacePath)
+    await deps.sources.release({ project: target.projectId, workspacePath });
   await deps.store.update((s) => {
     s.targets = s.targets.filter((t) => t.id !== target.id);
   });
@@ -751,13 +785,7 @@ async function destroyReplacedPreviews(
         });
       });
     } catch (error) {
-      const reason =
-        error instanceof RigError
-          ? `${error.message} ${error.hint}`
-          : error instanceof Error
-            ? error.message
-            : String(error);
-      const failure = reason.endsWith(".") ? reason : `${reason}.`;
+      const failure = failureReason(error);
       const selector = replacement.branch
         ? `preview ${replacement.branch}`
         : `preview --deployment ${replacement.name}`;

@@ -20,6 +20,7 @@ export function createDeploymentSources(
   return {
     preflight: (input) => preflightDeployment(input, run),
     prepare: (request) => store.prepare(request),
+    release: (request) => store.release(request),
     async resolve(repository, ref) {
       if (ref.startsWith("-"))
         throw new RigError(

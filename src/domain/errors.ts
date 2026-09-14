@@ -19,6 +19,16 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** One sentence a user can act on: message and hint for a RigError, the message otherwise; always ends with a period. */
+export function failureReason(error: unknown): string {
+  const reason =
+    error instanceof RigError
+      ? `${error.message} ${error.hint}`
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return reason.endsWith(".") ? reason : `${reason}.`;
+}
 export function asRigError(error: unknown): RigError {
   try {
     if (error instanceof RigError) return error;

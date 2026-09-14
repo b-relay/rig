@@ -37,7 +37,11 @@ function fixture() {
       return [];
     },
     async inspectProxy() {
-      return { proxyFile: "/tmp/isolated-rig/proxy/Caddyfile", routes: 0, state: "unpublished" as const };
+      return {
+        proxyFile: "/tmp/isolated-rig/proxy/Caddyfile",
+        routes: 0,
+        state: "unpublished" as const,
+      };
     },
     store: {
       async read() {
@@ -94,6 +98,7 @@ function fixture() {
       async currentBranch() {
         return "main";
       },
+      async release() {},
     },
     lifecycle: {
       async checkpoint(target) {
@@ -156,9 +161,15 @@ test("init config name is authoritative; local up uses the actual repo and appli
   expect(plans[1].plan.components[0].command).toBe("serve --host 127.0.0.1");
   await runtime.command({ action: "down", project: "demo" });
   await runtime.command({ action: "up", project: "demo" });
-  expect(plans[3].plan.components[0]).toMatchObject({ command: "changed", port: 9999 });
+  expect(plans[3].plan.components[0]).toMatchObject({
+    command: "changed",
+    port: 9999,
+  });
   expect(state.targets[0]).toMatchObject({ id, desired: "running" });
-  expect(state.targets[0]!.plan.components[0]).toMatchObject({ command: "changed", port: 9999 });
+  expect(state.targets[0]!.plan.components[0]).toMatchObject({
+    command: "changed",
+    port: 9999,
+  });
   config.components.web = { mode: "managed", command: "restarted", port: 9999 };
   await runtime.command({ action: "restart", project: "demo" });
   expect(plans.at(-1).plan.components[0].command).toBe("restarted");
@@ -190,25 +201,45 @@ test("deployed source policy survives down/up and same commit is no-op", async (
       target: "live",
       branch: "main",
     }),
-  ).toMatchObject({ outcome: "unchanged", branch: "main", commit: "abc", previousCommit: "abc" });
+  ).toMatchObject({
+    outcome: "unchanged",
+    branch: "main",
+    commit: "abc",
+    previousCommit: "abc",
+  });
   expect(state.targets).toHaveLength(1);
   expect(
     await runtime.command({ action: "deployment-context", project: "demo" }),
-  ).toMatchObject({ project: "demo", repoPath: "/tmp/developer", productionBranch: "main" });
+  ).toMatchObject({
+    project: "demo",
+    repoPath: "/tmp/developer",
+    productionBranch: "main",
+  });
 });
 
 test("a Preview deploy stays deployed when retiring the oldest Preview fails, and the next Preview deploy retires enough to meet the cap", async () => {
   const { runtime, state, deps } = fixture();
   deps.documents.host = async () =>
-    parseHostConfig({ deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } } });
+    parseHostConfig({
+      deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } },
+    });
   const preview = (branch: string) =>
-    runtime.command({ action: "deploy", project: "demo", target: "preview", branch });
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch,
+    });
   const previews = () =>
     state.targets.filter((t) => t.kind === "preview").map((t) => t.branch);
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await preview("feature/a");
   deps.lifecycle.retire = async () => {
-    throw new RigError("STOP_INCOMPLETE", "web did not stop.", "Stop it by hand.");
+    throw new RigError(
+      "STOP_INCOMPLETE",
+      "web did not stop.",
+      "Stop it by hand.",
+    );
   };
   expect(await preview("feature/b")).toMatchObject({
     outcome: "deployed",
@@ -220,7 +251,10 @@ test("a Preview deploy stays deployed when retiring the oldest Preview fails, an
     desired: "running",
     commit: "abc",
   });
-  expect(state.activity.at(-1)).toMatchObject({ action: "deploy", outcome: "deployed" });
+  expect(state.activity.at(-1)).toMatchObject({
+    action: "deploy",
+    outcome: "deployed",
+  });
   expect(previews()).toEqual(["feature/a", "feature/b"]);
   expect(await preview("feature/b")).toMatchObject({ outcome: "unchanged" });
   const retired: string[] = [];
@@ -228,7 +262,10 @@ test("a Preview deploy stays deployed when retiring the oldest Preview fails, an
     retired.push(target.branch!);
     await publishRemoval?.();
   };
-  expect(await preview("feature/c")).toMatchObject({ outcome: "deployed", warnings: [] });
+  expect(await preview("feature/c")).toMatchObject({
+    outcome: "deployed",
+    warnings: [],
+  });
   expect(retired).toEqual(["feature/a", "feature/b"]);
   expect(previews()).toEqual(["feature/c"]);
 });
@@ -236,24 +273,37 @@ test("a Preview deploy stays deployed when retiring the oldest Preview fails, an
 test("replacing the oldest Preview destroys its owned storage after verified shutdown, and a failed deletion keeps its record as the retry handle", async () => {
   const { runtime, state, deps } = fixture();
   deps.documents.host = async () =>
-    parseHostConfig({ deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } } });
+    parseHostConfig({
+      deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } },
+    });
   const preview = (branch: string) =>
-    runtime.command({ action: "deploy", project: "demo", target: "preview", branch });
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch,
+    });
   const calls: string[] = [];
   deps.files.inspectPreviewDeletion = async ({ target }) => {
     calls.push(`inspect:${target.branch}`);
   };
   deps.lifecycle.retire = async (target, publishRemoval) => {
-    calls.push(`retire:${target.branch}:${publishRemoval ? "publish" : "retain"}`);
+    calls.push(
+      `retire:${target.branch}:${publishRemoval ? "publish" : "retain"}`,
+    );
   };
   deps.files.destroyPreview = async ({ target }) => {
     calls.push(`destroy:${target.branch}`);
-    if (target.branch === "feature/b") throw new Error("EBUSY: data root in use");
+    if (target.branch === "feature/b")
+      throw new Error("EBUSY: data root in use");
   };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await preview("feature/a");
   const first = state.targets.find((t) => t.kind === "preview")!;
-  expect(await preview("feature/b")).toMatchObject({ outcome: "deployed", warnings: [] });
+  expect(await preview("feature/b")).toMatchObject({
+    outcome: "deployed",
+    warnings: [],
+  });
   expect(calls).toEqual([
     "inspect:feature/a",
     "retire:feature/a:retain",
@@ -284,28 +334,48 @@ test("replacing the oldest Preview destroys its owned storage after verified shu
 test("Preview replacement evicts incomplete and stopped Previews before the oldest running one, reports each retirement, and records it in activity", async () => {
   const { runtime, state, deps } = fixture();
   deps.documents.host = async () =>
-    parseHostConfig({ deploy: { generated: { maxActive: 3, replacePolicy: "oldest" } } });
+    parseHostConfig({
+      deploy: { generated: { maxActive: 3, replacePolicy: "oldest" } },
+    });
   const preview = (branch: string) =>
-    runtime.command({ action: "deploy", project: "demo", target: "preview", branch });
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch,
+    });
   const previews = () =>
     state.targets.filter((t) => t.kind === "preview").map((t) => t.branch);
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await preview("feature/a");
   await preview("feature/b");
   await preview("feature/c");
-  await runtime.command({ action: "down", project: "demo", target: "preview", branch: "feature/b" });
+  await runtime.command({
+    action: "down",
+    project: "demo",
+    target: "preview",
+    branch: "feature/b",
+  });
   const stoppedName = state.targets.find((t) => t.branch === "feature/b")!.name;
   expect(await preview("feature/d")).toMatchObject({
     outcome: "deployed",
     warnings: [],
-    retired: [{ target: stoppedName, branch: "feature/b", reason: "Preview limit" }],
+    retired: [
+      { target: stoppedName, branch: "feature/b", reason: "Preview limit" },
+    ],
   });
   expect(previews()).toEqual(["feature/a", "feature/c", "feature/d"]);
   expect(state.activity.slice(-2)).toMatchObject([
-    { action: "destroy", target: stoppedName, outcome: "stopped", message: "Preview limit" },
+    {
+      action: "destroy",
+      target: stoppedName,
+      outcome: "stopped",
+      message: "Preview limit",
+    },
     { action: "deploy", outcome: "deployed" },
   ]);
-  state.targets.find((t) => t.branch === "feature/c")!.deploymentIncomplete = true;
+  state.targets.find((t) => t.branch === "feature/c")!.deploymentIncomplete =
+    true;
   await preview("feature/e");
   expect(previews()).toEqual(["feature/a", "feature/d", "feature/e"]);
   await preview("feature/f");
@@ -403,25 +473,53 @@ test("repoint refuses a config whose port another Target records and leaves the 
           `Port ${request.preferred} is reserved by another Target.`,
           "Configure a distinct local/live port.",
         );
-    return Object.fromEntries(requests.map((request) => [request.name, request.preferred ?? 6000]));
+    return Object.fromEntries(
+      requests.map((request) => [request.name, request.preferred ?? 6000]),
+    );
   };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   await runtime.command({ action: "down", project: "demo" });
   const foreign = structuredClone(state.targets[0]!);
-  Object.assign(foreign, { id: "foreign", projectId: "other", name: "live", kind: "live" });
+  Object.assign(foreign, {
+    id: "foreign",
+    projectId: "other",
+    name: "live",
+    kind: "live",
+  });
   (foreign.plan.components[0] as { port: number }).port = 4600;
   state.targets.push(foreign);
-  config.components.web = { mode: "managed", command: "serve --host 127.0.0.1", port: 4600 };
+  config.components.web = {
+    mode: "managed",
+    command: "serve --host 127.0.0.1",
+    port: 4600,
+  };
   await expect(
-    runtime.command({ action: "repoint", project: "demo", newPath: "/tmp/moved" }),
+    runtime.command({
+      action: "repoint",
+      project: "demo",
+      newPath: "/tmp/moved",
+    }),
   ).rejects.toMatchObject({ code: "PORT_RESERVED" });
   expect(state.projects[0]).toMatchObject({ repoPath: "/tmp/developer" });
-  expect(state.targets[0]!.plan).toMatchObject({ workspacePath: "/tmp/developer" });
+  expect(state.targets[0]!.plan).toMatchObject({
+    workspacePath: "/tmp/developer",
+  });
   expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4567 });
-  config.components.web = { mode: "managed", command: "serve --host 127.0.0.1", port: 4700 };
-  await runtime.command({ action: "repoint", project: "demo", newPath: "/tmp/moved" });
-  expect(state.targets[0]).toMatchObject({ id: state.targets[0]!.id, desired: "stopped" });
+  config.components.web = {
+    mode: "managed",
+    command: "serve --host 127.0.0.1",
+    port: 4700,
+  };
+  await runtime.command({
+    action: "repoint",
+    project: "demo",
+    newPath: "/tmp/moved",
+  });
+  expect(state.targets[0]).toMatchObject({
+    id: state.targets[0]!.id,
+    desired: "stopped",
+  });
   expect(state.targets[0]!.plan).toMatchObject({ workspacePath: "/tmp/moved" });
   expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4700 });
 });
@@ -448,7 +546,9 @@ test("a Convex site port is requested as port + 1 but the collision-checked sele
     { name: "api", preferred: 3210 },
     { name: "api.site", preferred: 3211 },
   ]);
-  expect(state.targets[0]!.plan.components.find((c) => c.name === "api")).toMatchObject({
+  expect(
+    state.targets[0]!.plan.components.find((c) => c.name === "api"),
+  ).toMatchObject({
     port: 3210,
     sitePort: 3999,
   });
@@ -459,10 +559,17 @@ test("ports owned by a Target's unresolved recovery plan stay reserved while oth
   const occupiedSeen: number[][] = [];
   deps.files.selectPorts = async ({ requests, occupied }) => {
     occupiedSeen.push([...occupied].sort((a, b) => a - b));
-    return Object.fromEntries(requests.map((request) => [request.name, request.preferred ?? 6000]));
+    return Object.fromEntries(
+      requests.map((request) => [request.name, request.preferred ?? 6000]),
+    );
   };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({ action: "deploy", project: "demo", target: "live", branch: "main" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  });
   const live = state.targets[0]!;
   const previousPlan = structuredClone(live.plan);
   (previousPlan.components[0] as { port: number }).port = 4600;
@@ -473,7 +580,12 @@ test("ports owned by a Target's unresolved recovery plan stay reserved while oth
     desired: "running",
     stage: "blocked",
   };
-  await runtime.command({ action: "deploy", project: "demo", target: "preview", branch: "feature/x" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature/x",
+  });
   expect(occupiedSeen.at(-1)).toEqual([4567, 4600]);
 });
 
@@ -521,15 +633,27 @@ test("a stopped Working copy Target frees its old port for a live deploy once ri
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   await runtime.command({ action: "down", project: "demo" });
-  const live = { action: "deploy", project: "demo", target: "live", branch: "main" } as const;
-  await expect(runtime.command(live)).rejects.toMatchObject({ code: "PORT_RESERVED" });
+  const live = {
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  } as const;
+  await expect(runtime.command(live)).rejects.toMatchObject({
+    code: "PORT_RESERVED",
+  });
   config.local = { components: { web: { port: 4570 } } } as typeof config.local;
   await runtime.command({ action: "up", project: "demo" });
   await runtime.command({ action: "down", project: "demo" });
   expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4570 });
-  await expect(runtime.command(live)).resolves.toMatchObject({ outcome: "deployed" });
+  await expect(runtime.command(live)).resolves.toMatchObject({
+    outcome: "deployed",
+  });
   expect(
-    state.targets.map((t) => [t.kind, (t.plan.components[0] as { port?: number }).port]),
+    state.targets.map((t) => [
+      t.kind,
+      (t.plan.components[0] as { port?: number }).port,
+    ]),
   ).toEqual([
     ["local", 4570],
     ["live", 4567],
@@ -550,15 +674,29 @@ test("deploy plans a Target from the rig config committed on the deployed revisi
   deps.documents.read = async (path) =>
     path === "/tmp/developer"
       ? await workingCopy(path)
-      : { path: `${path}/rig.yaml`, format: "yaml", revision: "committed", config: committed };
+      : {
+          path: `${path}/rig.yaml`,
+          format: "yaml",
+          revision: "committed",
+          config: committed,
+        };
   expect(
-    await runtime.command({ action: "deploy", project: "demo", target: "live" }),
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+    }),
   ).toMatchObject({ outcome: "deployed", commit: "abc" });
   const live = state.targets.find((target) => target.kind === "live")!;
   expect(live.plan.workspacePath).toContain("/revisions/");
-  expect(live.plan.components.map((component) => component.name)).toEqual(["web", "api"]);
+  expect(live.plan.components.map((component) => component.name)).toEqual([
+    "web",
+    "api",
+  ]);
   expect(live.plan.components).toEqual(
-    expect.arrayContaining([expect.objectContaining({ name: "api", port: 4600 })]),
+    expect.arrayContaining([
+      expect.objectContaining({ name: "api", port: 4600 }),
+    ]),
   );
 });
 
@@ -570,7 +708,12 @@ test("deploy refuses a revision whose committed rig config names another Project
   deps.documents.read = async (path) =>
     path === "/tmp/developer"
       ? await workingCopy(path)
-      : { path: `${path}/rig.yaml`, format: "yaml", revision: "committed", config: renamed };
+      : {
+          path: `${path}/rig.yaml`,
+          format: "yaml",
+          revision: "committed",
+          config: renamed,
+        };
   await expect(
     runtime.command({ action: "deploy", project: "demo", target: "live" }),
   ).rejects.toMatchObject({ code: "PROJECT_IDENTITY" });
@@ -720,20 +863,29 @@ test("restart proceeds to up after failed shutdown hooks and reports them as war
       "STOP_HOOKS",
       "Managed processes are stopped, but shutdown hooks failed.",
       "Inspect Target logs and correct the shutdown hooks.",
-      { processesStopped: true, outcome: "stopped", hookFailures: [new Error("postStop exited with code 1")] },
+      {
+        processesStopped: true,
+        outcome: "stopped",
+        hookFailures: [new Error("postStop exited with code 1")],
+      },
     );
   };
   deps.lifecycle.restoreEffects = async () => {
     restored = true;
   };
-  expect(await runtime.command({ action: "restart", project: "demo" })).toMatchObject({
+  expect(
+    await runtime.command({ action: "restart", project: "demo" }),
+  ).toMatchObject({
     action: "restart",
     outcome: "started",
     warnings: ["Shutdown hook failed: postStop exited with code 1"],
   });
   expect(restored).toBe(true);
   expect(state.targets[0]?.desired).toBe("running");
-  expect(state.activity.at(-1)).toMatchObject({ action: "restart", outcome: "started" });
+  expect(state.activity.at(-1)).toMatchObject({
+    action: "restart",
+    outcome: "started",
+  });
 });
 
 test.each(["pending", "blocked", "committing"] as const)(
@@ -1124,22 +1276,46 @@ test("a successful up completes an incomplete first deployment, which status and
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   const up = deps.lifecycle.up;
   deps.lifecycle.up = async () => {
-    throw new RigError("HEALTH_FAILED", "web never became healthy", "Inspect logs");
+    throw new RigError(
+      "HEALTH_FAILED",
+      "web never became healthy",
+      "Inspect logs",
+    );
   };
   await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "live", branch: "main" }),
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+    }),
   ).rejects.toMatchObject({ code: "HEALTH_FAILED" });
-  expect(state.targets[0]).toMatchObject({ desired: "stopped", deploymentIncomplete: true });
-  const status = (await runtime.command({ action: "status", project: "demo" })) as {
+  expect(state.targets[0]).toMatchObject({
+    desired: "stopped",
+    deploymentIncomplete: true,
+  });
+  const status = (await runtime.command({
+    action: "status",
+    project: "demo",
+  })) as {
     warnings?: string[];
     targets: { name: string; deploymentIncomplete?: boolean }[];
   };
-  expect(status.warnings?.join(" ")).toContain("live: the last deploy did not complete");
-  expect(status.targets.find((t) => t.name === "live")).toMatchObject({ deploymentIncomplete: true });
-  const { checks } = (await runtime.command({ action: "doctor", project: "demo" })) as {
+  expect(status.warnings?.join(" ")).toContain(
+    "live: the last deploy did not complete",
+  );
+  expect(status.targets.find((t) => t.name === "live")).toMatchObject({
+    deploymentIncomplete: true,
+  });
+  const { checks } = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as {
     checks: { ok: boolean; reason?: string; hint?: string }[];
   };
-  expect(checks.find((c) => c.reason === "deployment-incomplete")).toMatchObject({
+  expect(
+    checks.find((c) => c.reason === "deployment-incomplete"),
+  ).toMatchObject({
     ok: false,
     hint: expect.stringContaining("up"),
   });
@@ -1149,12 +1325,22 @@ test("a successful up completes an incomplete first deployment, which status and
   ).toMatchObject({ outcome: "started" });
   expect(state.targets[0]!.deploymentIncomplete).toBeUndefined();
   expect(
-    await runtime.command({ action: "deploy", project: "demo", target: "live", branch: "main" }),
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+    }),
   ).toMatchObject({ outcome: "unchanged" });
-  const after = (await runtime.command({ action: "doctor", project: "demo" })) as {
+  const after = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as {
     checks: { reason?: string }[];
   };
-  expect(after.checks.find((c) => c.reason === "deployment-incomplete")).toBeUndefined();
+  expect(
+    after.checks.find((c) => c.reason === "deployment-incomplete"),
+  ).toBeUndefined();
 });
 
 test("status and doctor report a live deploy as in progress instead of unresolved recovery", async () => {
@@ -1177,18 +1363,30 @@ test("status and doctor report a live deploy as in progress instead of unresolve
     operationId: "op-deploy",
   });
   while (!state.targets[0]?.recovery) await Bun.sleep(5);
-  const live = (await runtime.command({ action: "status", project: "demo" })) as {
+  const live = (await runtime.command({
+    action: "status",
+    project: "demo",
+  })) as {
     targets: { state: string }[];
     warnings?: string[];
   };
   expect(live.targets[0]?.state).not.toBe("unknown");
-  expect(live.warnings?.join(" ")).toContain("deploy in progress (operation op-deploy)");
+  expect(live.warnings?.join(" ")).toContain(
+    "deploy in progress (operation op-deploy)",
+  );
   expect(live.warnings?.join(" ")).not.toContain("run down");
-  const { checks } = (await runtime.command({ action: "doctor", project: "demo" })) as {
+  const { checks } = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as {
     checks: { ok: boolean; reason?: string; message: string }[];
   };
-  expect(checks.find((c) => c.reason === "deployment-recovery")).toBeUndefined();
-  expect(checks.find((c) => c.reason === "deployment-in-progress")).toMatchObject({
+  expect(
+    checks.find((c) => c.reason === "deployment-recovery"),
+  ).toBeUndefined();
+  expect(
+    checks.find((c) => c.reason === "deployment-in-progress"),
+  ).toMatchObject({
     ok: true,
     message: expect.stringContaining("op-deploy"),
   });
@@ -1202,12 +1400,17 @@ test("status and doctor report a live deploy as in progress instead of unresolve
     desired: "running",
     operationId: "op-deploy",
   };
-  const stale = (await createRuntime(deps).command({ action: "status", project: "demo" })) as {
+  const stale = (await createRuntime(deps).command({
+    action: "status",
+    project: "demo",
+  })) as {
     targets: { state: string }[];
     warnings?: string[];
   };
   expect(stale.targets[0]?.state).toBe("unknown");
-  expect(stale.warnings?.join(" ")).toContain("unresolved deployment transition");
+  expect(stale.warnings?.join(" ")).toContain(
+    "unresolved deployment transition",
+  );
 });
 
 test("failed deploy records separate safe initiating and rollback categories", async () => {
@@ -1945,15 +2148,25 @@ test("a retirement refused before anything changed releases the Preview instead 
     f.deps.lifecycle.retire = async () => {
       throw new RigError("PROVIDER_MISSING", "No supervisor", "Fix providers");
     };
-    await expect(f.destroy()).rejects.toMatchObject({ code: "PROVIDER_MISSING" });
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "PROVIDER_MISSING",
+    });
     expect(f.state.targets[0]).toMatchObject({ desired: "stopped" });
     expect(f.state.targets[0]!.destructionPending).toBeUndefined();
     const uninstall = await f.runtime
       .command({ action: "prepare-uninstall" })
-      .then(() => "allowed", (error: unknown) => (error as RigError).code);
+      .then(
+        () => "allowed",
+        (error: unknown) => (error as RigError).code,
+      );
     expect(uninstall).not.toBe("DEPLOY_RECOVERY");
     expect(
-      await f.runtime.command({ action: "up", project: "demo", target: "preview", deployment: "review" }),
+      await f.runtime.command({
+        action: "up",
+        project: "demo",
+        target: "preview",
+        deployment: "review",
+      }),
     ).toMatchObject({ outcome: "started" });
     f.deps.lifecycle.retire = retire;
     expect(await f.destroy()).toMatchObject({ outcome: "stopped" });
@@ -1967,12 +2180,26 @@ test("a retirement whose finalization is unfinished keeps the Preview locked for
   const f = await destroyFixture();
   try {
     f.deps.lifecycle.retire = async () => {
-      throw new RigError("RETIRE_COMMIT_PENDING", "Finalization failed", "Retry");
+      throw new RigError(
+        "RETIRE_COMMIT_PENDING",
+        "Finalization failed",
+        "Retry",
+      );
     };
-    await expect(f.destroy()).rejects.toMatchObject({ code: "RETIRE_COMMIT_PENDING" });
-    expect(f.state.targets[0]).toMatchObject({ desired: "stopped", destructionPending: true });
+    await expect(f.destroy()).rejects.toMatchObject({
+      code: "RETIRE_COMMIT_PENDING",
+    });
+    expect(f.state.targets[0]).toMatchObject({
+      desired: "stopped",
+      destructionPending: true,
+    });
     await expect(
-      f.runtime.command({ action: "up", project: "demo", target: "preview", deployment: "review" }),
+      f.runtime.command({
+        action: "up",
+        project: "demo",
+        target: "preview",
+        deployment: "review",
+      }),
     ).rejects.toMatchObject({ code: "DESTROY_PENDING" });
   } finally {
     await f.cleanup();
@@ -2197,4 +2424,67 @@ test("deploy --no-up says the Target is stopped and names the rig up command", a
     ],
   });
   expect(state.targets[0]?.desired).toBe("stopped");
+});
+
+test("a deploy releases the revision it supersedes or the candidate it rejects, a Preview destroy releases its revision, and a release failure is only a warning", async () => {
+  const { runtime, state, deps } = fixture();
+  const released: string[] = [];
+  deps.sources.release = async ({ project, workspacePath }) => {
+    released.push(`${project}:${workspacePath}`);
+  };
+  const commit = (value: string) => {
+    deps.sources.resolve = async () => value;
+    deps.sources.preflight = async () => ({ commit: value, warnings: [] });
+    deps.sources.prepare = async (request) => ({
+      workspacePath: request.destination,
+      commit: value,
+    });
+  };
+  const deploy = (target: "live" | "preview", branch: string) =>
+    runtime.command({ action: "deploy", project: "demo", target, branch });
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await deploy("live", "main");
+  const first = state.targets[0]!.plan.workspacePath;
+  expect(released).toEqual([]);
+  commit("def");
+  expect(await deploy("live", "main")).toMatchObject({
+    outcome: "deployed",
+    warnings: [],
+  });
+  const second = state.targets[0]!.plan.workspacePath;
+  expect(released).toEqual([`${state.projects[0]!.id}:${first}`]);
+  commit("ghi");
+  const up = deps.lifecycle.up;
+  deps.lifecycle.up = async (record) => {
+    if (record.commit === "ghi") throw new Error("candidate failed");
+    return up(record);
+  };
+  await expect(deploy("live", "main")).rejects.toThrow("candidate failed");
+  expect(state.targets[0]!.plan.workspacePath).toBe(second);
+  expect(released).toHaveLength(2);
+  expect(released[1]).not.toBe(released[0]);
+  expect(released[1]!.endsWith(second)).toBe(false);
+  deps.lifecycle.up = up;
+  await deploy("preview", "feature/a");
+  const preview = state.targets.find((t) => t.kind === "preview")!;
+  await runtime.command({
+    action: "destroy",
+    project: "demo",
+    target: "preview",
+    branch: "feature/a",
+  });
+  expect(released[2]).toBe(
+    `${preview.projectId}:${preview.plan.workspacePath}`,
+  );
+  commit("jkl");
+  deps.sources.release = async () => {
+    throw new Error("worktree is locked");
+  };
+  expect(await deploy("live", "main")).toMatchObject({
+    outcome: "deployed",
+    warnings: [
+      `Revision ${second} was not removed: worktree is locked. Delete it by hand to reclaim disk.`,
+    ],
+  });
+  expect(state.targets.find((t) => t.kind === "live")!.commit).toBe("jkl");
 });

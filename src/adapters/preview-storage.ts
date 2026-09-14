@@ -1,5 +1,6 @@
 import { lstat, readdir, realpath, rm } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { within } from "../domain/paths";
 import type { TargetRecord } from "../domain/runtime";
 import type { RuntimeFiles } from "../runtime/contracts";
 import { RigError } from "../domain/errors";
@@ -109,15 +110,6 @@ async function inspectDeletionRoot({
   return physicalBase;
 }
 
-function within(parent: string, child: string): boolean {
-  const path = relative(parent, child);
-  return (
-    path !== "" &&
-    path !== ".." &&
-    !path.startsWith(`..${sep}`) &&
-    !path.startsWith(sep)
-  );
-}
 function overlaps(first: string, second: string): boolean {
   return first === second || within(first, second) || within(second, first);
 }

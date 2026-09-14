@@ -50,6 +50,9 @@ export interface DeploymentSources {
     ref: string;
     destination: string;
   }): Promise<{ workspacePath: string; commit: string }>;
+  /** Remove a prepared workspace, its install output, and its worktree registration; a workspace
+   * already deleted is only pruned. Callers pass only workspaces no inventory record references. */
+  release(request: { project: string; workspacePath: string }): Promise<void>;
   resolve(repository: string, ref: string): Promise<string>;
   preflight(input: {
     repoPath: string;

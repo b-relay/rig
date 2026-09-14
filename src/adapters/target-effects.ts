@@ -291,11 +291,8 @@ export function createTargetEffects(
         }
       }
       if (target.kind === "local") return;
-      const marker = join(
-        options.root,
-        "prepared",
-        createHash("sha256").update(target.plan.workspacePath).digest("hex"),
-      );
+      // The marker lives in the immutable workspace, so releasing the revision reclaims it too.
+      const marker = join(target.plan.workspacePath, PREPARED_MARKER);
       if (await exists(marker)) return;
       // Dependency installation happens once per immutable workspace. Application builds remain Component policy.
       let command: string[] | undefined;
@@ -329,7 +326,6 @@ export function createTargetEffects(
             "Inspect Target setup logs and retry deployment.",
           );
       }
-      await mkdir(dirname(marker), { recursive: true, mode: 0o700 });
       await writeFile(marker, "prepared\n", { mode: 0o600 });
     },
     async hook(command, target, component, name) {
@@ -546,6 +542,8 @@ async function readEnvironment(path: string): Promise<Record<string, string>> {
   return values;
 }
 
+/** Written at a deployed workspace root once its dependencies are installed. */
+const PREPARED_MARKER = ".rig-prepared";
 const installReceiptSchema = z.object({
   key: z.string().describe("Digest of recorded installation policy."),
   sourceRevision: z.string().describe("Installed source identity."),

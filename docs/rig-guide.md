@@ -185,6 +185,16 @@ plan. A revision whose committed config names a different Project is refused
 as `PROJECT_IDENTITY`, and an invalid committed config fails the deploy with
 the revision's path in the message.
 
+Each deploy checks out its revision under
+`<RIG_ROOT>/targets/<project>/<id>/revisions/<uuid>` as a worktree of Rig's
+own mirror and installs its dependencies once, recording that in a
+`.rig-prepared` file at the workspace root. Once the new revision is committed,
+the superseded checkout, its install output, and its worktree registration are
+removed; a candidate that fails to start is removed the same way when the
+previous plan is restored. A revision that could not be removed is reported as
+a deploy warning naming its path, and the deploy still succeeds. Destroying a
+Preview also drops its worktree registration from the mirror.
+
 Every deploy resolves its Project from `--project` or the working directory
 and, before anything changes, prints a line such as
 `Deploying share (/Users/me/share) to live from main.` on stderr. A deploy run

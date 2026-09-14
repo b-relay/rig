@@ -1,5 +1,12 @@
 import type { TargetRecord } from "../domain/runtime";
-import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
+import {
+  RigError,
+  failureCauses,
+  failureReason,
+  retainFailureCauses,
+  type FailureCauses,
+} from "../domain/errors";
+import { within } from "../domain/paths";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
 import { stopForTransition } from "./lifecycle";
@@ -159,4 +166,46 @@ export async function stopForRecovery(
   await deps.lifecycle.restoreEffects(target);
   await persistTarget(previous, deps.store);
   return previous;
+}
+
+/** The checkout a deployed Target owns under its revisions directory; local Targets have none. */
+export function ownedRevision(record: TargetRecord): string | undefined {
+  return record.sourceRoot &&
+    within(record.sourceRoot, record.plan.workspacePath)
+    ? record.plan.workspacePath
+    : undefined;
+}
+/** A revision that stayed on disk after a deployment decision, with the reason for the user and the diagnostic log. */
+export interface RetainedRevision {
+  readonly workspacePath: string;
+  readonly warning: string;
+  readonly causes: FailureCauses;
+}
+/** Give back the revisions among `records` that no inventory record uses any more, once the deployment
+ * outcome is saved. Each failure is reported, never thrown: the outcome stands and the checkout stays. */
+export async function releaseUnreferencedRevisions(
+  records: readonly TargetRecord[],
+  deps: Pick<RuntimeDependencies, "sources" | "store">,
+): Promise<RetainedRevision[]> {
+  const referenced = new Set(
+    (await deps.store.read()).targets.flatMap((record) => [
+      record.plan.workspacePath,
+      ...(record.recovery ? [record.recovery.plan.workspacePath] : []),
+    ]),
+  );
+  const retained: RetainedRevision[] = [];
+  for (const record of records) {
+    const workspacePath = ownedRevision(record);
+    if (!workspacePath || referenced.has(workspacePath)) continue;
+    try {
+      await deps.sources.release({ project: record.projectId, workspacePath });
+    } catch (error) {
+      retained.push({
+        workspacePath,
+        warning: `Revision ${workspacePath} was not removed: ${failureReason(error)} Delete it by hand to reclaim disk.`,
+        causes: failureCauses(error),
+      });
+    }
+  }
+  return retained;
 }

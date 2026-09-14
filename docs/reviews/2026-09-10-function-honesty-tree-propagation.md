@@ -270,7 +270,7 @@ owner carries only its own owner-level defects.
 | minor CLI gaps (Details without Operation, empty branch, hashed slug, no --version) | #150 |
 | crash between effect and journal capture bricks the Target | #151 |
 | repoint skips port reservation | #152 |
-| superseded revisions/worktrees/markers never removed | #153 |
+| superseded revisions/worktrees/markers never removed | #153 (fixed: `releaseUnreferencedRevisions` after each deploy decision; the prepare marker now lives in the workspace) |
 | drift hint "Deploy to apply" is a same-Commit no-op | #154 |
 | up starts incomplete Deployment, flag never cleared | #155 |
 | installer shell environment inherited by rigd, components, hooks; persisted to capture JSON | #156 (fixed: `inheritedEnvironment` picks the login basics in both install modes) |
@@ -341,7 +341,7 @@ owner carries only its own owner-level defects.
 | destroy persists destructionPending before retirement preconditions: refused destroy wedges the Preview and blocks uninstall | #219 |
 | Preview records without sourceRoot can never be destroyed; same-commit deploy does not repair | #220 |
 | eviction by createdAt evicts the most recently redeployed Preview; half-destroyed Preview holds a slot (addendum) | #188 |
-| destroyed Previews leave stale git worktree entries in the mirror (addendum) | #153 |
+| destroyed Previews leave stale git worktree entries in the mirror (addendum) | #153 (fixed: Preview destroy calls `sources.release`, which prunes the mirror) |
 | [D] inspectOfflineHost hard-wires inspectHost/discoverProject (row 1) | #224 |
 | [D+T] createChildSupervisor / [D] createProcessInspection defaults; composeDaemon passes none (rows 6, 7) | #225 |
 | [D] child observe process.kill(0) bypasses inspection (row 2) | #146 item 2 |

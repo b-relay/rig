@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { writeFile, readFile, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { rigFixture } from "./support/rig-fixture";
 
 test("real Branch deployment preserves policy, persistent data, no-op stops, and developer-repository independence", async () => {
@@ -89,9 +89,13 @@ test("real Branch deployment preserves policy, persistent data, no-op stops, and
     ).toMatchObject({ code: 0 });
     const verified = await f.run(
       ["git", "fsck", "--full"],
-      target.plan.workspacePath,
+      replaced.plan.workspacePath,
     );
     expect(verified).toMatchObject({ code: 0 });
+    // The superseded revision left with its replacement; only the current checkout remains.
+    expect(await readdir(dirname(replaced.plan.workspacePath))).toEqual([
+      basename(replaced.plan.workspacePath),
+    ]);
     expect(
       await f.rig(["down", "live", "--project", "demo"], f.base),
     ).toMatchObject({ code: 0 });

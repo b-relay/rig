@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile, stat, readdir } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+  stat,
+  readdir,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTargetEffects } from "../src/adapters/target-effects";
@@ -39,14 +47,20 @@ function target(root: string): TargetRecord {
 function effects(
   root: string,
   recordingTime = () => new Date().toISOString(),
-  environment: Record<string, string> = { PATH: process.env.PATH!, HOST: "host" },
+  environment: Record<string, string> = {
+    PATH: process.env.PATH!,
+    HOST: "host",
+  },
 ) {
   return createTargetEffects({
     root,
     recordingTime,
     supervisors: new Map(),
     run: runCommand,
-    installer: createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath }),
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
     router: {
       async apply() {},
       async remove() {},
@@ -76,7 +90,12 @@ test("global and component hooks receive their resolved environment and write ra
     dependsOn: [],
   };
   const adapter = effects(root);
-  await adapter.hook('printf "%s:%s\\n" "$HOST" "$VALUE"', record, undefined, "preStart");
+  await adapter.hook(
+    'printf "%s:%s\\n" "$HOST" "$VALUE"',
+    record,
+    undefined,
+    "preStart",
+  );
   await adapter.hook(
     'printf "%s:%s:%s\\n" "$HOST" "$VALUE" "$OVERRIDE"',
     record,
@@ -304,42 +323,95 @@ test("setup recording acquires time for each retained line and reads unchanged s
   const root = await mkdtemp(join(tmpdir(), "rig-record-time-"));
   roots.push(root);
   const record = target(root);
-  const timestamps = ["2026-09-09T12:00:00.001Z", "2026-09-09T12:00:00.002Z", "2026-09-09T12:00:00.003Z", "2026-09-09T12:00:00.004Z"];
+  const timestamps = [
+    "2026-09-09T12:00:00.001Z",
+    "2026-09-09T12:00:00.002Z",
+    "2026-09-09T12:00:00.003Z",
+    "2026-09-09T12:00:00.004Z",
+  ];
   let acquired = 0;
   const adapter = effects(root, () => timestamps[acquired++]!);
-  await adapter.hook("printf 'one\\n\\ntwo\\n'; printf 'error\\n' >&2", record, undefined, "preStart");
+  await adapter.hook(
+    "printf 'one\\n\\ntwo\\n'; printf 'error\\n' >&2",
+    record,
+    undefined,
+    "preStart",
+  );
   await adapter.hook("true", record, undefined, "postStart");
   const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
   const page = await createRuntimeFiles().logs(record, undefined, 100);
   expect(page.entries).toEqual([
-    { timestamp: timestamps[0], component: "setup", stream: "stdout", line: "one" },
-    { timestamp: timestamps[1], component: "setup", stream: "stdout", line: "" },
-    { timestamp: timestamps[2], component: "setup", stream: "stdout", line: "two" },
-    { timestamp: timestamps[3], component: "setup", stream: "stderr", line: "error" },
+    {
+      timestamp: timestamps[0],
+      component: "setup",
+      stream: "stdout",
+      line: "one",
+    },
+    {
+      timestamp: timestamps[1],
+      component: "setup",
+      stream: "stdout",
+      line: "",
+    },
+    {
+      timestamp: timestamps[2],
+      component: "setup",
+      stream: "stdout",
+      line: "two",
+    },
+    {
+      timestamp: timestamps[3],
+      component: "setup",
+      stream: "stderr",
+      line: "error",
+    },
   ]);
   const { runRigCli } = await import("../src/cli/rig");
   const controller = new AbortController();
-  let output = "", polls = 0, waits = 0;
+  let output = "",
+    polls = 0,
+    waits = 0;
   const cursors: (string | undefined)[] = [];
   const files = createRuntimeFiles();
-  expect(await runRigCli(["logs", "local", "--follow"], {
-    root, cwd: root, signal: controller.signal,
-    async wait() {
-      if (++waits === 2) controller.abort();
-    },
-    client: {
-      async status() { throw new Error("Unexpected status"); },
-      async command(request) {
-        expect(request.action).toBe("logs");
-        polls++;
-        cursors.push(request.after);
-        return { project: "demo", target: "local", ...await files.logs(record, request.after, 100) };
+  expect(
+    await runRigCli(["logs", "local", "--follow"], {
+      root,
+      cwd: root,
+      signal: controller.signal,
+      async wait() {
+        if (++waits === 2) controller.abort();
       },
-    },
-    output: { write(value) { output += value; }, error(value) { throw new Error(value); } },
-    diagnostics: { async record() { return {}; } },
-    newOperationId: () => "recorded-follow",
-  })).toBe(0);
+      client: {
+        async status() {
+          throw new Error("Unexpected status");
+        },
+        async command(request) {
+          expect(request.action).toBe("logs");
+          polls++;
+          cursors.push(request.after);
+          return {
+            project: "demo",
+            target: "local",
+            ...(await files.logs(record, request.after, 100)),
+          };
+        },
+      },
+      output: {
+        write(value) {
+          output += value;
+        },
+        error(value) {
+          throw new Error(value);
+        },
+      },
+      diagnostics: {
+        async record() {
+          return {};
+        },
+      },
+      newOperationId: () => "recorded-follow",
+    }),
+  ).toBe(0);
   expect(polls).toBe(2);
   expect(cursors[0]).toBeUndefined();
   expect(typeof cursors[1]).toBe("string");
@@ -349,13 +421,19 @@ test("setup recording acquires time for each retained line and reads unchanged s
   expect(acquired).toBe(4);
   expect(await readdir(record.logRoot)).toEqual(["target.jsonl"]);
   expect((await stat(record.logRoot)).mode & 0o777).toBe(0o700);
-  expect((await stat(join(record.logRoot, "target.jsonl"))).mode & 0o777).toBe(0o600);
+  expect((await stat(join(record.logRoot, "target.jsonl"))).mode & 0o777).toBe(
+    0o600,
+  );
 });
 
 test("a health URL with an uppercase scheme is probed over HTTP rather than run as a shell command", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-scheme-"));
   roots.push(root);
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("ok"),
+  });
   try {
     const component = {
       name: "web",
@@ -367,7 +445,13 @@ test("a health URL with an uppercase scheme is probed over HTTP rather than run 
       dependsOn: [],
       health: `HTTP://127.0.0.1:${server.port}/health`,
     };
-    await expect(effects(root).observations.health(target(root), component, new AbortController().signal)).resolves.toBe(true);
+    await expect(
+      effects(root).observations.health(
+        target(root),
+        component,
+        new AbortController().signal,
+      ),
+    ).resolves.toBe(true);
   } finally {
     server.stop(true);
   }
@@ -377,20 +461,43 @@ test("an installation receipt survives a change in the daemon's inherited enviro
   const root = await mkdtemp(join(tmpdir(), "rig-install-receipt-env-"));
   roots.push(root);
   // A deployed Target relies on the receipt alone; local rebuilds every time regardless.
-  const record = { ...target(root), id: "live", kind: "live" as const, name: "live", plan: { ...target(root).plan, target: "live" as const } };
+  const record = {
+    ...target(root),
+    id: "live",
+    kind: "live" as const,
+    name: "live",
+    plan: { ...target(root).plan, target: "live" as const },
+  };
   const component = {
     name: "tool",
     kind: "installed" as const,
     entrypoint: "tool",
-    build: "printf 'built\\n' >> builds; printf '#!/bin/sh\\necho ready\\n' > tool",
+    build:
+      "printf 'built\\n' >> builds; printf '#!/bin/sh\\necho ready\\n' > tool",
     env: { FLAVOR: "plain" },
     dependsOn: [],
   };
-  expect(await effects(root).install(component, record)).toEqual({ outcome: "installed" });
-  const later = effects(root, undefined, { PATH: process.env.PATH!, TERM_SESSION_ID: "another-tab", HOST: "other" });
-  expect(await later.install(component, record)).toEqual({ outcome: "unchanged" });
-  expect(await later.observations.artifact(record, component, new AbortController().signal)).toBe("installed");
-  expect(await later.install({ ...component, env: { FLAVOR: "spicy" } }, record)).toEqual({ outcome: "installed" });
+  expect(await effects(root).install(component, record)).toEqual({
+    outcome: "installed",
+  });
+  const later = effects(root, undefined, {
+    PATH: process.env.PATH!,
+    TERM_SESSION_ID: "another-tab",
+    HOST: "other",
+  });
+  expect(await later.install(component, record)).toEqual({
+    outcome: "unchanged",
+  });
+  expect(
+    await later.observations.artifact(
+      record,
+      component,
+      new AbortController().signal,
+    ),
+  ).toBe("installed");
+  expect(
+    await later.install({ ...component, env: { FLAVOR: "spicy" } }, record),
+  ).toEqual({ outcome: "installed" });
   expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
 });
 
@@ -408,22 +515,41 @@ test("a local Target rebuilds on every install and republishes only when the bui
   };
   await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v1\n");
   const local = target(root);
-  expect(await adapter.install(component, local)).toEqual({ outcome: "installed" });
+  expect(await adapter.install(component, local)).toEqual({
+    outcome: "installed",
+  });
   await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v2\n");
-  expect(await adapter.install(component, local)).toEqual({ outcome: "installed" });
-  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toContain("echo v2");
+  expect(await adapter.install(component, local)).toEqual({
+    outcome: "installed",
+  });
+  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toContain(
+    "echo v2",
+  );
   expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
-  const live = { ...target(root), id: "live", kind: "live" as const, name: "live", plan: { ...target(root).plan, target: "live" as const } };
-  expect(await adapter.install(component, live)).toEqual({ outcome: "installed" });
+  const live = {
+    ...target(root),
+    id: "live",
+    kind: "live" as const,
+    name: "live",
+    plan: { ...target(root).plan, target: "live" as const },
+  };
+  expect(await adapter.install(component, live)).toEqual({
+    outcome: "installed",
+  });
   await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v3\n");
-  expect(await adapter.install(component, live)).toEqual({ outcome: "unchanged" });
-  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\nbuilt\n");
+  expect(await adapter.install(component, live)).toEqual({
+    outcome: "unchanged",
+  });
+  expect(await readFile(join(root, "builds"), "utf8")).toBe(
+    "built\nbuilt\nbuilt\n",
+  );
 });
 
 test("a renamed Component takes over its own Target's installed executable, while another Target is still refused and told who owns it", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-install-rename-"));
   roots.push(root);
-  const adapter = effects(root), record = target(root);
+  const adapter = effects(root),
+    record = target(root);
   const cli = {
     name: "cli",
     kind: "installed" as const,
@@ -435,11 +561,71 @@ test("a renamed Component takes over its own Target's installed executable, whil
   };
   expect(await adapter.install(cli, record)).toEqual({ outcome: "installed" });
   const launcher = { ...cli, name: "launcher" };
-  expect(await adapter.install(launcher, record)).toEqual({ outcome: "installed" });
-  expect(await adapter.observations.artifact(record, launcher, new AbortController().signal)).toBe("installed");
+  expect(await adapter.install(launcher, record)).toEqual({
+    outcome: "installed",
+  });
+  expect(
+    await adapter.observations.artifact(
+      record,
+      launcher,
+      new AbortController().signal,
+    ),
+  ).toBe("installed");
   const other = { ...record, id: "other" };
   await expect(adapter.install(cli, other)).rejects.toMatchObject({
     code: "ARTIFACT_CONFLICT",
-    details: { destination: join(root, "bin", "tool-dev"), owner: { targetId: "t", componentName: "launcher" } },
+    details: {
+      destination: join(root, "bin", "tool-dev"),
+      owner: { targetId: "t", componentName: "launcher" },
+    },
   });
+});
+
+test("dependency installation runs once per deployed revision and its marker leaves with the revision", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-prepare-marker-"));
+  roots.push(root);
+  const workspace = join(root, "targets", "p", "t", "revisions", "r1");
+  const scaffold = async () => {
+    await mkdir(workspace, { recursive: true });
+    await writeFile(join(workspace, "package.json"), "{}\n");
+  };
+  await scaffold();
+  const installs: string[] = [];
+  const adapter = createTargetEffects({
+    root,
+    recordingTime: () => "now",
+    supervisors: new Map(),
+    run: async ({ command, cwd }) => {
+      installs.push(`${cwd}:${command.join(" ")}`);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: {
+      async apply() {},
+      async remove() {},
+      async checkpoint(key) {
+        return { key, value: null };
+      },
+      async restore() {},
+    },
+    environment: { PATH: process.env.PATH! },
+  });
+  const record: TargetRecord = {
+    ...target(root),
+    kind: "live",
+    name: "live",
+    sourceRoot: join(root, "targets", "p", "t", "revisions"),
+    plan: { ...target(root).plan, target: "live", workspacePath: workspace },
+  };
+  await adapter.prepare(record);
+  await adapter.prepare(record);
+  expect(installs).toEqual([`${workspace}:/bin/sh -c bun install`]);
+  expect(await Bun.file(join(root, "prepared")).exists()).toBe(false);
+  await rm(workspace, { recursive: true, force: true });
+  await scaffold();
+  await adapter.prepare(record);
+  expect(installs).toHaveLength(2);
 });

@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,28 +24,31 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-test.each([41, 63])("deployment rejects a %i-character Commit before publishing source files", async (length) => {
-  const root = await mkdtemp(join(tmpdir(), "rig-git-invalid-"));
-  roots.push(root);
-  const sourceRoot = join(root, "sources");
-  const store = createGitSourceStore({
-    root: sourceRoot,
-    run: async ({ command }) => {
-      if (command[1] !== "rev-parse")
-        throw new Error("Unexpected Git operation");
-      return { exitCode: 0, stdout: "a".repeat(length), stderr: "" };
-    },
-  });
-  await expect(
-    store.prepare({
-      project: "demo",
-      repository: root,
-      ref: "main",
-      destination: join(root, "deployment"),
-    }),
-  ).rejects.toMatchObject({ code: "GIT_COMMIT" });
-  expect(existsSync(sourceRoot)).toBe(false);
-});
+test.each([41, 63])(
+  "deployment rejects a %i-character Commit before publishing source files",
+  async (length) => {
+    const root = await mkdtemp(join(tmpdir(), "rig-git-invalid-"));
+    roots.push(root);
+    const sourceRoot = join(root, "sources");
+    const store = createGitSourceStore({
+      root: sourceRoot,
+      run: async ({ command }) => {
+        if (command[1] !== "rev-parse")
+          throw new Error("Unexpected Git operation");
+        return { exitCode: 0, stdout: "a".repeat(length), stderr: "" };
+      },
+    });
+    await expect(
+      store.prepare({
+        project: "demo",
+        repository: root,
+        ref: "main",
+        destination: join(root, "deployment"),
+      }),
+    ).rejects.toMatchObject({ code: "GIT_COMMIT" });
+    expect(existsSync(sourceRoot)).toBe(false);
+  },
+);
 test("a committed deployment remains a complete Git workspace after its developer repository is deleted", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-git-"));
   roots.push(root);
@@ -147,4 +151,60 @@ test("a relative repository or destination is rejected as SOURCE_PATH before any
       store.prepare({ project: "demo", ref: "main", ...request }),
     ).rejects.toMatchObject({ code: "SOURCE_PATH", hint: expect.any(String) });
   expect(commands).toEqual([]);
+});
+
+test("releasing a revision removes its worktree from the source mirror, and a revision deleted by hand is pruned", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-git-release-"));
+  roots.push(root);
+  const repository = join(root, "developer");
+  await mkdir(repository);
+  const git = async (cwd: string, ...args: string[]) => {
+    const result = await gitRun({ command: ["git", ...args], cwd });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.trim();
+  };
+  await git(repository, "init", "-b", "main");
+  await git(repository, "config", "user.email", "rig@example.invalid");
+  await git(repository, "config", "user.name", "Rig Test");
+  await writeFile(join(repository, "app.txt"), "committed content");
+  await git(repository, "add", ".");
+  await git(
+    repository,
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-m",
+    "initial",
+  );
+  const store = createGitSourceStore({
+    root: join(root, "sources"),
+    run: gitRun,
+  });
+  const prepare = (name: string) =>
+    store.prepare({
+      project: "demo",
+      repository,
+      ref: "main",
+      destination: join(root, "revisions", name),
+    });
+  const first = await prepare("first"),
+    second = await prepare("second");
+  await writeFile(join(first.workspacePath, "node_modules"), "install output");
+  const mirror = join(
+    root,
+    "sources",
+    `${createHash("sha256").update("demo").digest("hex")}.git`,
+  );
+  const worktrees = async () =>
+    git(root, "--git-dir", mirror, "worktree", "list", "--porcelain");
+  expect(await worktrees()).toContain(first.workspacePath);
+  await store.release({ project: "demo", workspacePath: first.workspacePath });
+  expect(existsSync(first.workspacePath)).toBe(false);
+  expect(await worktrees()).not.toContain(first.workspacePath);
+  await rm(second.workspacePath, { recursive: true, force: true });
+  await store.release({ project: "demo", workspacePath: second.workspacePath });
+  expect(await worktrees()).not.toContain(second.workspacePath);
+  expect(await readFile(join(repository, "app.txt"), "utf8")).toBe(
+    "committed content",
+  );
 });

@@ -154,7 +154,10 @@ rig init
 
 `rig init` should:
 
-- resolve the repository root, even when run from a subdirectory
+- resolve the repository root, even when run from a subdirectory; a `rig.yaml`
+  already present at or above the given directory inside the repository is
+  registered instead, so `rig init --path packages/web` and `rig status` from
+  `packages/web` agree on the Project
 - choose a Project identity, defaulting to a slug from the repo directory
 - confirm the Production branch interactively
 - write committed Project config at the repo root

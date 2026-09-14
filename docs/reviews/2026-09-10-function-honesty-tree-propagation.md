@@ -294,7 +294,7 @@ owner carries only its own owner-level defects.
 | `occupied` ignores `recovery.plan` ports | #175 |
 | health minors (3xx unhealthy without reason, evidence discarded, dependsOn readiness weaker than documented, readyTimeout overflow) | #176 |
 | moved repo is a dead end: `repoint .` conflicts, commands blame config, registered path never rendered | #177 | (fixed: `readProjectConfig` raises `missing_directory` when the directory is gone; `selectProject` maps it to `PROJECT_MOVED` naming the path and repoint command, and `status`/`doctor` (`directory-missing`) carry the same text; `repoint` selects by config name so `rig repoint .` works from the moved repository; `PROJECT_PATH_CONFLICT` and `PROJECT_CONFLICT` name both paths and the resolving command)
-| `init --path` registers the Git toplevel, ignores nearer `rig.yaml` | #178 |
+| `init --path` registers the Git toplevel, ignores nearer `rig.yaml` | #178 | (fixed: `inspectInitialization` registers the nearest config at or above the path inside the repository (`nearestConfigWithin`), the same document `discoverProject` finds; only a repository without one scaffolds at the Git root)
 | non-interactive `init` records the checked-out branch as Production | #179 |
 | registration minors (same-name second repo, init discards flags, rename to same name, repoint non-git dir, no unregister, discovery above nested root) | #180 |
 | corrupt `state.json` → rigd exits silently; doctor says healthy | #181 (fixed: reconcile records STATE_CORRUPT and keeps serving; hint names the file and the first problem; hostDoctor reports `runtime-state`) |

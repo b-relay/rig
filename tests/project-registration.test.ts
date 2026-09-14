@@ -143,6 +143,41 @@ test("nested init uses the Git root and existing config identity, and rerunning 
   );
   expect(await readdir(nested)).toEqual([]);
 });
+test("init --path registers the nearest Project config inside the repository, the one other commands discover", async () => {
+  const f = await fixture();
+  expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
+    0,
+  );
+  const web = join(f.repo, "packages", "web");
+  await mkdir(web, { recursive: true });
+  const config = "name: web\ncomponents: {}\n";
+  await writeFile(join(web, "rig.yaml"), config);
+  expect(await f.deps.documents.initializationInfo(web)).toMatchObject({
+    name: "web",
+    existing: true,
+  });
+  const registered = await registerProject(
+    { action: "init", repoPath: web },
+    f.deps,
+  );
+  expect(registered).toMatchObject({
+    name: "web",
+    repoPath: web,
+    configPath: join(web, "rig.yaml"),
+  });
+  expect(await readdir(f.repo)).not.toContain("rig.yaml");
+  expect(await readFile(join(web, "rig.yaml"), "utf8")).toBe(config);
+  expect(
+    (
+      await run({ command: ["git", "remote", "get-url", "rig"], cwd: web })
+    ).stdout.trim(),
+  ).toBe("rig://localhost/web");
+  expect((await f.deps.documents.discover(web)).repoPath).toBe(web);
+  expect(
+    await registerProject({ action: "init", repoPath: web }, f.deps),
+  ).toEqual(registered);
+});
+
 test("a registered path conflict preserves its existing config and leaves its remote unconfigured", async () => {
   const f = await fixture();
   expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(

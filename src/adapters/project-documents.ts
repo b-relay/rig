@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, sep } from "node:path";
 import { ConfigError } from "../config/errors";
 import {
   discoverProject,
@@ -9,6 +9,7 @@ import {
   resolveTargetPlan,
 } from "../config";
 import type { ProjectDocuments } from "../runtime/contracts";
+import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { CommandRunner } from "../providers/contracts";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
@@ -88,21 +89,18 @@ async function inspectInitialization(
   command: RuntimeCommand,
   discovery: ProjectDiscovery,
 ) {
-  const { repoPath, productionBranch, gitRequired } =
-    await inspectProjectLocation(path, discovery);
+  const location = await inspectProjectLocation(path, discovery);
+  const { productionBranch, gitRequired } = location;
   if (gitRequired && !command.createGit)
     throw new RigError(
       "GIT_REQUIRED",
       "Rig needs a Git working repository.",
       "Explicitly use rig init --create-git.",
     );
-  let existing;
-  try {
-    existing = await readProjectConfig(repoPath);
-  } catch (error) {
-    if (!(error instanceof ConfigError) || error.code !== "missing_config")
-      throw error;
-  }
+  // The Project other commands discover is the nearest config at or above the path within the repository.
+  const nearest = await nearestConfigWithin(path, location.repoPath);
+  const repoPath = nearest?.repoPath ?? location.repoPath;
+  const existing = nearest?.document;
   const name =
     existing?.config.name ?? command.project ?? projectSlug(basename(repoPath));
   if (existing && command.project && command.project !== name)
@@ -118,6 +116,26 @@ async function inspectInitialization(
     productionBranch: existing?.config.live?.deployBranch ?? productionBranch,
     gitRequired,
   };
+}
+
+/** The config the upward search from `path` finds, provided it lies inside the repository root. */
+async function nearestConfigWithin(
+  path: string,
+  root: string,
+): Promise<
+  { repoPath: string; document: ConfigDocument<ProjectConfig> } | undefined
+> {
+  let found;
+  try {
+    found = await discoverProject(path);
+  } catch (error) {
+    if (error instanceof ConfigError && error.code === "missing_config")
+      return undefined;
+    throw error;
+  }
+  return found.repoPath === root || found.repoPath.startsWith(root + sep)
+    ? found
+    : undefined;
 }
 
 function projectSlug(directory: string): string {

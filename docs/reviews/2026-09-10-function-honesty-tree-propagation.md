@@ -285,7 +285,7 @@ owner carries only its own owner-level defects.
 | Target log reader cannot skip one bad record (oversized newline-free line, glued partial line) | #165 |
 | deleted log directory silently drops output; status strips the recorded reason | #166 | (fixed: `recordLine` recreates the directory on ENOENT; the failure is named per log root, cleared on the next success, and carried through status and `renderStatus`) |
 | `rig activity` hides message and Operation id; no `rig result` | #167 |
-| diagnostic rotation disabled forever after a partial first record | #168 |
+| diagnostic rotation disabled forever after a partial first record | #168 | (fixed: `segmentDay` scans for the first complete record and falls back to the file birthtime; `appendRecord` starts a new line after a partial one) |
 | minor logs gaps (UTC times, cursor error on unreadable file, wrapper logs invisible, no Target log rotation, build output burst) | #169 |
 | readiness never re-observes the process: foreign listener certifies, immediate exit reported started, dead process waits full readyTimeout | #171 |
 | missing envFile → raw ENOENT → `UNEXPECTED` | #172 |

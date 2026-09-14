@@ -522,7 +522,10 @@ does not repair or deploy configuration implicitly.
 It includes daemon administration and terminal crash evidence. Diagnostics live
 in separate `logs/rig/rig.jsonl` and `logs/rigd/rigd.jsonl` files beneath the Rig
 root, with daily rotation and 14-day retention by default. That retention does
-not delete Target logs, activity, or Persistent storage. Daemon administration
+not delete Target logs, activity, or Persistent storage. A record cut short by
+a killed writer never glues onto the next one (the next record starts on its
+own line) and never disables rotation: the segment's day comes from its first
+complete record, or from the file's creation time when none can be read. Daemon administration
 activity is written under a lock file that records the writer's pid and start
 time; a lock left by a writer that died or was replaced, or an unreadable lock
 older than a minute, is reclaimed by the next administration. When activity

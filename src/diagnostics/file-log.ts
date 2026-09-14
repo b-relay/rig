@@ -102,10 +102,9 @@ export function createFileDiagnosticLog(
           options.source,
           timestamp.slice(0, 10),
         );
-        await appendFile(
+        await appendRecord(
           path,
-          `${JSON.stringify(diagnosticRecord(entry, options.source, timestamp))}\n`,
-          { mode: 0o600 },
+          JSON.stringify(diagnosticRecord(entry, options.source, timestamp)),
         );
         await chmod(path, 0o600);
         await pruneDiagnostics(
@@ -156,13 +155,36 @@ async function acquireLock(path: string): Promise<() => void> {
     throw error;
   }
 }
+/** A record killed mid-write leaves a line without its newline; the next record starts on its own line rather than gluing onto it. */
+async function appendRecord(path: string, record: string): Promise<void> {
+  const separator = (await endsWithNewline(path)) ? "" : "\n";
+  await appendFile(path, `${separator}${record}\n`, { mode: 0o600 });
+}
+async function endsWithNewline(path: string): Promise<boolean> {
+  let file;
+  try {
+    file = await open(path, "r");
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return true;
+    throw error;
+  }
+  try {
+    const { size } = await file.stat();
+    if (size === 0) return true;
+    const last = Buffer.alloc(1);
+    await file.read(last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } finally {
+    await file.close();
+  }
+}
 async function rotateDiagnostic(
   path: string,
   directory: string,
   source: string,
   today: string,
 ): Promise<void> {
-  const previousDay = await firstRecordDay(path);
+  const previousDay = await segmentDay(path);
   if (!previousDay || previousDay >= today) return;
   const identity = await stat(path, { bigint: true });
   const canonical = join(directory, `${source}-${previousDay}.jsonl`);
@@ -186,8 +208,9 @@ async function rotateDiagnostic(
   // If a writer dies between link and unlink, the next writer recognizes the same inode and completes rotation.
   await rm(path);
 }
-/** Normal appends inspect at most 4096 bytes, regardless of current log size. */
-async function firstRecordDay(path: string): Promise<string | undefined> {
+/** The day an active segment belongs to: that of its first complete record within the leading 4096 bytes,
+ * or, when a partial or corrupt head hides every record, the day the file was created. */
+async function segmentDay(path: string): Promise<string | undefined> {
   let file;
   try {
     file = await open(path, "r");
@@ -198,22 +221,27 @@ async function firstRecordDay(path: string): Promise<string | undefined> {
   try {
     const buffer = Buffer.alloc(4096),
       { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-    const text = buffer.subarray(0, bytesRead).toString("utf8"),
-      newline = text.indexOf("\n");
-    if (newline < 0) return undefined;
-    try {
-      const first = JSON.parse(text.slice(0, newline)) as {
-        timestamp?: unknown;
-      };
-      return typeof first.timestamp === "string" &&
-        /^\d{4}-\d{2}-\d{2}T/.test(first.timestamp)
-        ? first.timestamp.slice(0, 10)
-        : undefined;
-    } catch {
-      return undefined;
+    const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
+    for (const line of lines.slice(0, -1)) {
+      const day = recordDay(line);
+      if (day) return day;
     }
+    const { birthtime, mtime } = await file.stat();
+    const created = birthtime.getTime() > 0 ? birthtime : mtime;
+    return created.toISOString().slice(0, 10);
   } finally {
     await file.close();
+  }
+}
+function recordDay(line: string): string | undefined {
+  try {
+    const record = JSON.parse(line) as { timestamp?: unknown };
+    return typeof record.timestamp === "string" &&
+      /^\d{4}-\d{2}-\d{2}T/.test(record.timestamp)
+      ? record.timestamp.slice(0, 10)
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 async function pruneDiagnostics(

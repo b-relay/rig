@@ -323,3 +323,35 @@ test("causal metadata accepts only closed categories for malformed and secret-be
   expect(record).not.toHaveProperty("recoveryCause");
   expect(JSON.stringify(record)).not.toContain("secret");
 });
+
+test("a partial first record neither disables rotation nor corrupts the next record", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-diagnostics-partial-"));
+  const { mkdir, writeFile, readdir } = await import("node:fs/promises");
+  const directory = join(root, "logs/rig");
+  const active = join(directory, "rig.jsonl");
+  let now = new Date("2026-09-08T12:00:00Z");
+  const log = createFileDiagnosticLog({ root, source: "rig", now: () => now });
+  try {
+    await mkdir(directory, { recursive: true });
+    // A writer killed mid-append leaves a first line without its newline.
+    await writeFile(active, '{"timestamp":"2026-09-08T11:00:00.000Z","sou');
+    await log.record({ event: "command.started" });
+    const lines = (await readFile(active, "utf8")).split("\n");
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[1]!)).toMatchObject({ event: "command.started" });
+    now = new Date("2026-09-09T00:00:01Z");
+    await log.record({ event: "command.completed" });
+    expect(await readdir(directory)).toContain("rig-2026-09-08.jsonl");
+    expect(await readFile(active, "utf8")).not.toContain("command.started");
+    // A segment with no complete record at all rotates on the day it was created.
+    await rm(active);
+    await writeFile(active, "garbage");
+    const born = (await stat(active)).birthtime.toISOString().slice(0, 10);
+    now = new Date(Date.parse(`${born}T00:00:01Z`) + 24 * 60 * 60 * 1000);
+    await log.record({ event: "command.completed" });
+    expect(await readdir(directory)).toContain(`rig-${born}.jsonl`);
+    expect(await readFile(active, "utf8")).not.toContain("garbage");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

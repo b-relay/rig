@@ -477,6 +477,10 @@ placeholders. The available properties are:
   `preview`), `deployment` (the Target's deployment name), `branchSlug`, and
   `subdomain`.
 - `workspace` and `dataRoot`: the Target's checkout and persistent storage.
+  On `live` and Preview Targets, rigd owns both, so a SQLite `path` must
+  resolve inside `dataRoot` and an `envFile` inside `workspace`; an absolute
+  or `..` path that escapes them is rejected when the config is resolved,
+  naming the Component and field. `local` keeps whatever path you wrote.
 - Per Component `<name>`: `<name>.port` (also `ports.<name>` and
   `port.<name>`) and `<name>.url` for any Component with a port;
   `<name>.sitePort`, `<name>.siteUrl`, and `<name>.stateDir` for Convex;

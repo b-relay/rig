@@ -721,3 +721,40 @@ test("hooks are rejected on Components without a process, in the base definition
     parseProjectConfig(config({ local: { components: { db: { hooks } } } })),
   ).toThrow();
 });
+
+test.each([
+  ["preview", { db: { uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" } }, {}, { component: "db", field: "path" }, "/tmp/elsewhere/db.sqlite"],
+  ["live", { db: { uses: "sqlite", path: "../escape.sqlite" } }, {}, { component: "db", field: "path" }, "/escape.sqlite"],
+  ["preview", { db: { uses: "sqlite", path: "${workspace}/db.sqlite" } }, {}, { component: "db", field: "path" }, "/work/db.sqlite"],
+  ["live", { web: { mode: "managed", command: "serve --port ${web.port}", envFile: "/etc/app.env" } }, {}, { component: "web", field: "envFile" }, "/etc/app.env"],
+  ["preview", { web: { mode: "managed", command: "serve --port ${web.port}" } }, { envFile: "../shared/.env" }, { field: "envFile" }, "/shared/.env"],
+])("%s Targets reject a sqlite path or envFile that resolves outside the Target's storage, naming the field", async (target, components, lane, context, path) => {
+  const config = parseProjectConfig({
+    name: "app",
+    components,
+    ...(target === "live" ? { live: lane } : { deployments: lane }),
+  });
+  expect(() =>
+    resolveTargetPlan({ config, target: target as "live" | "preview", workspacePath: "/work", dataRoot: "/data", branch: "main", commit: "abc", assignedPorts: { web: 4100 } }),
+  ).toThrow(
+    expect.objectContaining({
+      _tag: "ConfigError",
+      code: "path_outside_target",
+      context: { ...context, path, root: context.field === "path" ? "/data" : "/work" },
+      hint: expect.stringContaining(context.field),
+    }),
+  );
+});
+
+test("local Targets keep the developer's absolute sqlite path and envFile", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    components: {
+      db: { uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" },
+      web: { mode: "managed", command: "serve --port ${web.port}", envFile: "/etc/app.env" },
+    },
+  });
+  const plan = resolveTargetPlan({ config, target: "local", workspacePath: "/work", dataRoot: "/data", assignedPorts: { web: 4100 } });
+  expect(plan.preparedComponents).toEqual([{ name: "db", uses: "sqlite", path: "/tmp/elsewhere/db.sqlite" }]);
+  expect(plan.components.find((component) => component.name === "web")).toMatchObject({ envFile: "/etc/app.env" });
+});

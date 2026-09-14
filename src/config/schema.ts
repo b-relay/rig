@@ -77,7 +77,9 @@ const hooks = z.strictObject({
   preStop: z
     .string()
     .optional()
-    .describe("Run before stopping active managed processes; skipped when already stopped."),
+    .describe(
+      "Run before stopping active managed processes; skipped when already stopped.",
+    ),
   postStop: z.string().optional().describe("Run after stopping."),
 });
 const common = {
@@ -87,7 +89,9 @@ const common = {
     .describe("Inline process environment."),
   envFile: text
     .optional()
-    .describe("Environment file relative to the workspace."),
+    .describe(
+      "Environment file relative to the workspace. live and Preview files must stay inside the workspace; only local may point elsewhere.",
+    ),
   hooks: hooks.optional().describe("Component lifecycle hooks."),
 };
 const runtime = {
@@ -130,7 +134,7 @@ const component = z.union([
     path: text
       .optional()
       .describe(
-        "Database path; defaults to Target persistent storage. A relative path is inside the working copy for local and inside Target persistent storage for live and Previews, whose checkouts are replaced on every deploy.",
+        "Database path; defaults to Target persistent storage. A relative path is inside the working copy for local and inside Target persistent storage for live and Previews, whose checkouts are replaced on every deploy. live and Preview paths must stay inside that storage; only local may point elsewhere.",
       ),
   }),
   z.strictObject({
@@ -169,7 +173,11 @@ const lane = z.strictObject({
     .record(z.string(), z.string())
     .optional()
     .describe("Environment inherited by every Component."),
-  envFile: text.optional().describe("Default environment file."),
+  envFile: text
+    .optional()
+    .describe(
+      "Default environment file relative to the workspace, inherited by every Component. live and Preview files must stay inside the workspace.",
+    ),
   proxy: z
     .strictObject({
       upstream: componentName.describe(
@@ -276,8 +284,7 @@ export const projectConfigSchema = z
         if (done.has(key)) return;
         visiting.add(key);
         for (const dependency of (definitions[key]?.dependsOn as
-          | string[]
-          | undefined) ?? []) {
+          string[] | undefined) ?? []) {
           if (
             !definitions[dependency] ||
             definitions[dependency]?.mode === "installed"

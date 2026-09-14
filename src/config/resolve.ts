@@ -1,4 +1,4 @@
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { ConfigError } from "./errors.js";
 import { parseProjectConfig, localhostCommand } from "./schema.js";
 import type {
@@ -10,6 +10,7 @@ import type {
   TargetPlan,
 } from "./types.js";
 type Properties = Record<string, string | number>;
+type TargetKind = ResolveTargetPlanInput["target"];
 type Component = ProjectConfig["components"][string];
 type Lane = NonNullable<ProjectConfig["local"]>;
 interface Definition {
@@ -148,12 +149,21 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
   const { properties: resolvedProperties, preparedComponents } =
     resolveComponentProperties(definitions, input, properties);
   Object.assign(properties, resolvedProperties);
+  const envFile = lane?.envFile
+    ? targetPath(
+        input.target,
+        input.workspacePath,
+        interpolate(lane.envFile, properties),
+        { field: "envFile" },
+      )
+    : undefined;
   const components = definitions.map(({ name, component }) =>
     resolvePlanComponent({
       name,
       component,
       shared: config.components[name]!,
       lane,
+      target: input.target,
       workspacePath: input.workspacePath,
       properties,
     }),
@@ -189,15 +199,33 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
     ...(domain ? { domain: interpolate(domain, properties) } : {}),
     ...(lane?.proxy ? { proxy: lane.proxy } : {}),
     ...(config.hooks ? { hooks: resolveHooks(config.hooks, properties) } : {}),
-    ...(lane?.envFile
-      ? {
-          envFile: resolve(
-            input.workspacePath,
-            interpolate(lane.envFile, properties),
-          ),
-        }
-      : {}),
+    ...(envFile ? { envFile } : {}),
   };
+}
+
+/** Resolves a config path against its Target root. Deployed Targets (live and Previews) own their storage,
+ * so a path that lands outside the root is rejected as ConfigError `path_outside_target`; the developer's local
+ * working copy keeps whatever path they wrote.
+ */
+function targetPath(
+  target: TargetKind,
+  root: string,
+  value: string,
+  context: { readonly component?: string; readonly field: "path" | "envFile" },
+): string {
+  const path = resolve(root, value),
+    inside = relative(root, path);
+  if (
+    target !== "local" &&
+    (inside === "" || inside.startsWith("..") || isAbsolute(inside))
+  )
+    throw new ConfigError(
+      `${context.component ? `Component '${context.component}' ` : "Lane "}${context.field} '${value}' resolves outside the Target's ${context.field === "path" ? "persistent storage" : "workspace"} (${root}).`,
+      "path_outside_target",
+      { ...context, path, root },
+      `Give ${context.field} a relative path inside the Target; rigd only creates, protects, and destroys files it owns.`,
+    );
+  return path;
 }
 
 /** Computes concrete ports and prepared storage before commands read their properties. */
@@ -276,12 +304,14 @@ function resolveComponentProperties(
   }
   for (const { name, component } of definitions)
     if ("uses" in component && component.uses === "sqlite") {
-      const path = resolve(
+      const path = targetPath(
+        input.target,
         persistentRoot(input),
         interpolate(
           component.path ?? join(input.dataRoot, "sqlite", `${name}.sqlite`),
           properties,
         ),
+        { component: name, field: "path" },
       );
       properties[`${name}.path`] = path;
       preparedComponents.push({ name, uses: "sqlite", path });
@@ -310,6 +340,7 @@ function resolvePlanComponent({
   component,
   shared,
   lane,
+  target,
   workspacePath,
   properties,
 }: {
@@ -317,6 +348,7 @@ function resolvePlanComponent({
   component: Component;
   shared: Component;
   lane: Lane | undefined;
+  target: TargetKind;
   workspacePath: string;
   properties: Properties;
 }): PlanComponent {
@@ -341,7 +373,12 @@ function resolvePlanComponent({
       : {}),
     ...(envFile
       ? {
-          envFile: resolve(workspacePath, interpolate(envFile, properties)),
+          envFile: targetPath(
+            target,
+            workspacePath,
+            interpolate(envFile, properties),
+            { component: name, field: "envFile" },
+          ),
         }
       : {}),
   };

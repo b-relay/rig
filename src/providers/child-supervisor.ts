@@ -12,7 +12,7 @@ import {
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
-import { RigError } from "../domain/errors";
+import { RigError, failureReason } from "../domain/errors";
 import type {
   ManagedProcess,
   ProcessObservation,
@@ -57,6 +57,18 @@ const leaseSchema = z.object({
       "The start request, so a daemon that adopts the lease can restart the process under its keepAlive policy.",
     ),
 });
+/** Appends one log line, bringing back a log directory that was removed underneath the running component. */
+async function recordLine(logRoot: string, entry: TargetLogEntry): Promise<void> {
+  const line = JSON.stringify(entry) + "\n";
+  const file = join(logRoot, "target.jsonl");
+  try {
+    await appendFile(file, line, { mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await mkdir(logRoot, { recursive: true });
+    await appendFile(file, line, { mode: 0o600 });
+  }
+}
 interface OwnedProcess {
   pid: number;
   identity?: string;
@@ -68,7 +80,8 @@ interface OwnedProcess {
   stopped: boolean;
   drains: Promise<void>[];
   writes: Promise<void>;
-  writeError?: unknown;
+  /** Why the latest output line could not be recorded; cleared by the next line that is. */
+  outputFailure?: string;
 }
 export interface ChildSupervisorOptions {
   readonly stateRoot: string;
@@ -188,9 +201,7 @@ export function createChildSupervisor(
         return {
           state: "running",
           pid: owned.pid,
-          ...(owned.writeError
-            ? { reason: "Target output could not be recorded." }
-            : {}),
+          ...(owned.outputFailure ? { reason: owned.outputFailure } : {}),
         };
       } catch (error) {
         return (error as NodeJS.ErrnoException).code === "ESRCH"
@@ -474,16 +485,15 @@ function captureOutput(
             line,
           };
           owned.writes = owned.writes
-            .then(() =>
-              appendFile(
-                join(request.logRoot, "target.jsonl"),
-                JSON.stringify(entry) + "\n",
-                { mode: 0o600 },
-              ),
-            )
-            .catch((error) => {
-              owned.writeError = error;
-            });
+            .then(() => recordLine(request.logRoot, entry))
+            .then(
+              () => {
+                owned.outputFailure = undefined;
+              },
+              (error) => {
+                owned.outputFailure = `Target output is not being recorded in ${request.logRoot}: ${failureReason(error)}`;
+              },
+            );
         };
         pipe.on("data", (chunk: Buffer) => {
           pending += decoder.write(chunk);

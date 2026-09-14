@@ -88,7 +88,7 @@ testability and honesty refactors.
 65. ~~#121~~ (fixed) Empty or unreadable control-plane token reported as "not installed"; install then crashes with raw EEXIST. (#224.)
 66. ~~#116~~ (fixed) Distinguish missing daemon tokens from invalid or unreadable token state.
 67. ~~#158~~ (fixed) Stale rig.yaml.lock after a crashed config edit blocks every later edit.
-68. #166 Deleting a Target log directory while a component runs silently drops all further output.
+68. ~~#166~~ (fixed) Deleting a Target log directory while a component runs silently drops all further output.
 69. #168 Diagnostic log rotation permanently disabled after one partial record; log grows without bound.
 70. #165 Target log reader cannot get past one bad record; logs and --follow fail until >4 MiB of newer output.
 71. #207 `rig logs --follow` never exits when stdout is closed; orphan CLI polls rigd every 250 ms.

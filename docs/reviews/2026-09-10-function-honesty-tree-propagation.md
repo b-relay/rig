@@ -283,7 +283,7 @@ owner carries only its own owner-level defects.
 | lane `hooks` override replaces the whole object; `env` merges per key | #163 (fixed: `mergeComponentOverride` merges env and hooks per key in resolver and schema) |
 | config validation gaps (union "Invalid input", spurious `base.` override error, interpolation without path, Caddy-invalid domains, `ports` namespace collision, `.bak` litter) | #164 |
 | Target log reader cannot skip one bad record (oversized newline-free line, glued partial line) | #165 |
-| deleted log directory silently drops output; status strips the recorded reason | #166 |
+| deleted log directory silently drops output; status strips the recorded reason | #166 | (fixed: `recordLine` recreates the directory on ENOENT; the failure is named per log root, cleared on the next success, and carried through status and `renderStatus`) |
 | `rig activity` hides message and Operation id; no `rig result` | #167 |
 | diagnostic rotation disabled forever after a partial first record | #168 |
 | minor logs gaps (UTC times, cursor error on unreadable file, wrapper logs invisible, no Target log rotation, build output burst) | #169 |

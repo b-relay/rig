@@ -441,6 +441,11 @@ rig logs preview feature/login --follow
 `--follow` streams. Logs may be read for stopped Targets when logs exist.
 Output identifies component, timestamp, and stream with `>` for stdout and `!`
 for stderr; legacy records with missing evidence must be marked unknown.
+A Target log directory removed while a component runs is recreated by the
+next line of output. While output cannot be recorded at all (the path is not a
+directory, or is not writable), `rig status` prints the reason under the still
+running component, naming the log directory, and clears it once a line is
+recorded again.
 
 ## Status, List, Doctor
 

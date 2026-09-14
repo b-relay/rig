@@ -89,7 +89,10 @@ export function renderStatus(report: ProjectStatusReport): string {
         failures.push(
           `${displayWord(target.name)} ${displayWord(component.name)}: ${displayWord(component.reason) || displayWord(component.state)}`,
         );
-      if (component.state === "unknown" && component.reason)
+      if (
+        component.reason &&
+        !["failed", "unhealthy", "missing"].includes(component.state)
+      )
         lines.push(`    ${displayWord(component.reason)}`);
     }
   }

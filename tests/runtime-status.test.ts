@@ -394,3 +394,43 @@ test("completed observations keep their result while the shared budget expires p
   expect(deadline.budgets).toEqual([100]);
   expect(deadline.pending).toBe(false);
 });
+test("a running component keeps the reason its provider attached, and the rendered status prints it", async () => {
+  const { renderStatus } = await import("../src/cli/output");
+  const result = await observeTargets(
+    [target],
+    {
+      async process() {
+        return {
+          state: "running",
+          pid: 22,
+          reason: "Target output is not being recorded in /logs/live.",
+        };
+      },
+      async health() {
+        return true;
+      },
+      async artifact() {
+        return "installed";
+      },
+      async persistent() {
+        return true;
+      },
+    },
+    2000,
+  );
+  expect(result[0]!.components).toEqual([
+    expect.objectContaining({
+      name: "api",
+      state: "healthy",
+      reason: "Target output is not being recorded in /logs/live.",
+    }),
+    expect.objectContaining({
+      name: "web",
+      state: "running",
+      reason: "Target output is not being recorded in /logs/live.",
+    }),
+  ]);
+  expect(renderStatus({ project: "demo", targets: result })).toContain(
+    "    Target output is not being recorded in /logs/live.",
+  );
+});

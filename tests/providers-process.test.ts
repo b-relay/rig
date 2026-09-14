@@ -533,3 +533,46 @@ test("a lease-recovered keepAlive process is restarted by the next daemon when i
   expect(after.state).toBe("running");
   expect(after.pid).not.toBe(pid);
 });
+test("a deleted log directory is recreated on the next line; output that cannot be recorded is named while it lasts", async () => {
+  const { mkdir, writeFile, stat } = await import("node:fs/promises");
+  const root = await mkdtemp(join(tmpdir(), "rig-process-logdir-"));
+  roots.push(root);
+  const supervisor = createChildSupervisor({ stateRoot: root });
+  supervisors.push(supervisor);
+  const logRoot = join(root, "logs", "live");
+  await mkdir(logRoot, { recursive: true });
+  const request = {
+    key: "target/web",
+    componentName: "web",
+    command: [process.execPath, "-e", "let n=0; setInterval(()=>process.stdout.write(`tick ${n++}\\n`), 10)"],
+    cwd: root,
+    env: { ...process.env } as Record<string, string>,
+    logRoot,
+  };
+  await supervisor.ensureRunning(request);
+  const lines = async () =>
+    (await readFile(join(logRoot, "target.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+  while ((await lines()) < 3) await Bun.sleep(10);
+  // The directory disappears under the running component: the next line brings it back.
+  await rm(logRoot, { recursive: true, force: true });
+  for (let i = 0; i < 100 && (await lines()) < 2; i++) await Bun.sleep(10);
+  expect(await lines()).toBeGreaterThanOrEqual(2);
+  expect(await supervisor.observe(request.key)).toEqual({ state: "running", pid: expect.any(Number) });
+  // A path that cannot be a directory cannot take output: the observation says so, and recovers once it can.
+  await rm(logRoot, { recursive: true, force: true });
+  await writeFile(logRoot, "not a directory");
+  let observed = await supervisor.observe(request.key);
+  for (let i = 0; i < 100 && !observed.reason; i++) {
+    await Bun.sleep(10);
+    observed = await supervisor.observe(request.key);
+  }
+  expect(observed).toMatchObject({ state: "running", reason: expect.stringContaining(`Target output is not being recorded in ${logRoot}`) });
+  await rm(logRoot, { force: true });
+  for (let i = 0; i < 100 && observed.reason; i++) {
+    await Bun.sleep(10);
+    observed = await supervisor.observe(request.key);
+  }
+  expect(observed).toEqual({ state: "running", pid: expect.any(Number) });
+  expect((await stat(join(logRoot, "target.jsonl"))).isFile()).toBe(true);
+  await supervisor.stop(request.key);
+});

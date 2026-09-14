@@ -104,6 +104,8 @@ export async function observeTargets(
                 ? "healthy"
                 : "unhealthy"
               : "running",
+            // A running component can still have something to say, such as output it cannot record.
+            ...(observed.reason ? { reason: observed.reason } : {}),
           };
         },
     ),

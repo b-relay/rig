@@ -530,6 +530,52 @@ test("a Project whose registered directory no longer exists is named with its pa
   });
 });
 
+test.each(["--project", "cwd"])(
+  "a config whose name was edited is adopted by rig rename <new> --project <old> (%s form), and other commands name that command",
+  async (form) => {
+    const { runtime, state, deps, config } = fixture();
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    config.name = "unk2";
+    const message =
+      "The config at /tmp/developer names Project 'unk2', but it is registered as 'demo'.";
+    const hint =
+      "Run rig rename unk2 --project demo to adopt the config name, or restore name: demo in the config.";
+    await expect(
+      runtime.command({ action: "config", repoPath: "/tmp/developer" }),
+    ).rejects.toMatchObject({ code: "PROJECT_IDENTITY", message, hint });
+    await expect(
+      runtime.command({ action: "config", project: "demo" }),
+    ).rejects.toMatchObject({ code: "PROJECT_IDENTITY", message, hint });
+    const report = (await runtime.command({
+      action: "doctor",
+      project: "demo",
+    })) as DoctorReport;
+    expect(
+      report.checks.find((c) => c.name === "project-config"),
+    ).toMatchObject({ ok: false, reason: "identity-drift", hint });
+    expect(
+      (await runtime.status({ project: "demo" })).warnings?.join("\n"),
+    ).toContain(hint);
+    const renames: string[] = [];
+    deps.documents.rename = async (project, name) => {
+      renames.push(`${project.name}->${name}`);
+      return await deps.documents.read(project.repoPath);
+    };
+    await runtime.command({
+      action: "rename",
+      newName: "unk2",
+      ...(form === "cwd"
+        ? { repoPath: "/tmp/developer" }
+        : { project: "demo" }),
+    });
+    expect(renames).toEqual(["demo->unk2"]);
+    expect(state.projects[0]?.name).toBe("unk2");
+    await expect(
+      runtime.command({ action: "config", repoPath: "/tmp/developer" }),
+    ).resolves.toMatchObject({ project: "unk2" });
+  },
+);
+
 test("init names the conflicting registration and the command that resolves it", async () => {
   const { runtime, state, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
@@ -914,7 +960,7 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     message:
       "Current configuration names Project 'other', not 'demo'; its policy was not compared.",
     reason: "identity-drift",
-    hint: "Use rig rename.",
+    hint: "Run rig rename other --project demo to adopt the config name, or restore name: demo in the config.",
   });
   independent(report);
 });

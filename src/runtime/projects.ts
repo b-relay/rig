@@ -30,7 +30,8 @@ export async function selectProject(
         if (registeredDirectoryMissing(error)) throw movedProject(project);
         throw error;
       });
-    assertIdentity(project, document);
+    if (!adoptsConfigName(command, project, document))
+      assertIdentity(project, document);
     return { project, document };
   }
   if (!command.repoPath)
@@ -40,9 +41,21 @@ export async function selectProject(
       "Run inside a Project directory or pass --project.",
     );
   const found = await deps.documents.discover(command.repoPath);
-  const project = state.projects.find(
+  const byName = state.projects.find(
     (p) => p.name === found.document.config.name,
   );
+  // A registered directory whose config names an unregistered Project had its name edited; rename adopts the edit.
+  const byPath = byName
+    ? undefined
+    : state.projects.find(
+        (p) => resolve(p.repoPath) === resolve(found.repoPath),
+      );
+  if (byPath) {
+    if (adoptsConfigName(command, byPath, found.document))
+      return { project: byPath, document: found.document };
+    throw identityDrift(byPath, found.document);
+  }
+  const project = byName;
   if (!project)
     throw new RigError(
       "PROJECT_MISSING",
@@ -175,14 +188,39 @@ function assertRegistrationAvailable(
   return existing;
 }
 export function assertIdentity(
-  project: ProjectRecord,
+  project: Pick<ProjectRecord, "name" | "repoPath">,
   document: ConfigDocument<ProjectConfig>,
 ): void {
   if (document.config.name !== project.name)
-    throw new RigError(
-      "PROJECT_IDENTITY",
-      "The registered Project name differs from its config.",
-      "Use rig rename to change the Project identity.",
-      { project: project.name, path: document.path },
-    );
+    throw identityDrift(project, document);
+}
+/** `rig rename <new>` on a config that already declares `<new>` adopts the edit instead of refusing it. */
+function adoptsConfigName(
+  command: RuntimeCommand,
+  project: Pick<ProjectRecord, "name">,
+  document: ConfigDocument<ProjectConfig>,
+): boolean {
+  return (
+    command.action === "rename" &&
+    document.config.name !== project.name &&
+    command.newName === document.config.name
+  );
+}
+/** The config's name and the registration disagree; rename adopts the config, or the config is restored. */
+export function identityDrift(
+  project: Pick<ProjectRecord, "name" | "repoPath">,
+  document: ConfigDocument<ProjectConfig>,
+): RigError {
+  return new RigError(
+    "PROJECT_IDENTITY",
+    `The config at ${project.repoPath} names Project '${document.config.name}', but it is registered as '${project.name}'.`,
+    identityDriftHint(project.name, document.config.name),
+    { project: project.name, path: document.path },
+  );
+}
+export function identityDriftHint(
+  registeredName: string,
+  configName: string,
+): string {
+  return `Run rig rename ${configName} --project ${registeredName} to adopt the config name, or restore name: ${registeredName} in the config.`;
 }

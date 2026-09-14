@@ -13,7 +13,11 @@ import {
   deploymentFlags,
 } from "./status";
 import { targetName } from "./targets";
-import { movedProject, registeredDirectoryMissing } from "./projects";
+import {
+  identityDriftHint,
+  movedProject,
+  registeredDirectoryMissing,
+} from "./projects";
 /** Adds configured-only capabilities without interpreting configuration as runtime evidence. */
 export async function projectStatus(
   project: Pick<ProjectRecord, "name" | "repoPath">,
@@ -61,10 +65,10 @@ export async function projectStatus(
   try {
     document = await deps.documents.read(project.repoPath);
     if (document.config.name !== project.name) {
-      document = undefined;
       warnings.push(
-        "Current Project configuration has a different identity; showing recorded Targets.",
+        `Current configuration names Project '${document.config.name}', not '${project.name}'; showing recorded Targets. ${identityDriftHint(project.name, document.config.name)}`,
       );
+      document = undefined;
     }
   } catch (error) {
     const failure = registeredDirectoryMissing(error)

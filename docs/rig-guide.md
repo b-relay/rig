@@ -784,6 +784,13 @@ an unregistered copy fails with `PROJECT_PATH_CONFLICT`, which names both
 directories. `rig init` over a conflicting registration names the registered
 Project and path, and whether `repoint` or `rename` resolves it.
 
+Editing `name` in the config by hand is adopted the same way: `rig rename <new
+name> --project <old name>` (or `rig rename <new name>` from the repository)
+accepts a config that already declares the new name and updates the
+registration and Git remote. Until then every command that reads the config
+fails with `PROJECT_IDENTITY`, naming both names and that command, and `rig
+doctor` reports `identity-drift` with the same hint.
+
 ## Provider Boundary
 
 `rigd` resolves Host config and Project config into a runtime plan before

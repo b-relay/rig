@@ -9,7 +9,11 @@ import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
 import { recordedPorts } from "./ports";
 import { transitionInProgress } from "./project-status";
-import { movedProject, registeredDirectoryMissing } from "./projects";
+import {
+  identityDriftHint,
+  movedProject,
+  registeredDirectoryMissing,
+} from "./projects";
 
 /** Host checks and ownership evidence remain available when Project discovery fails. */
 export async function hostDoctor(
@@ -226,9 +230,9 @@ function projectConfigCheck(
       return {
         name,
         ok: false,
-        message: "Project identity differs from registration.",
+        message: `The config names Project '${repository.document.config.name}', but it is registered as '${project.name}'.`,
         reason: "identity-drift",
-        hint: "Use rig rename.",
+        hint: identityDriftHint(project.name, repository.document.config.name),
       };
     case "invalid":
       return {
@@ -295,7 +299,7 @@ async function configCheck(
       return failing(
         `${label} names Project '${source.document.config.name}', not '${project.name}'; its policy was not compared.`,
         "identity-drift",
-        "Use rig rename.",
+        identityDriftHint(project.name, source.document.config.name),
       );
     case "usable":
       break;

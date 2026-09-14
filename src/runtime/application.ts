@@ -29,6 +29,7 @@ import {
   prepareRegistration,
   registerProject,
   selectProject,
+  assertIdentity,
 } from "./projects";
 import { persistTarget, planTarget, targetName } from "./targets";
 import { observeTargets } from "./status";
@@ -751,12 +752,7 @@ async function workingCopyDocument(
   deps: RuntimeDependencies,
 ): Promise<ConfigDocument<ProjectConfig>> {
   const document = await deps.documents.read(project.repoPath);
-  if (document.config.name !== project.name)
-    throw new RigError(
-      "PROJECT_IDENTITY",
-      "Project config identity changed.",
-      "Use rig rename to update registration.",
-    );
+  assertIdentity(project, document);
   return document;
 }
 /** A stopped Working copy Target is re-planned from the current rig.yaml before it starts, keeping its id, data root, and recorded ports. */

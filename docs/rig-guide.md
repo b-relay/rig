@@ -263,6 +263,13 @@ external edit. Only a change made to an owned file *after* the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
 `down` stops a Target and retains its inventory, data, logs, and source history.
+When every process is verified stopped but a `preStop` or `postStop` hook
+fails, `down` reports `STOP_HOOKS` with the Target stopped. `restart` treats
+the same case the way deploy transitions do: it continues to the start half
+and lists each failed shutdown hook as a warning in its result, so a flaky hook
+does not turn a restart into an outage. A process that could not be stopped
+still aborts both commands.
+
 `rig down preview <branch> --destroy` verifies shutdown, retires the Preview's
 owned route and installed artifacts, deletes its canonical Target root (owned
 data, logs, and source history), and removes its inventory record. `--destroy`

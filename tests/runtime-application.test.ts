@@ -399,6 +399,33 @@ test("explicit down restores interrupted non-process effects after verified stop
   expect(state.targets[0]?.desired).toBe("stopped");
 });
 
+test("restart proceeds to up after failed shutdown hooks and reports them as warnings", async () => {
+  const { runtime, state, deps } = fixture();
+  const { RigError } = await import("../src/domain/errors");
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  let restored = false;
+  deps.lifecycle.down = async () => {
+    throw new RigError(
+      "STOP_HOOKS",
+      "Managed processes are stopped, but shutdown hooks failed.",
+      "Inspect Target logs and correct the shutdown hooks.",
+      { processesStopped: true, outcome: "stopped", hookFailures: [new Error("postStop exited with code 1")] },
+    );
+  };
+  deps.lifecycle.restoreEffects = async () => {
+    restored = true;
+  };
+  expect(await runtime.command({ action: "restart", project: "demo" })).toMatchObject({
+    action: "restart",
+    outcome: "started",
+    warnings: ["Shutdown hook failed: postStop exited with code 1"],
+  });
+  expect(restored).toBe(true);
+  expect(state.targets[0]?.desired).toBe("running");
+  expect(state.activity.at(-1)).toMatchObject({ action: "restart", outcome: "started" });
+});
+
 test.each(["pending", "blocked", "committing"] as const)(
   "uninstall rejects stopped Targets with %s recovery and still permits explicit down",
   async (stage) => {

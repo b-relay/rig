@@ -37,7 +37,7 @@ testability and honesty refactors.
 ## Tier 1 — core flows silently wrong or wedged
 
 19. ~~#171~~ (fixed) `rig up` certifies readiness without re-observing the process: crashed component reported started, foreign listener passes health.
-20. #194 `rig restart` aborts after the stop half when a stop hook fails; desired persisted as stopped, up never runs.
+20. ~~#194~~ (fixed) `rig restart` aborts after the stop half when a stop hook fails; desired persisted as stopped, up never runs.
 21. #187 git push rig / rig deploy plan the Target from the working-copy rig.yaml, not the pushed commit.
 22. #186 After a failed first Preview deploy, git push rig reports "Everything up-to-date" forever, even with --force.
 23. #214 git push interrupted mid-deploy: helper has no signal handling, in-flight commit advertised as the remote ref, re-push says up-to-date.

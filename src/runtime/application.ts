@@ -3,7 +3,7 @@ import type {
   ProjectStatusReport,
   StatusSelection,
 } from "../domain/project-status";
-import { stopRecordedTarget } from "./stop";
+import { stopBeforeRestart, stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
 import { updateRegistration } from "./registration";
 import { ConfigError } from "../config/errors";
@@ -465,6 +465,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target = await stopForRecovery(target, deps);
       }
       let outcome: OperationRecord["outcome"];
+      let warnings: string[] = [];
       if (command.action === "down") {
         target.desired = "stopped";
         target.updatedAt = deps.now();
@@ -475,7 +476,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           target.desired = "stopped";
           target.updatedAt = deps.now();
           await persistTarget(target, deps.store);
-          await stopRecordedTarget(target, deps.lifecycle);
+          warnings = (await stopBeforeRestart(target, deps.lifecycle)).warnings;
         }
         outcome = (await deps.lifecycle.up(target)).outcome;
         // up installs, routes, and starts the recorded plan under its own
@@ -485,7 +486,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       target.updatedAt = deps.now();
       await persistTarget(target, deps.store);
-      return await finish(outcome);
+      return await finish(outcome, warnings.length ? { warnings } : {});
     } catch (error) {
       if (!reads.has(command.action)) {
         const errorCode = diagnosticErrorCode(error);

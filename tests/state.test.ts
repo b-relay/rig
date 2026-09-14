@@ -100,3 +100,56 @@ test("valid JSON with an incomplete saved Target plan fails closed", async () =>
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a deployed Target recorded before sourceRoot existed is backfilled on read when its workspace sits in the Target's revisions directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-sourceroot-"));
+  try {
+    await mkdir(join(root, "runtime"), { recursive: true });
+    const record = (id: string, kind: "local" | "preview", workspacePath: string) => ({
+      id,
+      projectId: "p",
+      name: id,
+      kind,
+      desired: "stopped",
+      createdAt: "now",
+      updatedAt: "now",
+      logRoot: join(root, "targets", "p", id, "logs"),
+      plan: {
+        project: "demo",
+        target: kind,
+        workspacePath,
+        dataRoot: join(root, "targets", "p", id, "data"),
+        deploymentName: id,
+        branchSlug: id,
+        subdomain: "",
+        providers: { processSupervisor: "rigd" },
+        providerProfile: "default",
+        components: [],
+        preparedComponents: [],
+      },
+    });
+    await writeFile(
+      join(root, "runtime", "state.json"),
+      JSON.stringify({
+        version: 2,
+        projects: [
+          { id: "p", name: "demo", repoPath: "/tmp/demo", configPath: "/tmp/demo/rig.yaml", createdAt: "now" },
+        ],
+        targets: [
+          record("inside", "preview", join(root, "targets", "p", "inside", "revisions", "abc")),
+          record("elsewhere", "preview", "/tmp/somewhere-else"),
+          record("local", "local", "/tmp/demo"),
+        ],
+        activity: [],
+      }),
+    );
+    const state = await new FileStateStore(root).read();
+    expect(state.targets.map((t) => [t.id, t.sourceRoot])).toEqual([
+      ["inside", join(root, "targets", "p", "inside", "revisions")],
+      ["elsewhere", undefined],
+      ["local", undefined],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

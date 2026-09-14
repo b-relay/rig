@@ -318,6 +318,12 @@ and lists each failed shutdown hook as a warning in its result, so a flaky hook
 does not turn a restart into an outage. A process that could not be stopped
 still aborts both commands.
 
+Preview records written by older Rig versions, before the source history root
+was recorded, are repaired when rigd reads its state: a Preview whose checkout
+sits under `<RIG_ROOT>/targets/<project>/<id>/revisions` gets that directory
+as its source root, so it can be destroyed like any other. A record whose
+checkout lies elsewhere keeps failing destroy with `DESTROY_OWNERSHIP`.
+
 `rig down preview <branch> --destroy` verifies shutdown, retires the Preview's
 owned route and installed artifacts, deletes its canonical Target root (owned
 data, logs, and source history), and removes its inventory record. `--destroy`

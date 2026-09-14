@@ -8,6 +8,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { runtimeStateSchema as schema } from "./state-schema";
+import { backfillSourceRoots } from "./state-compat";
 import { RigError } from "../domain/errors";
 import type { RuntimeState, StateStore } from "../domain/runtime";
 
@@ -50,7 +51,7 @@ export class FileStateStore implements StateStore {
       );
     }
     try {
-      return schema.parse(JSON.parse(raw));
+      return backfillSourceRoots(schema.parse(JSON.parse(raw)), this.root);
     } catch {
       throw new RigError(
         "STATE_CORRUPT",

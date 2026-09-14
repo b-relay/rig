@@ -64,11 +64,7 @@ export function renderStatus(report: ProjectStatusReport): string {
   for (const target of report.targets) {
     lines.push(
       "",
-      [
-        word(target.name),
-        word(target.state),
-        word(target.branch) || (target.kind === "local" ? "working copy" : ""),
-      ]
+      [word(target.name), word(target.state), deployedFrom(target)]
         .filter(Boolean)
         .join("  "),
     );
@@ -112,10 +108,24 @@ export function renderStatus(report: ProjectStatusReport): string {
     lines.push(`Warning: ${word(warning)}`);
   return `${lines.join("\n")}\n`;
 }
+/** A deployed Target shows the Branch and Commit it serves; the Working copy shows neither. */
+function deployedFrom(
+  target: Pick<
+    ProjectStatusReport["targets"][number],
+    "kind" | "branch" | "commit"
+  >,
+): string {
+  const commit = word(target.commit).slice(0, 7);
+  const branch = word(target.branch);
+  if (branch && commit) return `${branch}@${commit}`;
+  if (branch || commit) return branch || commit;
+  return target.kind === "local" ? "working copy" : "";
+}
 function renderDoctor(report: Record<string, unknown>): string {
   const failures = rows(report.checks).filter((check) => check.ok !== true);
+  const note = word(report.note);
   if (!failures.length && report.ok === true)
-    return `${word(report.project) ? `Host and ${word(report.project)} healthy` : "Host healthy"}\nNo problems found.\n`;
+    return `${word(report.project) ? `Host and ${word(report.project)} healthy` : "Host healthy"}\nNo problems found.\n${note ? `${note}\n` : ""}`;
   const lines = ["Problems found"];
   for (const check of failures) {
     lines.push(
@@ -123,6 +133,7 @@ function renderDoctor(report: Record<string, unknown>): string {
     );
     if (check.hint) lines.push(`    ${word(check.hint)}`);
   }
+  if (note) lines.push(note);
   return `${lines.join("\n")}\n`;
 }
 export function renderLogs(value: unknown, heading: boolean): string {

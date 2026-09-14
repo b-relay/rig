@@ -159,20 +159,35 @@ export function deploymentFlags(
   };
 }
 
+/** Managed processes decide whether a Target is live, stopped, starting or
+ * failed; the other Components qualify a live Target. Storage or an
+ * executable that is missing beside a healthy process is a degraded Target,
+ * and a process that runs but fails its check is unhealthy rather than
+ * failed. A stopped Target is stopped whatever the state of its data. */
 function aggregate(components: ComponentReport[]): TargetReport["state"] {
   if (!components.length) return "configured";
   const managed = components.filter(
     (component) => component.kind === "managed",
   );
   const capabilities = managed.length ? managed : components;
+  const others = managed.length
+    ? components.filter((component) => component.kind !== "managed")
+    : [];
   const usable = (component: ComponentReport) =>
     ["healthy", "running", "installed", "ready"].includes(component.state);
+  const present = (component: ComponentReport) =>
+    usable(component) || component.state === "unhealthy";
+  const qualified = (live: TargetReport["state"]) =>
+    others.every(usable) ? live : "degraded";
   if (capabilities.every(usable))
-    return managed.length
-      ? managed.every((component) => component.state === "healthy")
-        ? "healthy"
-        : "running"
-      : "ready";
+    return qualified(
+      managed.length
+        ? managed.every((component) => component.state === "healthy")
+          ? "healthy"
+          : "running"
+        : "ready",
+    );
+  if (capabilities.every(present)) return qualified("unhealthy");
   if (capabilities.some(usable)) return "degraded";
   if (capabilities.every((component) => component.state === "stopped"))
     return "stopped";

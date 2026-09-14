@@ -42,7 +42,7 @@ test("fresh status distinguishes failed health from running without health and r
   );
   expect(result[0]).toMatchObject({
     name: "live",
-    state: "degraded",
+    state: "unhealthy",
     branch: "main",
     commit: "abc",
     route: "demo.localhost",
@@ -118,7 +118,7 @@ test("a crashed desired-running process is failed with exit evidence while an in
     components: [{ state: "stopped" }, { state: "stopped" }],
   });
 });
-test("managed capabilities own mixed Target health and installed observations retain their distinct states", async () => {
+test("an installed Component that cannot be observed degrades a Target whose processes run, and installed observations retain their distinct states", async () => {
   const mixed = {
     ...target,
     desired: "running",
@@ -147,7 +147,7 @@ test("managed capabilities own mixed Target health and installed observations re
   };
   const [report] = await observeTargets([mixed], effects);
   expect(report).toMatchObject({
-    state: "running",
+    state: "degraded",
     components: [
       { name: "api", state: "healthy", route: "demo.localhost" },
       { name: "web", state: "running" },
@@ -433,4 +433,46 @@ test("a running component keeps the reason its provider attached, and the render
   expect(renderStatus({ project: "demo", targets: result })).toContain(
     "    Target output is not being recorded in /logs/live.",
   );
+});
+
+test("the Target aggregate counts every Component: missing storage beside a healthy process is degraded, and a running process that fails its check is unhealthy, not failed", async () => {
+  const mixed = {
+    ...target,
+    plan: {
+      domain: "demo.localhost",
+      components: [
+        {
+          name: "web",
+          kind: "managed",
+          port: 4445,
+          health: "http://localhost:4445",
+        },
+        { name: "db", kind: "sqlite" },
+        { name: "cli", kind: "installed" },
+      ],
+    },
+  } as TargetRecord;
+  const observe = (ready: boolean, artifact: "installed" | "missing") =>
+    observeTargets(
+      [mixed],
+      {
+        async process() {
+          return { state: "running", pid: 22 };
+        },
+        async health() {
+          return ready ? { ready: true } : { ready: false, reason: "HTTP 503" };
+        },
+        async artifact() {
+          return artifact;
+        },
+        async persistent() {
+          return artifact === "installed";
+        },
+      },
+      2000,
+    );
+  expect((await observe(true, "installed"))[0]?.state).toBe("healthy");
+  expect((await observe(true, "missing"))[0]?.state).toBe("degraded");
+  expect((await observe(false, "installed"))[0]?.state).toBe("unhealthy");
+  expect((await observe(false, "missing"))[0]?.state).toBe("degraded");
 });

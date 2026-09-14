@@ -115,6 +115,7 @@ test("status renders observed component states and keeps configured routes visib
         name: "live",
         kind: "live",
         branch: "main",
+        commit: "abc1234def5678",
         state: "degraded",
         route: "https://pantry.b-relay.com",
         components: [
@@ -159,7 +160,7 @@ test("status renders observed component states and keeps configured routes visib
     newOperationId: () => "op-status",
   });
   expect(exit).toBe(0);
-  expect(text).toContain("live  degraded  main");
+  expect(text).toContain("live  degraded  main@abc1234");
   expect(text).toContain("web  failed  :3070  https://pantry.b-relay.com");
   expect(text).toContain("convex  healthy  :3290");
   expect(text).toContain("Failures\n  live web: exited with code 1");
@@ -554,6 +555,14 @@ test("config and doctor expose user views while suppressing editor metadata and 
   };
   expect(await runRigCli(["doctor"], dependencies)).toBe(0);
   expect(text).toBe("Host healthy\nNo problems found.\n");
+  text = "";
+  result = { ok: true, checks: [], project: "pantry" };
+  expect(await runRigCli(["doctor"], dependencies)).toBe(0);
+  expect(text).toBe("Host and pantry healthy\nNo problems found.\n");
+  text = "";
+  result = { ok: true, checks: [], note: "Project checks were skipped: no Project selected." };
+  expect(await runRigCli(["doctor"], dependencies)).toBe(0);
+  expect(text).toBe("Host healthy\nNo problems found.\nProject checks were skipped: no Project selected.\n");
   text = "";
   result = {
     ok: false,

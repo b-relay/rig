@@ -126,7 +126,7 @@ testability and honesty refactors.
 
 ## Tier 4 — minors
 
-100. #203 doctor/status/list minors (aggregate never unhealthy, list observes every Target, status omits Commit). (#234.)
+100. ~~#203~~ (fixed) doctor/status/list minors (aggregate never unhealthy, list observes every Target, status omits Commit). (#234.)
 101. #206 Caddy router and daemon minors (port-unaware conflict check, remove of absent route reloads, Origin check).
 102. #189 Preview push minors.
 103. #215 git-remote-rig minors (hijack hint, success line, --force same-commit, --all).

@@ -30,6 +30,7 @@ import {
   diagnosticEvidence,
   type FailureCauses,
 } from "../domain/errors";
+import { resolve as resolvePath } from "node:path";
 import type { RuntimeDependencies } from "./contracts";
 import {
   prepareRegistration,
@@ -185,9 +186,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         } catch {
           ownership = false;
         }
-        const reports = ownership
-          ? await observeTargets(state.targets, deps.observations)
-          : [];
+        // An inventory listing reads the record only; Target liveness is status's job and is not observed here.
         return {
           ownership: ownership ? "ready" : "unknown",
           projects: state.projects.map((p) => ({
@@ -196,15 +195,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             targetCount: state.targets.filter((t) => t.projectId === p.id)
               .length,
           })),
-          runningTargets: ownership
-            ? reports.filter((t) =>
-                t.components.some((c) =>
-                  ["running", "healthy", "unhealthy", "unknown"].includes(
-                    c.state,
-                  ),
-                ),
-              ).length
-            : null,
         } satisfies ListResult;
       }
       if (command.action === "activity" && !command.project) {
@@ -238,7 +228,21 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         try {
           if (!command.repoPath)
             throw new ConfigError("No Project selected.", "missing_config");
-          await deps.documents.discover(command.repoPath);
+          const found = await deps.documents.discover(command.repoPath);
+          const state = await deps.store.read();
+          // A directory whose config names no registered Project still gets Host checks, with the reason Project checks are absent.
+          if (
+            !state.projects.some(
+              (p) =>
+                p.name === found.document.config.name ||
+                resolvePath(p.repoPath) === resolvePath(found.repoPath),
+            )
+          )
+            throw new RigError(
+              "PROJECT_MISSING",
+              `Project '${found.document.config.name}' is not registered.`,
+              "Run rig init in this Project directory.",
+            );
         } catch (error) {
           return await hostDoctor(deps, error);
         }

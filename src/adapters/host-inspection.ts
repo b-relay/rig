@@ -15,17 +15,6 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
       ok: true,
       message: "Host configuration is valid.",
     });
-    if (
-      host.providers.caddy.reload.mode === "command" &&
-      !host.providers.caddy.reload.command
-    )
-      checks.push({
-        name: "caddy-reload",
-        ok: false,
-        message: "Caddy command reload has no command configured.",
-        reason: "missing-reload-command",
-        hint: "Set providers.caddy.reload.command or choose manual reload.",
-      });
     checks.push(
       await inspectHostProxy(root, host, process.env).then(proxyCheck, (error) => ({
         name: "caddy-proxy",

@@ -12,7 +12,7 @@ export interface DoctorCheck {
 export async function inspectOfflineHost(
   root: string,
   cwd: string,
-): Promise<{ ok: false; checks: DoctorCheck[] }> {
+): Promise<{ ok: false; checks: DoctorCheck[]; note: string }> {
   const checks: DoctorCheck[] = [
     {
       name: "rigd",
@@ -46,5 +46,9 @@ export async function inspectOfflineHost(
             : "Inspect the Project directory.",
       });
   }
-  return { ok: false, checks };
+  return {
+    ok: false,
+    checks,
+    note: "Project checks were skipped: rigd is not reachable.",
+  };
 }

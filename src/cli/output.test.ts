@@ -25,7 +25,6 @@ test("status, result and log text drop bidi overrides, zero-width and C1 control
     renderResult("list", {
       ownership: "ready",
       projects: [{ name: hostile, repoPath: hostile, targetCount: 1 }],
-      runningTargets: 0,
     }),
     renderResult("up", {
       project: hostile,

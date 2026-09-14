@@ -15,19 +15,36 @@ import {
   registeredDirectoryMissing,
 } from "./projects";
 
-/** Host checks and ownership evidence remain available when Project discovery fails. */
+export interface DoctorReport {
+  ok: boolean;
+  checks: DoctorCheck[];
+  /** The Project whose checks the report includes; absent when only the Host was checked. */
+  project?: string;
+  /** Why Project checks are absent, so a clean Host report is not read as a clean Project. */
+  note?: string;
+}
+/** Host checks and ownership evidence remain available when Project discovery fails;
+ * the report says why Project checks were skipped instead of implying they passed. */
 export async function hostDoctor(
   deps: RuntimeDependencies,
   discoveryFailure?: unknown,
-) {
+): Promise<DoctorReport> {
   const checks = await inspectRuntimeHost(deps);
+  const skipped = (why: string) => `Project checks were skipped: ${why}`;
+  let note = skipped("no Project selected.");
   if (
+    discoveryFailure instanceof RigError &&
+    discoveryFailure.code === "PROJECT_MISSING"
+  )
+    note = skipped(`${discoveryFailure.message} ${discoveryFailure.hint}`);
+  else if (
     discoveryFailure !== undefined &&
     !(
       discoveryFailure instanceof ConfigError &&
       discoveryFailure.code === "missing_config"
     )
-  )
+  ) {
+    note = skipped("the Project config could not be read.");
     checks.push({
       name: "project-config",
       ok: false,
@@ -41,7 +58,8 @@ export async function hostDoctor(
           ? discoveryFailure.hint
           : "Inspect the Project directory.",
     });
-  return { ok: checks.every((check) => check.ok), checks };
+  }
+  return { ok: checks.every((check) => check.ok), checks, note };
 }
 
 async function inspectRuntimeHost(
@@ -100,7 +118,7 @@ export async function doctor(
   project: ProjectRecord,
   targets: TargetRecord[],
   deps: RuntimeDependencies & { inProgress(operationId: string): boolean },
-) {
+): Promise<DoctorReport> {
   const checks = await inspectRuntimeHost(deps);
   // One acquisition serves identity and every Working copy comparison, so a concurrent edit cannot split one report across revisions.
   const repository = await acquireDocument(
@@ -159,6 +177,14 @@ export async function doctor(
         deps,
       ),
     );
+    if (target.kind === "live" && repository.outcome === "usable")
+      checks.push(
+        productionBranchCheck(
+          target,
+          repository.document.config.live?.deployBranch ??
+            (await deps.documents.host()).deploy.productionBranch,
+        ),
+      );
   }
   const ownershipKnown = !checks.some(
     (check) => check.name === "runtime-ownership" && !check.ok,
@@ -175,7 +201,33 @@ export async function doctor(
   for (const report of reports)
     for (const component of report.components)
       checks.push(componentCheck(report.name, component));
-  return { ok: checks.every((c) => c.ok), checks };
+  return { ok: checks.every((c) => c.ok), checks, project: project.name };
+}
+/** The Stable Target serves whatever Branch it was deployed from; a Production setting changed since then is drift the operator acts on. */
+function productionBranchCheck(
+  target: Pick<TargetRecord, "name" | "branch">,
+  production: string,
+): DoctorCheck {
+  const name = `${target.name}/branch`;
+  if (target.branch === undefined)
+    return {
+      name,
+      ok: true,
+      message: `${target.name} was deployed from a Commit, not a Branch.`,
+    };
+  if (target.branch === production)
+    return {
+      name,
+      ok: true,
+      message: `${target.name} was deployed from Production '${production}'.`,
+    };
+  return {
+    name,
+    ok: false,
+    message: `${target.name} was deployed from '${target.branch}', but Production is now '${production}'.`,
+    reason: "production-branch-drift",
+    hint: `Run rig deploy ${target.name} to deploy '${production}', or set ${target.name}.deployBranch back to '${target.branch}'.`,
+  };
 }
 /** One read of a config document, kept apart by why it cannot serve a comparison. */
 type AcquiredDocument =

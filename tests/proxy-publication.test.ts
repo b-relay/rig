@@ -208,3 +208,17 @@ test("rig doctor names the caddy executable as a provider capability", async () 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a command reload mode without a command is one invalid host config, not a separate caddy-reload check", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-reload-"));
+  try {
+    await writeFile(join(root, "config.yaml"), "providers:\n  caddy:\n    reload:\n      mode: command\n");
+    const checks = await inspectHost(root);
+    expect(checks.map((check) => check.name)).not.toContain("caddy-reload");
+    const host = checks.find((check) => check.name === "host-config");
+    expect(host).toMatchObject({ ok: false, reason: "config-invalid" });
+    expect(`${host?.message} ${host?.hint}`).toContain("providers.caddy.reload.command");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

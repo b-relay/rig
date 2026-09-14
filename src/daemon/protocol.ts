@@ -95,8 +95,6 @@ export const listResultSchema = z
         targetCount: z.number().int().nonnegative(),
       }),
     ),
-    /** Null when ownership of the state directory could not be confirmed. */
-    runningTargets: z.number().int().nonnegative().nullable(),
   })
   .passthrough();
 export const logsResultSchema = z

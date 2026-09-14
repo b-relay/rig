@@ -215,7 +215,9 @@ rig deploy live --project pantry
 folder name.
 
 `rig list` is host-scoped. It shows Projects plus summary metadata such as
-Target count. It does not show every Target for every Project.
+Target count. It does not show every Target for every Project, and it reads
+the inventory record only: it never observes a Target, so it is quick and
+says nothing about what is running (`rig status` does).
 
 ## Targets
 
@@ -535,9 +537,17 @@ so a version mismatch can never look like "No Projects registered", "No logs
 yet", or "No activity yet"; only a validated empty collection prints those.
 
 `rig doctor` always runs Host diagnostics. When a Project context is available,
-it also runs Project diagnostics. Outside a Project, it may succeed with
-Host-only checks and a note that Project checks were skipped. `doctor` is
-read-only by default. One report reads the repository config once, so the
+it also runs Project diagnostics and the clean report names the Project ("Host
+and pantry healthy"). Outside a Project, in a directory whose config is invalid,
+in a directory whose valid config names a Project that is not registered, or
+when rigd is unreachable, it still runs the Host checks and ends with a note
+that says Project checks were skipped and why ("Project checks were skipped:
+Project 'app' is not registered. Run rig init in this Project directory."), so
+a clean Host report is never mistaken for a clean Project. For the Stable
+Target, a `live/branch` check compares the Branch it was deployed from with the
+current Production Branch (`live.deployBranch`, else the Host default); a
+Production Branch changed since the deploy is `production-branch-drift` with a
+hint to redeploy. `doctor` is read-only by default. One report reads the repository config once, so the
 identity check and every Working copy comparison see the same revision even
 while the file is being edited. A config the parser rejects is
 `config-invalid` and carries the parser's message; a config that could not be
@@ -624,7 +634,15 @@ daemon crash.
 Status shares one two-second budget across concurrent observations. Managed
 components without health checks are running, not healthy; uncertain observations
 are unknown. Configured-only components are configured, installed-tool Targets
-can be ready, and partial runtime capability is degraded. Recorded routes stay
+can be ready, and partial runtime capability is degraded. Every Component
+counts toward the Target state: a missing database or executable beside a
+healthy process is degraded, not healthy. A Target whose processes all run but
+at least one fails its health check is unhealthy, which is distinct from failed
+(a process that exited or was never found). Processes decide whether a Target
+is live at all: a Target whose processes are all stopped is stopped whatever
+the state of its data. A deployed Target's line shows the
+Branch and the short Commit it serves (`live  healthy  main@abc1234`); the
+Working copy shows neither. Recorded routes stay
 visible when stopped, and show `unpublished` when no Host Caddyfile loads Rig's
 route file (see Setup). Doctor owns current-config drift and failed checks; it
 does not repair or deploy configuration implicitly.

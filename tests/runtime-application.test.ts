@@ -3287,3 +3287,92 @@ test("runtime list, logs and activity replies satisfy the client contract end to
     await server.stop(true);
   }
 });
+
+test("doctor names the Project it checked and says when Project checks were skipped, running Host checks for an unregistered Project", async () => {
+  const { runtime } = fixture();
+  const unregistered = (await runtime.command({
+    action: "doctor",
+    repoPath: "/tmp/developer",
+  })) as {
+    ok: boolean;
+    project?: string;
+    note?: string;
+    checks: { name: string }[];
+  };
+  expect(unregistered.project).toBeUndefined();
+  expect(unregistered.note).toBe(
+    "Project checks were skipped: Project 'demo' is not registered. Run rig init in this Project directory.",
+  );
+  expect(unregistered.checks.map((check) => check.name)).toContain("rigd");
+  expect(unregistered.ok).toBe(true);
+  const none = (await runtime.command({ action: "doctor" })) as {
+    note?: string;
+    project?: string;
+  };
+  expect(none.project).toBeUndefined();
+  expect(none.note).toBe("Project checks were skipped: no Project selected.");
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const checked = (await runtime.command({
+    action: "doctor",
+    repoPath: "/tmp/developer",
+  })) as {
+    project?: string;
+    note?: string;
+  };
+  expect(checked.project).toBe("demo");
+  expect(checked.note).toBeUndefined();
+  await expect(
+    runtime.command({ action: "doctor", project: "ghost" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_MISSING",
+  });
+});
+
+test("doctor reports a Stable Target deployed from a Branch that is no longer Production", async () => {
+  const { runtime, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  });
+  const branchCheck = async () =>
+    (
+      (await runtime.command({ action: "doctor", project: "demo" })) as {
+        checks: {
+          name: string;
+          ok: boolean;
+          message: string;
+          reason?: string;
+          hint?: string;
+        }[];
+      }
+    ).checks.find((check) => check.name === "live/branch");
+  expect(await branchCheck()).toEqual({
+    name: "live/branch",
+    ok: true,
+    message: "live was deployed from Production 'main'.",
+  });
+  config.live = { deployBranch: "release" };
+  expect(await branchCheck()).toEqual({
+    name: "live/branch",
+    ok: false,
+    message: "live was deployed from 'main', but Production is now 'release'.",
+    reason: "production-branch-drift",
+    hint: "Run rig deploy live to deploy 'release', or set live.deployBranch back to 'main'.",
+  });
+});
+
+test("list reads the inventory without observing any Target", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  deps.observations.process = async () => {
+    throw new Error("list must not observe Targets");
+  };
+  expect(await runtime.command({ action: "list" })).toEqual({
+    ownership: "ready",
+    projects: [{ name: "demo", repoPath: "/tmp/developer", targetCount: 1 }],
+  });
+});

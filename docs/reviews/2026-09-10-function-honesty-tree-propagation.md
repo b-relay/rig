@@ -298,7 +298,7 @@ owner carries only its own owner-level defects.
 | non-interactive `init` records the checked-out branch as Production | #179 |
 | registration minors (same-name second repo, init discards flags, rename to same name, repoint non-git dir, no unregister, discovery above nested root) | #180 |
 | corrupt `state.json` → rigd exits silently; doctor says healthy | #181 (fixed: reconcile records STATE_CORRUPT and keeps serving; hint names the file and the first problem; hostDoctor reports `runtime-state`) |
-| state write has no fsync/backup; hint refers to a backup that never exists | #182 |
+| state write has no fsync/backup; hint refers to a backup that never exists | #182 (fixed: fsync temp file and directory, keep one generation as `state.json.bak`, hint names it only when present) |
 | `state.json` strip-mode parse, unversioned per field → downgrade drops `destructionPending`/`deploymentIncomplete` | #183 |
 | `rigd install` cannot upgrade a running daemon; no binary identity; protocol skew rendered as usage error | #184 |
 | strict effect journal bricks Target on downgrade; orphan journals never reclaimed | #185 |

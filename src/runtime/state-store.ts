@@ -1,9 +1,10 @@
 import {
   access,
+  link,
   mkdir,
+  open,
   readFile,
   rename,
-  writeFile,
   rm,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -54,12 +55,20 @@ export class FileStateStore implements StateStore {
     try {
       return backfillSourceRoots(schema.parse(JSON.parse(raw)), this.root);
     } catch (error) {
+      const backup = (await exists(this.backupPath))
+        ? this.backupPath
+        : undefined;
       throw new RigError(
         "STATE_CORRUPT",
         "Invalid runtime state; nothing was changed.",
-        `Runtime state at ${this.path} ${describeCorruption(error)}. Restore a known-good copy of the file, or repair it by hand, before retrying.`,
+        `Runtime state at ${this.path} ${describeCorruption(error)}. ${
+          backup
+            ? `The previous version is kept at ${backup}; copy it back over the file, or repair the file by hand, before retrying.`
+            : "Repair the file by hand, or restore it from your own backup, before retrying."
+        }`,
         {
           path: this.path,
+          ...(backup ? { backupPath: backup } : {}),
           ...(error instanceof z.ZodError
             ? { issues: error.issues.slice(0, 3) }
             : {}),
@@ -68,24 +77,65 @@ export class FileStateStore implements StateStore {
     }
   }
 
+  /** Durable replace: the new state is flushed to disk before it becomes `state.json`, and the version it
+   * replaces stays readable as `state.json.bak` (one generation). */
   update(change: (state: RuntimeState) => void | Promise<void>): Promise<void> {
     const operation = this.queue.then(async () => {
       const state = await this.read();
       await change(state);
       schema.parse(state);
-      await mkdir(join(this.root, "runtime"), { recursive: true, mode: 0o700 });
+      const directory = join(this.root, "runtime");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
       const temporary = `${this.path}.next`;
       try {
-        await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, {
-          mode: 0o600,
-        });
+        await writeDurably(temporary, `${JSON.stringify(state, null, 2)}\n`);
+        await keepPreviousGeneration(this.path, this.backupPath);
         await rename(temporary, this.path);
+        await syncDirectory(directory);
       } finally {
         await rm(temporary, { force: true });
       }
     });
     this.queue = operation.catch(() => {});
     return operation;
+  }
+  private get backupPath(): string {
+    return `${this.path}.bak`;
+  }
+}
+async function writeDurably(path: string, content: string): Promise<void> {
+  const file = await open(path, "w", 0o600);
+  try {
+    await file.writeFile(content);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+/** Point `backup` at the bytes currently published at `path`; a first write has nothing to keep. */
+async function keepPreviousGeneration(
+  path: string,
+  backup: string,
+): Promise<void> {
+  if (!(await exists(path))) return;
+  await rm(backup, { force: true });
+  await link(path, backup);
+}
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 /** The first thing wrong with a state file, worded so the user can open it and look. */

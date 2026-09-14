@@ -201,3 +201,39 @@ test.each([
     }
   },
 );
+
+test("each update keeps the previous state as state.json.bak, and the corrupt-state hint points at it once it exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-backup-"));
+  try {
+    const store = new FileStateStore(root);
+    const path = join(root, "runtime", "state.json");
+    const backup = `${path}.bak`;
+    await store.update((s) => {
+      s.projects.push({
+        id: "p",
+        name: "alpha",
+        repoPath: "/tmp/alpha",
+        configPath: "/tmp/alpha/rig.yaml",
+        createdAt: "now",
+      });
+    });
+    const first = await readFile(path, "utf8");
+    expect(await Bun.file(backup).exists()).toBe(false);
+    await store.update((s) => {
+      s.projects[0]!.name = "beta";
+    });
+    expect(await readFile(backup, "utf8")).toBe(first);
+    expect(await readFile(path, "utf8")).toContain("beta");
+    expect(await Bun.file(`${path}.next`).exists()).toBe(false);
+    await writeFile(path, "{broken");
+    const failure = (await store.read().then(
+      () => undefined,
+      (error: unknown) => error,
+    )) as { code: string; hint: string };
+    expect(failure.code).toBe("STATE_CORRUPT");
+    expect(failure.hint).toContain(backup);
+    expect(await readFile(backup, "utf8")).toBe(first);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

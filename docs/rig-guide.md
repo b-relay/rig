@@ -398,9 +398,11 @@ An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
 or a malformed record) never makes `rigd` exit: startup records the failure in
 the daemon diagnostic log and keeps serving, `rig doctor` reports
 `runtime-state` as failed with the file path and the first problem, and every
-other command fails with that same message. `rigd uninstall` refuses until the
-file is repaired, because it cannot verify that Targets are stopped without
-it.
+other command fails with that same message. Every state write is flushed to
+disk before it replaces the file, and the version it replaces stays beside it
+as `state.json.bak`; the failure message points at that copy when it exists.
+`rigd uninstall` refuses until the file is repaired, because it cannot verify
+that Targets are stopped without it.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (hooks, builds, `readyTimeout`). Reads such

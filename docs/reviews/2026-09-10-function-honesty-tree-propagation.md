@@ -330,7 +330,7 @@ owner carries only its own owner-level defects.
 | status/doctor during a normal in-flight deploy report unknown with a destructive "run down" hint | #210 |
 | clean rigd stop kills every child; next start silently restarts all Targets and re-runs start hooks | #211 |
 | lease recovery after daemon restart: leader-only ownership (dead sh leader → duplicate), keepAlive lost | #212 |
-| one global mutation queue blocks unrelated Projects with no feedback | #213 |
+| one global mutation queue blocks unrelated Projects with no feedback | #213 (fixed in part: the `queue` read names the running operation and the count waiting; `rig` prints it after two seconds without an answer; the queue is still global) |
 | git push interrupted mid-deploy: no signal handling, in-flight commit advertised, re-push says up-to-date | #214 |
 | git-remote-rig minors (repoint hint hijack, success line names nothing, --force same commit, --all) | #215 |
 | git push over 300 s reported as rigd not reachable (addendum) | #204 |

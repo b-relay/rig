@@ -474,6 +474,13 @@ as `status`, `list`, and `doctor` give up after five seconds and report
 is distinct from `rigd is not reachable`. Check `rig activity` before
 retrying so the same operation is not queued twice.
 
+`rigd` runs one mutation at a time across all Projects, so a slow hook or
+readiness wait in one Project delays `rig up` and `rig deploy` elsewhere. When
+a mutation has gone two seconds without an answer, `rig` prints on stderr
+which operation `rigd` is running (Project, Target, action, operation id, and
+start time) and how many more commands are ahead, so a wait always has a
+visible cause; the command then keeps waiting for its own result.
+
 While a deploy is running, `rig status` and `rig doctor` report the Target
 as `deploy in progress (operation <id>)` and show whatever is observed at that
 moment. The "unresolved deployment transition; run down" warning is reserved

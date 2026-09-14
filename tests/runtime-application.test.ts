@@ -2578,3 +2578,38 @@ test("reconcile prunes effect checkpoints whose Target is absent from state and 
     },
   ]);
 });
+test("the queue read names the mutation rigd is running and how many wait behind it, without waiting itself", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => (release = resolve));
+  const up = deps.lifecycle.up;
+  deps.lifecycle.up = async (target) => {
+    await blocked;
+    return up(target);
+  };
+  const first = runtime.command({
+    action: "up",
+    project: "demo",
+    operationId: "slow-up",
+  });
+  const second = runtime.command({
+    action: "down",
+    project: "demo",
+    operationId: "later-down",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(await runtime.command({ action: "queue" })).toEqual({
+    running: {
+      operationId: "slow-up",
+      action: "up",
+      project: "demo",
+      startedAt: expect.any(String),
+    },
+    waiting: 1,
+  });
+  release();
+  await first;
+  await second;
+  expect(await runtime.command({ action: "queue" })).toEqual({ waiting: 0 });
+});

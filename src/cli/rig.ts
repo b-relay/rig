@@ -1,12 +1,48 @@
 import { RigError } from "../domain/errors";
 import { prepareInteractiveRequest } from "./interaction";
-import type { RuntimeCommand } from "../daemon/protocol";
+import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { createRigCommand, type ExecuteCommand } from "./commands";
 import { renderResult, renderStatus, object, renderLogs } from "./output";
 import { isHelp, recordDiagnostic, reportFailure } from "./failure";
 
 /** Parse and render one invocation; the injected client owns runtime effects. */
+/** How long a command may go unanswered before the user is told what rigd is doing instead. */
+const NOTICE_AFTER_MS = 2000;
+/** Sends the command and, when rigd has not answered in time, names the
+ * operation it is running and how many wait ahead, so a hang has a cause. */
+async function awaitMutation(
+  request: RuntimeCommand,
+  dependencies: Pick<CliDependencies, "client" | "output" | "wait" | "signal">,
+  operationId: string,
+): Promise<unknown> {
+  let settled = false;
+  const pending = dependencies.client.command(request).finally(() => {
+    settled = true;
+  });
+  await Promise.race([
+    pending.catch(() => {}),
+    dependencies.wait(NOTICE_AFTER_MS, dependencies.signal),
+  ]);
+  if (!settled && !dependencies.signal?.aborted) {
+    const queue = object(
+      await dependencies.client.command({ action: "queue" }).catch(() => ({})),
+    );
+    const running = object(queue.running);
+    if (running.operationId && running.operationId !== operationId) {
+      const ahead = Number(queue.waiting ?? 0) - 1;
+      const subject = [running.project, running.target, running.action]
+        .filter((part) => typeof part === "string")
+        .join(" ");
+      dependencies.output.error(
+        `Waiting: rigd is running ${subject} (operation ${String(running.operationId)}, started ${String(running.startedAt ?? "")})${
+          ahead > 0 ? `; ${ahead} more ahead of this command` : ""
+        }.\n`,
+      );
+    }
+  }
+  return await pending;
+}
 export async function runRigCli(
   args: readonly string[],
   dependencies: CliDependencies,
@@ -36,7 +72,11 @@ export async function runRigCli(
       request.action === "status"
         ? await dependencies.client.status(correlated)
         : undefined;
-    const result = status ?? (await dependencies.client.command(correlated));
+    const result =
+      status ??
+      (readActions.has(request.action)
+        ? await dependencies.client.command(correlated)
+        : await awaitMutation(correlated, dependencies, operationId));
     dependencies.output.write(
       json
         ? `${JSON.stringify(result)}\n`
@@ -72,7 +112,8 @@ export async function runRigCli(
       dependencies.signal?.aborted &&
       error instanceof RigError &&
       error.code === "CANCELLED"
-    ) return 0;
+    )
+      return 0;
     await reportFailure(error, {
       diagnostics: dependencies.diagnostics,
       output: dependencies.output,

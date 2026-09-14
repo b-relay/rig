@@ -8,7 +8,7 @@ import { doctor, hostDoctor } from "./doctor";
 import { updateRegistration } from "./registration";
 import { ConfigError } from "../config/errors";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
-import type { RuntimeCommand } from "../daemon/protocol";
+import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type {
   OperationRecord,
   ProjectRecord,
@@ -66,20 +66,23 @@ export interface RigRuntime extends ProjectStatusReader {
   exclusive<T>(operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
 }
-const reads = new Set([
-  "initialization-info",
-  "deployment-context",
-  "list",
-  "status",
-  "doctor",
-  "config",
-  "logs",
-  "activity",
-]);
+const reads = readActions;
+/** What one serialized mutation looks like from outside while it runs. */
+interface RunningOperation {
+  operationId: string;
+  action: RuntimeCommand["action"];
+  project?: string;
+  target?: string;
+  startedAt: string;
+}
 /** One authority serializes mutations, while read-only requests probe the last committed inventory. */
 export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   let queue: Promise<unknown> = Promise.resolve();
   let draining = false;
+  // The mutation executing now and how many are queued behind it: the answer to
+  // "what is holding the host" for a caller whose command has not returned.
+  let running: RunningOperation | undefined;
+  let waiting = 0;
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
   const inProgress = (operationId: string) => inFlight.has(operationId);
@@ -100,10 +103,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const operationId = command.operationId ?? deps.id();
     if (reads.has(command.action)) return run(command, operationId);
     inFlight.add(operationId);
+    running = {
+      operationId,
+      action: command.action,
+      ...(command.project ? { project: command.project } : {}),
+      ...(command.target ? { target: command.target } : {}),
+      startedAt: deps.now(),
+    };
     try {
       return await run(command, operationId);
     } finally {
       inFlight.delete(operationId);
+      running = undefined;
     }
   };
   const run = async (
@@ -148,6 +159,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         draining = true;
         return { ready: true };
       }
+      if (command.action === "queue")
+        return { ...(running ? { running } : {}), waiting };
       if (command.action === "list") {
         const state = await deps.store.read();
         let ownership = true;
@@ -587,7 +600,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     },
     command(command) {
       if (reads.has(command.action)) return execute(command);
-      const operation = queue.catch(() => {}).then(() => execute(command));
+      waiting++;
+      const operation = queue
+        .catch(() => {})
+        .then(() => {
+          waiting--;
+          return execute(command);
+        });
       queue = operation;
       return operation;
     },

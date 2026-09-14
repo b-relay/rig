@@ -695,3 +695,53 @@ for (const when of ["before start", "during wait", "after page"] as const) {
     expect(waits).toBe(when === "during wait" ? 1 : 0);
   });
 }
+
+test("a mutation rigd has not answered after the notice delay tells the user which operation it is waiting behind", async () => {
+  let text = "";
+  const asked: string[] = [];
+  let finish!: (value: unknown) => void;
+  const dependencies = {
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
+      async command(request: { action: string }) {
+        asked.push(request.action);
+        if (request.action === "queue")
+          return {
+            running: { operationId: "slow-up", action: "up", project: "alpha", target: "live", startedAt: "2026-09-14T10:00:00.000Z" },
+            waiting: 2,
+          };
+        return await new Promise((resolve) => (finish = resolve));
+      },
+    },
+    output: {
+      write(value: string) {
+        text += value;
+      },
+      error(value: string) {
+        text += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
+    wait: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    },
+    newOperationId: () => "mine",
+  };
+  const run = runRigCli(["up", "live", "--project", "beta"], dependencies);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(asked).toEqual(["up", "queue"]);
+  expect(text).toContain("slow-up");
+  expect(text).toContain("alpha live up");
+  expect(text).toContain("1 more");
+  finish({ project: "beta", target: "live", action: "up", outcome: "started", operationId: "mine" });
+  expect(await run).toBe(0);
+  expect(text).toContain("beta live started");
+});

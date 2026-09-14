@@ -23,6 +23,7 @@ export const commandSchema = z
       "destroy",
       "prepare-uninstall",
       "cancel-uninstall",
+      "queue",
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: z.string().min(1).max(128).optional(),
@@ -66,6 +67,18 @@ export const commandSchema = z
   })
   .strict();
 export type RuntimeCommand = z.infer<typeof commandSchema>;
+/** Reads probe committed state and are never queued behind mutations. */
+export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
+  "initialization-info",
+  "deployment-context",
+  "list",
+  "status",
+  "doctor",
+  "config",
+  "logs",
+  "activity",
+  "queue",
+] as const);
 export interface DaemonAddress {
   port: number;
   token: string;

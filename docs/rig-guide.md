@@ -361,7 +361,14 @@ The remote advertises only completed deployments. A Target whose last deploy
 failed or was interrupted, or whose transition is still unresolved, is
 withheld from `list for-push`, so a repeated `git push rig <branch>` sends the
 push again instead of reporting "Everything up-to-date"; rigd then finishes or
-refuses it with the usual deployment errors. Interrupting a push with Ctrl-C
+refuses it with the usual deployment errors. A deployment whose local Branch
+no longer contains the deployed Commit (the Branch was deleted and recreated,
+or rebased) is withheld too, so the push goes through and redeploys instead
+of git rejecting it as non-fast-forward with a `git pull` hint the Rig remote
+cannot serve. A push that fails, for example because the pushed Commit's
+`rig.yaml` is invalid, is recorded in `rig activity` under the Target it aimed
+at with the same code the error carries (`INVALID_YAML`), not as an unexpected
+failure of no Target. Interrupting a push with Ctrl-C
 prints the operation id that rigd may still be running; check `rig activity`
 or `rig status` before pushing again.
 

@@ -44,6 +44,9 @@ test("remote helper advertises push and waits for a final deployment result befo
         return "a".repeat(40);
       },
       async verifyBranch() {},
+      async rewritten() {
+        return false;
+      },
     },
     newOperationId: () => "push-op",
   });
@@ -86,6 +89,9 @@ test("dry-run and rejected deletions never deploy; destination Branch and force 
         return "b".repeat(40);
       },
       async verifyBranch() {},
+      async rewritten() {
+        return false;
+      },
     },
     newOperationId: () => "op",
   };
@@ -151,6 +157,9 @@ test("failed or acceptance-only daemon replies never acknowledge a successful pu
         return "a".repeat(40);
       },
       async verifyBranch() {},
+      async rewritten() {
+        return false;
+      },
     },
     newOperationId: () => "op-failed",
   };
@@ -227,6 +236,9 @@ test("advertises only canonical deployment destinations, excluding custom Previe
         throw Error("not pushing");
       },
       async verifyBranch() {},
+      async rewritten() {
+        return false;
+      },
     },
     newOperationId: () => "op",
   });
@@ -269,6 +281,9 @@ test("list for-push withholds incomplete or transitioning deployments so git sen
         throw Error("not pushing");
       },
       async verifyBranch() {},
+      async rewritten() {
+        return false;
+      },
     },
     newOperationId: () => "op",
   });
@@ -302,6 +317,9 @@ test("an interrupted push names the operation rigd may still be running", async 
         return "a".repeat(40);
       },
       async verifyBranch() {},
+      async rewritten() {
+        return false;
+      },
     },
     newOperationId: () => "push-op",
     interrupt: interrupt.signal,
@@ -345,6 +363,9 @@ test("a tag or deletion in a push batch is rejected per ref while the Branch in 
         return "a".repeat(40);
       },
       async verifyBranch() {},
+      async rewritten() {
+        return false;
+      },
     },
     newOperationId: () => "op",
   });
@@ -353,4 +374,43 @@ test("a tag or deletion in a push batch is rejected per ref while the Branch in 
     "\nok refs/heads/main\nerror refs/tags/v1 Rig deploys Branches only; tags are not pushed.\nerror refs/heads/old Deleting a Branch is unsupported; use rig down --destroy.\n\n",
   );
   expect(commands.filter((c: any) => c.action === "git-push")).toHaveLength(1);
+});
+
+test("list for-push withholds a deployment whose local Branch no longer contains it, so a recreated Branch pushes instead of being rejected as non-fast-forward", async () => {
+  const { targetName } = await import("../src/runtime/targets");
+  let output = "";
+  const asked: [string, string][] = [];
+  const targets = [
+    { name: "live", kind: "live", branch: "main", commit: "a".repeat(40) },
+    { name: targetName({ target: "preview", branch: "c1" }), kind: "preview", branch: "c1", commit: "b".repeat(40) },
+  ];
+  const code = await runRemoteHelper("rig://localhost/example", {
+    repoPath: "/repo",
+    input: input(["list for-push", ""]),
+    output: {
+      write(value) {
+        output += value;
+      },
+      error() {},
+    },
+    client: {
+      async command() {
+        return { targets };
+      },
+    },
+    source: {
+      async resolve() {
+        throw Error("not pushing");
+      },
+      async verifyBranch() {},
+      async rewritten(branch, commit) {
+        asked.push([branch, commit]);
+        return branch === "c1";
+      },
+    },
+    newOperationId: () => "op",
+  });
+  expect(code).toBe(0);
+  expect(output).toBe(`${"a".repeat(40)} refs/heads/main\n\n`);
+  expect(asked).toEqual([["main", "a".repeat(40)], ["c1", "b".repeat(40)]]);
 });

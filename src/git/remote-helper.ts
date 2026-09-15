@@ -23,6 +23,8 @@ export interface RemoteHelperDependencies {
   source: {
     resolve(ref: string): Promise<string>;
     verifyBranch(branch: string): Promise<void>;
+    /** True when a local Branch of that name exists and the Commit is not in its history, so git would reject the push as non-fast-forward. */
+    rewritten(branch: string, commit: string): Promise<boolean>;
   };
   newOperationId(): string;
   diagnostics?: DiagnosticLog;
@@ -145,6 +147,12 @@ export async function runRemoteHelper(
                     });
             if (!canonical) continue;
             await dependencies.source.verifyBranch(target.branch);
+            // A recreated or rebased local Branch would be rejected by git against the old Commit with a hint to
+            // pull, which the Rig remote cannot serve; withholding the ref lets git send the push and rigd decide.
+            if (
+              await dependencies.source.rewritten(target.branch, target.commit)
+            )
+              continue;
             const ref = `refs/heads/${target.branch}`;
             if (references.has(ref)) ambiguous.add(ref);
             references.set(ref, target.commit);
@@ -374,6 +382,19 @@ export function createGitPushSource(
           "The destination Branch is invalid.",
           "Choose a valid Git Branch name.",
         );
+    },
+    async rewritten(branch, commit) {
+      const local = await run({
+        command: ["git", "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+        cwd: repoPath,
+      });
+      if (local.exitCode !== 0) return false;
+      // A Commit git no longer has locally is as unreachable as one outside the Branch's history.
+      const ancestry = await run({
+        command: ["git", "merge-base", "--is-ancestor", commit, `refs/heads/${branch}`],
+        cwd: repoPath,
+      });
+      return ancestry.exitCode !== 0;
     },
   };
 }

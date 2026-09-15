@@ -3376,3 +3376,47 @@ test("list reads the inventory without observing any Target", async () => {
     projects: [{ name: "demo", repoPath: "/tmp/developer", targetCount: 1 }],
   });
 });
+
+test("a push whose committed config is invalid is recorded under the Preview it aimed at with the config code, not as an unexpected failure of no Target", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const read = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => {
+    if (path !== "/tmp/developer")
+      throw new ConfigError("rig.yaml is not valid YAML.", "invalid_yaml", {
+        path,
+      });
+    return await read(path);
+  };
+  await expect(
+    runtime.command({
+      action: "git-push",
+      project: "demo",
+      repoPath: "/tmp/developer",
+      branch: "feature",
+      commit: "abc",
+      operationId: "push-1",
+    }),
+  ).rejects.toMatchObject({ code: "invalid_yaml" });
+  const activity = (await runtime.command({
+    action: "activity",
+    project: "demo",
+  })) as {
+    operations: {
+      id: string;
+      action: string;
+      target?: string;
+      outcome: string;
+      message?: string;
+    }[];
+  };
+  const { targetName } = await import("../src/runtime/targets");
+  expect(
+    activity.operations.find((entry) => entry.id === "push-1"),
+  ).toMatchObject({
+    action: "git-push",
+    target: targetName({ target: "preview", branch: "feature" }),
+    outcome: "failed",
+    message: "INVALID_YAML",
+  });
+});

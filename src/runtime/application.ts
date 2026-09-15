@@ -136,6 +136,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     operationId: string,
   ): Promise<unknown> => {
     let project: ProjectRecord | undefined, target: TargetRecord | undefined;
+    // The Target a command aimed at, so a failure before its record exists is still filed under its name.
+    let aimed: string | undefined;
     // Set once selection and argument checks are done: a failure after this point is an
     // Operation outcome and is recorded in activity; one before it is a usage mistake and is not.
     let attempted = false;
@@ -327,6 +329,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           branch: await deps.sources.currentBranch(project.repoPath),
         };
       const name = targetName(command);
+      aimed = name;
       target = targets.find((t) => t.name === name);
       if (target && target.kind !== (command.target ?? "local"))
         throw new RigError(
@@ -572,7 +575,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           id: operationId,
           projectId: project?.id,
           project: project?.name,
-          target: target?.name,
+          target: target?.name ?? aimed,
           action: command.action,
           outcome,
           occurredAt: deps.now(),
@@ -585,7 +588,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           action: command.action,
           outcome,
           project: project?.name,
-          target: target?.name,
+          target: target?.name ?? aimed,
           errorCode,
           ...causes,
           ...(providerEvidence ? { evidence: providerEvidence } : {}),

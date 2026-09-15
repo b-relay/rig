@@ -305,7 +305,7 @@ owner carries only its own owner-level defects.
 | failed/interrupted first Preview deploy → git "Everything up-to-date" forever | #186 |
 | deploys plan from the working-copy `rig.yaml`, not the pushed commit | #187 |
 | Preview replacement silent and state-blind | #188 |
-| preview push minors (recreated branch hint, ConfigError recorded as UNEXPECTED) | #189 |
+| preview push minors (recreated branch hint, ConfigError recorded as UNEXPECTED) | #189 (fixed: `source.rewritten` withholds a deployment the local Branch no longer contains from `list for-push`; `diagnosticErrorCode` goes through `asRigError` so a ConfigError is recorded by its code; failures before a Target record exists are filed under the aimed Target name) |
 | processSupervisor typo accepted by schema; wedges the Target at deploy | #190 |
 | convex stateDir and relative sqlite paths resolved under the revision checkout: data lost per deploy | #191 |
 | rename keeping installName raises ARTIFACT_CONFLICT; local up never rebuilds after source change | #192 (fixed: same-Target takeover; local builds every up, republishes on changed output) |

@@ -280,12 +280,11 @@ export function lastOutputLine(output: string): string | undefined {
 }
 
 /** Inspect an untrusted failure without allowing its prototype or code getter to replace it. */
+/** The same code the failure carries to the user, so a config problem is recorded as one and not as UNEXPECTED. */
 export function diagnosticErrorCode(error: unknown): string {
   try {
-    if (error instanceof RigError) {
-      const code = error.code;
-      if (isDiagnosticCode(code)) return code;
-    }
+    const code = asRigError(error).code;
+    if (isDiagnosticCode(code)) return code;
   } catch {
     /* Diagnostic preparation is best effort, including property inspection. */
   }

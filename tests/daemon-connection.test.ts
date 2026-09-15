@@ -148,7 +148,7 @@ test("remote discovery never turns unavailable, rejected or acceptance-only repl
         input: (async function* () { yield* ["push refs/heads/main:refs/heads/main", "", ""]; })(),
         output: { write(value) { output += value; }, error() {} },
         client: { async command(command) { return (await connectDaemon(root)).command(command); } },
-        source: { async resolve() { return "a".repeat(40); }, async verifyBranch() {} },
+        source: { async resolve() { return "a".repeat(40); }, async verifyBranch() {}, async rewritten() { return false; } },
         newOperationId: () => "connection-push",
       });
       expect(exit).toBe(scenario === "deployed" ? 0 : 1);

@@ -24,6 +24,7 @@ import {
   type ProcessInspection,
 } from "./process-inspection";
 import { createProcessTiming, type ProcessTiming } from "./process-timing";
+import { appendTargetLog } from "./target-log";
 /** SIGTERM grace before SIGKILL when no stopTimeoutMs is configured. */
 const DEFAULT_STOP_TIMEOUT_MS = 1500;
 /** How often stop asks whether the signalled group is gone. */
@@ -61,17 +62,9 @@ const leaseSchema = z.object({
       "The start request, so a daemon that adopts the lease can restart the process under its keepAlive policy.",
     ),
 });
-/** Appends one log line, bringing back a log directory that was removed underneath the running component. */
-async function recordLine(logRoot: string, entry: TargetLogEntry): Promise<void> {
-  const line = JSON.stringify(entry) + "\n";
-  const file = join(logRoot, "target.jsonl");
-  try {
-    await appendFile(file, line, { mode: 0o600 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(logRoot, { recursive: true });
-    await appendFile(file, line, { mode: 0o600 });
-  }
+/** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
+function recordLine(logRoot: string, entry: TargetLogEntry): Promise<void> {
+  return appendTargetLog(logRoot, JSON.stringify(entry) + "\n");
 }
 /** Longest run of output characters recorded as one log record. */
 const MAX_RECORD_CHARS = 64 * 1024;

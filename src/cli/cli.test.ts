@@ -466,7 +466,7 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
   expect(requests[2]).toMatchObject({ action: "logs", after: "cursor-b" });
   expect(text.match(/same line/g)).toHaveLength(2);
   expect(text.match(/pantry live/g)).toHaveLength(1);
-  expect(text).toContain("09:42:11  web  > same line");
+  expect(text).toContain("09:42:11Z  web  > same line");
 });
 
 test("sink failure preserves success and unexpected error while never advertising an absent file", async () => {

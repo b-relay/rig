@@ -37,6 +37,8 @@ export interface CommandRequest {
   readonly env?: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
+  /** Receives each chunk of output as the command produces it; the result still carries the bounded whole. */
+  readonly onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
 }
 export interface CommandResult {
   readonly exitCode: number;

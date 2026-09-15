@@ -1,5 +1,4 @@
 import {
-  appendFile,
   lstat,
   mkdir,
   open,
@@ -48,6 +47,7 @@ import type { ObservationEffects } from "../runtime/status";
 import { RigError, failureCauses } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { createEffectTransactions } from "./effect-transactions";
+import { appendTargetLog } from "../providers/target-log";
 export interface TargetAdapterOptions {
   root: string;
   /** Acquires an ISO timestamp per recorded output entry, after buffered execution. */
@@ -138,14 +138,45 @@ export function createTargetEffects(
     timeoutSeconds: number,
     componentName = "setup",
   ) => {
+    const live = liveRecorder(target, componentName);
     const result = await options.run({
       command: ["/bin/sh", "-c", command],
       cwd: target.plan.workspacePath,
       env,
       timeoutMs: timeoutSeconds * 1000,
+      onOutput: live.receive,
     });
-    await recordOutput(result, target, componentName);
+    // A runner that does not stream hands over its whole output at the end instead.
+    if (!(await live.finish()))
+      await recordOutput(result, target, componentName);
     return result;
+  };
+  /** Records complete lines as a running command produces them, each at the time it was seen;
+   * finish flushes a trailing partial line and says whether anything was streamed. */
+  const liveRecorder = (target: TargetRecord, componentName: string) => {
+    const pending = { stdout: "", stderr: "" };
+    let streamed = false;
+    let writes: Promise<void> = Promise.resolve();
+    const receive = (stream: "stdout" | "stderr", chunk: string) => {
+      streamed = true;
+      const text = pending[stream] + chunk;
+      const lines = text.split("\n");
+      pending[stream] = lines.pop() ?? "";
+      if (lines.length)
+        writes = writes.then(() =>
+          recordLines(target, componentName, stream, lines),
+        );
+    };
+    const finish = async () => {
+      for (const stream of ["stdout", "stderr"] as const)
+        if (pending[stream])
+          writes = writes.then(() =>
+            recordLines(target, componentName, stream, [pending[stream]]),
+          );
+      await writes;
+      return streamed;
+    };
+    return { receive, finish };
   };
   const recordOutput = async (
     result: CommandResult,
@@ -171,9 +202,8 @@ export function createTargetEffects(
     lines: readonly string[],
   ) => {
     if (!lines.length) return;
-    await mkdir(target.logRoot, { recursive: true, mode: 0o700 });
-    await appendFile(
-      join(target.logRoot, "target.jsonl"),
+    await appendTargetLog(
+      target.logRoot,
       lines
         .map((line) =>
           JSON.stringify({
@@ -184,7 +214,6 @@ export function createTargetEffects(
           }),
         )
         .join("\n") + "\n",
-      { mode: 0o600 },
     );
   };
   /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. */

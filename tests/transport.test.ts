@@ -525,7 +525,7 @@ test("malformed list, logs and activity replies fail as protocol errors through 
         { project: "demo", target: "local", entries: [entry], cursor: "c3" },
       ),
     ).toBe(1);
-    expect(output).toContain("10:00:00  web  > first page");
+    expect(output).toContain("10:00:00Z  web  > first page");
     expect(output).toContain("rigd returned an invalid response.");
     expect(output.match(/first page/g)).toHaveLength(1);
     expect(bodies).toHaveLength(2);

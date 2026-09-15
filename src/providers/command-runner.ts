@@ -10,6 +10,7 @@ export const runCommand: CommandRunner = async ({
   env,
   signal,
   timeoutMs = 120_000,
+  onOutput,
 }) => {
   if (!command.length)
     throw new RigError(
@@ -46,10 +47,14 @@ export const runCommand: CommandRunner = async ({
       signal?.removeEventListener("abort", cancel);
     };
     child.stdout.on("data", (data) => {
-      stdout = (stdout + data.toString()).slice(-1_048_576);
+      const chunk = data.toString();
+      stdout = (stdout + chunk).slice(-1_048_576);
+      onOutput?.("stdout", chunk);
     });
     child.stderr.on("data", (data) => {
-      stderr = (stderr + data.toString()).slice(-1_048_576);
+      const chunk = data.toString();
+      stderr = (stderr + chunk).slice(-1_048_576);
+      onOutput?.("stderr", chunk);
     });
     child.on("error", (error) => {
       cleanup();

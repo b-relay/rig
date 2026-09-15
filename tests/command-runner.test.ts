@@ -52,3 +52,26 @@ test("a command whose executable cannot start names the executable and the cause
     details: { executable, cause: expect.stringContaining("ENOENT") },
   });
 });
+
+test("output reaches onOutput as it is produced, before the command ends", async () => {
+  const seen: string[] = [];
+  const result = await runCommand({
+    command: [
+      "/bin/sh",
+      "-c",
+      "echo first; echo warned >&2; sleep 0.2; echo second",
+    ],
+    env,
+    onOutput: (stream, chunk) => seen.push(`${stream}:${chunk}`),
+  });
+  expect(result).toEqual({
+    exitCode: 0,
+    stdout: "first\nsecond\n",
+    stderr: "warned\n",
+  });
+  expect(seen.sort()).toEqual([
+    "stderr:warned\n",
+    "stdout:first\n",
+    "stdout:second\n",
+  ]);
+});

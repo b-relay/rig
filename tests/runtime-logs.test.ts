@@ -1,8 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
+import { appendTargetLog } from "../src/providers/target-log";
 import type { TargetRecord } from "../src/domain/runtime";
 const roots: string[] = [];
 afterEach(async () => {
@@ -196,4 +206,89 @@ test("public follow reports reader truncation failure and preserves retained byt
   expect(polls).toBe(2);
   expect(errors).toContain("cursor is invalid or its files changed");
   expect(await readFile(path, "utf8")).toBe("{}\n");
+});
+
+test("an unreadable or non-regular Target log is reported as unreadable, not as a cursor problem", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("kept"));
+  const { cursor } = await files.logs(target, undefined, 2);
+  await chmod(path, 0o000);
+  try {
+    for (const after of [undefined, cursor])
+      await expect(files.logs(target, after, 2)).rejects.toMatchObject({
+        code: "LOG_UNREADABLE",
+        message: `The Target log ${path} could not be read (EACCES).`,
+        hint: "Fix its permissions or move it aside, then read the logs again.",
+      });
+  } finally {
+    await chmod(path, 0o600);
+  }
+  const directory = await fixture();
+  await mkdir(join(directory.logRoot, "target.jsonl"));
+  await expect(files.logs(directory, undefined, 2)).rejects.toMatchObject({
+    code: "LOG_UNREADABLE",
+    message: `The Target log ${join(directory.logRoot, "target.jsonl")} is not a regular file.`,
+  });
+  await expect(files.logs(target, "bogus", 2)).rejects.toMatchObject({
+    code: "LOG_CURSOR",
+  });
+});
+test("launchd wrapper stdout and stderr files are shown under their component with an unknown time", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles();
+  await writeFile(join(target.logRoot, "web.stdout.log"), "");
+  await writeFile(
+    join(target.logRoot, "web.stderr.log"),
+    "error: Cannot find module\n",
+  );
+  await writeFile(join(target.logRoot, "target.jsonl"), entry("dated"));
+  const first = await files.logs(target, undefined, 10);
+  expect(first.entries).toEqual([
+    {
+      timestamp: "unknown",
+      component: "web",
+      stream: "stderr",
+      line: "error: Cannot find module",
+    },
+    { timestamp: "2026-09-09T12:00:00Z", component: "web", stream: "stdout", line: "dated" },
+  ]);
+  await appendFile(join(target.logRoot, "web.stderr.log"), "again\n");
+  expect((await files.logs(target, first.cursor, 10)).entries).toEqual([
+    { timestamp: "unknown", component: "web", stream: "stderr", line: "again" },
+  ]);
+});
+test("a rotated Target log continues a follow without repeating or losing entries", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("a") + entry("b", "2026-09-09T12:00:01Z"));
+  const first = await files.logs(target, undefined, 10);
+  expect(first.entries.map((row) => row.line)).toEqual(["a", "b"]);
+  await appendFile(path, entry("c", "2026-09-09T12:00:02Z"));
+  await rename(path, `${path}.1`);
+  await writeFile(path, entry("d", "2026-09-09T12:00:03Z"));
+  const second = await files.logs(target, first.cursor, 10);
+  expect(second.entries.map((row) => row.line)).toEqual(["c", "d"]);
+  await appendFile(path, entry("e", "2026-09-09T12:00:04Z"));
+  expect(
+    (await files.logs(target, second.cursor, 10)).entries.map((row) => row.line),
+  ).toEqual(["e"]);
+  expect(
+    (await files.logs(target, undefined, 10)).entries.map((row) => row.line),
+  ).toEqual(["a", "b", "c", "d", "e"]);
+});
+test("the Target log writer rotates at its size limit and keeps one previous generation", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  const line = (n: number) => `{"n":${n}}\n`;
+  // Eight-byte lines against a 20-byte limit: the file rotates once it holds three.
+  for (let n = 1; n <= 7; n += 1)
+    await appendTargetLog(target.logRoot, line(n), 20);
+  expect(await readFile(path, "utf8")).toBe(line(7));
+  expect(await readFile(`${path}.1`, "utf8")).toBe(line(4) + line(5) + line(6));
+  await rm(target.logRoot, { recursive: true, force: true });
+  await appendTargetLog(target.logRoot, line(8), 20);
+  expect(await readFile(path, "utf8")).toBe(line(8));
 });

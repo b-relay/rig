@@ -1,6 +1,7 @@
 import {
   writeCaptureObservation,
   type CaptureObservation,
+  throttledPublisher,
 } from "./capture-observation";
 import {
   createProcessIdentityReader,
@@ -13,6 +14,8 @@ import { RigError } from "../domain/errors";
 import { readCaptureRequest } from "./capture-request";
 import { createChildSupervisor } from "./child-supervisor";
 /** Private rigd entrypoint used by launchd; owns signal handlers and the captured child lifetime. */
+/** Unchanged evidence is rewritten this often; the reader trusts evidence younger than one second. */
+const OBSERVATION_HEARTBEAT_MS = 250;
 export async function runCapturedProcess(
   requestPath: string,
   dependencies: { inspect?: ProcessIdentityReader } = {},
@@ -42,17 +45,21 @@ export async function runCapturedProcess(
       state: "running",
       pid: applicationPid,
     });
-    const publish = (
-      observation: CaptureObservation["observation"],
-      applicationIdentity?: string,
-    ) =>
-      writeCaptureObservation(requestPath, {
-        wrapperPid: process.pid,
-        wrapperIdentity,
-        observedAt: Date.now(),
-        applicationIdentity,
-        observation,
-      });
+    // Idle evidence is rewritten only at the heartbeat, well inside the reader's freshness window.
+    const publish = throttledPublisher(
+      (
+        observation: CaptureObservation["observation"],
+        applicationIdentity?: string,
+      ) =>
+        writeCaptureObservation(requestPath, {
+          wrapperPid: process.pid,
+          wrapperIdentity,
+          observedAt: Date.now(),
+          applicationIdentity,
+          observation,
+        }),
+      { heartbeatMs: OBSERVATION_HEARTBEAT_MS, now: Date.now },
+    );
     try {
       return await observeUntilStopped({
         supervisor,

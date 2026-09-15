@@ -550,7 +550,22 @@ untrusted repository cannot rewrite, hide, or reorder what `rig status`,
 `rig list`, `rig logs`, or a prompt displays. `--json` output is not altered.
 Output identifies component, timestamp, and stream with `>` for stdout, `!`
 for stderr, and `~` for health-check evidence; legacy records with missing
-evidence must be marked unknown.
+evidence must be marked unknown. Times are the UTC clock the record was
+written at, printed with a `Z` (`23:30:00Z`) so they are not mistaken for
+local time; `--json` carries the full ISO-8601 timestamp. Build, install, and
+hook output is recorded line by line as the command produces it, each line at
+the time it was seen, so a long build is visible in `rig logs --follow` while
+it runs rather than as one burst afterwards.
+A Target's `target.jsonl` is rotated once it reaches 64 MiB: the full file
+becomes `target.jsonl.1`, replacing the previous one, so a chatty Component
+holds at most about 128 MiB of log on disk. `rig logs` reads both generations
+and a `--follow` continues across the rotation without repeating or losing
+lines. The files launchd writes for a job (`<component>.stdout.log` and
+`<component>.stderr.log`, which hold a capture wrapper's own crash output or
+an uncaptured app's output) are shown under their Component with an unknown
+time. A log file that cannot be opened, or that is not a regular file, fails
+as `LOG_UNREADABLE` naming the file and the reason; `LOG_CURSOR` is reserved
+for a follow whose cursor no longer matches the files.
 A record that cannot be parsed (for example one cut short by a crash and glued
 onto the next), or a run longer than the reader's 4 MiB window, is shown in
 place as an unknown-stream line "Rig skipped an unreadable log record (N
@@ -718,7 +733,8 @@ name rigd would reject is named at the terminal instead of being reported
 as a version mismatch. Diagnostics live
 in separate `logs/rig/rig.jsonl` and `logs/rigd/rigd.jsonl` files beneath the Rig
 root, with daily rotation and 14-day retention by default. That retention does
-not delete Target logs, activity, or Persistent storage. A record cut short by
+not delete Target logs (which are size-bounded instead, see Logs), activity,
+or Persistent storage. A record cut short by
 a killed writer never glues onto the next one (the next record starts on its
 own line) and never disables rotation: the segment's day comes from its first
 complete record, or from the file's creation time when none can be read. Daemon administration

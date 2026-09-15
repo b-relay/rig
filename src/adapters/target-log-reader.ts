@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open, readdir } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { TargetRecord } from "../domain/runtime";
@@ -40,15 +40,26 @@ interface SourceWindow {
   end: number;
   rows: LogRow[];
 }
+const wrapperLog = /^([a-zA-Z0-9_-]+)\.(stdout|stderr)\.log$/;
+/** Rig's own records, their rotated previous generation, legacy events, and the files launchd writes for a job. */
 const recognized = (name: string) =>
   name === "target.jsonl" ||
+  name === "target.jsonl.1" ||
   name === "events.jsonl" ||
-  /^[a-zA-Z0-9_-]+\.launchd\.log$/.test(name);
+  /^[a-zA-Z0-9_-]+\.launchd\.log$/.test(name) ||
+  wrapperLog.test(name);
 const cursorError = () =>
   new RigError(
     "LOG_CURSOR",
     "The Target log cursor is invalid or its files changed.",
     "Read logs again without a cursor.",
+  );
+const unreadableFile = (path: string, code: string | undefined) =>
+  new RigError(
+    "LOG_UNREADABLE",
+    `The Target log ${path} could not be read (${code ?? "unknown error"}).`,
+    "Fix its permissions or move it aside, then read the logs again.",
+    { path, code },
   );
 
 /** Read-only current/legacy log view. Cursors belong to this Target and preserve per-source byte identity.
@@ -72,6 +83,7 @@ export async function readTargetLogs(
     .update(JSON.stringify([target.id, target.logRoot]))
     .digest("hex");
   const previous = decodeCursor(after, identity);
+  await continueRotated(target.logRoot, previous);
   let names: string[];
   try {
     names = (await readdir(target.logRoot)).filter(recognized);
@@ -154,6 +166,23 @@ function decodeCursor(
     throw cursorError();
   }
 }
+/** A follow whose target.jsonl was rotated underneath it carries on from the same bytes in target.jsonl.1. */
+async function continueRotated(
+  root: string,
+  previous: Record<string, Position>,
+): Promise<void> {
+  const current = previous["target.jsonl"];
+  if (!current || previous["target.jsonl.1"]) return;
+  let rotated;
+  try {
+    rotated = await stat(join(root, "target.jsonl.1"));
+  } catch {
+    return;
+  }
+  if (`${rotated.dev}:${rotated.ino}` !== current.identity) return;
+  previous["target.jsonl.1"] = current;
+  delete previous["target.jsonl"];
+}
 /** Filesystem adapter retains bytes after the last newline for the next read, including split UTF-8. */
 async function readSource(
   root: string,
@@ -162,20 +191,29 @@ async function readSource(
   recent: boolean,
 ): Promise<SourceWindow | undefined> {
   let file: Awaited<ReturnType<typeof open>>;
+  const path = join(root, name);
   try {
-    file = await open(join(root, name), "r");
+    file = await open(path, "r");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !previous)
-      return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw unreadableFile(path, code);
+    // A source the cursor knew has gone: that is a cursor problem, not a missing log.
+    if (!previous) return undefined;
     throw cursorError();
   }
   try {
     const metadata = await file.stat();
     const identity = `${metadata.dev}:${metadata.ino}`;
+    if (!metadata.isFile())
+      throw new RigError(
+        "LOG_UNREADABLE",
+        `The Target log ${path} is not a regular file.`,
+        "Move it aside so Rig can write its log there, then read the logs again.",
+        { path },
+      );
     if (
-      !metadata.isFile() ||
-      (previous &&
-        (previous.identity !== identity || previous.offset > metadata.size))
+      previous &&
+      (previous.identity !== identity || previous.offset > metadata.size)
     )
       throw cursorError();
     const start = recent
@@ -266,8 +304,18 @@ function parseLine(
       stream: "unknown",
       line,
     };
+  // launchd writes a job's own stdout/stderr (a crashed wrapper, an uncaptured app) without times.
+  const wrapper = wrapperLog.exec(name);
+  if (wrapper)
+    return {
+      timestamp: "unknown",
+      component: wrapper[1]!,
+      stream: wrapper[2] as "stdout" | "stderr",
+      line,
+    };
   try {
-    if (name === "target.jsonl") return currentEntry.parse(JSON.parse(line));
+    if (name === "target.jsonl" || name === "target.jsonl.1")
+      return currentEntry.parse(JSON.parse(line));
     const event = legacyEvent.parse(JSON.parse(line));
     if (
       event.event !== "component.log" ||

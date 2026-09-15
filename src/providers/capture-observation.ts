@@ -45,7 +45,7 @@ export async function writeCaptureObservation(
   }
 }
 
-/** Evidence older than this at read time no longer describes the application; the wrapper republishes every 50 ms. */
+/** Evidence older than this at read time no longer describes the application; the wrapper republishes at least every 250 ms. */
 const FRESHNESS_MS = 1000;
 /** Only fresh evidence from the current launchd wrapper can describe its application. */
 export async function readCaptureObservation(request: {
@@ -82,4 +82,22 @@ export async function readCaptureObservation(request: {
   } catch {
     return unknown;
   }
+}
+
+/** Wraps a publisher so unchanged evidence is rewritten only once per heartbeat, while any change is published at once. */
+export function throttledPublisher<Observation>(
+  publish: (
+    observation: Observation,
+    applicationIdentity?: string,
+  ) => Promise<void>,
+  options: { heartbeatMs: number; now: () => number },
+): (observation: Observation, applicationIdentity?: string) => Promise<void> {
+  let last: { key: string; at: number } | undefined;
+  return async (observation, applicationIdentity) => {
+    const key = JSON.stringify([observation, applicationIdentity]);
+    const at = options.now();
+    if (last && last.key === key && at - last.at < options.heartbeatMs) return;
+    await publish(observation, applicationIdentity);
+    last = { key, at };
+  };
 }

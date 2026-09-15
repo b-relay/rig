@@ -77,7 +77,7 @@ test("real daemon owns working-copy process across CLI clients and releases its 
     const logs = await call(rig, ["logs", "local"]);
     expect(logs.stdout).toContain("hello stdout");
     expect(logs.stdout).toContain("hello stderr");
-    expect(logs.stdout).toMatch(/\d{2}:\d{2}:\d{2}  setup  > setup production stdout/);
+    expect(logs.stdout).toMatch(/\d{2}:\d{2}:\d{2}Z  setup  > setup production stdout/);
     expect(logs.stdout).toContain("setup  ! setup production stderr");
     expect(await call(rigd, ["uninstall"])).toMatchObject({ code: 1 });
     expect(

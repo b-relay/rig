@@ -907,3 +907,46 @@ test("an HTTP health probe treats a redirect as ready, reports a failed status, 
     server.stop(true);
   }
 });
+
+test("hook output is recorded line by line as it arrives, with the time each line was seen", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-hook-stream-"));
+  roots.push(root);
+  let tick = 0;
+  const adapter = createTargetEffects({
+    root,
+    recordingTime: () => `t${(tick += 1)}`,
+    supervisors: new Map(),
+    run: async ({ onOutput }) => {
+      onOutput?.("stdout", "one\ntw");
+      await Bun.sleep(10);
+      onOutput?.("stderr", "warned\n");
+      await Bun.sleep(10);
+      onOutput?.("stdout", "o\n");
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: {
+      async apply() {},
+      async remove() {},
+      async checkpoint(key) {
+        return { key, value: null };
+      },
+      async restore() {},
+    },
+    environment: {},
+  });
+  const record = target(root);
+  await adapter.hook("build", record, undefined, "preStart");
+  const lines = (await readFile(join(record.logRoot, "target.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(lines).toEqual([
+    { timestamp: "t1", component: "setup", stream: "stdout", line: "one" },
+    { timestamp: "t2", component: "setup", stream: "stderr", line: "warned" },
+    { timestamp: "t3", component: "setup", stream: "stdout", line: "two" },
+  ]);
+});

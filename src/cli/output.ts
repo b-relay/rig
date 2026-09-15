@@ -152,8 +152,11 @@ export function renderLogs(value: unknown, heading: boolean): string {
     : [];
   for (const entry of rows(report.entries)) {
     const timestamp = word(entry.timestamp);
-    const time = /^\d{4}-\d{2}-\d{2}T/.test(timestamp)
-      ? timestamp.slice(11, 19)
+    // Timestamps are recorded in UTC; the marker keeps the clock from passing for local time.
+    const time = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(
+      timestamp,
+    )
+      ? `${timestamp.slice(11, 19)}Z`
       : timestamp;
     const marker =
       entry.stream === "stderr"

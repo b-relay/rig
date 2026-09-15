@@ -67,3 +67,24 @@ test("list marks a registered directory that no longer exists", () => {
     "demo  0 Targets  /gone  (directory missing: rig repoint or rig forget demo)\napp  2 Targets  /here\n",
   );
 });
+
+test("logs print the UTC clock with its zone marker so it cannot pass for local time", () => {
+  expect(
+    renderLogs(
+      {
+        project: "app",
+        target: "live",
+        entries: [
+          {
+            timestamp: "2026-09-14T23:30:00.000Z",
+            component: "web",
+            stream: "stdout",
+            line: "ready",
+          },
+        ],
+        cursor: "0",
+      },
+      false,
+    ),
+  ).toBe("23:30:00Z  web  > ready\n");
+});

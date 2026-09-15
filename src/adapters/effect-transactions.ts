@@ -349,15 +349,17 @@ export function createEffectTransactions(options: {
           "This Target has an unfinished effect transaction.",
           "Run down for this Target to restore its saved effects before retrying.",
         );
-      const destinations = new Set<string>();
+      const destinations = new Map<string, string>();
       for (const artifact of artifacts) {
-        if (destinations.has(artifact.destination))
+        const first = destinations.get(artifact.destination);
+        if (first !== undefined)
           throw new RigError(
             "ARTIFACT_CONFLICT",
-            "Two Components use the same installed executable path.",
+            `Components '${first}' and '${artifact.componentName}' both install to ${artifact.destination}.`,
             "Give each Component a distinct installName.",
+            { destination: artifact.destination },
           );
-        destinations.add(artifact.destination);
+        destinations.set(artifact.destination, artifact.componentName);
         await options.ownership.inspect(artifact);
       }
       const route = await options.router.checkpoint(targetId);

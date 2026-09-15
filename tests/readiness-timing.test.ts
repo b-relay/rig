@@ -73,7 +73,8 @@ test("a process that has exited is reported with its exit code before the first 
   const f = fixture(async () => { polls++; return notReady(); }, { crashes: { "readiness:new": 127 } });
   await expect(f.lifecycle.up(f.record)).rejects.toMatchObject({
     code: "PROCESS_EXITED",
-    message: "new exited with code 127 before it became ready.",
+    message: "new exited with code 127 before it became ready: the shell found no executable for its command.",
+    hint: "Install the missing tool where rigd can find it (rigd uses the PATH it was installed from), or fix the command, then retry.",
     details: { component: "new", exitCode: 127 },
   });
   expect(polls).toBe(0);

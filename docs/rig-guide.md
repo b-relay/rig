@@ -821,7 +821,16 @@ out leaves the previous installed artifact in place.
    and an identical output is reported `unchanged`. Renaming a Component
    while keeping its `installName` hands the executable to the new name
    within the same Target; only another Target's Component is refused with
-   `ARTIFACT_CONFLICT`, which names the owner.
+   `ARTIFACT_CONFLICT`, which names the owning Project, Target, and
+   Component. Installed executables share one `bin/` directory across every
+   Project and Target on the Host (`<installName or name>` for `live`,
+   `-dev` for `local`, `-<preview name>` for a Preview), so two Projects that
+   both install `cli` on `live` collide; give one a distinct `installName`.
+   An executable Rig did not install is never overwritten
+   (`ARTIFACT_UNOWNED`), and one that was edited by hand after installation
+   is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks
+   `rig down preview --destroy` too): both name the file, and moving or
+   deleting it is the way through.
 2. For each Component in dependency order: the Component's `preStart`, the
    process start, readiness, then the Component's `postStart`. Readiness means
    the `health` check passed, or, for a Component without `health`, that the
@@ -871,7 +880,19 @@ placeholders. The available properties are:
   `port.<name>`) and `<name>.url` for any Component with a port; because of
   those aliases a Component may not be named `port` or `ports`;
   `<name>.sitePort`, `<name>.siteUrl`, and `<name>.stateDir` for Convex;
-  `<name>.dataDir` for Postgres; `<name>.path` for SQLite.
+  `<name>.dataDir` for Postgres; `<name>.path` for SQLite. For a Postgres
+  Component `<name>.url` is a connection string,
+  `postgres://127.0.0.1:<port>/postgres`, rather than an HTTP URL.
+
+A Postgres Component's cluster is created by `initdb -E UTF8 -A trust
+--no-locale` on first start: UTF-8 encoding, trust authentication on
+loopback, the superuser is the user rigd runs as, and the default database
+is `postgres`. Rig needs `initdb`, `postgres`, and `pg_isready` on the PATH
+rigd was installed from (for example `brew install postgresql@17`); a missing
+`initdb` fails the start as `POSTGRES_INIT` naming the tool, and a managed
+command whose executable the shell cannot find fails as `PROCESS_EXITED` with
+exit code 127 and a hint that names the missing tool problem instead of
+waiting out `readyTimeout`.
 
 `branch`, `commit`, `domain`, and `project` are not interpolation properties,
 and an unknown placeholder is rejected when the config is resolved so a typo

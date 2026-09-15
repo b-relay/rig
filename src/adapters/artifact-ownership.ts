@@ -14,6 +14,14 @@ const ownerSchema = z
   .object({
     targetId: z.string().describe("Stable Target that owns this executable."),
     componentName: z.string().describe("Owning Component name."),
+    project: z
+      .string()
+      .optional()
+      .describe("Owning Project name, so a conflict can name it."),
+    target: z
+      .string()
+      .optional()
+      .describe("Owning Target name, so a conflict can name it."),
     revision: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -25,6 +33,9 @@ export interface ArtifactIdentity {
   targetId: string;
   componentName: string;
   destination: string;
+  /** The owning Project and Target names, recorded so a later conflict can name them. */
+  project?: string;
+  target?: string;
 }
 /** One daemon serializes ownership mutations; existing unowned files require explicit migration. */
 export function createArtifactOwnership(root: string) {
@@ -57,28 +68,34 @@ export function createArtifactOwnership(root: string) {
     if (saved && saved.targetId !== identity.targetId)
       throw new RigError(
         "ARTIFACT_CONFLICT",
-        "Another Target's Component owns this installed executable.",
-        "Choose a different installName.",
+        `${
+          saved.project && saved.target
+            ? `Project '${saved.project}' Target '${saved.target}' Component '${saved.componentName}'`
+            : `Another Target's Component '${saved.componentName}'`
+        } owns the installed executable ${identity.destination}.`,
+        "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
         {
           destination: identity.destination,
           owner: {
             targetId: saved.targetId,
             componentName: saved.componentName,
+            ...(saved.project ? { project: saved.project } : {}),
+            ...(saved.target ? { target: saved.target } : {}),
           },
         },
       );
     if (!saved && revision !== undefined)
       throw new RigError(
         "ARTIFACT_UNOWNED",
-        "An unmanaged executable already occupies this installation path.",
-        "Preserve or explicitly adopt the existing executable before installing.",
+        `An executable Rig did not install already occupies ${identity.destination}.`,
+        "Move or delete it, then retry; Rig never overwrites an executable it did not install.",
         { destination: identity.destination },
       );
     if (saved && revision !== undefined && saved.revision !== revision)
       throw new RigError(
         "ARTIFACT_CHANGED",
-        "The installed executable changed outside its owning Component.",
-        "Inspect and preserve that change before reinstalling.",
+        `The installed executable ${identity.destination} changed outside its owning Component ${saved.componentName}.`,
+        `Move or delete ${identity.destination} to keep or discard that change, then retry.`,
         { destination: identity.destination },
       );
     return { owner: saved, revision };
@@ -102,6 +119,8 @@ export function createArtifactOwnership(root: string) {
         JSON.stringify({
           targetId: identity.targetId,
           componentName: identity.componentName,
+          ...(identity.project ? { project: identity.project } : {}),
+          ...(identity.target ? { target: identity.target } : {}),
           revision,
         }),
       );

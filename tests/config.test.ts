@@ -240,7 +240,7 @@ test("Preview plans use assigned ports and bundled dependency defaults without l
   const config = parseProjectConfig({
     name: "app",
     domain: "${subdomain}.example.com",
-    hooks: { preStart: "echo ${workspace}" },
+    hooks: { preStart: "echo ${workspace} ${postgres.url} ${convex.url}" },
     components: {
       convex: { uses: "convex", port: 3210 },
       postgres: { uses: "postgres", port: 5432 },
@@ -271,7 +271,10 @@ test("Preview plans use assigned ports and bundled dependency defaults without l
     branch: "feature/test",
     commit: "abc",
     providers: { processSupervisor: "launchd" },
-    hooks: { preStart: "echo /work" },
+    hooks: {
+      preStart:
+        "echo /work postgres://127.0.0.1:5433/postgres http://127.0.0.1:4000",
+    },
   });
   expect(plan.components[0]).toMatchObject({
     port: 4000,
@@ -281,6 +284,7 @@ test("Preview plans use assigned ports and bundled dependency defaults without l
   expect(plan.components[1]).toMatchObject({
     port: 5433,
     health: "pg_isready -h 127.0.0.1 -p 5433",
+    command: expect.stringContaining("initdb -E UTF8 -A trust --no-locale -D"),
   });
   expect(plan.components[2]).toMatchObject({
     kind: "installed",

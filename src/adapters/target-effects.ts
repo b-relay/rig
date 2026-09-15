@@ -45,7 +45,7 @@ function failureReason(error: unknown): string {
   return String(error);
 }
 import type { ObservationEffects } from "../runtime/status";
-import { RigError } from "../domain/errors";
+import { RigError, failureCauses } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { createEffectTransactions } from "./effect-transactions";
 export interface TargetAdapterOptions {
@@ -268,6 +268,8 @@ export function createTargetEffects(
         targetId: target.id,
         componentName: component.name,
         destination,
+        project: target.plan.project,
+        target: target.name,
       });
       await transactions.withArtifactChange(
         target.id,
@@ -303,6 +305,8 @@ export function createTargetEffects(
           componentName: component.name,
           destination: installedPath(options.root, owner, component),
           receiptPath: receiptPath(owner, component),
+          project: owner.plan.project,
+          target: owner.name,
         })),
       ),
     commitEffects: (target) => transactions.commit(target.id),
@@ -331,23 +335,39 @@ export function createTargetEffects(
           component.uses === "postgres" &&
           !(await exists(join(component.dataDir, "PG_VERSION")))
         ) {
-          const result = await options.run({
-            command: [
-              "initdb",
-              "-D",
-              component.dataDir,
-              "-A",
-              "trust",
-              "--no-locale",
-            ],
-            env: options.environment,
-          });
+          let result;
+          try {
+            result = await options.run({
+              command: [
+                "initdb",
+                "-E",
+                "UTF8",
+                "-A",
+                "trust",
+                "--no-locale",
+                "-D",
+                component.dataDir,
+              ],
+              env: options.environment,
+            });
+          } catch (error) {
+            if (!(error instanceof RigError) || error.code !== "COMMAND_START")
+              throw error;
+            throw new RigError(
+              "POSTGRES_INIT",
+              `initdb is not installed or not on rigd's PATH, so the Postgres storage for ${component.name} could not be initialized.`,
+              "Install PostgreSQL (for example brew install postgresql@17) so initdb, postgres and pg_isready are on the PATH rigd was installed from, then retry.",
+              { component: component.name },
+              failureCauses(error),
+            );
+          }
           await recordOutput(result, target, component.name);
           if (result.exitCode)
             throw new RigError(
               "POSTGRES_INIT",
-              "Postgres storage could not be initialized.",
-              "Install Postgres tools and inspect Target setup logs.",
+              `initdb exited with code ${result.exitCode}, so the Postgres storage for ${component.name} could not be initialized.`,
+              "Inspect the Target setup logs for initdb's output.",
+              { component: component.name, exitCode: result.exitCode },
             );
         }
       }
@@ -439,6 +459,8 @@ export function createTargetEffects(
         targetId: target.id,
         componentName: component.name,
         destination,
+        project: target.plan.project,
+        target: target.name,
       };
       await ownership.inspect(identity);
       const declared = await declaredEnvironment(target, component);
@@ -555,6 +577,8 @@ export function createTargetEffects(
             targetId: target.id,
             componentName: component.name,
             destination,
+            project: target.plan.project,
+            target: target.name,
           });
           if (owned.revision === undefined) return "missing";
           if (!owned.owner) return "unknown";

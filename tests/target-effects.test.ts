@@ -14,6 +14,7 @@ import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
+import { RigError } from "../src/domain/errors";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -571,14 +572,96 @@ test("a renamed Component takes over its own Target's installed executable, whil
       new AbortController().signal,
     ),
   ).toBe("installed");
-  const other = { ...record, id: "other" };
+  const other = {
+    ...record,
+    id: "other",
+    plan: { ...record.plan, project: "second" },
+  };
   await expect(adapter.install(cli, other)).rejects.toMatchObject({
     code: "ARTIFACT_CONFLICT",
+    message: `Project 'demo' Target 'local' Component 'launcher' owns the installed executable ${join(root, "bin", "tool-dev")}.`,
+    hint: "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
     details: {
       destination: join(root, "bin", "tool-dev"),
-      owner: { targetId: "t", componentName: "launcher" },
+      owner: {
+        targetId: "t",
+        componentName: "launcher",
+        project: "demo",
+        target: "local",
+      },
     },
   });
+  await writeFile(join(root, "bin", "tool-dev"), "hand edit", { mode: 0o755 });
+  const installed = {
+    ...record,
+    plan: { ...record.plan, components: [launcher] },
+  };
+  await expect(adapter.retireArtifacts(installed)).rejects.toMatchObject({
+    code: "ARTIFACT_CHANGED",
+    message: `The installed executable ${join(root, "bin", "tool-dev")} changed outside its owning Component launcher.`,
+    hint: `Move or delete ${join(root, "bin", "tool-dev")} to keep or discard that change, then retry.`,
+  });
+  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toBe("hand edit");
+  await rm(join(root, "bin", "tool-dev"));
+  await adapter.retireArtifacts(installed);
+  expect(await Bun.file(join(root, "bin", "tool-dev")).exists()).toBe(false);
+  expect(
+    await adapter.observations.artifact(
+      installed,
+      launcher,
+      new AbortController().signal,
+    ),
+  ).toBe("missing");
+});
+
+test("a missing initdb names the tool instead of a generic start failure, and an initialised cluster is UTF8", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-postgres-missing-"));
+  roots.push(root);
+  const commands: (readonly string[])[] = [];
+  const adapter = createTargetEffects({
+    root,
+    recordingTime: () => "now",
+    supervisors: new Map(),
+    run: async ({ command }) => {
+      commands.push(command);
+      throw new RigError(
+        "COMMAND_START",
+        `Provider command '${command[0]}' could not start (spawn ${command[0]} ENOENT).`,
+        "Check that the executable exists and is on the PATH, and that the working directory exists.",
+        { executable: command[0], cause: `spawn ${command[0]} ENOENT` },
+      );
+    },
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: {
+      async apply() {},
+      async remove() {},
+      async checkpoint(key) {
+        return { key, value: null };
+      },
+      async restore() {},
+    },
+    environment: { PATH: "/nonexistent" },
+  });
+  const record: TargetRecord = {
+    ...target(root),
+    plan: {
+      ...target(root).plan,
+      preparedComponents: [
+        { name: "pg", uses: "postgres", dataDir: join(root, "pg") },
+      ],
+    },
+  };
+  await expect(adapter.prepare(record)).rejects.toMatchObject({
+    code: "POSTGRES_INIT",
+    message: "initdb is not installed or not on rigd's PATH, so the Postgres storage for pg could not be initialized.",
+    hint: "Install PostgreSQL (for example brew install postgresql@17) so initdb, postgres and pg_isready are on the PATH rigd was installed from, then retry.",
+  });
+  expect(commands).toEqual([
+    ["initdb", "-E", "UTF8", "-A", "trust", "--no-locale", "-D", join(root, "pg")],
+  ]);
 });
 
 test("dependency installation runs once per deployed revision and its marker leaves with the revision", async () => {

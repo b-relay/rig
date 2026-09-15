@@ -309,7 +309,7 @@ owner carries only its own owner-level defects.
 | processSupervisor typo accepted by schema; wedges the Target at deploy | #190 |
 | convex stateDir and relative sqlite paths resolved under the revision checkout: data lost per deploy | #191 |
 | rename keeping installName raises ARTIFACT_CONFLICT; local up never rebuilds after source change | #192 (fixed: same-Target takeover; local builds every up, republishes on changed output) |
-| provider minors (PROVIDER_MISSING wording, redirect handling, sqlite path hint) | #193 |
+| provider minors (PROVIDER_MISSING wording, redirect handling, sqlite path hint) | #193 (fixed: `initdb -E UTF8`, `<pg>.url` is a `postgres://` connection string, a missing `initdb` is `POSTGRES_INIT` naming the tool, exit 127/126 is explained by `PROCESS_EXITED`, `ARTIFACT_CONFLICT` names the owning Project/Target/Component, `ARTIFACT_CHANGED`/`ARTIFACT_UNOWNED` name the file and the way through) |
 | rig restart aborts after the stop half on a preStop/postStop failure: outage, desired persisted stopped | #194 |
 | installation receipt key hashes the whole inherited daemon env: ambient changes rebuild everything, artifact unknown | #195 (fixed: keyed on declared env only) |
 | hook semantics drift: installed-component hooks never run, postStart before readiness, preStart after builds, HOOK_FAILED unnamed, RIG_DAEMON_CHILD inherited, undocumented interpolation names | #196 |

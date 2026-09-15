@@ -510,12 +510,21 @@ async function assertAlive(
   const observation = await process.observe();
   if (observation.state !== "stopped") return;
   const exitCode = observation.exitCode;
+  // The shell's own exit codes: 127 names a command it could not find, 126 one it could not run.
+  const shellFailure =
+    exitCode === 127
+      ? "the shell found no executable for its command"
+      : exitCode === 126
+        ? "the shell could not run its command (not executable)"
+        : undefined;
   throw new RigError(
     "PROCESS_EXITED",
     exitCode === undefined
       ? `${component.name} exited before it became ready.`
-      : `${component.name} exited with code ${exitCode} before it became ready.`,
-    "Inspect Target logs for the start-up failure before retrying.",
+      : `${component.name} exited with code ${exitCode} before it became ready${shellFailure ? `: ${shellFailure}` : ""}.`,
+    shellFailure
+      ? "Install the missing tool where rigd can find it (rigd uses the PATH it was installed from), or fix the command, then retry."
+      : "Inspect Target logs for the start-up failure before retrying.",
     {
       component: component.name,
       ...(exitCode === undefined ? {} : { exitCode }),

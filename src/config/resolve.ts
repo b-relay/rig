@@ -323,6 +323,10 @@ function resolveComponentProperties(
       ("uses" in component && component.uses !== "sqlite")
     ) {
       reserve(name, component.port);
+      // A Postgres URL is a connection string; libpq fills in the OS user the cluster trusts.
+      if ("uses" in component && component.uses === "postgres")
+        properties[`${name}.url`] =
+          `postgres://127.0.0.1:${properties[`${name}.port`]}/postgres`;
       if ("uses" in component && component.uses === "convex") {
         // The site port's port + 1 fallback is the runtime's preference when it
         // requests ports; the resolver records only what was configured or assigned.
@@ -477,7 +481,7 @@ function resolvePlanComponent({
     health ??= `http://127.0.0.1:${port}/instance_name`;
   }
   if (plugin === "postgres") {
-    command ??= `sh -c 'test -f "$1/PG_VERSION" || initdb -D "$1" || exit; exec postgres -D "$1" -h 127.0.0.1 -p "$2"' -- ${shellArg(String(properties[`${name}.dataDir`]))} ${port}`;
+    command ??= `sh -c 'test -f "$1/PG_VERSION" || initdb -E UTF8 -A trust --no-locale -D "$1" || exit; exec postgres -D "$1" -h 127.0.0.1 -p "$2"' -- ${shellArg(String(properties[`${name}.dataDir`]))} ${port}`;
     health ??= `pg_isready -h 127.0.0.1 -p ${port}`;
   }
   const resolvedCommand = interpolateShell(

@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
-import { runCommand } from "./command-runner";
 import {
   createProcessIdentityReader,
   type ProcessIdentityReader,
@@ -20,19 +19,23 @@ export interface ProcessInspection {
   groupExists(pid: number): Promise<boolean>;
   signalGroup(pid: number, signal: NodeJS.Signals): Promise<void>;
 }
+export type ProcessKill = (pid: number, signal: NodeJS.Signals | 0) => void;
 export interface ProcessInspectionOptions {
-  readonly run?: CommandRunner;
-  readonly kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
+  /** Runs `/bin/ps` for identity and the permission fallback; `runCommand` on the platform. */
+  readonly run: CommandRunner;
+  /** Sends a signal (0 probes); `platformKill` on the platform. */
+  readonly kill: ProcessKill;
 }
+/** The platform signal path; an owner passes it explicitly so a test can substitute it. */
+export const platformKill: ProcessKill = (pid, signal) => {
+  process.kill(pid, signal);
+};
 
 /** Owns OS probes, permission fallback and signal error translation. */
 export function createProcessInspection(
-  options: ProcessInspectionOptions = {},
+  options: ProcessInspectionOptions,
 ): ProcessInspection {
-  const run = options.run ?? runCommand;
-  const kill = options.kill ?? ((pid, signal) => {
-    process.kill(pid, signal);
-  });
+  const { run, kill } = options;
   async function groupExists(pid: number): Promise<boolean> {
     try {
       kill(-pid, 0);

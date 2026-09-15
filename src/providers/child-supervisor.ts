@@ -19,11 +19,8 @@ import type {
   Supervisor,
   TargetLogEntry,
 } from "./contracts";
-import {
-  createProcessInspection,
-  type ProcessInspection,
-} from "./process-inspection";
-import { createProcessTiming, type ProcessTiming } from "./process-timing";
+import type { ProcessInspection } from "./process-inspection";
+import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
 /** SIGTERM grace before SIGKILL when no stopTimeoutMs is configured. */
 const DEFAULT_STOP_TIMEOUT_MS = 1500;
@@ -88,9 +85,10 @@ export interface ChildSupervisorOptions {
   readonly stopTimeoutMs?: number;
   /** How long a killed group may take to disappear before stop fails as STOP_TIMEOUT; 1500 ms. */
   readonly killWaitMs?: number;
-  /** Clock and timers; the platform's unless a test scripts them. */
-  readonly timing?: ProcessTiming;
-  readonly processInspection?: ProcessInspection;
+  /** Clock and timers; `createProcessTiming()` on the platform, scripted in tests. */
+  readonly timing: ProcessTiming;
+  /** Process identity, group presence, and signals; the owner passes the platform's or a scripted one. */
+  readonly processInspection: ProcessInspection;
   readonly captureCommand?: readonly string[];
   readonly restartLimit?: number;
   readonly restartWindowMs?: number;
@@ -115,9 +113,9 @@ export function createChildSupervisor(
       ? { restartPending: true, ...(restart?.at === undefined ? {} : { restartAt: restart.at }) }
       : {};
   };
-  const timing = options.timing ?? createProcessTiming();
+  const timing = options.timing;
   const now = timing.now;
-  const inspection = options.processInspection ?? createProcessInspection();
+  const inspection = options.processInspection;
   const inspect = inspection.identity;
   const leaseRoot = join(options.stateRoot, "process-leases");
   let shuttingDown = false;

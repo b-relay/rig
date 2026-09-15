@@ -23,6 +23,11 @@ import { FileStateStore } from "../runtime/state-store";
 import { createRuntime } from "../runtime/application";
 import { createTargetLifecycle } from "../runtime/lifecycle";
 import { createChildSupervisor } from "../providers/child-supervisor";
+import {
+  createProcessInspection,
+  platformKill,
+} from "../providers/process-inspection";
+import { createProcessTiming } from "../providers/process-timing";
 import { createLaunchdSupervisor } from "../providers/launchd-supervisor";
 import { createGitSourceStore } from "../providers/git-source-store";
 import { createArtifactInstaller } from "../providers/artifact-installer";
@@ -46,7 +51,16 @@ export async function composeDaemon(
     now: () => new Date(),
     ...host.diagnostics,
   });
-  const child = createChildSupervisor({ stateRoot: root, captureCommand });
+  // The daemon owns the platform clock and signal path; every supervisor receives them explicitly.
+  const child = createChildSupervisor({
+    stateRoot: root,
+    captureCommand,
+    timing: createProcessTiming(),
+    processInspection: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }),
+  });
   const launchd = createLaunchdSupervisor({
     root: join(root, "launchd"),
     domain: `gui/${process.getuid?.() ?? 501}`,

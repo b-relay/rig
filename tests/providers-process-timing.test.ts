@@ -4,7 +4,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
-import { createProcessInspection } from "../src/providers/process-inspection";
+import {
+  createProcessInspection,
+  platformKill,
+} from "../src/providers/process-inspection";
+import { runCommand } from "../src/providers/command-runner";
 import type { ProcessTiming } from "../src/providers/process-timing";
 
 const roots: string[] = [];
@@ -196,6 +200,10 @@ test("the restart budget is a sliding window on the supplied clock: exhausted at
   const supervisor = createChildSupervisor({
     stateRoot: join(root, ".rig"),
     timing: clock.timing,
+    processInspection: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }),
     restartLimit: 2,
     restartWindowMs: 1000,
     restartBackoffMs: 100,
@@ -253,6 +261,10 @@ test("a scheduled restart that cannot start ends the pending restart instead of 
   const supervisor = createChildSupervisor({
     stateRoot: join(base, ".rig"),
     timing: clock.timing,
+    processInspection: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }),
     restartBackoffMs: 100,
   });
   const request = {

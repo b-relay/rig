@@ -13,6 +13,9 @@ import { dirname } from "node:path";
 import { RigError } from "../domain/errors";
 import { readCaptureRequest } from "./capture-request";
 import { createChildSupervisor } from "./child-supervisor";
+import { runCommand } from "./command-runner";
+import { createProcessInspection, platformKill } from "./process-inspection";
+import { createProcessTiming } from "./process-timing";
 /** Private rigd entrypoint used by launchd; owns signal handlers and the captured child lifetime. */
 /** Unchanged evidence is rewritten this often; the reader trusts evidence younger than one second. */
 const OBSERVATION_HEARTBEAT_MS = 250;
@@ -21,7 +24,14 @@ export async function runCapturedProcess(
   dependencies: { inspect?: ProcessIdentityReader } = {},
 ): Promise<number> {
   const request = await readCaptureRequest(requestPath);
-  const supervisor = createChildSupervisor({ stateRoot: dirname(requestPath) });
+  const supervisor = createChildSupervisor({
+    stateRoot: dirname(requestPath),
+    timing: createProcessTiming(),
+    processInspection: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }),
+  });
   let stopping: Promise<unknown> | undefined;
   const stop = () => {
     stopping ??= supervisor.stop(request.key);

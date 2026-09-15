@@ -343,13 +343,21 @@ test("Targets without managed components have no pre-stop work", async () => {
 test("port contention after selection fails startup and preserves an already running component", async () => {
   const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
   const { createChildSupervisor } = await import("../src/providers/child-supervisor");
+  const { runCommand } = await import("../src/providers/command-runner");
+  const { createProcessInspection, platformKill } = await import("../src/providers/process-inspection");
+  const { createProcessTiming } = await import("../src/providers/process-timing");
   const { mkdtemp, mkdir, rm, writeFile, readFile } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const base = await mkdtemp(join(tmpdir(), "rig-port-contention-"));
   const root = join(base, ".rig");
   await mkdir(root);
-  const supervisor = createChildSupervisor({ stateRoot: root, restartLimit: 0 });
+  const supervisor = createChildSupervisor({
+    stateRoot: root,
+    restartLimit: 0,
+    timing: createProcessTiming(),
+    processInspection: createProcessInspection({ run: runCommand, kill: platformKill }),
+  });
   const ports = await createRuntimeFiles().selectPorts({ requests: [{ name: "api" }, { name: "web" }], occupied: new Set(), policy: "dynamic" });
   const record = structuredClone(target);
   record.plan.workspacePath = root;

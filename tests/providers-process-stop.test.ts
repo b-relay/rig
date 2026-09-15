@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
 import { createProcessInspection } from "../src/providers/process-inspection";
 import { runCommand } from "../src/providers/command-runner";
+import { createProcessTiming } from "../src/providers/process-timing";
 import type { CommandRequest, CommandResult } from "../src/providers/contracts";
 
 const roots: string[] = [];
@@ -30,6 +31,7 @@ async function fixture(options: {
   const supervisor = createChildSupervisor({
     stateRoot,
     stopTimeoutMs: 0,
+    timing: createProcessTiming(),
     processInspection: createProcessInspection({
       kill: options.kill,
       run: async request => {
@@ -171,6 +173,7 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
     stateRoot: join(root, ".rig"),
     stopTimeoutMs: 0,
     restartBackoffMs: 60_000,
+    timing: createProcessTiming(),
     processInspection: createProcessInspection({
       kill: (target, signal) => { probes.push([target, signal]); process.kill(target, signal); },
       run: async request => { commands.push(request); return runCommand(request); },

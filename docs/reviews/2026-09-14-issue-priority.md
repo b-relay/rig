@@ -141,7 +141,7 @@ testability and honesty refactors.
 
 Ordered by how many `[T]` ancestors each clears and which bugs above it unblocks.
 
-110. #225 createChildSupervisor / createProcessInspection defaults; composeDaemon passes none. Unblocks #120, #146, #171, #211, #212.
+110. ~~#225~~ (fixed) createChildSupervisor / createProcessInspection defaults; composeDaemon passes none. Unblocks #120, #146, #171, #211, #212.
 111. #234 Runtime observation deadline chosen by omission in four call sites. Unblocks #200, #203, #210, #213 tests.
 112. #226 waitForCaptureStart Date.now/Bun.sleep. Shared by both supervisors.
 113. #227 launchd waitForApplication/stop uninjectable sleeps. Unblocks #144, #218.

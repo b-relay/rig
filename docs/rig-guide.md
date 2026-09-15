@@ -386,6 +386,22 @@ Rig remote classification uses the pushed destination Branch:
 - Same-Commit pushes are no-ops and should not start a stopped Target.
 - Rig remote pushes do not support `--no-up` in the first release.
 
+A successful push prints one line per Branch on stderr naming the Project,
+the Branch, the outcome, the Target it landed on (Preview names are derived,
+such as `feature-login-0d6e4079`), its route, and the operation id, for
+example `demo feature/login deployed to feature-login-0d6e4079 at
+feature-login.demo.test (operation 3f2c…)`. Two git behaviours are worth
+knowing. `git push --force rig <branch>` with the Commit that is already
+deployed never reaches rigd: git sees the advertised ref and answers
+"Everything up-to-date", so a same-Commit redeploy is `rig deploy <target>
+--force`. `git push --all rig` deploys every local Branch as a Preview, one
+after another, and the Preview limit retires the oldest ones as it goes; push
+Branches by name unless that is what you want. Pushing from a directory that
+is registered as a different Project (`git push other main` from the `demo`
+checkout) is refused with `PROJECT_PATH_CONFLICT` naming both Projects and the
+remote URL to use; `rig repoint` is only suggested for a directory no Project
+is registered at.
+
 ## Lifecycle And Logs
 
 Lifecycle commands act only on existing Targets. They do not create missing

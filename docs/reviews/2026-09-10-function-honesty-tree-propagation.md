@@ -332,7 +332,7 @@ owner carries only its own owner-level defects.
 | lease recovery after daemon restart: leader-only ownership (dead sh leader → duplicate), keepAlive lost | #212 |
 | one global mutation queue blocks unrelated Projects with no feedback | #213 (fixed in part: the `queue` read names the running operation and the count waiting; `rig` prints it after two seconds without an answer; the queue is still global) |
 | git push interrupted mid-deploy: no signal handling, in-flight commit advertised, re-push says up-to-date | #214 |
-| git-remote-rig minors (repoint hint hijack, success line names nothing, --force same commit, --all) | #215 |
+| git-remote-rig minors (repoint hint hijack, success line names nothing, --force same commit, --all) | #215 (fixed: `pushedFromElsewhere` names both Projects and the remote URL, repoint only for an unregistered directory; the success line names Target, route and operation id; `--force` same-Commit and `--all` documented) |
 | git push over 300 s reported as rigd not reachable (addendum) | #204 |
 | more helper fatal-path hangs: trailing slash, unregistered project, no daemon, :branch, ls-remote (addendum) | #160 |
 | rigd LaunchAgent records the symlink-resolved bun path: brew upgrade leaves a job that can never start | #216 |

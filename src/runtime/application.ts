@@ -300,11 +300,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "git-push") {
         if (command.repoPath !== project.repoPath)
-          throw new RigError(
-            "PROJECT_PATH_CONFLICT",
-            `The pushed repository ${command.repoPath} is not the registered Project directory ${project.repoPath}.`,
-            "Push from the registered repository or one of its linked worktrees, or run rig repoint . there if the Project moved.",
-          );
+          throw pushedFromElsewhere(command.repoPath, project, state.projects);
         if (!command.branch || !command.commit)
           throw new RigError(
             "GIT_PUSH",
@@ -466,6 +462,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         return await finish("deployed", {
           warnings,
           retired: replaced.retired,
+          ...(target.plan.domain ? { route: target.plan.domain } : {}),
           ...previous,
         });
       }
@@ -709,6 +706,32 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       await operation;
     },
   };
+}
+/** A push whose repository is another registered Project must be told which remote to use; repoint would hijack the named Project. */
+function pushedFromElsewhere(
+  repoPath: string | undefined,
+  named: Pick<ProjectRecord, "name" | "repoPath">,
+  projects: readonly Pick<ProjectRecord, "name" | "repoPath">[],
+): RigError {
+  const pushed = repoPath ?? "(unknown)";
+  const owner = projects.find(
+    (candidate) =>
+      repoPath !== undefined &&
+      resolvePath(candidate.repoPath) === resolvePath(repoPath),
+  );
+  if (owner)
+    return new RigError(
+      "PROJECT_PATH_CONFLICT",
+      `The pushed repository ${pushed} is registered as Project '${owner.name}', but the remote names Project '${named.name}' (registered at ${named.repoPath}).`,
+      `Push to rig://localhost/${owner.name} from ${pushed} (git remote set-url rig rig://localhost/${owner.name}), or push from ${named.repoPath}.`,
+      { registeredPath: named.repoPath, pushedProject: owner.name },
+    );
+  return new RigError(
+    "PROJECT_PATH_CONFLICT",
+    `The pushed repository ${pushed} is not the registered directory of Project '${named.name}' (${named.repoPath}).`,
+    `Push from ${named.repoPath} or one of its linked worktrees, or run rig repoint . in ${pushed} if the Project moved there.`,
+    { registeredPath: named.repoPath },
+  );
 }
 /** Effect checkpoints of Targets no longer in state are reclaimed; each result and any failure is recorded, never raised. */
 async function pruneCheckpoints(

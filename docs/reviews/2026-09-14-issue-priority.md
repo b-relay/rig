@@ -129,7 +129,7 @@ testability and honesty refactors.
 100. ~~#203~~ (fixed) doctor/status/list minors (aggregate never unhealthy, list observes every Target, status omits Commit). (#234.)
 101. ~~#206~~ (fixed) Caddy router and daemon minors (port-unaware conflict check, remove of absent route reloads, Origin check).
 102. ~~#189~~ (fixed) Preview push minors.
-103. #215 git-remote-rig minors (hijack hint, success line, --force same-commit, --all).
+103. ~~#215~~ (fixed) git-remote-rig minors (hijack hint, success line, --force same-commit, --all).
 104. #180 Registration minor gaps. (#233, #235.)
 105. #193 Provider minors (Postgres encoding, pg.url scheme, generic missing-binary errors, bin/ collisions).
 106. #169 Logs/diagnostics minors.

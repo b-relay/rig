@@ -73,6 +73,8 @@ const completed = z.object({
     .describe(
       "Final deployment outcome; transport acceptance is insufficient.",
     ),
+  target: z.string().optional().describe("Recorded name of the deployed Target."),
+  route: z.string().optional().describe("Hostname the Target is routed at."),
   retired: z
     .array(
       z.object({
@@ -238,8 +240,9 @@ export async function runRemoteHelper(
                   dependencies.output.error(
                     `${project} ${entry.branch ?? entry.target} retired (${entry.reason})\n`,
                   );
+                // A Preview's recorded name is derived, so the line says where the push landed and how to find it later.
                 dependencies.output.error(
-                  `${project} ${push.branch} ${result.outcome}\n`,
+                  `${project} ${push.branch} ${result.outcome}${result.target ? ` to ${result.target}` : ""}${result.route ? ` at ${result.route}` : ""} (operation ${operationId})\n`,
                 );
               }
             }

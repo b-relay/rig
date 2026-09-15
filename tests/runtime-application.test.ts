@@ -3420,3 +3420,46 @@ test("a push whose committed config is invalid is recorded under the Preview it 
     message: "INVALID_YAML",
   });
 });
+
+test("a push from a directory registered as another Project names both Projects and says which remote to use, never suggesting repoint", async () => {
+  const { runtime, deps, config } = fixture();
+  const read = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => ({
+    ...(await read(path)),
+    config: path === "/tmp/other" ? { ...config, name: "other" } : config,
+  });
+  deps.documents.identifyInitialization = async (path) => ({
+    repoPath: path,
+    name: path === "/tmp/other" ? "other" : config.name,
+  });
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "init", repoPath: "/tmp/other" });
+  await expect(
+    runtime.command({
+      action: "git-push",
+      project: "other",
+      repoPath: "/tmp/developer",
+      branch: "main",
+      commit: "abc",
+    }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_PATH_CONFLICT",
+    message:
+      "The pushed repository /tmp/developer is registered as Project 'demo', but the remote names Project 'other' (registered at /tmp/other).",
+    hint: "Push to rig://localhost/demo from /tmp/developer (git remote set-url rig rig://localhost/demo), or push from /tmp/other.",
+  });
+  await expect(
+    runtime.command({
+      action: "git-push",
+      project: "other",
+      repoPath: "/tmp/elsewhere",
+      branch: "main",
+      commit: "abc",
+    }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_PATH_CONFLICT",
+    message:
+      "The pushed repository /tmp/elsewhere is not the registered directory of Project 'other' (/tmp/other).",
+    hint: "Push from /tmp/other or one of its linked worktrees, or run rig repoint . in /tmp/elsewhere if the Project moved there.",
+  });
+});

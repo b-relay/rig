@@ -35,6 +35,8 @@ test("remote helper advertises push and waits for a final deployment result befo
         resolved = true;
         return {
           outcome: "deployed",
+          target: "live",
+          route: "example.test",
           retired: [{ target: "feature-b-9876fedc", branch: "feature/b", reason: "Preview limit" }],
         };
       },
@@ -62,7 +64,7 @@ test("remote helper advertises push and waits for a final deployment result befo
     operationId: "push-op",
   });
   expect(error).toContain(
-    "example feature/b retired (Preview limit)\nexample main deployed",
+    "example feature/b retired (Preview limit)\nexample main deployed to live at example.test (operation push-op)\n",
   );
 });
 

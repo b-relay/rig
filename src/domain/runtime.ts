@@ -54,6 +54,7 @@ export interface OperationRecord {
     | "registered"
     | "renamed"
     | "repointed"
+    | "forgotten"
     | "installed"
     | "uninstalled";
   occurredAt: string;

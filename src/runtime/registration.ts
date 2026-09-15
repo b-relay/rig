@@ -4,15 +4,16 @@ import type { RuntimeDependencies } from "./contracts";
 import { RigError, failureCauses } from "../domain/errors";
 import { observeTargets } from "./status";
 import { planTarget } from "./targets";
-export async function updateRegistration(
-  command: RuntimeCommand,
-  project: ProjectRecord,
+/** A registration changes only while nothing of the Project runs, is meant to run, or is mid-recovery. */
+async function assertTargetsStopped(
   targets: TargetRecord[],
   deps: RuntimeDependencies,
-) {
+): Promise<void> {
   const reports = await observeTargets(targets, deps.observations);
   if (
-    targets.some((t) => t.recovery) ||
+    targets.some(
+      (t) => t.desired === "running" || t.recovery || t.destructionPending,
+    ) ||
     reports.some((t) =>
       t.components.some(
         (c) => c.kind === "managed" && !["stopped", "failed"].includes(c.state),
@@ -24,6 +25,48 @@ export async function updateRegistration(
       "Project registration can only change while every Target is stopped.",
       "Stop all Targets and retry.",
     );
+}
+/** Removes the registration and its stopped local/live records; Previews own data and must be destroyed first.
+ * Returns a warning for every live workspace and data root left on disk. */
+export async function forgetProject(
+  project: ProjectRecord,
+  targets: TargetRecord[],
+  deps: RuntimeDependencies,
+): Promise<string[]> {
+  await assertTargetsStopped(targets, deps);
+  const previews = targets.filter((t) => t.kind === "preview");
+  if (previews.length)
+    throw new RigError(
+      "PROJECT_TARGETS",
+      `Project '${project.name}' still has ${previews.length} Preview${previews.length === 1 ? "" : "s"}: ${previews.map((t) => t.branch ?? t.name).join(", ")}.`,
+      `Run rig down preview <branch> --destroy for each Preview, then rig forget ${project.name}.`,
+      { previews: previews.map((t) => t.name) },
+    );
+  await deps.store.update((state) => {
+    state.projects = state.projects.filter((p) => p.id !== project.id);
+    state.targets = state.targets.filter((t) => t.projectId !== project.id);
+  });
+  return targets
+    .filter((t) => t.kind === "live")
+    .map(
+      (t) =>
+        `Target ${t.name} was forgotten, but its workspace at ${t.plan.workspacePath} and data under ${t.plan.dataRoot} were not deleted.`,
+    );
+}
+export async function updateRegistration(
+  command: RuntimeCommand,
+  project: ProjectRecord,
+  targets: TargetRecord[],
+  deps: RuntimeDependencies,
+): Promise<"renamed" | "repointed" | "unchanged"> {
+  // Renaming to the registered name is a no-op unless the config drifted from it.
+  if (
+    command.action === "rename" &&
+    command.newName === project.name &&
+    (await deps.documents.read(project.repoPath)).config.name === project.name
+  )
+    return "unchanged";
+  await assertTargetsStopped(targets, deps);
   if (command.action === "rename") {
     if (
       !command.newName ||
@@ -73,6 +116,7 @@ export async function updateRegistration(
       throw error;
     }
     project.name = command.newName;
+    return "renamed";
   } else {
     if (!command.newPath)
       throw new RigError(
@@ -80,9 +124,15 @@ export async function updateRegistration(
         "A new repository path is required.",
         "Pass the new directory.",
       );
-    const { repoPath, document } = await deps.documents.discover(
+    const { repoPath, document, gitRequired } = await deps.documents.discover(
       command.newPath,
     );
+    if (gitRequired)
+      throw new RigError(
+        "GIT_REQUIRED",
+        `The new directory ${repoPath} is not a Git working repository.`,
+        `Repoint to the moved repository, or run rig init --create-git in ${repoPath} for a new Project.`,
+      );
     if (document.config.name !== project.name)
       throw new RigError(
         "PROJECT_IDENTITY",
@@ -123,5 +173,6 @@ export async function updateRegistration(
         (target) => replanned.get(target.id) ?? target,
       );
     });
+    return "repointed";
   }
 }

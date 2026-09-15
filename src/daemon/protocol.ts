@@ -22,6 +22,7 @@ export const commandSchema = z
       "activity",
       "rename",
       "repoint",
+      "forget",
       "git-push",
       "destroy",
       "prepare-uninstall",
@@ -93,6 +94,8 @@ export const listResultSchema = z
         name: z.string(),
         repoPath: z.string(),
         targetCount: z.number().int().nonnegative(),
+        /** The registered directory no longer exists; repoint or forget resolves it. */
+        missing: z.boolean().optional(),
       }),
     ),
   })

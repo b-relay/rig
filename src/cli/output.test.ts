@@ -53,3 +53,17 @@ test("status, result and log text drop bidi overrides, zero-width and C1 control
     expect(rendered).not.toContain(forbidden);
   expect(rendered).toContain("appname tail");
 });
+
+test("list marks a registered directory that no longer exists", () => {
+  expect(
+    renderResult("list", {
+      ownership: "ready",
+      projects: [
+        { name: "demo", repoPath: "/gone", targetCount: 0, missing: true },
+        { name: "app", repoPath: "/here", targetCount: 2 },
+      ],
+    }),
+  ).toBe(
+    "demo  0 Targets  /gone  (directory missing: rig repoint or rig forget demo)\napp  2 Targets  /here\n",
+  );
+});

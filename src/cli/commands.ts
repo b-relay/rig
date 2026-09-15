@@ -105,6 +105,15 @@ export function createRigCommand(
         ...projectScope(options),
       }),
     );
+  command
+    .command("forget")
+    .description(
+      "Remove a stopped Project's registration; its repository is untouched.",
+    )
+    .argument("<name>", "Registered Project identity")
+    .action(async (project: string) =>
+      execute({ action: "forget", repoPath: cwd, project }),
+    );
   return command;
 }
 export function terminalCommand(name: string, output: UserOutput): Command {

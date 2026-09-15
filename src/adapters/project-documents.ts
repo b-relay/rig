@@ -26,7 +26,18 @@ export function createProjectDocuments(
 ): ProjectDocuments {
   const discovery = createProjectDiscovery(run);
   return {
-    discover: discoverProject,
+    async discover(path) {
+      const location = await inspectProjectLocation(path, discovery);
+      const found = await nearestConfigWithin(path, location.repoPath);
+      if (!found)
+        throw new ConfigError(
+          "No Project config found in this directory or its parents within the repository.",
+          "missing_config",
+          { startPath: path },
+          "Run rig init in a repository, or select a registered Project.",
+        );
+      return { ...found, gitRequired: location.gitRequired };
+    },
     read: readProjectConfig,
     resolve: resolveTargetPlan,
     host: () => readHostConfig(root),
@@ -46,13 +57,17 @@ export function createProjectDocuments(
       };
     },
     async identifyInitialization(path, command) {
-      const { repoPath, name } = await inspectInitialization(
+      const { repoPath, name, existing } = await inspectInitialization(
         path,
         command,
         discovery,
         root,
       );
-      return { repoPath, name };
+      return {
+        repoPath,
+        name,
+        ...(existing ? { configPath: existing.path } : {}),
+      };
     },
     async initialize(path, command) {
       const { repoPath, name, existing, productionBranch } =

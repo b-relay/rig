@@ -284,6 +284,12 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     force: true,
     noUp: true,
   });
+  expect(await runRigCli(["forget", "demo"], dependencies)).toBe(0);
+  expect(requests.at(-1)).toMatchObject({
+    action: "forget",
+    project: "demo",
+    repoPath: "/workspace",
+  });
   expect(
     await runRigCli(
       [
@@ -384,6 +390,7 @@ test("every command supports both help flags without side effects; removed globa
     ["logs"],
     ["rename"],
     ["repoint"],
+    ["forget"],
   ]) {
     for (const flag of ["--help", "-h"]) {
       text = "";

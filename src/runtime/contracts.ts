@@ -18,9 +18,13 @@ import type { TargetLogEntry } from "../providers/contracts";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 export interface ProjectDocuments {
-  discover(
-    path: string,
-  ): Promise<{ repoPath: string; document: ConfigDocument<ProjectConfig> }>;
+  /** The nearest config at or above `path` inside its Git working repository; a directory
+   * that is not a repository is searched alone and reported with `gitRequired`. */
+  discover(path: string): Promise<{
+    repoPath: string;
+    document: ConfigDocument<ProjectConfig>;
+    gitRequired: boolean;
+  }>;
   read(path: string): Promise<ConfigDocument<ProjectConfig>>;
   initializationInfo(path: string): Promise<{
     name: string;
@@ -34,7 +38,12 @@ export interface ProjectDocuments {
   identifyInitialization(
     path: string,
     command: RuntimeCommand,
-  ): Promise<{ repoPath: string; name: string }>;
+  ): Promise<{
+    repoPath: string;
+    name: string;
+    /** The config init would keep, when one already exists. */
+    configPath?: string;
+  }>;
   initialize(
     path: string,
     command: RuntimeCommand,

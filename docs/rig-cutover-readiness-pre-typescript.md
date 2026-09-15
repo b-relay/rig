@@ -84,7 +84,7 @@ sudo launchctl kickstart -k system/com.caddyserver.caddy
 | Deploy | `rig deploy live [branch]` and `rig deploy preview [branch]` execute through SCM, workspace, package, health, process, event, and proxy providers. | Prove real Caddy reachability and Pantry dry run. |
 | Config | `rig config read` uses `rigd.configRead`; generic config writes are reserved for hosted or expert workflows. | Connect hosted/web editing later. |
 | Version metadata | Branch/Commit deploys replaced `rig bump`; version metadata is not a user-facing redeploy command. | Keep release metadata separate from Target lifecycle. |
-| Forget/purge | No direct replacement command yet. | Defer unless real use needs it. |
+| Forget/purge | `rig forget <name>` removes a stopped registration; there is no purge, and remaining live workspaces and data roots are named in a warning. | Add a purge only if real use needs it. |
 | Daemon authority | `rigd install/status/uninstall` is a separate daemon admin CLI; normal `rig` rejects daemon control surfaces. | Keep `rigd` as the runtime authority with a narrow admin surface. |
 | Doctor | `rig doctor`. | Caddy reload-command misconfiguration is reported as an actionable provider diagnostic. |
 | Hosted transport | Hosted identity and pairing token live in home config; transport retry/reconnect and delivery failures are covered without the real hosted service. | Keep disabled unless explicitly configured. |

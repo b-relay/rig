@@ -113,6 +113,8 @@ export async function prepareRegistration(
 export interface ProjectIdentity {
   repoPath: string;
   name: string;
+  /** The config init would keep, when one already exists. */
+  configPath?: string;
 }
 /** Writes the Project files and records the registration for an identity prepareRegistration accepted. */
 export async function registerProject(
@@ -165,7 +167,7 @@ export async function registerProject(
 }
 function assertRegistrationAvailable(
   projects: readonly ProjectRecord[],
-  identity: { name: string; repoPath: string },
+  identity: ProjectIdentity,
 ): ProjectRecord | undefined {
   const existing = projects.find(
     (project) =>
@@ -181,11 +183,17 @@ function assertRegistrationAvailable(
       "PROJECT_CONFLICT",
       `Project '${existing.name}' is already registered at ${existing.repoPath}.`,
       existing.name === identity.name
-        ? `Run rig repoint ${identity.repoPath} --project ${existing.name} to move it here, or initialize with another Project name.`
+        ? `Run rig repoint ${identity.repoPath} --project ${existing.name} to move it here, or ${anotherName(identity)}.`
         : `Run rig rename ${identity.name} --project ${existing.name} to rename the registered Project, or restore its config name.`,
       { registeredName: existing.name, registeredPath: existing.repoPath },
     );
   return existing;
+}
+/** How a second repository takes another name: its config decides when it has one. */
+function anotherName(identity: ProjectIdentity): string {
+  return identity.configPath
+    ? `set another name in ${identity.configPath} and run rig init again`
+    : `run rig init --project <other name> in ${identity.repoPath}`;
 }
 export function assertIdentity(
   project: Pick<ProjectRecord, "name" | "repoPath">,

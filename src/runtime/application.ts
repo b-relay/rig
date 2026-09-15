@@ -5,7 +5,7 @@ import type {
 } from "../domain/project-status";
 import { stopBeforeRestart, stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
-import { updateRegistration } from "./registration";
+import { forgetProject, updateRegistration } from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
@@ -37,6 +37,7 @@ import {
   registerProject,
   selectProject,
   assertIdentity,
+  registeredDirectoryMissing,
 } from "./projects";
 import { persistTarget, planTarget, targetName } from "./targets";
 import { observeTargets } from "./status";
@@ -191,12 +192,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         // An inventory listing reads the record only; Target liveness is status's job and is not observed here.
         return {
           ownership: ownership ? "ready" : "unknown",
-          projects: state.projects.map((p) => ({
-            name: p.name,
-            repoPath: p.repoPath,
-            targetCount: state.targets.filter((t) => t.projectId === p.id)
-              .length,
-          })),
+          projects: await Promise.all(
+            state.projects.map(async (p) => ({
+              name: p.name,
+              repoPath: p.repoPath,
+              targetCount: state.targets.filter((t) => t.projectId === p.id)
+                .length,
+              ...((await directoryMissing(p.repoPath, deps))
+                ? { missing: true }
+                : {}),
+            })),
+          ),
         } satisfies ListResult;
       }
       if (command.action === "activity" && !command.project) {
@@ -224,7 +230,29 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         const identity = await prepareRegistration(command, deps);
         attempted = true;
         project = await registerProject(command, identity, deps);
-        return await finish("registered", { path: project.configPath });
+        const kept = identity.configPath ? unappliedInitFlags(command) : [];
+        return await finish("registered", {
+          path: project.configPath,
+          ...(kept.length
+            ? {
+                warnings: [
+                  `The existing config at ${identity.configPath} was kept; ${listed(kept)} ${kept.length === 1 ? "was" : "were"} not applied. Edit the config to change it.`,
+                ],
+              }
+            : {}),
+        });
+      }
+      if (command.action === "forget") {
+        project = (await selectProject(command, deps, false)).project;
+        attempted = true;
+        const warnings = await forgetProject(
+          project,
+          (await deps.store.read()).targets.filter(
+            (t) => t.projectId === project!.id,
+          ),
+          deps,
+        );
+        return await finish("forgotten", warnings.length ? { warnings } : {});
       }
       if (command.action === "doctor" && !command.project) {
         try {
@@ -293,9 +321,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
         attempted = true;
-        await updateRegistration(command, project, targets, deps);
         return await finish(
-          command.action === "rename" ? "renamed" : "repointed",
+          await updateRegistration(command, project, targets, deps),
         );
       }
       if (command.action === "git-push") {
@@ -933,4 +960,36 @@ function selectActivity(
   return {
     operations: records.slice(-(command.lines ?? 100)),
   } satisfies ActivityResult;
+}
+
+/** A registered directory that is gone entirely, as opposed to one whose config is unreadable. */
+async function directoryMissing(
+  repoPath: string,
+  deps: Pick<RuntimeDependencies, "documents">,
+): Promise<boolean> {
+  try {
+    await deps.documents.read(repoPath);
+    return false;
+  } catch (error) {
+    return registeredDirectoryMissing(error);
+  }
+}
+/** The scaffold flags an init carried that an existing config keeps out. */
+function unappliedInitFlags(command: RuntimeCommand): string[] {
+  const flags: [keyof RuntimeCommand, string][] = [
+    ["productionBranch", "--production-branch"],
+    ["domain", "--domain"],
+    ["proxy", "--proxy"],
+    ["uses", "--uses"],
+    ["managed", "--managed"],
+    ["installed", "--installed"],
+  ];
+  return flags
+    .filter(([field]) => command[field] !== undefined)
+    .map(([, flag]) => flag);
+}
+function listed(items: string[]): string {
+  return items.length < 2
+    ? items.join("")
+    : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }

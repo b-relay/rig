@@ -69,10 +69,18 @@ function fixture() {
         };
       },
       async identifyInitialization(path) {
-        return { repoPath: path, name: config.name };
+        return {
+          repoPath: path,
+          name: config.name,
+          configPath: `${path}/rig.yaml`,
+        };
       },
       async discover(path) {
-        return { repoPath: path, document: await this.read(path) };
+        return {
+          repoPath: path,
+          document: await this.read(path),
+          gitRequired: false,
+        };
       },
       async read(path) {
         return {
@@ -586,7 +594,7 @@ test("init names the conflicting registration and the command that resolves it",
   ).rejects.toMatchObject({
     code: "PROJECT_CONFLICT",
     message: "Project 'demo' is already registered at /tmp/developer.",
-    hint: "Run rig repoint /tmp/elsewhere --project demo to move it here, or initialize with another Project name.",
+    hint: "Run rig repoint /tmp/elsewhere --project demo to move it here, or set another name in /tmp/elsewhere/rig.yaml and run rig init again.",
   });
   config.name = "renamed";
   await expect(
@@ -3461,5 +3469,174 @@ test("a push from a directory registered as another Project names both Projects 
     message:
       "The pushed repository /tmp/elsewhere is not the registered directory of Project 'other' (/tmp/other).",
     hint: "Push from /tmp/other or one of its linked worktrees, or run rig repoint . in /tmp/elsewhere if the Project moved there.",
+  });
+});
+
+test("init on a second repository with the same name says how to give it another name, with or without a config", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await expect(
+    runtime.command({ action: "init", repoPath: "/tmp/elsewhere" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_CONFLICT",
+    message: "Project 'demo' is already registered at /tmp/developer.",
+    hint: "Run rig repoint /tmp/elsewhere --project demo to move it here, or set another name in /tmp/elsewhere/rig.yaml and run rig init again.",
+  });
+  deps.documents.identifyInitialization = async (path) => ({
+    repoPath: path,
+    name: "demo",
+  });
+  await expect(
+    runtime.command({ action: "init", repoPath: "/tmp/elsewhere" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_CONFLICT",
+    hint: "Run rig repoint /tmp/elsewhere --project demo to move it here, or run rig init --project <other name> in /tmp/elsewhere.",
+  });
+});
+
+test("init on a registered Project warns about the flags the existing config kept out, and a fresh init warns about nothing", async () => {
+  const { runtime, deps } = fixture();
+  expect(
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" }),
+  ).not.toHaveProperty("warnings");
+  expect(
+    await runtime.command({
+      action: "init",
+      repoPath: "/tmp/developer",
+      domain: "app.test",
+      uses: ["sqlite"],
+      productionBranch: "release",
+    }),
+  ).toMatchObject({
+    outcome: "registered",
+    warnings: [
+      "The existing config at /tmp/developer/rig.yaml was kept; --production-branch, --domain and --uses were not applied. Edit the config to change it.",
+    ],
+  });
+  deps.documents.identifyInitialization = async (path) => ({
+    repoPath: path,
+    name: "fresh",
+  });
+  deps.documents.read = async (path) => ({
+    path: `${path}/rig.yaml`,
+    format: "yaml",
+    revision: "abc",
+    config: parseProjectConfig({ name: "fresh", components: {} }),
+  });
+  expect(
+    await runtime.command({
+      action: "init",
+      repoPath: "/tmp/fresh",
+      domain: "app.test",
+    }),
+  ).not.toHaveProperty("warnings");
+});
+
+test("rename to the current name is unchanged and never rewrites the config", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  deps.documents.rename = async () => {
+    throw new Error("the config must not be rewritten");
+  };
+  expect(
+    await runtime.command({
+      action: "rename",
+      project: "demo",
+      newName: "demo",
+    }),
+  ).toMatchObject({ outcome: "unchanged", project: "demo" });
+  expect(state.projects[0]?.name).toBe("demo");
+});
+
+test("repoint refuses a directory that is not a Git working repository and leaves the registration unchanged", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const originalDiscover = deps.documents.discover.bind(deps.documents);
+  deps.documents.discover = async (path) => ({
+    ...(await originalDiscover(path)),
+    gitRequired: path === "/tmp/plain",
+  });
+  await expect(
+    runtime.command({
+      action: "repoint",
+      project: "demo",
+      newPath: "/tmp/plain",
+    }),
+  ).rejects.toMatchObject({
+    code: "GIT_REQUIRED",
+    message: "The new directory /tmp/plain is not a Git working repository.",
+    hint: "Repoint to the moved repository, or run rig init --create-git in /tmp/plain for a new Project.",
+  });
+  expect(state.projects[0]?.repoPath).toBe("/tmp/developer");
+});
+
+test("forget refuses running Targets and retained Previews, list marks a missing directory, and forgetting removes the Project with its stopped records", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await expect(
+    runtime.command({ action: "forget", project: "demo" }),
+  ).rejects.toMatchObject({ code: "PROJECT_ACTIVE" });
+  await runtime.command({ action: "down", project: "demo" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature",
+  });
+  await runtime.command({
+    action: "down",
+    project: "demo",
+    target: "preview",
+    branch: "feature",
+  });
+  await runtime.command({ action: "deploy", project: "demo", target: "live" });
+  await runtime.command({ action: "down", project: "demo", target: "live" });
+  await expect(
+    runtime.command({ action: "forget", project: "demo" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_TARGETS",
+    message: "Project 'demo' still has 1 Preview: feature.",
+    hint: "Run rig down preview <branch> --destroy for each Preview, then rig forget demo.",
+  });
+  state.targets = state.targets.filter((t) => t.kind !== "preview");
+  const originalRead = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => {
+    if (path === "/tmp/developer")
+      throw new ConfigError(
+        "Project directory /tmp/developer does not exist.",
+        "missing_directory",
+        { repoPath: path },
+      );
+    return await originalRead(path);
+  };
+  expect(await runtime.command({ action: "list" })).toMatchObject({
+    projects: [
+      {
+        name: "demo",
+        repoPath: "/tmp/developer",
+        targetCount: 2,
+        missing: true,
+      },
+    ],
+  });
+  const live = state.targets.find((t) => t.kind === "live")!;
+  expect(
+    await runtime.command({ action: "forget", project: "demo" }),
+  ).toMatchObject({
+    outcome: "forgotten",
+    project: "demo",
+    warnings: [
+      `Target live was forgotten, but its workspace at ${live.plan.workspacePath} and data under ${live.plan.dataRoot} were not deleted.`,
+    ],
+  });
+  expect(state.projects).toEqual([]);
+  expect(state.targets).toEqual([]);
+  expect(state.activity.length).toBeGreaterThan(0);
+  await expect(
+    runtime.command({ action: "forget", project: "demo" }),
+  ).rejects.toMatchObject({ code: "PROJECT_MISSING" });
+  expect(await runtime.command({ action: "list" })).toMatchObject({
+    projects: [],
   });
 });

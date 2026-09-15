@@ -55,7 +55,16 @@ export function renderResult(action: string, value: unknown): string {
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);
   return projects.length
-    ? `${projects.map((project) => `${word(project.name)}  ${Number(project.targetCount ?? 0)} Targets  ${word(project.repoPath)}`).join("\n")}\n`
+    ? `${projects
+        .map(
+          (project) =>
+            `${word(project.name)}  ${Number(project.targetCount ?? 0)} Targets  ${word(project.repoPath)}${
+              project.missing === true
+                ? `  (directory missing: rig repoint or rig forget ${word(project.name)})`
+                : ""
+            }`,
+        )
+        .join("\n")}\n`
     : "No Projects registered.\n";
 }
 export function renderStatus(report: ProjectStatusReport): string {

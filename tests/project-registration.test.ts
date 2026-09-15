@@ -295,3 +295,35 @@ test("init records the host's Production branch default, never the checked-out b
     "deployBranch: release",
   );
 });
+test("discovery stops at the nearest Git toplevel and reports whether the directory is a working repository", async () => {
+  const f = await fixture();
+  expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
+    0,
+  );
+  await writeFile(join(f.repo, "rig.yaml"), "name: outer\ncomponents: {}\n");
+  const nested = join(f.repo, "src", "nested");
+  await mkdir(nested, { recursive: true });
+  expect(await f.deps.documents.discover(nested)).toMatchObject({
+    repoPath: f.repo,
+    document: { config: { name: "outer" } },
+    gitRequired: false,
+  });
+  const inner = join(f.repo, "vendor", "inner");
+  await mkdir(inner, { recursive: true });
+  expect((await run({ command: ["git", "init"], cwd: inner })).exitCode).toBe(
+    0,
+  );
+  await expect(f.deps.documents.discover(inner)).rejects.toMatchObject({
+    code: "missing_config",
+  });
+  const plain = join(f.root, "plain");
+  await mkdir(plain);
+  await writeFile(join(plain, "rig.yaml"), "name: plain\ncomponents: {}\n");
+  expect(await f.deps.documents.discover(plain)).toMatchObject({
+    repoPath: plain,
+    gitRequired: true,
+  });
+  await expect(
+    f.deps.documents.discover(join(f.root, "absent")),
+  ).rejects.toMatchObject({ code: "GIT_PATH_MISSING" });
+});

@@ -182,7 +182,18 @@ If run outside Git in an interactive terminal, `rig init` may ask before running
 
 If config is written but `rigd` registration fails, `rig init` should report the
 partial state without rolling the file back. A later `rig init` should resume
-registration idempotently when the config still matches the workspace.
+registration idempotently when the config still matches the workspace. An
+existing config is never rewritten by `rig init`: scaffold flags passed with it
+(`--production-branch`, `--domain`, `--proxy`, `--uses`, `--managed`,
+`--installed`) are reported as not applied in a warning that names the kept
+config, so the outcome "registered" never hides an ignored flag.
+
+A second repository whose config (or directory slug) names an already
+registered Project fails with `PROJECT_CONFLICT`. The hint names the
+registered directory and both ways forward: `rig repoint <this directory>
+--project <name>` when the repository moved, or another name for the new
+Project, which is `name` in its `rig.yaml` when a config exists and `rig init
+--project <other name>` when none does.
 
 New config uses `rig.yaml`; matching existing `rig.json` is preserved. Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
@@ -218,12 +229,18 @@ rig deploy live --project pantry
 ```
 
 `--project` selects the configured Project identity known to `rigd`, not the
-folder name.
+folder name. Workspace discovery searches for `rig.yaml` from the current
+directory upward, but never above the nearest Git working repository: a nested
+repository without its own config (a vendored checkout inside a registered
+Project, say) is "no Project", not the enclosing one, which is also what `rig
+init` there would register.
 
 `rig list` is host-scoped. It shows Projects plus summary metadata such as
-Target count. It does not show every Target for every Project, and it reads
-the inventory record only: it never observes a Target, so it is quick and
-says nothing about what is running (`rig status` does).
+Target count. It does not show every Target for every Project, and it never
+observes a Target, so it is quick and says nothing about what is running
+(`rig status` does). It does check that each registered directory still
+exists: a Project whose directory is gone is marked `(directory missing: rig
+repoint or rig forget <name>)`, and `--json` carries `missing: true`.
 
 ## Targets
 
@@ -901,11 +918,24 @@ checkout and the production branch is the main tree's branch. A push from a
 directory that is not the registered repository or one of its worktrees fails
 with `PROJECT_PATH_CONFLICT`, naming both paths.
 
-`rig rename <name>` and `rig repoint <path>` require stopped Targets and validate
-registered identity/path conflicts. They do not delete Project data. `repoint`
-re-plans the Working copy Target from the new directory's config with the same
-port reservation as `rig up`: a port that another Target records is refused
-with `PORT_RESERVED` and the registration is left unchanged.
+`rig rename <name>` and `rig repoint <path>` require stopped Targets (none
+running, meant to run, or mid-recovery) and validate registered identity/path
+conflicts. They do not delete Project data. `rig rename <current name>` is
+"unchanged" and leaves the config file alone. `repoint` requires the new
+directory to be a Git working repository (`GIT_REQUIRED` otherwise, since
+deploys and pushes would fail there) and re-plans the Working copy Target from
+its config with the same port reservation as `rig up`: a port that another
+Target records is refused with `PORT_RESERVED` and the registration is left
+unchanged.
+
+`rig forget <name>` removes a Project's registration under the same stopped
+requirement. The repository, its `rig.yaml`, and its `rig` remote are not
+touched, and the Project's activity history is kept. A Preview must be
+destroyed first (`rig down preview <branch> --destroy`), because forgetting
+would orphan its data; `forget` refuses with `PROJECT_TARGETS` naming the
+Previews. Stopped `local` and `live` records go with the registration, and a
+warning names the live workspace and data root that remain on disk for the
+operator to delete.
 
 A moved repository is recovered from inside it: `cd <new path> && rig repoint .`
 selects the Project by the config's name, so the registered path may differ.

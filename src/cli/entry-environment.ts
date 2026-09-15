@@ -1,5 +1,5 @@
-import { writeSync } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { constants, writeSync } from "node:fs";
+import { access, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { RigError } from "../domain/errors";
@@ -22,6 +22,53 @@ export function resolveRigRoot(
       { RIG_ROOT },
     );
   return resolve(RIG_ROOT);
+}
+/** Every command writes under the root (at least its diagnostic log), so a root that cannot be
+ * written is reported by path before anything else runs, instead of surfacing as a generic
+ * failure whose "inspect the log" hint points at a log that could not be written either. */
+export async function verifyRigRoot(root: string): Promise<void> {
+  const existing = await nearestExisting(root);
+  if (existing === undefined) return;
+  if (!existing.directory)
+    throw new RigError(
+      "RIG_ROOT",
+      existing.path === root
+        ? `The Rig root ${root} is not a directory.`
+        : `The Rig root ${root} cannot be created because ${existing.path} is not a directory.`,
+      "Set RIG_ROOT to a directory, or move that file aside.",
+      { root, path: existing.path },
+    );
+  try {
+    await access(existing.path, constants.W_OK | constants.X_OK);
+  } catch {
+    throw new RigError(
+      "RIG_ROOT",
+      existing.path === root
+        ? `The Rig root ${root} is not writable.`
+        : `The Rig root ${root} cannot be created because ${existing.path} is not writable.`,
+      `Fix its permissions (chmod u+rwx ${existing.path}), or set RIG_ROOT to a writable directory.`,
+      { root, path: existing.path },
+    );
+  }
+}
+/** The path itself or its nearest existing ancestor; undefined when no ancestor exists (an unmounted volume). */
+async function nearestExisting(
+  target: string,
+): Promise<{ path: string; directory: boolean } | undefined> {
+  for (let candidate = target; ; candidate = dirname(candidate)) {
+    try {
+      return {
+        path: candidate,
+        directory: (await stat(candidate)).isDirectory(),
+      };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOTDIR") {
+        // An ancestor is a file; keep walking up until stat names it.
+      } else if (code !== "ENOENT") throw error;
+    }
+    if (dirname(candidate) === candidate) return undefined;
+  }
 }
 /** Ctrl-C policy for one command: the first interrupt cancels, the second
  * detaches from a mutation rigd is still running, and a third ends the process

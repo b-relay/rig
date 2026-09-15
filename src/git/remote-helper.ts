@@ -9,7 +9,7 @@ import type { UserOutput } from "../cli/types";
 import type { DiagnosticLog } from "../diagnostics/types";
 import { createHostDiagnosticLog } from "../diagnostics/host-log";
 import { recordDiagnostic } from "../cli/failure";
-import { rigRoot, userOutput } from "../cli/entry-environment";
+import { rigRoot, userOutput, verifyRigRoot } from "../cli/entry-environment";
 import { runCommand } from "../providers/command-runner";
 import type { CommandRunner } from "../providers/contracts";
 import { inspectProjectGit, createProjectDiscovery } from "./project";
@@ -422,6 +422,7 @@ export async function main(args: readonly string[]): Promise<number> {
       createProjectDiscovery(runCommand),
     );
     const root = rigRoot();
+    await verifyRigRoot(root);
     const interrupt = new AbortController();
     // Ctrl-C, a killed git, or a closed terminal all end the helper; rigd keeps running the operation.
     for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const)

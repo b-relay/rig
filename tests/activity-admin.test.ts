@@ -169,6 +169,7 @@ test("a journal lock left by a dead or replaced writer is reclaimed; a live hold
       root,
       now: () => "2026-09-14T00:00:00.000Z",
       id: () => "op-lock",
+      lockWait: { attempts: 2, pauseMs: 10 },
     }),
     entry = { action: "daemon-install" as const, outcome: "installed" as const };
   await mkdir(join(root, "runtime"), { recursive: true });
@@ -192,4 +193,20 @@ test("a journal lock left by a dead or replaced writer is reclaimed; a live hold
   expect(fresh.warning).toContain(lock);
   expect(await readFile(lock, "utf8")).toBe("{torn");
   expect(await journal.read()).toHaveLength(3);
+});
+
+test("a journal lock held by a live writer is waited for, so two concurrent administrations both record", async () => {
+  const root = await fixture(),
+    lock = join(root, "runtime", "admin-activity.jsonl.lock"),
+    journal = createAdminActivityJournal({
+      root,
+      now: () => "2026-09-14T00:00:00.000Z",
+      id: () => "op-wait",
+    }),
+    entry = { action: "daemon-install" as const, outcome: "installed" as const };
+  await mkdir(join(root, "runtime"), { recursive: true });
+  await writeFile(lock, JSON.stringify({ pid: process.pid }));
+  setTimeout(() => void rm(lock, { force: true }), 250);
+  expect(await journal.append(entry)).toEqual({});
+  expect((await journal.read()).map((record) => record.outcome)).toEqual(["installed"]);
 });

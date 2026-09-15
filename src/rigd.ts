@@ -5,6 +5,7 @@ import {
   daemonCommand,
   reportRootFailure,
   rigRoot,
+  verifyRigRoot,
   userOutput,
 } from "./cli/entry-environment";
 import { createHostDiagnosticLog } from "./diagnostics/host-log";
@@ -17,6 +18,7 @@ export async function main(args: readonly string[]): Promise<number> {
   let root: string;
   try {
     root = rigRoot();
+    await verifyRigRoot(root);
   } catch (error) {
     return reportRootFailure(error, userOutput());
   }

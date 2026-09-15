@@ -24,6 +24,12 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
     });
     const unauthorized = await fetch(`http://127.0.0.1:${server.port}/health`);
     expect(unauthorized.status).toBe(401);
+    const probe = await fetch(`http://127.0.0.1:${server.port}/health`, {
+      method: "HEAD",
+      headers: { authorization: "Bearer test-secret" },
+    });
+    expect(probe.status).toBe(200);
+    expect(await probe.text()).toBe("");
     const browser = await fetch(`http://127.0.0.1:${server.port}/health`, {
       headers: {
         authorization: "Bearer test-secret",

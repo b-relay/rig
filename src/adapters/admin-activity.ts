@@ -5,11 +5,27 @@ import type { OperationRecord } from "../domain/runtime";
 import { RigError } from "../domain/errors";
 import { acquireProcessLock } from "./process-lock";
 
-/** The journal lock: a refused acquisition is named by path so an operator can recover. */
+/** How long an append waits for another live administration to finish its own append. */
+export interface LockWait {
+  attempts: number;
+  pauseMs: number;
+}
+export const DEFAULT_LOCK_WAIT: LockWait = { attempts: 50, pauseMs: 100 };
+/** The journal lock: an append holds it for milliseconds, so a live holder is waited for;
+ * a refused acquisition is named by path so an operator can recover. */
 async function acquireLock(
   lockPath: string,
+  wait: LockWait,
 ): Promise<Awaited<ReturnType<typeof open>>> {
-  const acquired = await acquireProcessLock(lockPath);
+  let acquired = await acquireProcessLock(lockPath);
+  for (
+    let attempt = 0;
+    "held" in acquired && attempt < wait.attempts;
+    attempt++
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, wait.pauseMs));
+    acquired = await acquireProcessLock(lockPath);
+  }
   if ("lock" in acquired) return acquired.lock;
   const { held } = acquired;
   const cause =
@@ -75,6 +91,8 @@ export function createAdminActivityJournal(options: {
   root: string;
   now(): string;
   id(): string;
+  /** Overrides the wait for a live writer; the default waits about five seconds. */
+  lockWait?: LockWait;
 }): AdminActivityJournal {
   const directory = join(options.root, "runtime"),
     path = join(directory, "admin-activity.jsonl");
@@ -116,7 +134,10 @@ export function createAdminActivityJournal(options: {
           occurredAt: options.now(),
         });
         await mkdir(directory, { recursive: true, mode: 0o700 });
-        lock = await acquireLock(lockPath);
+        lock = await acquireLock(
+          lockPath,
+          options.lockWait ?? DEFAULT_LOCK_WAIT,
+        );
         await read();
         const file = await open(path, "a", 0o600);
         try {

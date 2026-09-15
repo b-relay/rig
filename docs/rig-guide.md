@@ -23,7 +23,13 @@ to try the rewrite. Existing Host state needs the explicit backed-up cutover.
 `RIG_ROOT` must be an absolute path: an empty value means the default
 `~/.rig`, and a relative value makes `rig`, `rigd`, and `git-remote-rig` exit
 with a usage error before they create or read anything, rather than rooting
-Rig in the current working directory.
+Rig in the current working directory. Every command writes under the root (at
+least its diagnostic log), so a root that is a file, or a directory the user
+cannot write, is named by path before anything runs (`The Rig root /x is not
+writable.` with a `chmod u+rwx` hint) instead of surfacing as a generic
+failure whose hint points at a log that could not be written either. A root
+that does not exist yet is fine as long as its nearest existing ancestor is a
+writable directory.
 
 Every command answers `--help` and `-h`, and `rig help <command>` (for
 example `rig help deploy preview`, or `rig deploy help`) prints that command's
@@ -119,6 +125,8 @@ a ten second throttle, so a broken install does not spin. `rigd status` and
 `rigd install` again to record the current one. A failed `launchctl bootstrap`
 reports launchctl's reason and leaves nothing installed.
 
+The daemon's loopback `/health` endpoint answers `HEAD` as well as `GET`, so
+a probe that only wants the status line gets 200 without a body.
 `rig --version` and `rigd --version` print the version, and a serving daemon
 reports its own version to `rigd status`, which warns when it differs from the
 `rigd` you ran. Upgrading is `rigd install`: when the serving daemon reports
@@ -730,7 +738,10 @@ route file (see Setup). Doctor owns current-config drift and failed checks; it
 does not repair or deploy configuration implicitly.
 
 `rig activity` displays final daemon Operations separately from Target output.
-It includes daemon administration and terminal crash evidence. rigd keeps the
+It includes daemon administration and terminal crash evidence; two `rigd
+install` runs that overlap both record their outcome, because an
+administration waits (about five seconds) for a live writer to release the
+activity journal before warning that its record was lost. rigd keeps the
 most recent 1000 Operations in its state; older ones remain in the diagnostic
 log until its retention expires. A request rigd refuses before an Operation
 begins (an unregistered Project, a missing Target, a deploy aimed at local, an

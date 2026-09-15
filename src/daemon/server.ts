@@ -66,6 +66,9 @@ export function startControlPlane(options: ControlPlaneOptions) {
           running: true,
           version: RIG_VERSION,
         });
+      // Probes that only want the status line (HEAD) get it without a body.
+      if (url.pathname === "/health" && request.method === "HEAD")
+        return new Response(null, { status: 200 });
       if (
         url.pathname === "/v1/config" &&
         request.method === "POST" &&

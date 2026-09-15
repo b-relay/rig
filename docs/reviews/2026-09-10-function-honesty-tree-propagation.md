@@ -259,7 +259,7 @@ owner carries only its own owner-level defects.
 | stale `acquiring` lock unrecoverable via CLI | #139 (fixed: the lock records its holder; exited or replaced holders and minute-old holder-less locks are reclaimed; refusals name the lock and pid; the daemon writes `startup-failure.json` and `rigd install` reports it) |
 | cleanly stopped daemon cannot be uninstalled | #140 (fixed: an installed daemon with no live process is uninstalled via the unreachable path with a warning; pinned by test) |
 | `state.activity` unbounded; usage mistakes recorded | #141 | (fixed: `recordActivity` keeps the newest 1000; `run` records a failure only once `attempted` is set after selection and argument checks, with `prepareRegistration` split from `registerProject` for init) |
-| minor daemon messaging gaps | #142 |
+| minor daemon messaging gaps | #142 (fixed: `HEAD /health`, `verifyRigRoot` names a file or unwritable root before any command runs, the activity journal waits for a live writer) |
 | capture wrapper catch-all rewrites `running` as `failed` | #143 |
 | launchd `ensureRunning` false `LAUNCHD_START` during backoff | #144 |
 | migration roots unreachable; adoption guard can wedge | #145 | (fixed: guard error and doctor `runtime-ownership` hint name `<root>/runtime/legacy-adoption.json` and state that no rigd command finalizes it; migration roots still unwired) |

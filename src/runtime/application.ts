@@ -370,7 +370,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           "Retry down preview --destroy for this Preview.",
         );
       if (command.action === "logs") {
-        if (!target) throw missingTarget(name);
+        if (!target) throw missingTarget(command, name);
         return {
           project: project.name,
           target: target.name,
@@ -500,7 +500,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             "Only Previews can be destroyed.",
             "Use down to stop local or live.",
           );
-        if (!target) throw missingTarget(name);
+        if (!target) throw missingTarget(command, name);
         attempted = true;
         if (target.recovery) target = await stopForRecovery(target, deps);
         await destroyPreview(target, deps);
@@ -510,7 +510,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         !target &&
         (command.action !== "up" || (command.target ?? "local") !== "local")
       )
-        throw missingTarget(name);
+        throw missingTarget(command, name);
       attempted = true;
       if (!target) {
         target = await planTarget(
@@ -789,10 +789,18 @@ async function pruneCheckpoints(
     });
   }
 }
-function missingTarget(name: string): RigError {
+/** Names the Preview by the Branch or deployment the user typed; the hashed slug stays internal. */
+function missingTarget(
+  command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
+  name: string,
+): RigError {
+  const label =
+    command.target === "preview"
+      ? `Preview '${command.deployment ?? command.branch ?? name}'`
+      : `Target '${name}'`;
   return new RigError(
     "TARGET_MISSING",
-    `Target '${name}' has no recorded deployment.`,
+    `${label} has no recorded deployment.`,
     "Use rig up for local, or deploy this Target first.",
   );
 }

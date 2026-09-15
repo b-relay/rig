@@ -100,8 +100,9 @@ export async function runRigCli(
   let exitCode = 0;
   const execute: ExecuteCommand = async (request, options = {}) => {
     json = options.json === true;
-    request = await prepareInteractiveRequest(request, dependencies, { json });
+    // Assigned before preflight so a failure while gathering answers still names the Operation.
     operationId = dependencies.newOperationId();
+    request = await prepareInteractiveRequest(request, dependencies, { json });
     const correlated = { ...request, operationId };
     await recordDiagnostic(dependencies.diagnostics, {
       event: "command.started",

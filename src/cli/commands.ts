@@ -211,7 +211,7 @@ function addLifecycleCommands(
         `${action === "up" ? "Start" : action === "down" ? "Stop" : "Restart"} a recorded Target.`,
       )
       .argument("[target]", "local, live, or preview")
-      .argument("[branch]", "Preview Branch or name")
+      .argument("[branch]", "Preview Branch or name", nonEmpty)
       .option("--project <name>", "Registered Project identity")
       .option("--json", "Render the final domain result as JSON")
       .option("--deployment <name>", "Explicit Preview name");
@@ -273,6 +273,7 @@ function addDeployCommands(
       .argument(
         "[branch]",
         "Source Branch (defaults to Production for live, current Branch for preview)",
+        nonEmpty,
       )
       .option("--project <name>", "Registered Project identity")
       .option("--force", "Redeploy even when the selected Commit is unchanged")
@@ -318,7 +319,7 @@ function addLogsCommand(
     .command("logs")
     .description("Read recent Target logs, including stopped Targets.")
     .argument("[target]", "local, live, or preview")
-    .argument("[branch]", "Preview Branch or name")
+    .argument("[branch]", "Preview Branch or name", nonEmpty)
     .option("--project <name>", "Registered Project identity")
     .option("--deployment <name>", "Explicit Preview name")
     .option("--follow", "Follow new output until interrupted")

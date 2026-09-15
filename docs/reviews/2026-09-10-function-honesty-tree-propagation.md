@@ -267,7 +267,7 @@ owner carries only its own owner-level defects.
 | bearer token sent to whatever owns a stale daemon port | #147 |
 | editing Project name in config leaves a circular dead end | #148 | (fixed: `selectProject` accepts `rename <new>` when the config already declares `<new>` at the registered path, by `--project` or by cwd (registered directory found by path); `identityDrift`/`identityDriftHint` name both names and the rename command in `PROJECT_IDENTITY`, doctor `identity-drift`, and the status warning)
 | user-correctable failures rendered as unexpected; no CLI pre-validation | #149 (fixed: `userCorrectable(code)` owns the policy in the domain; `projectScope`/`previewScope` validate flags before a request; `explainIssue`/`describeIssue` turn Zod issues into plain rules) |
-| minor CLI gaps (Details without Operation, empty branch, hashed slug, no --version) | #150 |
+| minor CLI gaps (Details without Operation, empty branch, hashed slug, no --version) | #150 (fixed: Operation id assigned before interactive preflight, empty `[branch]` refused, TARGET_MISSING names the typed Preview) |
 | crash between effect and journal capture bricks the Target | #151 |
 | repoint skips port reservation | #152 |
 | superseded revisions/worktrees/markers never removed | #153 (fixed: `releaseUnreferencedRevisions` after each deploy decision; the prepare marker now lives in the workspace) |

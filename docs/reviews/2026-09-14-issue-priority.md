@@ -134,7 +134,7 @@ testability and honesty refactors.
 105. ~~#193~~ (fixed) Provider minors (Postgres encoding, pg.url scheme, generic missing-binary errors, bin/ collisions).
 106. ~~#169~~ (fixed) Logs/diagnostics minors.
 107. ~~#209~~ (fixed) CLI minors.
-108. #150 Minor CLI gaps (no --version, hashed slug in messages).
+108. ~~#150~~ (fixed) Minor CLI gaps (no --version, hashed slug in messages).
 109. #142 Minor daemon/CLI messaging gaps.
 
 ## Tier 5 — honesty refactors not themselves functional defects

@@ -3216,6 +3216,28 @@ test("usage mistakes that never reached an Operation leave activity untouched; a
     runtime.command({ action: "down", project: "demo", target: "live" }),
   ).rejects.toMatchObject({ code: "TARGET_MISSING" });
   await expect(
+    runtime.command({
+      action: "down",
+      project: "demo",
+      target: "preview",
+      branch: "feature/nope",
+    }),
+  ).rejects.toMatchObject({
+    code: "TARGET_MISSING",
+    message: "Preview 'feature/nope' has no recorded deployment.",
+  });
+  await expect(
+    runtime.command({
+      action: "logs",
+      project: "demo",
+      target: "preview",
+      deployment: "nope-1234",
+    }),
+  ).rejects.toMatchObject({
+    code: "TARGET_MISSING",
+    message: "Preview 'nope-1234' has no recorded deployment.",
+  });
+  await expect(
     runtime.command({ action: "deploy", project: "demo", target: "local" }),
   ).rejects.toMatchObject({ code: "DEPLOY_TARGET" });
   await expect(

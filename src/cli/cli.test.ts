@@ -226,6 +226,110 @@ test("usage errors never call runtime or advertise diagnostics; unexpected failu
   });
 });
 
+test("a failure during interactive preflight still carries the Operation id next to Details", async () => {
+  const { RigError } = await import("../domain/errors");
+  let text = "";
+  const events: any[] = [];
+  const dependencies = {
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
+      async command() {
+        throw new RigError(
+          "STATE_CORRUPT",
+          "The registry could not be read.",
+          "Run rig doctor.",
+        );
+      },
+    },
+    output: {
+      write(value: string) {
+        text += value;
+      },
+      error(value: string) {
+        text += value;
+      },
+    },
+    diagnostics: {
+      async record(entry: unknown) {
+        events.push(entry);
+        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
+      },
+    },
+    interaction: {
+      async select(): Promise<string> {
+        throw new Error("Unexpected prompt");
+      },
+      async text(): Promise<string> {
+        throw new Error("Unexpected prompt");
+      },
+      async confirm(): Promise<boolean> {
+        throw new Error("Unexpected prompt");
+      },
+    },
+    wait: async () => {},
+    newOperationId: () => "op-preflight",
+  };
+  expect(await runRigCli(["init"], dependencies)).toBe(1);
+  expect(text).toContain("The registry could not be read.");
+  expect(text).toContain("Operation: op-preflight");
+  expect(text).toContain("Details: /isolated/.rig/logs/rig/rig.jsonl");
+  expect(events).toContainEqual({
+    event: "command.failed",
+    level: "error",
+    operationId: "op-preflight",
+    code: "STATE_CORRUPT",
+  });
+});
+
+test("an empty Preview branch is a usage error, not the current Branch", async () => {
+  let text = "";
+  let calls = 0;
+  const dependencies = {
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
+      async command() {
+        calls++;
+        return {};
+      },
+    },
+    output: {
+      write(value: string) {
+        text += value;
+      },
+      error(value: string) {
+        text += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
+      },
+    },
+    wait: async () => {},
+    newOperationId: () => "op-empty",
+  };
+  for (const args of [
+    ["deploy", "preview", ""],
+    ["up", "preview", ""],
+    ["logs", "preview", ""],
+  ]) {
+    text = "";
+    expect(await runRigCli(args, dependencies)).toBe(1);
+    expect(text).toContain("branch");
+    expect(text).toContain("It is empty.");
+    expect(text).toMatch(new RegExp(`Run rig ${args[0]}( preview)? --help\\.`));
+  }
+  expect(calls).toBe(0);
+});
+
 test("preserves deployment/init options and rejects unsafe destroy before runtime", async () => {
   const requests: any[] = [];
   let error = "";

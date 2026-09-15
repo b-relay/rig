@@ -31,8 +31,10 @@ usage; `rig help nonsense` fails with `Unknown command 'nonsense'.` and exit
 1 instead of printing nothing. A usage error names the command it belongs to
 in its hint (`rig up --bogus` says `Run rig up --help.`), and an empty value
 for an option or argument that takes one (`--path ""`, `--project ""`,
-`--deployment ""`, `rig repoint ""`) is refused as empty rather than silently
-treated as the default.
+`--deployment ""`, `rig repoint ""`, `rig deploy preview ""`) is refused as
+empty rather than silently treated as the default. A Preview that was never
+deployed is reported by the Branch or name that was typed (`Preview
+'feature/x' has no recorded deployment.`), never by its internal hashed slug.
 
 Install the daemon:
 
@@ -744,6 +746,8 @@ problem, a missing branch or directory, a reserved port, a Component that
 never became ready, an unreachable or mismatched daemon) prints only its
 message and hint; the `Operation:` and `Details:` lines, and the
 `operationId`/`diagnosticPath` fields under `--json`, mark an internal fault.
+The Operation id is assigned before any interactive prompt, so a fault while
+`rig init` or `rig up` is still gathering answers prints both lines together.
 Config validation hints name the field and the rule in plain words
 (`Fix name: must start with a letter or digit and contain only letters,
 digits, '_' or '-'.`, `Fix config: has no field named "bogusField".`), and

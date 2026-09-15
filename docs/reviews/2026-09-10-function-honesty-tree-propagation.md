@@ -326,7 +326,7 @@ owner carries only its own owner-level defects.
 | empty RIG_ROOT flips rigd install into launchd mode rooted at cwd (addendum) | #122 | (fixed: empty RIG_ROOT now roots at `~/.rig`, which matches launchd mode) |
 | rig logs --follow never exits when stdout closes: pipelines hang, orphan CLI polls rigd; follow capped at --lines per poll | #207 | (fixed: `userOutput` writes the descriptors synchronously and reports a gone reader through `onClosed`, which `main` wires to the cancel controller; follow polls use a fixed 1000-entry batch) |
 | preview Branch positional silently discarded when --deployment also passed: wrong Preview stopped or destroyed | #208 |
-| CLI minors (help unknown exit 0, usage hint, rigd capture --help ENOENT, list hides ownership, empty option values dropped) | #209 |
+| CLI minors (help unknown exit 0, usage hint, rigd capture --help ENOENT, list hides ownership, empty option values dropped) | #209 (fixed: explicit `help [command...]` on rig and rigd naming unknown commands with exit 1, usage hints name the failing subcommand via `commandPath`, `rig deploy help`/unknown deploy Target handled, `rigd capture` is a documented commander command with `--help`, `rig list` warns on `ownership: unknown`, `nonEmpty` option/argument parser plus empty `--project`/`--deployment` messages, `rigd status` exits 1 with advice when unreachable) |
 | status/doctor during a normal in-flight deploy report unknown with a destructive "run down" hint | #210 |
 | clean rigd stop kills every child; next start silently restarts all Targets and re-runs start hooks | #211 |
 | lease recovery after daemon restart: leader-only ownership (dead sh leader → duplicate), keepAlive lost | #212 |

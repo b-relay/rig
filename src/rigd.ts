@@ -20,17 +20,13 @@ export async function main(args: readonly string[]): Promise<number> {
   } catch (error) {
     return reportRootFailure(error, userOutput());
   }
-  if (args[0] === "capture") {
-    // A private entrypoint, but its failures are still read by a person in the launchd log.
-    const output = userOutput();
-    if (!args[1] || args.length !== 2) {
-      output.error("Usage: rigd capture <request-file>\n");
-      return 2;
-    }
+  // launchd's own invocation skips the command line parser and daemon setup below; a person
+  // typing rigd capture (--help, no file) gets the documented command instead.
+  if (args[0] === "capture" && args.length === 2 && !args[1]!.startsWith("-")) {
     try {
-      return await runCapturedProcess(args[1]);
+      return await runCapturedProcess(args[1]!);
     } catch (error) {
-      return reportRootFailure(error, output);
+      return reportRootFailure(error, userOutput());
     }
   }
   if (process.env.RIG_DAEMON_CHILD === "1") {
@@ -55,6 +51,7 @@ export async function main(args: readonly string[]): Promise<number> {
     }),
     output: userOutput(),
     newOperationId: randomUUID,
+    capture: runCapturedProcess,
     diagnostics: createHostDiagnosticLog({
       root,
       source: "rigd",

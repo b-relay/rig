@@ -79,10 +79,11 @@ export function createRigCommand(
   addDeployCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
   addLogsCommand(command, cwd, execute);
+  addHelpCommand(command, "rig");
   command
     .command("rename")
     .description("Rename a Project after its Targets are stopped.")
-    .argument("<name>", "New Project identity")
+    .argument("<name>", "New Project identity", nonEmpty)
     .option("--project <name>", "Current registered Project identity")
     .action(async (newName: string, options: ScopeOptions) =>
       execute({
@@ -95,7 +96,7 @@ export function createRigCommand(
   command
     .command("repoint")
     .description("Register a new repository path for a stopped Project.")
-    .argument("<path>", "New repository path")
+    .argument("<path>", "New repository path", nonEmpty)
     .option("--project <name>", "Registered Project identity")
     .action(async (path: string, options: ScopeOptions) =>
       execute({
@@ -110,11 +111,54 @@ export function createRigCommand(
     .description(
       "Remove a stopped Project's registration; its repository is untouched.",
     )
-    .argument("<name>", "Registered Project identity")
+    .argument("<name>", "Registered Project identity", nonEmpty)
     .action(async (project: string) =>
       execute({ action: "forget", repoPath: cwd, project }),
     );
   return command;
+}
+/** `help [command...]` shows one command's usage or names the command that does not exist;
+ * commander's implicit help command would report an unknown name silently. */
+export function addHelpCommand(command: Command, executable: string): void {
+  command
+    .command("help")
+    .description("Show help for a command.")
+    .argument("[command...]", "Command path, for example deploy preview")
+    .action((path: string[]) => {
+      let current = command;
+      for (const name of path) {
+        const next = subcommand(current, name);
+        if (!next)
+          throw new RigError(
+            "USAGE",
+            `Unknown command '${terminalText(name)}'.`,
+            `Run ${executable} --help.`,
+          );
+        current = next;
+      }
+      current.help();
+    });
+}
+/** The subcommand path the arguments name, so a usage error can point at that command's help. */
+export function commandPath(
+  command: Command,
+  args: readonly string[],
+): string[] {
+  const path: string[] = [];
+  let current = command;
+  for (const arg of args) {
+    const next = subcommand(current, arg);
+    if (!next) break;
+    path.push(next.name());
+    current = next;
+  }
+  return path;
+}
+function subcommand(command: Command, name: string): Command | undefined {
+  return command.commands.find(
+    (candidate) =>
+      candidate.name() === name || candidate.aliases().includes(name),
+  );
 }
 export function terminalCommand(name: string, output: UserOutput): Command {
   return new Command(name)
@@ -130,7 +174,11 @@ function projectScope(options: ScopeOptions): { project?: string } {
   if (!projectName.safeParse(options.project).success)
     throw new RigError(
       "USAGE",
-      `The --project name is ${options.project.length} characters long; Project names have 1 to 128 characters.`,
+      `The --project name is ${
+        options.project.length
+          ? `${options.project.length} characters long`
+          : "empty"
+      }; Project names have 1 to 128 characters.`,
       "Pass the registered Project name shown by rig list.",
     );
   return { project: options.project };
@@ -143,7 +191,9 @@ function previewScope(options: Pick<ScopeOptions, "deployment">): {
   if (!previewName.safeParse(options.deployment).success)
     throw new RigError(
       "USAGE",
-      `The --deployment name '${terminalText(options.deployment)}' is not a valid Preview name.`,
+      options.deployment.length
+        ? `The --deployment name '${terminalText(options.deployment)}' is not a valid Preview name.`
+        : "The --deployment name is empty.",
       "Use letters, digits, '_' or '-', starting with a letter or digit.",
     );
   return { deployment: options.deployment };
@@ -201,9 +251,16 @@ function addDeployCommands(
 ): void {
   const deploy = command
     .command("deploy")
-    .description("Deploy a Branch to a Stable Target or Preview.");
-  deploy.action(() => {
-    deploy.help();
+    .description("Deploy a Branch to a Stable Target or Preview.")
+    .argument("[target]", "live or preview");
+  // Subcommands win over the argument, so only a bare, help, or unknown Target reaches here.
+  deploy.action((target?: string) => {
+    if (target === undefined || target === "help") deploy.help();
+    throw new RigError(
+      "USAGE",
+      `Deploy Targets are live or preview, not '${terminalText(String(target))}'.`,
+      "Run rig deploy --help.",
+    );
   });
   for (const target of ["live", "preview"] as const) {
     const child = deploy
@@ -316,10 +373,11 @@ function addInitCommand(
       "--project <name>",
       "Project identity (defaults to existing config or repository name)",
     )
-    .option("--path <path>", "Repository to initialize", ".")
+    .option("--path <path>", "Repository to initialize", nonEmpty, ".")
     .option(
       "--production-branch <branch>",
       "Production Branch for the live Target",
+      nonEmpty,
     )
     .option(
       "--create-git",
@@ -328,27 +386,42 @@ function addInitCommand(
     .option(
       "--domain <domain>",
       "Base domain: live serves it, local and Previews get subdomains under it",
+      nonEmpty,
     )
-    .option("--proxy <component>", "Proxy upstream component")
+    .option("--proxy <component>", "Proxy upstream component", nonEmpty)
     .option(
       "--uses <plugins>",
       "Comma-separated sqlite, postgres, or convex components",
+      nonEmpty,
     )
-    .option("--managed <name>", "Managed component name")
-    .option("--managed-command <command>", "Managed component command")
+    .option("--managed <name>", "Managed component name", nonEmpty)
+    .option(
+      "--managed-command <command>",
+      "Managed component command",
+      nonEmpty,
+    )
     .option(
       "--managed-port <port>",
       "Managed component localhost port",
       positiveInteger,
     )
-    .option("--managed-health <check>", "Managed component health check")
-    .option("--installed <name>", "Installed component name")
-    .option("--installed-entrypoint <path>", "Installed executable entrypoint")
+    .option(
+      "--managed-health <check>",
+      "Managed component health check",
+      nonEmpty,
+    )
+    .option("--installed <name>", "Installed component name", nonEmpty)
+    .option(
+      "--installed-entrypoint <path>",
+      "Installed executable entrypoint",
+      nonEmpty,
+    )
     .option(
       "--installed-build <command>",
       "Build command for the installed executable",
+      nonEmpty,
     )
-    .option("--installed-name <name>", "Installed executable name")
+    .option("--installed-name <name>", "Installed executable name", nonEmpty)
     .action(async (options: InitOptions) => execute(initRequest(cwd, options)));
 }
 function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
@@ -475,6 +548,11 @@ function targetRequest(
     ...preview,
     ...projectScope(options),
   };
+}
+/** An empty value would otherwise be dropped by a truthiness check and silently mean "default". */
+function nonEmpty(value: string): string {
+  if (value.trim() === "") throw new InvalidArgumentError("It is empty.");
+  return value;
 }
 function positiveInteger(value: string): number {
   if (

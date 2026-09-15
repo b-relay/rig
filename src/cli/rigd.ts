@@ -1,14 +1,16 @@
 import type { DiagnosticLog } from "../diagnostics/types";
 import type { DaemonAdmin, UserOutput } from "./types";
-import { terminalCommand } from "./commands";
+import { addHelpCommand, commandPath, terminalCommand } from "./commands";
 import { isHelp, recordDiagnostic, reportFailure } from "./failure";
-import { renderResult } from "./output";
+import { object, renderResult } from "./output";
 
 export interface RigdCliDependencies {
   admin: DaemonAdmin;
   output: UserOutput;
   diagnostics: DiagnosticLog;
   newOperationId: () => string;
+  /** Runs one managed Component from the request file rigd wrote; returns the wrapper's exit code. */
+  capture(requestFile: string): Promise<number>;
 }
 /** Daemon administration is explicit and separate from normal Project requests. */
 export async function runRigdCli(
@@ -19,6 +21,7 @@ export async function runRigdCli(
     "Install and inspect the local Rig daemon.",
   );
   let operationId: string | undefined;
+  let exitCode = 0;
   for (const action of ["install", "status", "uninstall"] as const) {
     command
       .command(action)
@@ -41,6 +44,8 @@ export async function runRigdCli(
             ? await dependencies.admin.status()
             : await dependencies.admin[action](operationId);
         dependencies.output.write(renderResult(`daemon-${action}`, result));
+        if (action === "status" && object(result).reachable !== true)
+          exitCode = 1;
         const evidence = await recordDiagnostic(dependencies.diagnostics, {
           event: "command.completed",
           action,
@@ -49,17 +54,27 @@ export async function runRigdCli(
         if (evidence.error) dependencies.output.error(`${evidence.error}\n`);
       });
   }
+  command
+    .command("capture")
+    .description(
+      "Run one managed Component from a request file rigd wrote (launchd invokes this; not for direct use).",
+    )
+    .argument("<request-file>", "Capture request file written by rigd")
+    .action(async (requestFile: string) => {
+      exitCode = await dependencies.capture(requestFile);
+    });
+  addHelpCommand(command, "rigd");
   try {
     await command.parseAsync(args.length ? [...args] : ["--help"], {
       from: "user",
     });
-    return 0;
+    return exitCode;
   } catch (error) {
     if (isHelp(error)) return 0;
     await reportFailure(error, {
       diagnostics: dependencies.diagnostics,
       output: dependencies.output,
-      executable: "rigd",
+      executable: ["rigd", ...commandPath(command, args)].join(" "),
       operationId,
     });
     return 1;

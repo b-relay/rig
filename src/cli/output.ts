@@ -16,7 +16,7 @@ export function renderResult(action: string, value: unknown): string {
       Array.isArray(report.warnings)
         ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
         : ""
-    }`;
+    }${daemonAdvice(report)}`;
   const subject =
     [word(report.project), word(report.target)].filter(Boolean).join(" ") ||
     "rigd";
@@ -54,6 +54,10 @@ export function renderResult(action: string, value: unknown): string {
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);
+  const unobserved =
+    report.ownership === "unknown"
+      ? "Warning: rigd is not observing Targets: legacy adoption is pending, so Target counts come from the registry only. Run rig doctor.\n"
+      : "";
   return projects.length
     ? `${projects
         .map(
@@ -64,8 +68,17 @@ function renderProjects(report: Record<string, unknown>): string {
                 : ""
             }`,
         )
-        .join("\n")}\n`
-    : "No Projects registered.\n";
+        .join("\n")}\n${unobserved}`
+    : `No Projects registered.\n${unobserved}`;
+}
+/** What to do about a daemon that is not serving, or nothing when it is. */
+function daemonAdvice(report: Record<string, unknown>): string {
+  if (report.reachable === true) return "";
+  if (report.installed !== true)
+    return "rigd is not installed. Run rigd install.\n";
+  if (report.running !== true)
+    return "rigd is installed but not running. Run rigd install to start it.\n";
+  return "rigd is running but not reachable. Run rig doctor, or rigd uninstall and then rigd install.\n";
 }
 export function renderStatus(report: ProjectStatusReport): string {
   const lines = [word(report.project)];

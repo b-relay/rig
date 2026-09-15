@@ -133,7 +133,7 @@ testability and honesty refactors.
 104. ~~#180~~ (fixed) Registration minor gaps. (#233, #235.)
 105. ~~#193~~ (fixed) Provider minors (Postgres encoding, pg.url scheme, generic missing-binary errors, bin/ collisions).
 106. ~~#169~~ (fixed) Logs/diagnostics minors.
-107. #209 CLI minors.
+107. ~~#209~~ (fixed) CLI minors.
 108. #150 Minor CLI gaps (no --version, hashed slug in messages).
 109. #142 Minor daemon/CLI messaging gaps.
 

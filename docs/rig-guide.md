@@ -25,12 +25,29 @@ to try the rewrite. Existing Host state needs the explicit backed-up cutover.
 with a usage error before they create or read anything, rather than rooting
 Rig in the current working directory.
 
+Every command answers `--help` and `-h`, and `rig help <command>` (for
+example `rig help deploy preview`, or `rig deploy help`) prints that command's
+usage; `rig help nonsense` fails with `Unknown command 'nonsense'.` and exit
+1 instead of printing nothing. A usage error names the command it belongs to
+in its hint (`rig up --bogus` says `Run rig up --help.`), and an empty value
+for an option or argument that takes one (`--path ""`, `--project ""`,
+`--deployment ""`, `rig repoint ""`) is refused as empty rather than silently
+treated as the default.
+
 Install the daemon:
 
 ```bash
 rigd install
 rigd status
 ```
+
+`rigd status` exits 0 only when the daemon is reachable; otherwise it exits 1
+and its last line says what to do (`rigd is not installed. Run rigd install.`,
+`rigd is installed but not running. Run rigd install to start it.`, or, for a
+running daemon that does not answer, `Run rig doctor, or rigd uninstall and
+then rigd install.`). `rigd capture <request-file>` is the command launchd
+runs for each managed Component; it is listed in `rigd --help` and answers
+`--help`, but people never run it themselves.
 
 `rigd install` owns daemon setup and creates the local control-plane auth token.
 It only runs when no daemon process exists, and it issues a fresh token every
@@ -238,7 +255,9 @@ init` there would register.
 `rig list` is host-scoped. It shows Projects plus summary metadata such as
 Target count. It does not show every Target for every Project, and it never
 observes a Target, so it is quick and says nothing about what is running
-(`rig status` does). It does check that each registered directory still
+(`rig status` does). While legacy adoption is pending (`--json` reports
+`ownership: "unknown"`), it ends with a warning that rigd is not observing
+Targets and that the counts come from the registry only. It does check that each registered directory still
 exists: a Project whose directory is gone is marked `(directory missing: rig
 repoint or rig forget <name>)`, and `--json` carries `missing: true`.
 

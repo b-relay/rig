@@ -2,7 +2,7 @@ import { RigError, cancelled } from "../domain/errors";
 import { prepareInteractiveRequest } from "./interaction";
 import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
-import { createRigCommand, type ExecuteCommand } from "./commands";
+import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
 import { renderResult, renderStatus, object, renderLogs } from "./output";
 import {
   isHelp,
@@ -166,7 +166,7 @@ export async function runRigCli(
     await reportFailure(error, {
       diagnostics: dependencies.diagnostics,
       output: dependencies.output,
-      executable: "rig",
+      executable: ["rig", ...commandPath(command, args)].join(" "),
       operationId,
       json,
     });

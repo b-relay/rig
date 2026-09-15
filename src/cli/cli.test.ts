@@ -1043,3 +1043,84 @@ test("Ctrl-C during a read is passed to the client, and the aborted read exits 0
   expect(received).toBe(cancel.signal);
   expect(text).toBe("");
 });
+
+function quietDependencies(sink: { text: string }) {
+  return {
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    client: {
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status read");
+      },
+      async command(): Promise<unknown> {
+        throw new Error("Unexpected daemon request");
+      },
+    },
+    output: {
+      write(value: string) {
+        sink.text += value;
+      },
+      error(value: string) {
+        sink.text += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
+    wait: async () => {},
+    newOperationId: () => "usage",
+  };
+}
+test("help names an unknown command and fails, while help <command> and <command> help show that command's usage", async () => {
+  const sink = { text: "" };
+  const dependencies = quietDependencies(sink);
+  expect(await runRigCli(["help", "nonsense"], dependencies)).toBe(1);
+  expect(sink.text).toContain("Unknown command 'nonsense'.");
+  expect(sink.text).toContain("Run rig --help.");
+  for (const path of [
+    ["help", "deploy"],
+    ["deploy", "help"],
+    ["help", "deploy", "preview"],
+    ["help"],
+  ]) {
+    sink.text = "";
+    expect(await runRigCli(path, dependencies)).toBe(0);
+    expect(sink.text).toContain(
+      path.length === 1 ? "Usage: rig " : `Usage: rig ${path.filter((part) => part !== "help").join(" ")}`,
+    );
+  }
+});
+test("a usage error hints the failing subcommand's own help", async () => {
+  const sink = { text: "" };
+  const dependencies = quietDependencies(sink);
+  for (const [path, hint] of [
+    [["up", "--bogus"], "Run rig up --help."],
+    [["deploy", "preview", "--bogus"], "Run rig deploy preview --help."],
+    [["deploy", "bogus"], "Run rig deploy --help."],
+    [["nonsense"], "Run rig --help."],
+  ] as const) {
+    sink.text = "";
+    expect(await runRigCli([...path], dependencies)).toBe(1);
+    expect(sink.text).toContain(hint);
+  }
+});
+test("an empty option or argument value is refused instead of silently dropped", async () => {
+  const sink = { text: "" };
+  const dependencies = quietDependencies(sink);
+  for (const [path, flag] of [
+    [["init", "--path", ""], "--path"],
+    [["init", "--production-branch", ""], "--production-branch"],
+    [["init", "--domain", ""], "--domain"],
+    [["repoint", ""], "path"],
+    [["rename", ""], "name"],
+    [["up", "--project", ""], "--project"],
+    [["deploy", "preview", "--deployment", "", "main"], "--deployment"],
+  ] as const) {
+    sink.text = "";
+    expect(await runRigCli([...path], dependencies)).toBe(1);
+    expect(sink.text).toContain(flag);
+    expect(sink.text.toLowerCase()).toContain("empty");
+  }
+});

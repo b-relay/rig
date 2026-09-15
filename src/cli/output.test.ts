@@ -88,3 +88,14 @@ test("logs print the UTC clock with its zone marker so it cannot pass for local 
     ),
   ).toBe("23:30:00Z  web  > ready\n");
 });
+
+test("list says when rigd cannot observe Targets because legacy adoption is pending", () => {
+  expect(
+    renderResult("list", {
+      ownership: "unknown",
+      projects: [{ name: "app", repoPath: "/here", targetCount: 2 }],
+    }),
+  ).toBe(
+    "app  2 Targets  /here\nWarning: rigd is not observing Targets: legacy adoption is pending, so Target counts come from the registry only. Run rig doctor.\n",
+  );
+});

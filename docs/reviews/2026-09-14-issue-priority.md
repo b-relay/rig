@@ -152,8 +152,13 @@ Ordered by how many `[T]` ancestors each clears and which bugs above it unblocks
 118. ~~#230~~ (fixed) createCaddyRouter default run. Unblocks #205 daemon-level test.
 119. ~~#235~~ (fixed) updateRegistration mutates project.name with void return.
 120. ~~#236~~ (fixed) selectProject/registerProject resolve against cwd (latent).
-121. #224 inspectOfflineHost hard-wires inspectHost/discoverProject.
+121. ~~#224~~ (fixed) inspectOfflineHost hard-wires inspectHost/discoverProject.
 
 ## Not in the queue
 
 122. #114 Redesign the project config (enhancement; a design project, not a defect).
+
+## Deferred items
+
+What each fix above deliberately left out is collected in
+[2026-09-16-deferred-items.md](2026-09-16-deferred-items.md).

@@ -101,6 +101,39 @@ test("valid JSON with an incomplete saved Target plan fails closed", async () =>
   }
 });
 
+test("a state file with a relative repository path is refused as corrupt and names the requirement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-relative-path-"));
+  try {
+    await mkdir(join(root, "runtime"), { recursive: true });
+    const content = JSON.stringify({
+      version: 3,
+      projects: [
+        {
+          id: "p",
+          name: "demo",
+          repoPath: "demo",
+          configPath: "demo/rig.yaml",
+          createdAt: "now",
+        },
+      ],
+      targets: [],
+      activity: [],
+    });
+    await writeFile(join(root, "runtime", "state.json"), content);
+    await expect(new FileStateStore(root).read()).rejects.toMatchObject({
+      code: "STATE_CORRUPT",
+      hint: expect.stringContaining(
+        "invalid value at projects.0.repoPath: must be an absolute path",
+      ),
+    });
+    expect(await readFile(join(root, "runtime", "state.json"), "utf8")).toBe(
+      content,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a deployed Target recorded before sourceRoot existed is backfilled on read when its workspace sits in the Target's revisions directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-sourceroot-"));
   try {

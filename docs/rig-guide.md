@@ -666,7 +666,11 @@ other command fails with that same message. Every state write is flushed to
 disk before it replaces the file, and the version it replaces stays beside it
 as `state.json.bak`; the failure message points at that copy when it exists.
 `rigd uninstall` refuses until the file is repaired, because it cannot verify
-that Targets are stopped without it.
+that Targets are stopped without it. Registered `repoPath` and `configPath`
+values must be absolute; a hand-edited relative path is reported as a
+malformed record rather than resolved against the daemon's working directory,
+and a command that sends a relative path is refused as an invalid request
+(`rig` resolves paths against your directory before sending).
 
 A legacy adoption manifest at `<RIG_ROOT>/runtime/legacy-adoption.json` whose
 status is still `requires-adoption` blocks every mutating command and

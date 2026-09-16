@@ -1,9 +1,14 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 /** Only domain commands cross the local control plane, never arbitrary scripts. */
 /** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
 export const projectName = z.string().min(1).max(128);
 export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
+/** rig resolves paths against the caller's directory before sending; rigd never resolves against its own. */
+export const absolutePath = z.string().min(1).refine(isAbsolute, {
+  message: "must be an absolute path",
+});
 export const commandSchema = z
   .object({
     action: z.enum([
@@ -31,7 +36,7 @@ export const commandSchema = z
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
-    repoPath: z.string().min(1).optional(),
+    repoPath: absolutePath.optional(),
     target: z.enum(["local", "live", "preview"]).optional(),
     branch: z.string().optional(),
     commit: z.string().optional(),
@@ -66,7 +71,7 @@ export const commandSchema = z
     operation: z.string().min(1).optional(),
     after: z.string().optional(),
     newName: z.string().optional(),
-    newPath: z.string().optional(),
+    newPath: absolutePath.optional(),
   })
   .strict();
 export type RuntimeCommand = z.infer<typeof commandSchema>;

@@ -151,7 +151,7 @@ Ordered by how many `[T]` ancestors each clears and which bugs above it unblocks
 117. ~~#233~~ (fixed) inspectInitialization hidden readProjectConfig. Unblocks #178, #179, #180.
 118. ~~#230~~ (fixed) createCaddyRouter default run. Unblocks #205 daemon-level test.
 119. ~~#235~~ (fixed) updateRegistration mutates project.name with void return.
-120. #236 selectProject/registerProject resolve against cwd (latent).
+120. ~~#236~~ (fixed) selectProject/registerProject resolve against cwd (latent).
 121. #224 inspectOfflineHost hard-wires inspectHost/discoverProject.
 
 ## Not in the queue

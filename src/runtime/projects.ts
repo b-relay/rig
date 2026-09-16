@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
@@ -47,9 +47,7 @@ export async function selectProject(
   // A registered directory whose config names an unregistered Project had its name edited; rename adopts the edit.
   const byPath = byName
     ? undefined
-    : state.projects.find(
-        (p) => resolve(p.repoPath) === resolve(found.repoPath),
-      );
+    : state.projects.find((p) => p.repoPath === found.repoPath);
   if (byPath) {
     if (adoptsConfigName(command, byPath, found.document))
       return { project: byPath, document: found.document };
@@ -63,10 +61,7 @@ export async function selectProject(
       "Run rig init in this Project directory.",
     );
   // repoint is how a registration follows a moved repository, so the config name alone selects it.
-  if (
-    command.action !== "repoint" &&
-    resolve(project.repoPath) !== resolve(found.repoPath)
-  )
+  if (command.action !== "repoint" && project.repoPath !== found.repoPath)
     throw new RigError(
       "PROJECT_PATH_CONFLICT",
       `Project '${project.name}' is registered at ${project.repoPath}, not ${found.repoPath}.`,
@@ -127,10 +122,7 @@ export async function registerProject(
   const repoPath = dirname(document.path);
   let result: ProjectRecord | undefined;
   try {
-    if (
-      name !== identity.name ||
-      resolve(repoPath) !== resolve(identity.repoPath)
-    )
+    if (name !== identity.name || repoPath !== identity.repoPath)
       throw new RigError(
         "PROJECT_IDENTITY",
         "Project identity changed during initialization.",
@@ -171,13 +163,11 @@ function assertRegistrationAvailable(
 ): ProjectRecord | undefined {
   const existing = projects.find(
     (project) =>
-      project.name === identity.name ||
-      resolve(project.repoPath) === resolve(identity.repoPath),
+      project.name === identity.name || project.repoPath === identity.repoPath,
   );
   if (
     existing &&
-    (existing.name !== identity.name ||
-      resolve(existing.repoPath) !== resolve(identity.repoPath))
+    (existing.name !== identity.name || existing.repoPath !== identity.repoPath)
   )
     throw new RigError(
       "PROJECT_CONFLICT",

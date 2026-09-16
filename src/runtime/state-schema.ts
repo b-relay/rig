@@ -1,5 +1,10 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 const text = z.string().min(1);
+/** Registered paths are stored absolute, so comparing two of them never depends on rigd's working directory. */
+const absolutePath = text.refine(isAbsolute, {
+  message: "must be an absolute path",
+});
 const hooks = z.object({
   preStart: z.string().optional(),
   postStart: z.string().optional(),
@@ -76,8 +81,8 @@ export const targetPlanSchema = z.object({
 const project = z.object({
   id: text,
   name: text,
-  repoPath: text,
-  configPath: text,
+  repoPath: absolutePath,
+  configPath: absolutePath,
   createdAt: text,
 });
 const target = z.object({

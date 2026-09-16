@@ -9,7 +9,11 @@ import {
   resolveTargetPlan,
 } from "../config";
 import type { ProjectDocuments } from "../runtime/contracts";
-import type { ConfigDocument, ProjectConfig } from "../config/types";
+import type {
+  ConfigDocument,
+  HostConfig,
+  ProjectConfig,
+} from "../config/types";
 import type { CommandRunner } from "../providers/contracts";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
@@ -27,10 +31,28 @@ export function createProjectDocuments(
   env: Readonly<Record<string, string>>,
 ): ProjectDocuments {
   const discovery = createProjectDiscovery(run, env);
+  // The adapter is the effect owner: it binds the config documents on disk once, here.
+  const reads: InitializationReads = {
+    discovery,
+    discoverConfig: async (path) => {
+      try {
+        return await discoverProject(path);
+      } catch (error) {
+        if (error instanceof ConfigError && error.code === "missing_config")
+          return undefined;
+        throw error;
+      }
+    },
+    hostConfig: () => readHostConfig(root),
+  };
   return {
     async discover(path) {
       const location = await inspectProjectLocation(path, discovery);
-      const found = await nearestConfigWithin(path, location.repoPath);
+      const found = await nearestConfigWithin(
+        path,
+        location.repoPath,
+        reads.discoverConfig,
+      );
       if (!found)
         throw new ConfigError(
           "No Project config found in this directory or its parents within the repository.",
@@ -47,8 +69,7 @@ export function createProjectDocuments(
       const info = await inspectInitialization(
         path,
         { action: "init", createGit: true },
-        discovery,
-        root,
+        reads,
       );
       return {
         name: info.name,
@@ -62,8 +83,7 @@ export function createProjectDocuments(
       const { repoPath, name, existing } = await inspectInitialization(
         path,
         command,
-        discovery,
-        root,
+        reads,
       );
       return {
         repoPath,
@@ -73,7 +93,7 @@ export function createProjectDocuments(
     },
     async initialize(path, command) {
       const { repoPath, name, existing, productionBranch } =
-        await inspectInitialization(path, command, discovery, root);
+        await inspectInitialization(path, command, reads);
       await ensureProjectGit(
         { path: repoPath, project: name, createGit: command.createGit },
         discovery,
@@ -104,12 +124,24 @@ export function createProjectDocuments(
     },
   };
 }
-async function inspectInitialization(
+/** Everything initialization reads; the adapter binds the real documents, a test scripts them. */
+export interface InitializationReads {
+  discovery: ProjectDiscovery;
+  /** The Project config the upward search from `path` finds, or undefined when there is none. */
+  discoverConfig(
+    path: string,
+  ): Promise<
+    { repoPath: string; document: ConfigDocument<ProjectConfig> } | undefined
+  >;
+  hostConfig(): Promise<HostConfig>;
+}
+/** Resolves where a Project would be initialized and under which name, without creating anything. */
+export async function inspectInitialization(
   path: string,
   command: RuntimeCommand,
-  discovery: ProjectDiscovery,
-  root: string,
+  reads: InitializationReads,
 ) {
+  const { discovery } = reads;
   const location = await inspectProjectLocation(path, discovery);
   const { gitRequired } = location;
   if (gitRequired && !command.createGit)
@@ -119,7 +151,11 @@ async function inspectInitialization(
       "Explicitly use rig init --create-git.",
     );
   // The Project other commands discover is the nearest config at or above the path within the repository.
-  const nearest = await nearestConfigWithin(path, location.repoPath);
+  const nearest = await nearestConfigWithin(
+    path,
+    location.repoPath,
+    reads.discoverConfig,
+  );
   const repoPath = nearest?.repoPath ?? location.repoPath;
   const existing = nearest?.document;
   const name =
@@ -135,7 +171,7 @@ async function inspectInitialization(
     existing?.config.live?.deployBranch ??
     command.productionBranch ??
     location.productionBranch ??
-    (await readHostConfig(root)).deploy.productionBranch;
+    (await reads.hostConfig()).deploy.productionBranch;
   return {
     repoPath,
     name,
@@ -150,18 +186,13 @@ async function inspectInitialization(
 async function nearestConfigWithin(
   path: string,
   root: string,
+  discoverConfig: InitializationReads["discoverConfig"],
 ): Promise<
   { repoPath: string; document: ConfigDocument<ProjectConfig> } | undefined
 > {
-  let found;
-  try {
-    found = await discoverProject(path);
-  } catch (error) {
-    if (error instanceof ConfigError && error.code === "missing_config")
-      return undefined;
-    throw error;
-  }
-  return found.repoPath === root || found.repoPath.startsWith(root + sep)
+  const found = await discoverConfig(path);
+  return found &&
+    (found.repoPath === root || found.repoPath.startsWith(root + sep))
     ? found
     : undefined;
 }

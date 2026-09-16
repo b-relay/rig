@@ -9,7 +9,12 @@ async function assertTargetsStopped(
   targets: TargetRecord[],
   deps: RuntimeDependencies,
 ): Promise<void> {
-  const reports = await observeTargets(targets, deps.observations);
+  const reports = await observeTargets(
+    targets,
+    deps.observations,
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
   if (
     targets.some(
       (t) => t.desired === "running" || t.recovery || t.destructionPending,

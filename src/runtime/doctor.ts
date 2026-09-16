@@ -196,6 +196,8 @@ export async function doctor(
           (target) => !target.recovery && !target.destructionPending,
         ),
         deps.observations,
+        deps.observationBudgetMs,
+        deps.observationDeadline,
       )
     : [];
   for (const report of reports)

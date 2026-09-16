@@ -1,6 +1,7 @@
 import { controlledDeadline } from "./controlled-observation-deadline";
 import { test, expect } from "bun:test";
 import { observeTargets } from "../src/runtime/status";
+import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import type { TargetRecord } from "../src/domain/runtime";
 const target = {
   id: "t",
@@ -39,6 +40,7 @@ test("fresh status distinguishes failed health from running without health and r
       },
     },
     2000,
+    timerObservationDeadline,
   );
   expect(result[0]).toMatchObject({
     name: "live",
@@ -71,6 +73,7 @@ test("one deadline bounds every concurrent probe and timeouts are unknown", asyn
       },
     },
     30,
+    timerObservationDeadline,
   );
   expect(performance.now() - start).toBeLessThan(150);
   expect(
@@ -105,6 +108,8 @@ test("a crashed desired-running process is failed with exit evidence while an in
       { ...target, desired: "stopped" },
     ],
     effects,
+    2000,
+    timerObservationDeadline,
   );
   expect(crashed).toMatchObject({
     state: "failed",
@@ -145,7 +150,12 @@ test("an installed Component that cannot be observed degrades a Target whose pro
       return true;
     },
   };
-  const [report] = await observeTargets([mixed], effects);
+  const [report] = await observeTargets(
+    [mixed],
+    effects,
+    2000,
+    timerObservationDeadline,
+  );
   expect(report).toMatchObject({
     state: "degraded",
     components: [
@@ -161,15 +171,23 @@ test("an installed Component that cannot be observed degrades a Target whose pro
   };
   expect(
     (
-      await observeTargets([tools], {
-        ...effects,
-        async artifact() {
-          return "installed";
+      await observeTargets(
+        [tools],
+        {
+          ...effects,
+          async artifact() {
+            return "installed";
+          },
         },
-      })
+        2000,
+        timerObservationDeadline,
+      )
     )[0],
   ).toMatchObject({ state: "ready", components: [{ state: "installed" }] });
-  expect((await observeTargets([tools], effects))[0]!.state).toBe("unknown");
+  expect(
+    (await observeTargets([tools], effects, 2000, timerObservationDeadline))[0]!
+      .state,
+  ).toBe("unknown");
 });
 test("timed out observations retain the configured port and route without claiming reachability", async () => {
   const routed = {
@@ -207,20 +225,25 @@ test("timed out observations retain the configured port and route without claimi
 });
 
 test("immediate observation rejection is unknown with a safe failure reason", async () => {
-  const [report] = await observeTargets([target], {
-    async process() {
-      throw new Error("provider unavailable: TOKEN=private-credential");
+  const [report] = await observeTargets(
+    [target],
+    {
+      async process() {
+        throw new Error("provider unavailable: TOKEN=private-credential");
+      },
+      async health() {
+        return { ready: true as const };
+      },
+      async artifact() {
+        return "installed";
+      },
+      async persistent() {
+        return true;
+      },
     },
-    async health() {
-      return { ready: true as const };
-    },
-    async artifact() {
-      return "installed";
-    },
-    async persistent() {
-      return true;
-    },
-  });
+    2000,
+    timerObservationDeadline,
+  );
   expect(report).toMatchObject({
     state: "unknown",
     components: [
@@ -417,6 +440,7 @@ test("a running component keeps the reason its provider attached, and the render
       },
     },
     2000,
+    timerObservationDeadline,
   );
   expect(result[0]!.components).toEqual([
     expect.objectContaining({
@@ -470,6 +494,7 @@ test("the Target aggregate counts every Component: missing storage beside a heal
         },
       },
       2000,
+      timerObservationDeadline,
     );
   expect((await observe(true, "installed"))[0]?.state).toBe("healthy");
   expect((await observe(true, "missing"))[0]?.state).toBe("degraded");

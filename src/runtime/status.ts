@@ -2,7 +2,6 @@ import type { ComponentReport, TargetReport } from "../domain/project-status";
 export type { ComponentReport, TargetReport } from "../domain/project-status";
 import {
   boundedObservations,
-  timerObservationDeadline,
   type ObservationDeadline,
 } from "./bounded-observations";
 import type {
@@ -34,12 +33,13 @@ export interface ObservationEffects {
     signal: AbortSignal,
   ): Promise<boolean>;
 }
-/** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget. */
+/** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget.
+ * The caller chooses the budget and the deadline scheduler, so a test can expire an observation deterministically. */
 export async function observeTargets(
   targets: readonly TargetRecord[],
   effects: ObservationEffects,
-  budgetMs = 2000,
-  deadline: ObservationDeadline = timerObservationDeadline,
+  budgetMs: number,
+  deadline: ObservationDeadline,
 ): Promise<TargetReport[]> {
   const entries = targets.flatMap((target) =>
     target.plan.components.map((component) => ({

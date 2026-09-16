@@ -17,6 +17,7 @@ import type {
 import type { TargetLogEntry } from "../providers/contracts";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
+import type { ObservationDeadline } from "./bounded-observations";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a directory
    * that is not a repository is searched alone and reported with `gitRequired`. */
@@ -133,6 +134,10 @@ export interface RuntimeDependencies {
   sources: DeploymentSources;
   lifecycle: TargetLifecycle;
   observations: ObservationEffects;
+  /** Shared budget for one read-only observation pass (status, doctor, registration, prepare-uninstall). */
+  observationBudgetMs: number;
+  /** Schedules that budget's expiry; the timer in production, scripted in tests. */
+  observationDeadline: ObservationDeadline;
   files: RuntimeFiles;
   now(): string;
   id(): string;

@@ -162,7 +162,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             "Cannot uninstall rigd while Targets have unresolved recovery or destruction.",
             "Finish recovery with rig down, or retry Preview --destroy when deletion is pending, then retry uninstall.",
           );
-        const reports = await observeTargets(state.targets, deps.observations);
+        const reports = await observeTargets(
+          state.targets,
+          deps.observations,
+          deps.observationBudgetMs,
+          deps.observationDeadline,
+        );
         if (
           state.targets.some((t) => t.desired === "running") ||
           reports.some((t) =>

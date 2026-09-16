@@ -354,7 +354,7 @@ owner carries only its own owner-level defects.
 | ~~[D] store prepare resolve() against cwd / [D+T] createGitSourceStore default run (rows 14, 15)~~ fixed | #231 |
 | [D] createProjectDiscovery process.env (row 16) | #232 |
 | [D] inspectInitialization hidden readProjectConfig (row 17) | #233 |
-| [D] observation deadline by omission: projectStatus, doctor, updateRegistration, createRuntime list/prepare-uninstall (rows 18-21) | #234 |
+| [D] observation deadline by omission: projectStatus, doctor, updateRegistration, createRuntime list/prepare-uninstall (rows 18-21) | #234 (fixed: `RuntimeDependencies.observationBudgetMs`/`observationDeadline` are required and forwarded at every `observeTargets` call, whose budget and deadline parameters no longer default; `composeDaemon` passes the timer) |
 | [D] updateRegistration mutates project.name, void return (row 20b) | #235 |
 | [D latent] selectProject / registerProject resolve against cwd (rows 22, 23) | #236 |
 | [D] createProcessIdentityReader default run, called bare by the wrapper (row 24) | #237 |

@@ -25,7 +25,11 @@ export async function projectStatus(
   command: StatusSelection,
   deps: Pick<
     RuntimeDependencies,
-    "assertOwnershipReady" | "observations" | "inspectProxy"
+    | "assertOwnershipReady"
+    | "observations"
+    | "observationBudgetMs"
+    | "observationDeadline"
+    | "inspectProxy"
   > & {
     documents: Pick<RuntimeDependencies["documents"], "read">;
     /** Whether the daemon is executing this operation right now. */
@@ -60,7 +64,12 @@ export async function projectStatus(
           reason: ownershipFailure,
         })),
       }))
-    : await observeTargets(selected, deps.observations);
+    : await observeTargets(
+        selected,
+        deps.observations,
+        deps.observationBudgetMs,
+        deps.observationDeadline,
+      );
   let document: ConfigDocument<ProjectConfig> | undefined;
   try {
     document = await deps.documents.read(project.repoPath);

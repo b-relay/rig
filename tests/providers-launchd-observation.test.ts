@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { createLaunchdSupervisor } from "../src/providers/launchd-supervisor";
 import { createProcessIdentityReader } from "../src/providers/process-identity";
 import { observeTargets } from "../src/runtime/status";
+import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { ProcessObservation } from "../src/providers/contracts";
 
@@ -51,7 +52,7 @@ test("launchd reports application backoff, recovery identity, and terminal failu
   const report = () => observeTargets([target], {
     process: (_target, _component, signal) => supervisor.observe(request.key, signal),
     health: async () => ({ ready: true }), artifact: async () => "installed", persistent: async () => true,
-  });
+  }, 2000, timerObservationDeadline);
   const waitFor = async (predicate: (value: ProcessObservation) => boolean) => {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {

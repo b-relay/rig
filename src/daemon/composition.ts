@@ -23,6 +23,9 @@ import { FileStateStore } from "../runtime/state-store";
 import { createRuntime } from "../runtime/application";
 import { createTargetLifecycle } from "../runtime/lifecycle";
 import { createChildSupervisor } from "../providers/child-supervisor";
+import { timerObservationDeadline } from "../runtime/bounded-observations";
+/** One read-only observation pass (status, doctor) may take this long before components report unknown. */
+const OBSERVATION_BUDGET_MS = 2000;
 import {
   createProcessInspection,
   platformKill,
@@ -121,6 +124,8 @@ export async function composeDaemon(
     ),
     lifecycle: createTargetLifecycle(effects),
     observations: effects.observations,
+    observationBudgetMs: OBSERVATION_BUDGET_MS,
+    observationDeadline: timerObservationDeadline,
     files: createRuntimeFiles(),
     now: () => new Date().toISOString(),
     id: randomUUID,

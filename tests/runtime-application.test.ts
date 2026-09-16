@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileStateStore } from "../src/runtime/state-store";
 import { createRuntime } from "../src/runtime/application";
+import { controlledDeadline } from "./controlled-observation-deadline";
 import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient } from "../src/daemon/client";
 import type { RuntimeState } from "../src/domain/runtime";
@@ -21,6 +22,7 @@ import {
   resolveTargetPlan,
 } from "../src/config";
 function fixture() {
+  const deadline = controlledDeadline();
   const state: RuntimeState = {
     version: 3,
     projects: [],
@@ -162,11 +164,13 @@ function fixture() {
         return { entries: [], cursor: "0" };
       },
     },
+    observationBudgetMs: 2000,
+    observationDeadline: deadline,
     now: () => new Date().toISOString(),
     id: () => `id${++id}`,
     async diagnostic() {},
   };
-  return { runtime: createRuntime(deps), state, plans, config, deps };
+  return { runtime: createRuntime(deps), state, plans, config, deps, deadline };
 }
 test("init config name is authoritative; local up uses the actual repo and applies the current config once stopped", async () => {
   const { runtime, state, plans, config } = fixture();
@@ -1076,6 +1080,40 @@ test("doctor reports drift on a running Working copy Target and names restart as
       expect.objectContaining({ name: "local/config", ok: true }),
     ]),
   });
+});
+
+test("status and doctor expire a slow observation on the injected deadline and report it as unknown with no timer left pending", async () => {
+  const { runtime, deps, deadline } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  deps.observations.process = () => new Promise(() => {});
+  const status = runtime.status({ project: "demo" });
+  await Bun.sleep(0);
+  expect(deadline.pending).toBe(true);
+  expect(deadline.budgets).toEqual([2000]);
+  deadline.expire();
+  expect((await status).targets[0]!.components[0]).toMatchObject({
+    name: "web",
+    state: "unknown",
+    reason: "Observation did not complete before the status deadline.",
+  });
+  expect(deadline.pending).toBe(false);
+  const doctor = runtime.command({
+    action: "doctor",
+    project: "demo",
+  }) as Promise<{
+    checks: { name: string; message: string }[];
+  }>;
+  await Bun.sleep(0);
+  expect(deadline.pending).toBe(true);
+  deadline.expire();
+  expect(
+    (await doctor).checks.find((c) => c.name === "local/web"),
+  ).toMatchObject({
+    message:
+      "Component is unknown. Observation did not complete before the status deadline.",
+  });
+  expect(deadline.pending).toBe(false);
 });
 
 test("doctor carries each failing component's observation reason and exit code and picks its hint from them", async () => {

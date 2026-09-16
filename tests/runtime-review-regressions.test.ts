@@ -59,6 +59,8 @@ function fixture() {
       resolve: resolveTargetPlan,
     },
     observations: {},
+    observationBudgetMs: 2000,
+    observationDeadline: { schedule: () => () => {} },
     now: () => new Date().toISOString(),
     id: () => "operation",
     async diagnostic() {},

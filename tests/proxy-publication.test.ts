@@ -8,6 +8,7 @@ import {
 } from "../src/adapters/proxy-publication";
 import { inspectHost } from "../src/adapters/host-inspection";
 import { projectStatus } from "../src/runtime/project-status";
+import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { renderStatus } from "../src/cli/output";
 import { parseProjectConfig, resolveTargetPlan } from "../src/config";
 import type { TargetRecord } from "../src/domain/runtime";
@@ -176,6 +177,8 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
         async assertOwnershipReady() {},
         inProgress: () => false,
         observations,
+        observationBudgetMs: 2000,
+        observationDeadline: timerObservationDeadline,
         documents: {
           async read() {
             return { path: "/repo/rig.yaml", format: "yaml", revision: "r", config };

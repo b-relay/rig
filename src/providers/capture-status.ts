@@ -46,13 +46,26 @@ export async function writeCaptureStatus(
     await rm(temporary, { force: true });
   }
 }
+/** How long a managed app may take to confirm startup once its wrapper exists; the supervisors pass it explicitly. */
+export const DEFAULT_CAPTURE_START_MS = 5000;
+/** Poll cadence while the status file is absent. */
+const CAPTURE_START_POLL_MS = 20;
+/** The clock the startup poll lives by; a supervisor passes the timing it already holds, a test a scripted one. */
+export interface CaptureStartWait {
+  /** Budget on `now`'s clock before the wait fails as PROCESS_START_TIMEOUT. */
+  readonly timeoutMs: number;
+  /** Unix milliseconds. */
+  now(): number;
+  /** Resolves once `ms` have elapsed on the same clock. */
+  wait(ms: number): Promise<void>;
+}
 /** The wrapper's process existence does not prove that its managed app started. */
 export async function waitForCaptureStart(
   requestPath: string,
-  timeoutMs = 5000,
+  wait: CaptureStartWait,
 ): Promise<number> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const deadline = wait.now() + wait.timeoutMs;
+  while (wait.now() < deadline) {
     const raw = await readFile(`${requestPath}.status.json`, "utf8").catch(
       (error) => {
         if (error.code === "ENOENT") return undefined;
@@ -69,7 +82,7 @@ export async function waitForCaptureStart(
         );
       return status.pid;
     }
-    await Bun.sleep(20);
+    await wait.wait(CAPTURE_START_POLL_MS);
   }
   throw new RigError(
     "PROCESS_START_TIMEOUT",

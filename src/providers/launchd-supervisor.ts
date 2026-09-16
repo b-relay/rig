@@ -3,7 +3,11 @@ import {
   createProcessIdentityReader,
   type ProcessIdentityReader,
 } from "./process-identity";
-import { clearCaptureStatus, waitForCaptureStart } from "./capture-status";
+import {
+  clearCaptureStatus,
+  DEFAULT_CAPTURE_START_MS,
+  waitForCaptureStart,
+} from "./capture-status";
 import { writeCaptureRequest } from "./capture-request";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
@@ -26,6 +30,8 @@ export interface LaunchdOptions {
   readonly inspect?: ProcessIdentityReader;
   /** Unix milliseconds used to reject stale capture observations. */
   readonly now?: () => number;
+  /** Resolves once `ms` have elapsed on `now`'s clock; every poll pause in this supervisor uses it. */
+  readonly wait?: (ms: number) => Promise<void>;
   /** rigd's private capture command, used to timestamp and separate both application streams. */
   readonly captureCommand?: readonly string[];
 }
@@ -40,6 +46,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const run = options.run ?? runCommand;
   const inspect = options.inspect ?? createProcessIdentityReader(run);
   const now = options.now ?? Date.now;
+  const wait = options.wait ?? ((ms: number) => Bun.sleep(ms));
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
   const service = (key: string) => `${options.domain}/${label(key)}`;
@@ -124,7 +131,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       if (observation.restartPending && observation.restartAt !== undefined)
         deadline = Math.max(deadline, observation.restartAt + APPLICATION_START_MS);
       last = observation;
-      await Bun.sleep(100);
+      await wait(100);
     } while (now() < deadline);
     throw new RigError(
       "LAUNCHD_START",
@@ -194,7 +201,11 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       }
       if (options.captureCommand) {
         try {
-          await waitForCaptureStart(requestPath);
+          await waitForCaptureStart(requestPath, {
+            timeoutMs: DEFAULT_CAPTURE_START_MS,
+            now,
+            wait,
+          });
         } catch (error) {
           await checked(["bootout", service(request.key)], request.key);
           await removeJobFiles(request.key);
@@ -231,7 +242,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           await removeJobFiles(key);
           return { outcome: "stopped" };
         }
-        await Bun.sleep(UNLOAD_POLL_MS);
+        await wait(UNLOAD_POLL_MS);
       } while (now() < deadline);
       throw new RigError(
         "LAUNCHD_STOP",

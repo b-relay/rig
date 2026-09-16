@@ -1,4 +1,8 @@
-import { clearCaptureStatus, waitForCaptureStart } from "./capture-status";
+import {
+  clearCaptureStatus,
+  DEFAULT_CAPTURE_START_MS,
+  waitForCaptureStart,
+} from "./capture-status";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -436,7 +440,11 @@ export function createChildSupervisor(
         }
       }
       if (options.captureCommand)
-        await waitForCaptureStart(capturePath(request.key));
+        await waitForCaptureStart(capturePath(request.key), {
+          timeoutMs: DEFAULT_CAPTURE_START_MS,
+          now: () => timing.now().getTime(),
+          wait: (ms) => timing.wait(ms),
+        });
     } catch (error) {
       await stop(request.key);
       throw error;

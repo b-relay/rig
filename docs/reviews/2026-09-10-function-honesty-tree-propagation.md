@@ -346,7 +346,7 @@ owner carries only its own owner-level defects.
 | [D+T] createChildSupervisor / [D] createProcessInspection defaults; composeDaemon passes none (rows 6, 7) | #225 (fixed: `timing` and `processInspection` are required, `run` and `kill` are required with `platformKill` exported; `composeDaemon` and `runCapturedProcess` pass the platform providers explicitly, and every test constructs them explicitly) |
 | [D] child observe process.kill(0) bypasses inspection (row 2) | #146 item 2 (fixed: probe removed; the spawned child's exit report is authoritative and a probe between reap and report had produced a bare `stopped` that made the capture wrapper quit a keepAlive component) |
 | [D] child stop Date.now/Bun.sleep/1500 ms grace; scheduleRestart setTimeout (rows 3, 4) | #120 (fixed: `ProcessTiming` {now, wait, schedule} option in `process-timing.ts`; stop deadlines, polling, and restart timers run on it; kill grace is `killWaitMs`) |
-| [D] waitForCaptureStart Date.now/Bun.sleep (row 5) | #226 |
+| [D] waitForCaptureStart Date.now/Bun.sleep (row 5) | #226 (fixed: `waitForCaptureStart(requestPath, wait: CaptureStartWait)` takes `{ timeoutMs, now, wait }`; the child supervisor passes its `timing`, the launchd supervisor its `now` and new `wait` option) |
 | [D] launchd waitForApplication / stop 30 × Bun.sleep(100) (rows 8, 9) | #227 |
 | [D+T] createLaunchdSupervisor defaults run/inspect/now (row 10) | #228 |
 | ~~[D] installer install Bun.which("bun") / [D+T] createArtifactInstaller default run (rows 11, 12)~~ fixed | #229 |

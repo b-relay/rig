@@ -3,10 +3,7 @@ import {
   type CaptureObservation,
   throttledPublisher,
 } from "./capture-observation";
-import {
-  createProcessIdentityReader,
-  type ProcessIdentityReader,
-} from "./process-identity";
+import type { ProcessIdentityReader } from "./process-identity";
 import { writeCaptureStatus } from "./capture-status";
 import type { Supervisor } from "./contracts";
 import { dirname } from "node:path";
@@ -24,13 +21,15 @@ export async function runCapturedProcess(
   dependencies: { inspect?: ProcessIdentityReader } = {},
 ): Promise<number> {
   const request = await readCaptureRequest(requestPath);
+  // The wrapper is the effect owner: it names the platform runner once and shares it with its supervisor.
+  const processInspection = createProcessInspection({
+    run: runCommand,
+    kill: platformKill,
+  });
   const supervisor = createChildSupervisor({
     stateRoot: dirname(requestPath),
     timing: createProcessTiming(),
-    processInspection: createProcessInspection({
-      run: runCommand,
-      kill: platformKill,
-    }),
+    processInspection,
   });
   let stopping: Promise<unknown> | undefined;
   const stop = () => {
@@ -39,7 +38,7 @@ export async function runCapturedProcess(
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   process.on("SIGHUP", stop);
-  const inspect = dependencies.inspect ?? createProcessIdentityReader();
+  const inspect = dependencies.inspect ?? processInspection.identity;
   let applicationPid: number | undefined;
   try {
     const wrapperIdentity = await inspect(process.pid);

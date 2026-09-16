@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createLaunchdSupervisor, createLaunchdTiming } from "../src/providers/launchd-supervisor";
 import { createProcessIdentityReader } from "../src/providers/process-identity";
+import { runCommand } from "../src/providers/command-runner";
 import { observeTargets } from "../src/runtime/status";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import type { TargetRecord } from "../src/domain/runtime";
@@ -14,7 +15,7 @@ test("launchd reports application backoff, recovery identity, and terminal failu
   const root = await mkdtemp(join(tmpdir(), "rig-launchd-observation-"));
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let replayExitingWrapperSnapshot = false;
-  const inspect = createProcessIdentityReader();
+  const inspect = createProcessIdentityReader(runCommand);
   const wrapper = join(root, "capture.ts");
   await writeFile(wrapper, `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[2]!);`);
   const supervisor = createLaunchdSupervisor({

@@ -357,7 +357,7 @@ owner carries only its own owner-level defects.
 | [D] observation deadline by omission: projectStatus, doctor, updateRegistration, createRuntime list/prepare-uninstall (rows 18-21) | #234 (fixed: `RuntimeDependencies.observationBudgetMs`/`observationDeadline` are required and forwarded at every `observeTargets` call, whose budget and deadline parameters no longer default; `composeDaemon` passes the timer) |
 | [D] updateRegistration mutates project.name, void return (row 20b) | #235 |
 | [D latent] selectProject / registerProject resolve against cwd (rows 22, 23) | #236 |
-| [D] createProcessIdentityReader default run, called bare by the wrapper (row 24) | #237 |
+| [D] createProcessIdentityReader default run, called bare by the wrapper (row 24) | #237 (fixed: `createProcessIdentityReader(run)` requires its runner; `runCapturedProcess` names `runCommand` once in `createProcessInspection` and uses its `identity` reader) |
 
 ---
 

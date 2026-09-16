@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
-import { runCommand } from "./command-runner";
 export type ProcessIdentityReader = (
   pid: number,
 ) => Promise<string | undefined>;
 /** A lease is usable only while the PID and immutable process birth time still match. */
 export function createProcessIdentityReader(
-  run: CommandRunner = runCommand,
+  run: CommandRunner,
 ): ProcessIdentityReader {
   return async (pid) => {
     const result = await run({

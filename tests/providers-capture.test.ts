@@ -99,8 +99,9 @@ test("an observation failure after startup stops the running component deliberat
   );
   const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};
 import {createProcessIdentityReader} from ${JSON.stringify(resolve("src/providers/process-identity.ts"))};
+import {runCommand} from ${JSON.stringify(resolve("src/providers/command-runner.ts"))};
 import {existsSync} from "node:fs";
-const real = createProcessIdentityReader(); let calls = 0;
+const real = createProcessIdentityReader(runCommand); let calls = 0;
 process.exitCode = await runCapturedProcess(process.argv[1], { inspect: async (pid) => {
   if (++calls !== 2) return real(pid);
   while (!existsSync(${JSON.stringify(pidFile)})) await Bun.sleep(20);

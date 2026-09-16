@@ -348,7 +348,7 @@ owner carries only its own owner-level defects.
 | [D] child stop Date.now/Bun.sleep/1500 ms grace; scheduleRestart setTimeout (rows 3, 4) | #120 (fixed: `ProcessTiming` {now, wait, schedule} option in `process-timing.ts`; stop deadlines, polling, and restart timers run on it; kill grace is `killWaitMs`) |
 | [D] waitForCaptureStart Date.now/Bun.sleep (row 5) | #226 (fixed: `waitForCaptureStart(requestPath, wait: CaptureStartWait)` takes `{ timeoutMs, now, wait }`; the child supervisor passes its `timing`, the launchd supervisor its `now` and new `wait` option) |
 | [D] launchd waitForApplication / stop 30 × Bun.sleep(100) (rows 8, 9) | #227 (fixed: `LaunchdOptions.timing: LaunchdTiming` `{ now, wait, applicationStartMs, unloadBudgetMs }` is required; both loops pause on `wait` and expire on `now`; `composeDaemon` passes `createLaunchdTiming()`) |
-| [D+T] createLaunchdSupervisor defaults run/inspect/now (row 10) | #228 |
+| [D+T] createLaunchdSupervisor defaults run/inspect/now (row 10) | #228 (fixed: `run`, `inspect` and `timing` are required; `composeDaemon` passes `runCommand`, the identity reader shared with the child supervisor, and `createLaunchdTiming()`) |
 | ~~[D] installer install Bun.which("bun") / [D+T] createArtifactInstaller default run (rows 11, 12)~~ fixed | #229 |
 | [D] createCaddyRouter default run (row 13) | #230 |
 | ~~[D] store prepare resolve() against cwd / [D+T] createGitSourceStore default run (rows 14, 15)~~ fixed | #231 |

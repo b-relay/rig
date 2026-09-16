@@ -145,7 +145,7 @@ Ordered by how many `[T]` ancestors each clears and which bugs above it unblocks
 111. ~~#234~~ (fixed) Runtime observation deadline chosen by omission in four call sites. Unblocks #200, #203, #210, #213 tests.
 112. ~~#226~~ (fixed) waitForCaptureStart Date.now/Bun.sleep. Shared by both supervisors.
 113. ~~#227~~ (fixed) launchd waitForApplication/stop uninjectable sleeps. Unblocks #144, #218.
-114. #228 createLaunchdSupervisor defaults run/inspect/now.
+114. ~~#228~~ (fixed) createLaunchdSupervisor defaults run/inspect/now.
 115. #237 createProcessIdentityReader default run, called bare by the wrapper. Unblocks #143 test.
 116. #232 createProjectDiscovery captures process.env. Unblocks #156, #161, #178 tests.
 117. #233 inspectInitialization hidden readProjectConfig. Unblocks #178, #179, #180.

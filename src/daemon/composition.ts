@@ -57,21 +57,24 @@ export async function composeDaemon(
     now: () => new Date(),
     ...host.diagnostics,
   });
-  // The daemon owns the platform clock and signal path; every supervisor receives them explicitly.
+  // The daemon owns the platform clock, command runner, and signal path; every supervisor receives them explicitly.
+  const processInspection = createProcessInspection({
+    run: runCommand,
+    kill: platformKill,
+  });
   const child = createChildSupervisor({
     stateRoot: root,
     captureCommand,
     timing: createProcessTiming(),
-    processInspection: createProcessInspection({
-      run: runCommand,
-      kill: platformKill,
-    }),
+    processInspection,
   });
   const launchd = createLaunchdSupervisor({
     root: join(root, "launchd"),
     domain: `gui/${process.getuid?.() ?? 501}`,
     labelPrefix: `com.b-relay.rig.${createHash("sha256").update(root).digest("hex").slice(0, 12)}`,
     captureCommand,
+    run: runCommand,
+    inspect: processInspection.identity,
     timing: createLaunchdTiming(),
   });
   const supervisors = new Map<string, Supervisor>([

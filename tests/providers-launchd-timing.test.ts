@@ -68,6 +68,7 @@ test("launchd start and unload waits run on the injected clock and budgets: a la
     domain: "gui/99999",
     labelPrefix: "test.timing",
     run,
+    inspect: async () => undefined,
     timing,
   });
 

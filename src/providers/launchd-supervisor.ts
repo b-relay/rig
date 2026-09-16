@@ -1,8 +1,5 @@
 import { readCaptureObservation } from "./capture-observation";
-import {
-  createProcessIdentityReader,
-  type ProcessIdentityReader,
-} from "./process-identity";
+import type { ProcessIdentityReader } from "./process-identity";
 import {
   clearCaptureStatus,
   DEFAULT_CAPTURE_START_MS,
@@ -19,15 +16,15 @@ import type {
   ProcessObservation,
   Supervisor,
 } from "./contracts";
-import { runCommand } from "./command-runner";
 import { DEFAULT_SHUTDOWN_BUDGET_MS } from "./child-supervisor";
 export interface LaunchdOptions {
   readonly root: string;
   readonly domain: string;
   readonly labelPrefix: string;
-  readonly run?: CommandRunner;
-  /** Fresh process birth identity checks for captured wrapper and application ownership. */
-  readonly inspect?: ProcessIdentityReader;
+  /** Runs `launchctl`; the platform runner in rigd, a fake in tests. */
+  readonly run: CommandRunner;
+  /** Fresh process birth identity checks for captured wrapper and application ownership; the daemon shares its identity reader. */
+  readonly inspect: ProcessIdentityReader;
   /** Clock, pauses, and wait budgets; `createLaunchdTiming()` on the platform, scripted in tests. */
   readonly timing: LaunchdTiming;
   /** rigd's private capture command, used to timestamp and separate both application streams. */
@@ -60,8 +57,7 @@ export function createLaunchdTiming(): LaunchdTiming {
 const POLL_MS = 100;
 /** launchd owns persistent job lifetime; explicit up preserves already running jobs. */
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
-  const run = options.run ?? runCommand;
-  const inspect = options.inspect ?? createProcessIdentityReader(run);
+  const { run, inspect } = options;
   const { now, wait, applicationStartMs, unloadBudgetMs } = options.timing;
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;

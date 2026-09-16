@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLaunchdSupervisor, createLaunchdTiming } from "../src/providers/launchd-supervisor";
 import type { CommandRunner } from "../src/providers/contracts";
+import { runCommand } from "../src/providers/command-runner";
+import { createProcessIdentityReader } from "../src/providers/process-identity";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -32,6 +34,7 @@ test("launchd up does not restart a running job and stop checks that it is unloa
     domain: "gui/99999",
     labelPrefix: "test.rig",
     run,
+    inspect: async () => undefined,
     timing: createLaunchdTiming(),
   });
   const request = {
@@ -77,6 +80,9 @@ test("real launchd capture stops its managed child and retains stdout and stderr
     domain: `gui/${process.getuid!()}`,
     labelPrefix: `test.rig.${randomUUID()}`,
     captureCommand: [process.execPath, wrapper],
+    // This test bootstraps a real launchd job, so it runs the real launchctl and reads real process identities.
+    run: runCommand,
+    inspect: createProcessIdentityReader(runCommand),
     timing: createLaunchdTiming(),
   });
   const request = {

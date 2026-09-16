@@ -16,7 +16,7 @@ test("initialization suggests a lowercase directory slug while preserving config
       ? "fatal: not a git repository"
       : "",
   });
-  const documents = createProjectDocuments(root, run);
+  const documents = createProjectDocuments(root, run, {});
   try {
     expect(await documents.initializationInfo(repo)).toMatchObject({
       name: "my-app-v2",

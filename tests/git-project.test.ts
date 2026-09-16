@@ -9,6 +9,8 @@ import {
 } from "../src/git/project";
 import { runCommand } from "../src/providers/command-runner";
 import type { CommandRunner } from "../src/providers/contracts";
+import { inheritedEnvironment } from "../src/daemon/environment";
+const env = inheritedEnvironment(process.env);
 const run: CommandRunner = (input) =>
   runCommand({
     ...input,
@@ -32,13 +34,13 @@ test("explicit Git creation and nested discovery use one repository root and an 
   );
   try {
     await expect(
-      inspectProjectGit(directory, createProjectDiscovery(run)),
+      inspectProjectGit(directory, createProjectDiscovery(run, env)),
     ).rejects.toMatchObject({
       code: "GIT_REQUIRED",
     });
     const first = await ensureProjectGit(
       { path: directory, project: "example", createGit: true },
-      createProjectDiscovery(run),
+      createProjectDiscovery(run, env),
     );
     expect(first.repoPath).toBe(directory);
     expect(first.remoteUrl).toBe("rig://localhost/example");
@@ -48,11 +50,12 @@ test("explicit Git creation and nested discovery use one repository root and an 
     const link = join(directory, "linked");
     await symlink(nested, link);
     expect(
-      (await inspectProjectGit(link, createProjectDiscovery(run))).repoPath,
+      (await inspectProjectGit(link, createProjectDiscovery(run, env)))
+        .repoPath,
     ).toBe(directory);
     const second = await ensureProjectGit(
       { path: nested, project: "example" },
-      createProjectDiscovery(run),
+      createProjectDiscovery(run, env),
     );
     expect(second.repoPath).toBe(directory);
     expect(second.remoteConfigured).toBe(false);
@@ -76,12 +79,12 @@ test("conflicting fetch or push destinations are preserved and reported explicit
   try {
     await ensureProjectGit(
       { path: directory, project: "original", createGit: true },
-      createProjectDiscovery(run),
+      createProjectDiscovery(run, env),
     );
     await expect(
       ensureProjectGit(
         { path: directory, project: "renamed" },
-        createProjectDiscovery(run),
+        createProjectDiscovery(run, env),
       ),
     ).rejects.toMatchObject({ code: "GIT_REMOTE_CONFLICT" });
     expect(
@@ -106,7 +109,7 @@ test("conflicting fetch or push destinations are preserved and reported explicit
     await expect(
       ensureProjectGit(
         { path: directory, project: "original" },
-        createProjectDiscovery(run),
+        createProjectDiscovery(run, env),
       ),
     ).rejects.toMatchObject({ code: "GIT_REMOTE_CONFLICT" });
     expect(
@@ -130,7 +133,7 @@ test("Project rename updates fetch and explicit push URLs and can compensate wit
   try {
     await ensureProjectGit(
       { path: directory, project: "old", createGit: true },
-      createProjectDiscovery(run),
+      createProjectDiscovery(run, env),
     );
     await run({
       command: [
@@ -274,7 +277,7 @@ test("real unborn, origin default, detached and bare repositories preserve disco
   const discovery = createProjectDiscovery(async (input) => {
     commands.push(input.command);
     return await run(input);
-  });
+  }, env);
   const git = (args: string[]) =>
     run({ command: ["git", ...args], cwd: directory });
   try {
@@ -334,7 +337,7 @@ test("explicit setup executes exactly init and missing remote add mutations", as
     )
       mutations.push(input.command);
     return await run(input);
-  });
+  }, env);
   try {
     await ensureProjectGit(
       { path: directory, project: "example", createGit: true },
@@ -376,7 +379,7 @@ test("a linked worktree is discovered as its main working tree, reporting its ow
     expect(
       (await git(["worktree", "add", "-b", "feature", linked])).exitCode,
     ).toBe(0);
-    const discovery = createProjectDiscovery(run);
+    const discovery = createProjectDiscovery(run, env);
     expect(await inspectProjectGit(linked, discovery)).toEqual({
       repoPath: main,
       currentBranch: "feature",
@@ -390,5 +393,45 @@ test("a linked worktree is discovered as its main working tree, reporting its ow
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("discovery runs git with the environment it is given, minus GIT_DIR and GIT_WORK_TREE, so an inherited redirect cannot move it off the requested directory", async () => {
+  const directory = await realpath(
+    await mkdtemp(join(tmpdir(), "rig-discovery-env-")),
+  );
+  const elsewhere = await realpath(
+    await mkdtemp(join(tmpdir(), "rig-discovery-other-")),
+  );
+  const seen: (Record<string, string> | undefined)[] = [];
+  const discovery = createProjectDiscovery(
+    async (input) => {
+      seen.push(input.env);
+      return await run(input);
+    },
+    {
+      HOME: process.env.HOME ?? "",
+      PATH: process.env.PATH ?? "",
+      RIG_TEST_MARKER: "1",
+      GIT_DIR: join(elsewhere, ".git"),
+      GIT_WORK_TREE: elsewhere,
+    },
+  );
+  try {
+    await run({ command: ["git", "init", "-b", "work"], cwd: directory });
+    expect(await inspectProjectGit(directory, discovery)).toEqual({
+      repoPath: directory,
+      currentBranch: "work",
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    for (const env of seen)
+      expect(env).toMatchObject({ RIG_TEST_MARKER: "1", LC_ALL: "C" });
+    for (const env of seen) {
+      expect(env).not.toHaveProperty("GIT_DIR");
+      expect(env).not.toHaveProperty("GIT_WORK_TREE");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(elsewhere, { recursive: true, force: true });
   }
 });

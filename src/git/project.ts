@@ -31,13 +31,20 @@ export interface ProjectDiscovery {
   run: CommandRunner;
 }
 
-/** Concrete OS acquisition stays here, shared by initialization and remote discovery. */
-export function createProjectDiscovery(run: CommandRunner): ProjectDiscovery {
-  const env = { ...process.env, LC_ALL: "C" };
+/** Discovery must resolve the directory it was asked about, so these redirects never reach git. */
+const REDIRECTING_GIT_VARIABLES = ["GIT_DIR", "GIT_WORK_TREE"] as const;
+/** Concrete OS acquisition stays here, shared by initialization and remote discovery.
+ * `env` is the environment git runs with; the owner chooses it (the daemon's inherited login basics, a test's fixture). */
+export function createProjectDiscovery(
+  run: CommandRunner,
+  env: Readonly<Record<string, string>>,
+): ProjectDiscovery {
+  const base: Record<string, string> = { ...env, LC_ALL: "C" };
+  for (const name of REDIRECTING_GIT_VARIABLES) delete base[name];
   return {
     canonicalize: realpath,
     run: (input) =>
-      run({ ...input, env: { ...env, ...input.env, LC_ALL: "C" } }),
+      run({ ...input, env: { ...base, ...input.env, LC_ALL: "C" } }),
   };
 }
 

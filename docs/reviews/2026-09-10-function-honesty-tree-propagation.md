@@ -352,7 +352,7 @@ owner carries only its own owner-level defects.
 | ~~[D] installer install Bun.which("bun") / [D+T] createArtifactInstaller default run (rows 11, 12)~~ fixed | #229 |
 | [D] createCaddyRouter default run (row 13) | #230 |
 | ~~[D] store prepare resolve() against cwd / [D+T] createGitSourceStore default run (rows 14, 15)~~ fixed | #231 |
-| [D] createProjectDiscovery process.env (row 16) | #232 |
+| [D] createProjectDiscovery process.env (row 16) | #232 (fixed: `createProjectDiscovery(run, env)` and `createProjectDocuments(root, run, env)` take the environment; `composeDaemon` passes its inherited login basics, `git-remote-rig main` passes `inheritedEnvironment(process.env)`; discovery drops `GIT_DIR`/`GIT_WORK_TREE`) |
 | [D] inspectInitialization hidden readProjectConfig (row 17) | #233 |
 | [D] observation deadline by omission: projectStatus, doctor, updateRegistration, createRuntime list/prepare-uninstall (rows 18-21) | #234 (fixed: `RuntimeDependencies.observationBudgetMs`/`observationDeadline` are required and forwarded at every `observeTargets` call, whose budget and deadline parameters no longer default; `composeDaemon` passes the timer) |
 | [D] updateRegistration mutates project.name, void return (row 20b) | #235 |

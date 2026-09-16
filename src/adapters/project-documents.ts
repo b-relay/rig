@@ -23,8 +23,10 @@ import {
 export function createProjectDocuments(
   root: string,
   run: CommandRunner,
+  /** The environment git discovery runs with. */
+  env: Readonly<Record<string, string>>,
 ): ProjectDocuments {
-  const discovery = createProjectDiscovery(run);
+  const discovery = createProjectDiscovery(run, env);
   return {
     async discover(path) {
       const location = await inspectProjectLocation(path, discovery);

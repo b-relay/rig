@@ -10,6 +10,7 @@ import type { DiagnosticLog } from "../diagnostics/types";
 import { createHostDiagnosticLog } from "../diagnostics/host-log";
 import { recordDiagnostic } from "../cli/failure";
 import { rigRoot, userOutput, verifyRigRoot } from "../cli/entry-environment";
+import { inheritedEnvironment } from "../daemon/environment";
 import { runCommand } from "../providers/command-runner";
 import type { CommandRunner } from "../providers/contracts";
 import { inspectProjectGit, createProjectDiscovery } from "./project";
@@ -419,7 +420,7 @@ export async function main(args: readonly string[]): Promise<number> {
   try {
     const { repoPath } = await inspectProjectGit(
       process.cwd(),
-      createProjectDiscovery(runCommand),
+      createProjectDiscovery(runCommand, inheritedEnvironment(process.env)),
     );
     const root = rigRoot();
     await verifyRigRoot(root);

@@ -832,8 +832,11 @@ same for hooks, builds, and managed processes in both install modes: only
 `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`,
 `LC_CTYPE`, and `TZ` from the shell that ran `rigd install`. Tokens and other
 variables in that shell never reach rigd or a Project's processes; declare
-what a process needs in `envFile` or `env`. A hook writes its output to the
-Target's logs under the Component name, or `setup` for Project hooks.
+what a process needs in `envFile` or `env`. Git discovery (`rig init`, `rig
+select`, and `git push rig`) runs with the same base and ignores `GIT_DIR` and
+`GIT_WORK_TREE`, so it always describes the directory it was asked about. A
+hook writes its output to the Target's logs under the Component name, or
+`setup` for Project hooks.
 
 An `envFile` holds one `KEY=value` per line, with an optional `export`, single
 or double quotes, and a `# comment` after the value (after the closing quote of

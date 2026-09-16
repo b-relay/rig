@@ -124,7 +124,7 @@ export async function composeDaemon(
     inspectProxy: () => inspectHostProxy(root, host, environment),
     assertOwnershipReady: createAdoptionGuard(root),
     store,
-    documents: createProjectDocuments(root, runCommand),
+    documents: createProjectDocuments(root, runCommand, environment),
     sources: createDeploymentSources(
       createGitSourceStore({ root: join(root, "sources"), run: runCommand }),
       runCommand,

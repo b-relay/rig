@@ -28,25 +28,41 @@ export interface LaunchdOptions {
   readonly run?: CommandRunner;
   /** Fresh process birth identity checks for captured wrapper and application ownership. */
   readonly inspect?: ProcessIdentityReader;
-  /** Unix milliseconds used to reject stale capture observations. */
-  readonly now?: () => number;
-  /** Resolves once `ms` have elapsed on `now`'s clock; every poll pause in this supervisor uses it. */
-  readonly wait?: (ms: number) => Promise<void>;
+  /** Clock, pauses, and wait budgets; `createLaunchdTiming()` on the platform, scripted in tests. */
+  readonly timing: LaunchdTiming;
   /** rigd's private capture command, used to timestamp and separate both application streams. */
   readonly captureCommand?: readonly string[];
 }
-/** launchd owns persistent job lifetime; explicit up preserves already running jobs. */
-/** How long a launchd application may take to appear after bootstrap or after its advertised restart. */
-const APPLICATION_START_MS = 3000;
-/** Unload polling cadence. */
-const UNLOAD_POLL_MS = 100;
+/** The clock this supervisor polls by and how long each wait may run on it; the platform implementation is the effect owner, a test supplies a scripted one. */
+export interface LaunchdTiming {
+  /** Unix milliseconds; rejects stale capture observations and bounds every poll below. */
+  now(): number;
+  /** Resolves once `ms` have elapsed on the same clock; every poll pause in this supervisor uses it. */
+  wait(ms: number): Promise<void>;
+  /** How long a launchd application may take to appear after bootstrap or after its advertised restart. */
+  readonly applicationStartMs: number;
+  /** How long a booted-out job may take to leave launchd before stop fails as LAUNCHD_STOP. */
+  readonly unloadBudgetMs: number;
+}
+/** Application start budget on the platform. */
+export const DEFAULT_APPLICATION_START_MS = 3000;
 /** The wrapper's own SIGTERM then SIGKILL shutdown, plus headroom for output drains and launchctl latency. */
-const UNLOAD_BUDGET_MS = DEFAULT_SHUTDOWN_BUDGET_MS + 2000;
+export const DEFAULT_UNLOAD_BUDGET_MS = DEFAULT_SHUTDOWN_BUDGET_MS + 2000;
+export function createLaunchdTiming(): LaunchdTiming {
+  return {
+    now: Date.now,
+    wait: (ms) => Bun.sleep(ms),
+    applicationStartMs: DEFAULT_APPLICATION_START_MS,
+    unloadBudgetMs: DEFAULT_UNLOAD_BUDGET_MS,
+  };
+}
+/** Polling cadence for the application start and unload waits. */
+const POLL_MS = 100;
+/** launchd owns persistent job lifetime; explicit up preserves already running jobs. */
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const run = options.run ?? runCommand;
   const inspect = options.inspect ?? createProcessIdentityReader(run);
-  const now = options.now ?? Date.now;
-  const wait = options.wait ?? ((ms: number) => Bun.sleep(ms));
+  const { now, wait, applicationStartMs, unloadBudgetMs } = options.timing;
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
   const service = (key: string) => `${options.domain}/${label(key)}`;
@@ -118,20 +134,20 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       };
     }
   };
-  /** Waits for the application to run, giving it APPLICATION_START_MS after the latest restart the wrapper advertises. */
+  /** Waits for the application to run, giving it applicationStartMs after the latest restart the wrapper advertises. */
   const waitForApplication = async (
     key: string,
     restartAt?: number,
   ): Promise<number | undefined> => {
-    let deadline = Math.max(restartAt ?? 0, now()) + APPLICATION_START_MS;
+    let deadline = Math.max(restartAt ?? 0, now()) + applicationStartMs;
     let last: ProcessObservation | undefined;
     do {
       const observation = await observe(key);
       if (observation.state === "running") return observation.pid;
       if (observation.restartPending && observation.restartAt !== undefined)
-        deadline = Math.max(deadline, observation.restartAt + APPLICATION_START_MS);
+        deadline = Math.max(deadline, observation.restartAt + applicationStartMs);
       last = observation;
-      await wait(100);
+      await wait(POLL_MS);
     } while (now() < deadline);
     throw new RigError(
       "LAUNCHD_START",
@@ -232,7 +248,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         );
       }
       await checked(["bootout", service(key)], key);
-      const deadline = now() + UNLOAD_BUDGET_MS;
+      const deadline = now() + unloadBudgetMs;
       do {
         const result = await run({
           command: ["launchctl", "print", service(key)],
@@ -242,11 +258,11 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           await removeJobFiles(key);
           return { outcome: "stopped" };
         }
-        await wait(UNLOAD_POLL_MS);
+        await wait(POLL_MS);
       } while (now() < deadline);
       throw new RigError(
         "LAUNCHD_STOP",
-        `The managed job ${label(key)} did not unload within ${UNLOAD_BUDGET_MS / 1000} s.`,
+        `The managed job ${label(key)} did not unload within ${unloadBudgetMs / 1000} s.`,
         "Inspect launchd state, then run the stop again once the job is gone.",
         { key, label: label(key) },
       );

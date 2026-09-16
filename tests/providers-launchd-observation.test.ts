@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createLaunchdSupervisor } from "../src/providers/launchd-supervisor";
+import { createLaunchdSupervisor, createLaunchdTiming } from "../src/providers/launchd-supervisor";
 import { createProcessIdentityReader } from "../src/providers/process-identity";
 import { observeTargets } from "../src/runtime/status";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
@@ -20,6 +20,7 @@ test("launchd reports application backoff, recovery identity, and terminal failu
   const supervisor = createLaunchdSupervisor({
     root, domain: "gui/99999", labelPrefix: "test.observation",
     captureCommand: [process.execPath, wrapper],
+    timing: createLaunchdTiming(),
     inspect: async pid => {
       if (replayExitingWrapperSnapshot && pid === child?.pid) await child.exited;
       return inspect(pid);
@@ -104,7 +105,7 @@ test("capture observations reject missing, stale, corrupt, or mismatched evidenc
   };
   const supervisor = createLaunchdSupervisor({
     root, domain: "gui/99999", labelPrefix: "test.observation", captureCommand: ["capture"],
-    now: () => 10_000,
+    timing: { ...createLaunchdTiming(), now: () => 10_000 },
     inspect: async pid => pid === 101 ? wrapperIdentity : pid === 202 ? applicationIdentity : undefined,
     run: async () => ({ exitCode: 0, stdout: "pid = 101\n", stderr: "" }),
   });

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLaunchdSupervisor } from "../src/providers/launchd-supervisor";
+import { createLaunchdSupervisor, createLaunchdTiming } from "../src/providers/launchd-supervisor";
 import type { CommandRunner } from "../src/providers/contracts";
 const roots: string[] = [];
 afterEach(async () => {
@@ -32,6 +32,7 @@ test("launchd up does not restart a running job and stop checks that it is unloa
     domain: "gui/99999",
     labelPrefix: "test.rig",
     run,
+    timing: createLaunchdTiming(),
   });
   const request = {
     key: "stable-id/web",
@@ -76,6 +77,7 @@ test("real launchd capture stops its managed child and retains stdout and stderr
     domain: `gui/${process.getuid!()}`,
     labelPrefix: `test.rig.${randomUUID()}`,
     captureCommand: [process.execPath, wrapper],
+    timing: createLaunchdTiming(),
   });
   const request = {
     key: "actual-job",
@@ -161,7 +163,7 @@ test("ensureRunning waits for the wrapper's advertised restart instead of a fixe
     labelPrefix: "test.rig",
     captureCommand: ["/bin/true"],
     run,
-    now: () => clock,
+    timing: { ...createLaunchdTiming(), now: () => clock },
     inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : "x".repeat(64)),
   });
   expect(
@@ -224,6 +226,7 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     labelPrefix: "test.rig",
     captureCommand: ["/fake/rigd", "capture"],
     run,
+    timing: createLaunchdTiming(),
     inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : undefined),
   });
   const request = { key, componentName: "web", command: ["/bin/sh", "-c", "serve"], cwd: root, env: { SECRET: "s3cret" }, logRoot: root, keepAlive: true };

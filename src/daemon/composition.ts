@@ -31,7 +31,10 @@ import {
   platformKill,
 } from "../providers/process-inspection";
 import { createProcessTiming } from "../providers/process-timing";
-import { createLaunchdSupervisor } from "../providers/launchd-supervisor";
+import {
+  createLaunchdSupervisor,
+  createLaunchdTiming,
+} from "../providers/launchd-supervisor";
 import { createGitSourceStore } from "../providers/git-source-store";
 import { createArtifactInstaller } from "../providers/artifact-installer";
 import { createCaddyRouter } from "../providers/caddy-router";
@@ -69,6 +72,7 @@ export async function composeDaemon(
     domain: `gui/${process.getuid?.() ?? 501}`,
     labelPrefix: `com.b-relay.rig.${createHash("sha256").update(root).digest("hex").slice(0, 12)}`,
     captureCommand,
+    timing: createLaunchdTiming(),
   });
   const supervisors = new Map<string, Supervisor>([
     ["rigd", child],

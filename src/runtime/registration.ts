@@ -58,19 +58,25 @@ export async function forgetProject(
         `Target ${t.name} was forgotten, but its workspace at ${t.plan.workspacePath} and data under ${t.plan.dataRoot} were not deleted.`,
     );
 }
+/** What a registration change left behind; `project` is the record as stored, never the argument mutated. */
+export interface RegistrationUpdate {
+  outcome: "renamed" | "repointed" | "unchanged";
+  project: ProjectRecord;
+}
+/** Renames or repoints a registration and returns the updated record; the `project` argument is read only. */
 export async function updateRegistration(
   command: RuntimeCommand,
   project: ProjectRecord,
   targets: TargetRecord[],
   deps: RuntimeDependencies,
-): Promise<"renamed" | "repointed" | "unchanged"> {
+): Promise<RegistrationUpdate> {
   // Renaming to the registered name is a no-op unless the config drifted from it.
   if (
     command.action === "rename" &&
     command.newName === project.name &&
     (await deps.documents.read(project.repoPath)).config.name === project.name
   )
-    return "unchanged";
+    return { outcome: "unchanged", project };
   await assertTargetsStopped(targets, deps);
   if (command.action === "rename") {
     if (
@@ -120,8 +126,10 @@ export async function updateRegistration(
       }
       throw error;
     }
-    project.name = command.newName;
-    return "renamed";
+    return {
+      outcome: "renamed",
+      project: { ...project, name: command.newName, configPath: document.path },
+    };
   } else {
     if (!command.newPath)
       throw new RigError(
@@ -178,6 +186,9 @@ export async function updateRegistration(
         (target) => replanned.get(target.id) ?? target,
       );
     });
-    return "repointed";
+    return {
+      outcome: "repointed",
+      project: { ...project, repoPath, configPath: document.path },
+    };
   }
 }

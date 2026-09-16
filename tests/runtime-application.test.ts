@@ -447,6 +447,56 @@ test("unsafe candidate rollback never restores an old plan over surviving candid
   ).rejects.toThrow("unresolved deployment");
 });
 
+test("rename and repoint reply and record activity from the updated registration, not from the record they were handed", async () => {
+  const { runtime, state, deps, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const renamedDocument = async (path: string) => ({
+    path: `${path}/rig.yaml`,
+    format: "yaml" as const,
+    revision: "abc",
+    config: { ...config, name: "renamed" },
+  });
+  deps.documents.rename = async (project) =>
+    await renamedDocument(project.repoPath);
+  expect(
+    await runtime.command({
+      action: "rename",
+      project: "demo",
+      newName: "renamed",
+    }),
+  ).toMatchObject({
+    outcome: "renamed",
+    project: "renamed",
+    repoPath: "/tmp/developer",
+  });
+  expect(state.activity.at(-1)).toMatchObject({
+    action: "rename",
+    outcome: "renamed",
+    project: "renamed",
+  });
+  deps.documents.read = renamedDocument;
+  expect(
+    await runtime.command({
+      action: "repoint",
+      project: "renamed",
+      newPath: "/tmp/moved",
+    }),
+  ).toMatchObject({
+    outcome: "repointed",
+    project: "renamed",
+    repoPath: "/tmp/moved",
+  });
+  expect(state.activity.at(-1)).toMatchObject({
+    action: "repoint",
+    outcome: "repointed",
+    project: "renamed",
+  });
+  expect(state.projects[0]).toMatchObject({
+    name: "renamed",
+    repoPath: "/tmp/moved",
+  });
+});
+
 test("repoint uses the new config path and retains assigned ports, including Convex site ports", async () => {
   const { runtime, state, deps, config } = fixture();
   config.components.api = { uses: "convex" };

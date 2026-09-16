@@ -326,9 +326,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
         attempted = true;
-        return await finish(
-          await updateRegistration(command, project, targets, deps),
+        const updated = await updateRegistration(
+          command,
+          project,
+          targets,
+          deps,
         );
+        project = updated.project;
+        return await finish(updated.outcome, { repoPath: project.repoPath });
       }
       if (command.action === "git-push") {
         if (command.repoPath !== project.repoPath)

@@ -355,7 +355,7 @@ owner carries only its own owner-level defects.
 | [D] createProjectDiscovery process.env (row 16) | #232 (fixed: `createProjectDiscovery(run, env)` and `createProjectDocuments(root, run, env)` take the environment; `composeDaemon` passes its inherited login basics, `git-remote-rig main` passes `inheritedEnvironment(process.env)`; discovery drops `GIT_DIR`/`GIT_WORK_TREE`) |
 | [D] inspectInitialization hidden readProjectConfig (row 17) | #233 (fixed: exported `inspectInitialization(path, command, reads: InitializationReads)` takes `{ discovery, discoverConfig, hostConfig }`; `createProjectDocuments` binds the real documents once) |
 | [D] observation deadline by omission: projectStatus, doctor, updateRegistration, createRuntime list/prepare-uninstall (rows 18-21) | #234 (fixed: `RuntimeDependencies.observationBudgetMs`/`observationDeadline` are required and forwarded at every `observeTargets` call, whose budget and deadline parameters no longer default; `composeDaemon` passes the timer) |
-| [D] updateRegistration mutates project.name, void return (row 20b) | #235 |
+| [D] updateRegistration mutates project.name, void return (row 20b) | #235 (fixed: returns `{ outcome, project }` with a fresh record; `execute` adopts the returned record for the reply and activity) |
 | [D latent] selectProject / registerProject resolve against cwd (rows 22, 23) | #236 |
 | [D] createProcessIdentityReader default run, called bare by the wrapper (row 24) | #237 (fixed: `createProcessIdentityReader(run)` requires its runner; `runCapturedProcess` names `runCommand` once in `createProcessInspection` and uses its `identity` reader) |
 

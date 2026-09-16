@@ -1,6 +1,5 @@
-import { inspectHost } from "../adapters/host-inspection";
-import { discoverProject } from "../config";
 import { ConfigError } from "../config/errors";
+import type { ConfigDocument, ProjectConfig } from "../config/types";
 export interface DoctorCheck {
   name: string;
   ok: boolean;
@@ -8,10 +7,18 @@ export interface DoctorCheck {
   reason?: string;
   hint?: string;
 }
+/** The observations offline doctor reports; the owner binds them to the host and the filesystem. */
+export interface OfflineHostReads {
+  inspectHost(root: string): Promise<DoctorCheck[]>;
+  discoverProject(
+    cwd: string,
+  ): Promise<{ repoPath: string; document: ConfigDocument<ProjectConfig> }>;
+}
 /** Read-only diagnostics continue even when the runtime authority is unavailable. */
 export async function inspectOfflineHost(
   root: string,
   cwd: string,
+  reads: OfflineHostReads,
 ): Promise<{ ok: false; checks: DoctorCheck[]; note: string }> {
   const checks: DoctorCheck[] = [
     {
@@ -22,9 +29,9 @@ export async function inspectOfflineHost(
       hint: "Run rigd status, then rigd install if needed.",
     },
   ];
-  checks.push(...(await inspectHost(root)));
+  checks.push(...(await reads.inspectHost(root)));
   try {
-    const { document } = await discoverProject(cwd);
+    const { document } = await reads.discoverProject(cwd);
     checks.push({
       name: "project-config",
       ok: true,

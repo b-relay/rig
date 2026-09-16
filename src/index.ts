@@ -13,6 +13,8 @@ import { createHostDiagnosticLog } from "./diagnostics/host-log";
 import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
 import { inspectOfflineHost } from "./daemon/offline-doctor";
+import { inspectHost } from "./adapters/host-inspection";
+import { discoverProject } from "./config";
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
   // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked.
@@ -71,7 +73,10 @@ export function createCliClient(
         return await (await connectDaemon(root)).command(request, signal);
       } catch (error) {
         if (request.action === "doctor" && isDaemonUnavailable(error))
-          return inspectOfflineHost(root, request.repoPath ?? cwd);
+          return inspectOfflineHost(root, request.repoPath ?? cwd, {
+            inspectHost,
+            discoverProject,
+          });
         throw error;
       }
     },

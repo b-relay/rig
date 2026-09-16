@@ -342,7 +342,7 @@ owner carries only its own owner-level defects.
 | Preview records without sourceRoot can never be destroyed; same-commit deploy does not repair | #220 |
 | eviction by createdAt evicts the most recently redeployed Preview; half-destroyed Preview holds a slot (addendum) | #188 |
 | destroyed Previews leave stale git worktree entries in the mirror (addendum) | #153 (fixed: Preview destroy calls `sources.release`, which prunes the mirror) |
-| [D] inspectOfflineHost hard-wires inspectHost/discoverProject (row 1) | #224 |
+| [D] inspectOfflineHost hard-wires inspectHost/discoverProject (row 1) | #224 (fixed: takes `reads: OfflineHostReads { inspectHost, discoverProject }`; `createCliClient` in src/index.ts binds the real adapters) |
 | [D+T] createChildSupervisor / [D] createProcessInspection defaults; composeDaemon passes none (rows 6, 7) | #225 (fixed: `timing` and `processInspection` are required, `run` and `kill` are required with `platformKill` exported; `composeDaemon` and `runCapturedProcess` pass the platform providers explicitly, and every test constructs them explicitly) |
 | [D] child observe process.kill(0) bypasses inspection (row 2) | #146 item 2 (fixed: probe removed; the spawned child's exit report is authoritative and a probe between reap and report had produced a bare `stopped` that made the capture wrapper quit a keepAlive component) |
 | [D] child stop Date.now/Bun.sleep/1500 ms grace; scheduleRestart setTimeout (rows 3, 4) | #120 (fixed: `ProcessTiming` {now, wait, schedule} option in `process-timing.ts`; stop deadlines, polling, and restart timers run on it; kill grace is `killWaitMs`) |

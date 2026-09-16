@@ -95,6 +95,7 @@ export async function composeDaemon(
     router: createCaddyRouter({
       caddyfile:
         host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
+      run: runCommand,
       reload: host.providers.caddy.reload.mode === "command",
       extraConfig: host.providers.caddy.extraConfig,
       ...(host.providers.caddy.reload.command

@@ -350,7 +350,7 @@ owner carries only its own owner-level defects.
 | [D] launchd waitForApplication / stop 30 × Bun.sleep(100) (rows 8, 9) | #227 (fixed: `LaunchdOptions.timing: LaunchdTiming` `{ now, wait, applicationStartMs, unloadBudgetMs }` is required; both loops pause on `wait` and expire on `now`; `composeDaemon` passes `createLaunchdTiming()`) |
 | [D+T] createLaunchdSupervisor defaults run/inspect/now (row 10) | #228 (fixed: `run`, `inspect` and `timing` are required; `composeDaemon` passes `runCommand`, the identity reader shared with the child supervisor, and `createLaunchdTiming()`) |
 | ~~[D] installer install Bun.which("bun") / [D+T] createArtifactInstaller default run (rows 11, 12)~~ fixed | #229 |
-| [D] createCaddyRouter default run (row 13) | #230 |
+| [D] createCaddyRouter default run (row 13) | #230 (fixed: `run` is required and the router no longer imports `runCommand`; `composeDaemon` passes it) |
 | ~~[D] store prepare resolve() against cwd / [D+T] createGitSourceStore default run (rows 14, 15)~~ fixed | #231 |
 | [D] createProjectDiscovery process.env (row 16) | #232 (fixed: `createProjectDiscovery(run, env)` and `createProjectDocuments(root, run, env)` take the environment; `composeDaemon` passes its inherited login basics, `git-remote-rig main` passes `inheritedEnvironment(process.env)`; discovery drops `GIT_DIR`/`GIT_WORK_TREE`) |
 | [D] inspectInitialization hidden readProjectConfig (row 17) | #233 (fixed: exported `inspectInitialization(path, command, reads: InitializationReads)` takes `{ discovery, discoverConfig, hostConfig }`; `createProjectDocuments` binds the real documents once) |

@@ -149,7 +149,7 @@ Ordered by how many `[T]` ancestors each clears and which bugs above it unblocks
 115. ~~#237~~ (fixed) createProcessIdentityReader default run, called bare by the wrapper. Unblocks #143 test.
 116. ~~#232~~ (fixed) createProjectDiscovery captures process.env. Unblocks #156, #161, #178 tests.
 117. ~~#233~~ (fixed) inspectInitialization hidden readProjectConfig. Unblocks #178, #179, #180.
-118. #230 createCaddyRouter default run. Unblocks #205 daemon-level test.
+118. ~~#230~~ (fixed) createCaddyRouter default run. Unblocks #205 daemon-level test.
 119. #235 updateRegistration mutates project.name with void return.
 120. #236 selectProject/registerProject resolve against cwd (latent).
 121. #224 inspectOfflineHost hard-wires inspectHost/discoverProject.

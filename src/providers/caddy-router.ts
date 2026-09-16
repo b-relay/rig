@@ -10,7 +10,6 @@ import {
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
-import { runCommand } from "./command-runner";
 import type { CommandRunner } from "./contracts";
 export interface RouteRequest {
   readonly key: string;
@@ -30,13 +29,14 @@ export interface Router {
 /** Only marked Rig blocks are mutable; each change validates before publishing and rolls back on reload failure. */
 export function createCaddyRouter(options: {
   readonly caddyfile: string;
-  readonly run?: CommandRunner;
+  /** Runs caddy validate and the reload command; the daemon passes the platform runner, a test a fake. */
+  readonly run: CommandRunner;
   readonly executable?: string;
   readonly reload?: boolean;
   readonly reloadCommand?: readonly string[];
   readonly extraConfig?: readonly string[];
 }): Router {
-  const run = options.run ?? runCommand;
+  const { run } = options;
   let pending: Promise<unknown> = Promise.resolve();
   async function change(
     key: string,

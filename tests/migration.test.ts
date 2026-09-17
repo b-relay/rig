@@ -19,15 +19,14 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
+const currentConfig = (name: string) =>
+  `name: ${name}\ntools:\n  cli:\n    bin: bin/cli\n`;
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "rig-migration-"));
   roots.push(root);
   await mkdir(join(root, "runtime"));
   await mkdir(join(root, "developer"));
-  await writeFile(
-    join(root, "developer", "rig.json"),
-    JSON.stringify({ name: "app", components: {} }),
-  );
+  await writeFile(join(root, "developer", "rig.yaml"), currentConfig("app"));
   return root;
 }
 function legacy(root: string) {
@@ -324,24 +323,30 @@ test("conflicting recorded provider selections are rejected instead of silently 
   ).toBe(true);
 });
 
-test("migration preview reports missing repositories, ambiguous current config, and mismatched identities", async () => {
+test("migration preview reports missing repositories, legacy-format or retired-schema current config, and mismatched identities", async () => {
   const root = await fixture(),
-    path = join(root, "runtime", "rigd-state.json");
+    path = join(root, "runtime", "rigd-state.json"),
+    developer = join(root, "developer");
   await writeFile(path, JSON.stringify(legacy(root)));
-  await writeFile(
-    join(root, "developer", "rig.yaml"),
-    "name: app\ncomponents: {}\n",
-  );
-  expect(
-    (await readLegacyState(root)).issues.some(
-      (issue) => issue.code === "ambiguous_current_config",
-    ),
-  ).toBe(true);
-  await rm(join(root, "developer", "rig.yaml"));
-  await writeFile(
-    join(root, "developer", "rig.json"),
-    JSON.stringify({ name: "wrong", components: {} }),
-  );
+  const invalidCurrent = async () => {
+    const preview = await readLegacyState(root);
+    expect(
+      preview.issues.some((issue) => issue.code.includes("current_config")),
+    ).toBe(false);
+    return preview.warnings.some(
+      (issue) => issue.code === "invalid_current_config",
+    );
+  };
+  expect(await invalidCurrent()).toBe(false);
+  // A retired rig.json is never read, even next to a valid rig.yaml.
+  const legacyJson = JSON.stringify({ name: "app", components: {} });
+  await writeFile(join(developer, "rig.json"), legacyJson);
+  expect(await invalidCurrent()).toBe(true);
+  expect(await readFile(join(developer, "rig.json"), "utf8")).toBe(legacyJson);
+  await rm(join(developer, "rig.json"));
+  await writeFile(join(developer, "rig.yaml"), "name: app\ncomponents: {}\n");
+  expect(await invalidCurrent()).toBe(true);
+  await writeFile(join(developer, "rig.yaml"), currentConfig("wrong"));
   expect(
     (await readLegacyState(root)).issues.some(
       (issue) => issue.code === "current_identity_mismatch",

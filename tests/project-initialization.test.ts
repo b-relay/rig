@@ -21,7 +21,6 @@ function repoDiscovery(): ProjectDiscovery {
 test("initialization takes the existing Project config from its reads, so a conflicting name fails PROJECT_IDENTITY and an absent config yields the requested name without touching the filesystem", async () => {
   const other: ConfigDocument<ProjectConfig> = {
     path: "/repo/rig.yaml",
-    format: "yaml",
     revision: "r1",
     config: { name: "other" } as ProjectConfig,
   };

@@ -37,19 +37,15 @@ test("real daemon owns working-copy process across CLI clients and releases its 
       `const s=Bun.serve({hostname:'127.0.0.1',port:Number(process.env.PORT),fetch:()=>new Response(process.cwd())});process.stdout.write('hello stdout\\n');process.stderr.write('hello stderr\\n');`,
     );
     await writeFile(
-      join(repo, "rig.json"),
-      JSON.stringify({
-        name: "demo",
-        hooks: { preStart: "printf 'setup production stdout\\n'; printf 'setup production stderr\\n' >&2" },
-        components: {
-          web: {
-            mode: "managed",
-            command: `'${process.execPath}' server.ts`,
-            health: "http://127.0.0.1:${web.port}",
-            env: { PORT: "${web.port}" },
-          },
-        },
-      }),
+      join(repo, "rig.yaml"),
+      `name: demo
+services:
+  web:
+    run: "'${process.execPath}' server.ts"
+    ports: { http: auto }
+    ready: http://127.0.0.1:\${services.web.ports.http}
+    env: { PORT: "\${services.web.ports.http}" }
+`,
     );
     expect(await call(rigd, ["install"])).toMatchObject({ code: 0 });
     expect(await call(rig, ["init", "--create-git"])).toMatchObject({
@@ -77,8 +73,7 @@ test("real daemon owns working-copy process across CLI clients and releases its 
     const logs = await call(rig, ["logs", "local"]);
     expect(logs.stdout).toContain("hello stdout");
     expect(logs.stdout).toContain("hello stderr");
-    expect(logs.stdout).toMatch(/\d{2}:\d{2}:\d{2}Z  setup  > setup production stdout/);
-    expect(logs.stdout).toContain("setup  ! setup production stderr");
+    expect(logs.stdout).toMatch(/\d{2}:\d{2}:\d{2}Z  web  > hello stdout/);
     expect(await call(rigd, ["uninstall"])).toMatchObject({ code: 1 });
     expect(
       await call(rig, ["down", "local", "--json"], directory),

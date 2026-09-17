@@ -114,7 +114,8 @@ test("nested init uses the Git root and existing config identity, and rerunning 
   expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
     0,
   );
-  const config = "name: canonical\n# Keep this comment.\ncomponents: {}\n";
+  const config =
+    "name: canonical\n# Keep this comment.\ntools:\n  cli:\n    bin: cli\n";
   await writeFile(join(f.repo, "rig.yaml"), config);
   const nested = join(f.repo, "src", "nested");
   await mkdir(nested, { recursive: true });
@@ -150,7 +151,7 @@ test("init --path registers the nearest Project config inside the repository, th
   );
   const web = join(f.repo, "packages", "web");
   await mkdir(web, { recursive: true });
-  const config = "name: web\ncomponents: {}\n";
+  const config = "name: web\ntools:\n  cli:\n    bin: cli\n";
   await writeFile(join(web, "rig.yaml"), config);
   expect(await f.deps.documents.initializationInfo(web)).toMatchObject({
     name: "web",
@@ -183,7 +184,7 @@ test("a registered path conflict preserves its existing config and leaves its re
   expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
     0,
   );
-  const config = "name: new-name\ncomponents: {}\n";
+  const config = "name: new-name\ntools:\n  cli:\n    bin: cli\n";
   await writeFile(join(f.repo, "rig.yaml"), config);
   f.state.projects.push({
     id: "existing",
@@ -203,7 +204,7 @@ test("a registered path conflict preserves its existing config and leaves its re
 });
 test("config identity mismatch is rejected before creating Git or a Rig remote", async () => {
   const f = await fixture();
-  const config = "name: canonical\ncomponents: {}\n";
+  const config = "name: canonical\ntools:\n  cli:\n    bin: cli\n";
   await writeFile(join(f.repo, "rig.yaml"), config);
   await expect(
     registerProject(
@@ -222,6 +223,7 @@ test("store failure reports preserved initialization and rerunning completes the
     action: "init" as const,
     repoPath: f.repo,
     project: "demo",
+    tool: { name: "cli", bin: "cli.ts" },
     createGit: true,
   };
   await expect(registerProject(command, f.deps)).rejects.toMatchObject({
@@ -270,11 +272,16 @@ test("init records the host's Production branch default, never the checked-out b
     currentBranch: "feature/wip",
   });
   const project = await registerProject(
-    { action: "init", repoPath: f.repo, project: "demo" },
+    {
+      action: "init",
+      repoPath: f.repo,
+      project: "demo",
+      tool: { name: "cli", bin: "cli.ts" },
+    },
     f.deps,
   );
   expect(await readFile(project.configPath, "utf8")).toContain(
-    "deployBranch: trunk",
+    "production_branch: trunk",
   );
   const other = join(f.root, "other");
   await mkdir(other);
@@ -287,12 +294,13 @@ test("init records the host's Production branch default, never the checked-out b
       action: "init",
       repoPath: other,
       project: "other",
+      service: { name: "web", run: "serve", port: 4567 },
       productionBranch: "release",
     },
     f.deps,
   );
   expect(await readFile(explicit.configPath, "utf8")).toContain(
-    "deployBranch: release",
+    "production_branch: release",
   );
 });
 test("discovery stops at the nearest Git toplevel and reports whether the directory is a working repository", async () => {
@@ -300,7 +308,10 @@ test("discovery stops at the nearest Git toplevel and reports whether the direct
   expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
     0,
   );
-  await writeFile(join(f.repo, "rig.yaml"), "name: outer\ncomponents: {}\n");
+  await writeFile(
+    join(f.repo, "rig.yaml"),
+    "name: outer\ntools:\n  cli:\n    bin: cli\n",
+  );
   const nested = join(f.repo, "src", "nested");
   await mkdir(nested, { recursive: true });
   expect(await f.deps.documents.discover(nested)).toMatchObject({
@@ -318,7 +329,10 @@ test("discovery stops at the nearest Git toplevel and reports whether the direct
   });
   const plain = join(f.root, "plain");
   await mkdir(plain);
-  await writeFile(join(plain, "rig.yaml"), "name: plain\ncomponents: {}\n");
+  await writeFile(
+    join(plain, "rig.yaml"),
+    "name: plain\ntools:\n  cli:\n    bin: cli\n",
+  );
   expect(await f.deps.documents.discover(plain)).toMatchObject({
     repoPath: plain,
     gitRequired: true,

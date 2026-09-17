@@ -65,7 +65,7 @@ function configHttp(root: string) {
 }
 
 const original =
-  "# Project commentary\nname: demo\ndescription: original\ncomponents:\n  web:\n    mode: managed\n    command: serve # preserve command note\n";
+  "# Project commentary\nname: demo\ndescription: original\nservices:\n  web:\n    run: serve # preserve command note\n    ports: { http: auto }\n";
 
 test("real authenticated config HTTP preview/apply preserves comments, exact backup, revision and restart persistence", async () => {
   const f = await rigFixture(),
@@ -79,16 +79,16 @@ test("real authenticated config HTTP preview/apply preserves comments, exact bac
     expect(read.status).toBe(200);
     const source = sourceSchema.parse(read.body).result;
     expect(source.raw).toBe(original);
-    expect(
-      source.fields.some((field) => field.path === "components.*.command"),
-    ).toBe(true);
+    expect(source.fields.some((field) => field.path === "services.*.run")).toBe(
+      true,
+    );
     const request = {
       project: "demo",
       expectedRevision: source.revision,
       patch: [
         {
           op: "set",
-          path: ["components", "web", "command"],
+          path: ["services", "web", "run"],
           value: "serve --port 3000",
         },
       ],
@@ -154,7 +154,8 @@ test("real config HTTP rejects unauthorized, cross-origin, identity and unknown-
     ).toMatchObject({ status: 403, body: { error: { code: "ORIGIN" } } });
     for (const [editPath, code] of [
       [["name"], "IDENTITY_CHANGE"],
-      [["components", "web", "unknown"], "INVALID_EDIT"],
+      [["services", "web", "unknown"], "INVALID_EDIT"],
+      [["components", "web", "command"], "INVALID_EDIT"],
     ] as const) {
       expect(
         await http({

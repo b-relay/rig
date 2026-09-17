@@ -25,7 +25,7 @@ test("initialization suggests a lowercase directory slug while preserving config
     });
     await writeFile(
       join(repo, "rig.yaml"),
-      "name: Exact_NAME\ncomponents: {}\n",
+      "name: Exact_NAME\ntools:\n  cli:\n    bin: bin/cli\n",
     );
     expect(await documents.initializationInfo(repo)).toMatchObject({
       name: "Exact_NAME",

@@ -15,7 +15,7 @@ afterEach(async () => {
   );
 });
 async function fixture(
-  raw = "# Project\nname: pantry\ncomponents:\n  web:\n    mode: managed\n    command: serve # keep this\n",
+  raw = "# Project\nname: pantry\nservices:\n  web:\n    run: serve # keep this\n",
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-editor-"));
   roots.push(root);
@@ -41,16 +41,16 @@ test("registered config preview is pure and apply matches preview with comments,
   const f = await fixture();
   const read = await f.editor({ action: "read", project: "pantry" });
   expect(read).toMatchObject({ project: "pantry", raw: f.raw });
-  expect(
-    read.fields?.some((field) => field.path === "components.*.command"),
-  ).toBe(true);
+  expect(read.fields?.some((field) => field.path === "services.*.run")).toBe(
+    true,
+  );
   const request = {
     project: "pantry",
     expectedRevision: read.revision,
     patch: [
       {
         op: "set",
-        path: ["components", "web", "command"],
+        path: ["services", "web", "run"],
         value: "serve --port 3000",
       },
     ],
@@ -93,11 +93,12 @@ test("editor rejects unregistered identities, arbitrary paths, identity edits an
   for (const path of [
     ["name"],
     ["constructor", "prototype"],
-    ["components", "web", "unknown"],
-    ["components", "BAD_NAME", "command"],
+    ["services", "web", "unknown"],
+    ["services", "BAD_NAME", "run"],
+    ["components", "web", "command"],
     ["missing"],
     ["toString"],
-    ["components", "web", "dependsOn", "0"],
+    ["services", "web", "depends_on", "0"],
   ]) {
     await expect(
       f.editor({
@@ -117,14 +118,14 @@ test("editor rejects unregistered identities, arbitrary paths, identity edits an
 
 test("YAML scalar removal preserves unrelated comments and refuses attached comments or collection replacement", async () => {
   const f = await fixture(
-    "# Project\nname: pantry\ndescription: optional\ncomponents:\n  web:\n    mode: managed\n    command: serve\n    health: curl localhost # keep explanation\n",
+    "# Project\nname: pantry\ndescription: optional\nservices:\n  web:\n    run: serve\n    ready: curl localhost # keep explanation\n",
   );
   const read = await f.editor({ action: "read", project: "pantry" });
   const request = { project: "pantry", expectedRevision: read.revision };
   for (const patch of [
-    [{ op: "remove", path: ["components", "web", "health"] }],
-    [{ op: "remove", path: ["components", "web"] }],
-    [{ op: "set", path: ["components"], value: {} }],
+    [{ op: "remove", path: ["services", "web", "ready"] }],
+    [{ op: "remove", path: ["services", "web"] }],
+    [{ op: "set", path: ["services"], value: {} }],
   ])
     await expect(
       f.editor({ action: "preview", ...request, patch }),
@@ -134,55 +135,53 @@ test("YAML scalar removal preserves unrelated comments and refuses attached comm
     ...request,
     patch: [
       { op: "remove", path: ["description"] },
-      { op: "remove", path: ["local", "env", "UNSET"] },
+      { op: "remove", path: ["targets", "working", "env", "UNSET"] },
     ],
   });
   expect(result.raw).not.toContain("description:");
   expect(result.raw).toContain("# Project");
-  expect(result.raw).toContain("health: curl localhost # keep explanation");
+  expect(result.raw).toContain("ready: curl localhost # keep explanation");
 });
 
-test("JSON preview/apply use original bytes for backups and reject invalid domain values without a write", async () => {
+test("apply rejects an invalid domain value without a write, and a retired rig.json is refused for read, preview and apply without being read or changed", async () => {
   const f = await fixture();
-  await rm(f.path);
-  const jsonPath = join(f.root, "rig.json");
-  const original = JSON.stringify({
-    name: "pantry",
-    description: "remove",
-    components: { web: { mode: "managed", command: "serve" } },
-  });
-  await writeFile(jsonPath, original);
   const read = await f.editor({ action: "read", project: "pantry" });
   const request = { project: "pantry", expectedRevision: read.revision };
   await expect(
     f.editor({
       action: "apply",
       ...request,
-      patch: [{ op: "set", path: ["components", "web", "port"], value: 0 }],
+      patch: [
+        { op: "set", path: ["services", "web", "ports", "http"], value: 0 },
+      ],
     }),
   ).rejects.toMatchObject({ code: "invalid_config" });
-  expect(await readdir(f.root)).toEqual(["rig.json"]);
-  const patch = [
-    { op: "remove", path: ["description"] },
-    { op: "remove", path: ["local", "env", "NOT_SET"] },
-    { op: "set", path: ["components", "web", "env", "MODE"], value: "local" },
-  ];
-  const preview = await f.editor({ action: "preview", ...request, patch });
-  const result = await f.editor({ action: "apply", ...request, patch });
-  if (
-    !("nextRevision" in preview) ||
-    !("backupPath" in result) ||
-    typeof result.backupPath !== "string"
-  )
-    throw new Error("Expected preview and applied edit");
-  expect(result.nextRevision).toBe(preview.nextRevision);
-  expect(JSON.parse(result.raw)).toEqual({
+  expect(await readdir(f.root)).toEqual(["rig.yaml"]);
+  expect(await readFile(f.path, "utf8")).toBe(f.raw);
+  const jsonPath = join(f.root, "rig.json");
+  const original = JSON.stringify({
     name: "pantry",
-    components: {
-      web: { mode: "managed", command: "serve", env: { MODE: "local" } },
-    },
+    services: { web: { run: "serve" } },
   });
-  expect(await readFile(result.backupPath!, "utf8")).toBe(original);
+  await writeFile(jsonPath, original);
+  const patch = [{ op: "set", path: ["description"], value: "updated" }];
+  // The JSON document is refused whether or not a rig.yaml sits next to it.
+  for (const withYaml of [true, false]) {
+    if (!withYaml) await rm(f.path);
+    for (const input of [
+      { action: "read", project: "pantry" },
+      { action: "preview", ...request, patch },
+      { action: "apply", ...request, patch },
+    ])
+      await expect(f.editor(input)).rejects.toMatchObject({
+        code: "legacy_format",
+      });
+    expect((await readdir(f.root)).sort()).toEqual(
+      withYaml ? ["rig.json", "rig.yaml"] : ["rig.json"],
+    );
+    expect(await readFile(jsonPath, "utf8")).toBe(original);
+    if (withYaml) expect(await readFile(f.path, "utf8")).toBe(f.raw);
+  }
 });
 
 test("registration resolution occurs inside the runtime mutation gate for apply", async () => {

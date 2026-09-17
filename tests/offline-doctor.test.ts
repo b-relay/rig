@@ -69,9 +69,11 @@ test("offline doctor reports the host checks and discovery it is given, without 
     repoPath: cwd,
     document: {
       path: `${cwd}/rig.yaml`,
-      format: "yaml",
       revision: "abc",
-      config: parseProjectConfig({ name: "demo", components: {} }),
+      config: parseProjectConfig({
+        name: "demo",
+        tools: { cli: { bin: "bin/cli" } },
+      }),
     },
   }));
   expect(

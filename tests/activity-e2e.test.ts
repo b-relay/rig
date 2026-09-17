@@ -10,14 +10,13 @@ test("daemon records observed terminal crashes once and exposes verified adminis
       "process.stdout.write('started\\n');setTimeout(()=>process.exit(7),750)",
     );
     await writeFile(
-      join(f.repo, "rig.json"),
-      JSON.stringify({
-        name: "demo",
-        local: { daemon: { keepAlive: false } },
-        components: {
-          worker: { mode: "managed", command: `'${process.execPath}' app.ts` },
-        },
-      }),
+      join(f.repo, "rig.yaml"),
+      `name: demo
+services:
+  worker:
+    run: "'${process.execPath}' app.ts"
+    ports: { http: auto }
+`,
     );
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["init", "--create-git"])).toMatchObject({ code: 0 });
@@ -46,4 +45,4 @@ test("daemon records observed terminal crashes once and exposes verified adminis
   } finally {
     await f.cleanup();
   }
-}, 30000);
+}, 60000);

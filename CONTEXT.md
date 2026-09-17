@@ -506,9 +506,8 @@ the normal terminal response.
 A named non-local Target intended for durable shared use. The first Stable
 Target defaults to `live`.
 
-Stable Target names are configurable, and a Project may have multiple Stable
-Targets alongside generated Previews. A Stable Target is not inherently a
-promotion stage.
+The Stable Target has a configurable name and coexists with generated Previews.
+A Stable Target is not inherently a promotion stage.
 
 _Relationship_: Default Stable Target routing should include Project identity
 so Stable Targets from different Projects do not collide.

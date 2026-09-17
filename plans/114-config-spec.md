@@ -1,8 +1,8 @@
 # Issue 114: consolidated configuration design
 
-Status: **review draft, September 17, 2026**. Runtime implementation has not begun in this session. Accepted decisions come from the [interview record](114-design-interview.md) and [ADRs](../docs/adr/). Six proposed decision packages, Q20–Q25 below, complete the current frontier. Recommendations and examples are not silently promoted to accepted requirements.
+Status: **accepted design, September 17, 2026**. The user accepted Q20–Q25 and specified config role keys `working` and `stable`, with display names defaulting to `local` and `live`. The grilling frontier is closed. Runtime implementation and live cutover are not completed by this document; see the [implementation plan](114-implementation-plan.md).
 
-This document consolidates the accumulated [issue 114](https://github.com/b-relay/rig/issues/114) draft. If a package is rejected, revise its dependent sections and examples before final confirmation. Existing recorded requirements remain authoritative until that confirmation.
+This document is the consolidated specification for [issue 114](https://github.com/b-relay/rig/issues/114). It supersedes conflicting historical draft wording. The [interview record](114-design-interview.md) and [ADRs](../docs/adr/) preserve the accepted decisions and explicit deferrals.
 
 ## Accepted scope
 
@@ -20,9 +20,9 @@ This document consolidates the accumulated [issue 114](https://github.com/b-rela
 - All recipe features in #114 ship together: generation, version notices and diff.
 - Applications consume arguments, env variables and paths they define. Rig expressions exist in deployment configuration; no application requires Rig-specific APIs or conventions.
 
-## Six decisions awaiting answers
+## Final decisions
 
-| ID | Concrete question | Recommended package |
+| ID | Design question | Accepted decision |
 |---|---|---|
 | Q20 | How many Stable Targets in this release, and how are they named? | One Working copy and one Stable Target with configurable names, plus generated Previews. Use role-keyed patches below. Multiple Stable Targets and their independent Branch policies remain future work. |
 | Q21 | Which input wins when several scopes/files provide the same environment name? | Public Project values, then public Service values, then Project files, then Service files. Later files win within a scope; optional target-class files follow all.env. Thus operator files beat committed defaults. Apply the approved command-conflict check to run, build and shell readiness commands, including indirect references. |
@@ -31,7 +31,7 @@ This document consolidates the accumulated [issue 114](https://github.com/b-rela
 | Q24 | How does the YAML/state cutover treat saved deployments and old commits? | An explicit reviewed migration maps existing identities, saved plans, ports, data locations and known evidence into the new records. Do not substitute current checkout config or fabricate receipts. Reject newly deploying old-format commits with conversion guidance. Preserve old binaries/config/state for rollback. |
 | Q25 | What happens to existing hooks that do more than build? | No silent deletion or automatic conversion of arbitrary hooks into builds. Classify every hook; portable application scripts/lifecycle behavior replace non-build hooks. Block affected migration until its replacement is reviewed. Do not add a permanent legacy-hook compatibility system. |
 
-The sections below make these packages reviewable. No additional optional platform features are introduced. Detailed mechanics that realize these choices belong in implementation tickets and interface reviews.
+The sections below define the accepted contracts. Detailed mechanics that realize these choices belong in implementation tickets and interface reviews.
 
 ## Q20: Target declaration and selection
 
@@ -39,15 +39,15 @@ Compare two shapes:
 
 | Shape | Benefit | Cost |
 |---|---|---|
-| Named map: targets.dev.kind: local | Config keys equal displayed Target names | Requires a kind discriminator/cardinality validation and suggests arbitrary Target counts that are not in the proposed first release |
-| Role-keyed patches with name metadata | One local, one stable and one Preview template are visible; changing a name does not move the patch | Must distinguish fixed role keys from user-facing names |
+| Named map: targets.dev.kind: working | Config keys equal displayed Target names | Requires a kind discriminator/cardinality validation and suggests arbitrary Target counts that are not in this release |
+| Role-keyed patches with name metadata | One Working copy, one Stable Target and one Preview template are visible; changing a name does not move the patch | Must distinguish fixed role keys from user-facing names |
 
-Recommend the role-keyed shape. Omitted roles use defaults; the Preview entry is a template, not one named Target.
+The selected shape is role-keyed. Omitted roles use defaults; the Preview entry is a template, not one named Target.
 
 ```yaml
 production_branch: main
 targets:
-  local:
+  working:
     name: dev
     services:
       api:
@@ -61,8 +61,8 @@ targets:
     domain: ${rig.target}.preview.example.com
 ```
 
-- Defaults: local name `local`, Stable name `live`. Production branch resolution preserves the existing chain: Project `production_branch`, then Host `deploy.productionBranch`, then `main`.
-- The fixed config keys `local`, `stable`, `preview` denote roles. `name` is metadata for local/stable, excluded from the merged Project `name`. Preview names remain generated from Branch identity using the existing collision-safe naming policy.
+- Defaults: Working copy name `local`, Stable name `live`. Production branch resolution preserves the existing chain: Project `production_branch`, then Host `deploy.productionBranch`, then `main`.
+- The fixed config keys `working`, `stable`, `preview` denote roles. `name` is metadata for working/stable, excluded from the merged Project `name`. Preview names remain generated from Branch identity using the existing collision-safe naming policy.
 - `rig up dev` selects the Working copy. `rig deploy production` selects the Stable Target. `rig deploy preview <branch>` retains explicit Preview selection.
 - Pushes of the Production branch deploy the one configured Stable Target; other pushed branches create/update Previews. Renaming a Target does not change this Branch rule.
 - Names are unique, validated, and cannot use the reserved Preview selector. Match state by stable identity, not by a renamed label. A proposed name change that cannot be mapped unambiguously requires an explicit migration; never silently create a second data root.
@@ -110,11 +110,11 @@ Environment precedence, lowest to highest:
 | 1 | Public Project env |
 | 2 | Public Service env, for Service invocations |
 | 3 | Explicit Project env_file files, in listed order |
-| 4 | Optional `~/.rig/env/<project>/all.env`, then `<local|stable|preview>.env` |
+| 4 | Optional `~/.rig/env/<project>/all.env`, then `<working|stable|preview>.env` |
 | 5 | Explicit Service env_file files, in listed order |
-| 6 | Optional `~/.rig/env/<project>/<service>/all.env`, then `<local|stable|preview>.env` |
+| 6 | Optional `~/.rig/env/<project>/<service>/all.env`, then `<working|stable|preview>.env` |
 
-The file names use Target role, not a configurable display name. Migration must preserve existing secret sources through explicit references or reviewed file mapping; do not silently drop old `live.env` sources when adopting the proposed stable role filename. Services never implicitly read sibling Service files. Listed files are required; convention files are optional. Files inside the repository must be ignored by Git. Keep permissions warnings and safe diagnostics from the original proposal.
+The file names use Target role, not a configurable display name. Migration must preserve existing secret sources through explicit references or reviewed file mapping; do not silently drop old `local.env` or `live.env` sources when adopting `working.env` and `stable.env`. The default CLI names remain local/live; they are not the env-file role names. Services never implicitly read sibling Service files. Listed files are required; convention files are optional. Files inside the repository must be ignored by Git. Keep permissions warnings and safe diagnostics from the original proposal.
 
 This deliberately resolves the original draft's contradiction between “Service wins” and “a machine file beats committed values”: committed Service defaults do not override operator file values. Beneath the six layers is a controlled execution baseline: the operator's configured executable PATH, operator HOME, owned temporary TMPDIR, and LANG/LC_ALL/LC_CTYPE/TZ when supplied by the execution adapter. No other daemon-environment entries are implicitly copied. Explicit env/files may override baseline values. The adapter receives this baseline as an explicit capability input; pure config resolution does not read process.env. Migration inventories needed ambient setting names and requires explicit application mappings for anything outside this list, without recording secret values.
 
@@ -122,7 +122,7 @@ The approved conflict guard is applied to public env leaves referenced directly 
 
 Public references may appear in commands, readiness URLs, env values, workdir, env_file paths and proxy values. `${rig.target}` is the sole hostname substitution exception. No interpolation in map keys, Project name or port declarations. Relative paths resolve against the relevant workspace; `~` in env_file paths resolves to the configured operator home. Host-dependent reads remain adapter capabilities, not hidden inputs to pure resolution.
 
-Rig quotes command substitutions as literal data using the existing context-aware command interpolation policy; it does not reinterpret substituted strings as shell code. Ordinary `$VARIABLE` is shell syntax and is not a Rig reference. Proposed `$${VARIABLE}` escapes a braced shell reference past Rig as literal `${VARIABLE}`. Environment-file contents are plain env data, not shell scripts or recursively interpolated Rig config. An application receiving env data can still disclose it itself; Rig does not promise universal output redaction.
+Rig quotes command substitutions as literal data using the existing context-aware command interpolation policy; it does not reinterpret substituted strings as shell code. Ordinary `$VARIABLE` is shell syntax and is not a Rig reference. `$${VARIABLE}` escapes a braced shell reference past Rig as literal `${VARIABLE}`. Environment-file contents are plain env data, not shell scripts or recursively interpolated Rig config. An application receiving env data can still disclose it itself; Rig does not promise universal output redaction.
 
 ### Rig-generated values
 
@@ -201,7 +201,7 @@ Keep recipes as ordinary copied configuration. Generated metadata identifies rec
 
 ## Acceptance and planned implementation slices
 
-These are draft slices, not new ready tickets. Finalize after the six packages and shared understanding are confirmed.
+The [implementation plan](114-implementation-plan.md) expands these responsibilities into complete behavior slices and tracks their GitHub dependencies.
 
 1. YAML-only Project/Host documents plus an end-to-end config inspection path for the three examples; documented fields, strict invalid-key errors, role names, patches, source revision selection and no deletion feature.
 2. Pure public resolution with explicit inputs plus env-file execution composition: named ports, scoped paths, cycle/escape/quoting rules, transitive conflicts and safe provenance output.
@@ -215,4 +215,4 @@ Each slice starts with a failing public-behavior regression, uses isolated RIG_R
 
 ## Decision coverage
 
-All previously open tree branches now have an explicit proposed rule in this draft or are deferred. Target cardinality-dependent rules are conditional on Q20; operator value precedence and its syntax package are Q21; build identity/artifact/order/local details are Q22; exit/reset/readiness/retry details are Q23; saved-state/storage/old-commit migration is Q24; hook replacement is Q25. Portability and already accepted behavior are not reopened. If an answer changes a prerequisite, revisit only its affected branches before final confirmation.
+All design branches have an accepted rule or an explicit deferral. Q20 fixes one Working copy/one Stable Target plus Previews; Q21 fixes value composition; Q22 fixes build behavior; Q23 fixes activation/retry behavior; Q24 fixes saved-state/old-Commit conversion; Q25 fixes hook replacement. Config role keys are working/stable/preview; default display names are local/live, with generated Preview names. No product question remains pending from this grilling session.

@@ -1,4 +1,4 @@
-# Review draft for #114, conditional on Q20-Q25; not accepted by today's schema.
+# Accepted #114 design; the new schema is not implemented yet.
 # The example notes application reads HOST, PORT and DATA_DIR itself.
 name: notes
 production_branch: main
@@ -20,12 +20,12 @@ proxy:
   /: ${services.api.ports.http}
 
 targets:
-  local:
-    name: dev
+  working:
+    name: local
     services:
       api:
         env: {LOG_LEVEL: debug}
   stable:
-    name: production
+    name: live
   preview:
     domain: ${rig.target}.preview.notes.example.com

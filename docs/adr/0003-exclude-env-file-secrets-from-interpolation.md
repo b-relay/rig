@@ -8,4 +8,4 @@ For [#114](https://github.com/b-relay/rig/issues/114), secret values loaded from
 
 This is an accepted design decision, not a claim that every proposed environment behavior is implemented. It does not promise that arbitrary application output cannot contain secrets.
 
-On September 16 the user required an explicit resolution order and visibility into shadowed names/sources, then approved rejecting a conflicting env-file override of a public value used in a command. Name the competing key/sources without exposing secret values. Ordinary non-conflicting overrides remain explainable; the complete precedence and evaluation contract will be specified in the design.
+On September 16 the user required an explicit resolution order and visibility into shadowed names/sources, then approved rejecting a conflicting env-file override of a public value used in a command. Name the competing key/sources without exposing secret values. The user subsequently accepted the complete [precedence and evaluation contract](../../plans/114-config-spec.md#q21-values-environment-and-command-evaluation), including indirect references and build/readiness commands.

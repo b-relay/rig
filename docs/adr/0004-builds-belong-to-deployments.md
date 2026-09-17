@@ -6,6 +6,6 @@ status: accepted
 
 For [#114](https://github.com/b-relay/rig/issues/114), the user chose deployment-time builds with recorded completion instead of a pre-start hook that repeats on every start. A completed build is reused by subsequent starts and restarts of that Deployment, including materialization without activation.
 
-The user approved one explicit Project shared build plus optional Service/Tool builds, without deduplicating matching command strings. If a build may have finished but lacks a durable success record, report unknown completion and require explicit retry. Explicitly starting/restarting the Working copy builds current source; automatic restarts reuse the result. Build identity, missing artifacts, ordering and exact no-op behavior remain to be specified.
+The user approved one explicit Project shared build plus optional Service/Tool builds, without deduplicating matching command strings. If a build may have finished but lacks a durable success record, report unknown completion and require explicit retry. Explicitly starting/restarting the Working copy builds current source; automatic restarts reuse the result. The user accepted the detailed [build identity, missing-artifact, ordering and no-op contract](../../plans/114-config-spec.md#q22-build-reuse-and-failure-handling), including local Tool-only behavior and finite build budgets.
 
 This is an accepted design direction, not an exactly-once guarantee for arbitrary shell side effects or a claim of completed implementation.

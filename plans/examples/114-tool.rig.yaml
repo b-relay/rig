@@ -1,4 +1,4 @@
-# Review draft for #114, conditional on Q20-Q25; not accepted by today's schema.
+# Accepted #114 design; the new schema is not implemented yet.
 # This Project has no server, port, hostname or proxy.
 name: report
 production_branch: main
@@ -9,7 +9,7 @@ tools:
     bin: .rig-build/report
 
 targets:
-  local:
-    name: dev
+  working:
+    name: local
   stable:
-    name: production
+    name: live

@@ -1,4 +1,4 @@
-# Review draft for #114, conditional on Q20-Q25; not accepted by today's schema.
+# Accepted #114 design; the new schema is not implemented yet.
 # These example programs use ordinary application-defined environment inputs.
 name: acme
 production_branch: main
@@ -55,7 +55,7 @@ proxy:
   /: ${services.web.ports.http}
 
 targets:
-  local:
+  working:
     name: dev
     services:
       api:

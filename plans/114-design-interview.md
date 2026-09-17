@@ -1,20 +1,20 @@
 # Issue 114 design interview
 
-Source: [GitHub issue 114](https://github.com/b-relay/rig/issues/114). Round 1 was asked September 10, 2026 at `470a510`; answers arrived September 16 and source was refreshed at `5c5b57e`. This is a design interview, not an implementation or release-completion record.
+Source: [GitHub issue 114](https://github.com/b-relay/rig/issues/114). Round 1 was asked September 10, 2026 at `470a510`; answers arrived September 16 and source was refreshed at `5c5b57e`. The user accepted the complete design on September 17, correcting the config role key to working. The grilling is complete; this is not an implementation or release-completion record.
 
 ## Settled decisions
 
 | Question | User decision |
 |---|---|
 | Q1 Release scope | Deliver all #114 features together, including recipe generation, version notices and diff tooling. This does not require one implementation ticket or commit. |
-| Q2 Targets | Configurable Target names, Stable Targets, and generated Previews. Fixed local/live names are not the intended model. Independent branch mappings for multiple Stable Targets are deferred because they do not exist today. Configurable names remain accepted; exact declaration and first-release Target cardinality remain open. |
+| Q2 Targets | Configurable Target names, Stable Targets, and generated Previews. Fixed local/live names are not the intended model. Independent branch mappings for multiple Stable Targets are deferred because they do not exist today. Q20 settled one Working copy and one Stable Target with configurable names, plus generated Previews. Config keys are working/stable/preview, with local/live display-name defaults. |
 | Q3 Project contents | Services, Tools, or both; require at least one across the two maps. |
 | Q4 Environment | Make resolution order, winning source and shadowed names explicit. Reject a conflicting env-file override of a public value used in a command; name keys and sources without showing secret values. |
 | Q5 Dependencies | Readiness is a startup gate. No cascading restarts merely because a dependency later fails. |
 | Q6 Loopback | Approved: check owned listeners are bound locally at each activation, including automatic restarts, before reporting successful startup or publishing routes. This is not continuous enforcement of future application behavior. |
 | Q7 Format | Project and Host user-authored config become YAML-only; machine-owned records may remain JSON. |
 | Q8 Migration | A planned per-Target stop/start window is acceptable; preserve application data and prepare backups/rollback. No live cutover executed or scheduled. |
-| Q9 Builds | Track successful build completion once per Deployment; do not rerun it as a pre-start hook. Build during materialization, including --no-up. Q13/Q14/Q18 settle shared build scope, interrupted completion and Working copy triggers below; detailed identity/order/no-op rules remain open. |
+| Q9 Builds | Track successful build completion once per Deployment; do not rerun it as a pre-start hook. Build during materialization, including --no-up. Q13/Q14/Q18 settle shared build scope, interrupted completion and Working copy triggers below; Q22 settles detailed identity/order/no-op rules in the accepted spec. |
 | Q10 Restart inputs | Deployed Targets use recorded deployment policy and refresh env-file contents on restart. Explicit Working copy starts/restarts build current source; automatic restarts reuse the result. |
 | Q11 Exit evidence | Persist observed exit results; missing reliable evidence after a crash requires manual start. This also overrides always, as accepted in Q19. Never infer manual stop as the historical cause from missing evidence. |
 
@@ -26,23 +26,23 @@ Decision records: [YAML-only cutover](../docs/adr/0001-yaml-only-project-config-
 114: explicit Project contract
 |-- Application portability [settled: explicit ordinary inputs; ADR 0005]
 |-- Release scope [settled: all proposed features together]
-|   `-- Vertical slices, recipe version comparison and release gates [after contracts]
+|   `-- Vertical slices, recipe version comparison and release gates [implementation plan; no open product decision]
 |-- Domain model
 |   |-- Configurable names / Stable Targets / generated Previews [settled]
 |   |-- Services and/or Tools [settled]
 |   |-- Independent per-Stable-Target source branches [deferred]
-|   |   `-- First-release cardinality, push routing, hostnames, tool aliases, target declaration [open]
+|   |   `-- First-release cardinality, push routing, hostnames, tool aliases, target declaration [accepted in final Q20-Q25 packages]
 |   |-- Removing inherited Services through Target patches [deferred Q15]
-|   `-- Allowed patch fields and final graph validation [open; no Service-removal feature]
+|   `-- Allowed patch fields and final graph validation [accepted Q20; no Service-removal feature]
 |-- Values and execution
 |   |-- No secret interpolation; explain shadowing [settled]
 |   |-- Reject command/env conflict [settled Q4]
-|   |   `-- Full precedence, literals, shell expansion, paths, cycles, build-time env [open after Q4]
+|   |   `-- Full precedence, literals, shell expansion, paths, cycles, build-time env [accepted Q21]
 |   |-- Deployment-time build with successful completion record [settled]
 |   |-- Shared build unit [settled Q13: explicit shared + per-Service/Tool]
 |   |-- Interrupted build result [settled Q14: unknown requires explicit retry]
 |   |-- Working copy build trigger [settled Q18: explicit start/restart]
-|   |   `-- Build identity, missing artifacts, force/retry and build dependency ordering [after build rules]
+|   |   `-- Build identity, missing artifacts, force/retry and build dependency ordering [accepted Q22]
 |   `-- Saved deployed policy with freshly loaded env files [settled]
 |-- Lifecycle
 |   |-- restart:no leaves exited services stopped; explicit start permitted [settled]
@@ -50,15 +50,15 @@ Decision records: [YAML-only cutover](../docs/adr/0001-yaml-only-project-config-
 |   |-- Unknown-result fallback versus always [settled Q19: manual start]
 |   |-- Startup-only dependencies [settled]
 |   |-- Partial startup failure [settled Q17: undo newly started processes]
-|   `-- Ready-check precedence, dependency completion, retries/backoff, new-deploy reset [after lifecycle rules]
+|   `-- Ready-check precedence, dependency completion, retries/backoff, new-deploy reset [accepted Q23]
 |-- Exposure
 |   |-- Activation-only loopback verification [settled Q6]
-|   `-- Exact ownership scope, check failure behavior, routes/hostnames and headless URLs [after Q6 and Target model]
+|   `-- Exact ownership scope, check failure behavior, routes/hostnames and headless URLs [accepted Q20/Q23]
 `-- Cutover
     |-- Project and Host YAML-only [settled]
     |-- Planned downtime [settled]
     |-- Preserve existing data roots versus relocate [settled Q16: preserve]
-    `-- Conversion, service/Target renames, backup/rollback, old commits and shutdown-hook replacement [after data/model rules]
+    `-- Conversion, service/Target renames, backup/rollback, old commits and shutdown-hook replacement [accepted Q24/Q25]
 ```
 
 ## Round 2 answers (September 16)
@@ -69,7 +69,7 @@ The user approved the recommendations, including Q6 after clarification. Q15 Ser
 |---|---|
 | Q4 | Reject conflicting command/environment values; show the competing keys/sources without secret values. |
 | Q6 | Approved after explanation: inspect local bindings at activation, not continuous enforcement. |
-| Q12 | Independent per-Stable-Target branch policies are not implemented and are deferred to future work. Preserve the existing single Production branch behavior. Configurable Target names were separately approved in Q2; do not silently retract that decision or assume the cardinality question is settled. |
+| Q12 | Independent per-Stable-Target branch policies are not implemented and are deferred to future work. Preserve the existing single Production branch behavior. Configurable Target names were separately approved in Q2; Q20 later settled one of each, with configurable names. |
 | Q13 | Explicit Project shared build plus optional Service/Tool builds. Do not deduplicate commands by string equality. |
 | Q14 | Unknown build completion requires an explicit retry; do not silently rerun or claim success. |
 | Q15 | Deferred: omitting an inherited Service from an individual Target (such as worker: null) is useful future work, not part of #114 delivery. Do not add an equivalent disable/remove mechanism under another name. Overrides of settings remain in scope. |
@@ -98,11 +98,11 @@ At 5c5b57e, one configured Production branch maps to live; other pushed branches
 - Reconciliation still starts desired-running Targets (`src/runtime/application.ts:721-727`). Target state has no durable per-Service terminal intent (`src/runtime/state-schema.ts:90-123`). Capture observations require fresh live-wrapper evidence (`src/providers/capture-observation.ts:48-81`). A journal can improve evidence but cannot record an exit after power has already disappeared.
 - Existing dataRoot is retained during replanning (`src/runtime/targets.ts:63-64,102`), while Preview deletion checks the canonical owned layout (`src/adapters/preview-storage.ts:64-72`). SQLite/Convex persistence improved since the first round; format changes do not inherently require moving data.
 
-## Round 3: concrete review draft (September 17)
+## Round 3: review and acceptance (September 17)
 
-The [consolidated spec](114-config-spec-draft.md) and [three complete YAML examples](examples/114-service.rig.yaml) now provide concrete proposed rules for all remaining branches. Their new schema is not implemented; the examples have only been checked for YAML syntax and basic internal consistency.
+The [consolidated spec](114-config-spec.md) and [three complete YAML examples](examples/114-service.rig.yaml) provided concrete rules for all remaining branches, which the user accepted with the working role-key correction. Their new schema is not implemented; the examples have only been checked for YAML syntax and basic internal consistency.
 
-The current decision frontier is six packages, all **proposed, awaiting answers**:
+The following six packages were presented and are now **accepted**. Recommendations below are the historical question wording; the final spec contains the corrected working/stable config keys:
 
 | Question | Remaining choice |
 |---|---|
@@ -113,8 +113,8 @@ The current decision frontier is six packages, all **proposed, awaiting answers*
 | Q24 | Conversion of saved deployments and old source commits. Recommend a reviewed migration manifest preserving exact identities/storage/policy/evidence, strict rejection of new deployments from old-format commits, isolated rehearsal and tested backups/rollback. |
 | Q25 | Conversion of non-build lifecycle hooks. Recommend portable application scripts/signal handling, no silent discard/merge, and blocking affected migration until an equivalent replacement is reviewed. |
 
-All previously accepted decisions stay closed. Rules dependent on the proposed one-Stable-Target shape are conditional on Q20; revise them if the user chooses multiple. If all packages are accepted, present the consolidated design for final shared-understanding confirmation before implementation. If a package changes, revisit its affected branch rather than restarting the interview.
+The user answered Q20 yes, retained default names local/live, corrected the config role key from local to working, and agreed to the rest. This confirms shared understanding of Q20-Q25; no further approval of these same choices is required.
 
-An independent source/spec reviewer identified Tool-only local build triggers, Host branch fallback, timeout destination fields and an implicit execution environment as missing details. The draft now states those explicitly. Validation and review are evidence about the draft, not acceptance of its proposed product choices.
+An independent source/spec reviewer identified Tool-only local build triggers, Host branch fallback, timeout destination fields and an implicit execution environment as missing details. The draft now states those explicitly. Validation/review checked the draft; the subsequent user agreement supplies acceptance of its product choices.
 
-The session continues until the design frontier is exhausted and the user confirms shared understanding. This session updates design docs and #114 only; it does not implement or operate the runtime.
+The grilling frontier is empty and shared understanding is confirmed. The next work is the implementation plan and child tickets; runtime implementation and live operations are separate from this design record.

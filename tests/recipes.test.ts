@@ -520,6 +520,17 @@ test("a '# rig-recipe:' line that is a Service's shell text is not provenance, a
     { service: "last", recipe: "cache", version: 2, name: "last" },
   ]);
 
+  // Text before `services`, and a flow-style map, give the first Service nothing to inherit.
+  const flow = await fixture(
+    APP.replace(
+      /^services:[\s\S]*$/m,
+      "description: |\n  # rig-recipe: cache@9 name=web\nservices: {web: {run: sleep 1000}}\n",
+    ),
+  );
+  expect(
+    (await readProjectConfig(join(flow.file, ".."))).recipeMarkers,
+  ).toBeUndefined();
+
   const escape = String.fromCharCode(27);
   const hostile = await f.rig("recipe", "diff", `x${escape}[2J\nweb: fine`);
   expect(hostile.code).toBe(1);

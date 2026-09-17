@@ -123,3 +123,8 @@ two-version `cache` recipe through the same public paths.
 2. A `# rig-recipe:` line ending the previous Service's block scalar was
    counted as a second marker of the next Service. The scan is now bounded
    below by the end of the previous Service's value. Red confirmed for both.
+
+**Round 2**: both resolved. One new should-fix, taken: with a flow-style
+`services` map the first Service could inherit a `# rig-recipe:` line from a
+scalar before `services`. The scan now starts at the `services` key and skips
+flow-style maps (the documented limit). Red confirmed.

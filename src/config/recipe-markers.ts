@@ -19,10 +19,17 @@ export function markerComment(recipe: string, version: number, name: string) {
 }
 /** Pure: the markers in the comment lines directly above each Service key of a parsed document and its source text. */
 export function recipeMarkers(document: Document, raw: string): RecipeMarker[] {
-  const services = document.get("services");
-  if (!isMap(services)) return [];
+  const owner = isMap(document.contents)
+    ? document.contents.items.find(
+        ({ key }) => isScalar(key) && key.value === "services",
+      )
+    : undefined;
+  const services = owner?.value;
+  // A flow-style map has no line of its own above a key, so nothing in it is provenance.
+  if (!isMap(services) || services.flow || !isScalar(owner?.key)) return [];
   const markers: RecipeMarker[] = [];
-  let floor = 0;
+  // Nothing before the `services` key belongs to a Service.
+  let floor = owner.key.range?.[1] ?? raw.length;
   for (const { key, value } of services.items) {
     // Only what lies between the previous Service's value and this key can be a comment on this key: a `#` line
     // inside that value's block scalar is the Service's shell text.

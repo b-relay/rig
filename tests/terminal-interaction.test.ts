@@ -130,6 +130,8 @@ test("Ctrl-C at a deploy confirmation exits 0 without an error message or a fail
           repoPath: "/repo",
           productionBranch: "main",
           currentBranch: "feature/wip",
+          targets: { working: "local", stable: "live" },
+          selected: "stable",
         };
       },
     },

@@ -21,11 +21,14 @@ rig deploy preview feature/login
 Commands discover the Project from the current workspace. Use `--project <name>`
 to select a registered Project elsewhere, and `--help` on any command for options.
 `local` runs the working copy; `live` runs the configured Production branch;
-Previews run other Branches. Lifecycle commands reuse recorded deployment policy.
+Previews run other Branches. `local` and `live` are the default Target names; a
+Project may rename them under `targets` in `rig.yaml`. Lifecycle commands reuse
+recorded deployment policy.
 
-New configuration uses `rig.yaml` and Host `config.yaml`. Existing JSON documents
-remain supported. See the [guide](docs/rig-guide.md) for setup, Git push deploys,
-configuration, diagnostics, and command behavior.
+Configuration is YAML only: `rig.yaml` for a Project and `config.yaml` for the
+Host. A `rig.json` or Host `config.json` is refused, never read or converted. See
+the [guide](docs/rig-guide.md) for setup, Git push deploys, configuration,
+diagnostics, and command behavior.
 
 ## Development
 
@@ -54,7 +57,7 @@ and [cutover procedure](docs/rig-cutover-readiness.md).
 
 | Module | Responsibility |
 |---|---|
-| `src/config` | Validated YAML/JSON documents, revision-checked edits, and Target plan resolution. |
+| `src/config` | Validated YAML documents, revision-checked edits, and Target plan resolution. |
 | `src/runtime` and `src/domain` | Serialized operations, recorded policy, deployment recovery, and observed status. |
 | `src/daemon` | Authenticated localhost transport, administration, and adapter composition. |
 | `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects. |

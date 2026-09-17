@@ -45,6 +45,8 @@ function fixture() {
             project: "demo",
             repoPath: "/repo",
             productionBranch: "main",
+            targets: { working: "local", stable: "live" },
+            selected: request.target === "live" ? "stable" : "preview",
             currentBranch: "feature",
           };
         return {
@@ -133,6 +135,52 @@ test("implicit Production deployment requires explicit branch noninteractively o
   ).toMatchObject({ branch: "main" });
 });
 
+test("Production confirmation follows the role rigd says the selector means, whatever the Stable Target is named", async () => {
+  const { deps } = fixture();
+  const asked: unknown[] = [];
+  // rigd resolves both the configured name and a name the Stable Target is still recorded under.
+  deps.client.command = async (command) => {
+    asked.push(command);
+    return {
+      project: "demo",
+      repoPath: "/repo",
+      productionBranch: "main",
+      targets: { working: "dev", stable: "production" },
+      selected: "stable",
+      currentBranch: "feature",
+    };
+  };
+  delete deps.interaction;
+  for (const target of ["production", "live"])
+    await expect(
+      prepareInteractiveRequest({ action: "deploy", target }, deps),
+    ).rejects.toMatchObject({
+      code: "PRODUCTION_CONFIRMATION",
+      hint: "Pass the Production Branch explicitly: rig deploy production main.",
+    });
+  expect(asked).toEqual([
+    expect.objectContaining({
+      action: "deployment-context",
+      target: "production",
+    }),
+    expect.objectContaining({ action: "deployment-context", target: "live" }),
+  ]);
+});
+
+test("a deployment context that does not say which Target was selected is a protocol failure, not an unconfirmed deploy", async () => {
+  const { deps } = fixture();
+  deps.client.command = async () => ({
+    project: "demo",
+    repoPath: "/repo",
+    productionBranch: "main",
+    targets: { working: "local", stable: "live" },
+    currentBranch: "feature",
+  });
+  await expect(
+    prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+  ).rejects.toMatchObject({ code: "DAEMON_PROTOCOL" });
+});
+
 test("interactive read protocol errors are safe structured daemon failures", async () => {
   const { deps } = fixture();
   deps.client.command = async () => ({ unexpected: "secret-value" });
@@ -151,6 +199,8 @@ test("cancellation while a context query is pending prevents a deploy request fr
       project: "demo",
       repoPath: "/repo",
       productionBranch: "main",
+      targets: { working: "local", stable: "live" },
+      selected: "stable",
       currentBranch: "main",
     };
   };
@@ -163,12 +213,23 @@ test("every deploy names the resolved Project, directory, Target, and Branch bef
   const lines: string[] = [];
   deps.output = { write() {}, error: (text) => void lines.push(text) };
   await prepareInteractiveRequest(
-    { action: "deploy", target: "live", branch: "main", repoPath: "/elsewhere" },
+    {
+      action: "deploy",
+      target: "live",
+      branch: "main",
+      repoPath: "/elsewhere",
+    },
     deps,
   );
-  expect(requests[0]).toMatchObject({ action: "deployment-context", repoPath: "/elsewhere" });
+  expect(requests[0]).toMatchObject({
+    action: "deployment-context",
+    repoPath: "/elsewhere",
+  });
   expect(lines).toEqual(["Deploying demo (/repo) to live from main.\n"]);
   lines.length = 0;
-  await prepareInteractiveRequest({ action: "deploy", target: "preview", repoPath: "/repo" }, deps);
+  await prepareInteractiveRequest(
+    { action: "deploy", target: "preview", repoPath: "/repo" },
+    deps,
+  );
   expect(lines).toEqual(["Deploying demo (/repo) to preview from feature.\n"]);
 });

@@ -32,7 +32,10 @@ function fixture() {
     targets: [],
     activity: [],
   };
-  const config = parseProjectConfig({ name: "demo", components: {} });
+  const config = parseProjectConfig({
+    name: "demo",
+    tools: { cli: { bin: "cli" } },
+  });
   const deps = {
     async inspectHost() {
       return [{ name: "host-check", ok: true, message: "Host inspected." }];
@@ -75,7 +78,10 @@ test("repoint through a symlink retains canonical workspace selection on the nex
     alias = join(root, "alias");
   await mkdir(repository);
   await symlink(repository, alias);
-  await writeFile(join(repository, "rig.yaml"), "name: demo\ncomponents: {}\n");
+  await writeFile(
+    join(repository, "rig.yaml"),
+    "name: demo\ntools:\n  cli:\n    bin: cli\n",
+  );
   state.projects.push({
     id: "p",
     name: "demo",
@@ -142,7 +148,6 @@ test("doctor reports blocked deployment recovery instead of healthy matching con
   });
   deps.documents.read = async () => ({
     path: "/project/rig.yaml",
-    format: "yaml",
     revision: "revision",
     config,
   });

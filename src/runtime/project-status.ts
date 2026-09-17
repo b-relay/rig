@@ -12,12 +12,33 @@ import {
   type TargetReport,
   deploymentFlags,
 } from "./status";
-import { targetName } from "./targets";
+import { previewName, selectTarget } from "./targets";
+import {
+  PREVIEW_SELECTOR,
+  patchedSettings,
+  proxyUpstream,
+  targetNames,
+} from "../config/schema";
 import {
   identityDriftHint,
   movedProject,
   registeredDirectoryMissing,
 } from "./projects";
+/** Which Targets a status selector means: every Target without one, one Preview by name, or the Working copy or Stable
+ * Target by the same naming rule every other command uses, so an unknown name rejects TARGET_UNKNOWN instead of reporting nothing. */
+function targetSelection(
+  command: StatusSelection,
+  configured: Parameters<typeof selectTarget>[1],
+  recorded: readonly Pick<TargetRecord, "kind" | "name">[],
+): (target: Pick<TargetRecord, "kind" | "name">) => boolean {
+  if (command.target === PREVIEW_SELECTOR || command.deployment) {
+    const name = previewName(command);
+    return (target) => target.kind === "preview" && target.name === name;
+  }
+  if (!command.target) return () => true;
+  const { kind } = selectTarget(command, configured, recorded);
+  return (target) => target.kind === kind;
+}
 /** Adds configured-only capabilities without interpreting configuration as runtime evidence. */
 export async function projectStatus(
   project: Pick<ProjectRecord, "name" | "repoPath">,
@@ -36,10 +57,26 @@ export async function projectStatus(
     inProgress(operationId: string): boolean;
   },
 ): Promise<ProjectStatusReport> {
-  const selected =
-    command.target || command.deployment
-      ? targets.filter((t) => t.name === targetName(command))
-      : targets;
+  let configWarning: string | undefined;
+  let document: ConfigDocument<ProjectConfig> | undefined;
+  try {
+    document = await deps.documents.read(project.repoPath);
+    if (document.config.name !== project.name) {
+      configWarning = `Current configuration names Project '${document.config.name}', not '${project.name}'; showing recorded Targets. ${identityDriftHint(project.name, document.config.name)}`;
+      document = undefined;
+    }
+  } catch (error) {
+    const failure = registeredDirectoryMissing(error)
+      ? movedProject(project)
+      : asRigError(error);
+    configWarning = `${failure.message} ${failure.hint}`;
+  }
+  const selects = targetSelection(
+    command,
+    document && targetNames(document.config),
+    targets,
+  );
+  const selected = targets.filter(selects);
   const warnings: string[] = [];
   let ownershipFailure: string | undefined;
   try {
@@ -70,38 +107,27 @@ export async function projectStatus(
         deps.observationBudgetMs,
         deps.observationDeadline,
       );
-  let document: ConfigDocument<ProjectConfig> | undefined;
-  try {
-    document = await deps.documents.read(project.repoPath);
-    if (document.config.name !== project.name) {
-      warnings.push(
-        `Current configuration names Project '${document.config.name}', not '${project.name}'; showing recorded Targets. ${identityDriftHint(project.name, document.config.name)}`,
-      );
-      document = undefined;
-    }
-  } catch (error) {
-    const failure = registeredDirectoryMissing(error)
-      ? movedProject(project)
-      : asRigError(error);
-    warnings.push(`${failure.message} ${failure.hint}`);
-  }
+  if (configWarning) warnings.push(configWarning);
   if (document) {
-    const kinds: ("local" | "live")[] = command.target
-      ? command.target === "preview"
-        ? []
-        : [command.target]
-      : ["local", "live"];
-    for (const kind of kinds) {
-      const definitions = configuredComponents(document.config, kind);
-      const report = reports.find((t) => t.name === kind);
+    const names = targetNames(document.config);
+    for (const [role, kind] of [
+      ["working", "local"],
+      ["stable", "live"],
+    ] as const) {
+      const definitions = configuredComponents(document.config, role);
+      // A recorded Target keeps reporting under its recorded name until it is planned from the renamed config.
+      const report = reports.find((t) => t.kind === kind);
       if (report) {
-        const names = new Set(report.components.map((c) => c.name));
+        const known = new Set(report.components.map((c) => c.name));
         report.components.push(
-          ...definitions.filter((c) => !names.has(c.name)),
+          ...definitions.filter((c) => !known.has(c.name)),
         );
-      } else
+      } else if (
+        !targets.some((t) => t.kind === kind) &&
+        selects({ kind, name: names[role] })
+      )
         reports.push({
-          name: kind,
+          name: names[role],
           kind,
           state: "configured",
           components: definitions,
@@ -166,32 +192,37 @@ async function markUnpublishedRoutes(
 }
 function configuredComponents(
   config: ProjectConfig,
-  kind: "local" | "live",
+  role: "working" | "stable",
 ): ComponentReport[] {
-  const lane = kind === "local" ? config.local : config.live;
-  return Object.entries(config.components).map(([name, base]) => {
-    const component = { ...base, ...lane?.components?.[name] };
-    const componentKind =
-      "mode" in component
-        ? component.mode === "installed"
-          ? "installed"
-          : "managed"
-        : "uses" in component && component.uses === "sqlite"
-          ? "persistent"
-          : "managed";
-    const domain = lane?.domain ?? config.domain;
-    return {
+  const settings = patchedSettings(config, role);
+  const routed =
+    role === "stable" || config.targets?.[role]?.domain
+      ? settings.domain
+      : undefined;
+  const upstream = settings.proxy?.["/"]
+    ? proxyUpstream(settings.proxy["/"])?.service
+    : undefined;
+  return [
+    ...Object.entries(settings.services ?? {}).map(
+      ([name, service]): ComponentReport => {
+        const port = Object.values(service.ports ?? {})[0];
+        return {
+          name,
+          kind: "managed",
+          state: "configured",
+          ...(typeof port === "number" ? { port } : {}),
+          ...(upstream === name && routed && !routed.includes("${")
+            ? { route: routed }
+            : {}),
+        };
+      },
+    ),
+    ...Object.keys(settings.tools ?? {}).map((name): ComponentReport => ({
       name,
-      kind: componentKind,
+      kind: "installed",
       state: "configured",
-      ...("port" in component && component.port
-        ? { port: component.port }
-        : {}),
-      ...(lane?.proxy?.upstream === name && domain && !domain.includes("${")
-        ? { route: domain }
-        : {}),
-    };
-  });
+    })),
+  ];
 }
 
 /** A recovery record whose operation this daemon is still running is a live deploy, not an abandoned one. */

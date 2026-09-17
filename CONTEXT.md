@@ -705,9 +705,9 @@ Target
 _Decision history_: The accepted Project format boundary is recorded in
 [ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md).
 
-_Relationship_: If both `rig.yaml` and `rig.json` exist in one Project, Rig
-should fail with a clear ambiguity error rather than silently choosing or
-merging them.
+_Relationship_: A `rig.json` in a Project is refused as a retired format,
+whether or not a `rig.yaml` sits beside it. Rig never reads, merges, or chooses
+between the two.
 
 _Relationship_: Project config migration is manual. Rig should not expose a
 config migration command or silently rewrite an existing JSON file.

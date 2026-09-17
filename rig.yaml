@@ -1,0 +1,14 @@
+name: rig
+description: Rig project config for the CLI, daemon, and Git remote helper binaries.
+production_branch: main
+
+tools:
+  rig:
+    build: bun install --frozen-lockfile && bun build --compile src/index.ts --outfile rig
+    bin: rig
+  rigd:
+    build: bun install --frozen-lockfile && bun build --compile src/rigd.ts --outfile rigd
+    bin: rigd
+  git-remote-rig:
+    build: bun install --frozen-lockfile && bun build --compile src/git/remote-helper.ts --outfile git-remote-rig
+    bin: git-remote-rig

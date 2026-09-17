@@ -37,28 +37,26 @@ export const commandSchema = z
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
     repoPath: absolutePath.optional(),
-    target: z.enum(["local", "live", "preview"]).optional(),
+    /** `preview`, or the name the Project gives its Working copy or Stable Target. */
+    target: z.string().min(1).max(63).optional(),
     branch: z.string().optional(),
     commit: z.string().optional(),
     deployment: previewName.optional(),
     domain: z.string().optional(),
-    proxy: z.string().optional(),
-    uses: z.array(z.enum(["sqlite", "postgres", "convex"])).optional(),
-    managed: z
+    service: z
       .object({
         name: z.string(),
-        command: z.string(),
+        run: z.string(),
         port: z.number().int().optional(),
-        health: z.string().optional(),
+        ready: z.string().optional(),
       })
       .strict()
       .optional(),
-    installed: z
+    tool: z
       .object({
         name: z.string(),
-        entrypoint: z.string(),
+        bin: z.string(),
         build: z.string().optional(),
-        installName: z.string().optional(),
       })
       .strict()
       .optional(),

@@ -65,7 +65,7 @@ test("Doctor uses captured or explicit repo paths and only falls back for missin
     const explicit = join(directory, "explicit");
     for (const [path, name] of [[captured, "captured"], [explicit, "explicit"]] as const) {
       await mkdir(path, { recursive: true });
-      await writeFile(join(path, "rig.json"), JSON.stringify({ name, components: {} }));
+      await writeFile(join(path, "rig.yaml"), `name: ${name}\ntools:\n  cli:\n    bin: bin/cli\n`);
     }
     const client = createCliClient(root, captured);
     expect(await client.command({ action: "doctor" })).toMatchObject({ ok: false, checks: expect.arrayContaining([expect.objectContaining({ message: "Project 'captured' configuration is valid." })]) });

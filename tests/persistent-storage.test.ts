@@ -15,41 +15,48 @@ afterEach(async () => {
 
 const config = parseProjectConfig({
   name: "demo",
-  components: {
-    db: { uses: "sqlite", path: "data/app.db" },
-    api: { uses: "convex", port: 3210 },
-    def: { uses: "sqlite" },
+  services: {
+    api: {
+      run: "serve --db ${rig.data}/app.db",
+      ports: { http: "auto" },
+      env: { DATA_DIR: "${rig.data}" },
+    },
   },
+  targets: { preview: { services: { api: { env: { DATA_DIR: "${rig.data}/preview" } } } } },
 });
-const prepared = (target: "local" | "live" | "preview", revision: string) => {
-  const plan = resolveTargetPlan({
+const api = (target: "local" | "live" | "preview", revision: string) =>
+  resolveTargetPlan({
     config,
     target,
     workspacePath: target === "local" ? "/repo" : `/root/targets/p/t/revisions/${revision}`,
-    dataRoot: target === "local" ? "/root/targets/p/t/data" : "/root/targets/p/t/data",
-    assignedPorts: { "api.site": 3211 },
-  });
-  const find = (name: string) => plan.preparedComponents.find((c) => c.name === name)!;
-  return { plan, sqlite: (find("db") as { path: string }).path, convex: (find("api") as { stateDir: string }).stateDir, defaultSqlite: (find("def") as { path: string }).path };
-};
+    dataRoot: "/root/targets/p/t/data",
+    branch: "feature",
+    assignedPorts: { api: 3210 },
+  }).components.find((c) => c.name === "api")!;
 
-test("live and preview plans keep relative sqlite paths and Convex state under the Target's persistent storage across revisions", () => {
-  for (const target of ["live", "preview"] as const) {
-    const first = prepared(target, "r1"), second = prepared(target, "r2");
-    expect(first.sqlite).toBe("/root/targets/p/t/data/data/app.db");
-    expect(second.sqlite).toBe(first.sqlite);
-    expect(first.convex).toBe("/root/targets/p/t/data/convex/api");
-    expect(second.convex).toBe(first.convex);
-    expect(first.defaultSqlite).toBe("/root/targets/p/t/data/sqlite/def.sqlite");
-    const db = first.plan.components.find((c) => c.name === "db")!;
-    expect(db).toMatchObject({ kind: "persistent", path: first.sqlite });
+// `uses: sqlite|convex` plugins are retired: a Service reaches Persistent storage only through ${rig.data}.
+test("every Target's plan resolves ${rig.data} to the Service's directory under the Target's persistent storage, unchanged across revisions", () => {
+  for (const target of ["local", "live", "preview"] as const) {
+    const first = api(target, "r1"), second = api(target, "r2");
+    expect(first).toMatchObject({
+      kind: "managed",
+      command: "serve --db /root/targets/p/t/data/api/app.db",
+      env: { DATA_DIR: target === "preview" ? "/root/targets/p/t/data/api/preview" : "/root/targets/p/t/data/api" },
+    });
+    expect({ command: second.kind === "managed" && second.command, env: second.env }).toEqual({
+      command: first.kind === "managed" && first.command,
+      env: first.env,
+    });
   }
 });
 
-test("local plans resolve relative sqlite paths and Convex state inside the working copy", () => {
-  const local = prepared("local", "unused");
-  expect(local.sqlite).toBe("/repo/data/app.db");
-  expect(local.convex).toBe("/repo/.convex/local/default");
+test("a config that still declares a uses plugin is refused as the retired component schema", () => {
+  expect(() =>
+    parseProjectConfig({ name: "demo", components: { db: { uses: "sqlite", path: "data/app.db" } } }),
+  ).toThrow(expect.objectContaining({ code: "legacy_config" }));
+  expect(() =>
+    parseProjectConfig({ name: "demo", services: { db: { uses: "sqlite" } } }),
+  ).toThrow("Invalid Project configuration");
 });
 
 function record(root: string, workspacePath: string, stateDir: string): TargetRecord {

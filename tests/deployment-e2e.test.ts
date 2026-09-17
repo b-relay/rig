@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { rigFixture } from "./support/rig-fixture";
 
@@ -12,20 +12,15 @@ test("real Branch deployment preserves policy, persistent data, no-op stops, and
       `Bun.serve({hostname:'127.0.0.1',port:Number(process.env.PORT),fetch:()=>new Response('first')});`,
     );
     await writeFile(
-      join(f.repo, "rig.json"),
-      JSON.stringify({
-        name: "demo",
-        components: {
-          db: { uses: "sqlite" },
-          web: {
-            mode: "managed",
-            command: `'${process.execPath}' server.ts`,
-            health: "http://127.0.0.1:${web.port}",
-            env: { PORT: "${web.port}" },
-            dependsOn: ["db"],
-          },
-        },
-      }),
+      join(f.repo, "rig.yaml"),
+      `name: demo
+services:
+  web:
+    run: "'${process.execPath}' server.ts"
+    ports: { http: auto }
+    ready: http://127.0.0.1:\${services.web.ports.http}
+    env: { PORT: "\${services.web.ports.http}", DATA_DIR: "\${rig.data}" }
+`,
     );
     let commit = await f.commit();
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
@@ -41,9 +36,12 @@ test("real Branch deployment preserves policy, persistent data, no-op stops, and
         await readFile(join(f.root, "runtime", "state.json"), "utf8"),
       ),
       target = state.targets[0];
-    const persistent = target.plan.components.find(
-      (c: any) => c.kind === "persistent",
-    ).path;
+    // ${rig.data} is the Service's directory under the Target's Persistent storage.
+    const dataDir = target.plan.components.find((c: any) => c.name === "web")
+      .env.DATA_DIR;
+    expect(dataDir).toBe(join(target.plan.dataRoot, "web"));
+    const persistent = join(dataDir, "app.db");
+    await mkdir(dataDir, { recursive: true });
     await writeFile(persistent, "precious database bytes");
     await writeFile(
       join(f.repo, "server.ts"),
@@ -65,14 +63,15 @@ test("real Branch deployment preserves policy, persistent data, no-op stops, and
     expect(status.targets.find((t: any) => t.name === "live").state).toBe(
       "stopped",
     );
+    // Uncommitted working-copy policy never reaches the Stable Target: it restarts from its recorded plan.
     await writeFile(
-      join(f.repo, "rig.json"),
-      JSON.stringify({
-        name: "demo",
-        components: {
-          bad: { mode: "managed", command: "exit 99", port: 19999 },
-        },
-      }),
+      join(f.repo, "rig.yaml"),
+      `name: demo
+services:
+  bad:
+    run: exit 99
+    ports: { http: 19999 }
+`,
     );
     expect(await f.rig(["up", "live", "--json"])).toMatchObject({ code: 0 });
     const after = JSON.parse(
@@ -123,14 +122,14 @@ test("CLI Preview destroy removes owned storage after stopping the real process 
     await f.git(["init", "-b", "main"]);
     await writeFile(join(f.repo, "server.ts"), `setInterval(() => {}, 1000);`);
     await writeFile(
-      join(f.repo, "rig.json"),
-      JSON.stringify({
-        name: "demo",
-        components: {
-          db: { uses: "sqlite" },
-          web: { mode: "managed", command: `'${process.execPath}' server.ts` },
-        },
-      }),
+      join(f.repo, "rig.yaml"),
+      `name: demo
+services:
+  web:
+    run: "'${process.execPath}' server.ts"
+    ports: { http: auto }
+    env: { DATA_DIR: "\${rig.data}" }
+`,
     );
     await f.commit();
     await f.git(["checkout", "-b", "review"]);
@@ -142,9 +141,11 @@ test("CLI Preview destroy removes owned storage after stopping the real process 
     const target = JSON.parse(
       await readFile(join(f.root, "runtime", "state.json"), "utf8"),
     ).targets[0];
-    const database = target.plan.components.find(
-      (c: any) => c.kind === "persistent",
-    ).path;
+    const dataDir = target.plan.components.find((c: any) => c.name === "web")
+      .env.DATA_DIR;
+    expect(dataDir).toBe(join(target.plan.dataRoot, "web"));
+    const database = join(dataDir, "app.db");
+    await mkdir(dataDir, { recursive: true });
     await writeFile(database, "preview-owned bytes");
     expect(
       await f.rig(["down", "preview", "--deployment", "review"]),

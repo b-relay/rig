@@ -348,6 +348,8 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
             repoPath: "/workspace",
             productionBranch: "main",
             currentBranch: "main",
+            targets: { working: "local", stable: "live" },
+            selected: "stable",
           };
         return { project: "test", outcome: "unchanged" };
       },
@@ -404,17 +406,15 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
         "app",
         "--production-branch",
         "production",
-        "--uses",
-        "sqlite,postgres",
-        "--managed",
+        "--service",
         "web",
-        "--managed-command",
+        "--run",
         "bun web.ts",
-        "--managed-port",
+        "--port",
         "3010",
-        "--installed",
+        "--tool",
         "app",
-        "--installed-entrypoint",
+        "--bin",
         "app.ts",
       ],
       dependencies,
@@ -425,9 +425,8 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     repoPath: "/other",
     project: "app",
     productionBranch: "production",
-    uses: ["sqlite", "postgres"],
-    managed: { name: "web", command: "bun web.ts", port: 3010 },
-    installed: { name: "app", entrypoint: "app.ts" },
+    service: { name: "web", run: "bun web.ts", port: 3010 },
+    tool: { name: "app", bin: "app.ts" },
   });
   expect(
     await runRigCli(
@@ -671,9 +670,15 @@ test("config and doctor expose user views while suppressing editor metadata and 
   expect(await runRigCli(["doctor"], dependencies)).toBe(0);
   expect(text).toBe("Host and pantry healthy\nNo problems found.\n");
   text = "";
-  result = { ok: true, checks: [], note: "Project checks were skipped: no Project selected." };
+  result = {
+    ok: true,
+    checks: [],
+    note: "Project checks were skipped: no Project selected.",
+  };
   expect(await runRigCli(["doctor"], dependencies)).toBe(0);
-  expect(text).toBe("Host healthy\nNo problems found.\nProject checks were skipped: no Project selected.\n");
+  expect(text).toBe(
+    "Host healthy\nNo problems found.\nProject checks were skipped: no Project selected.\n",
+  );
   text = "";
   result = {
     ok: false,
@@ -723,7 +728,7 @@ test("scoped JSON also renders usage failures before a daemon request is created
     wait: async () => {},
     newOperationId: () => "unused",
   };
-  expect(await runRigCli(["up", "nonsense", "--json"], dependencies)).toBe(1);
+  expect(await runRigCli(["up", "preview", "--json"], dependencies)).toBe(1);
   expect(JSON.parse(text)).toMatchObject({ error: { code: "USAGE" } });
   expect(errors).toBe("");
   expect(calls).toBe(0);
@@ -768,18 +773,31 @@ test("follow reports daemon failure even when cancellation happens during the fa
   let calls = 0;
   let errors = "";
   const exit = await runRigCli(["logs", "live", "--follow"], {
-    root: "/isolated/.rig", cwd: "/workspace", signal: controller.signal,
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    signal: controller.signal,
     wait: async () => {},
     client: {
-      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status");
+      },
       async command() {
         if (++calls === 1) return { entries: [], cursor: "opaque-a" };
         controller.abort();
         throw new Error("daemon failed during read");
       },
     },
-    output: { write() {}, error(value) { errors += value; } },
-    diagnostics: { async record() { return {}; } },
+    output: {
+      write() {},
+      error(value) {
+        errors += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
     newOperationId: () => "follow-failure",
   });
   expect(exit).toBe(1);
@@ -791,26 +809,47 @@ for (const when of ["before start", "during wait", "after page"] as const) {
   test(`follow cancellation ${when} stops without another poll`, async () => {
     const controller = new AbortController();
     const { waitForLogPoll } = await import("../adapters/log-follow-scheduler");
-    let polls = 0, waits = 0;
+    let polls = 0,
+      waits = 0;
     if (when === "before start") controller.abort();
     const start = performance.now();
-    expect(await runRigCli(["logs", "live", "--follow"], {
-      root: "/isolated/.rig", cwd: "/workspace", signal: controller.signal,
-      async wait(milliseconds, signal) {
-        waits++;
-        expect(milliseconds).toBe(250);
-        expect(signal).toBe(controller.signal);
-        queueMicrotask(() => controller.abort());
-        await waitForLogPoll(milliseconds, signal);
-      },
-      client: {
-        async status() { throw new Error("Unexpected status"); },
-        async command() { polls++; return { entries: [], cursor: "opaque" }; },
-      },
-      output: { write() { if (when === "after page") controller.abort(); }, error(value) { throw new Error(value); } },
-      diagnostics: { async record() { return {}; } },
-      newOperationId: () => "cancel-follow",
-    })).toBe(0);
+    expect(
+      await runRigCli(["logs", "live", "--follow"], {
+        root: "/isolated/.rig",
+        cwd: "/workspace",
+        signal: controller.signal,
+        async wait(milliseconds, signal) {
+          waits++;
+          expect(milliseconds).toBe(250);
+          expect(signal).toBe(controller.signal);
+          queueMicrotask(() => controller.abort());
+          await waitForLogPoll(milliseconds, signal);
+        },
+        client: {
+          async status() {
+            throw new Error("Unexpected status");
+          },
+          async command() {
+            polls++;
+            return { entries: [], cursor: "opaque" };
+          },
+        },
+        output: {
+          write() {
+            if (when === "after page") controller.abort();
+          },
+          error(value) {
+            throw new Error(value);
+          },
+        },
+        diagnostics: {
+          async record() {
+            return {};
+          },
+        },
+        newOperationId: () => "cancel-follow",
+      }),
+    ).toBe(0);
     expect(performance.now() - start).toBeLessThan(250);
     expect(polls).toBe(when === "before start" ? 0 : 1);
     expect(waits).toBe(when === "during wait" ? 1 : 0);
@@ -832,7 +871,13 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
         asked.push(request.action);
         if (request.action === "queue")
           return {
-            running: { operationId: "slow-up", action: "up", project: "alpha", target: "live", startedAt: "2026-09-14T10:00:00.000Z" },
+            running: {
+              operationId: "slow-up",
+              action: "up",
+              project: "alpha",
+              target: "live",
+              startedAt: "2026-09-14T10:00:00.000Z",
+            },
             waiting: 2,
           };
         return await new Promise((resolve) => (finish = resolve));
@@ -862,7 +907,13 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
   expect(text).toContain("slow-up");
   expect(text).toContain("alpha live up");
   expect(text).toContain("1 more");
-  finish({ project: "beta", target: "live", action: "up", outcome: "started", operationId: "mine" });
+  finish({
+    project: "beta",
+    target: "live",
+    action: "up",
+    outcome: "started",
+    operationId: "mine",
+  });
   expect(await run).toBe(0);
   expect(text).toContain("beta live started");
 });
@@ -937,7 +988,9 @@ test("rig activity shows each record's message and Operation id, and rig activit
       "",
     ].join("\n"),
   );
-  expect(requests).toMatchObject([{ action: "activity", repoPath: "/workspace" }]);
+  expect(requests).toMatchObject([
+    { action: "activity", repoPath: "/workspace" },
+  ]);
   expect(requests[0]).not.toHaveProperty("operation");
   text = "";
   result = { operations: [], operation: "0b1f2c3d-op" };
@@ -974,7 +1027,11 @@ test.each([
           throw new Error("Unexpected status read");
         },
         async command(): Promise<unknown> {
-          throw new RigError(code, "Something you can fix.", "Fix it this way.");
+          throw new RigError(
+            code,
+            "Something you can fix.",
+            "Fix it this way.",
+          );
         },
       },
       output: {
@@ -1063,14 +1120,20 @@ test("an invalid --project or --deployment is refused by rig before any request,
 test("Ctrl-C after a mutation is submitted is acknowledged, and a second one detaches with exit 130", async () => {
   const cancel = new AbortController();
   const detach = new AbortController();
-  let text = "", errors = "";
+  let text = "",
+    errors = "";
   const events: { event: string; operationId?: string }[] = [];
   const submitted: (AbortSignal | undefined)[] = [];
   const exit = await runRigCli(["up", "local"], {
-    root: "/isolated/.rig", cwd: "/workspace", signal: cancel.signal, detach: detach.signal,
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    signal: cancel.signal,
+    detach: detach.signal,
     wait: async () => {},
     client: {
-      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status");
+      },
       command(request, signal) {
         if (request.action === "queue") return Promise.resolve({});
         submitted.push(signal);
@@ -1079,13 +1142,23 @@ test("Ctrl-C after a mutation is submitted is acknowledged, and a second one det
       },
     },
     output: {
-      write(value) { text += value; },
+      write(value) {
+        text += value;
+      },
       error(value) {
         errors += value;
         if (value.includes("Ctrl-C again")) setTimeout(() => detach.abort(), 5);
       },
     },
-    diagnostics: { async record(entry) { events.push({ event: entry.event, ...(entry.operationId ? { operationId: entry.operationId } : {}) }); return {}; } },
+    diagnostics: {
+      async record(entry) {
+        events.push({
+          event: entry.event,
+          ...(entry.operationId ? { operationId: entry.operationId } : {}),
+        });
+        return {};
+      },
+    },
     newOperationId: () => "slow-up",
   });
   expect(exit).toBe(130);
@@ -1095,26 +1168,52 @@ test("Ctrl-C after a mutation is submitted is acknowledged, and a second one det
   expect(errors).toContain("rig activity slow-up");
   expect(text).toBe("");
   expect(submitted).toEqual([detach.signal]);
-  expect(events).toEqual([{ event: "command.started", operationId: "slow-up" }, { event: "command.detached", operationId: "slow-up" }]);
+  expect(events).toEqual([
+    { event: "command.started", operationId: "slow-up" },
+    { event: "command.detached", operationId: "slow-up" },
+  ]);
 });
 
 test("a mutation that finishes after the first Ctrl-C still renders its result and exits 0", async () => {
   const cancel = new AbortController();
-  let text = "", errors = "";
+  let text = "",
+    errors = "";
   const exit = await runRigCli(["up", "live", "--project", "beta"], {
-    root: "/isolated/.rig", cwd: "/workspace", signal: cancel.signal, detach: new AbortController().signal,
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    signal: cancel.signal,
+    detach: new AbortController().signal,
     wait: async () => {},
     client: {
-      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status");
+      },
       async command(request) {
         if (request.action === "queue") return {};
         cancel.abort();
         await new Promise((resolve) => setTimeout(resolve, 5));
-        return { project: "beta", target: "live", action: "up", outcome: "started", operationId: "mine" };
+        return {
+          project: "beta",
+          target: "live",
+          action: "up",
+          outcome: "started",
+          operationId: "mine",
+        };
       },
     },
-    output: { write(value) { text += value; }, error(value) { errors += value; } },
-    diagnostics: { async record() { return {}; } },
+    output: {
+      write(value) {
+        text += value;
+      },
+      error(value) {
+        errors += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
     newOperationId: () => "mine",
   });
   expect(exit).toBe(0);
@@ -1127,20 +1226,43 @@ test("Ctrl-C during a read is passed to the client, and the aborted read exits 0
   let text = "";
   let received: AbortSignal | undefined;
   const exit = await runRigCli(["list"], {
-    root: "/isolated/.rig", cwd: "/workspace", signal: cancel.signal,
+    root: "/isolated/.rig",
+    cwd: "/workspace",
+    signal: cancel.signal,
     wait: async () => {},
     client: {
-      async status(): Promise<ProjectStatusReport> { throw new Error("Unexpected status"); },
+      async status(): Promise<ProjectStatusReport> {
+        throw new Error("Unexpected status");
+      },
       command(_request, signal) {
         received = signal;
         return new Promise((_resolve, reject) => {
-          signal?.addEventListener("abort", () => reject(new RigError("CANCELLED", "The operation was cancelled.", "Retry.")));
+          signal?.addEventListener("abort", () =>
+            reject(
+              new RigError(
+                "CANCELLED",
+                "The operation was cancelled.",
+                "Retry.",
+              ),
+            ),
+          );
           queueMicrotask(() => cancel.abort());
         });
       },
     },
-    output: { write(value) { text += value; }, error(value) { text += value; } },
-    diagnostics: { async record() { return {}; } },
+    output: {
+      write(value) {
+        text += value;
+      },
+      error(value) {
+        text += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
     newOperationId: () => "read",
   });
   expect(exit).toBe(0);
@@ -1183,16 +1305,13 @@ test("help names an unknown command and fails, while help <command> and <command
   expect(await runRigCli(["help", "nonsense"], dependencies)).toBe(1);
   expect(sink.text).toContain("Unknown command 'nonsense'.");
   expect(sink.text).toContain("Run rig --help.");
-  for (const path of [
-    ["help", "deploy"],
-    ["deploy", "help"],
-    ["help", "deploy", "preview"],
-    ["help"],
-  ]) {
+  for (const path of [["help", "deploy"], ["deploy", "help"], ["help"]]) {
     sink.text = "";
     expect(await runRigCli(path, dependencies)).toBe(0);
     expect(sink.text).toContain(
-      path.length === 1 ? "Usage: rig " : `Usage: rig ${path.filter((part) => part !== "help").join(" ")}`,
+      path.length === 1
+        ? "Usage: rig "
+        : `Usage: rig ${path.filter((part) => part !== "help").join(" ")}`,
     );
   }
 });
@@ -1201,8 +1320,11 @@ test("a usage error hints the failing subcommand's own help", async () => {
   const dependencies = quietDependencies(sink);
   for (const [path, hint] of [
     [["up", "--bogus"], "Run rig up --help."],
-    [["deploy", "preview", "--bogus"], "Run rig deploy preview --help."],
-    [["deploy", "bogus"], "Run rig deploy --help."],
+    [["deploy", "preview", "--bogus"], "Run rig deploy --help."],
+    [
+      ["deploy", "live", "--deployment", "x"],
+      "rig deploy preview --deployment",
+    ],
     [["nonsense"], "Run rig --help."],
   ] as const) {
     sink.text = "";

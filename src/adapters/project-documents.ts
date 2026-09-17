@@ -7,6 +7,7 @@ import {
   readHostConfig,
   readProjectConfig,
   resolveTargetPlan,
+  scaffoldProjectConfig,
 } from "../config";
 import type { ProjectDocuments } from "../runtime/contracts";
 import type {
@@ -94,16 +95,15 @@ export function createProjectDocuments(
     async initialize(path, command) {
       const { repoPath, name, existing, productionBranch } =
         await inspectInitialization(path, command, reads);
+      // An invalid scaffold is refused before Git or the config file is touched.
+      const scaffold = existing
+        ? undefined
+        : scaffoldProjectConfig({ ...command, name, productionBranch });
       await ensureProjectGit(
         { path: repoPath, project: name, createGit: command.createGit },
         discovery,
       );
-      if (existing) return existing;
-      return await initializeProjectConfig(repoPath, {
-        ...command,
-        name,
-        productionBranch,
-      });
+      return existing ?? (await initializeProjectConfig(repoPath, scaffold!));
     },
     async rename(project, name) {
       const document = await readProjectConfig(project.repoPath);
@@ -168,7 +168,7 @@ export async function inspectInitialization(
     );
   // The checked-out branch is never assumed to be Production; the host default stands in for origin/HEAD.
   const productionBranch =
-    existing?.config.live?.deployBranch ??
+    existing?.config.production_branch ??
     command.productionBranch ??
     location.productionBranch ??
     (await reads.hostConfig()).deploy.productionBranch;

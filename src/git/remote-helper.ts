@@ -14,7 +14,7 @@ import { inheritedEnvironment } from "../daemon/environment";
 import { runCommand } from "../providers/command-runner";
 import type { CommandRunner } from "../providers/contracts";
 import { inspectProjectGit, createProjectDiscovery } from "./project";
-import { targetName } from "../runtime/targets";
+import { previewName } from "../runtime/targets";
 
 export interface RemoteHelperDependencies {
   repoPath: string;
@@ -140,14 +140,9 @@ export async function runRemoteHelper(
             !target.transitionPending
           ) {
             const canonical =
-              target.kind === "live"
-                ? target.name === "live"
-                : target.kind === "preview" &&
-                  target.name ===
-                    targetName({
-                      target: "preview",
-                      branch: target.branch,
-                    });
+              target.kind === "live" ||
+              (target.kind === "preview" &&
+                target.name === previewName({ branch: target.branch }));
             if (!canonical) continue;
             await dependencies.source.verifyBranch(target.branch);
             // A recreated or rebased local Branch would be rejected by git against the old Commit with a hint to

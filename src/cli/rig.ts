@@ -206,7 +206,6 @@ function requestsStructuredOutput(args: readonly string[]): boolean {
   const options = end < 0 ? args : args.slice(0, end);
   return (
     options.includes("--json") &&
-    (["status", "up", "down", "restart"].includes(args[0] ?? "") ||
-      (args[0] === "deploy" && ["live", "preview"].includes(args[1] ?? "")))
+    ["status", "up", "down", "restart", "deploy"].includes(args[0] ?? "")
   );
 }

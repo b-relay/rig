@@ -34,14 +34,17 @@ test("legacy migration, explicit ownership and real daemon preserve recorded sou
       "process.stdout.write('installed tool\\n')",
     );
     await writeFile(
-      join(f.repo, "rig.json"),
-      JSON.stringify({
-        name: "demo",
-        components: {
-          web: { mode: "managed", command, port, env: { PORT: String(port) } },
-          tool: { mode: "installed", entrypoint: "tool.ts" },
-        },
-      }),
+      join(f.repo, "rig.yaml"),
+      `name: demo
+services:
+  web:
+    run: "${command}"
+    ports: { http: ${port} }
+    env: { PORT: "${port}" }
+tools:
+  tool:
+    bin: tool.ts
+`,
     );
     await f.git(["init", "-b", "main"]);
     const commit = await f.commit();
@@ -138,6 +141,9 @@ test("legacy migration, explicit ownership and real daemon preserve recorded sou
     await writeFile(legacyPath, original);
     const preview = await readLegacyState(f.root);
     expect(preview.issues).toEqual([]);
+    expect(
+      preview.warnings.some((issue) => issue.code === "invalid_current_config"),
+    ).toBe(false);
     await migrateLegacyState(f.root, { expectedRevision: preview.revision });
     await expect(createAdoptionGuard(f.root)()).rejects.toMatchObject({
       code: "LEGACY_ADOPTION_PENDING",

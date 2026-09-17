@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { z } from "zod";
-import { readProjectConfig, ConfigError } from "../config/index";
+import { readProjectConfig } from "../config/index";
 import { RigError } from "../domain/errors";
 import {
   legacyStateSchema,
@@ -342,13 +342,11 @@ async function buildPreview(
         record.repoPath = repository;
         record.configPath = document.path;
       }
-    } catch (error) {
-      const ambiguous =
-        error instanceof ConfigError && error.code === "ambiguous_config";
-      (ambiguous ? preview.issues : preview.warnings).push({
-        code: ambiguous ? "ambiguous_current_config" : "invalid_current_config",
+    } catch {
+      preview.warnings.push({
+        code: "invalid_current_config",
         message:
-          "The registered repository has missing, ambiguous, or invalid current configuration.",
+          "The registered repository has missing, legacy-format, or invalid current configuration.",
         project: project.name,
       });
     }

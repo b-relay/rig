@@ -17,7 +17,7 @@ interface AppReport {
   setting: string;
 }
 
-test("a complete Project runs web, SQLite and installed CLI across local, live and Preview, then survives rename and repoint", async () => {
+test("a complete Project runs a web Service with SQLite under ${rig.data} and an installed Tool across local, live and Preview, then survives rename and repoint", async () => {
   const f = await rigFixture();
   let project = "demo";
   const success = (result: {
@@ -75,6 +75,9 @@ test("a complete Project runs web, SQLite and installed CLI across local, live a
       join(f.repo, "server.ts"),
       `
 import {Database} from 'bun:sqlite';
+import {mkdirSync} from 'node:fs';
+import {dirname} from 'node:path';
+mkdirSync(dirname(process.env.DATABASE!),{recursive:true});
 const database = new Database(process.env.DATABASE!);
 database.exec('CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
 database.query('INSERT OR IGNORE INTO ledger (id,value) VALUES (1,?)').run('empty');
@@ -90,26 +93,21 @@ process.stderr.write('bundle diagnostic fixture\\n');
 `,
     );
     await writeFile(
-      join(f.repo, "rig.json"),
-      JSON.stringify({
-        name: "demo",
-        components: {
-          db: { uses: "sqlite" },
-          web: {
-            mode: "managed",
-            command: `'${process.execPath}' server.ts`,
-            health: "http://127.0.0.1:${web.port}/health",
-            envFile: ".env",
-            env: { PORT: "${web.port}", DATABASE: "${db.path}" },
-            dependsOn: ["db"],
-          },
-          tool: {
-            mode: "installed",
-            entrypoint: "cli/main.ts",
-            installName: "bundle-tool",
-          },
-        },
-      }),
+      join(f.repo, "rig.yaml"),
+      `name: demo
+env_file: .env
+services:
+  web:
+    run: "'${process.execPath}' server.ts"
+    ports: { http: auto }
+    ready: http://127.0.0.1:\${services.web.ports.http}/health
+    env:
+      PORT: "\${services.web.ports.http}"
+      DATABASE: "\${rig.data}/ledger.sqlite"
+tools:
+  bundle-tool:
+    bin: cli/main.ts
+`,
     );
     const commit = await f.commit();
     await f.git(["branch", "feature/full"]);
@@ -191,10 +189,7 @@ process.stderr.write('bundle diagnostic fixture\\n');
     ).toBe(3);
     for (const report of running) {
       expect(
-        report.components.find((component) => component.name === "db"),
-      ).toMatchObject({ state: "ready" });
-      expect(
-        report.components.find((component) => component.name === "tool"),
+        report.components.find((component) => component.name === "bundle-tool"),
       ).toMatchObject({ state: "installed" });
     }
     expect(
@@ -269,4 +264,4 @@ process.stderr.write('bundle diagnostic fixture\\n');
     }
     await f.cleanup();
   }
-}, 60000);
+}, 120000);

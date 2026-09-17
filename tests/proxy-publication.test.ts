@@ -129,8 +129,8 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
   const config = parseProjectConfig({
     name: "app",
     domain: "app.example.test",
-    live: { proxy: { upstream: "web" } },
-    components: { web: { mode: "managed", command: "serve", port: 4000 } },
+    services: { web: { run: "serve", ports: { http: 4000 } } },
+    proxy: { "/": "${services.web.ports.http}" },
   });
   const plan = resolveTargetPlan({
     config,
@@ -181,7 +181,7 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
         observationDeadline: timerObservationDeadline,
         documents: {
           async read() {
-            return { path: "/repo/rig.yaml", format: "yaml", revision: "r", config };
+            return { path: "/repo/rig.yaml", revision: "r", config };
           },
         },
         async inspectProxy() {

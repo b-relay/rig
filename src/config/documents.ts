@@ -19,26 +19,26 @@ import {
 } from "yaml";
 import { acquireProcessLock, type LockHeld } from "../adapters/process-lock";
 import { ConfigError } from "./errors.js";
-import { applyJsonEdits, applyYamlEdits, type ConfigEdit } from "./editor.js";
+import { applyYamlEdits, type ConfigEdit } from "./editor.js";
 export type { ConfigEdit } from "./editor.js";
-import { parseHostConfig, parseProjectConfig } from "./schema.js";
+import {
+  DEFAULT_TARGET_NAMES,
+  parseHostConfig,
+  parseProjectConfig,
+} from "./schema.js";
 import type { ConfigDocument, HostConfig, ProjectConfig } from "./types.js";
 const revisionOf = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 const missing = (error: unknown): boolean =>
   error instanceof Error && "code" in error && error.code === "ENOENT";
-/** Filesystem effect owner: probes both canonical names, preserving permission failures. */
+/** Filesystem effect owner: finds the YAML document and refuses a retired JSON document instead of reading or ignoring it; permission failures are preserved. */
 async function locateConfig(
   directory: string,
   stem: string,
 ): Promise<string | undefined> {
-  const candidates = [
-    join(directory, `${stem}.yaml`),
-    join(directory, `${stem}.json`),
-  ];
-  const found = (
-    await Promise.all(
-      candidates.map(async (path) => {
+  const [yaml, json] = await Promise.all(
+    [join(directory, `${stem}.yaml`), join(directory, `${stem}.json`)].map(
+      async (path) => {
         try {
           await access(path);
           return path;
@@ -50,17 +50,19 @@ async function locateConfig(
             { path },
           );
         }
-      }),
-    )
-  ).filter((path): path is string => !!path);
-  if (found.length > 1)
+      },
+    ),
+  );
+  if (json)
     throw new ConfigError(
-      "Both YAML and JSON config documents exist.",
-      "ambiguous_config",
-      { paths: found },
-      "Keep exactly one .yaml or .json config document; Rig will not choose or merge them.",
+      `${stem}.json is a retired configuration format.`,
+      "legacy_format",
+      { path: json, ...(yaml ? { yamlPath: yaml } : {}) },
+      yaml
+        ? `Rig reads only ${stem}.yaml and will not choose between two documents; remove ${json} once ${yaml} holds the converted configuration.`
+        : `Convert ${json} to ${stem}.yaml in the current schema, then remove it; Rig never converts or guesses a config silently.`,
     );
-  return found[0];
+  return yaml;
 }
 /** Pure YAML 1.2 parser. Restrictions run on the syntax tree before domain validation. */
 function yamlDocument(raw: string, path: string) {
@@ -114,13 +116,9 @@ function decodeDocument<T>(
   path: string,
   validate: (value: unknown) => T,
 ): ConfigDocument<T> {
-  const format = path.endsWith(".yaml") ? "yaml" : "json";
   let value: unknown;
   try {
-    value =
-      format === "yaml"
-        ? yamlDocument(raw, path).toJS({ maxAliasCount: 0 })
-        : JSON.parse(raw);
+    value = yamlDocument(raw, path).toJS({ maxAliasCount: 0 });
   } catch (error) {
     if (error instanceof ConfigError) throw error;
     throw new ConfigError(
@@ -129,7 +127,7 @@ function decodeDocument<T>(
       { path },
     );
   }
-  return { path, format, revision: revisionOf(raw), config: validate(value) };
+  return { path, revision: revisionOf(raw), config: validate(value) };
 }
 async function readDocument<T>(
   path: string,
@@ -181,7 +179,7 @@ export async function readProjectConfig(
         "Run rig repoint <new path> --project <name> to register the moved directory.",
       );
     throw new ConfigError(
-      "No rig.yaml or rig.json found.",
+      "No rig.yaml found.",
       "missing_config",
       { repoPath },
       "Run rig init from the Project repository.",
@@ -213,17 +211,17 @@ export async function discoverProject(
     directory = parent;
   }
 }
-/** Reads Host configuration, returning defaults only when neither canonical document exists. */
+/** Reads Host configuration from config.yaml, returning defaults only when no Host document exists. */
 export async function readHostConfig(stateRoot: string): Promise<HostConfig> {
   const path = await locateConfig(resolve(stateRoot), "config");
   return path
     ? (await readDocument(path, parseHostConfig)).config
     : parseHostConfig({});
 }
-/** Creates a new canonical YAML document exclusively; existing JSON or YAML remains untouched. */
+/** Creates a new YAML document exclusively; an existing document remains untouched. */
 export async function initializeProjectConfig(
   repoPath: string,
-  input: InitializeProjectInput,
+  config: ProjectConfig,
 ): Promise<ConfigDocument<ProjectConfig>> {
   if (await locateConfig(repoPath, "rig"))
     throw new ConfigError(
@@ -232,7 +230,6 @@ export async function initializeProjectConfig(
       { repoPath },
       "Use rig config to inspect the existing Project.",
     );
-  const config = scaffoldProjectConfig(input);
   const path = join(repoPath, "rig.yaml");
   await writeFile(path, stringify(config), { flag: "wx" });
   return readDocument(path, parseProjectConfig);
@@ -255,7 +252,7 @@ export async function readProjectConfigSource(
 ): Promise<ProjectConfigSource> {
   const path = await locateConfig(resolve(repoPath), "rig");
   if (!path)
-    throw new ConfigError("No rig.yaml or rig.json found.", "missing_config", {
+    throw new ConfigError("No rig.yaml found.", "missing_config", {
       repoPath,
     });
   return readDocumentSource(path, parseProjectConfig);
@@ -272,16 +269,9 @@ function prepareEdit(
       { path },
       "Read the current config before retrying the edit.",
     );
-  let output: string;
-  if (path.endsWith(".yaml")) {
-    const ast = yamlDocument(raw, path);
-    applyYamlEdits(ast, input.edits);
-    output = ast.toString();
-  } else {
-    const config: Record<string, unknown> = JSON.parse(raw);
-    applyJsonEdits(config, input.edits);
-    output = JSON.stringify(config, null, 2) + "\n";
-  }
+  const ast = yamlDocument(raw, path);
+  applyYamlEdits(ast, input.edits);
+  const output = ast.toString();
   return {
     ...decodeDocument(output, path, parseProjectConfig),
     raw: output,
@@ -361,54 +351,52 @@ export interface InitializeProjectInput {
   name: string;
   productionBranch?: string;
   domain?: string;
-  proxy?: string;
-  uses?: readonly ("sqlite" | "postgres" | "convex")[];
-  managed?: { name: string; command: string; port?: number; health?: string };
-  installed?: {
-    name: string;
-    entrypoint: string;
-    build?: string;
-    installName?: string;
-  };
+  service?: { name: string; run: string; port?: number; ready?: string };
+  tool?: { name: string; bin: string; build?: string };
 }
-/** Pure initial Project policy. Initialization never replaces an existing document. */
+/** Pure initial Project policy: one optional Service, routed at '/' when a domain is given, and one optional Tool. */
 export function scaffoldProjectConfig(
   input: InitializeProjectInput,
 ): ProjectConfig {
-  const components: Record<string, unknown> = {};
-  for (const uses of input.uses ?? []) components[uses] = { uses };
-  if (input.managed) {
-    const { name, ...fields } = input.managed;
-    if (components[name])
-      throw new ConfigError(
-        "Initial Component names must be unique.",
-        "duplicate_component",
-        { name },
-      );
-    components[name] = { mode: "managed", ...fields };
-  }
-  if (input.installed) {
-    const { name, ...fields } = input.installed;
-    if (components[name])
-      throw new ConfigError(
-        "Initial Component names must be unique.",
-        "duplicate_component",
-        { name },
-      );
-    components[name] = { mode: "installed", ...fields };
-  }
-  const proxy = input.proxy ? { proxy: { upstream: input.proxy } } : {};
-  // The base domain is the Stable Target's hostname; local and every Preview get their own subdomain under it.
+  const { service, tool } = input;
+  if (!service && !tool)
+    throw new ConfigError(
+      "A new Project needs a Service or a Tool.",
+      "empty_project",
+      {},
+      "Pass --service <name> --run <command>, or --tool <name> --bin <path>; or write rig.yaml first and run rig init again.",
+    );
   return parseProjectConfig({
     name: input.name,
-    ...(input.domain ? { domain: `\${subdomain}.${input.domain}` } : {}),
-    components,
-    local: { ...proxy },
-    live: {
-      deployBranch: input.productionBranch ?? "main",
-      ...(input.domain ? { domain: input.domain } : {}),
-      ...proxy,
+    production_branch: input.productionBranch ?? "main",
+    ...(input.domain ? { domain: input.domain } : {}),
+    ...(service
+      ? {
+          services: {
+            [service.name]: {
+              run: service.run,
+              ports: { http: service.port ?? "auto" },
+              ...(service.ready ? { ready: service.ready } : {}),
+            },
+          },
+        }
+      : {}),
+    ...(tool
+      ? {
+          tools: {
+            [tool.name]: {
+              ...(tool.build ? { build: tool.build } : {}),
+              bin: tool.bin,
+            },
+          },
+        }
+      : {}),
+    ...(service && input.domain
+      ? { proxy: { "/": `\${services.${service.name}.ports.http}` } }
+      : {}),
+    targets: {
+      working: { name: DEFAULT_TARGET_NAMES.working },
+      stable: { name: DEFAULT_TARGET_NAMES.stable },
     },
-    deployments: { subdomain: "${branchSlug}", ...proxy },
   });
 }

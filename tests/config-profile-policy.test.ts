@@ -1,25 +1,24 @@
 import { expect, test } from "bun:test";
 import { parseHostConfig, parseProjectConfig } from "../src/config";
 
-test("configuration accepts the supported default profile and refuses profiles that cannot select isolated providers", () => {
+test("Host configuration accepts only the default provider profile, and Project configuration cannot select a profile at all", () => {
   expect(parseHostConfig({}).providers.defaultProfile).toBe("default");
-  expect(
-    parseProjectConfig({
-      name: "app",
-      components: {},
-      local: { providerProfile: "default" },
-    }).local?.providerProfile,
-  ).toBe("default");
   for (const profile of ["stub", "isolated-e2e"]) {
     expect(() =>
       parseHostConfig({ providers: { defaultProfile: profile } }),
     ).toThrow("Invalid Host configuration");
-    for (const lane of ["local", "live", "deployments"])
+  }
+  // Provider profiles are Host policy only: a Project cannot select one, at the top level or in a Target patch.
+  for (const profile of ["default", "stub"]) {
+    const project = { name: "app", tools: { cli: { bin: "bin/cli" } } };
+    expect(() =>
+      parseProjectConfig({ ...project, providerProfile: profile }),
+    ).toThrow("Invalid Project configuration");
+    for (const role of ["working", "stable", "preview"])
       expect(() =>
         parseProjectConfig({
-          name: "app",
-          components: {},
-          [lane]: { providerProfile: profile },
+          ...project,
+          targets: { [role]: { providerProfile: profile } },
         }),
       ).toThrow("Invalid Project configuration");
   }

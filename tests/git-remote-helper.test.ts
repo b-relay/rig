@@ -173,11 +173,8 @@ test("failed or acceptance-only daemon replies never acknowledge a successful pu
 });
 
 test("advertises only canonical deployment destinations, excluding custom Previews and ambiguous duplicates", async () => {
-  const { targetName } = await import("../src/runtime/targets");
-  const canonical = targetName({
-    target: "preview",
-    branch: "feature",
-  });
+  const { previewName } = await import("../src/runtime/targets");
+  const canonical = previewName({ branch: "feature" });
   let output = "";
   const targets = [
     { name: "local", kind: "local", branch: "working", commit: "a".repeat(40) },
@@ -201,19 +198,13 @@ test("advertises only canonical deployment destinations, excluding custom Previe
       commit: "e".repeat(40),
     },
     {
-      name: targetName({
-        target: "preview",
-        branch: "duplicate",
-      }),
+      name: previewName({ branch: "duplicate" }),
       kind: "preview",
       branch: "duplicate",
       commit: "a".repeat(40),
     },
     {
-      name: targetName({
-        target: "preview",
-        branch: "duplicate",
-      }),
+      name: previewName({ branch: "duplicate" }),
       kind: "preview",
       branch: "duplicate",
       commit: "b".repeat(40),
@@ -251,18 +242,18 @@ test("advertises only canonical deployment destinations, excluding custom Previe
 });
 
 test("list for-push withholds incomplete or transitioning deployments so git sends the push again", async () => {
-  const { targetName } = await import("../src/runtime/targets");
+  const { previewName } = await import("../src/runtime/targets");
   let output = "";
   const targets = [
     { name: "live", kind: "live", branch: "main", commit: "a".repeat(40), deploymentIncomplete: true },
     {
-      name: targetName({ target: "preview", branch: "fail1" }),
+      name: previewName({ branch: "fail1" }),
       kind: "preview",
       branch: "fail1",
       commit: "b".repeat(40),
       transitionPending: true,
     },
-    { name: targetName({ target: "preview", branch: "done" }), kind: "preview", branch: "done", commit: "c".repeat(40) },
+    { name: previewName({ branch: "done" }), kind: "preview", branch: "done", commit: "c".repeat(40) },
   ];
   const code = await runRemoteHelper("rig://localhost/example", {
     repoPath: "/repo",
@@ -379,12 +370,12 @@ test("a tag or deletion in a push batch is rejected per ref while the Branch in 
 });
 
 test("list for-push withholds a deployment whose local Branch no longer contains it, so a recreated Branch pushes instead of being rejected as non-fast-forward", async () => {
-  const { targetName } = await import("../src/runtime/targets");
+  const { previewName } = await import("../src/runtime/targets");
   let output = "";
   const asked: [string, string][] = [];
   const targets = [
     { name: "live", kind: "live", branch: "main", commit: "a".repeat(40) },
-    { name: targetName({ target: "preview", branch: "c1" }), kind: "preview", branch: "c1", commit: "b".repeat(40) },
+    { name: previewName({ branch: "c1" }), kind: "preview", branch: "c1", commit: "b".repeat(40) },
   ];
   const code = await runRemoteHelper("rig://localhost/example", {
     repoPath: "/repo",

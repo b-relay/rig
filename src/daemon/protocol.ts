@@ -62,7 +62,11 @@ export const commandSchema = z
       .strict()
       .optional(),
     /** The one Service a recipe comparison is narrowed to. */
-    serviceName: z.string().min(1).max(128).optional(),
+    serviceName: z
+      .string()
+      .max(128)
+      .regex(/^[a-z0-9][a-z0-9-]*$/)
+      .optional(),
     createGit: z.boolean().optional(),
     productionBranch: z.string().optional(),
     force: z.boolean().optional(),

@@ -506,3 +506,24 @@ test("the accepted multi-Service example carries the provenance Rig writes, and 
     },
   ]);
 });
+
+test("a '# rig-recipe:' line that is a Service's shell text is not provenance, and a Service argument that is not a name is refused before it is sent or echoed", async () => {
+  const yaml =
+    APP.trimEnd() +
+    "\n  job:\n    run: |\n      sleep 1000\n      # rig-recipe: cache@1 name=job\n" +
+    (await block("cache", "store")) +
+    "  tail:\n    run: sleep 1000 # rig-recipe: cache@1 name=tail\n" +
+    (await block("cache", "last"));
+  const f = await fixture(yaml);
+  expect((await readProjectConfig(join(f.file, ".."))).recipeMarkers).toEqual([
+    { service: "store", recipe: "cache", version: 2, name: "store" },
+    { service: "last", recipe: "cache", version: 2, name: "last" },
+  ]);
+
+  const escape = String.fromCharCode(27);
+  const hostile = await f.rig("recipe", "diff", `x${escape}[2J\nweb: fine`);
+  expect(hostile.code).toBe(1);
+  expect(hostile.err).not.toContain(escape);
+  expect(hostile.err).not.toContain("\nweb: fine");
+  expect(hostile.err).toContain("is not a Service name.");
+});

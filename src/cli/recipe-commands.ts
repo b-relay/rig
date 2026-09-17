@@ -67,13 +67,7 @@ export function addRecipeCommands(
             ? `Bundled versions: ${found.versions.map((each) => each.version).join(", ")}.`
             : "Run rig recipe list to see the bundled recipes.",
         );
-      const service = options.name ?? found.defaultName;
-      if (!SERVICE_NAME.test(service))
-        throw new RigError(
-          "USAGE",
-          `'${terminalText(service)}' is not a Service name.`,
-          "Use lowercase letters, digits or '-', starting with a letter or digit.",
-        );
+      const service = serviceName(options.name ?? found.defaultName);
       output.write(renderRecipe(found, chosen, service));
     });
   recipe
@@ -88,7 +82,18 @@ export function addRecipeCommands(
         action: "recipe-diff",
         repoPath: cwd,
         ...projectScope(options),
-        ...(service === undefined ? {} : { serviceName: service }),
+        ...(service === undefined ? {} : { serviceName: serviceName(service) }),
       }),
     );
+}
+
+/** Refuses text that cannot be a Service key before it is sent anywhere or echoed back. */
+function serviceName(text: string): string {
+  if (!SERVICE_NAME.test(text))
+    throw new RigError(
+      "USAGE",
+      `'${terminalText(text)}' is not a Service name.`,
+      "Use lowercase letters, digits or '-', starting with a letter or digit.",
+    );
+  return text;
 }

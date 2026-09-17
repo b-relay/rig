@@ -111,3 +111,15 @@ two-version `cache` recipe through the same public paths.
   from the old plugins, or none; nothing requires it.
 - **#245** gate: recipes add no runtime dependency. Evidence is
   `tests/recipes.test.ts`; a live PostgreSQL/Convex run was not performed.
+
+## Review (Codex, gpt-6-astra, high, read-only)
+
+**Round 1** (on the first commit): two should-fix findings, both taken.
+
+1. `rig recipe diff <service>` echoed an argument with escape sequences or
+   newlines through the `SERVICE_UNKNOWN` message. The CLI now refuses anything
+   that is not a Service name before sending it (same rule and text as
+   `generate --name`), and the protocol's `serviceName` has the same grammar.
+2. A `# rig-recipe:` line ending the previous Service's block scalar was
+   counted as a second marker of the next Service. The scan is now bounded
+   below by the end of the previous Service's value. Red confirmed for both.

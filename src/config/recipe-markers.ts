@@ -1,4 +1,4 @@
-import { isMap, isScalar, type Document } from "yaml";
+import { isMap, isNode, isScalar, type Document } from "yaml";
 /** What a `# rig-recipe:` comment above a Service says about where the block came from. It is never read when a Target is
  * planned or run: a marker that cannot be understood is kept as `malformed` for a report to mention, not refused. */
 export type RecipeMarker =
@@ -22,9 +22,15 @@ export function recipeMarkers(document: Document, raw: string): RecipeMarker[] {
   const services = document.get("services");
   if (!isMap(services)) return [];
   const markers: RecipeMarker[] = [];
-  for (const { key } of services.items) {
+  let floor = 0;
+  for (const { key, value } of services.items) {
+    // Only what lies between the previous Service's value and this key can be a comment on this key: a `#` line
+    // inside that value's block scalar is the Service's shell text.
+    const from = floor;
+    floor = (isNode(value) ? value.range?.[1] : undefined) ?? floor;
     if (!isScalar(key) || typeof key.value !== "string" || !key.range) continue;
-    const above = raw.slice(0, key.range[0]).split("\n").slice(0, -1);
+    const above = raw.slice(from, key.range[0]).split("\n").slice(0, -1);
+    if (from > 0 && raw[from - 1] !== "\n") above.shift();
     const found: string[] = [];
     for (let at = above.length - 1; at >= 0; at--) {
       const line = above[at]!.trim();

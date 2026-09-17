@@ -794,6 +794,9 @@ async function assertAlive(
     {
       component: component.name,
       ...(exitCode === undefined ? {} : { exitCode }),
+      ...(observation.signal === undefined
+        ? {}
+        : { signal: observation.signal }),
     },
   );
 }

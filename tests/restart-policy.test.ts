@@ -66,8 +66,8 @@ async function fixture(
   const starts: string[] = [];
   const refusal: {
     start?: (request: ManagedProcess) => boolean;
-    /** The process is spawned and is gone, with no record, before it is ready. */
-    survive?: (request: ManagedProcess) => boolean;
+    /** The process is spawned and ends on its own before it is ready, leaving this evidence; `{}` is none. */
+    dies?: (request: ManagedProcess) => { exitCode?: number } | undefined;
     stop?: (key: string) => boolean;
   } = {};
   const supervisor: Supervisor = {
@@ -79,7 +79,13 @@ async function fixture(
         return { outcome: "unchanged" };
       if (refusal.start?.(request)) throw new Error("spawn refused");
       starts.push(request.componentName);
-      if (refusal.survive?.(request)) processes.delete(request.key);
+      const death = refusal.dies?.(request);
+      if (death)
+        processes.set(request.key, {
+          state: "stopped",
+          ...("exitCode" in death ? { incarnation: request.incarnation } : {}),
+          ...death,
+        });
       else
         processes.set(request.key, {
           state: "running",
@@ -558,20 +564,50 @@ test("an automatic start whose rollback cannot be verified leaves an unknown out
   await f.command("up");
   await f.exit("api", { exitCode: 1 });
   f.timing.startGraceMs = 1;
-  f.refusal.survive = () => true;
+  f.refusal.dies = () => ({});
   f.refusal.stop = () => true;
   await settle(f);
   expect(f.starts).toEqual(["api", "api"]);
   expect((await f.target()).services!.api!.outcome).toMatchObject({
     kind: "unknown",
   });
-  delete f.refusal.survive;
+  delete f.refusal.dies;
   delete f.refusal.stop;
   f.clock.ms += 60_000;
   f.reopen();
   await f.reconcile();
   await settle(f);
   expect(f.starts).toEqual(["api", "api"]);
+  expect((await f.status()).api).toMatchObject({
+    state: "failed",
+    exit: "unknown",
+  });
+});
+
+test("an automatic start that ends on its own before it is ready is judged by its evidence: a recorded failure is tried again, an unrecorded end never is", async () => {
+  const f = await fixture({ api: { run: "api", ports: { http: 46061 } } });
+  await f.command("up");
+  f.timing.startGraceMs = 1;
+  await f.exit("api", { exitCode: 1 });
+  f.refusal.dies = () => ({ exitCode: 5 });
+  await settle(f);
+  expect(f.starts).toEqual(["api", "api"]);
+  expect((await f.target()).services!.api!.outcome).toMatchObject({
+    kind: "exited",
+    exitCode: 5,
+  });
+  f.refusal.dies = () => ({});
+  await settle(f);
+  expect(f.starts).toEqual(["api", "api", "api"]);
+  expect((await f.target()).services!.api!.outcome).toMatchObject({
+    kind: "unknown",
+  });
+  delete f.refusal.dies;
+  f.clock.ms += 60_000;
+  f.reopen();
+  await f.reconcile();
+  await settle(f);
+  expect(f.starts).toEqual(["api", "api", "api"]);
   expect((await f.status()).api).toMatchObject({
     state: "failed",
     exit: "unknown",

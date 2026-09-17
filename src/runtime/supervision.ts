@@ -280,7 +280,6 @@ async function superviseService(
   } catch (error) {
     // Every failed attempt spends budget, one refused before anything was spawned too, so a Service that cannot start
     // (a dependency that stays down, say) ends exhausted and visible instead of being asked again forever.
-    // A rollback that could not be verified may have left the new process behind; how that one ends is not known here.
     const code = diagnosticErrorCode(error);
     const { retryAt: _retryAt, ...current } = currentRun(target, service)!;
     await saveRun(
@@ -292,10 +291,7 @@ async function superviseService(
           current.incarnation === run.incarnation
             ? [...current.attempts, now]
             : current.attempts,
-        outcome:
-          code === "START_ROLLBACK_FAILED"
-            ? { kind: "unknown", at: deps.now() }
-            : { kind: "activation-failed", errorCode: code, at: deps.now() },
+        outcome: failedAttemptOutcome(error, deps.now()),
       },
       deps,
       {
@@ -320,6 +316,25 @@ async function superviseService(
     }),
   );
   return undefined;
+}
+
+/** What a failed automatic attempt leaves on record. A start Rig itself stopped is a failure it witnessed. A process that
+ * ended on its own before it was ready is judged like any other exit: by its evidence, and `unknown` without any. A rollback
+ * that could not be verified may have left the process behind, and how that one ends will not be known. */
+function failedAttemptOutcome(error: unknown, at: string): ServiceOutcome {
+  const code = diagnosticErrorCode(error);
+  if (code === "START_ROLLBACK_FAILED") return { kind: "unknown", at };
+  if (code !== "PROCESS_EXITED")
+    return { kind: "activation-failed", errorCode: code, at };
+  const { exitCode, signal } = (error as RigError).details;
+  return typeof exitCode === "number" || typeof signal === "string"
+    ? {
+        kind: "exited",
+        ...(typeof exitCode === "number" ? { exitCode } : {}),
+        ...(typeof signal === "string" ? { signal } : {}),
+        at,
+      }
+    : { kind: "unknown", at };
 }
 
 /** What status says about a Service whose process is stopped, from the record and the observation alone; it writes nothing,

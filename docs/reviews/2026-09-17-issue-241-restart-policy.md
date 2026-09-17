@@ -151,6 +151,13 @@ Round 1, four findings:
 4. *An unobservable sibling exhausts a Service's budget.* Fixed: `recover`
    observes only the Service and what it depends on.
 
+Round 2: findings 2 and 4 closed, 3 withdrawn by the reviewer. One new blocker:
+a replacement that ends on its own before readiness, with no evidence, was
+recorded `activation-failed` and retried because cleanup of the already-dead
+process succeeds. Fixed: `failedAttemptOutcome` judges `PROCESS_EXITED` by the
+exit evidence the error carries (`exited`, retried by policy) and records
+`unknown` without any; only a start Rig itself stopped stays `activation-failed`.
+
 ## Handoff
 
 - **#242** consumes `ActivationJournal.activated(service, incarnation)` (called

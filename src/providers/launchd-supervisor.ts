@@ -17,6 +17,11 @@ import type {
   Supervisor,
 } from "./contracts";
 import { DEFAULT_SHUTDOWN_BUDGET_MS } from "./child-supervisor";
+import {
+  exitEvidence,
+  readExitRecord,
+  removeExitRecord,
+} from "./exit-record";
 export interface LaunchdOptions {
   readonly root: string;
   readonly domain: string;
@@ -55,7 +60,8 @@ export function createLaunchdTiming(): LaunchdTiming {
 }
 /** Polling cadence for the application start and unload waits. */
 const POLL_MS = 100;
-/** launchd owns persistent job lifetime; explicit up preserves already running jobs. */
+/** launchd keeps a job alive across rigd's exit but never respawns it (KeepAlive is false): whether a Service that ended
+ * starts again is the runtime's decision. Explicit up preserves already running jobs. */
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const { run, inspect } = options;
   const { now, wait, applicationStartMs, unloadBudgetMs } = options.timing;
@@ -88,6 +94,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       `${requestPath}.observation.json`,
     ])
       await rm(file, { force: true });
+    await removeExitRecord(options.root, key);
   };
   const unloaded = (result: { exitCode: number; stderr: string }) =>
     result.exitCode !== 0 &&
@@ -104,10 +111,8 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         signal,
         timeoutMs: 2000,
       });
-      if (result.exitCode !== 0)
-        return /could not find service|service not found/i.test(result.stderr)
-          ? { state: "stopped" }
-          : { state: "unknown", reason: "launchd could not inspect the job." };
+      if (result.exitCode !== 0 && !unloaded(result))
+        return { state: "unknown", reason: "launchd could not inspect the job." };
       const pid = result.stdout.match(/^\s*pid = (\d+)\s*$/m);
       if (pid) return options.captureCommand
         ? await readCaptureObservation({
@@ -116,10 +121,11 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
             inspect, now, signal,
           })
         : { state: "running", pid: Number(pid[1]) };
-      const exit = result.stdout.match(/^\s*last exit code = (\d+)\s*$/m);
+      // Loaded without a pid, or no longer loaded. launchd's own last exit code names no start and, under capture, is
+      // the wrapper's; only the wrapper's record of its application's exit is evidence.
       return {
         state: "stopped",
-        ...(exit ? { exitCode: Number(exit[1]) } : {}),
+        ...exitEvidence(await readExitRecord(options.root, key)),
       };
     } catch {
       return {
@@ -130,31 +136,24 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       };
     }
   };
-  /** Waits for the application to run, giving it applicationStartMs after the latest restart the wrapper advertises. */
+  /** Waits up to applicationStartMs for the application to run. */
   const waitForApplication = async (
     key: string,
-    restartAt?: number,
   ): Promise<number | undefined> => {
-    let deadline = Math.max(restartAt ?? 0, now()) + applicationStartMs;
+    const deadline = now() + applicationStartMs;
     let last: ProcessObservation | undefined;
     do {
-      const observation = await observe(key);
-      if (observation.state === "running") return observation.pid;
-      if (observation.restartPending && observation.restartAt !== undefined)
-        deadline = Math.max(deadline, observation.restartAt + applicationStartMs);
-      last = observation;
+      last = await observe(key);
+      if (last.state === "running") return last.pid;
       await wait(POLL_MS);
     } while (now() < deadline);
     throw new RigError(
       "LAUNCHD_START",
-      last?.restartPending
-        ? "The managed job did not restart its application on the schedule it advertised."
-        : "The managed job did not start.",
+      "The managed job did not start.",
       "Inspect the Target logs and retry.",
       {
         key,
         ...(last?.exitCode === undefined ? {} : { exitCode: last.exitCode }),
-        ...(last?.restartPending ? { restartPending: true } : {}),
       },
     );
   };
@@ -164,11 +163,6 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       const before = await observe(request.key);
       if (before.state === "running")
         return { outcome: "unchanged", pid: before.pid };
-      if (before.restartPending)
-        return {
-          outcome: "unchanged",
-          pid: await waitForApplication(request.key, before.restartAt),
-        };
       if (before.state === "unknown")
         throw new RigError(
           "LAUNCHD_UNKNOWN",
@@ -176,6 +170,8 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           "Resolve launchd access before starting it.",
           { key: request.key },
         );
+      // A record left by an earlier start must not explain the end of this one.
+      await removeExitRecord(options.root, request.key);
       await mkdir(options.root, { recursive: true });
       await mkdir(request.logRoot, { recursive: true });
       const jobLabel = label(request.key);
@@ -189,14 +185,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       const plist = join(options.root, `${jobLabel}.plist`);
       await writeFile(
         plist,
-        launchdPlist(
-          {
-            ...request,
-            command,
-            keepAlive: options.captureCommand ? false : request.keepAlive,
-          },
-          jobLabel,
-        ),
+        launchdPlist({ ...request, command }, jobLabel),
         { mode: 0o600 },
       );
       const existing = await run({
@@ -288,5 +277,5 @@ function launchdPlist(request: ManagedProcess, label: string): string {
     )
     .join(
       "",
-    )}</dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><${request.keepAlive ? "true" : "false"}/>\n<key>StandardOutPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stdout.log`))}</string>\n<key>StandardErrorPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stderr.log`))}</string>\n</dict></plist>\n`;
+    )}</dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><false/>\n<key>StandardOutPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stdout.log`))}</string>\n<key>StandardErrorPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stderr.log`))}</string>\n</dict></plist>\n`;
 }

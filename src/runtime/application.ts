@@ -33,6 +33,12 @@ import {
   failureCauses,
 } from "../domain/errors";
 import { resolve as resolvePath } from "node:path";
+import {
+  activationJournal,
+  intendRunning,
+  intendStopped,
+  superviseTarget,
+} from "./supervision";
 import type { RuntimeDependencies } from "./contracts";
 import {
   prepareRegistration,
@@ -80,9 +86,16 @@ async function retireForDestruction(
     throw error;
   }
 }
+/** `nextRetryAt` is when the earliest scheduled automatic restart is due, in Unix milliseconds. */
+export interface SupervisionPass {
+  nextRetryAt?: number;
+}
 export interface RigRuntime extends ProjectStatusReader {
   command(command: RuntimeCommand): Promise<unknown>;
-  reconcile(): Promise<void>;
+  /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
+  reconcile(): Promise<SupervisionPass>;
+  /** A later pass: applies restart policy to the Targets meant to run. Never raises; failures go to the diagnostic log. */
+  supervise(): Promise<SupervisionPass>;
   exclusive<T>(operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
 }
@@ -613,12 +626,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       let warnings: string[] = [];
       if (command.action === "down") {
         target.desired = "stopped";
+        intendStopped(target);
         target.updatedAt = deps.now();
         await persistTarget(target, deps.store);
         outcome = (await stopRecordedTarget(target, deps.lifecycle)).outcome;
       } else {
         if (command.action === "restart") {
           target.desired = "stopped";
+          intendStopped(target);
           target.updatedAt = deps.now();
           await persistTarget(target, deps.store);
           warnings = (await stopBeforeRestart(target, deps.lifecycle)).warnings;
@@ -647,7 +662,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           warnings.push(
             `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${target.name} to apply the current rig.yaml.`,
           );
-        outcome = (await deps.lifecycle.up(target)).outcome;
+        const journal = activationJournal(target, "explicit", deps);
+        try {
+          outcome = (await deps.lifecycle.up(target, undefined, journal))
+            .outcome;
+        } catch (error) {
+          // The rolled-back Services are recorded as not started; failing to say so leaves their outcome unknown, never retried.
+          await journal.failed(error).catch(() => {});
+          throw error;
+        }
+        intendRunning(target);
         // up installs, routes, and starts the recorded plan under its own
         // committed checkpoint, which is everything an incomplete deployment lacked.
         delete target.deploymentIncomplete;
@@ -766,67 +790,57 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       queue = operation;
       return operation;
     },
-    async reconcile() {
-      const operation = queue
-        .catch(() => {})
-        .then(async () => {
-          if (draining) return;
-          try {
-            await deps.assertOwnershipReady();
-          } catch (error) {
-            await deps
-              .diagnostic({
-                operationId: deps.id(),
-                action: "reconcile",
-                outcome: "failed",
-                errorCode:
-                  error instanceof RigError ? error.code : "OWNERSHIP_UNKNOWN",
-              })
-              .catch(() => {});
-            return;
-          }
-          // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
-          let state;
-          try {
-            state = await deps.store.read();
-          } catch (error) {
-            await deps
-              .diagnostic({
-                operationId: deps.id(),
-                action: "reconcile",
-                outcome: "failed",
-                errorCode:
-                  error instanceof RigError ? error.code : "UNEXPECTED",
-                ...diagnosticCauses(error),
-              })
-              .catch(() => {});
-            return;
-          }
-          await pruneCheckpoints(state, deps);
-          for (const target of state.targets) {
-            if (draining) break;
-            if (target.recovery || target.destructionPending) continue;
-            try {
-              if (target.desired === "running") await deps.lifecycle.up(target);
-              else await deps.lifecycle.down(target);
-            } catch (error) {
-              await deps
-                .diagnostic({
-                  operationId: deps.id(),
-                  action: "reconcile",
-                  outcome: "failed",
-                  target: target.name,
-                  errorCode:
-                    error instanceof RigError ? error.code : "UNEXPECTED",
-                })
-                .catch(() => {});
-            }
-          }
-        });
-      queue = operation;
-      await operation;
-    },
+    reconcile: () => pass("reconcile"),
+    supervise: () => pass("supervise"),
   };
+  /** One serialized pass over the recorded Targets. Both passes supervise the Targets meant to run; only `reconcile`, the
+   * daemon's first pass, also re-stops the Targets meant to be stopped and reclaims orphaned checkpoints. */
+  function pass(action: "reconcile" | "supervise"): Promise<SupervisionPass> {
+    const operation = queue
+      .catch(() => {})
+      .then(async (): Promise<SupervisionPass> => {
+        if (draining) return {};
+        const failed = (error: unknown, target?: string) =>
+          deps
+            .diagnostic({
+              operationId: deps.id(),
+              action,
+              outcome: "failed",
+              ...(target ? { target } : {}),
+              errorCode: diagnosticErrorCode(error),
+              ...diagnosticCauses(error),
+            })
+            .catch(() => {});
+        // Unreadable ownership or state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
+        let state;
+        try {
+          await deps.assertOwnershipReady();
+          state = await deps.store.read();
+        } catch (error) {
+          await failed(error);
+          return {};
+        }
+        if (action === "reconcile") await pruneCheckpoints(state, deps);
+        let nextRetryAt: number | undefined;
+        for (const target of state.targets) {
+          if (draining) break;
+          if (target.recovery || target.destructionPending) continue;
+          try {
+            if (target.desired === "running") {
+              const due = await superviseTarget(target, deps);
+              if (due !== undefined)
+                nextRetryAt = Math.min(nextRetryAt ?? due, due);
+            } else if (action === "reconcile")
+              await deps.lifecycle.down(target);
+          } catch (error) {
+            await failed(error, target.name);
+          }
+        }
+        return nextRetryAt === undefined ? {} : { nextRetryAt };
+      });
+    queue = operation;
+    return operation;
+  }
 }
 /** A push whose repository is another registered Project must be told which remote to use; repoint would hijack the named Project. */
 function pushedFromElsewhere(
@@ -941,6 +955,8 @@ async function replanWorkingCopy(
     { command, kind: "local", project, document, existing: target },
     deps,
   );
+  // A Service a failed down left running is adopted by the next up, not started; its record is what explains its later exit.
+  if (target.services) replanned.services = target.services;
   // The plan being replaced is stopped; an executable only it names (a removed Tool, or an alias under the old Target name) goes with it.
   // Retirement and the new plan are published together or not at all.
   const checkpoint = await deps.lifecycle.checkpoint(replanned, target);
@@ -1022,6 +1038,7 @@ async function destroyPreview(
     state: await deps.store.read(),
   });
   target.desired = "stopped";
+  intendStopped(target);
   target.destructionPending = true;
   target.updatedAt = deps.now();
   await persistTarget(target, deps.store);

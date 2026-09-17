@@ -77,21 +77,28 @@ export function recordingDiagnostic(
       );
   };
 }
-/** Runs one pass at a time on a fixed interval; a failed pass is noted, a later success clears it. Returns the stop. */
+/** Runs one pass at a time on a fixed interval, and once more when a pass names an earlier time something is due
+ * (`nextRetryAt`, Unix milliseconds). A failed pass is noted, a later success clears it. Returns the stop. */
 export function startFailureMonitor(options: {
   intervalMs: number;
-  run(): Promise<unknown>;
+  run(): Promise<{ nextRetryAt?: number } | void>;
   notices: Pick<NoticeBoard, "note" | "clear">;
 }): () => void {
   let running = false,
     stopped = false;
-  const timer = setInterval(() => {
+  let due: ReturnType<typeof setTimeout> | undefined;
+  const pass = () => {
     if (running || stopped) return;
     running = true;
     void options
       .run()
       .then(
-        () => options.notices.clear(FAILURE_MONITOR),
+        (result) => {
+          options.notices.clear(FAILURE_MONITOR);
+          if (stopped || result?.nextRetryAt === undefined) return;
+          clearTimeout(due);
+          due = setTimeout(pass, Math.max(0, result.nextRetryAt - Date.now()));
+        },
         (error) =>
           options.notices.note(
             FAILURE_MONITOR,
@@ -101,10 +108,12 @@ export function startFailureMonitor(options: {
       .finally(() => {
         running = false;
       });
-  }, options.intervalMs);
+  };
+  const timer = setInterval(pass, options.intervalMs);
   return () => {
     stopped = true;
     clearInterval(timer);
+    clearTimeout(due);
   };
 }
 /** Metadata only: a code and message, never entry contents. */

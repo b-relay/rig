@@ -104,7 +104,7 @@ export async function runCapturedProcess(
     await supervisor.shutdown();
   }
 }
-/** Publishes fresh application evidence until the application stops for good or a stop was requested; returns the exit code. */
+/** Publishes fresh application evidence until the application stops or a stop was requested; returns the exit code. */
 async function observeUntilStopped(input: {
   supervisor: Pick<Supervisor, "observe">;
   key: string;
@@ -129,8 +129,7 @@ async function observeUntilStopped(input: {
       state,
       state.state === "running" ? applicationIdentity : undefined,
     );
-    if (state.state === "stopped" && !state.restartPending)
-      return state.exitCode ?? 1;
+    if (state.state === "stopped") return state.exitCode ?? 1;
     await Bun.sleep(50);
   }
   await input.stopping();

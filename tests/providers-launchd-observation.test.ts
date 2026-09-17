@@ -11,7 +11,7 @@ import type { TargetRecord } from "../src/domain/runtime";
 import type { ProcessObservation } from "../src/providers/contracts";
 
 // Real wrapper/application processes; only the OS launchctl boundary is replaced.
-test("launchd reports application backoff, recovery identity, and terminal failure through public status", async () => {
+test("launchd reports the running application, then its recorded exit and the start it belonged to, without respawning it, through public status", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-launchd-observation-"));
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let replayExitingWrapperSnapshot = false;
@@ -43,9 +43,10 @@ test("launchd reports application backoff, recovery identity, and terminal failu
         : { exitCode: 113, stdout: "", stderr: "Could not find service" };
     },
   });
+  const exitNow = join(root, "exit-now");
   const request = {
-    key: "application/web", componentName: "web", cwd: root, env: {}, logRoot: root, keepAlive: true,
-    command: [process.execPath, "-e", `setTimeout(()=>process.exit(9), 350)`],
+    key: "application/web", componentName: "web", cwd: root, env: {}, logRoot: root, incarnation: "start-1",
+    command: [process.execPath, "-e", `setInterval(()=>{if(require("node:fs").existsSync(${JSON.stringify(exitNow)}))process.exit(9)}, 20)`],
   };
   const target = { id: "application", name: "live", kind: "live", desired: "running", plan: { components: [
     { name: "web", kind: "managed", port: 4444 },
@@ -67,18 +68,14 @@ test("launchd reports application backoff, recovery identity, and terminal failu
   try {
     const started = await supervisor.ensureRunning(request);
     expect(started.pid).not.toBe(child!.pid);
-    const firstPid = started.pid;
-    const pending = await waitFor(value => value.restartPending === true);
-    expect(pending).toMatchObject({ state: "stopped", exitCode: 9, restartPending: true, restartAt: expect.any(Number) });
-    expect((await report())[0]!.components.map(component => component.state)).toEqual(["starting", "starting"]);
+    expect(await supervisor.observe(request.key)).toEqual({ state: "running", pid: started.pid, incarnation: "start-1" });
     const wrapperPid = child!.pid;
     const resumed = await supervisor.ensureRunning(request);
-    expect(resumed.outcome).toBe("unchanged");
+    expect(resumed).toEqual({ outcome: "unchanged", pid: started.pid });
     expect(child!.pid).toBe(wrapperPid);
-    const recovered = await waitFor(value => value.state === "running" && value.pid !== firstPid);
-    expect(recovered.pid).not.toBe(child!.pid);
     expect((await report())[0]!.components.map(component => component.state)).toEqual(["running", "healthy"]);
-    await waitFor(value => value.state === "stopped" && !value.restartPending && value.exitCode === 9);
+    await writeFile(exitNow, "");
+    expect(await waitFor(value => value.state === "stopped")).toEqual({ state: "stopped", exitCode: 9, incarnation: "start-1" });
     // Replay a launchctl PID snapshot taken just before the wrapper exits. Its
     // subsequent identity lookup must remain unknown, never trust dead ownership.
     replayExitingWrapperSnapshot = true;
@@ -87,6 +84,8 @@ test("launchd reports application backoff, recovery identity, and terminal failu
     // A terminal child snapshot can precede the wrapper's own process exit.
     await child!.exited;
     expect((await report())[0]!.components.map(component => component.state)).toEqual(["failed", "failed"]);
+    // The wrapper is gone and nothing started the application again: the recorded exit is what remains.
+    expect(await supervisor.observe(request.key)).toEqual({ state: "stopped", exitCode: 9, incarnation: "start-1" });
   } finally {
     await supervisor.stop(request.key);
     await rm(root, { recursive: true, force: true });
@@ -130,8 +129,8 @@ test("capture observations reject missing, stale, corrupt, or mismatched evidenc
     expect(await supervisor.observe(key)).toEqual({ state: "running", pid: 202 });
     expect((await supervisor.observe(key, AbortSignal.abort())).state).toBe("unknown");
     for (const observation of [
-      { state: "stopped", exitCode: 9, restartPending: true },
-      { state: "stopped", exitCode: 9 },
+      { state: "stopped", exitCode: 9, incarnation: "start-1" },
+      { state: "stopped", signal: "SIGKILL", incarnation: "start-1" },
       { state: "unknown", reason: "Child observation unavailable." },
     ] satisfies ProcessObservation[]) {
       await writeFile(path, JSON.stringify({ ...evidence, observation }));

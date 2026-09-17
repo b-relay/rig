@@ -87,10 +87,10 @@ test("one deadline bounds every concurrent probe and timeouts are unknown", asyn
       ),
   ).toBe(true);
 });
-test("a crashed desired-running process is failed with exit evidence while an intentional stop remains stopped", async () => {
+test("a crashed desired-running process is failed with the exit evidence of its recorded start, an unrecorded one is failed as unknown, and an intentional stop remains stopped", async () => {
   const effects = {
     async process() {
-      return { state: "stopped" as const, exitCode: 1 };
+      return { state: "stopped" as const, exitCode: 1, incarnation: "start-1" };
     },
     async health() {
       return { ready: false, reason: "probe failed" };
@@ -102,8 +102,28 @@ test("a crashed desired-running process is failed with exit evidence while an in
       return true;
     },
   };
-  const [crashed, stopped] = await observeTargets(
+  const run = {
+    deployment: "/deployments/abc",
+    intent: "running" as const,
+    incarnation: "start-1",
+    attempts: [],
+  };
+  const recorded = {
+    ...target,
+    desired: "running" as const,
+    plan: {
+      ...target.plan,
+      workspacePath: "/deployments/abc",
+      components: target.plan.components.map((component) => ({
+        ...component,
+        restart: "no" as const,
+      })),
+    },
+    services: { api: run, web: run },
+  };
+  const [crashed, unrecorded, stopped] = await observeTargets(
     [
+      recorded,
       { ...target, desired: "running" },
       { ...target, desired: "stopped" },
     ],
@@ -114,10 +134,18 @@ test("a crashed desired-running process is failed with exit evidence while an in
   expect(crashed).toMatchObject({
     state: "failed",
     components: [
-      { state: "failed", exitCode: 1 },
-      { state: "failed", exitCode: 1 },
+      { state: "failed", exit: "failed", exitCode: 1 },
+      { state: "failed", exit: "failed", exitCode: 1 },
     ],
   });
+  expect(unrecorded).toMatchObject({
+    state: "failed",
+    components: [
+      { state: "failed", exit: "unknown" },
+      { state: "failed", exit: "unknown" },
+    ],
+  });
+  expect(unrecorded!.components[0]).not.toHaveProperty("exitCode");
   expect(stopped).toMatchObject({
     state: "stopped",
     components: [{ state: "stopped" }, { state: "stopped" }],
@@ -334,7 +362,7 @@ for (const outcome of ["completed", "rejected", "empty"] as const) {
       expect(reports[0]!.components[0]).toMatchObject(
         outcome === "rejected"
           ? { state: "unknown", reason: "Observation failed." }
-          : { state: "stopped", exitCode: 2 },
+          : { state: "stopped" },
       );
   });
 }

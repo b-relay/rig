@@ -710,12 +710,12 @@ message, and its hint follows from that: an exit points at `rig logs
 running doctor again.
 
 Background failures inside `rigd` are not dropped. When the diagnostic log
-cannot be written, or a pass of the crash monitor fails, `rigd` keeps one
+cannot be written, or a supervision pass fails, `rigd` keeps one
 bounded notice per channel (a count, the first and last time, and the latest
 message; never log contents) and `rig doctor` reports it as a failing
 `rigd/diagnostics` or `rigd/monitor` check with what it means: operation
-outcomes are never changed by a logging failure, and crashes are not recorded
-as Activity until a monitor pass succeeds again, which clears the notice. The
+outcomes are never changed by a logging failure, and exits are neither
+recorded nor retried until a pass succeeds again, which clears the notice. The
 notices live in memory and reset when `rigd` restarts.
 
 An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
@@ -927,7 +927,9 @@ A Service is a long-running process Rig starts and supervises. Its fields:
 - `depends_on`: Services that must be running and ready before this one
   starts. Unknown names and cycles are rejected when the config is parsed.
 - `env` and `env_file`: see below.
-- `build`, `build_timeout`, `workdir`, `restart`, and `supervisor` are part of
+- `restart`: `always` (default), `on-failure`, or `no`; see "Automatic
+  restart".
+- `build`, `build_timeout`, `workdir`, and `supervisor` are part of
   the schema but see "Not yet runnable".
 
 A Tool is an executable the Project makes available on the Host rather than a
@@ -975,16 +977,51 @@ or a port pinned twice is reported under `targets.<role>`.
 `supervisor` selects `rigd` (default; the daemon owns child processes) or
 `launchd` (one launchd agent per Service), at the top level or in a role
 patch. Any other name is rejected when the config is parsed, so a typo can
-never be recorded in a Target plan. A launchd Service whose application
-crashed and is waiting out its restart backoff is not restarted again by
-`rig up` or `rig restart`; they wait for the restart the wrapper has
-scheduled, then for the application to appear, and only report
-`LAUNCHD_START` when it misses that schedule. Stopping a launchd Service
+never be recorded in a Target plan. Neither supervisor starts a Service again
+by itself (launchd jobs are written with `KeepAlive` false); see "Automatic
+restart". Stopping a launchd Service
 waits for the wrapper's full shutdown budget (SIGTERM, then SIGKILL, plus
 headroom) before reporting `LAUNCHD_STOP`, and every stop that finds the job
 gone, including one after a logout that already unloaded it, removes the
 job's plist, request, and evidence files from `$RIG_ROOT/launchd`; a failed
 bootstrap removes them too.
+
+### Automatic restart
+
+`rigd` decides whether a Service that ended is started again; a supervisor
+only starts it once and records how it ended. `restart` selects the policy:
+
+| The Service                                                | `always`      | `on-failure`  | `no`          |
+| ---------------------------------------------------------- | ------------- | ------------- | ------------- |
+| exited with code 0                                         | started again | stays stopped | stays stopped |
+| exited non-zero, or was ended by a signal Rig did not send | started again | started again | stays stopped |
+| is gone and nothing recorded how it ended                  | stays stopped | stays stopped | stays stopped |
+| was stopped by `rig down` or `rig restart`                 | stays stopped | stays stopped | stays stopped |
+
+Each start is named, and an exit only counts when its record names the start
+Rig last made. A Service that is gone without such a record (after a reboot,
+or when the record could not be written or read) is reported as `failed` with
+`exit: unknown` and is never started again automatically, under any policy:
+run `rig up`. `rig status` tells the cases apart in a stopped Service's
+`exit` field (`clean`, `failed`, `requested`, `unknown`) and its reason, and
+Activity records each exit and each automatic restart.
+
+A Service gets five automatic attempts within any 60 seconds, the first
+100 ms after the exit and each further one after twice the previous delay. An
+attempt that fails to start, including one refused because a Service it
+depends on is down, spends an attempt. An attempt whose end nobody saw (the
+supervisor could not start it, or its process was gone without a record before
+it was ready) is an unknown exit like any other and ends the attempts. A Service that used them all stays
+stopped, and stays so across `rigd` restarts, until `rig up`, `rig restart`,
+or a new deployment starts it, which also resets the count. An `up` that finds
+a Service already running changes nothing about it. `rig down` cancels any
+scheduled attempt. Siblings are independent: one Service staying stopped never
+stops or restarts another, and a Service that survived a `rigd` restart is
+adopted, not started twice.
+
+Nothing is started again while `rigd` itself is down; the first pass of the
+next daemon applies the same rules to what it finds. Every start, automatic
+or not, reads the env files fresh.
 
 ### Not yet runnable
 
@@ -995,7 +1032,6 @@ refused as `unsupported_setting`, naming the path (for example
 setting for now.
 
 - a Service `workdir`
-- a Service `restart` other than `always`
 - a Service `supervisor` that differs from the Project's
 - a Service with no port or with more than one port
 - a `proxy` prefix other than `/`

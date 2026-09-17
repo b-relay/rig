@@ -84,7 +84,7 @@ test("a failing monitor iteration is noted, never overlaps the next, and a later
         if (release === undefined)
           await new Promise<void>((resolve) => (release = resolve));
         if (failing) throw new Error("state.json is locked");
-        return { recorded: 0 };
+        return {};
       } finally {
         active--;
       }
@@ -112,4 +112,24 @@ test("a failing monitor iteration is noted, never overlaps the next, and a later
   const settled = calls;
   await Bun.sleep(30);
   expect(calls).toBe(settled);
+});
+test("a pass that names an earlier due time is followed by one at that time, not at the next interval; stop cancels it", async () => {
+  const board = createNoticeBoard(clock());
+  const passes: number[] = [];
+  const began = Date.now();
+  const stop = startFailureMonitor({
+    intervalMs: 60,
+    notices: board,
+    async run() {
+      passes.push(Date.now() - began);
+      return passes.length === 1 ? { nextRetryAt: Date.now() + 5 } : {};
+    },
+  });
+  try {
+    await Bun.sleep(100);
+    expect(passes.length).toBeGreaterThanOrEqual(2);
+    expect(passes[1]! - passes[0]!).toBeLessThan(40);
+  } finally {
+    stop();
+  }
 });

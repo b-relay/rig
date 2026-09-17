@@ -10,7 +10,7 @@ const captureRequestSchema = z.object({
   cwd: z.string().min(1),
   env: z.record(z.string(), z.string()),
   logRoot: z.string().min(1),
-  keepAlive: z.boolean().optional(),
+  incarnation: z.string().min(1),
 });
 export type CaptureRequest = z.infer<typeof captureRequestSchema>;
 /** The wrapper reads the request on its own schedule, so it is replaced whole: a reader sees the previous or the new document, never a partial one. */

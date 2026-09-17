@@ -23,6 +23,12 @@ import type {
   Supervisor,
   TargetLogEntry,
 } from "./contracts";
+import {
+  exitEvidence,
+  readExitRecord,
+  removeExitRecord,
+  writeExitRecord,
+} from "./exit-record";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
@@ -48,19 +54,11 @@ const leaseSchema = z.object({
     .string()
     .length(64)
     .describe("Digest of immutable process birth time and PID."),
-  request: z
-    .object({
-      key: z.string(),
-      componentName: z.string(),
-      command: z.array(z.string()),
-      cwd: z.string(),
-      env: z.record(z.string(), z.string()),
-      logRoot: z.string(),
-      keepAlive: z.boolean().optional(),
-    })
+  incarnation: z
+    .string()
     .optional()
     .describe(
-      "The start request, so a daemon that adopts the lease can restart the process under its keepAlive policy.",
+      "The start that produced this process; absent on a lease written before starts were named.",
     ),
 });
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
@@ -73,11 +71,9 @@ interface OwnedProcess {
   pid: number;
   identity?: string;
   child?: ChildProcess;
-  request?: ManagedProcess;
-  exitCode?: number;
-  /** A recovered process has no child handle; its exit is noticed by observation and recorded once. */
-  exitObserved?: boolean;
-  stopped: boolean;
+  incarnation?: string;
+  /** Settles once the child's exit is on disk, or could not be put there. */
+  exitRecorded?: Promise<void>;
   drains: Promise<void>[];
   writes: Promise<void>;
   /** Why the latest output line could not be recorded; cleared by the next line that is. */
@@ -94,36 +90,29 @@ export interface ChildSupervisorOptions {
   /** Process identity, group presence, and signals; the owner passes the platform's or a scripted one. */
   readonly processInspection: ProcessInspection;
   readonly captureCommand?: readonly string[];
-  readonly restartLimit?: number;
-  readonly restartWindowMs?: number;
-  readonly restartBackoffMs?: number;
 }
-/** Daemon-owned groups have identity-checked leases; stop never trusts an unverified recovered PID. */
+/** Daemon-owned groups have identity-checked leases; stop never trusts an unverified recovered PID.
+ * A process is started once and never respawned here. Whoever holds the application's child handle records its exit:
+ * this supervisor, or under a capture command the wrapper's own, whose records this one then reads. */
 export function createChildSupervisor(
   options: ChildSupervisorOptions,
 ): Supervisor {
   const processes = new Map<string, OwnedProcess>();
   const operations = new Map<string, Promise<unknown>>();
-  const restarting = new Set<string>();
-  const restarts = new Map<
-    string,
-    { times: number[]; cancel?: () => void; at?: number }
-  >();
-  /** Restart evidence for an observation: pending while a restart is scheduled or in flight, with its advertised time. */
-  const restartEvidence = (key: string, owned: OwnedProcess) => {
-    const restart = restarts.get(key);
-    const pending = restarting.has(key) || (!owned.stopped && restart?.cancel);
-    return pending
-      ? { restartPending: true, ...(restart?.at === undefined ? {} : { restartAt: restart.at }) }
-      : {};
-  };
   const timing = options.timing;
   const now = timing.now;
   const inspection = options.processInspection;
   const inspect = inspection.identity;
   const leaseRoot = join(options.stateRoot, "process-leases");
-  let shuttingDown = false;
   const captureRoot = join(options.stateRoot, "capture");
+  /** Where the holder of the application's child handle records exits. */
+  const exitRoot = options.captureCommand ? captureRoot : options.stateRoot;
+  const stoppedObservation = async (
+    key: string,
+  ): Promise<ProcessObservation> => ({
+    state: "stopped",
+    ...exitEvidence(await readExitRecord(exitRoot, key)),
+  });
   const capturePath = (key: string) =>
     join(captureRoot, `${createHash("sha256").update(key).digest("hex")}.json`);
   const leasePath = (key: string) =>
@@ -166,8 +155,9 @@ export function createChildSupervisor(
     const owned: OwnedProcess = {
       pid: parsed.data.pid,
       identity: parsed.data.identity,
-      ...(parsed.data.request ? { request: parsed.data.request } : {}),
-      stopped: false,
+      ...(parsed.data.incarnation
+        ? { incarnation: parsed.data.incarnation }
+        : {}),
       drains: [],
       writes: Promise.resolve(),
     };
@@ -191,34 +181,28 @@ export function createChildSupervisor(
     }
     if (signal?.aborted)
       return { state: "unknown", reason: "Observation cancelled." };
-    if (!owned) return { state: "stopped" };
+    if (!owned) return await stoppedObservation(key);
+    const running = {
+      state: "running" as const,
+      pid: owned.pid,
+      ...(owned.incarnation ? { incarnation: owned.incarnation } : {}),
+    };
     if (
       owned.child &&
       (owned.child.exitCode !== null || owned.child.signalCode !== null)
-    )
-      return {
-        state: "stopped",
-        ...(owned.exitCode === undefined ? {} : { exitCode: owned.exitCode }),
-        ...restartEvidence(key, owned),
-      };
-    // A spawned child's handle is authoritative: Bun reports its exit within milliseconds and that report
-    // schedules any restart, so no OS probe second-guesses it. A probe that ran between the reap and the
-    // report answered "stopped" without restart evidence, which made the capture wrapper give up on a
-    // keepAlive component.
+    ) {
+      await owned.exitRecorded;
+      return await stoppedObservation(key);
+    }
+    // A spawned child's handle is authoritative: Bun reports its exit within milliseconds, so no OS probe second-guesses it.
     if (owned.child)
       return {
-        state: "running",
-        pid: owned.pid,
+        ...running,
         ...(owned.outputFailure ? { reason: owned.outputFailure } : {}),
       };
     try {
-      if ((await inspect(owned.pid)) === owned.identity)
-        return { state: "running", pid: owned.pid };
-      if (!owned.exitObserved) {
-        owned.exitObserved = true;
-        scheduleRestart(key, owned);
-      }
-      return { state: "stopped", ...restartEvidence(key, owned) };
+      if ((await inspect(owned.pid)) === owned.identity) return running;
+      return await stoppedObservation(key);
     } catch {
       return {
         state: "unknown",
@@ -229,11 +213,6 @@ export function createChildSupervisor(
   async function stop(
     key: string,
   ): Promise<{ outcome: "stopped" | "unchanged" }> {
-    const restart = restarts.get(key);
-    if (restart?.cancel) {
-      restart.cancel();
-      restart.cancel = undefined;
-    }
     const owned = await recover(key);
     if (!owned) return { outcome: "unchanged" };
     const before = await observe(key);
@@ -244,7 +223,6 @@ export function createChildSupervisor(
         "Inspect daemon state before stopping this component.",
         { key },
       );
-    owned.stopped = true;
     // Live children are held by this daemon; recovered PIDs require a fresh identity check before any signal.
     const liveChild =
       owned.child &&
@@ -283,56 +261,19 @@ export function createChildSupervisor(
     }
     await Promise.all(owned.drains);
     await owned.writes;
+    await owned.exitRecorded;
     await rm(leasePath(key), { force: true });
     if (options.captureCommand) await rm(capturePath(key), { force: true });
+    // Ending a running process was a request, not an exit to explain; an exit that came first stays on record,
+    // which is how the capture wrapper's own cleanup leaves its application's exit readable.
+    if (before.state === "running") await removeExitRecord(exitRoot, key);
     return { outcome: before.state === "running" ? "stopped" : "unchanged" };
   }
-  /** Ends restart scheduling and waits for in-flight operations so ownership can be handed over or ended. */
+  /** Waits for in-flight operations so ownership can be handed over or ended. */
   async function quiesce(): Promise<void> {
-    shuttingDown = true;
-    for (const restart of restarts.values()) {
-      restart.cancel?.();
-      restart.cancel = undefined;
-    }
     await Promise.all(
       [...operations.values()].map((pending) => pending.catch(() => {})),
     );
-  }
-  function scheduleRestart(key: string, owned: OwnedProcess): void {
-    if (
-      !owned.request?.keepAlive ||
-      owned.stopped ||
-      shuttingDown ||
-      processes.get(key) !== owned
-    )
-      return;
-    const restart = restarts.get(key) ?? { times: [] };
-    const timestamp = now().getTime();
-    restart.times = restart.times.filter(
-      (time) => timestamp - time < (options.restartWindowMs ?? 60_000),
-    );
-    if (restart.times.length >= (options.restartLimit ?? 5)) return;
-    restart.times.push(timestamp);
-    const delay =
-      (options.restartBackoffMs ?? 100) * 2 ** (restart.times.length - 1);
-    restart.at = timestamp + delay;
-    const cancel = timing.schedule(delay, () => {
-      // A callback the platform queued before its cancellation is ignored; the process is only revived by a live schedule.
-      if (restart.cancel !== cancel) return;
-      restart.cancel = undefined;
-      void serialized(key, async () => {
-        if (!owned.stopped && !shuttingDown) {
-          restarting.add(key);
-          await ensureRunning(owned.request!);
-        }
-      })
-        .finally(() => {
-          restarting.delete(key);
-        })
-        .catch(() => {});
-    });
-    restart.cancel = cancel;
-    restarts.set(key, restart);
   }
   async function ensureRunning(
     request: ManagedProcess,
@@ -355,6 +296,8 @@ export function createChildSupervisor(
         "Configure a command.",
         { key: request.key },
       );
+    // A record left by an earlier start must not explain the end of this one.
+    await removeExitRecord(exitRoot, request.key);
     await mkdir(request.logRoot, { recursive: true });
     await mkdir(leaseRoot, { recursive: true });
     await appendFile(join(request.logRoot, "target.jsonl"), "", {
@@ -392,17 +335,22 @@ export function createChildSupervisor(
     const owned: OwnedProcess = {
       pid: 0,
       child,
-      request: options.captureCommand
-        ? { ...request, keepAlive: false }
-        : request,
-      stopped: false,
+      incarnation: request.incarnation,
       drains: [],
       writes: Promise.resolve(),
     };
-    child.once("exit", (code) => {
-      owned.exitCode = code ?? undefined;
-      scheduleRestart(request.key, owned);
-    });
+    // Under a capture command this child is the wrapper, whose exit says nothing of the application's.
+    if (!options.captureCommand)
+      child.once("exit", (code, signal) => {
+        // An exit that cannot be written stays unknown: nothing is remembered that a later daemon could not also read.
+        owned.exitRecorded = writeExitRecord(exitRoot, {
+          key: request.key,
+          incarnation: request.incarnation,
+          ...(code === null ? {} : { exitCode: code }),
+          ...(signal === null ? {} : { signal }),
+          at: now().toISOString(),
+        }).catch(() => {});
+      });
     if (!options.captureCommand) captureOutput(owned, request, now);
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
@@ -430,7 +378,7 @@ export function createChildSupervisor(
               key: request.key,
               pid: owned.pid,
               identity: owned.identity,
-              request: owned.request,
+              incarnation: request.incarnation,
             }),
             { mode: 0o600 },
           );

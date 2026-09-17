@@ -11,6 +11,7 @@ import type {
   Supervisor,
 } from "../providers/contracts";
 import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
+import { randomUUID } from "node:crypto";
 
 export interface TargetEffectCheckpoint {
   readonly targetId: string;
@@ -76,6 +77,14 @@ export interface BuildJournal {
   started(unit: BuildUnit): Promise<void>;
   finished(unit: BuildUnit, state: "succeeded" | "failed"): Promise<void>;
 }
+/** The runtime's say over each process start, and what it learns before a route is published.
+ * `starting` is asked before a stopped Service is spawned and answers with the incarnation its process will carry; when it
+ * rejects, nothing is spawned. `activated` is told once that process is verified ready (alive, when it has no check) and before
+ * the Target's route is published; when it rejects, the start fails like a failed readiness check. */
+export interface ActivationJournal {
+  starting(service: string): Promise<string>;
+  activated(service: string, incarnation: string): Promise<void>;
+}
 export interface PreparationRequest {
   /** `all` runs every unit. `stopped` is a Working copy up: the units of Services that are not running and of every Tool,
    * after the shared unit when any Service is to start or any Tool exists; nothing when every Service runs and there is no Tool. */
@@ -102,10 +111,23 @@ export interface TargetLifecycle {
     request: PreparationRequest,
   ): Promise<{ built: string[] }>;
   /** Starts the recorded plan and publishes its Tools; never builds. A deployed Target whose recorded preparation is not
-   * complete is refused with PREPARATION_INCOMPLETE, or BUILD_UNKNOWN when a unit's outcome is unknown. */
+   * complete is refused with PREPARATION_INCOMPLETE, or BUILD_UNKNOWN when a unit's outcome is unknown.
+   * Every stopped Service is started, whatever its restart policy: this is the explicit start. Without a journal each start
+   * carries a fresh incarnation nobody records. */
   up(
     target: TargetRecord,
     checkpoint?: TargetEffectCheckpoint,
+    journal?: ActivationJournal,
+  ): Promise<{ outcome: "started" | "unchanged" }>;
+  /** Starts one stopped Service of a running Target again under the same rules as `up`: fresh environment, readiness, then the
+   * route. Never builds, installs or starts another Service. SERVICE_DEPENDENCY when a Service it depends on is not running;
+   * a process started by a failed attempt has been stopped. Once the start was journalled, the failure says how the process
+   * ended: the step's own error when it was still running and this rollback stopped it; PROCESS_EXITED, with the `exitCode` or
+   * `signal` recorded for this start if any, when it had ended on its own; START_UNVERIFIED when it could not be observed. */
+  recover(
+    target: TargetRecord,
+    service: string,
+    journal: ActivationJournal,
   ): Promise<{ outcome: "started" | "unchanged" }>;
   down(target: TargetRecord): Promise<{ outcome: "stopped" | "unchanged" }>;
   /** Stop, unroute, and uninstall a Target under one checkpoint.
@@ -141,10 +163,12 @@ const OBSERVATION_INTERVAL_MS = 100;
 async function observeManaged(
   target: TargetRecord,
   supervisor: Supervisor,
+  only?: string[],
 ): Promise<Map<string, ProcessObservation>> {
   const observations = new Map<string, ProcessObservation>();
   for (const component of target.plan.components) {
     if (component.kind !== "managed") continue;
+    if (only && !only.includes(component.name)) continue;
     const observation = await supervisor.observe(
       `${target.id}:${component.name}`,
     );
@@ -252,7 +276,7 @@ export function createTargetLifecycle(
       }
       return { built: units.map((unit) => unit.id) };
     },
-    async up(target, providedCheckpoint) {
+    async up(target, providedCheckpoint, journal) {
       assertProviderProfile(target);
       assertPrepared(target);
       if (providedCheckpoint && providedCheckpoint.targetId !== target.id)
@@ -295,34 +319,7 @@ export function createTargetLifecycle(
               });
             continue;
           }
-          if (component.hooks?.preStart)
-            await effects.hook(
-              component.hooks.preStart,
-              target,
-              component,
-              "preStart",
-            );
-          const result = await supervisor.ensureRunning({
-            key,
-            componentName: component.name,
-            command: ["/bin/sh", "-c", component.command],
-            cwd: target.plan.workspacePath,
-            env: await effects.environment(target, component),
-            logRoot: target.logRoot,
-            keepAlive: target.plan.daemon?.keepAlive ?? true,
-          });
-          if (result.outcome === "started") started.push(key);
-          const process = { observe: () => supervisor.observe(key) };
-          if (component.health)
-            await awaitReady(component, target, effects, timing, process);
-          else await awaitSurvival(component, timing, process);
-          if (component.hooks?.postStart && result.outcome === "started")
-            await effects.hook(
-              component.hooks.postStart,
-              target,
-              component,
-              "postStart",
-            );
+          await startService(target, component, supervisor, journal, started);
         }
         await effects.route(target);
         if (began && target.plan.hooks?.postStart)
@@ -360,6 +357,95 @@ export function createTargetLifecycle(
         throw error;
       }
     },
+    async recover(target, service, journal) {
+      assertProviderProfile(target);
+      assertPrepared(target);
+      const component = target.plan.components.find(
+        (candidate): candidate is ManagedComponent =>
+          candidate.kind === "managed" && candidate.name === service,
+      );
+      if (!component)
+        throw new RigError(
+          "SERVICE_UNKNOWN",
+          `${target.name} has no Service named '${service}'.`,
+          "Select a Service of the recorded plan.",
+          { service },
+        );
+      const supervisor = effects.supervisor(target);
+      // Only what this start depends on decides it; a sibling that cannot be observed is not its concern.
+      const observations = await observeManaged(target, supervisor, [
+        service,
+        ...component.dependsOn,
+      ]);
+      if (observations.get(`${target.id}:${service}`)!.state === "running")
+        return { outcome: "unchanged" };
+      const missing = component.dependsOn.find(
+        (name) => observations.get(`${target.id}:${name}`)?.state !== "running",
+      );
+      if (missing)
+        throw new RigError(
+          "SERVICE_DEPENDENCY",
+          `${service} depends on ${missing}, which is not running.`,
+          `Run rig up ${target.name} to start both.`,
+          { service, dependency: missing },
+        );
+      const started: string[] = [];
+      let incarnation: string | undefined;
+      const tracked: ActivationJournal = {
+        async starting(name) {
+          return (incarnation = await journal.starting(name));
+        },
+        activated: (name, started) => journal.activated(name, started),
+      };
+      try {
+        await effects.prepare(target);
+        await startService(target, component, supervisor, tracked, started);
+        await effects.route(target);
+        return { outcome: started.length ? "started" : "unchanged" };
+      } catch (error) {
+        // Nothing was asked of the supervisor: the refusal itself says how the attempt ended.
+        if (incarnation === undefined) throw error;
+        // Seen before the cleanup below removes the evidence, because only a process found running here is one Rig ended.
+        const key = `${target.id}:${service}`;
+        const seen = await supervisor.observe(key).catch(() => undefined);
+        try {
+          await supervisor.stop(key);
+        } catch (failure) {
+          throw new RigError(
+            "START_ROLLBACK_FAILED",
+            "The Service could not be started again and its new process could not be verified stopped.",
+            "Run rig doctor and rig down before retrying.",
+            {},
+            failureCauses(error, failure),
+          );
+        }
+        if (seen?.state === "running") throw error;
+        if (seen?.state !== "stopped")
+          throw new RigError(
+            "START_UNVERIFIED",
+            `${service} was asked to start, but how that start ended could not be established.`,
+            `Inspect Target logs, then run rig up ${target.name} to start it again.`,
+            { service },
+            failureCauses(error),
+          );
+        const evidence = seen.incarnation === incarnation ? seen : undefined;
+        throw new RigError(
+          "PROCESS_EXITED",
+          `${service} ended on its own before its start was complete.`,
+          "Inspect Target logs for the start-up failure.",
+          {
+            component: service,
+            ...(evidence?.exitCode === undefined
+              ? {}
+              : { exitCode: evidence.exitCode }),
+            ...(evidence?.signal === undefined
+              ? {}
+              : { signal: evidence.signal }),
+          },
+          failureCauses(error),
+        );
+      }
+    },
     async down(target) {
       assertProviderProfile(target);
       const supervisor = effects.supervisor(target);
@@ -381,9 +467,7 @@ export function createTargetLifecycle(
           const observation = await supervisor.observe(
             `${target.id}:${component.name}`,
           );
-          needsPreStop =
-            observation.state !== "stopped" ||
-            observation.restartPending === true;
+          needsPreStop = observation.state !== "stopped";
         } catch {
           // Failed observation is not proof of absence; stop still verifies shutdown.
         }
@@ -456,6 +540,51 @@ export function createTargetLifecycle(
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
+  /** One Service start: hook, approval, spawn with a fresh environment, readiness, report, hook. `started` gains the process key
+   * as soon as a process was spawned, so the caller can stop it when a later step fails. */
+  async function startService(
+    target: TargetRecord,
+    component: ManagedComponent,
+    supervisor: Supervisor,
+    journal: ActivationJournal | undefined,
+    started: string[],
+  ): Promise<void> {
+    const key = `${target.id}:${component.name}`;
+    if (component.hooks?.preStart)
+      await effects.hook(
+        component.hooks.preStart,
+        target,
+        component,
+        "preStart",
+      );
+    // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
+    const env = await effects.environment(target, component);
+    const incarnation = journal
+      ? await journal.starting(component.name)
+      : randomUUID();
+    const result = await supervisor.ensureRunning({
+      key,
+      componentName: component.name,
+      command: ["/bin/sh", "-c", component.command],
+      cwd: target.plan.workspacePath,
+      env,
+      logRoot: target.logRoot,
+      incarnation,
+    });
+    if (result.outcome === "started") started.push(key);
+    const process = { observe: () => supervisor.observe(key) };
+    if (component.health)
+      await awaitReady(component, target, effects, timing, process);
+    else await awaitSurvival(component, timing, process);
+    await journal?.activated(component.name, incarnation);
+    if (component.hooks?.postStart && result.outcome === "started")
+      await effects.hook(
+        component.hooks.postStart,
+        target,
+        component,
+        "postStart",
+      );
+  }
   return lifecycle;
 }
 /** The units one preparation runs, in plan order. */
@@ -702,7 +831,9 @@ async function assertAlive(
     {
       component: component.name,
       ...(exitCode === undefined ? {} : { exitCode }),
-      ...(observation.restartPending ? { restartPending: true } : {}),
+      ...(observation.signal === undefined
+        ? {}
+        : { signal: observation.signal }),
     },
   );
 }

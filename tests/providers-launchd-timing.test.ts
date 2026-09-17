@@ -40,7 +40,7 @@ test("launchd start and unload waits run on the injected clock and budgets: a la
     cwd: root,
     env: {},
     logRoot: root,
-    keepAlive: true,
+    incarnation: "start-1",
   };
   let prints = 0;
   let pidAfterPrints = Infinity;

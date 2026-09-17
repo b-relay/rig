@@ -148,11 +148,6 @@ export function resolveTargetPlan(
       const at = `services.${name}`;
       if (service.workdir !== undefined)
         throw unsupported("A Service workdir", `${at}.workdir`);
-      if ((service.restart ?? "always") !== "always")
-        throw unsupported(
-          "A restart policy other than always",
-          `${at}.restart`,
-        );
       if ((service.supervisor ?? projectSupervisor) !== projectSupervisor)
         throw unsupported("A per-Service supervisor", `${at}.supervisor`);
       const run = references.shell(service.run, `${at}.run`);
@@ -206,6 +201,7 @@ export function resolveTargetPlan(
         command: run.value,
         port: ports[`services.${name}.ports`]!,
         readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
+        restart: service.restart ?? "always",
         ...(ready !== undefined ? { health: ready.value } : {}),
       };
     }),

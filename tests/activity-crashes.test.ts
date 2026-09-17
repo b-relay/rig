@@ -5,15 +5,29 @@ import type {
   StateStore,
   TargetRecord,
 } from "../src/domain/runtime";
-import { monitorRuntimeFailures } from "../src/runtime/activity";
+import type { ProcessObservation } from "../src/providers/contracts";
+import { timerObservationDeadline } from "../src/runtime/bounded-observations";
+import { superviseTarget } from "../src/runtime/supervision";
 const target = {
   id: "t",
   projectId: "p",
   name: "live",
   desired: "running",
   updatedAt: "2026-09-09T10:00:00Z",
-  plan: { components: [{ kind: "managed", name: "web" }] },
-} as TargetRecord;
+  plan: {
+    workspacePath: "/app",
+    components: [{ kind: "managed", name: "web", restart: "no" }],
+  },
+  services: {
+    web: {
+      deployment: "/app",
+      intent: "running",
+      incarnation: "i1",
+      attempts: [],
+    },
+  },
+} as unknown as TargetRecord;
+/** One supervision pass over the recorded Target with a scripted observation; the `no` policy keeps the lifecycle out of it. */
 function fixture() {
   const state: RuntimeState = {
     version: 3,
@@ -37,21 +51,41 @@ function fixture() {
       await change(state);
     },
   };
-  return { state, store };
+  let id = 0;
+  const pass = async (
+    process: (
+      target: TargetRecord,
+      component: unknown,
+      signal: AbortSignal,
+    ) => Promise<ProcessObservation>,
+    timing: {
+      observationBudgetMs?: number;
+      observationDeadline?: typeof timerObservationDeadline;
+    } = {},
+  ) =>
+    superviseTarget((await store.read()).targets[0]!, {
+      store,
+      now: () => "2026-09-09T10:01:00Z",
+      id: () => `id${++id}`,
+      lifecycle: {
+        async recover() {
+          throw new Error("a no-policy Service is never started again");
+        },
+      } as never,
+      observations: { process } as never,
+      observationBudgetMs: 2000,
+      observationDeadline: timerObservationDeadline,
+      async diagnostic() {},
+      ...timing,
+    });
+  return { state, store, pass };
 }
-test("terminal desired-running crash is recorded once across monitor calls with persistent evidence", async () => {
-  const { state, store } = fixture();
-  const options = {
-    store,
-    observations: {
-      async process() {
-        return { state: "stopped" as const, exitCode: 7 };
-      },
-    },
-    now: () => "2026-09-09T10:01:00Z",
-  };
-  expect(await monitorRuntimeFailures(options)).toEqual({ recorded: 1 });
-  expect(await monitorRuntimeFailures({ ...options })).toEqual({ recorded: 0 });
+test("a recorded exit becomes Activity once, however many passes see it, and names how the process ended", async () => {
+  const { state, pass } = fixture();
+  const crashed = async () =>
+    ({ state: "stopped", incarnation: "i1", exitCode: 7 }) as const;
+  await pass(crashed);
+  await pass(crashed);
   expect(state.activity).toHaveLength(1);
   expect(state.activity[0]).toMatchObject({
     project: "app",
@@ -60,168 +94,96 @@ test("terminal desired-running crash is recorded once across monitor calls with 
     outcome: "failed",
     message: "web exited with code 7.",
   });
-  state.targets[0]!.updatedAt = "2026-09-09T10:02:00Z";
-  expect(await monitorRuntimeFailures(options)).toEqual({ recorded: 1 });
+  expect(state.targets[0]!.services!.web!.outcome).toMatchObject({
+    kind: "exited",
+    exitCode: 7,
+  });
 });
-test("intentional stop, restart backoff, unknown observations and a racing down never become crash activity", async () => {
-  const { state, store } = fixture(),
-    now = () => "2026-09-09T10:01:00Z";
-  state.targets[0]!.desired = "stopped";
-  await monitorRuntimeFailures({
-    store,
-    now,
-    observations: {
-      async process() {
-        throw Error("must not probe intentionally stopped Target");
-      },
+for (const [name, observation, activity] of [
+  [
+    "a clean exit",
+    { state: "stopped", incarnation: "i1", exitCode: 0 },
+    { action: "exit", outcome: "stopped", message: "web exited with code 0." },
+  ],
+  [
+    "a signal",
+    { state: "stopped", incarnation: "i1", signal: "SIGKILL" },
+    {
+      action: "crash",
+      outcome: "failed",
+      message: "web was ended by SIGKILL.",
     },
+  ],
+  [
+    "absence without exit evidence",
+    { state: "stopped" },
+    { action: "exit", outcome: "failed" },
+  ],
+  [
+    "an exit record that names another start",
+    { state: "stopped", incarnation: "i0", exitCode: 7 },
+    { action: "exit", outcome: "failed" },
+  ],
+] as const)
+  test(`${name} is told apart in Activity and never invented as a crash`, async () => {
+    const { state, pass } = fixture();
+    await pass(async () => observation);
+    expect(state.activity).toHaveLength(1);
+    expect(state.activity[0]).toMatchObject(activity);
+    if (!("message" in activity)) {
+      expect(state.activity[0]!.message).toContain("nothing recorded how");
+      expect(state.targets[0]!.services!.web!.outcome).toMatchObject({
+        kind: "unknown",
+      });
+    }
   });
-  state.targets[0]!.desired = "running";
-  await monitorRuntimeFailures({
-    store,
-    now,
-    observations: {
-      async process() {
-        return { state: "stopped", exitCode: 7, restartPending: true };
-      },
-    },
-  });
-  await monitorRuntimeFailures({
-    store,
-    now,
-    observations: {
-      async process() {
-        return { state: "unknown" };
-      },
-    },
-  });
-  await monitorRuntimeFailures({
-    store,
-    now,
-    observations: {
-      async process() {
-        state.targets[0]!.desired = "stopped";
-        return { state: "stopped", exitCode: 7 };
-      },
-    },
-  });
+test("a stop an operator asked for, a running process and an unknown observation record nothing", async () => {
+  const { state, pass } = fixture();
+  await pass(async () => ({ state: "running", pid: 9, incarnation: "i1" }));
+  await pass(async () => ({ state: "unknown" }));
+  state.targets[0]!.services!.web!.intent = "stopped";
+  await pass(async () => ({
+    state: "stopped",
+    incarnation: "i1",
+    signal: "SIGTERM",
+  }));
   expect(state.activity).toEqual([]);
-});
-test("process absence without exit evidence is not invented crash history", async () => {
-  const { state, store } = fixture(),
-    now = () => "2026-09-09T10:01:00Z";
-  await monitorRuntimeFailures({
-    store,
-    now,
-    observations: {
-      async process() {
-        return { state: "stopped" };
-      },
-    },
-  });
-  expect(state.activity).toEqual([]);
+  expect(state.targets[0]!.services!.web!.outcome).toBeUndefined();
 });
 
 for (const late of ["resolution", "rejection"] as const) {
-  test(`controlled expiry ignores late Activity ${late} and cleans its deadline`, async () => {
-    const { store } = fixture();
+  test(`controlled expiry ignores late ${late} of the observation and cleans its deadline`, async () => {
+    const { state, pass } = fixture();
     const deadline = controlledDeadline();
     let reject!: (error: Error) => void;
-    let complete!: (value: { state: "stopped"; exitCode: number }) => void;
+    let complete!: (value: ProcessObservation) => void;
     let signal!: AbortSignal;
     let started!: () => void;
     const begun = new Promise<void>((resolve) => {
       started = resolve;
     });
-    const work = new Promise<{ state: "stopped"; exitCode: number }>(
-      (resolve, fail) => {
-        complete = resolve;
-        reject = fail;
-      },
-    );
-    const pending = monitorRuntimeFailures({
-      store,
-      now: () => "now",
-      budgetMs: 77,
-      deadline,
-      observations: {
-        process(_target, _component, cancellation) {
-          signal = cancellation;
-          started();
-          return work;
-        },
-      },
+    const work = new Promise<ProcessObservation>((resolve, fail) => {
+      complete = resolve;
+      reject = fail;
     });
+    const pending = pass(
+      (_target, _component, cancellation) => {
+        signal = cancellation;
+        started();
+        return work;
+      },
+      { observationBudgetMs: 77, observationDeadline: deadline },
+    );
     await begun;
     expect(deadline.budgets).toEqual([77]);
     deadline.expire();
-    expect(await pending).toEqual({ recorded: 0 });
+    expect(await pending).toBeUndefined();
     expect(signal.aborted).toBe(true);
     expect(deadline.pending).toBe(false);
     if (late === "rejection") reject(new Error("late rejection"));
-    else complete({ state: "stopped", exitCode: 9 });
+    else complete({ state: "stopped", incarnation: "i1", exitCode: 9 });
     await Promise.resolve();
-    expect((await store.read()).activity).toEqual([]);
-  });
-}
-
-for (const change of ["recovery", "generation"] as const) {
-  test(`Activity rechecks racing ${change} after completed evidence`, async () => {
-    const { store, state } = fixture();
-    const deadline = controlledDeadline();
-    expect(
-      await monitorRuntimeFailures({
-        store,
-        now: () => "now",
-        deadline,
-        observations: {
-          async process() {
-            if (change === "recovery")
-              state.targets[0]!.recovery = {
-                plan: target.plan,
-                desired: "running",
-                stage: "pending",
-              };
-            else state.targets[0]!.updatedAt = "later";
-            return { state: "stopped", exitCode: 5 };
-          },
-        },
-      }),
-    ).toEqual({ recorded: 0 });
-    expect((await store.read()).activity).toEqual([]);
-    expect(deadline.pending).toBe(false);
-  });
-}
-
-for (const outcome of ["empty", "rejected", "completed"] as const) {
-  test(`Activity ${outcome} releases scheduling and excludes store I/O from the budget`, async () => {
-    const { store, state } = fixture();
-    if (outcome === "empty") state.targets = [];
-    const deadline = controlledDeadline();
-    const checkedStore: StateStore = {
-      async read() {
-        expect(deadline.budgets).toEqual([]);
-        return store.read();
-      },
-      async update(change) {
-        expect(deadline.pending).toBe(false);
-        await store.update(change);
-      },
-    };
-    const result = await monitorRuntimeFailures({
-      store: checkedStore,
-      now: () => "now",
-      deadline,
-      observations: {
-        process() {
-          if (outcome === "rejected")
-            throw new Error("synchronous provider failure");
-          return Promise.resolve({ state: "stopped", exitCode: 5 });
-        },
-      },
-    });
-    expect(result).toEqual({ recorded: outcome === "completed" ? 1 : 0 });
-    expect(deadline.pending).toBe(false);
-    expect(deadline.budgets).toEqual(outcome === "empty" ? [] : [2000]);
+    expect(state.activity).toEqual([]);
+    expect(state.targets[0]!.services!.web!.outcome).toBeUndefined();
   });
 }

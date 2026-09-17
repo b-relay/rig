@@ -145,6 +145,7 @@ async function fixture() {
   const deps = {
     lifecycle,
     now: () => "then",
+    id: () => crypto.randomUUID(),
     store: {
       async read() {
         return structuredClone(state);

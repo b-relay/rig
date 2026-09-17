@@ -10,6 +10,7 @@ import type {
   PersistentComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
+import { stoppedStanding } from "./supervision";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
 export interface ObservationEffects {
   process(
@@ -72,28 +73,24 @@ export async function observeTargets(
                 : "missing",
             };
           const observed = await effects.process(target, component, signal);
+          if (observed.state === "stopped") {
+            const standing = stoppedStanding(target, component, observed);
+            const reason = [observed.reason, standing.reason]
+              .filter(Boolean)
+              .join(" ");
+            return {
+              ...base,
+              ...standing,
+              port: component.port,
+              ...(reason ? { reason } : {}),
+            };
+          }
           if (observed.state !== "running")
             return {
               ...base,
-              state: observed.restartPending
-                ? "starting"
-                : observed.state === "stopped" && target.desired === "running"
-                  ? "failed"
-                  : observed.state,
+              state: observed.state,
               port: component.port,
-              ...(observed.exitCode === undefined
-                ? {}
-                : { exitCode: observed.exitCode }),
-              ...(observed.reason
-                ? { reason: observed.reason }
-                : observed.state === "stopped" && target.desired === "running"
-                  ? {
-                      reason:
-                        observed.exitCode === undefined
-                          ? "The expected process is not running."
-                          : `The process exited with code ${observed.exitCode}.`,
-                    }
-                  : {}),
+              ...(observed.reason ? { reason: observed.reason } : {}),
             };
           return {
             ...base,

@@ -20,10 +20,10 @@ const observationSchema = z.object({
       .describe("Application process identifier, never the wrapper PID."),
     exitCode: z.number().int().optional()
       .describe("Last application exit code."),
-    restartPending: z.boolean().optional()
-      .describe("Whether another application restart attempt is scheduled."),
-    restartAt: z.number().finite().optional()
-      .describe("Unix milliseconds of the next scheduled restart attempt."),
+    signal: z.string().optional()
+      .describe("Signal that ended the application, when one did."),
+    incarnation: z.string().optional()
+      .describe("The start that produced the observed application process."),
     reason: z.string().optional()
       .describe("Safe explanation of uncertain application state."),
   }).describe("Application observation owned by the capture supervisor."),

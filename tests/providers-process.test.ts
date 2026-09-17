@@ -34,6 +34,7 @@ test("a repeated up preserves the process and down confirms its exit with captur
     cwd: root,
     env: { ...process.env } as Record<string, string>,
     logRoot: root,
+    incarnation: "start-1",
   };
   const started = await supervisor.ensureRunning(request);
   expect(started.outcome).toBe("started");
@@ -77,6 +78,7 @@ test("down kills shell descendants and an aborted observation does not stop the 
     cwd: root,
     env: { PATH: "/usr/bin:/bin" },
     logRoot: root,
+    incarnation: "start-1",
   };
   await supervisor.ensureRunning(request);
   let descendant = 0;
@@ -108,7 +110,7 @@ test("down kills shell descendants and an aborted observation does not stop the 
   }
   expect(() => process.kill(descendant, 0)).toThrow();
 });
-test("a crashed process is observed as stopped with its exit code", async () => {
+test("a crashed process is observed as stopped with its exit code and incarnation", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-crash-"));
   roots.push(root);
   const supervisor = createChildSupervisor({ ...platform(), stateRoot: root });
@@ -120,6 +122,7 @@ test("a crashed process is observed as stopped with its exit code", async () => 
     cwd: root,
     env: {},
     logRoot: root,
+    incarnation: "start-1",
   });
   for (
     let i = 0;
@@ -130,6 +133,7 @@ test("a crashed process is observed as stopped with its exit code", async () => 
   expect(await supervisor.observe("crash")).toEqual({
     state: "stopped",
     exitCode: 7,
+    incarnation: "start-1",
   });
 });
 test("concurrent up calls create only one process", async () => {
@@ -144,6 +148,7 @@ test("concurrent up calls create only one process", async () => {
     cwd: root,
     env: {},
     logRoot: root,
+    incarnation: "start-1",
   };
   const outcomes = await Promise.all([
     supervisor.ensureRunning(request),
@@ -166,12 +171,14 @@ test("a replacement daemon adopts an identity-matched lease and stops the origin
     cwd: root,
     env: {},
     logRoot: root,
+    incarnation: "start-1",
   });
   const replacement = createChildSupervisor({ ...platform(), stateRoot: root });
   supervisors.push(replacement);
   expect(await replacement.observe("recover")).toEqual({
     state: "running",
     pid: started.pid,
+    incarnation: "start-1",
   });
   expect(
     await replacement.ensureRunning({
@@ -181,6 +188,7 @@ test("a replacement daemon adopts an identity-matched lease and stops the origin
       cwd: root,
       env: {},
       logRoot: root,
+      incarnation: "start-1",
     }),
   ).toEqual({ outcome: "unchanged", pid: started.pid });
   await replacement.stop("recover");
@@ -200,6 +208,7 @@ test("a stale lease cannot stop a process whose identity no longer matches", asy
     cwd: root,
     env: {},
     logRoot: root,
+    incarnation: "start-1",
   });
   await mkdir(join(root, "process-leases"), { recursive: true });
   await writeFile(
@@ -217,15 +226,10 @@ test("a stale lease cannot stop a process whose identity no longer matches", asy
   expect(await supervisor.stop("stale")).toEqual({ outcome: "unchanged" });
   expect((await supervisor.observe("real")).state).toBe("running");
 });
-test("keepAlive uses a bounded restart budget instead of an infinite crash loop", async () => {
+test("a process that exits is not started again: one attempt is logged and observe reports its exit code and incarnation", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-budget-"));
   roots.push(root);
-  const supervisor = createChildSupervisor({
-    ...platform(),
-    stateRoot: root,
-    restartLimit: 2,
-    restartBackoffMs: 10,
-  });
+  const supervisor = createChildSupervisor({ ...platform(), stateRoot: root });
   supervisors.push(supervisor);
   await supervisor.ensureRunning({
     key: "budget",
@@ -238,15 +242,23 @@ test("keepAlive uses a bounded restart budget instead of an infinite crash loop"
     cwd: root,
     env: {},
     logRoot: root,
-    keepAlive: true,
+    incarnation: "start-1",
   });
-  await Bun.sleep(700);
+  for (let i = 0; i < 100; i++) {
+    if ((await supervisor.observe("budget")).state === "stopped") break;
+    await Bun.sleep(10);
+  }
+  await Bun.sleep(150);
   const logs = (await readFile(join(root, "target.jsonl"), "utf8"))
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-  expect(logs.filter((log) => log.line === "attempt")).toHaveLength(3);
-  expect((await supervisor.observe("budget")).state).toBe("stopped");
+  expect(logs.filter((log) => log.line === "attempt")).toHaveLength(1);
+  expect(await supervisor.observe("budget")).toEqual({
+    state: "stopped",
+    exitCode: 9,
+    incarnation: "start-1",
+  });
 });
 test("capture-backed processes keep writing logs after their starting daemon dies and can be adopted", async () => {
   const { writeFile } = await import("node:fs/promises");
@@ -269,6 +281,7 @@ test("capture-backed processes keep writing logs after their starting daemon die
     cwd: root,
     env: {},
     logRoot: root,
+    incarnation: "start-1",
   };
   const daemon = join(root, "daemon.ts");
   await writeFile(
@@ -315,6 +328,7 @@ test("process title changes do not invalidate its birth identity after daemon re
     cwd: root,
     env: {},
     logRoot: root,
+    incarnation: "start-1",
   });
   for (let i = 0; i < 100; i++) {
     if (
@@ -328,6 +342,7 @@ test("process title changes do not invalidate its birth identity after daemon re
   expect(await replacement.observe("title")).toEqual({
     state: "running",
     pid: started.pid,
+    incarnation: "start-1",
   });
 });
 test("exec preserves process ownership across daemon replacement", async () => {
@@ -342,6 +357,7 @@ test("exec preserves process ownership across daemon replacement", async () => {
     cwd: root,
     env: { PATH: "/usr/bin:/bin" },
     logRoot: root,
+    incarnation: "start-1",
   });
   await Bun.sleep(350);
   const replacement = createChildSupervisor({ ...platform(), stateRoot: root });
@@ -349,6 +365,7 @@ test("exec preserves process ownership across daemon replacement", async () => {
   expect(await replacement.observe("exec")).toEqual({
     state: "running",
     pid: started.pid,
+    incarnation: "start-1",
   });
 });
 test("capture-backed up rejects an app that cannot start instead of reporting the wrapper as success", async () => {
@@ -375,6 +392,7 @@ test("capture-backed up rejects an app that cannot start instead of reporting th
       cwd: root,
       env: {},
       logRoot: root,
+      incarnation: "start-1",
     }),
   ).rejects.toThrow();
   expect((await supervisor.observe("missing")).state).toBe("stopped");
@@ -400,7 +418,7 @@ for (const captured of [false, true]) {
     supervisors.push(supervisor);
     const started = await supervisor.ensureRunning({
       key: "drain", componentName: "web", cwd: root, logRoot: root,
-      env: { RIG_ROOT: root }, keepAlive: true,
+      env: { RIG_ROOT: root }, incarnation: "start-1",
       command: [process.execPath, "-e", "process.on('SIGTERM',()=>setTimeout(()=>{process.stdout.write('final stdout');process.stderr.write('final stderr');process.exit(0)},100));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
     });
     const log = join(root, "target.jsonl");
@@ -425,29 +443,26 @@ for (const captured of [false, true]) {
   });
 }
 
-test("stop cancels an owned child's pending restart", async () => {
+test("stop after an owned child already exited is unchanged, keeps its exit on record, and nothing starts it again", async () => {
   const { mkdir } = await import("node:fs/promises");
-  const base = await mkdtemp(join(tmpdir(), "rig-stop-restart-"));
+  const base = await mkdtemp(join(tmpdir(), "rig-stop-exited-"));
   roots.push(base);
   const root = join(base, ".rig");
   await mkdir(root);
-  const supervisor = createChildSupervisor({ ...platform(), stateRoot: root, restartBackoffMs: 500 });
+  const supervisor = createChildSupervisor({ ...platform(), stateRoot: root });
   supervisors.push(supervisor);
   await supervisor.ensureRunning({
-    key: "restart", componentName: "web", cwd: root, logRoot: root, env: { RIG_ROOT: root }, keepAlive: true,
+    key: "exited", componentName: "web", cwd: root, logRoot: root, env: { RIG_ROOT: root }, incarnation: "start-1",
     command: [process.execPath, "-e", "process.stdout.write('attempt\\n');setTimeout(()=>process.exit(7),100)"],
   });
   for (let attempt = 0; attempt < 100; attempt++) {
-    if ((await supervisor.observe("restart")).restartPending) break;
+    if ((await supervisor.observe("exited")).state === "stopped") break;
     await Bun.sleep(10);
   }
-  const pending = await supervisor.observe("restart");
-  expect(pending.restartPending).toBe(true);
-  expect(pending.restartAt).toBeGreaterThan(Date.now() - 1000);
-  expect(pending.restartAt).toBeLessThanOrEqual(Date.now() + 500);
-  expect(await supervisor.stop("restart")).toEqual({ outcome: "unchanged" });
-  await Bun.sleep(650);
-  expect((await supervisor.observe("restart")).restartPending).toBeUndefined();
+  expect(await supervisor.observe("exited")).toEqual({ state: "stopped", exitCode: 7, incarnation: "start-1" });
+  expect(await supervisor.stop("exited")).toEqual({ outcome: "unchanged" });
+  await Bun.sleep(150);
+  expect(await supervisor.observe("exited")).toEqual({ state: "stopped", exitCode: 7, incarnation: "start-1" });
   const entries = (await readFile(join(root, "target.jsonl"), "utf8")).trim().split("\n");
   expect(entries).toHaveLength(1);
 });
@@ -462,7 +477,7 @@ test("a detached daemon leaves its processes running and the next daemon adopts 
     cwd: root,
     env: { ...process.env } as Record<string, string>,
     logRoot: root,
-    keepAlive: true,
+    incarnation: "start-1",
   };
   const started = await first.ensureRunning(request);
   await first.detach();
@@ -472,6 +487,7 @@ test("a detached daemon leaves its processes running and the next daemon adopts 
   expect(await second.observe(request.key)).toMatchObject({
     state: "running",
     pid: started.pid,
+    incarnation: "start-1",
   });
   expect(await second.ensureRunning(request)).toEqual({
     outcome: "unchanged",
@@ -491,6 +507,7 @@ test("after a daemon restart, a dead group leader with live members is stopped a
     cwd: root,
     env: { PATH: "/usr/bin:/bin" },
     logRoot: join(root, "logs"),
+    incarnation: "start-1",
   };
   const first = createChildSupervisor({ ...platform(), stateRoot: root });
   const leader = (await first.ensureRunning(request)).pid!;
@@ -518,32 +535,6 @@ test("after a daemon restart, a dead group leader with live members is stopped a
   expect(await inspection.groupExists(again)).toBe(false);
   expect((await third.observe(request.key))).toMatchObject({ state: "running", pid: restarted.pid });
 });
-test("a lease-recovered keepAlive process is restarted by the next daemon when it exits", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rig-recovered-keepalive-"));
-  roots.push(root);
-  const request = {
-    key: "keepalive",
-    componentName: "web",
-    command: [process.execPath, "-e", "setInterval(()=>{},1000)"],
-    cwd: root,
-    env: {},
-    logRoot: join(root, "logs"),
-    keepAlive: true,
-  };
-  const first = createChildSupervisor({ ...platform(), stateRoot: root });
-  const pid = (await first.ensureRunning(request)).pid!;
-  await first.detach();
-  const second = createChildSupervisor({ ...platform(), stateRoot: root, restartBackoffMs: 50 });
-  supervisors.push(second);
-  expect(await second.observe(request.key)).toMatchObject({ state: "running", pid });
-  process.kill(pid, "SIGKILL");
-  await Bun.sleep(200);
-  expect(await second.observe(request.key)).toMatchObject({ state: "stopped", restartPending: true });
-  await Bun.sleep(600);
-  const after = await second.observe(request.key);
-  expect(after.state).toBe("running");
-  expect(after.pid).not.toBe(pid);
-});
 test("a deleted log directory is recreated on the next line; output that cannot be recorded is named while it lasts", async () => {
   const { mkdir, writeFile, stat } = await import("node:fs/promises");
   const root = await mkdtemp(join(tmpdir(), "rig-process-logdir-"));
@@ -559,6 +550,7 @@ test("a deleted log directory is recreated on the next line; output that cannot 
     cwd: root,
     env: { ...process.env } as Record<string, string>,
     logRoot,
+    incarnation: "start-1",
   };
   await supervisor.ensureRunning(request);
   const lines = async () =>
@@ -568,7 +560,7 @@ test("a deleted log directory is recreated on the next line; output that cannot 
   await rm(logRoot, { recursive: true, force: true });
   for (let i = 0; i < 100 && (await lines()) < 2; i++) await Bun.sleep(10);
   expect(await lines()).toBeGreaterThanOrEqual(2);
-  expect(await supervisor.observe(request.key)).toEqual({ state: "running", pid: expect.any(Number) });
+  expect(await supervisor.observe(request.key)).toEqual({ state: "running", pid: expect.any(Number), incarnation: "start-1" });
   // A path that cannot be a directory cannot take output: the observation says so, and recovers once it can.
   await rm(logRoot, { recursive: true, force: true });
   await writeFile(logRoot, "not a directory");
@@ -583,7 +575,7 @@ test("a deleted log directory is recreated on the next line; output that cannot 
     await Bun.sleep(10);
     observed = await supervisor.observe(request.key);
   }
-  expect(observed).toEqual({ state: "running", pid: expect.any(Number) });
+  expect(observed).toEqual({ state: "running", pid: expect.any(Number), incarnation: "start-1" });
   expect((await stat(join(logRoot, "target.jsonl"))).isFile()).toBe(true);
   await supervisor.stop(request.key);
 });
@@ -599,6 +591,7 @@ test("a newline-free output run is recorded as bounded records that reassemble l
     cwd: root,
     env: { ...process.env } as Record<string, string>,
     logRoot: root,
+    incarnation: "start-1",
   };
   await supervisor.ensureRunning(request);
   const read = async () => (await readFile(join(root, "target.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean);

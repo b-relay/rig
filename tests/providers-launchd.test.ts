@@ -11,7 +11,7 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-test("launchd up does not restart a running job and stop checks that it is unloaded", async () => {
+test("launchd up does not restart a running job, never asks launchd to respawn it, and stop checks that it is unloaded", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-launchd-"));
   roots.push(root);
   const calls: string[][] = [];
@@ -44,7 +44,7 @@ test("launchd up does not restart a running job and stop checks that it is unloa
     cwd: root,
     env: { PATH: "/usr/bin:/bin", VALUE: "<&" },
     logRoot: root,
-    keepAlive: true,
+    incarnation: "start-1",
   };
   expect(await supervisor.ensureRunning(request)).toEqual({
     outcome: "started",
@@ -59,7 +59,7 @@ test("launchd up does not restart a running job and stop checks that it is unloa
   const bootstrap = calls.find((call) => call[1] === "bootstrap")!;
   const plist = await readFile(bootstrap[3]!, "utf8");
   expect(plist).toContain("&lt;&amp;");
-  expect(plist).toContain("<key>KeepAlive</key><true/>");
+  expect(plist).toContain("<key>KeepAlive</key><false/>");
   await supervisor.stop(request.key);
   expect((await supervisor.observe(request.key)).state).toBe("stopped");
 });
@@ -96,6 +96,7 @@ test("real launchd capture stops its managed child and retains stdout and stderr
     cwd: root,
     env: { PATH: "/usr/bin:/bin" },
     logRoot: root,
+    incarnation: "start-1",
   };
   let appPid = 0;
   try {
@@ -135,31 +136,102 @@ test("real launchd capture stops its managed child and retains stdout and stderr
   }
 }, 15000);
 
-test("ensureRunning waits for the wrapper's advertised restart instead of a fixed budget while the application is in backoff", async () => {
+test("real launchd capture records its application's exit against the start it belonged to, leaves it stopped, and the next start recovers it", async () => {
+  if (process.platform !== "darwin") return;
+  const { randomUUID } = await import("node:crypto");
+  const { writeFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "rig-launchd-live-"));
+  roots.push(root);
+  const wrapper = join(root, "capture.ts");
+  await writeFile(
+    wrapper,
+    `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};process.exitCode=await runCapturedProcess(process.argv[2]!);`,
+  );
+  const supervisor = createLaunchdSupervisor({
+    root,
+    domain: `gui/${process.getuid!()}`,
+    labelPrefix: `test.rig.${randomUUID()}`,
+    captureCommand: [process.execPath, wrapper],
+    // This test bootstraps a real launchd job, so it runs the real launchctl and reads real process identities.
+    run: runCommand,
+    inspect: createProcessIdentityReader(runCommand),
+    timing: createLaunchdTiming(),
+  });
+  const trigger = join(root, "exit-now");
+  const request = (incarnation: string) => ({
+    key: "recovered-job",
+    componentName: "web",
+    command: [
+      process.execPath,
+      "-e",
+      `setInterval(()=>{if(require("node:fs").existsSync(${JSON.stringify(trigger)}))process.exit(7)},25)`,
+    ],
+    cwd: root,
+    env: { PATH: "/usr/bin:/bin" },
+    logRoot: root,
+    incarnation,
+  });
+  const until = async (state: string) => {
+    for (let i = 0; i < 200; i++) {
+      const seen = await supervisor.observe("recovered-job");
+      if (seen.state === state) return seen;
+      await Bun.sleep(30);
+    }
+    return supervisor.observe("recovered-job");
+  };
+  try {
+    expect((await supervisor.ensureRunning(request("start-1"))).outcome).toBe(
+      "started",
+    );
+    expect(await until("running")).toMatchObject({ incarnation: "start-1" });
+    await writeFile(trigger, "");
+    expect(await until("stopped")).toEqual({
+      state: "stopped",
+      exitCode: 7,
+      incarnation: "start-1",
+    });
+    await Bun.sleep(300);
+    expect((await supervisor.observe("recovered-job")).state).toBe("stopped");
+    await rm(trigger);
+    expect((await supervisor.ensureRunning(request("start-2"))).outcome).toBe(
+      "started",
+    );
+    expect(await until("running")).toMatchObject({ incarnation: "start-2" });
+  } finally {
+    await supervisor.stop("recovered-job");
+  }
+}, 20000);
+
+test("ensureRunning replaces a loaded job whose application has ended instead of waiting for it to come back", async () => {
   const { createHash } = await import("node:crypto");
   const { writeFile } = await import("node:fs/promises");
+  const { writeCaptureStatus } = await import("../src/providers/capture-status");
   const root = await mkdtemp(join(tmpdir(), "rig-launchd-"));
   roots.push(root);
   const key = "stable-id/web";
   const requestPath = join(root, `test.rig.${createHash("sha256").update(key).digest("hex").slice(0, 24)}.json`);
   const wrapper = { pid: 77, identity: "w".repeat(64) };
   const application = { pid: 88, identity: "a".repeat(64) };
-  const restartAt = 3500;
   let clock = 0;
+  let replaced = false;
   const calls: string[] = [];
   const run: CommandRunner = async ({ command }) => {
     calls.push(command[1]!);
+    if (command[1] === "bootstrap") {
+      replaced = true;
+      await writeCaptureStatus(requestPath, { state: "running", pid: application.pid });
+    }
     if (command[1] !== "print") return { exitCode: 0, stdout: "", stderr: "" };
     clock += 100;
-    const restarted = clock >= restartAt;
     await writeFile(`${requestPath}.observation.json`, JSON.stringify({
       wrapperPid: wrapper.pid,
       wrapperIdentity: wrapper.identity,
       observedAt: clock,
-      ...(restarted ? { applicationIdentity: application.identity } : {}),
-      observation: restarted
-        ? { state: "running", pid: application.pid }
-        : { state: "stopped", exitCode: 1, restartPending: true, restartAt },
+      ...(replaced ? { applicationIdentity: application.identity } : {}),
+      observation: replaced
+        ? { state: "running", pid: application.pid, incarnation: "start-2" }
+        : { state: "stopped", exitCode: 1, incarnation: "start-1" },
     }));
     return { exitCode: 0, stdout: `state = running\n\tpid = ${wrapper.pid}\n`, stderr: "" };
   };
@@ -172,6 +244,7 @@ test("ensureRunning waits for the wrapper's advertised restart instead of a fixe
     timing: { ...createLaunchdTiming(), now: () => clock },
     inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : "x".repeat(64)),
   });
+  expect(await supervisor.observe(key)).toEqual({ state: "stopped", exitCode: 1, incarnation: "start-1" });
   expect(
     await supervisor.ensureRunning({
       key,
@@ -180,12 +253,12 @@ test("ensureRunning waits for the wrapper's advertised restart instead of a fixe
       cwd: root,
       env: {},
       logRoot: root,
-      keepAlive: true,
+      incarnation: "start-2",
     }),
-  ).toEqual({ outcome: "unchanged", pid: application.pid });
-  expect(calls).not.toContain("bootstrap");
-  expect(clock).toBeGreaterThanOrEqual(restartAt);
-}, 15000);
+  ).toEqual({ outcome: "started", pid: application.pid });
+  expect(calls.filter((action) => action !== "print")).toEqual(["bootout", "bootstrap"]);
+  expect(await supervisor.observe(key)).toEqual({ state: "running", pid: application.pid, incarnation: "start-2" });
+});
 
 test("launchd stop and a failed bootstrap remove every job file, a vanished job is cleaned as unchanged, and unloading may take the wrapper's whole shutdown budget", async () => {
   const { createHash } = await import("node:crypto");
@@ -235,7 +308,7 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     timing: createLaunchdTiming(),
     inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : undefined),
   });
-  const request = { key, componentName: "web", command: ["/bin/sh", "-c", "serve"], cwd: root, env: { SECRET: "s3cret" }, logRoot: root, keepAlive: true };
+  const request = { key, componentName: "web", command: ["/bin/sh", "-c", "serve"], cwd: root, env: { SECRET: "s3cret" }, logRoot: root, incarnation: "start-1" };
   const files = async () => (await readdir(root)).filter((name) => name.startsWith(jobLabel)).sort();
 
   expect((await supervisor.ensureRunning(request)).outcome).toBe("started");

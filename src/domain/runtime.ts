@@ -25,6 +25,35 @@ export interface Preparation {
   units: Record<string, BuildOutcome>;
 }
 
+/** How the latest process of a Service ended, as far as Rig knows. `unknown` is a finding, not a gap: the process is gone and
+ * nothing recorded how, so nothing may treat it as a clean exit, a failure or a requested stop. */
+export type ServiceOutcome =
+  | { kind: "exited"; exitCode?: number; signal?: string; at: string }
+  /** A start could not be verified and its process was stopped: `activation-failed` for an automatic attempt, which counts
+   * as a failure to retry, `start-failed` for an operator's own start, which is theirs to repeat. */
+  | {
+      kind: "activation-failed" | "start-failed";
+      errorCode: string;
+      at: string;
+    }
+  | { kind: "unknown"; at: string };
+/** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
+export interface ServiceRun {
+  /** The workspace the Service was started from; a record of another Deployment describes nothing. */
+  deployment: string;
+  /** `stopped` once an operator stopped the Target; no exit is retried under it. */
+  intent: "running" | "stopped";
+  /** The latest process Rig started; exit evidence that names another one is not evidence about this Service. */
+  incarnation?: string;
+  /** Unix milliseconds of the automatic attempts since the last explicit start. */
+  attempts: number[];
+  outcome?: ServiceOutcome;
+  /** Unix milliseconds before which the next automatic attempt must not start. */
+  retryAt?: number;
+  /** Five automatic attempts ran within a minute; only an explicit start or a new Deployment starts the Service again. */
+  exhausted?: true;
+}
+
 export interface TargetRecord {
   id: string;
   projectId: string;
@@ -44,6 +73,8 @@ export interface TargetRecord {
   /** Present until deployment commits; absence retains legacy completion semantics. */
   deploymentIncomplete?: true;
   preparation?: Preparation;
+  /** Per managed Service name. A Service without a record was never started by this runtime. */
+  services?: Record<string, ServiceRun>;
   /** A rolled-back deployment attempt of this source left a build whose outcome is unknown. */
   uncertainBuild?: { branch?: string; commit?: string; unit: string };
   /** Revision of the rig.yaml a Working copy plan was made from. */

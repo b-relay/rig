@@ -4,11 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
-import {
-  createProcessInspection,
-  platformKill,
-} from "../src/providers/process-inspection";
-import { runCommand } from "../src/providers/command-runner";
+import { createProcessInspection } from "../src/providers/process-inspection";
 import type { ProcessTiming } from "../src/providers/process-timing";
 
 const roots: string[] = [];
@@ -20,7 +16,7 @@ const errno = (code: string) => Object.assign(new Error(code), { code });
 const pid = 424242;
 const identity = createHash("sha256").update(`${pid}:born`).digest("hex");
 
-/** A clock that only moves when the supervisor waits, plus timers the test fires or inspects by hand. */
+/** A clock that only moves when the supervisor waits, plus the timers it scheduled, which the test inspects. */
 function virtualTiming(start = 1_700_000_000_000) {
   let clock = start;
   let next = 0;
@@ -42,16 +38,7 @@ function virtualTiming(start = 1_700_000_000_000) {
   return {
     timing,
     elapsed: () => clock - start,
-    advance: (ms: number) => {
-      clock += ms;
-    },
     pending: () => [...timers.values()].map((timer) => timer.at - start),
-    /** Runs every due timer, as the platform would once their delay elapsed. */
-    fire: () => {
-      const due = [...timers.entries()];
-      timers.clear();
-      for (const [, timer] of due) timer.callback();
-    },
   };
 }
 
@@ -62,7 +49,6 @@ async function recovered(options: {
   identity?: () => string | undefined;
   stopTimeoutMs?: number;
   killWaitMs?: number;
-  keepAlive?: boolean;
   /** Receives every signal sent to the group, in order; the test may also consult it from `present`. */
   signals?: Array<NodeJS.Signals | 0>;
 }) {
@@ -70,26 +56,13 @@ async function recovered(options: {
   roots.push(root);
   const stateRoot = join(root, ".rig");
   await mkdir(join(stateRoot, "process-leases"), { recursive: true });
-  const request = {
-    key: "owned",
-    componentName: "web",
-    command: [
-      "/bin/sh",
-      "-c",
-      `touch ${JSON.stringify(join(root, "revived"))}`,
-    ],
-    cwd: root,
-    env: {},
-    logRoot: root,
-    keepAlive: options.keepAlive ?? false,
-  };
   await writeFile(
     join(
       stateRoot,
       "process-leases",
       createHash("sha256").update("owned").digest("hex") + ".json",
     ),
-    JSON.stringify({ key: "owned", pid, identity, request }),
+    JSON.stringify({ key: "owned", pid, identity, incarnation: "start-1" }),
   );
   const signals = options.signals ?? [];
   const supervisor = createChildSupervisor({
@@ -97,7 +70,6 @@ async function recovered(options: {
     timing: options.timing,
     stopTimeoutMs: options.stopTimeoutMs,
     killWaitMs: options.killWaitMs,
-    restartBackoffMs: 100,
     processInspection: createProcessInspection({
       kill: (target, signal) => {
         expect(target).toBe(-pid);
@@ -115,7 +87,7 @@ async function recovered(options: {
       }),
     }),
   });
-  return { supervisor, signals, root, request };
+  return { supervisor, signals };
 }
 
 test("stop escalates to SIGKILL exactly when the TERM grace elapses, without a platform sleep", async () => {
@@ -164,136 +136,24 @@ test("a group that survives SIGKILL fails as STOP_TIMEOUT after the TERM grace p
   expect(clock.elapsed()).toBeLessThan(800);
 });
 
-test("stop cancels a pending restart and a late timer callback cannot revive the process", async () => {
+test("a recovered process that is gone is a bare stop: no restart is scheduled and stop has nothing to signal", async () => {
   const clock = virtualTiming();
   let alive = true;
-  const { supervisor, root } = await recovered({
+  const { supervisor, signals } = await recovered({
     timing: clock.timing,
-    keepAlive: true,
     present: () => false,
     identity: () => (alive ? "born" : undefined),
   });
-  expect(await supervisor.observe("owned")).toEqual({ state: "running", pid });
-  alive = false;
   expect(await supervisor.observe("owned")).toEqual({
-    state: "stopped",
-    restartPending: true,
-    restartAt: clock.timing.now().getTime() + 100,
+    state: "running",
+    pid,
+    incarnation: "start-1",
   });
-  expect(clock.pending()).toEqual([100]);
-  expect(await supervisor.stop("owned")).toEqual({ outcome: "unchanged" });
-  expect(clock.pending()).toEqual([]);
-  // A callback the platform had already queued when the timer was cancelled.
-  const late = clock.timing.schedule(0, () => {});
-  late();
-  clock.fire();
-  await Bun.sleep(20);
+  alive = false;
   expect(await supervisor.observe("owned")).toEqual({ state: "stopped" });
-  expect(await Bun.file(join(root, "revived")).exists()).toBe(false);
+  expect(clock.pending()).toEqual([]);
+  expect(await supervisor.stop("owned")).toEqual({ outcome: "unchanged" });
+  expect(signals).toEqual([]);
+  expect(await supervisor.observe("owned")).toEqual({ state: "stopped" });
   await supervisor.shutdown();
-});
-
-test("the restart budget is a sliding window on the supplied clock: exhausted attempts return once the window has passed", async () => {
-  const clock = virtualTiming();
-  const root = await mkdtemp(join(tmpdir(), "rig-timing-"));
-  roots.push(root);
-  const supervisor = createChildSupervisor({
-    stateRoot: join(root, ".rig"),
-    timing: clock.timing,
-    processInspection: createProcessInspection({
-      run: runCommand,
-      kill: platformKill,
-    }),
-    restartLimit: 2,
-    restartWindowMs: 1000,
-    restartBackoffMs: 100,
-  });
-  const request = {
-    key: "flaky",
-    componentName: "web",
-    command: ["/usr/bin/true"],
-    cwd: root,
-    env: {},
-    logRoot: root,
-    keepAlive: true,
-  };
-  const untilStopped = async () => {
-    for (let i = 0; i < 500; i++) {
-      const observation = await supervisor.observe("flaky");
-      if (observation.state === "stopped") return observation;
-      await Bun.sleep(2);
-    }
-    throw new Error("the process did not exit");
-  };
-  try {
-    await supervisor.ensureRunning(request);
-    expect(await untilStopped()).toMatchObject({
-      restartPending: true,
-      restartAt: clock.timing.now().getTime() + 100,
-    });
-    clock.fire();
-    await Bun.sleep(20);
-    expect(await untilStopped()).toMatchObject({
-      restartPending: true,
-      restartAt: clock.timing.now().getTime() + 200,
-    });
-    clock.fire();
-    await Bun.sleep(20);
-    expect(await untilStopped()).toEqual({ state: "stopped", exitCode: 0 });
-    expect(clock.pending()).toEqual([]);
-    clock.advance(1001);
-    await supervisor.ensureRunning(request);
-    expect(await untilStopped()).toMatchObject({
-      restartPending: true,
-      restartAt: clock.timing.now().getTime() + 100,
-    });
-  } finally {
-    await supervisor.shutdown();
-  }
-});
-
-test("a scheduled restart that cannot start ends the pending restart instead of failing silently forever", async () => {
-  const clock = virtualTiming();
-  const base = await mkdtemp(join(tmpdir(), "rig-timing-"));
-  roots.push(base);
-  const cwd = join(base, "workdir");
-  await mkdir(cwd);
-  const supervisor = createChildSupervisor({
-    stateRoot: join(base, ".rig"),
-    timing: clock.timing,
-    processInspection: createProcessInspection({
-      run: runCommand,
-      kill: platformKill,
-    }),
-    restartBackoffMs: 100,
-  });
-  const request = {
-    key: "gone",
-    componentName: "web",
-    command: ["/usr/bin/true"],
-    cwd,
-    env: {},
-    logRoot: base,
-    keepAlive: true,
-  };
-  try {
-    await supervisor.ensureRunning(request);
-    for (
-      let i = 0;
-      i < 500 && !(await supervisor.observe("gone")).restartPending;
-      i++
-    )
-      await Bun.sleep(2);
-    expect(clock.pending()).toEqual([100]);
-    await rm(cwd, { recursive: true });
-    clock.fire();
-    await Bun.sleep(50);
-    expect(await supervisor.observe("gone")).toEqual({
-      state: "stopped",
-      exitCode: 0,
-    });
-    expect(clock.pending()).toEqual([]);
-  } finally {
-    await supervisor.shutdown();
-  }
 });

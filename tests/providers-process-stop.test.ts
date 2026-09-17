@@ -164,7 +164,7 @@ for (const changeAt of [1, 3]) {
   });
 }
 
-test("observe trusts a spawned child's handle: no OS probe, and its exit is reported with restart evidence, never as a bare stop", async () => {
+test("observe trusts a spawned child's handle: no OS probe, and its exit is reported with the recorded exit code and its incarnation, never as a bare stop", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-stop-"));
   roots.push(root);
   const probes: Array<[number, NodeJS.Signals | 0]> = [];
@@ -172,7 +172,6 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
   const supervisor = createChildSupervisor({
     stateRoot: join(root, ".rig"),
     stopTimeoutMs: 0,
-    restartBackoffMs: 60_000,
     timing: createProcessTiming(),
     processInspection: createProcessInspection({
       kill: (target, signal) => { probes.push([target, signal]); process.kill(target, signal); },
@@ -187,11 +186,11 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
       cwd: root,
       env: { ...process.env } as Record<string, string>,
       logRoot: root,
-      keepAlive: true,
+      incarnation: "start-1",
     });
     probes.length = 0;
     commands.length = 0;
-    expect(await supervisor.observe("live")).toEqual({ state: "running", pid: started.pid! });
+    expect(await supervisor.observe("live")).toEqual({ state: "running", pid: started.pid!, incarnation: "start-1" });
     expect(probes).toEqual([]);
     expect(commands).toEqual([]);
     let observation = await supervisor.observe("live");
@@ -199,7 +198,7 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
       await Bun.sleep(1);
       observation = await supervisor.observe("live");
     }
-    expect(observation).toMatchObject({ state: "stopped", exitCode: 9, restartPending: true });
+    expect(observation).toEqual({ state: "stopped", exitCode: 9, incarnation: "start-1" });
   } finally {
     await supervisor.stop("live");
     await supervisor.shutdown();

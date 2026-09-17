@@ -1,5 +1,4 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
-import { monitorRuntimeFailures } from "../runtime/activity";
 import {
   createNoticeBoard,
   recordingDiagnostic,
@@ -161,17 +160,11 @@ export async function composeDaemon(
     async start() {
       await runtime.reconcile();
       if (stopped) return;
+      // Restart policy is applied here, never by a supervisor: every pass records exits and makes the attempts that are due.
       stopMonitor = startFailureMonitor({
-        intervalMs: 5000,
+        intervalMs: 1000,
         notices,
-        run: () =>
-          runtime.exclusive(() =>
-            monitorRuntimeFailures({
-              store,
-              observations: effects.observations,
-              now: () => new Date().toISOString(),
-            }),
-          ),
+        run: () => runtime.supervise(),
       });
     },
     async shutdown() {

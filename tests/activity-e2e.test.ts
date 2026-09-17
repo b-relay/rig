@@ -16,6 +16,7 @@ services:
   worker:
     run: "'${process.execPath}' app.ts"
     ports: { http: auto }
+    restart: "no"
 `,
     );
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });

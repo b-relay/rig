@@ -20,7 +20,7 @@ const request = (marker: string) => ({
   cwd: "/srv/app",
   env: { MARKER: marker, PAD: "x".repeat(4 * 1024 * 1024) },
   logRoot: "/srv/logs",
-  keepAlive: true,
+  incarnation: "start-1",
 });
 
 test("a capture request is replaced whole: a reader never sees an empty or partial document", async () => {

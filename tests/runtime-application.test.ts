@@ -127,6 +127,9 @@ function fixture() {
       async checkpoint(target) {
         return { targetId: target.id, async commit() {}, async rollback() {} };
       },
+      async recover() {
+        return { outcome: "unchanged" as const };
+      },
       async restoreEffects() {},
       async commitEffects() {},
       async retireSuperseded() {},
@@ -1261,7 +1264,7 @@ test("status and doctor expire a slow observation on the injected deadline and r
 });
 
 test("doctor carries each failing component's observation reason and exit code and picks its hint from them", async () => {
-  const { runtime, deps } = fixture();
+  const { runtime, deps, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   const check = async () =>
@@ -1276,11 +1279,26 @@ test("doctor carries each failing component's observation reason and exit code a
         }[];
       }
     ).checks.find((c) => c.name === "local/web");
-  deps.observations.process = async () => ({ state: "stopped", exitCode: 137 });
+  const local = state.targets.find((t) => t.name === "local")!;
+  local.services = {
+    web: {
+      deployment: local.plan.workspacePath,
+      intent: "running",
+      incarnation: "i1",
+      attempts: [],
+      exhausted: true,
+    },
+  };
+  deps.observations.process = async () => ({
+    state: "stopped",
+    incarnation: "i1",
+    exitCode: 137,
+  });
   expect(await check()).toEqual({
     name: "local/web",
     ok: false,
-    message: "Component is failed. The process exited with code 137.",
+    message:
+      "Component is failed. The process exited with code 137 after 5 automatic restarts within 60 s, so it stays stopped. Run rig up to start it again.",
     reason: "failed",
     hint: "Inspect the Target logs (rig logs local) for why it exited.",
   });

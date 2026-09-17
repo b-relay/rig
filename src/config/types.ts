@@ -42,7 +42,10 @@ export interface ManagedComponent extends ComponentContext {
   sitePort?: number;
   health?: string;
   readyTimeout: number;
+  /** When Rig starts the Service again after a known exit; a plan recorded without it means always. */
+  restart?: RestartPolicy;
 }
+export type RestartPolicy = "always" | "on-failure" | "no";
 export interface InstalledComponent extends ComponentContext {
   kind: "installed";
   entrypoint: string;

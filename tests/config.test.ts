@@ -1398,6 +1398,7 @@ test("Target resolution provides forward port references, environment inheritanc
     command: "api --port 8081",
     port: 8081,
     readyTimeout: 30,
+    restart: "always",
     dependsOn: [],
     env: {
       MODE: "dev",
@@ -1745,11 +1746,23 @@ test("builds resolve to units: shared first, Services in dependency order, Tools
 });
 
 test.each([
-  [
-    "a restart policy other than always",
-    { services: web({ restart: "no" }) },
-    "services.web.restart",
-  ],
+  [{}, "always"],
+  [{ restart: "on-failure" }, "on-failure"],
+  [{ restart: "no" }, "no"],
+] as const)(
+  "a Service's restart policy %j is planned as %s",
+  (service, restart) => {
+    const plan = resolveTargetPlan({
+      config: parseProjectConfig({ name: "app", services: web(service) }),
+      target: "live",
+      ...roots_,
+      assignedPorts: { web: 4100 },
+    });
+    expect(plan.components[0]).toMatchObject({ name: "web", restart });
+  },
+);
+
+test.each([
   [
     "a Service with several ports",
     { services: web({ ports: { http: "auto", admin: "auto" } }) },

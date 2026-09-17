@@ -297,13 +297,13 @@ test("mixed Targets run pre-stop only for active components, and repeated down i
   expect([...f.running]).toEqual([]);
 });
 
-test.each(["unknown", "failed-observation", "restart-pending"] as const)(
+test.each(["unknown", "failed-observation"] as const)(
   "%s is not proof of absence and keeps pre-stop hooks before verified shutdown",
   async (state) => {
     const f = stopHookFixture(["t1:web"]);
     f.observations.set("t1:web", state === "failed-observation"
       ? new Error("Observation failed")
-      : state === "restart-pending" ? { state: "stopped", restartPending: true } : { state: "unknown" });
+      : { state: "unknown" });
     expect(await f.lifecycle.down(targetWithStopHooks())).toEqual({ outcome: "stopped" });
     expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
     expect([...f.running]).toEqual([]);
@@ -358,7 +358,6 @@ test("port contention after selection fails startup and preserves an already run
   await mkdir(root);
   const supervisor = createChildSupervisor({
     stateRoot: root,
-    restartLimit: 0,
     timing: createProcessTiming(),
     processInspection: createProcessInspection({ run: runCommand, kill: platformKill }),
   });

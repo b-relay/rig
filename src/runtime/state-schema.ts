@@ -35,6 +35,7 @@ const component = z.discriminatedUnion("kind", [
     sitePort: z.number().int().min(1).max(65535).optional(),
     health: text.optional(),
     readyTimeout: z.number().positive(),
+    restart: z.enum(["always", "on-failure", "no"]).optional(),
   }),
   z.object({
     ...common,
@@ -117,6 +118,65 @@ const preparation = z
     ),
   })
   .optional();
+const at = text.describe("When Rig recorded the outcome.");
+const services = z
+  .record(
+    text,
+    z.object({
+      deployment: text.describe(
+        "The workspace the Service was started from; a record of another Deployment describes nothing.",
+      ),
+      intent: z
+        .enum(["running", "stopped"])
+        .describe(
+          "stopped once an operator stopped the Target; no exit is retried under it.",
+        ),
+      incarnation: text
+        .optional()
+        .describe(
+          "The latest process Rig started; exit evidence naming another one is ignored.",
+        ),
+      attempts: z
+        .array(z.number().finite())
+        .describe(
+          "Unix milliseconds of the automatic attempts since the last explicit start.",
+        ),
+      outcome: z
+        .discriminatedUnion("kind", [
+          z.object({
+            kind: z.literal("exited"),
+            exitCode: z.number().int().optional(),
+            signal: text.optional(),
+            at,
+          }),
+          z.object({
+            kind: z.enum(["activation-failed", "start-failed"]),
+            errorCode: text,
+            at,
+          }),
+          z.object({ kind: z.literal("unknown"), at }),
+        ])
+        .optional()
+        .describe(
+          "How the latest process ended; unknown means it is gone and nothing recorded how.",
+        ),
+      retryAt: z
+        .number()
+        .finite()
+        .optional()
+        .describe(
+          "Unix milliseconds before which the next automatic attempt must not start.",
+        ),
+      exhausted: z
+        .literal(true)
+        .optional()
+        .describe(
+          "The automatic attempts are used up until an explicit start or a new Deployment.",
+        ),
+    }),
+  )
+  .optional()
+  .describe("Intent and known process outcomes per managed Service name.");
 const project = z.object({
   id: text,
   name: text,
@@ -148,6 +208,7 @@ const target = z.object({
     .optional()
     .describe("Deployment has not committed; matching source must be retried."),
   preparation,
+  services,
   uncertainBuild: z
     .object({
       branch: text.optional().describe("Branch of the attempted source."),

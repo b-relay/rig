@@ -1,3 +1,4 @@
+import { activationJournal, intendStopped } from "./supervision";
 import type { TargetRecord } from "../domain/runtime";
 import {
   RigError,
@@ -64,7 +65,11 @@ export async function activateDeployment(
       await deps.lifecycle.retireSuperseded(previous, candidate);
     }
     if (intent.activation === "start") {
-      await deps.lifecycle.up(candidate, checkpoint);
+      await deps.lifecycle.up(
+        candidate,
+        checkpoint,
+        activationJournal(candidate, "explicit", deps),
+      );
       candidate.desired = "running";
     }
     const decision = {
@@ -105,6 +110,7 @@ export async function activateDeployment(
       };
       candidate.recovery.stage = "blocked";
       candidate.desired = "stopped";
+      intendStopped(candidate);
       try {
         await persistTarget(candidate, deps.store);
       } catch (persistenceError) {
@@ -121,7 +127,11 @@ export async function activateDeployment(
     if (previous) {
       try {
         if (transitioned && previous.desired === "running")
-          await deps.lifecycle.up(previous);
+          await deps.lifecycle.up(
+            previous,
+            undefined,
+            activationJournal(previous, "explicit", deps),
+          );
         const uncertain = uncertainAttempt(candidate);
         await persistTarget(
           uncertain ? { ...previous, uncertainBuild: uncertain } : previous,
@@ -144,6 +154,7 @@ export async function activateDeployment(
       }
     } else {
       candidate.desired = "stopped";
+      intendStopped(candidate);
       delete candidate.recovery;
       try {
         await persistTarget(candidate, deps.store);

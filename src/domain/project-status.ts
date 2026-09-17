@@ -43,6 +43,16 @@ const componentReportSchema = z
       .int()
       .optional()
       .describe("Observed process exit evidence."),
+    signal: z
+      .string()
+      .optional()
+      .describe("Signal that ended the process, when recorded."),
+    exit: z
+      .enum(["clean", "failed", "requested", "unknown"])
+      .optional()
+      .describe(
+        "How a stopped Service ended: a clean exit, a failure, a stop an operator requested, or unknown when nothing recorded it. An unknown exit is never restarted automatically.",
+      ),
     reason: z.string().optional().describe("Explanation of the observation."),
   })
   .passthrough();

@@ -1,6 +1,6 @@
 /** The clock and timers a process supervisor lives by; the platform implementation is the effect owner, a test supplies a scripted one. */
 export interface ProcessTiming {
-  /** Wall-clock time, used for recorded timestamps, stop deadlines, and the restart window. */
+  /** Wall-clock time, used for recorded timestamps, and stop deadlines. */
   now(): Date;
   /** Resolves once `ms` have elapsed on this clock; the supervisor polls with it while waiting for a group to leave. */
   wait(ms: number): Promise<void>;

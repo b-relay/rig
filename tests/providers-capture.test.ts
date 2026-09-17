@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
+import { readExitRecord } from "../src/providers/exit-record";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -25,6 +26,7 @@ test("the launchd capture entrypoint preserves the real app exit code and stream
       cwd: root,
       env: {},
       logRoot: root,
+      incarnation: "start-1",
     }),
   );
   const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[1]);`;
@@ -45,7 +47,7 @@ test("the launchd capture entrypoint preserves the real app exit code and stream
     "bad",
   ]);
 });
-test("capture keeps the application restart budget alive and exits after that budget is exhausted", async () => {
+test("capture runs a failing application once, exits with its code, and leaves its exit record and final observation", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-budget-"));
   roots.push(root);
   const requestPath = join(root, "request.json");
@@ -62,7 +64,7 @@ test("capture keeps the application restart budget alive and exits after that bu
       cwd: root,
       env: {},
       logRoot: root,
-      keepAlive: true,
+      incarnation: "start-1",
     }),
   );
   const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};process.exitCode=await runCapturedProcess(process.argv[1]);`;
@@ -75,7 +77,21 @@ test("capture keeps the application restart budget alive and exits after that bu
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-  expect(logs.filter((log) => log.line === "attempt")).toHaveLength(6);
+  expect(logs.filter((log) => log.line === "attempt")).toHaveLength(1);
+  expect(await readExitRecord(root, "budget")).toEqual({
+    key: "budget",
+    incarnation: "start-1",
+    exitCode: 9,
+    at: expect.any(String),
+  });
+  const published = JSON.parse(
+    await readFile(`${requestPath}.observation.json`, "utf8"),
+  );
+  expect(published.observation).toEqual({
+    state: "stopped",
+    exitCode: 9,
+    incarnation: "start-1",
+  });
 }, 12000);
 test("an observation failure after startup stops the running component deliberately and never reports a start failure", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-observe-"));
@@ -95,6 +111,7 @@ test("an observation failure after startup stops the running component deliberat
       cwd: root,
       env: {},
       logRoot: root,
+      incarnation: "start-1",
     }),
   );
   const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};

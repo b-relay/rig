@@ -131,6 +131,8 @@ async function fixture() {
   };
   const deps = {
     lifecycle,
+    now: () => "2026-01-01T00:00:00.000Z",
+    id: () => crypto.randomUUID(),
     store: {
       async read() {
         return structuredClone(state);
@@ -304,8 +306,8 @@ test("rollback refuses an external artifact edit and retains blocked recovery ev
   await f.lifecycle.up(f.previous);
   await f.lifecycle.down(f.previous);
   const normalUp = f.deps.lifecycle.up.bind(f.deps.lifecycle);
-  f.deps.lifecycle.up = async (target, checkpoint) => {
-    const result = await normalUp(target, checkpoint);
+  f.deps.lifecycle.up = async (target, checkpoint, journal) => {
+    const result = await normalUp(target, checkpoint, journal);
     if (target.commit === "new") {
       await writeFile(join(f.root, "bin", "tool"), "external change");
       throw new Error("late failure");
@@ -509,11 +511,15 @@ test("first deployment and final inventory failure also retain a recoverable com
       await f.lifecycle.down(f.previous);
     } else f.state.targets = [];
     const update = f.deps.store.update.bind(f.deps.store);
-    let writes = 0;
-    f.deps.store.update = async (change) => {
-      if (++writes === 3) throw new Error("final inventory write failed");
-      await update(change);
-    };
+    // The final inventory write is the first one that clears the recovery record.
+    let refused = false;
+    f.deps.store.update = async (change) =>
+      update(async (state) => {
+        await change(state);
+        if (refused || state.targets[0]?.recovery) return;
+        refused = true;
+        throw new Error("final inventory write failed");
+      });
     await expect(
       activateDeployment(
         f.candidate,

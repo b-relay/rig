@@ -99,6 +99,9 @@ function effects(root: string) {
     router: {
       async apply() {},
       async remove() {},
+      async withheld() {
+        return [];
+      },
       async checkpoint(key) {
         return { key, value: null };
       },

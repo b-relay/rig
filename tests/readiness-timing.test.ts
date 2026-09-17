@@ -42,6 +42,8 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
   };
   const running = new Set(["readiness:prior"]);
   const exitCodes = new Map<string, number>();
+  /** While set, observing a running process does not answer until it resolves. */
+  const stalled: { observation?: Promise<void> } = {};
   const events: string[] = [];
   const checkpoint = { targetId: record.id, async commit() { events.push("commit"); }, async rollback() { events.push("rollback"); } };
   const effects: TargetEffects = {
@@ -52,6 +54,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
     listeners: async (pid: number) => loopbackListeners(pid, [4000]),
     supervisor: () => ({
       async observe(key) {
+        if (running.has(key) && stalled.observation) await stalled.observation;
         if (running.has(key)) return { state: "running", pid: 1 };
         const exitCode = exitCodes.get(key);
         return exitCode === undefined ? { state: "stopped" } : { state: "stopped", exitCode };
@@ -68,7 +71,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
     async hook(command) { events.push(command); }, async route() { events.push("route"); }, health,
   };
   const timing = scheduleFixture();
-  return { record, running, exitCodes, events, checkpoint, timing, lifecycle: createTargetLifecycle(effects, timing) };
+  return { record, running, exitCodes, stalled, events, checkpoint, timing, lifecycle: createTargetLifecycle(effects, timing) };
 }
 
 test("a process that has exited is reported with its exit code before the first health poll instead of after readyTimeout", async () => {
@@ -147,6 +150,27 @@ test("controlled deadline bounds uncooperative health and prevents late revival"
   finish(ready);
   await flush();
   expect(f.events).toEqual(["start:readiness:new", "stop:readiness:new", "rollback"]);
+  expect(f.timing.pending).toBe(0);
+});
+
+test("a supervisor that never answers the liveness observation is bounded by the same deadline", async () => {
+  let polls = 0;
+  let answer!: () => void;
+  const f = fixture(async () => { polls++; return ready; });
+  f.running.delete("readiness:prior");
+  f.stalled.observation = new Promise(resolve => { answer = resolve; });
+  let failure: unknown;
+  const result = f.lifecycle.up(f.record).catch(error => { failure = error; });
+  await flush();
+  f.timing.advance(1000);
+  await flush();
+  f.stalled.observation = undefined;
+  await result;
+  expect(failure).toMatchObject({ code: "HEALTH_FAILED", details: { outcome: "unanswered" } });
+  expect(polls).toBe(0);
+  answer();
+  await flush();
+  expect(f.events.filter(event => event === "route" || event.endsWith("-post"))).toEqual([]);
   expect(f.timing.pending).toBe(0);
 });
 

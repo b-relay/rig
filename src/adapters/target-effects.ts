@@ -610,7 +610,7 @@ export function createTargetEffects(
       return { outcome: "installed" };
     },
     listeners: (pid, signal) => options.listeners.inspect(pid, signal),
-    async route(target, withheld) {
+    async route(target, change) {
       if (!target.plan.domain || !target.plan.proxy)
         return transactions.withRouteChange(target.id, () =>
           options.router.remove(target.id),
@@ -623,13 +623,22 @@ export function createTargetEffects(
           "Correct the Project proxy configuration.",
         );
       const domain = target.plan.domain;
+      const held = new Set(await options.router.withheld(target.id));
+      const withheld = new Set([
+        ...routes
+          .filter((route) => held.has(route.prefix))
+          .map((route) => route.service),
+        ...("withhold" in change ? change.withhold : []),
+      ]);
+      if ("verified" in change)
+        for (const service of change.verified) withheld.delete(service);
       await transactions.withRouteChange(target.id, () =>
         options.router.apply({
           key: target.id,
           hostname: domain,
           routes: routes.map((route) => ({
             prefix: route.prefix,
-            upstream: withheld?.has(route.service)
+            upstream: withheld.has(route.service)
               ? null
               : `127.0.0.1:${route.port}`,
           })),

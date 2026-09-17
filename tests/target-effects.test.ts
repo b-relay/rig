@@ -83,6 +83,9 @@ function effects(
     router: {
       async apply() {},
       async remove() {},
+      async withheld() {
+        return [];
+      },
       async checkpoint(key) {
         return { key, value: null };
       },
@@ -680,6 +683,9 @@ test("a missing initdb names the tool instead of a generic start failure, and an
     router: {
       async apply() {},
       async remove() {},
+      async withheld() {
+        return [];
+      },
       async checkpoint(key) {
         return { key, value: null };
       },
@@ -732,6 +738,9 @@ test("dependency installation runs once per deployed revision and its marker lea
     router: {
       async apply() {},
       async remove() {},
+      async withheld() {
+        return [];
+      },
       async checkpoint(key) {
         return { key, value: null };
       },
@@ -833,6 +842,9 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
     router: {
       async apply() {},
       async remove() {},
+      async withheld() {
+        return [];
+      },
       async checkpoint(key) {
         return { key, value: null };
       },
@@ -974,6 +986,9 @@ test("hook output is recorded line by line as it arrives, with the time each lin
     router: {
       async apply() {},
       async remove() {},
+      async withheld() {
+        return [];
+      },
       async checkpoint(key) {
         return { key, value: null };
       },

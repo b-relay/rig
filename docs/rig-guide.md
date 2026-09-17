@@ -961,13 +961,16 @@ one day.
 prefix to a declared port reference; `/` is required when `proxy` is present.
 A prefix matches at a slash boundary (`/api` serves `/api` and `/api/users`,
 not `/apix`), the longest matching prefix wins, and the upstream receives the
-path unchanged. Wildcards are not prefixes. Upstreams are reached at
+path unchanged. Wildcards are not prefixes, and two prefixes that differ only
+by a trailing slash (`/api` and `/api/`) are one path and are refused. Upstreams are reached at
 `127.0.0.1:<port>`, so a routed port must listen on IPv4 loopback.
 While a routed Service is being started, by `up` or automatically, its paths
 answer `503` until it is verified; the other paths of the Target keep their
 upstreams. A replacement that fails verification is stopped and its paths stay
-at `503`. If the route cannot be withdrawn, the start is not
-attempted.
+at `503`, also while other Services of the Target start or recover: a path is
+released only when its own Service is next verified, by an automatic retry or
+by `rig up` or `rig restart`. If the route cannot be withdrawn, the start is
+not attempted.
 A Preview serves `<preview name>.<domain>`, or `targets.preview.domain` with
 `${rig.target}` replaced by the Preview's name. The Working copy has no route
 unless `targets.working.domain` is set. A Target with no resolved hostname or

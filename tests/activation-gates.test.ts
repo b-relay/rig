@@ -59,6 +59,7 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
   const pids = new Map<number, string>();
   const starts: string[] = [];
   const stops: string[] = [];
+  const unstoppable = new Set<string>();
   const supervisor: Supervisor = {
     async observe(key) {
       return processes.get(key) ?? { state: "stopped" };
@@ -77,6 +78,8 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
       return { outcome: "started" };
     },
     async stop(key) {
+      if (unstoppable.has(key.split(":").at(-1)!))
+        throw new Error("the process ignored the stop");
       const running = processes.get(key)?.state === "running";
       if (running) stops.push(key.split(":").at(-1)!);
       processes.delete(key);
@@ -101,6 +104,11 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     },
     async remove(key) {
       published.delete(key);
+    },
+    async withheld(key) {
+      return (published.get(key)?.routes ?? [])
+        .filter((route) => route.upstream === null)
+        .map((route) => route.prefix);
     },
     async checkpoint(key) {
       return { key, value: JSON.stringify(published.get(key) ?? null) };
@@ -223,6 +231,7 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     clock,
     starts,
     stops,
+    unstoppable,
     listening,
     hold,
     routerFailure,
@@ -446,4 +455,29 @@ test("when the verified replacement's route cannot be published it is stopped, i
   expect((await f.target()).services!.api!.outcome).toMatchObject({
     kind: "activation-failed",
   });
+});
+
+test("a sibling's recovery does not reopen the path of a Service whose unsafe replacement could not be stopped", async () => {
+  const f = await fixture();
+  await f.up();
+  await f.exit("api", 3);
+  f.listening.api = [`127.0.0.1:${API}`, `*:${ADMIN}`];
+  f.unstoppable.add("api");
+  await retry(f);
+  expect(await f.running("api")).toBe(true);
+  expect(await f.reach("/api")).toBeNull();
+
+  f.unstoppable.delete("api");
+  await f.exit("web", 3);
+  await retry(f);
+  expect(await f.running("web")).toBe(true);
+  expect(await f.reach("/")).toBe(`127.0.0.1:${WEB}`);
+  expect(await f.reach("/api")).toBeNull();
+
+  // Cleanup that failed is not retried on its own. The path is released by its own Service passing the gate, here on an
+  // operator's up, and not by anyone else's publication.
+  f.listening.api = [`127.0.0.1:${API}`, `::1:${ADMIN}`];
+  await f.exit("api", 3);
+  await f.up();
+  expect(await f.reach("/api")).toBe(`127.0.0.1:${API}`);
 });

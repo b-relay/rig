@@ -31,6 +31,8 @@ export interface RouteCheckpoint {
 export interface Router {
   apply(route: RouteRequest): Promise<void>;
   remove(key: string): Promise<void>;
+  /** The prefixes of the published route that reach no process; empty without a route. */
+  withheld(key: string): Promise<string[]>;
   checkpoint(key: string): Promise<RouteCheckpoint>;
   restore(saved: RouteCheckpoint, expected: RouteCheckpoint): Promise<void>;
 }
@@ -108,7 +110,10 @@ export function createCaddyRouter(options: {
     if (!block && existing === null) return;
     const after =
       without + (without && !without.endsWith("\n") ? "\n" : "") + block;
-    if (after === before) return;
+    // A withdrawal is reloaded even when the file already says it: what Caddy serves can differ from the file after a reload
+    // that failed, and a process is about to start behind whatever Caddy serves now.
+    const withdrawing = route?.routes.some((path) => path.upstream === null);
+    if (after === before && !withdrawing) return;
     // Write through a symlinked Caddyfile so the file Caddy reads changes and the link survives.
     const file = await realpath(options.caddyfile).catch(
       () => options.caddyfile,
@@ -206,6 +211,14 @@ export function createCaddyRouter(options: {
   return {
     apply: (route) => serialized(route.key, route),
     remove: (key) => serialized(key),
+    async withheld(key) {
+      await pending.catch(() => {});
+      const text = await readFile(options.caddyfile, "utf8").catch((error) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      return withheldPrefixes(ownedBlock(text, key) ?? "");
+    },
     async checkpoint(key) {
       await pending.catch(() => {});
       const text = await readFile(options.caddyfile, "utf8").catch((error) => {
@@ -243,6 +256,20 @@ function siteRoutes(routes: readonly RoutePath[]): string {
         : `  @rig${index} path ${path.prefix} ${path.prefix}/*\n  handle @rig${index} {\n    ${handler(path)}\n  }\n`,
     )
     .join("");
+}
+/** Reads back what `siteRoutes` wrote: the prefixes whose handler is `respond 503`. */
+function withheldPrefixes(block: string): string[] {
+  const matchers = new Map<string, string>();
+  const withheld: string[] = [];
+  let prefix = "/";
+  for (const line of block.split("\n").map((text) => text.trim())) {
+    const matcher = /^(@rig\d+) path (\S+) /.exec(line);
+    if (matcher) matchers.set(matcher[1]!, matcher[2]!);
+    const handle = /^handle(?: (@rig\d+))? \{$/.exec(line);
+    if (handle) prefix = handle[1] ? (matchers.get(handle[1]) ?? "/") : "/";
+    if (line === "respond 503") withheld.push(prefix);
+  }
+  return withheld;
 }
 /** Caddy serves one site per host and port; a bare address defaults to 443
  * (80 under http://), so `example.com` and `example.com:443` are one site and

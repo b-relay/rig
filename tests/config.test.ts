@@ -918,6 +918,19 @@ test("a proxy must include '/' and reference declared Service ports", () => {
       "/api/*": "${services.api.ports.http}",
     }),
   ).toContain("must be a path prefix starting with '/' without wildcards");
+  expect(
+    hint({
+      "/": "${services.web.ports.http}",
+      "/api": "${services.api.ports.http}",
+      "/api/": "${services.web.ports.http}",
+    }),
+  ).toContain("proxy./api/: Proxy '/api/' and '/api' are the same path.");
+  expect(
+    hint({
+      "/": "${services.web.ports.http}",
+      "//": "${services.api.ports.http}",
+    }),
+  ).toContain("proxy.//: Proxy '//' names no path.");
 });
 
 // ---------------------------------------------------------------------------

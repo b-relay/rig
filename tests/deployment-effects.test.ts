@@ -260,7 +260,9 @@ test("a crash between an applied route and its journal capture is rolled back by
   const effects = f.adapters({ router: crashing });
   await effects.checkpoint(f.candidate);
   crashed = true;
-  await expect(effects.route(f.candidate)).rejects.toThrow("rigd died");
+  await expect(
+    effects.route(f.candidate, { verified: new Set() }),
+  ).rejects.toThrow("rigd died");
   expect((await f.router.checkpoint(f.candidate.id)).value).toContain(
     "new.test",
   );

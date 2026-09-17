@@ -106,6 +106,9 @@ async function selected(
     router: {
       async apply() {},
       async remove() {},
+      async withheld() {
+        return [];
+      },
       async checkpoint(key) {
         return { key, value: null };
       },

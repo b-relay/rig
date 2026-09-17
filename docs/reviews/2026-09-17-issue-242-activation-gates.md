@@ -45,9 +45,9 @@ pay for `lsof`. C, rejected: the provider returns a verdict
 adapter, each adapter would need its own copy, and the lifecycle tests could not
 state the rule through the interface.
 
-**Route gate shape.** A, chosen: one idempotent `effects.route(target, withheld?)`
+**Route gate shape.** A, chosen: one `effects.route(target, change)`
 that publishes the Target's whole desired map, with withheld Services' paths at
-503. It is one atomic owned Caddy block, so "preserve unrelated routes" is
+503 (`change` is `{withhold}` or `{verified}`; see review round 1). It is one atomic owned Caddy block, so "preserve unrelated routes" is
 structural and the existing route checkpoint covers it. B, rejected: incremental
 `Router.withdraw(prefix)` / `publish(prefix)`. It adds per-prefix state, partial
 failure combinations, and a second checkpoint format.
@@ -74,7 +74,9 @@ bind elsewhere afterwards. TCP only. Documented in the guide.
 bound only to `::1` passes the gate and is not routable (readiness accepts ::1
 because unrouted ports may use it). The final publish in `recover` does not
 withhold stopped siblings: their dead ports answer 502, and any later start
-withdraws first. Status still says `running` for a Service without `ready`.
+withdraws first. The liveness grace period of a Service without readiness runs
+before `ready_timeout` starts and is not bounded by it (unchanged behaviour).
+Status still says `running` for a Service without `ready`.
 `ActivationJournal.activated` stays a no-op seam.
 
 ## Function-design ledger (findings only)
@@ -86,7 +88,9 @@ withdraws first. Status still says `running` for a Service without `ready`.
 | `awaitActivation` | One owner for deadline, retry and both checks, shared by `up`, `recover` and prerequisite verification. Distinguishes provider rejection (own error, immediate), expiry (`unanswered`), unready answer (`unready`), and unknown ownership (`LISTENER_UNKNOWN`). | — |
 | `localListeners` | Reads the owner twice around the inspection; pure policy otherwise. | — |
 | `loopbackAddress` | Pure; exported for its table test. | — |
-| `effects.route` | Now total over the plan's map; `withheld` is a set of Service names, not prefixes, because the caller knows Services. Throws `ROUTE_UPSTREAM` for a routed Target with no routes. | — |
+| `effects.route` | Now total over the plan's map; the change names Services, not prefixes, because the caller knows Services. Reads the published route (`Router.withheld`) so that what is withheld is state of the route itself, not of a caller: it survives a daemon restart and a sibling's publication. Throws `ROUTE_UPSTREAM` for a routed Target with no routes. | Required `change` argument: a caller must say whether it withholds or has verified. |
+| `Router.withheld` | Reads the owned block back; no reload, no write. A published prefix the plan no longer routes is ignored by the caller. | Contract test on the rendered text. |
+| `CaddyRouter.change` | The unchanged-file shortcut assumed the file is what Caddy serves. | A withdrawal always reloads; an unchanged publication still does not. |
 | `resolve.declaredPorts` / `ports.declaredPorts` | Two readers of "a component's ports": one builds the plan, one reads plans including legacy ones. | Kept apart: different inputs (config vs. saved plan). |
 
 Inherited debt named, not changed: test doubles of `TargetEffects` are hand-built
@@ -127,7 +131,31 @@ in several suites; each needed `listeners` and a pid on running observations.
 
 ## Review (Codex, gpt-6-astra, high, read-only)
 
-_Recorded below as rounds complete._
+**Round 1** (on 8862756): four findings, all taken in narrowed form.
+
+1. Blocker: a sibling's recovery published the whole map with only itself
+   withheld, reopening the path of a Service whose replacement failed the gate
+   and could not be stopped. Shapes compared: (a) the lifecycle derives the
+   withheld set from recorded Service outcomes on every publish: the lifecycle
+   has no store, and an outcome is not the same fact as "this path is at 503";
+   (b) chosen: the published route is the record. `Router.withheld(key)` reads
+   it back, `effects.route(target, {withhold} | {verified})` computes
+   (published ∪ withhold) − verified. `up` names the Services it started and
+   the prerequisites it gated; `recover` names its Service and the
+   prerequisites it gated. Regression: an unstoppable non-local api, then web
+   recovers, `/api` stays at 503 until the api itself passes on `up`. Red
+   confirmed by ignoring the published state.
+2. Blocker: a withdrawal identical to the file skipped the reload, although
+   Caddy can serve something older than the file after a failed reload. A
+   request with a withheld path now always validates and reloads.
+3. Should-fix: the liveness observation inside `awaitActivation` was not raced
+   against the deadline. It is now; red confirmed (the test hung to its 5 s
+   limit without the race).
+4. Should-fix: `/api` and `/api/` normalized to duplicate routes and `//` to an
+   empty prefix. Both are refused at the field when the config is read.
+
+Declined as scope: continuous containment, an interface redesign, #241 retry
+classification, bounding the pre-existing liveness grace period.
 
 ## Handoff
 

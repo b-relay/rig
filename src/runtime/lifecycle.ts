@@ -74,11 +74,15 @@ export interface TargetEffects {
   ): Promise<{ outcome: "installed" | "unchanged" }>;
   /** What the owned process `pid` and its descendants listen on now. May block or ignore cancellation. */
   listeners(pid: number, signal: AbortSignal): Promise<ListenerEvidence>;
-  /** Publishes the Target's whole route map, or removes its route when the plan has none. Every path of a `withheld` Service
-   * answers 503 instead of reaching a process; the other paths are published as usual. */
-  route(target: TargetRecord, withheld?: ReadonlySet<string>): Promise<void>;
+  /** Publishes the Target's whole route map, or removes its route when the plan has none. Every path of a withheld Service
+   * answers 503 instead of reaching a process. A path stays withheld across calls until its Service is named `verified`:
+   * `withhold` adds Services to the ones the published route already withholds, `verified` releases them. */
+  route(target: TargetRecord, change: RouteChange): Promise<void>;
   removeRoute(target: TargetRecord): Promise<void>;
 }
+export type RouteChange =
+  | { readonly withhold: ReadonlySet<string> }
+  | { readonly verified: ReadonlySet<string> };
 /** Where build outcomes are kept. `started` must be durable before it returns: it is the only evidence a crashed build leaves. */
 export interface BuildJournal {
   started(unit: BuildUnit): Promise<void>;
@@ -308,7 +312,9 @@ export function createTargetLifecycle(
           (name) =>
             observations.get(`${target.id}:${name}`)?.state === "stopped",
         );
-        if (unverified.size) await effects.route(target, unverified);
+        if (unverified.size)
+          await effects.route(target, { withhold: unverified });
+        const verified = new Set<string>();
         if (began && target.plan.hooks?.preStart)
           await effects.hook(
             target.plan.hooks.preStart,
@@ -331,11 +337,15 @@ export function createTargetLifecycle(
               await awaitActivation(component, target, effects, timing, {
                 observe: () => supervisor.observe(key),
               });
+            if (hasDependents(target, component.name))
+              verified.add(component.name);
             continue;
           }
           await startService(target, component, supervisor, journal, started);
+          verified.add(component.name);
         }
-        await effects.route(target);
+        // A path an earlier failed start left withheld is released only by that Service passing the gate itself.
+        await effects.route(target, { verified });
         if (began && target.plan.hooks?.postStart)
           await effects.hook(
             target.plan.hooks.postStart,
@@ -429,9 +439,12 @@ export function createTargetLifecycle(
         await effects.prepare(target);
         // Withdrawn before the spawn: the route published for the process that ended must not reach its unverified replacement.
         const unverified = routedServices(target, (name) => name === service);
-        if (unverified.size) await effects.route(target, unverified);
+        if (unverified.size)
+          await effects.route(target, { withhold: unverified });
         await startService(target, component, supervisor, tracked, started);
-        await effects.route(target);
+        await effects.route(target, {
+          verified: new Set([service, ...component.dependsOn]),
+        });
         return { outcome: started.length ? "started" : "unchanged" };
       } catch (error) {
         // Nothing was asked of the supervisor: the refusal itself says how the attempt ended.
@@ -783,7 +796,12 @@ async function awaitActivation(
   let lastCheck: string | undefined;
   try {
     while (!controller.signal.aborted) {
-      await assertAlive(component, process);
+      // An observation that never answers is bounded like any other check.
+      if (
+        (await Promise.race([assertAlive(component, process), expired])) ===
+        false
+      )
+        break;
       const check = await Promise.race([
         hasReadiness(component)
           ? effects.health(component, target, controller.signal)

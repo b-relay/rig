@@ -487,3 +487,51 @@ test("a route map renders in the order given with a withheld path answering 503,
     ).rejects.toMatchObject({ code: "ROUTE_INVALID" });
   expect(await readFile(file, "utf8")).toBe(text);
 });
+
+test("the router reports which published paths are withheld, and reloads a withdrawal the file already states but not an unchanged publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-withheld-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  const reloads: string[][] = [];
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async ({ command }) => {
+      if (command[1] === "reload") reloads.push([...command]);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  expect(await router.withheld("map")).toEqual([]);
+  const withdrawal = {
+    key: "map",
+    hostname: "app.test",
+    routes: [
+      { prefix: "/api/admin", upstream: null },
+      { prefix: "/api", upstream: "127.0.0.1:3002" },
+      { prefix: "/", upstream: null },
+    ],
+  };
+  await router.apply(withdrawal);
+  expect(await router.withheld("map")).toEqual(["/api/admin", "/"]);
+  expect(await router.withheld("other")).toEqual([]);
+  // Caddy may be serving something older than the file: a withdrawal is never assumed to be live.
+  const text = await readFile(file, "utf8");
+  await router.apply(withdrawal);
+  expect(reloads).toHaveLength(2);
+  expect(await readFile(file, "utf8")).toBe(text);
+
+  const lone = {
+    key: "map",
+    hostname: "app.test",
+    routes: [{ prefix: "/", upstream: null }],
+  };
+  await router.apply(lone);
+  expect(await router.withheld("map")).toEqual(["/"]);
+  const published = {
+    ...lone,
+    routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+  };
+  await router.apply(published);
+  await router.apply(published);
+  expect(reloads).toHaveLength(4);
+  expect(await router.withheld("map")).toEqual([]);
+});

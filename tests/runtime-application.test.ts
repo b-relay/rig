@@ -272,6 +272,22 @@ test("a plain deploy of the same Commit is refused while a build's outcome is un
   ).toMatchObject({ outcome: "deployed" });
   expect(state.targets[0]!.plan.workspacePath).not.toBe(workspace);
   expect(state.targets[0]!.preparation?.deployment).not.toBe(workspace);
+  // A completed Deployment of the same source is not a no-op while a rolled-back attempt of it is uncertain.
+  state.targets[0]!.uncertainBuild = {
+    branch: "main",
+    commit: "abc",
+    unit: "shared",
+  };
+  await expect(
+    runtime.command({ ...deploy, branch: "main" }),
+  ).rejects.toMatchObject({ code: "BUILD_UNKNOWN" });
+  expect(
+    await runtime.command({ ...deploy, branch: "main", force: true }),
+  ).toMatchObject({ outcome: "deployed" });
+  expect(state.targets[0]!.uncertainBuild).toBeUndefined();
+  expect(await runtime.command({ ...deploy, branch: "main" })).toMatchObject({
+    outcome: "unchanged",
+  });
 });
 
 test("a Working copy restart retires superseded executables and publishes the new plan under one checkpoint, rolled back when the plan cannot be saved", async () => {
@@ -309,6 +325,44 @@ test("a Working copy restart retires superseded executables and publishes the ne
   ).rejects.toThrow("store refused the write");
   expect(calls).toEqual(["retire", "refused", "rollback"]);
   expect(state.targets[0]!.plan).toEqual(before);
+  // Interrupted after the plan was saved: down finishes the commit and never restores the retired executables.
+  deps.store.update = update;
+  deps.lifecycle.checkpoint = async (target) => ({
+    targetId: target.id,
+    async commit() {
+      throw new Error("journal unavailable");
+    },
+    async rollback() {
+      calls.push("rollback");
+    },
+  });
+  deps.lifecycle.commitEffects = async () => {
+    calls.push("commitEffects");
+  };
+  deps.lifecycle.restoreEffects = async () => {
+    calls.push("restoreEffects");
+  };
+  calls.length = 0;
+  await expect(
+    runtime.command({ action: "restart", project: "demo" }),
+  ).rejects.toMatchObject({
+    code: "REPLAN_COMMIT_PENDING",
+    hint: expect.stringContaining("rig down local"),
+  });
+  expect(state.targets[0]!.recovery).toMatchObject({ stage: "committing" });
+  await expect(
+    runtime.command({ action: "up", project: "demo" }),
+  ).rejects.toMatchObject({ code: "DEPLOY_RECOVERY" });
+  expect(state.targets[0]!.recovery).toMatchObject({ stage: "committing" });
+  await runtime.command({ action: "down", project: "demo" });
+  // The commit is finished first, so the stop's routine restore finds nothing pending.
+  expect(calls).toEqual([
+    "restoreEffects",
+    "retire",
+    "commitEffects",
+    "restoreEffects",
+  ]);
+  expect(state.targets[0]!.recovery).toBeUndefined();
 });
 
 test("a Preview deploy stays deployed when retiring the oldest Preview fails, and the next Preview deploy retires enough to meet the cap", async () => {

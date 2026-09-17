@@ -30,6 +30,7 @@ import {
   diagnosticEvidence,
   type FailureCauses,
   retainFailureCauses,
+  failureCauses,
 } from "../domain/errors";
 import { resolve as resolvePath } from "node:path";
 import type { RuntimeDependencies } from "./contracts";
@@ -480,6 +481,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         const previous = target?.commit
           ? { previousCommit: target.commit }
           : {};
+        // An uncertain attempt of this source is neither a completed no-op nor an ordinary retry of an incomplete deployment.
+        if (target && !command.force)
+          assertSourceBuildsKnown(target, { branch, commit });
         if (
           target?.commit === commit &&
           target.branch === branch &&
@@ -490,9 +494,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             warnings: preflight.warnings,
             ...previous,
           });
-        // The same source again would otherwise look like an ordinary retry of an incomplete deployment.
-        if (target && !command.force)
-          assertSourceBuildsKnown(target, { branch, commit });
         const replacements =
           kind === "preview" && !target
             ? previewsToReplace(
@@ -588,7 +589,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       } else if (
         command.action === "up" &&
         target.kind === "local" &&
-        target.desired === "stopped"
+        target.desired === "stopped" &&
+        // An unresolved transition is settled by down before anything plans over it.
+        !target.recovery
       )
         target = await replanWorkingCopy(
           target,
@@ -943,7 +946,18 @@ async function replanWorkingCopy(
   const checkpoint = await deps.lifecycle.checkpoint(replanned, target);
   try {
     await deps.lifecycle.retireSuperseded(target, replanned);
-    await persistTarget(replanned, deps.store);
+    // Saved with the plan, the decision makes an interrupted finalization finish the commit instead of restoring retired executables.
+    await persistTarget(
+      {
+        ...replanned,
+        recovery: {
+          plan: target.plan,
+          desired: "stopped",
+          stage: "committing",
+        },
+      },
+      deps.store,
+    );
   } catch (error) {
     try {
       await checkpoint.rollback();
@@ -952,7 +966,18 @@ async function replanWorkingCopy(
     }
     throw error;
   }
-  await checkpoint.commit();
+  try {
+    await checkpoint.commit();
+    await persistTarget(replanned, deps.store);
+  } catch (error) {
+    throw new RigError(
+      "REPLAN_COMMIT_PENDING",
+      `The new plan of ${replanned.name} was saved, but its commit finalization is incomplete.`,
+      `Run rig down ${replanned.name} to finish the recorded commit, then run the command again.`,
+      {},
+      failureCauses(error),
+    );
+  }
   return replanned;
 }
 /** The oldest Previews that must leave so a new Preview fits under the Host limit; none while the Project is under it.

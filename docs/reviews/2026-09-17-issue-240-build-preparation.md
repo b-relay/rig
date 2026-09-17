@@ -133,3 +133,11 @@ previous Deployment through the shared process keys; the Working copy replan
 retired executables outside a checkpoint. Tests now assert zero supervisor
 transitions on a failed preparation, the retained `uncertainBuild`, and the
 replan rollback.
+
+Round 2 required two more, both made: the uncertainty gate now runs before the
+completed-source `unchanged` return; the Working copy replan saves a
+`committing` decision with the new plan, so an interrupted finalization is
+finished by `rig down` (`REPLAN_COMMIT_PENDING`) instead of restoring retired
+executables, and `up` no longer replans over an unresolved transition. Real
+artifact commit recovery is the existing `commitEffects` path covered by
+`tests/deployment-effects.test.ts`.

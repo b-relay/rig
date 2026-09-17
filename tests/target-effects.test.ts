@@ -1,3 +1,4 @@
+import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import {
   mkdir,
@@ -70,6 +71,7 @@ function effects(
   },
 ) {
   return createTargetEffects({
+    ...localActivation(),
     root,
     recordingTime,
     supervisors: new Map(),
@@ -658,6 +660,7 @@ test("a missing initdb names the tool instead of a generic start failure, and an
   roots.push(root);
   const commands: (readonly string[])[] = [];
   const adapter = createTargetEffects({
+    ...localActivation(),
     root,
     recordingTime: () => "now",
     supervisors: new Map(),
@@ -714,6 +717,7 @@ test("dependency installation runs once per deployed revision and its marker lea
   await scaffold();
   const installs: string[] = [];
   const adapter = createTargetEffects({
+    ...localActivation(),
     root,
     recordingTime: () => "now",
     supervisors: new Map(),
@@ -814,6 +818,7 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
   await writeFile(join(workspace, "package.json"), "{}\n");
   const requests: number[] = [];
   const adapter = createTargetEffects({
+    ...localActivation(),
     root,
     recordingTime: () => "now",
     supervisors: new Map(),
@@ -950,6 +955,7 @@ test("hook output is recorded line by line as it arrives, with the time each lin
   roots.push(root);
   let tick = 0;
   const adapter = createTargetEffects({
+    ...localActivation(),
     root,
     recordingTime: () => `t${(tick += 1)}`,
     supervisors: new Map(),

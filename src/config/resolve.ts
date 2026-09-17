@@ -15,6 +15,8 @@ import { referenceResolver, type PublicInput } from "./references.js";
 import type {
   BuildUnit,
   EnvFileRef,
+  ManagedComponent,
+  PlanRoute,
   ProjectConfig,
   PlanComponent,
   ResolveHost,
@@ -101,8 +103,10 @@ export function resolveTargetPlan(
     );
   const services = Object.entries(settings.services ?? {});
   const ports = resolvePorts(services, input);
-  const proxied = settings.proxy ? proxyService(settings.proxy) : undefined;
-  const rootPort = proxied ? ports[`services.${proxied}.ports`] : undefined;
+  const routes = settings.proxy ? planRoutes(settings.proxy, ports) : undefined;
+  const root = routes?.find((route) => route.prefix === "/");
+  const proxied = root?.service;
+  const rootPort = root?.port;
   const references = referenceResolver(settings, {
     target: deploymentName,
     workspace: input.workspacePath,
@@ -113,7 +117,7 @@ export function resolveTargetPlan(
         ? `https://${resolvedDomain}`
         : `http://127.0.0.1:${rootPort}`,
     data: (service) => join(input.dataRoot, service),
-    port: (service) => ports[`services.${service}.ports`]!,
+    port: (service, port) => ports[`services.${service}.ports.${port}`]!,
   });
   /** Listed files, then the operator's optional all.env and role file for this scope. */
   const envFiles = (
@@ -199,7 +203,7 @@ export function resolveTargetPlan(
         ],
         ...(inputs.length ? { commandInputs: inputs } : {}),
         command: run.value,
-        port: ports[`services.${name}.ports`]!,
+        ...declaredPorts(name, service, ports),
         readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
         restart: service.restart ?? "always",
         ...(ready !== undefined ? { health: ready.value } : {}),
@@ -276,17 +280,48 @@ export function resolveTargetPlan(
     ...(units.length ? { builds: units } : {}),
     preparedComponents: [],
     ...(resolvedDomain !== undefined && proxied
-      ? { domain: resolvedDomain, proxy: { upstream: proxied } }
+      ? {
+          domain: resolvedDomain,
+          proxy: { upstream: proxied, routes: routes! },
+        }
       : {}),
   };
 }
 
-/** The one Service a recorded plan can route: the '/' upstream. */
-function proxyService(proxy: Readonly<Record<string, string>>): string {
-  const extra = Object.keys(proxy).find((prefix) => prefix !== "/");
-  if (extra !== undefined)
-    throw unsupported("A proxy prefix other than '/'", `proxy.${extra}`);
-  return proxyUpstream(proxy["/"]!)!.service;
+/** The route map with concrete ports, longest prefix first so the first match is the most specific one. */
+function planRoutes(
+  proxy: Readonly<Record<string, string>>,
+  ports: Readonly<Record<string, number>>,
+): PlanRoute[] {
+  return Object.entries(proxy)
+    .map(([prefix, reference]) => {
+      const upstream = proxyUpstream(reference)!;
+      return {
+        // '/api/' and '/api' are one prefix: both match '/api' and everything below it.
+        prefix: prefix === "/" ? prefix : prefix.replace(/\/+$/, ""),
+        service: upstream.service,
+        port: ports[`services.${upstream.service}.ports.${upstream.port}`]!,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.prefix.length - a.prefix.length || (a.prefix < b.prefix ? -1 : 1),
+    );
+}
+/** A Service's concrete ports as the plan records them: all of them by name, and the first for status. */
+function declaredPorts(
+  name: string,
+  service: Service,
+  ports: Readonly<Record<string, number>>,
+): Pick<ManagedComponent, "port" | "ports"> {
+  const named = Object.fromEntries(
+    Object.keys(service.ports ?? {}).map((port) => [
+      port,
+      ports[`services.${name}.ports.${port}`]!,
+    ]),
+  );
+  const first = Object.values(named)[0];
+  return first === undefined ? {} : { port: first, ports: named };
 }
 
 /** A Branch as a hostname label, for a Preview the caller did not name. */
@@ -339,7 +374,8 @@ function envFilePath(
   return path;
 }
 
-/** Chooses each Service's one concrete port: a pin wins outside Previews, otherwise the caller's assignment. */
+/** Chooses every declared port's concrete number: a pin wins outside Previews, otherwise the caller's assignment, which is
+ * keyed `<service>.<port>`. An assignment recorded before named ports is keyed by the Service alone and means its first port. */
 function resolvePorts(
   services: readonly (readonly [string, Service])[],
   input: Pick<ResolveTargetPlanInput, "target" | "assignedPorts">,
@@ -348,36 +384,32 @@ function resolvePorts(
     resolved: Record<string, number> = {};
   for (const [name, service] of services) {
     const declared = Object.entries(service.ports ?? {});
-    if (declared.length !== 1)
-      throw unsupported(
-        declared.length
-          ? "A Service with several ports"
-          : "A Service without a port",
-        `services.${name}.ports`,
-      );
-    const [port, configured] = declared[0]!;
-    const assigned = input.assignedPorts?.[name],
-      pinned = configured === "auto" ? undefined : configured,
-      value = input.target === "preview" ? assigned : (pinned ?? assigned);
-    if (
-      value === undefined ||
-      !Number.isInteger(value) ||
-      value < 1 ||
-      value > 65535
-    )
-      throw new ConfigError(
-        `Service '${name}' needs a valid assigned port for '${port}'.`,
-        "missing_port",
-        { service: name, port },
-      );
-    if (owners.has(value))
-      throw new ConfigError(
-        `Port ${value} is used by more than one Service.`,
-        "port_collision",
-        { services: [owners.get(value), name], port: value },
-      );
-    owners.set(value, name);
-    resolved[`services.${name}.ports`] = value;
+    for (const [index, [port, configured]] of declared.entries()) {
+      const assigned =
+          input.assignedPorts?.[`${name}.${port}`] ??
+          (index === 0 ? input.assignedPorts?.[name] : undefined),
+        pinned = configured === "auto" ? undefined : configured,
+        value = input.target === "preview" ? assigned : (pinned ?? assigned);
+      if (
+        value === undefined ||
+        !Number.isInteger(value) ||
+        value < 1 ||
+        value > 65535
+      )
+        throw new ConfigError(
+          `Service '${name}' needs a valid assigned port for '${port}'.`,
+          "missing_port",
+          { service: name, port },
+        );
+      if (owners.has(value))
+        throw new ConfigError(
+          `Port ${value} is used by more than one Service.`,
+          "port_collision",
+          { services: [owners.get(value), name], port: value },
+        );
+      owners.set(value, name);
+      resolved[`services.${name}.ports.${port}`] = value;
+    }
   }
   return resolved;
 }

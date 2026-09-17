@@ -1,3 +1,4 @@
+import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -113,6 +114,9 @@ async function fixture(
     async detach() {},
   };
   const effects = createTargetEffects({
+    ...localActivation(
+      Object.values(services).map((service) => service.ports.http),
+    ),
     recordingTime: () => new Date(clock.ms).toISOString(),
     root,
     environment: {},
@@ -132,8 +136,8 @@ async function fixture(
     // Polls fire at once; a readiness deadline (seconds) is given long enough for a real health command to answer.
     schedule(delayMs: number, fire: () => void) {
       if (delayMs < 1000) {
-        queueMicrotask(fire);
-        return () => {};
+        const poll = setTimeout(fire, 0);
+        return () => clearTimeout(poll);
       }
       const timer = setTimeout(fire, 250);
       return () => clearTimeout(timer);

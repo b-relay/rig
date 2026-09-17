@@ -1,3 +1,4 @@
+import { loopbackListeners } from "./support/activation-doubles";
 import { expect, test } from "bun:test";
 import { createTargetLifecycle, type TargetEffects } from "../src/runtime/lifecycle";
 import type { TargetRecord } from "../src/domain/runtime";
@@ -35,7 +36,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
       deploymentName: "local", branchSlug: "local", subdomain: "local",
       providers: { processSupervisor: "child" }, providerProfile: "default", preparedComponents: [],
       hooks: { postStart: "target-post" },
-      components: ["prior", "new"].map(name => ({ name, kind: "managed", command: "serve", port: 4000, readyTimeout: 1,
+      components: ["prior", "new"].map(name => ({ name, kind: "managed", command: "serve", ...(options.healthChecks === false ? {} : { port: 4000 }), readyTimeout: 1,
         env: {}, dependsOn: options.dependsOn?.[name] ?? [], ...(options.healthChecks === false ? {} : { health: "http://127.0.0.1/health" }), hooks: { postStart: `${name}-post` } })),
     },
   };
@@ -48,9 +49,10 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
     async retireSuperseded() {}, async retireArtifacts() {}, async pruneCheckpoints() { return []; }, async prepare() {}, async environment() { return {}; },
     async build() {},
     async install() { return { outcome: "unchanged" }; }, async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000]),
     supervisor: () => ({
       async observe(key) {
-        if (running.has(key)) return { state: "running" };
+        if (running.has(key)) return { state: "running", pid: 1 };
         const exitCode = exitCodes.get(key);
         return exitCode === undefined ? { state: "stopped" } : { state: "stopped", exitCode };
       },

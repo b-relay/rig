@@ -1,3 +1,4 @@
+import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -89,6 +90,7 @@ function record(root: string, workspacePath: string, stateDir: string): TargetRe
 }
 function effects(root: string) {
   return createTargetEffects({
+    ...localActivation(),
     root,
     recordingTime: () => new Date().toISOString(),
     supervisors: new Map(),

@@ -39,6 +39,8 @@ import { createGitSourceStore } from "../providers/git-source-store";
 import { createArtifactInstaller } from "../providers/artifact-installer";
 import { createCaddyRouter } from "../providers/caddy-router";
 import { runCommand } from "../providers/command-runner";
+import { createListenerInspection } from "../providers/listener-inspection";
+import { probeLocalPort } from "../providers/port-probe";
 import { createProjectDocuments } from "../adapters/project-documents";
 import { createDeploymentSources } from "../adapters/deployment-sources";
 import { createRuntimeFiles } from "../adapters/runtime-files";
@@ -88,6 +90,8 @@ export async function composeDaemon(
     root,
     supervisors,
     run: runCommand,
+    connect: probeLocalPort,
+    listeners: createListenerInspection(runCommand),
     installer: createArtifactInstaller({
       run: runCommand,
       bunExecutable: process.execPath,

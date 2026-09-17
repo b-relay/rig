@@ -127,7 +127,6 @@ test("CLI Preview destroy removes owned storage after stopping the real process 
 services:
   web:
     run: "'${process.execPath}' server.ts"
-    ports: { http: auto }
     env: { DATA_DIR: "\${rig.data}" }
 `,
     );

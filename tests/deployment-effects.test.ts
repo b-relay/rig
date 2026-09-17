@@ -1,3 +1,4 @@
+import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import {
   chmod,
@@ -41,7 +42,9 @@ async function fixture() {
   const running = new Set<string>();
   const supervisor: Supervisor = {
     async observe(key) {
-      return { state: running.has(key) ? "running" : "stopped" };
+      return running.has(key)
+        ? { state: "running", pid: 1 }
+        : { state: "stopped" };
     },
     async ensureRunning(request) {
       running.add(request.key);
@@ -62,6 +65,7 @@ async function fixture() {
     overrides: { installer?: ArtifactInstaller; router?: Router } = {},
   ) =>
     createTargetEffects({
+      ...localActivation([12345]),
       recordingTime: () => new Date().toISOString(),
       root,
       environment: {},
@@ -203,7 +207,7 @@ test("successful route-free deployment removes only its previous owned route", a
   await f.router.apply({
     key: "other",
     hostname: "untouched.test",
-    upstream: "localhost:9876",
+    routes: [{ prefix: "/", upstream: "localhost:9876" }],
   });
   delete f.candidate.plan.domain;
   delete f.candidate.plan.proxy;

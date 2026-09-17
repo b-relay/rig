@@ -1,3 +1,4 @@
+import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import {
   chmod,
@@ -93,6 +94,7 @@ async function selected(
     return runCommand(request);
   };
   const adapter = createTargetEffects({
+    ...localActivation(),
     root,
     recordingTime: () => "now",
     supervisors: new Map(),

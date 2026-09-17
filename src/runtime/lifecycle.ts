@@ -10,7 +10,9 @@ import type {
   ProcessObservation,
   Supervisor,
 } from "../providers/contracts";
+import type { ListenerEvidence } from "../providers/listener-inspection";
 import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
+import { declaredPorts, plannedRoutes } from "./ports";
 import { randomUUID } from "node:crypto";
 
 export interface TargetEffectCheckpoint {
@@ -55,7 +57,8 @@ export interface TargetEffects {
     component: ManagedComponent | undefined,
     name: keyof Hooks,
   ): Promise<void>;
-  /** May block or ignore cancellation. A not-ready result retries after 100ms and its reason is kept for the failure; rejection fails startup. */
+  /** The Service's own check, or without one a connection to every port it declares.
+   * May block or ignore cancellation. A not-ready result retries after 100ms and its reason is kept for the failure; rejection fails startup. */
   health(
     component: ManagedComponent,
     target: TargetRecord,
@@ -69,7 +72,11 @@ export interface TargetEffects {
     component: InstalledComponent,
     target: TargetRecord,
   ): Promise<{ outcome: "installed" | "unchanged" }>;
-  route(target: TargetRecord): Promise<void>;
+  /** What the owned process `pid` and its descendants listen on now. May block or ignore cancellation. */
+  listeners(pid: number, signal: AbortSignal): Promise<ListenerEvidence>;
+  /** Publishes the Target's whole route map, or removes its route when the plan has none. Every path of a `withheld` Service
+   * answers 503 instead of reaching a process; the other paths are published as usual. */
+  route(target: TargetRecord, withheld?: ReadonlySet<string>): Promise<void>;
   removeRoute(target: TargetRecord): Promise<void>;
 }
 /** Where build outcomes are kept. `started` must be durable before it returns: it is the only evidence a crashed build leaves. */
@@ -295,6 +302,13 @@ export function createTargetLifecycle(
         await effects.prepare(target);
         const observations = await observeManaged(target, supervisor);
         began = [...observations.values()].some((o) => o.state === "stopped");
+        // A route that survives from an earlier start would hand requests to the new process the moment it binds its port.
+        const unverified = routedServices(
+          target,
+          (name) =>
+            observations.get(`${target.id}:${name}`)?.state === "stopped",
+        );
+        if (unverified.size) await effects.route(target, unverified);
         if (began && target.plan.hooks?.preStart)
           await effects.hook(
             target.plan.hooks.preStart,
@@ -313,8 +327,8 @@ export function createTargetLifecycle(
           const key = `${target.id}:${component.name}`;
           if (observations.get(key)!.state === "running") {
             // A dependency that is already running must still be ready before a dependent starts against it.
-            if (component.health && hasDependents(target, component.name))
-              await awaitReady(component, target, effects, timing, {
+            if (hasDependents(target, component.name))
+              await awaitActivation(component, target, effects, timing, {
                 observe: () => supervisor.observe(key),
               });
             continue;
@@ -389,6 +403,20 @@ export function createTargetLifecycle(
           `Run rig up ${target.name} to start both.`,
           { service, dependency: missing },
         );
+      const process = (name: string) => ({
+        observe: () => supervisor.observe(`${target.id}:${name}`),
+      });
+      for (const name of component.dependsOn)
+        await awaitActivation(
+          target.plan.components.find(
+            (candidate): candidate is ManagedComponent =>
+              candidate.kind === "managed" && candidate.name === name,
+          )!,
+          target,
+          effects,
+          timing,
+          process(name),
+        );
       const started: string[] = [];
       let incarnation: string | undefined;
       const tracked: ActivationJournal = {
@@ -399,6 +427,9 @@ export function createTargetLifecycle(
       };
       try {
         await effects.prepare(target);
+        // Withdrawn before the spawn: the route published for the process that ended must not reach its unverified replacement.
+        const unverified = routedServices(target, (name) => name === service);
+        if (unverified.size) await effects.route(target, unverified);
         await startService(target, component, supervisor, tracked, started);
         await effects.route(target);
         return { outcome: started.length ? "started" : "unchanged" };
@@ -573,9 +604,9 @@ export function createTargetLifecycle(
     });
     if (result.outcome === "started") started.push(key);
     const process = { observe: () => supervisor.observe(key) };
-    if (component.health)
-      await awaitReady(component, target, effects, timing, process);
-    else await awaitSurvival(component, timing, process);
+    if (!hasReadiness(component))
+      await awaitSurvival(component, timing, process);
+    await awaitActivation(component, target, effects, timing, process);
     await journal?.activated(component.name, incarnation);
     if (component.hooks?.postStart && result.outcome === "started")
       await effects.hook(
@@ -709,12 +740,33 @@ function assertPrepared(target: TargetRecord): void {
 interface SupervisedProcess {
   observe(): Promise<ProcessObservation>;
 }
-/** Health passes only while rig's own process is running: a foreign listener on the port never certifies a dead
- * component, and a process that exits fails fast with its exit code instead of waiting for readyTimeout. */
-async function awaitReady(
+/** Whether the Service has something to be ready on: its own check, or declared ports to connect to. */
+function hasReadiness(component: ManagedComponent): boolean {
+  return (
+    component.health !== undefined ||
+    Object.keys(declaredPorts(component)).length > 0
+  );
+}
+/** The routed Services that `select` picks: the ones whose paths a caller withholds. */
+function routedServices(
+  target: TargetRecord,
+  select: (service: string) => boolean,
+): Set<string> {
+  return new Set(
+    plannedRoutes(target.plan)
+      .map((route) => route.service)
+      .filter(select),
+  );
+}
+/** One Service is verified within its `readyTimeout`: ready, then listening only locally. Ready is its own check, else a
+ * connection to every declared port, else nothing beyond being alive. Readiness passes only while rig's own process is running:
+ * a foreign listener on the port never certifies a dead component, and a process that exits fails fast with its exit code.
+ * HEALTH_FAILED says how the budget ended: `unanswered` when no check ever answered, `unready` with the last answer otherwise.
+ * A rejecting provider fails with its own error at once; LISTENER_NONLOCAL and LISTENER_UNKNOWN are not waited out either. */
+async function awaitActivation(
   component: ManagedComponent,
   target: TargetRecord,
-  effects: Pick<TargetEffects, "health">,
+  effects: Pick<TargetEffects, "health" | "listeners">,
   timing: ReadinessTiming,
   process: SupervisedProcess,
 ): Promise<void> {
@@ -733,15 +785,27 @@ async function awaitReady(
     while (!controller.signal.aborted) {
       await assertAlive(component, process);
       const check = await Promise.race([
-        effects.health(component, target, controller.signal),
+        hasReadiness(component)
+          ? effects.health(component, target, controller.signal)
+          : ALIVE,
         expired,
       ]);
       if (controller.signal.aborted || check === false) break;
-      if (check.ready) {
-        await assertAlive(component, process);
-        return;
-      }
-      lastCheck = check.reason;
+      const verified = check.ready
+        ? await Promise.race([
+            localListeners(
+              component,
+              target,
+              effects,
+              process,
+              controller.signal,
+            ),
+            expired,
+          ])
+        : check;
+      if (controller.signal.aborted || verified === false) break;
+      if (verified.ready) return;
+      lastCheck = verified.reason;
       await Promise.race([
         new Promise<void>((resolve) => {
           cancelRetry = timing.schedule(OBSERVATION_INTERVAL_MS, resolve);
@@ -761,8 +825,77 @@ async function awaitReady(
     "Inspect Target logs and the configured health check.",
     {
       component: component.name,
+      outcome: lastCheck === undefined ? "unanswered" : "unready",
       ...(lastCheck === undefined ? {} : { lastCheck }),
     },
+  );
+}
+const ALIVE: HealthCheck = { ready: true };
+/** The listener half of activation, asked of the process that is running now. Not ready while a port the activation rests on
+ * (every routed port, and every declared port when connections were the readiness evidence) has no listener among the owned
+ * processes: whatever answered there was someone else. Throws LISTENER_NONLOCAL for a listener bound beyond loopback and
+ * LISTENER_UNKNOWN when the owner or its sockets cannot be established; PROCESS_EXITED when the process ended meanwhile. */
+async function localListeners(
+  component: ManagedComponent,
+  target: TargetRecord,
+  effects: Pick<TargetEffects, "listeners">,
+  process: SupervisedProcess,
+  signal: AbortSignal,
+): Promise<HealthCheck> {
+  const owner = await process.observe();
+  const evidence =
+    owner.state === "running" && owner.pid !== undefined
+      ? await effects.listeners(owner.pid, signal)
+      : undefined;
+  await assertAlive(component, process);
+  const still = await process.observe();
+  if (
+    evidence?.state !== "observed" ||
+    still.state !== "running" ||
+    still.pid !== owner.pid
+  )
+    throw new RigError(
+      "LISTENER_UNKNOWN",
+      `What ${component.name} listens on could not be established${evidence?.state === "unknown" ? `: ${evidence.reason}` : "."}`,
+      "Rig publishes nothing it cannot inspect. Run rig doctor to check process ownership, then start the Service again.",
+      { component: component.name },
+    );
+  const exposed = evidence.listeners.find(
+    (listener) => !loopbackAddress(listener.address),
+  );
+  if (exposed)
+    throw new RigError(
+      "LISTENER_NONLOCAL",
+      `${component.name} listens on ${exposed.address}:${exposed.port}, which is reachable from outside this machine.`,
+      "Bind the Service to 127.0.0.1 or ::1; Rig's proxy is the only public way in.",
+      {
+        component: component.name,
+        address: exposed.address,
+        port: exposed.port,
+      },
+    );
+  const evidencePorts = new Set([
+    ...(component.health ? [] : Object.values(declaredPorts(component))),
+    ...plannedRoutes(target.plan)
+      .filter((route) => route.service === component.name)
+      .map((route) => route.port),
+  ]);
+  const missing = [...evidencePorts].find(
+    (port) => !evidence.listeners.some((listener) => listener.port === port),
+  );
+  return missing === undefined
+    ? ALIVE
+    : {
+        ready: false,
+        reason: `port ${missing} has no listener owned by ${component.name}`,
+      };
+}
+/** IPv4 127.0.0.0/8 and IPv6 ::1, also as an IPv4-mapped address; a wildcard or any other address is reachable from elsewhere. */
+export function loopbackAddress(address: string): boolean {
+  const mapped = /^::ffff:(.+)$/i.exec(address)?.[1] ?? address;
+  return (
+    /^127(?:\.\d{1,3}){3}$/.test(mapped) ||
+    /^(?:0{0,4}:){2,7}0{0,3}1$/.test(address)
   );
 }
 /** Whether another Component in the plan lists `name` in dependsOn. */

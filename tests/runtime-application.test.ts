@@ -274,6 +274,43 @@ test("a plain deploy of the same Commit is refused while a build's outcome is un
   expect(state.targets[0]!.preparation?.deployment).not.toBe(workspace);
 });
 
+test("a Working copy restart retires superseded executables and publishes the new plan under one checkpoint, rolled back when the plan cannot be saved", async () => {
+  const { runtime, deps, state } = fixture();
+  const calls: string[] = [];
+  deps.lifecycle.checkpoint = async (target) => ({
+    targetId: target.id,
+    async commit() {
+      calls.push("commit");
+    },
+    async rollback() {
+      calls.push("rollback");
+    },
+  });
+  deps.lifecycle.retireSuperseded = async () => {
+    calls.push("retire");
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  calls.length = 0;
+  await runtime.command({ action: "restart", project: "demo" });
+  expect(calls.slice(0, 2)).toEqual(["retire", "commit"]);
+  calls.length = 0;
+  const update = deps.store.update.bind(deps.store);
+  deps.store.update = async (change) => {
+    if (calls.at(-1) === "retire") {
+      calls.push("refused");
+      throw new Error("store refused the write");
+    }
+    await update(change);
+  };
+  const before = structuredClone(state.targets[0]!.plan);
+  await expect(
+    runtime.command({ action: "restart", project: "demo" }),
+  ).rejects.toThrow("store refused the write");
+  expect(calls).toEqual(["retire", "refused", "rollback"]);
+  expect(state.targets[0]!.plan).toEqual(before);
+});
+
 test("a Preview deploy stays deployed when retiring the oldest Preview fails, and the next Preview deploy retires enough to meet the cap", async () => {
   const { runtime, state, deps } = fixture();
   deps.documents.host = async () =>

@@ -148,6 +148,16 @@ const target = z.object({
     .optional()
     .describe("Deployment has not committed; matching source must be retried."),
   preparation,
+  uncertainBuild: z
+    .object({
+      branch: text.optional().describe("Branch of the attempted source."),
+      commit: text.optional().describe("Commit of the attempted source."),
+      unit: text.describe("The build unit whose outcome is unknown."),
+    })
+    .optional()
+    .describe(
+      "A rolled-back deployment attempt whose build outcome is unknown; that source deploys again only with force.",
+    ),
   configRevision: text
     .optional()
     .describe(

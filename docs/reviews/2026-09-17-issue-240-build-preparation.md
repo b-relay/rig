@@ -26,7 +26,7 @@ live daemon; every test uses an isolated `RIG_ROOT`.
   env-file values never enter it.
 - `src/runtime/deploy.ts`: every deploy, `--no-up` included, prepares the
   candidate before the previous Deployment is stopped; a failed build does not
-  bounce the running Deployment (`previousTouched`). Recovery restores the
+  bounce the running Deployment (`transitioned`). Recovery restores the
   previous Deployment's preparation with its plan.
 - `src/runtime/application.ts`: a plain deploy of the recorded Commit/Branch is
   refused while a unit's outcome is unknown. Working copy `up` prepares
@@ -45,6 +45,18 @@ live daemon; every test uses an isolated `RIG_ROOT`.
   missing unit rejects `PREPARATION_INCOMPLETE`. Both hints name
   `rig deploy <target> --force`. A forced deploy (or a new Commit) is planned
   into a new workspace, which is a fresh scope by construction.
+- **Uncertainty outlives a rollback.** When a replacement attempt is rolled
+  back (in the operation, or by `down` after a crash), the restored record
+  keeps `uncertainBuild {branch, commit, unit}`. A plain deploy of that source
+  is refused as `BUILD_UNKNOWN`; force, another Commit, or any completed
+  deployment clears it, since a completed record is planned fresh.
+- **A failed preparation changes nothing.** Candidate and previous share
+  process keys, so rollback stops and restarts processes only once the
+  transition began (`transitioned`); before that it only rolls the checkpoint
+  back and re-saves the previous record.
+- **Working copy replan is one transaction.** Retiring superseded executables
+  and saving the new plan happen under one effect checkpoint, rolled back when
+  either fails.
 - **A success that cannot be recorded is `BUILD_UNKNOWN`** with the store
   failure as its cause. A failed build whose `failed` record also cannot be
   written keeps both causes (`retainFailureCauses`).
@@ -112,3 +124,12 @@ live daemon; every test uses an isolated `RIG_ROOT`.
 - #244: migrated plans carry no `builds` and no `preparation`; deployed records
   were already built, so `assertPrepared` passes them. Migration still emits
   `envFile`.
+
+## Review (Codex, gpt-6-astra high)
+
+Round 1 required three changes, all made: unknown-build evidence was lost when
+a replacement rolled back; a failed preparation stopped and restarted the
+previous Deployment through the shared process keys; the Working copy replan
+retired executables outside a checkpoint. Tests now assert zero supervisor
+transitions on a failed preparation, the retained `uncertainBuild`, and the
+replan rollback.

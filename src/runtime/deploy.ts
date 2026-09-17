@@ -9,7 +9,7 @@ import {
 import { within } from "../domain/paths";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
-import { stopForTransition } from "./lifecycle";
+import { stopForTransition, uncertainAttempt } from "./lifecycle";
 import { prepareTarget } from "./preparation";
 /** Unresolved recovery must be rejected before accepting any deployment outcome. */
 export function assertDeploymentRecovered(
@@ -45,7 +45,7 @@ export async function activateDeployment(
   };
   const checkpoint = await deps.lifecycle.checkpoint(candidate, previous);
   let commitDecided = false,
-    previousTouched = false;
+    transitioned = false;
   try {
     await persistTarget(candidate, deps.store);
   } catch (error) {
@@ -58,8 +58,8 @@ export async function activateDeployment(
   }
   try {
     await prepareTarget(candidate, "all", deps);
+    transitioned = true;
     if (previous) {
-      previousTouched = true;
       await stopForTransition(previous, deps.lifecycle);
       await deps.lifecycle.retireSuperseded(previous, candidate);
     }
@@ -89,9 +89,11 @@ export async function activateDeployment(
         failureCauses(error),
       );
     try {
-      await stopForTransition(candidate, deps.lifecycle);
-      if (previous && previousTouched)
-        await stopForTransition(previous, deps.lifecycle);
+      // A failed preparation changed nothing: the previous Deployment, whose process keys the candidate shares, keeps running.
+      if (transitioned) {
+        await stopForTransition(candidate, deps.lifecycle);
+        if (previous) await stopForTransition(previous, deps.lifecycle);
+      }
       await checkpoint.rollback();
     } catch (recoveryError) {
       candidate.recovery ??= {
@@ -118,8 +120,13 @@ export async function activateDeployment(
     }
     if (previous) {
       try {
-        if (previous.desired === "running") await deps.lifecycle.up(previous);
-        await persistTarget(previous, deps.store);
+        if (transitioned && previous.desired === "running")
+          await deps.lifecycle.up(previous);
+        const uncertain = uncertainAttempt(candidate);
+        await persistTarget(
+          uncertain ? { ...previous, uncertainBuild: uncertain } : previous,
+          deps.store,
+        );
       } catch (recoveryError) {
         if (candidate.recovery) candidate.recovery.stage = "blocked";
         try {
@@ -176,6 +183,10 @@ export async function stopForRecovery(
   };
   delete previous.recovery;
   if (!previous.preparation) delete previous.preparation;
+  if (target.recovery.plan.workspacePath !== target.plan.workspacePath) {
+    const uncertain = uncertainAttempt(target);
+    if (uncertain) previous.uncertainBuild = uncertain;
+  }
   await stopForTransition(previous, deps.lifecycle);
   await deps.lifecycle.restoreEffects(target);
   await persistTarget(previous, deps.store);

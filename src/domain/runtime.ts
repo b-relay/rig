@@ -44,6 +44,8 @@ export interface TargetRecord {
   /** Present until deployment commits; absence retains legacy completion semantics. */
   deploymentIncomplete?: true;
   preparation?: Preparation;
+  /** A rolled-back deployment attempt of this source left a build whose outcome is unknown. */
+  uncertainBuild?: { branch?: string; commit?: string; unit: string };
   /** Revision of the rig.yaml a Working copy plan was made from. */
   configRevision?: string;
   recovery?: {

@@ -507,12 +507,16 @@ function recordedUnits(
     ? target.preparation.units
     : {};
 }
-/** Rejects BUILD_UNKNOWN when a unit of the recorded plan was started and never recorded as finished. */
-export function assertBuildsKnown(target: TargetRecord): void {
+/** The unit of the recorded plan that was started and never recorded as finished, if any. */
+export function unknownUnit(target: TargetRecord): BuildUnit | undefined {
   const recorded = recordedUnits(target);
-  const unit = (target.plan.builds ?? []).find(
+  return (target.plan.builds ?? []).find(
     (unit) => recorded[unit.id]?.state === "started",
   );
+}
+/** Rejects BUILD_UNKNOWN when a unit of the recorded plan was started and never recorded as finished. */
+export function assertBuildsKnown(target: TargetRecord): void {
+  const unit = unknownUnit(target);
   if (unit)
     throw new RigError(
       "BUILD_UNKNOWN",
@@ -520,6 +524,39 @@ export function assertBuildsKnown(target: TargetRecord): void {
       forceHint(target),
       { unit: unit.id },
     );
+}
+/** Rejects BUILD_UNKNOWN when deploying `source` without force would repeat an attempt, recorded or rolled back, that left a build's outcome unknown. */
+export function assertSourceBuildsKnown(
+  target: TargetRecord,
+  source: { branch?: string; commit?: string },
+): void {
+  if (target.commit === source.commit && target.branch === source.branch)
+    assertBuildsKnown(target);
+  const attempt = target.uncertainBuild;
+  if (
+    attempt &&
+    attempt.commit === source.commit &&
+    attempt.branch === source.branch
+  )
+    throw new RigError(
+      "BUILD_UNKNOWN",
+      `Whether build unit ${attempt.unit} finished in the last deployment attempt of this Commit to ${target.name} is unknown.`,
+      forceHint(target),
+      { unit: attempt.unit },
+    );
+}
+/** What a record restored over `attempt` keeps of it: the attempted source, when one of its builds has an unknown outcome. */
+export function uncertainAttempt(
+  attempt: TargetRecord,
+): TargetRecord["uncertainBuild"] {
+  const unit = unknownUnit(attempt);
+  return unit
+    ? {
+        ...(attempt.branch ? { branch: attempt.branch } : {}),
+        ...(attempt.commit ? { commit: attempt.commit } : {}),
+        unit: unit.id,
+      }
+    : undefined;
 }
 /** A deployed Target starts only from a preparation whose every unit is recorded as succeeded for this workspace. */
 function assertPrepared(target: TargetRecord): void {

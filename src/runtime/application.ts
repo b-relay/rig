@@ -29,6 +29,7 @@ import {
   diagnosticErrorCode,
   diagnosticEvidence,
   type FailureCauses,
+  retainFailureCauses,
 } from "../domain/errors";
 import { resolve as resolvePath } from "node:path";
 import type { RuntimeDependencies } from "./contracts";
@@ -41,7 +42,7 @@ import {
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
-import { assertBuildsKnown } from "./lifecycle";
+import { assertSourceBuildsKnown } from "./lifecycle";
 import { prepareTarget } from "./preparation";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
@@ -490,13 +491,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             ...previous,
           });
         // The same source again would otherwise look like an ordinary retry of an incomplete deployment.
-        if (
-          target &&
-          target.commit === commit &&
-          target.branch === branch &&
-          !command.force
-        )
-          assertBuildsKnown(target);
+        if (target && !command.force)
+          assertSourceBuildsKnown(target, { branch, commit });
         const replacements =
           kind === "preview" && !target
             ? previewsToReplace(
@@ -943,8 +939,20 @@ async function replanWorkingCopy(
     deps,
   );
   // The plan being replaced is stopped; an executable only it names (a removed Tool, or an alias under the old Target name) goes with it.
-  await deps.lifecycle.retireSuperseded(target, replanned);
-  await persistTarget(replanned, deps.store);
+  // Retirement and the new plan are published together or not at all.
+  const checkpoint = await deps.lifecycle.checkpoint(replanned, target);
+  try {
+    await deps.lifecycle.retireSuperseded(target, replanned);
+    await persistTarget(replanned, deps.store);
+  } catch (error) {
+    try {
+      await checkpoint.rollback();
+    } catch (recoveryError) {
+      throw retainFailureCauses(error, error, recoveryError);
+    }
+    throw error;
+  }
+  await checkpoint.commit();
   return replanned;
 }
 /** The oldest Previews that must leave so a new Preview fits under the Host limit; none while the Project is under it.

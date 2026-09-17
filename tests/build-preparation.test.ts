@@ -6,7 +6,10 @@ import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import { createCaddyRouter } from "../src/providers/caddy-router";
-import { createTargetLifecycle } from "../src/runtime/lifecycle";
+import {
+  assertSourceBuildsKnown,
+  createTargetLifecycle,
+} from "../src/runtime/lifecycle";
 import { activateDeployment, stopForRecovery } from "../src/runtime/deploy";
 import { prepareTarget, unitPolicy } from "../src/runtime/preparation";
 import type { BuildUnit } from "../src/config/types";
@@ -33,15 +36,19 @@ async function fixture() {
     );
   }
   const running = new Set<string>();
+  /** Every process start and stop the supervisor was asked for. */
+  const transitions: string[] = [];
   const supervisor: Supervisor = {
     async observe(key) {
       return { state: running.has(key) ? "running" : "stopped" };
     },
     async ensureRunning(request) {
+      transitions.push(`start ${request.key}`);
       running.add(request.key);
       return { outcome: "started" };
     },
     async stop(key) {
+      transitions.push(`stop ${key}`);
       return { outcome: running.delete(key) ? "stopped" : "unchanged" };
     },
     async shutdown() {},
@@ -163,6 +170,7 @@ async function fixture() {
     state,
     deps,
     running,
+    transitions,
     refusal,
     unit,
     ran,
@@ -207,13 +215,15 @@ test("a failed build leaves the running previous Deployment untouched, keeps the
   );
   expect([...f.running].sort()).toEqual(["target:api", "target:web"]);
   f.candidate.plan.builds![2] = f.unit("service:web", "web", "; exit 7");
+  f.transitions.length = 0;
   await expect(
     activateDeployment(f.candidate, previous, { activation: "start" }, f.deps),
   ).rejects.toMatchObject({
     code: "BUILD_FAILED",
     details: { unit: "service:web", exitCode: 7 },
   });
-  // Later units never ran, and the previous Services were never stopped.
+  // Later units never ran, and the previous Services were never stopped or restarted: the candidate shares their process keys.
+  expect(f.transitions).toEqual([]);
   expect((await f.ran()).slice(4)).toEqual([
     "shared",
     "service:api",
@@ -298,6 +308,45 @@ test("a build whose success could not be recorded is unknown: nothing reruns it,
   });
 });
 
+test("a replacement whose build outcome is unknown rolls back to the running Deployment and still gates a plain deploy of that source", async () => {
+  const f = await fixture();
+  const previous = await activateDeployment(
+    f.previous,
+    undefined,
+    { activation: "start" },
+    f.deps,
+  );
+  f.transitions.length = 0;
+  f.refusal.when = (target) =>
+    target.preparation?.units["service:api"]?.state === "succeeded";
+  await expect(
+    activateDeployment(f.candidate, previous, { activation: "start" }, f.deps),
+  ).rejects.toMatchObject({ code: "BUILD_UNKNOWN" });
+  expect(f.transitions).toEqual([]);
+  // What a reopened daemon reads: the previous Deployment, and the source whose build is uncertain.
+  const recorded = structuredClone(f.state.targets[0]!);
+  expect(recorded).toMatchObject({
+    commit: "old",
+    uncertainBuild: { branch: "main", commit: "new", unit: "service:api" },
+  });
+  expect(() =>
+    assertSourceBuildsKnown(recorded, { branch: "main", commit: "new" }),
+  ).toThrow(expect.objectContaining({ code: "BUILD_UNKNOWN" }));
+  assertSourceBuildsKnown(recorded, { branch: "main", commit: "other" });
+  // The next completed deployment is planned fresh and carries no such mark.
+  const forced = structuredClone(f.candidate);
+  delete forced.preparation;
+  delete forced.recovery;
+  forced.plan.workspacePath = join(f.root, "old");
+  const deployed = await activateDeployment(
+    forced,
+    recorded,
+    { activation: "prepare" },
+    f.deps,
+  );
+  expect(deployed.uncertainBuild).toBeUndefined();
+});
+
 test("recovering a failed replacement restores the previous Deployment's preparation, so it starts again without building", async () => {
   const f = await fixture();
   const previous = await activateDeployment(
@@ -323,6 +372,12 @@ test("recovering a failed replacement restores the previous Deployment's prepara
   );
   const recovered = await stopForRecovery(interrupted, f.deps);
   expect(recovered.preparation).toEqual(previous.preparation);
+  // The abandoned attempt's uncertainty outlives its record.
+  expect(recovered.uncertainBuild).toEqual({
+    branch: "main",
+    commit: "new",
+    unit: "shared",
+  });
   await f.lifecycle.up(recovered);
   expect((await f.ran()).slice(4)).toEqual(["shared"]);
 });

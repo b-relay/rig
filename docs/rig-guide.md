@@ -54,8 +54,8 @@ and its last line says what to do (`rigd is not installed. Run rigd install.`,
 `rigd is installed but not running. Run rigd install to start it.`, or, for a
 running daemon that does not answer, `Run rig doctor, or rigd uninstall and
 then rigd install.`). `rigd capture <request-file>` is the command launchd
-runs for each managed Component; it is listed in `rigd --help` and answers
-`--help`, but people never run it themselves.
+runs for each Service under the `launchd` supervisor; it is listed in
+`rigd --help` and answers `--help`, but people never run it themselves.
 
 `rigd install` owns daemon setup and creates the local control-plane auth token.
 It only runs when no daemon process exists, and it issues a fresh token every
@@ -106,7 +106,7 @@ names `startup.log` to inspect.
 
 Stopping, restarting, or upgrading `rigd` is not a Target stop. Managed
 processes keep serving while the daemon is down, and the next daemon adopts
-them through their recorded process leases without re-running start hooks.
+them through their recorded process leases without starting them again.
 A stop signal (SIGTERM, `launchctl bootout`) first stops the daemon accepting
 new connections, then lets the commands already running finish and answer
 their callers, and only then closes what is still open, such as a log follow.
@@ -200,7 +200,8 @@ rig init
   never assumed to be Production: a non-interactive `rig init` on `feature/wip`
   records the host default, and the interactive prompt names the differing
   checkout so a deliberate answer can override it
-- write committed Project config at the repo root
+- write committed Project config, `rig.yaml`, at the repo root (see below for
+  what a new config needs)
 - configure the `rig` Git remote when possible
 - register the Project with `rigd`
 
@@ -211,9 +212,9 @@ If config is written but `rigd` registration fails, `rig init` should report the
 partial state without rolling the file back. A later `rig init` should resume
 registration idempotently when the config still matches the workspace. An
 existing config is never rewritten by `rig init`: scaffold flags passed with it
-(`--production-branch`, `--domain`, `--proxy`, `--uses`, `--managed`,
-`--installed`) are reported as not applied in a warning that names the kept
-config, so the outcome "registered" never hides an ignored flag.
+(`--production-branch`, `--domain`, `--service`, `--tool`) are reported as not
+applied in a warning that names the kept config, so the outcome "registered"
+never hides an ignored flag.
 
 A second repository whose config (or directory slug) names an already
 registered Project fails with `PROJECT_CONFLICT`. The hint names the
@@ -222,15 +223,39 @@ registered directory and both ways forward: `rig repoint <this directory>
 Project, which is `name` in its `rig.yaml` when a config exists and `rig init
 --project <other name>` when none does.
 
-New config uses `rig.yaml`; matching existing `rig.json` is preserved. Explicit
+A Project needs at least one Service or Tool, so a new config is scaffolded
+from flags:
+
+```bash
+rig init --service web --run "bun run start" --port 3000 \
+  --ready http://127.0.0.1:3000/health --domain app.test
+rig init --tool report --bin .rig-build/report \
+  --tool-build "go build -o .rig-build/report ./cmd/report"
+```
+
+`--service <name> --run <command>` declares one Service; `--port <n>` pins its
+`http` port (otherwise the port is `auto`) and `--ready <check>` sets its
+readiness check. `--tool <name> --bin <path>` declares one Tool, with
+`--tool-build <command>` as its build. Both may be given together, under
+different names. `--run`, `--port`, or `--ready` without `--service`, and
+`--bin` or `--tool-build` without `--tool`, are usage errors. With neither a
+Service nor a Tool and no existing `rig.yaml`, init fails as `empty_project`:
+pass the flags, or write `rig.yaml` by hand and run `rig init` again to
+register it. The scaffold also writes `production_branch` and the default
+Target names (`targets.working.name: local`, `targets.stable.name: live`).
+
+New config is always `rig.yaml`. A `rig.json` in the repository is refused as
+`legacy_format`, and a `rig.yaml` in the retired component schema as
+`legacy_config`; neither is read or converted (see Config). Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
 identity comes from existing config when present, not a conflicting folder name.
-`--domain app.test --proxy web` scaffolds one hostname per Target: `live`
-serves `app.test`, `local` serves `local.app.test`, and each Preview serves
-`<branch-slug>.app.test`, so two Targets never contend for one route. The
-scaffold writes `domain: ${subdomain}.app.test` with a `live.domain`
-override; edit either to change the scheme. A `domain` or `subdomain` value
-must be a hostname such as `app.test` or `${subdomain}.app.test`: a scheme,
+`--domain app.test` with `--service web` scaffolds `domain: app.test` and a
+`proxy` that sends `/` to the Service's `http` port. The Stable Target serves
+`app.test`, each Preview serves `<preview name>.app.test`, and the Working
+copy has no route unless `targets.working.domain` is set, so two Targets never
+contend for one route. A `domain` value must be a hostname such as `app.test`;
+`${rig.target}` is the only reference it may contain (for example
+`${rig.target}.preview.app.test` under `targets.preview.domain`). A scheme,
 port, path, wildcard, or comma-separated list is rejected when the config is
 parsed, and a Preview whose resolved hostname is still invalid is rejected
 when the Target is planned, before anything reaches Caddy.
@@ -277,12 +302,27 @@ Rig commands act on Targets:
 
 | Target form | Meaning |
 |---|---|
-| `local` | Working copy Target backed by the current checkout. |
-| `live` | First Stable Target. Future Project config may support custom stable target names. |
+| `local` | Working copy Target backed by the current checkout. `local` is its default name; `targets.working.name` renames it. |
+| `live` | Stable Target, deployed from the Production branch. `live` is its default name; `targets.stable.name` renames it. |
 | `preview <branch>` | Preview Target for a Branch. Branch names may include slashes. |
 
-Bare names such as `local` or `live` resolve to the Working copy Target or
-Stable Targets. Previews must use the `preview` selector.
+A Project has one Working copy Target, one Stable Target, and any number of
+generated Previews. The examples in this guide use the default names `local`
+and `live`; a Project that sets `targets.working.name: dev` and
+`targets.stable.name: production` runs `rig up dev` and `rig deploy
+production` instead. The two names must differ, and neither may be `preview`
+or end like a generated Preview name (a dash and eight hex digits). Renaming a
+Target keeps its identity and stored data.
+
+A bare name selects the Working copy Target or the Stable Target by its
+configured name. A name a Target is still recorded under also keeps selecting
+it until that Target is next planned from the renamed config, so a renamed
+Target stays reachable. Any other name fails as `TARGET_UNKNOWN`, and the hint
+lists the names that exist. Previews must use the `preview` selector, which is
+reserved: `--deployment <name>` cannot give a new Preview the name of the
+Working copy or Stable Target (`PREVIEW_NAME`), and a Working copy or Stable
+Target cannot be renamed to a name one of the Project's Previews already holds
+(`TARGET_NAME`).
 
 Target-aware commands with no selected Target should show an interactive picker
 in a TTY and fail with guidance in non-interactive use:
@@ -306,18 +346,26 @@ rig deploy live
 rig deploy live main
 ```
 
-`rig deploy live` deploys the configured Production branch. It can run from
+Deploy is one command, `rig deploy <target> [branch]`, where `<target>` is the
+Stable Target's configured name (`live` unless `rig.yaml` renames it) or
+`preview`. Naming the Working copy Target fails as `DEPLOY_TARGET`; use `rig
+up` for it. `rig deploy live` deploys the configured Production branch:
+`production_branch` in the Project config, else the Host config's
+`deploy.productionBranch`, else `main`. It can run from
 detached HEAD because it does not deploy the current checkout. If the current
 checkout differs from the Production branch, interactive commands should make
 the deployed branch clear.
 
 A deployed Target is planned from the `rig.yaml` committed on the deployed
-revision, so its components, ports, and hooks match the code it serves. The
-working copy's config only identifies the Project (its name and the live
-deploy branch policy); uncommitted edits to it never reach a live or Preview
-plan. A revision whose committed config names a different Project is refused
-as `PROJECT_IDENTITY`, and an invalid committed config fails the deploy with
-the revision's path in the message.
+revision, so its Services, Tools, ports, and Target name match the code it
+serves. The working copy's config only identifies the Project (its name, its
+Target names for selection, and the Production branch policy); uncommitted
+edits to it never reach a Stable or Preview plan. A revision whose committed
+config names a different Project is refused as `PROJECT_IDENTITY`, and an
+invalid committed config fails the deploy with the revision's path in the
+message. That includes a revision that only has `rig.json` (`legacy_format`)
+or a `rig.yaml` in the retired component schema (`legacy_config`): convert the
+config on that Branch and deploy the new Commit.
 
 Each deploy checks out its revision under
 `<RIG_ROOT>/targets/<project>/<id>/revisions/<uuid>` as a worktree of Rig's
@@ -346,6 +394,8 @@ rig deploy preview feature/login
 `rig deploy preview` uses the current Branch. It fails from detached HEAD. A
 Preview deploy from the Production branch itself is rejected; create a branch
 such as `preview/main` when you want a preview of production code.
+`--deployment <name>` names the Preview explicitly instead of deriving the
+name from the Branch; only `preview` takes it.
 
 Deploy options:
 
@@ -378,7 +428,7 @@ a warning naming the Preview and the `rig down preview <branch> --destroy`
 command that finishes it; the Project is over its cap until then. Under
 `replacePolicy: reject`, a deploy at the cap fails with `PREVIEW_LIMIT`.
 
-A deploy whose activation fails (a build, hook, or health failure) leaves the
+A deploy whose activation fails (a build or readiness failure) leaves the
 Target recorded at the new Commit but incomplete: its effects were rolled back
 and nothing is running. `rig status` and `rig doctor` say so. `rig up` finishes
 it, installing, routing, and starting the recorded plan under its own
@@ -436,7 +486,7 @@ A successful push prints one line per Branch on stderr naming the Project,
 the Branch, the outcome, the Target it landed on (Preview names are derived,
 such as `feature-login-0d6e4079`), its route, and the operation id, for
 example `demo feature/login deployed to feature-login-0d6e4079 at
-feature-login.demo.test (operation 3f2c…)`. Two git behaviours are worth
+feature-login-0d6e4079.demo.test (operation 3f2c…)`. Two git behaviours are worth
 knowing. `git push --force rig <branch>` with the Commit that is already
 deployed never reaches rigd: git sees the advertised ref and answers
 "Everything up-to-date", so a same-Commit redeploy is `rig deploy <target>
@@ -460,13 +510,14 @@ on disk before starting, keeping its Target id, data root, and recorded ports
 where the config still allows them. `rig up local` on a Target that is already
 running keeps the plan its processes were started from; `rig doctor` reports
 `config-drift` for it and names `rig restart local` as the fix. A valid config
-that adds a component the recorded plan has no port for is also reported as
-`config-drift`, naming the added components; `config-invalid` is reserved for
+that adds a Service the recorded plan has no port for is also reported as
+`config-drift`, naming the added Services; `config-invalid` is reserved for
 a config that does not parse or resolve, and carries the parser's message.
-Deployed Targets (`live`, `preview`) keep their recorded plan until the next
-deploy. They are planned from the committed config in their checkout, so `rig
-doctor` compares a deployed Target with that revision's config, not with the
-working copy; uncommitted edits are not drift for it. When the checkout's
+Deployed Targets (the Stable Target and Previews) keep their recorded plan
+until the next deploy. They are planned from the committed config in their
+checkout, so `rig doctor` compares a deployed Target with that revision's
+config, not with the working copy; uncommitted edits are not drift for it.
+When the checkout's
 config resolves to a different plan than the recorded one, doctor names `rig
 deploy <target> --force` as the fix, because a same-Commit deploy without
 `--force` is `unchanged`.
@@ -480,21 +531,22 @@ rig restart preview feature/login
 If `rig up preview feature/login` names a Preview that has not been deployed,
 Rig should fail and tell the user to deploy it first.
 
-`up` reports `started` only for processes Rig has confirmed alive. A component
-with a `health` URL is polled until it answers or `readyTimeout` expires, and
+`up` reports `started` only for processes Rig has confirmed alive. A Service
+with a `ready` URL is polled until it answers or `ready_timeout` (default
+`30s`) expires, and
 between polls Rig asks its supervisor whether the process still exists: a
 process that exits fails the start at once as `PROCESS_EXITED`, naming the exit
 code, instead of waiting out the timeout. A health answer counts only while
 Rig's own process is running, so a foreign listener on the port cannot certify
-a dead component. An HTTP probe is ready on any answer below 400, a redirect
+a dead Service. An HTTP probe is ready on any answer below 400, a redirect
 included, since a process that redirects is serving; a status of 400 or more,
 a refused connection, or a shell check that exits non-zero is not ready. When
-`readyTimeout` expires, `HEALTH_FAILED` names the last observation, for
+`ready_timeout` expires, `HEALTH_FAILED` names the last observation, for
 example `web did not become ready (last check: HTTP 503).` or `(last check:
 exit code 3: probing)`, and the Target log records each change in that
 observation as a `health` line, so a probe that never answers, a 5xx, or a
 check command's last output line is visible in `rig logs` rather than
-discarded. A component without a health check must survive a short
+discarded. A Service without a `ready` check must survive a short
 start grace period (half a second) before it counts as started; a command that
 exits earlier, such as a missing binary or a port already in use, fails `up`
 and rolls the start back.
@@ -519,12 +571,12 @@ one that cannot be read, is left in place and recorded in the diagnostic log
 with its reason, since only rollback or a person should decide about it.
 
 `down` stops a Target and retains its inventory, data, logs, and source history.
-When every process is verified stopped but a `preStop` or `postStop` hook
-fails, `down` reports `STOP_HOOKS` with the Target stopped. `restart` treats
-the same case the way deploy transitions do: it continues to the start half
-and lists each failed shutdown hook as a warning in its result, so a flaky hook
-does not turn a restart into an outage. A process that could not be stopped
-still aborts both commands.
+A process that could not be stopped aborts `down` and `restart`. Hooks are no
+longer part of the config, but a Target whose plan was recorded from the
+retired schema keeps its hooks until it is next planned: when every process is
+verified stopped but one of its stop hooks fails, `down` reports `STOP_HOOKS`
+with the Target stopped, while `restart` continues to the start half and lists
+the failed hook as a warning.
 
 Preview records written by older Rig versions, before the source history root
 was recorded, are repaired when rigd reads its state: a Preview whose checkout
@@ -581,8 +633,8 @@ Output identifies component, timestamp, and stream with `>` for stdout, `!`
 for stderr, and `~` for health-check evidence; legacy records with missing
 evidence must be marked unknown. Times are the UTC clock the record was
 written at, printed with a `Z` (`23:30:00Z`) so they are not mistaken for
-local time; `--json` carries the full ISO-8601 timestamp. Build, install, and
-hook output is recorded line by line as the command produces it, each line at
+local time; `--json` carries the full ISO-8601 timestamp. Build and install
+output is recorded line by line as the command produces it, each line at
 the time it was seen, so a long build is visible in `rig logs --follow` while
 it runs rather than as one burst afterwards.
 A Target's `target.jsonl` is rotated once it reaches 64 MiB: the full file
@@ -635,7 +687,7 @@ that says Project checks were skipped and why ("Project checks were skipped:
 Project 'app' is not registered. Run rig init in this Project directory."), so
 a clean Host report is never mistaken for a clean Project. For the Stable
 Target, a `live/branch` check compares the Branch it was deployed from with the
-current Production Branch (`live.deployBranch`, else the Host default); a
+current Production Branch (`production_branch`, else the Host default); a
 Production Branch changed since the deploy is `production-branch-drift` with a
 hint to redeploy. `doctor` is read-only by default. One report reads the repository config once, so the
 identity check and every Working copy comparison see the same revision even
@@ -687,15 +739,15 @@ Keys this `rigd` does not know are kept through every read and write, so a
 newer version's fields survive a temporary downgrade.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
-it takes; `rigd` owns every budget (`hookTimeout`, `buildTimeout`,
-`installTimeout`, `readyTimeout`, each at most 86400 seconds). Reads such
+it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
+at most one day, and the fixed dependency-install budget). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report
 `rigd did not answer the doctor read within 5 s; it may be busy`, which is
 distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
 into the offline host report. Reads are answered without queueing, so run
 `rig activity` to see what `rigd` is doing, then retry.
 
-`rigd` runs one mutation at a time across all Projects, so a slow hook or
+`rigd` runs one mutation at a time across all Projects, so a slow build or
 readiness wait in one Project delays `rig up` and `rig deploy` elsewhere. When
 a mutation has gone two seconds without an answer, `rig` prints on stderr
 which operation `rigd` is running (Project, Target, action, operation id, and
@@ -725,9 +777,9 @@ moment. The "unresolved deployment transition; run down" warning is reserved
 for a transition that no live operation owns, such as one interrupted by a
 daemon crash.
 
-Status shares one two-second budget across concurrent observations. Managed
-components without health checks are running, not healthy; uncertain observations
-are unknown. Configured-only components are configured, installed-tool Targets
+Status shares one two-second budget across concurrent observations. Services
+without a `ready` check are running, not healthy; uncertain observations
+are unknown. Configured-only Components are configured, Tool-only Targets
 can be ready, and partial runtime capability is degraded. Every Component
 counts toward the Target state: a missing database or executable beside a
 healthy process is degraded, not healthy. A Target whose processes all run but
@@ -802,112 +854,234 @@ Host config owns machine capability:
 - daemon address and local auth token
 - installed provider defaults
 
-A lane (`local`, `live`, or `deployments`) may override a shared Component
-under `components.<name>`. Scalar fields such as `command`, `port`, or
-`envFile` replace the shared value, while `env` and `hooks` merge per key:
-a lane that adds `hooks.postStart` keeps the shared `preStart`, and a lane
-that repeats a key replaces just that entry.
+A small `rig.yaml` with two Services, a Tool, and a route:
 
-A lane's `providers.processSupervisor` selects `rigd` (default; the daemon
-owns child processes), `child` (alias of `rigd`), or `launchd` (one launchd
-agent per Component). Any other name is rejected when the config is parsed, so
-a typo can never be recorded in a Target plan. A launchd Component whose
-application crashed and is waiting out its restart backoff is not restarted
-again by `rig up` or `rig restart`; they wait for the restart the wrapper has
+```yaml
+name: pantry
+production_branch: main
+domain: pantry.test
+
+env:
+  LOG_FORMAT: json
+
+services:
+  api:
+    run: bun run src/api.ts
+    ports: { http: auto }
+    env:
+      HOST: 127.0.0.1
+      PORT: ${services.api.ports.http}
+      DATA_DIR: ${rig.data}
+    ready: http://127.0.0.1:${services.api.ports.http}/health
+  web:
+    run: bun run src/web.ts --port ${services.web.ports.http}
+    ports: { http: 3000 }
+    env:
+      API_URL: http://127.0.0.1:${services.api.ports.http}
+    ready: http://127.0.0.1:${services.web.ports.http}/
+    ready_timeout: 1m
+    depends_on: [api]
+
+tools:
+  pantryctl:
+    build: bun build --compile src/cli.ts --outfile .rig-build/pantryctl
+    build_timeout: 5m
+    bin: .rig-build/pantryctl
+
+proxy:
+  /: ${services.web.ports.http}
+
+targets:
+  working:
+    name: local
+    env: { LOG_FORMAT: pretty }
+  stable:
+    name: live
+  preview:
+    domain: ${rig.target}.preview.pantry.test
+```
+
+Top-level fields: `name` (required Project identity), `description`,
+`production_branch`, `domain`, `supervisor`, `build`, `build_timeout`, `env`,
+`env_file`, `services`, `tools`, `proxy`, and `targets`. A Project needs at
+least one Service or Tool, and a Tool cannot share a Service's name. Service
+and Tool names use lowercase letters, digits, and `-`. Unknown keys are
+rejected with their field path.
+
+A Service is a long-running process Rig starts and supervises. Its fields:
+
+- `run` (required): the foreground shell command, run under `/bin/sh -c` in
+  the Target workspace.
+- `ports`: named local TCP ports. `auto` lets Rig choose a free port and keep
+  it for the Target; a number from 1 to 65535 pins it. Previews always use
+  chosen ports, so a pin applies to the Working copy and Stable Target only.
+- `ready`: a localhost HTTP URL or a shell command that reports readiness, and
+  `ready_timeout` (default `30s`).
+- `depends_on`: Services that must be running and ready before this one
+  starts. Unknown names and cycles are rejected when the config is parsed.
+- `env` and `env_file`: see below.
+- `build`, `build_timeout`, `workdir`, `restart`, and `supervisor` are part of
+  the schema but see "Not yet runnable".
+
+A Tool is an executable the Project makes available on the Host rather than a
+process Rig keeps running. `bin` (required) is the executable's path relative
+to the workspace; `build` is an optional shell command that produces it, and
+`build_timeout` bounds that build. Tools replace the "installed" Components
+of the retired schema and Services replace the "managed" ones.
+
+Durations are a whole number with a unit, such as `30s`, `10m`, or `1h`, up to
+one day.
+
+`domain` is the hostname the Stable Target serves, and `proxy` maps a path
+prefix to a declared port reference; `/` is required when `proxy` is present.
+A Preview serves `<preview name>.<domain>`, or `targets.preview.domain` with
+`${rig.target}` replaced by the Preview's name. The Working copy has no route
+unless `targets.working.domain` is set. A Target with no resolved hostname or
+no `proxy` gets no route. A Tool-only Project needs neither.
+
+The Production branch is `production_branch`, else the Host config's
+`deploy.productionBranch`, else `main`.
+
+### Target names and settings patches
+
+`targets` has three fixed keys, one per Target role: `working`, `stable`, and
+`preview`. `targets.working.name` and `targets.stable.name` set the names that
+select and display those Targets (defaults `local` and `live`; see Targets).
+`targets.preview` takes no `name`, because Preview names come from their
+Branch.
+
+Everything else under a role is a settings patch applied over the top-level
+settings for Targets of that role. A patch may set `domain`, `supervisor`,
+`build`, `build_timeout`, `env`, `env_file`, `proxy`, and fields of existing
+entries under `services.<name>` and `tools.<name>`. Maps merge per key: a
+patch that sets `env.LOG_FORMAT` keeps every other shared `env` key, and a
+patch under `services.api` leaves the Service's other fields alone. Lists
+(such as `depends_on`) and scalars (such as `run` or a port) replace the
+shared value. A patch cannot add a Service or Tool that the top level does not
+declare, remove or null one out, set `production_branch` or `description`,
+contain `targets`, or pin a port under `targets.preview`. The patched result
+for each role is validated when the config is parsed, so a broken dependency
+or a port pinned twice is reported under `targets.<role>`.
+
+### Supervisors
+
+`supervisor` selects `rigd` (default; the daemon owns child processes) or
+`launchd` (one launchd agent per Service), at the top level or in a role
+patch. Any other name is rejected when the config is parsed, so a typo can
+never be recorded in a Target plan. A launchd Service whose application
+crashed and is waiting out its restart backoff is not restarted again by
+`rig up` or `rig restart`; they wait for the restart the wrapper has
 scheduled, then for the application to appear, and only report
-`LAUNCHD_START` when it misses that schedule. Stopping a launchd Component
+`LAUNCHD_START` when it misses that schedule. Stopping a launchd Service
 waits for the wrapper's full shutdown budget (SIGTERM, then SIGKILL, plus
 headroom) before reporting `LAUNCHD_STOP`, and every stop that finds the job
 gone, including one after a logout that already unloaded it, removes the
 job's plist, request, and evidence files from `$RIG_ROOT/launchd`; a failed
 bootstrap removes them too.
 
-### Hooks and interpolation
+### Not yet runnable
 
-Hooks are shell commands that run around a Target's processes. A Project may
-declare `hooks` at the top level; a managed, Convex, or Postgres Component may
-declare its own. Installed executables and SQLite paths have no process, so
-`hooks` on them is rejected when the config is parsed; use an installed
-Component's `build` for steps that must run before installation. Every hook
-runs under `/bin/sh -c` in the Target workspace with the inherited base
-environment, the Project `envFile` and `env`, and, for a Component hook, the
-Component's own `envFile` and `env` layered on top. The inherited base is the
-same for hooks, builds, and managed processes in both install modes: only
-`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`,
-`LC_CTYPE`, and `TZ` from the shell that ran `rigd install`. Tokens and other
-variables in that shell never reach rigd or a Project's processes; declare
-what a process needs in `envFile` or `env`. Git discovery (`rig init`, `rig
-select`, and `git push rig`) runs with the same base and ignores `GIT_DIR` and
-`GIT_WORK_TREE`, so it always describes the directory it was asked about. A
-hook writes its output to the Target's logs under the Component name, or
-`setup` for Project hooks.
+These settings are valid config: they parse, and `rig config` shows them. This
+build of `rigd` cannot run them yet, so planning a Target that uses one is
+refused as `unsupported_setting`, naming the path (for example
+`services.api.workdir`), rather than silently dropping the policy. Remove the
+setting for now.
 
-An `envFile` holds one `KEY=value` per line, with an optional `export`, single
+- a shared `build` at the top level or in a role patch, and a Service `build`
+  (a Tool `build` is supported)
+- a Service `workdir`
+- a Service `restart` other than `always`
+- a Service `supervisor` that differs from the Project's
+- a Service with no port or with more than one port
+- an `env_file` list of more than one file
+- an `env_file` path under `~`
+- a `proxy` prefix other than `/`
+
+### Environment, builds, and startup
+
+Every build and process runs under `/bin/sh -c` in the Target workspace. Its
+environment is an inherited base, then the env file, then the top-level `env`,
+then the Service's own `env`, each layer replacing keys of the one before. A
+Service's `env_file` is used instead of the top-level one, not in addition to
+it; a Tool build gets the top-level `env` and `env_file`. `env` is public
+configuration and is recorded in the Target plan: keep secrets in an env file.
+The inherited base is the same for builds and Services under either
+supervisor: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`,
+`LC_ALL`, `LC_CTYPE`, and `TZ` from the shell that ran `rigd install`. Tokens
+and other variables in that shell never reach rigd or a Project's processes;
+declare what a process needs in `env_file` or `env`. Git discovery (`rig
+init`, `rig select`, and `git push rig`) runs with the same base and ignores
+`GIT_DIR` and `GIT_WORK_TREE`, so it always describes the directory it was
+asked about. A build writes its output to the Target's logs under the Tool
+name, and dependency installation under `setup`.
+
+An `env_file` holds one `KEY=value` per line, with an optional `export`, single
 or double quotes, and a `# comment` after the value (after the closing quote of
 a quoted one; a `#` inside quotes is part of the value). Anything else, such as
 a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
-`ENV_FILE` naming the file and line. A deployed Target reads its `envFile` from
-the checked-out revision, so a gitignored `.env` is absent there and the
-command fails as `ENV_FILE_MISSING` naming the path before any hook or process
-runs: commit the file, declare the values in that lane's `env`, or remove
-`envFile`.
+`ENV_FILE` naming the file and line. Its contents are plain data and never
+take part in `${...}` references. A relative path resolves against the Target
+workspace. On the Stable Target and Previews the path must stay inside that
+workspace (`path_outside_target` otherwise), and the file is read from the
+checked-out revision, so a gitignored `.env` is absent there and the command
+fails as `ENV_FILE_MISSING` naming the path before any build or process runs:
+commit the file, declare the values in `env` under that role's patch, or
+remove `env_file`. The Working copy keeps whatever path you wrote.
 
-Every hook, build, and dependency install runs within a budget in seconds:
-`hookTimeout` on the Project (default 120) sets Project hooks and the default
-for Component hooks, which may set their own `hookTimeout`; an installed
-Component's `buildTimeout` bounds its `build` (default 600); the Project's
-`installTimeout` bounds dependency installation on `live` and Preview Targets
-(default 600). A command past its budget is killed together with anything it
-started, what it printed until then is kept in the Target logs, and the
-command fails as `HOOK_TIMEOUT`, `BUILD_TIMEOUT`, or `DEPENDENCIES_TIMEOUT`,
-naming the hook or Component and the budget that ran out. A build that times
-out leaves the previous installed artifact in place.
+A Tool's `build` runs within `build_timeout` (the Tool's own, else the
+top-level one, else ten minutes), and dependency installation on the Stable
+Target and Previews within a fixed ten minutes. A command past its budget is
+killed together with anything it started, what it printed until then is kept
+in the Target logs, and the command fails as `BUILD_TIMEOUT` or
+`DEPENDENCIES_TIMEOUT`, naming the Tool and the budget that ran out. A build
+that times out leaves the previous installed executable in place.
 
-`rig up`, `rig restart`, and every deploy run hooks in this order:
+`rig up`, `rig restart`, and every deploy work in this order:
 
-1. Project `preStart`, only when at least one managed process is not already
-   running. Installed executables are built and installed after it, so it may
-   prepare what a build needs. On `live` and Preview Targets the checkout is
-   immutable, so an installed executable is rebuilt only when its
-   `entrypoint`, `build`, destination, or declared environment (`envFile`,
-   lane `env`, Component `env`) changes, or when its source or installed
-   artifact no longer matches the receipt; a daemon restarted from another
-   shell does not rebuild anything. On `local`, Rig cannot see which files a
-   build reads, so `build` runs on every `rig up` and `rig restart`; the
-   executable is republished only when the build output actually changed,
-   and an identical output is reported `unchanged`. Renaming a Component
-   while keeping its `installName` hands the executable to the new name
-   within the same Target; only another Target's Component is refused with
-   `ARTIFACT_CONFLICT`, which names the owning Project, Target, and
-   Component. Installed executables share one `bin/` directory across every
-   Project and Target on the Host (`<installName or name>` for `live`,
-   `-dev` for `local`, `-<preview name>` for a Preview), so two Projects that
-   both install `cli` on `live` collide; give one a distinct `installName`.
+1. Tools are built and installed. On the Stable Target and Previews the
+   checkout is immutable, so a Tool is rebuilt only when its `bin`, `build`,
+   destination, or declared environment (`env_file`, `env`) changes, or when
+   its source or installed executable no longer matches the receipt; a daemon
+   restarted from another shell does not rebuild anything. On the Working
+   copy, Rig cannot see which files a build reads, so `build` runs on every
+   `rig up` and `rig restart`; the executable is republished only when the
+   build output actually changed, and an identical output is reported
+   `unchanged`. Installed executables share one `bin/` directory across every
+   Project and Target on the Host: `<tool>` for the Stable Target,
+   `<tool>-dev` for the Working copy, and `<tool>-<preview name>` for a
+   Preview. Two Projects that both install `cli` on their Stable Target
+   therefore collide, and the second is refused with `ARTIFACT_CONFLICT`,
+   which names the owning Project, Target, and Tool; rename one of the Tools.
    An executable Rig did not install is never overwritten
    (`ARTIFACT_UNOWNED`), and one that was edited by hand after installation
    is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks
    `rig down preview --destroy` too): both name the file, and moving or
    deleting it is the way through.
-2. For each Component in dependency order: the Component's `preStart`, the
-   process start, readiness, then the Component's `postStart`. Readiness means
-   the `health` check passed, or, for a Component without `health`, that the
-   process survived the start grace period. A Component that was already
-   running is skipped along with its hooks, except that one another Component
-   lists in `dependsOn` must pass its `health` check first, so a dependent
-   never starts against a running but unhealthy dependency.
-3. Routing, then Project `postStart` (again only when something started).
+2. Each Service in dependency order: the process start, then readiness.
+   Readiness means the `ready` check passed, or, for a Service without
+   `ready`, that the process survived the start grace period. A Service that
+   was already running is skipped, except that one another Service lists in
+   `depends_on` must pass its `ready` check first, so a dependent never starts
+   against a running but unready dependency.
+3. Routing.
 
-`rig down` runs Project `preStop`, then each active Component's `preStop`,
-stops it, and runs its `postStop`; Project `postStop` runs last. Stop hooks
-are skipped for Components that are already stopped. A start hook that exits
-non-zero fails the command with `HOOK_FAILED`, which names the hook and the
-Component (or the Project) and the exit code, and rolls back the processes
-that command started. Stop-hook failures are reported as described above
-without leaving processes running.
+`rig down` stops each running Service. A start that fails rolls back the
+processes that command started.
 
-Every process Rig starts must listen on localhost only. Component
-commands, health checks, and hooks are checked when the config is parsed and
-again after interpolation: an explicit bind flag such as `--host`, `--bind`,
+Hooks (`preStart`, `postStart`, `preStop`, `postStop`), `hookTimeout`,
+`installTimeout`, `installName`, `uses` plugins (Convex, Postgres, SQLite),
+`components`, and the `local`/`live`/`deployments` lanes are not part of the
+current config. Run a database as an ordinary Service whose `run` command
+starts it, and put preparation steps in a `build` or in the script `run`
+invokes. A `run` command whose executable the shell cannot find fails as
+`PROCESS_EXITED` with exit code 127 and a hint that names the missing tool
+problem instead of waiting out `ready_timeout`.
+
+### Localhost binding
+
+Every process Rig starts must listen on localhost only. `run`, `ready`, and
+`build` commands are checked when the config is parsed and again after
+references are resolved: an explicit bind flag such as `--host`, `--bind`,
 `--listen`, or `--addr` must name `127.0.0.1` or `localhost`, and a wildcard
 address (`0.0.0.0`, `::`, `[::]`) is rejected anywhere in the command,
 including inside a quoted wrapper like `sh -c "..."`. In `env`, bind-style
@@ -916,55 +1090,43 @@ keys (`HOST`, `HOSTNAME`, `BIND`, `BIND_ADDR`, `BIND_ADDRESS`, `BIND_HOST`,
 may not hold a wildcard address; other env values are not inspected, because
 `HOST` often names a public hostname rather than a bind address. A process
 that reads its bind address from somewhere Rig cannot see is your
-responsibility. A `health` value that starts with `http://` or `https://` in
+responsibility. A `ready` value that starts with `http://` or `https://` in
 any letter case is an HTTP probe: the whole string must parse as a URL with
 no username or password and a hostname of `127.0.0.1` or `localhost`. Query
-strings may mention other hosts. Any other `health` value is a shell command
+strings may mention other hosts. Any other `ready` value is a shell command
 and follows the command rule.
 
-Commands, hooks, health checks, and build commands may use `${...}`
-placeholders. The available properties are:
+### References
 
-- `lane` (`local`, `live`, or `deployment`), `target` (`local`, `live`, or
-  `preview`), `deployment` (the Target's deployment name), `branchSlug`, and
-  `subdomain`.
-- `workspace` and `dataRoot`: the Target's checkout and persistent storage.
-  On `live` and Preview Targets, rigd owns both, so a SQLite `path` must
-  resolve inside `dataRoot` and an `envFile` inside `workspace`; an absolute
-  or `..` path that escapes them is rejected when the config is resolved,
-  naming the Component and field. `local` keeps whatever path you wrote.
-- Per Component `<name>`: `<name>.port` (also `ports.<name>` and
-  `port.<name>`) and `<name>.url` for any Component with a port; because of
-  those aliases a Component may not be named `port` or `ports`;
-  `<name>.sitePort`, `<name>.siteUrl`, and `<name>.stateDir` for Convex;
-  `<name>.dataDir` for Postgres; `<name>.path` for SQLite. For a Postgres
-  Component `<name>.url` is a connection string,
-  `postgres://127.0.0.1:<port>/postgres`, rather than an HTTP URL.
+`run`, `ready`, `build`, `bin`, `env` values, and `env_file` paths may use
+`${...}` references. The available references are:
 
-A Postgres Component's cluster is created by `initdb -E UTF8 -A trust
---no-locale` on first start: UTF-8 encoding, trust authentication on
-loopback, the superuser is the user rigd runs as, and the default database
-is `postgres`. Rig needs `initdb`, `postgres`, and `pg_isready` on the PATH
-rigd was installed from (for example `brew install postgresql@17`); a missing
-`initdb` fails the start as `POSTGRES_INIT` naming the tool, and a managed
-command whose executable the shell cannot find fails as `PROCESS_EXITED` with
-exit code 127 and a hint that names the missing tool problem instead of
-waiting out `readyTimeout`.
+- `${services.<service>.ports.<port>}`: the concrete number of a declared
+  port in this Target. `proxy` values must be exactly one such reference.
+- `${rig.target}`: the Target's actual name, configured or generated. It is
+  the only reference a `domain` may contain.
+- `${rig.workspace}`: the Target's checkout, which is the repository for the
+  Working copy.
+- `${rig.data}`: this Service's persistent directory in this Target. It is
+  only available inside a Service.
+- `${rig.host}`: the Target's hostname when it has both a hostname and a
+  `proxy`, otherwise empty.
+- `${rig.url}`: `https://<hostname>` when the Target has a route;
+  `http://127.0.0.1:<port>` of the `/` upstream when it has a `proxy` but no
+  hostname; empty without a `proxy`.
 
-`branch`, `commit`, `domain`, and `project` are not interpolation properties,
-and an unknown placeholder is rejected when the config is resolved so a typo
-never reaches a shell. That rejection names the field, such as
-`components.web.command`, and the hint points shell expansion like
-`${VAR:-default}` to `env`, an `envFile`, or a script the command runs.
-Config mistakes are reported the same way: a Component without `mode` or
-`uses` is told which values it may set, a non-string `env` value names its
-key, and an override in `live` or `preview` is checked against the shared
-Component only when the lane actually overrides it. Because those strings run
-under `/bin/sh -c`, Rig single-quotes any substituted value that contains a
-space or other shell-special character, so a repository or `RIG_ROOT` under a
-path like `~/Projects/My App` still resolves to one argument. A placeholder
-the author already wrapped in quotes is substituted as is. Values substituted
-into `env`, `domain`, `envFile`, and `entrypoint` are never quoted.
+Any other reference is rejected as `unknown_reference` when the Target is
+planned, so a typo never reaches a shell. That rejection names the field,
+such as `services.web.run`, and the hint points shell expansion like
+`${VAR:-default}` to `env`, an `env_file`, or a script the command runs. The
+retired placeholders (`${subdomain}`, `${branchSlug}`, `${lane}`,
+`${workspace}`, `${dataRoot}`, `${<name>.port}`, and `${<name>.url}`) are
+rejected the same way. Because `run`, `ready`, and `build` run under
+`/bin/sh -c`, Rig single-quotes any substituted value that contains a space
+or other shell-special character, so a repository or `RIG_ROOT` under a path
+like `~/Projects/My App` still resolves to one argument. A reference the
+author already wrapped in quotes is substituted as is. Values substituted
+into `env`, `domain`, `env_file`, and `bin` are never quoted.
 
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while
@@ -982,12 +1144,16 @@ Current config surface:
 - managed fields such as Project identity are not simple settable fields.
 - `--json` is available for status/lifecycle/deploy; there is no global flag.
 
-Project files use `rig.yaml` or legacy `rig.json`; Host files use `config.yaml`
-or legacy `config.json`. `.yml` is unsupported and both filenames in one scope
-are ambiguous. YAML accepts one document with comments, rejecting duplicate keys,
-tags, anchors, aliases, and merge keys. Existing config formats are never
-automatically converted, and supported structured edits preserve comments/order
-or refuse before mutation.
+Config is YAML only: a Project uses `rig.yaml` and the Host uses
+`<RIG_ROOT>/config.yaml`. A `rig.json` or Host `config.json` is refused as
+`legacy_format`, even beside a YAML file; it is never read, merged, or
+converted. A `rig.yaml` that still uses the retired component schema (any of
+`components`, `local`, `live`, `deployments`, `hooks`, `hookTimeout`, or
+`installTimeout` at the top level) is refused as `legacy_config`, naming the
+keys. Convert such a config by hand to the schema above, then remove the JSON
+file. `.yml` is unsupported. YAML accepts one document with comments,
+rejecting duplicate keys, tags, anchors, aliases, and merge keys. Supported
+structured edits preserve comments/order or refuse before mutation.
 
 A Project is its Git repository: `rig init`, `rig status` from the shell, and
 `git push rig` inside a linked worktree (`git worktree add ../wt feature`)

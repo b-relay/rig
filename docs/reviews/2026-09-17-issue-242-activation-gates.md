@@ -154,6 +154,15 @@ in several suites; each needed `listeners` and a pid on running observations.
 4. Should-fix: `/api` and `/api/` normalized to duplicate routes and `//` to an
    empty prefix. Both are refused at the field when the config is read.
 
+**Round 2** (on e36d05d): findings 1, 2 and 4 resolved; 3 resolved for
+activation. One new should-fix, declined: `recover`'s cleanup observation (from
+#241) is not bounded by the readiness deadline. Reason: the `supervisor.stop`
+next to it, and the same cleanup in `up` and `down`, are equally unbounded by
+the lifecycle, so bounding one call does not make recovery bounded; both shipped
+supervisors bound their own commands (launchctl 2 s, child stop timeouts), so an
+observation that never answers is a provider defect, and a lifecycle-wide
+budget for supervisor calls is a Supervisor-contract decision outside #242.
+
 Declined as scope: continuous containment, an interface redesign, #241 retry
 classification, bounding the pre-existing liveness grace period.
 

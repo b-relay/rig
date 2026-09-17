@@ -41,7 +41,7 @@ export function previewName(
 /** Which Target a command's selector means. The selector is `preview`, the configured name of the Working copy or
  * Stable Target, or a name one of them is still recorded under, so a Target stays reachable while its config is unreadable
  * or names it differently. No selector means the Working copy. `name` is absent for a Working copy or Stable Target nothing names yet.
- * Rejects TARGET_UNKNOWN for any other selector and PREVIEW_NAME for a new Preview named like the Working copy or Stable Target. */
+ * Rejects TARGET_UNKNOWN for any other selector, TARGET_AMBIGUOUS for a name configured for one Target while the other is still recorded under it, and PREVIEW_NAME for a new Preview named like the Working copy or Stable Target. */
 export function selectTarget(
   command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
   configured: Readonly<Record<"working" | "stable", string>> | undefined,
@@ -72,10 +72,17 @@ export function selectTarget(
   const role = (["working", "stable"] as const).find(
     (role) => configured?.[role] === command.target,
   );
-  const kind = role
-    ? KIND_OF[role]
-    : recorded.find((t) => t.kind !== "preview" && t.name === command.target)
-        ?.kind;
+  const holder = recorded.find(
+    (t) => t.kind !== "preview" && t.name === command.target,
+  )?.kind;
+  // Mid-rename a name can be configured for one Target while the other is still recorded under it; guessing could stop the wrong one.
+  if (role && holder && holder !== "preview" && holder !== KIND_OF[role])
+    throw new RigError(
+      "TARGET_AMBIGUOUS",
+      `'${command.target}' is the configured name of one Target and still the recorded name of the other.`,
+      `Select by the other configured name (${configured![ROLE_OF[holder]]}) first; planning that Target again (rig up, or a deploy) records its new name.`,
+    );
+  const kind = role ? KIND_OF[role] : holder;
   if (!kind || kind === "preview")
     throw new RigError(
       "TARGET_UNKNOWN",
@@ -147,18 +154,22 @@ export async function planTarget(
       ? previewName(command)
       : targetNames(config)[ROLE_OF[kind]];
   const targets = (await deps.store.read()).targets;
-  // A Working copy or Stable Target keeps its identity under a new configured name, but never takes a Preview's.
-  if (
-    kind !== "preview" &&
-    targets.some(
-      (t) =>
-        t.projectId === project.id && t.kind === "preview" && t.name === name,
-    )
-  )
+  // A Working copy or Stable Target keeps its identity under a new configured name, but never takes another Target's.
+  const holder =
+    kind === "preview"
+      ? undefined
+      : targets.find(
+          (t) => t.projectId === project.id && t.id !== id && t.name === name,
+        );
+  if (holder)
     throw new RigError(
       "TARGET_NAME",
-      `Target name '${name}' already belongs to a Preview of this Project.`,
-      `Choose another targets.${ROLE_OF[kind]}.name, or destroy that Preview first.`,
+      holder.kind === "preview"
+        ? `Target name '${name}' already belongs to a Preview of this Project.`
+        : `Target name '${name}' is still recorded for this Project's other Target.`,
+      holder.kind === "preview"
+        ? `Choose another targets.${ROLE_OF[kind as "local" | "live"]}.name, or destroy that Preview first.`
+        : `Plan the other Target under its new name first (rig up, or a deploy), or choose another targets.${ROLE_OF[kind as "local" | "live"]}.name.`,
     );
   const planInput = {
     config,

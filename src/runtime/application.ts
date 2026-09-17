@@ -307,6 +307,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             throw error;
           currentBranch = null;
         }
+        const names = targetNames(selection.document!.config);
         return {
           project: project.name,
           repoPath: project.repoPath,
@@ -314,7 +315,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             selection.document!.config.production_branch ??
             (await deps.documents.host()).deploy.productionBranch,
           currentBranch,
-          targets: targetNames(selection.document!.config),
+          targets: names,
+          // The role the selector means under the daemon's own rule, so a recorded name is confirmed like the configured one.
+          ...(command.target === undefined
+            ? {}
+            : {
+                selected:
+                  command.target === PREVIEW_SELECTOR
+                    ? "preview"
+                    : selectTarget(command, names, targets).kind === "live"
+                      ? "stable"
+                      : "working",
+              }),
         };
       }
       if (command.action === "config")
@@ -367,14 +379,23 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           ...command,
           branch: await deps.sources.currentBranch(project.repoPath),
         };
-      const configured = await configuredNames(
+      // One document snapshot serves the whole action: the names that select the Target and the plan made from it.
+      const configured = await checkoutConfig(
         selection.document,
         project,
         deps,
       );
+      const workingCopyDocument = (): ConfigDocument<ProjectConfig> => {
+        if (!configured.document) throw configured.failure;
+        return configured.document;
+      };
       const selected = ((): ReturnType<typeof selectTarget> => {
         try {
-          return selectTarget(command, configured.names, targets);
+          return selectTarget(
+            command,
+            configured.document && targetNames(configured.document.config),
+            targets,
+          );
         } catch (error) {
           // A name only the unreadable config could define is that config's failure, not an unknown Target.
           throw error instanceof RigError &&
@@ -553,7 +574,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             command,
             kind,
             project,
-            document: await workingCopyDocument(project, deps),
+            document: workingCopyDocument(),
           },
           deps,
         );
@@ -563,7 +584,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target.kind === "local" &&
         target.desired === "stopped"
       )
-        target = await replanWorkingCopy(target, command, project, deps);
+        target = await replanWorkingCopy(
+          target,
+          command,
+          project,
+          workingCopyDocument(),
+          deps,
+        );
       if (target.recovery) {
         if (command.action !== "down")
           throw new RigError(
@@ -587,7 +614,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           await persistTarget(target, deps.store);
           warnings = (await stopBeforeRestart(target, deps.lifecycle)).warnings;
           if (target.kind === "local")
-            target = await replanWorkingCopy(target, command, project, deps);
+            target = await replanWorkingCopy(
+              target,
+              command,
+              project,
+              workingCopyDocument(),
+              deps,
+            );
         }
         outcome = (await deps.lifecycle.up(target)).outcome;
         // up installs, routes, and starts the recorded plan under its own
@@ -825,20 +858,20 @@ async function pruneCheckpoints(
     });
   }
 }
-/** The names the Project's current rig.yaml gives its Working copy and Stable Target. A config that cannot be read, or
- * that names another Project, yields its failure instead so recorded names keep selecting Targets to stop or inspect. */
-async function configuredNames(
+/** The Project's current rig.yaml, read once per action. A config that cannot be read, or that names another Project,
+ * yields its failure instead so recorded names keep selecting Targets to stop or inspect. */
+async function checkoutConfig(
   document: ConfigDocument<ProjectConfig> | undefined,
   project: ProjectRecord,
   deps: Pick<RuntimeDependencies, "documents">,
 ): Promise<{
-  names?: ReturnType<typeof targetNames>;
+  document?: ConfigDocument<ProjectConfig>;
   failure?: unknown;
 }> {
   try {
     const current = document ?? (await deps.documents.read(project.repoPath));
     assertIdentity(project, current);
-    return { names: targetNames(current.config) };
+    return { document: current };
   } catch (failure) {
     return { failure };
   }
@@ -871,23 +904,14 @@ function preparedWarning(
     ? `${target.name} was running and is now stopped on the new deployment. Run ${up} to start it.`
     : `${target.name} is deployed but stopped. Run ${up} to start it.`;
 }
-/** The Working copy Target follows the registered repository's rig.yaml, whose name must still match the Project. */
-async function workingCopyDocument(
-  project: ProjectRecord,
-  deps: RuntimeDependencies,
-): Promise<ConfigDocument<ProjectConfig>> {
-  const document = await deps.documents.read(project.repoPath);
-  assertIdentity(project, document);
-  return document;
-}
 /** A stopped Working copy Target is re-planned from the current rig.yaml before it starts, keeping its id, data root, and recorded ports. */
 async function replanWorkingCopy(
   target: TargetRecord,
   command: RuntimeCommand,
   project: ProjectRecord,
+  document: ConfigDocument<ProjectConfig>,
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
-  const document = await workingCopyDocument(project, deps);
   const replanned = await planTarget(
     { command, kind: "local", project, document, existing: target },
     deps,

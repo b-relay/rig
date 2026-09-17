@@ -310,8 +310,8 @@ A Project has one Working copy Target, one Stable Target, and any number of
 generated Previews. The examples in this guide use the default names `local`
 and `live`; a Project that sets `targets.working.name: dev` and
 `targets.stable.name: production` runs `rig up dev` and `rig deploy
-production` instead. The two names must differ, and neither may be `preview`
-or end like a generated Preview name (a dash and eight hex digits). Renaming a
+production` instead. The two names must differ, and neither may be `preview`,
+`help`, or end like a generated Preview name (a dash and eight hex digits). Renaming a
 Target keeps its identity and stored data.
 
 A bare name selects the Working copy Target or the Stable Target by its
@@ -321,8 +321,10 @@ Target stays reachable. Any other name fails as `TARGET_UNKNOWN`, and the hint
 lists the names that exist. Previews must use the `preview` selector, which is
 reserved: `--deployment <name>` cannot give a new Preview the name of the
 Working copy or Stable Target (`PREVIEW_NAME`), and a Working copy or Stable
-Target cannot be renamed to a name one of the Project's Previews already holds
-(`TARGET_NAME`).
+Target cannot be renamed to a name another Target of the Project is still
+recorded under (`TARGET_NAME`). While a name is configured for one Target and
+still recorded for the other, selecting it fails as `TARGET_AMBIGUOUS`; the
+hint gives the name that is safe to use first.
 
 Target-aware commands with no selected Target should show an interactive picker
 in a TTY and fail with guidance in non-interactive use:

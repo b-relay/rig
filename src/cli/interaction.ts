@@ -26,6 +26,7 @@ const deployment = z.object({
   currentBranch: z.string().nullable(),
   /** The names this Project gives its Working copy and Stable Target. */
   targets: z.object({ working: z.string(), stable: z.string() }),
+  selected: z.enum(["working", "stable", "preview"]).optional(),
 });
 /** Resolve human choices through read-only daemon queries before submitting any mutation. */
 export async function prepareInteractiveRequest(
@@ -122,23 +123,21 @@ export async function prepareInteractiveRequest(
         action: "deployment-context",
         repoPath: request.repoPath,
         project: request.project,
+        ...(request.target ? { target: request.target } : {}),
       }),
     );
     assertActive(deps.signal);
     // A deploy resolved from the working directory must be visible before it acts, not only in its final line; structured callers get only the result.
     const branch =
       request.branch ??
-      (request.target === info.targets.stable
-        ? info.productionBranch
-        : info.currentBranch);
+      (info.selected === "stable" ? info.productionBranch : info.currentBranch);
     if (!options.json)
       deps.output.error(
         `Deploying ${terminalText(info.project)} (${terminalText(info.repoPath)}) to ${terminalText(
           request.deployment ?? request.target ?? "preview",
         )} from ${branch === null ? "a detached HEAD" : terminalText(branch)}.\n`,
       );
-    if (request.target !== info.targets.stable || request.branch)
-      return request;
+    if (info.selected !== "stable" || request.branch) return request;
     if (
       info.currentBranch !== null &&
       info.currentBranch !== info.productionBranch

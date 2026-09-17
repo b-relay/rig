@@ -1672,6 +1672,18 @@ test("a Preview resolved without a deployment name takes a hostname-safe name fr
   });
 });
 
+test("a Target cannot be named help, which every command reads as a request for help", () => {
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { stable: { name: "help" } },
+    }),
+  ).toBe(
+    "Fix targets.stable.name: cannot be 'help', which every command reads as a request for help.",
+  );
+});
+
 test("an env key the parser would drop silently is refused by name", () => {
   expect(
     hintOf(

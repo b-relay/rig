@@ -99,6 +99,24 @@ neither is byte-exact for those two shapes.
    revision checkout; the refusal now says the Commit carries retired
    configuration and that the way through is a new Commit.
 
+## Independent review (Codex, gpt-6-astra, high effort, read-only)
+
+Round 1 raised four findings, all fixed:
+
+1. A swap-style rename (`working: dev`, `stable: local` while the Working
+   copy is still recorded as `local`) let `rig down local` stop the Stable
+   Target. `selectTarget` now rejects `TARGET_AMBIGUOUS`, and `planTarget`
+   refuses any name another Target of the Project still holds.
+2. `rig deploy <recorded Stable name>` skipped the Production confirmation,
+   because the CLI compared against the configured name only. The
+   `deployment-context` reply now carries `selected`, the role rigd's own
+   selection rule gives the selector.
+3. `up`/`restart` selected the Working copy from one read of the config and
+   planned it from another. `checkoutConfig` reads once per action and the
+   same document is planned.
+4. `help` was a legal Target name that `rig deploy help` could never reach;
+   it is now reserved in the schema.
+
 ## Remaining integration dependencies
 
 - `unsupported_setting` until the owning ticket lands: shared and Service
@@ -140,7 +158,7 @@ neither is byte-exact for those two shapes.
 
 ## Validation
 
-- `bun test`: 684 pass, 0 fail across 71 files (one earlier sweep saw the
+- `bun test`: 687 pass, 0 fail across 71 files (one earlier sweep saw the
   known timing flake in `providers-process-timing.test.ts`; it passed on
   rerun and in the final run).
 - `bun run typecheck`: clean. `bun run build`: clean.

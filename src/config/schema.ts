@@ -261,6 +261,10 @@ const targetName = text
     "cannot be 'preview', which always selects Previews",
   )
   .refine(
+    (value) => value !== "help",
+    "cannot be 'help', which every command reads as a request for help",
+  )
+  .refine(
     (value) => !GENERATED_PREVIEW_NAME.test(value),
     "cannot end like a generated Preview name (a dash and eight hex digits)",
   );

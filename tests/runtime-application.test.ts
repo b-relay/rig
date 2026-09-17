@@ -3902,6 +3902,74 @@ test("a Working copy rename onto an existing Preview's name is refused, and a Pr
   ).toMatchObject({ outcome: "started", target: "dev" });
 });
 
+test("a name configured for one Target while the other is still recorded under it is refused, never guessed", async () => {
+  const { runtime, state, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({ action: "deploy", project: "demo", target: "live" });
+  config.targets = { working: { name: "dev" }, stable: { name: "local" } };
+  const before = structuredClone(state.targets);
+  await expect(
+    runtime.command({ action: "down", project: "demo", target: "local" }),
+  ).rejects.toMatchObject({
+    code: "TARGET_AMBIGUOUS",
+    hint: expect.stringContaining("(dev)"),
+  });
+  // Planning the Stable Target as 'local' would record two Targets under one name.
+  await expect(
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      force: true,
+    }),
+  ).rejects.toMatchObject({
+    code: "TARGET_NAME",
+    message:
+      "Target name 'local' is still recorded for this Project's other Target.",
+  });
+  expect(state.targets).toEqual(before);
+  expect(
+    await runtime.command({
+      action: "deployment-context",
+      project: "demo",
+      target: "live",
+    }),
+  ).toMatchObject({ selected: "stable", targets: { stable: "local" } });
+  // The Working copy takes its new name first; then 'local' means only the Stable Target.
+  await runtime.command({ action: "down", project: "demo", target: "dev" });
+  await runtime.command({ action: "up", project: "demo", target: "dev" });
+  expect(
+    await runtime.command({ action: "down", project: "demo", target: "local" }),
+  ).toMatchObject({ target: "live" });
+});
+
+test("an action selects and plans the Working copy from one read of the checkout config", async () => {
+  const { runtime, state, deps, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  config.targets = { working: { name: "dev" } };
+  const read = deps.documents.read.bind(deps.documents);
+  let reads = 0;
+  deps.documents.read = async (path) => {
+    const document = await read(path);
+    reads += 1;
+    // A later read would see an edit made while the action runs.
+    return reads === 1
+      ? document
+      : {
+          ...document,
+          config: {
+            ...document.config,
+            targets: { working: { name: "other" } },
+          },
+        };
+  };
+  expect(
+    await runtime.command({ action: "up", project: "demo", target: "dev" }),
+  ).toMatchObject({ outcome: "started", target: "dev" });
+  expect(state.targets[0]).toMatchObject({ name: "dev" });
+});
+
 test("status selects by the same names as every other command and rejects an unknown one", async () => {
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

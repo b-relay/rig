@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { projectConfigSchema, hostConfigSchema } from "./schema.js";
+import type { PublicInput } from "./references.js";
 
 export type ProjectConfig = z.infer<typeof projectConfigSchema>;
 export type HostConfig = z.infer<typeof hostConfigSchema>;
@@ -14,10 +15,21 @@ export interface Hooks {
   preStop?: string;
   postStop?: string;
 }
+/** One env file an invocation loads; only the reference is recorded, never the contents. */
+export interface EnvFileRef {
+  /** Absolute path. */
+  path: string;
+  /** A listed file must exist; an operator convention file is read when present. */
+  required: boolean;
+}
 interface ComponentContext {
   name: string;
+  /** Public values only: Project env, then this Service's env. */
   env: Record<string, string>;
-  envFile?: string;
+  /** Lowest to highest precedence; every file beats `env`. */
+  envFiles?: EnvFileRef[];
+  /** Public env leaves the run, build and shell readiness commands were built from; a file may not change them. */
+  commandInputs?: PublicInput[];
   hooks?: Hooks;
   /** Seconds; absent means the Project hookTimeout, then 120. */
   hookTimeout?: number;
@@ -73,7 +85,15 @@ export interface TargetPlan {
   hookTimeout?: number;
   /** Seconds for dependency installation; absent means 600. */
   installTimeout?: number;
-  envFile?: string;
+  /** The Project-scope files a Project or Tool invocation loads, lowest to highest precedence. */
+  envFiles?: EnvFileRef[];
+}
+/** Host facts the pure resolver needs for env-file references; the composition root acquires them. */
+export interface ResolveHost {
+  /** Absolute operator home that `~` in env_file means. */
+  operatorHome: string;
+  /** Absolute directory of operator convention files: <envRoot>/<project>[/<service>]/{all,<role>}.env. */
+  envRoot: string;
 }
 /** Roots are caller-acquired strings; resolveTargetPlan validates absolute identity before calculation. */
 export interface ResolveTargetPlanInput {

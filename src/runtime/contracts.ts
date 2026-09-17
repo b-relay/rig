@@ -89,12 +89,12 @@ export interface RuntimeFiles {
    * Probe sockets are closed before return, including partial failure. No live
    * reservation is transferred: another process may bind before startup, whose
    * failure/readiness remains the process provider and lifecycle owner's concern.
-   * Rejects PORT_RESERVED for configured inventory collisions and PORT_UNAVAILABLE
+   * Rejects PORT_RESERVED, naming the owning Target, for configured inventory collisions and PORT_UNAVAILABLE
    * for unsuccessful OS probes. Requests have unique names and validated ports.
    */
   selectPorts(input: {
     requests: readonly { name: string; preferred?: number }[];
-    occupied: ReadonlySet<number>;
+    occupied: ReadonlyMap<number, { target: string; project: string }>;
     policy: "configured" | "dynamic";
   }): Promise<Record<string, number>>;
   logs(

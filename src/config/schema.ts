@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ConfigError } from "./errors.js";
+import { referenceResolver } from "./references.js";
 const text = z.string().min(1);
 const name = text
   .regex(
@@ -493,6 +494,7 @@ function validateGraph(
         );
       else pinned.set(value, `${key}.${port}`);
     }
+  validateReferences(settings, at, report);
   if (!settings.proxy) return;
   if (!Object.hasOwn(settings.proxy, "/"))
     report([...at, "proxy"], "A proxy needs a '/' entry.");
@@ -506,6 +508,52 @@ function validateGraph(
         [...at, "proxy", prefix],
         `Proxy '${prefix}' references '${upstream.service}.${upstream.port}', which is not a declared Service port.`,
       );
+  }
+}
+/** Resolves every reference-bearing string against placeholder generated values, so a missing path, a collection,
+ * a cycle, a reference into targets or rig.data outside a Service is reported when the document is read, not at the first deploy. */
+function validateReferences(
+  settings: ProjectSettings,
+  at: readonly PropertyKey[],
+  report: (path: PropertyKey[], message: string) => void,
+): void {
+  const references = referenceResolver(settings, {
+    target: "target",
+    workspace: "/workspace",
+    host: "",
+    url: "",
+    data: () => "/data",
+    port: () => 1,
+  });
+  const fields: [string[], string | undefined][] = [
+    [["build"], settings.build],
+    ...Object.entries(settings.env ?? {}).map(
+      ([key, value]): [string[], string] => [["env", key], value],
+    ),
+    ...[settings.env_file ?? []]
+      .flat()
+      .map((value): [string[], string] => [["env_file"], value]),
+  ];
+  for (const [name, service] of Object.entries(settings.services ?? {})) {
+    const own = ["services", name];
+    for (const field of ["run", "build", "ready", "workdir"] as const)
+      fields.push([[...own, field], service[field]]);
+    for (const [key, value] of Object.entries(service.env ?? {}))
+      fields.push([[...own, "env", key], value]);
+    for (const value of [service.env_file ?? []].flat())
+      fields.push([[...own, "env_file"], value]);
+  }
+  for (const [name, tool] of Object.entries(settings.tools ?? {}))
+    for (const field of ["bin", "build"] as const)
+      fields.push([["tools", name, field], tool[field]]);
+  for (const [path, value] of fields) {
+    if (value === undefined) continue;
+    try {
+      references.text(value, path.join("."));
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error;
+      report([...at, ...path], error.message);
+    }
   }
 }
 const LEGACY_KEYS = [

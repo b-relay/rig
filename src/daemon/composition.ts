@@ -10,7 +10,8 @@ import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
 import { createAdoptionGuard } from "../migration/adoption";
 import { randomUUID, createHash } from "node:crypto";
-import { inheritedEnvironment } from "./environment";
+import { executionBaseline, inheritedEnvironment } from "./environment";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   readHostConfig,
@@ -108,7 +109,7 @@ export async function composeDaemon(
           }
         : {}),
     }),
-    environment,
+    environment: executionBaseline(process.env),
   });
   const store = new FileStateStore(root);
   const notices = createNoticeBoard(() => new Date().toISOString());
@@ -125,7 +126,7 @@ export async function composeDaemon(
     inspectProxy: () => inspectHostProxy(root, host, environment),
     assertOwnershipReady: createAdoptionGuard(root),
     store,
-    documents: createProjectDocuments(root, runCommand, environment),
+    documents: createProjectDocuments(root, runCommand, environment, homedir()),
     sources: createDeploymentSources(
       createGitSourceStore({ root: join(root, "sources"), run: runCommand }),
       runCommand,

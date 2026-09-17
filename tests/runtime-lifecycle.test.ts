@@ -358,7 +358,7 @@ test("port contention after selection fails startup and preserves an already run
     timing: createProcessTiming(),
     processInspection: createProcessInspection({ run: runCommand, kill: platformKill }),
   });
-  const ports = await createRuntimeFiles().selectPorts({ requests: [{ name: "api" }, { name: "web" }], occupied: new Set(), policy: "dynamic" });
+  const ports = await createRuntimeFiles().selectPorts({ requests: [{ name: "api" }, { name: "web" }], occupied: new Map(), policy: "dynamic" });
   const record = structuredClone(target);
   record.plan.workspacePath = root;
   record.plan.dataRoot = root;

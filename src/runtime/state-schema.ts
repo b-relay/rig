@@ -11,10 +11,16 @@ const hooks = z.object({
   preStop: z.string().optional(),
   postStop: z.string().optional(),
 });
+const envFiles = z
+  .array(z.object({ path: absolutePath, required: z.boolean() }))
+  .optional();
 const common = {
   name: text,
   env: z.record(z.string(), z.string()),
-  envFile: text.optional(),
+  envFiles,
+  commandInputs: z
+    .array(z.object({ name: text, source: text, value: z.string() }))
+    .optional(),
   hooks: hooks.optional(),
   hookTimeout: z.number().positive().optional(),
   dependsOn: z.array(text),
@@ -76,7 +82,7 @@ export const targetPlanSchema = z.object({
   hooks: hooks.optional(),
   hookTimeout: z.number().positive().optional(),
   installTimeout: z.number().positive().optional(),
-  envFile: text.optional(),
+  envFiles,
 });
 const project = z.object({
   id: text,

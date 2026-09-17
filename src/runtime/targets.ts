@@ -10,7 +10,7 @@ import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
 import { ConfigError } from "../config/errors";
 import type { RuntimeDependencies } from "./contracts";
-import { occupiedPorts, recordedPorts } from "./ports";
+import { portOwners, recordedPorts } from "./ports";
 import {
   PREVIEW_SELECTOR,
   patchedSettings,
@@ -180,7 +180,7 @@ export async function planTarget(
     ...(branch ? { branch } : {}),
     ...(commit ? { commit } : {}),
   };
-  const occupied = occupiedPorts(targets, id);
+  const owners = portOwners(targets, id);
   const settings = patchedSettings(
     config,
     kind === "preview" ? "preview" : ROLE_OF[kind],
@@ -210,7 +210,7 @@ export async function planTarget(
   );
   const selected = await deps.files.selectPorts({
     requests: requests.filter((r) => !prior[r.name]),
-    occupied,
+    occupied: owners,
     policy: kind === "preview" ? "dynamic" : "configured",
   });
   const assignedPorts = { ...prior, ...selected };

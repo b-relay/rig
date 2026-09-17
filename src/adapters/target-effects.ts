@@ -15,7 +15,8 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { InstalledComponent, ManagedComponent } from "../config/types";
 import { isHealthUrl } from "../config/schema";
-import { readEnvironmentFile } from "./env-file";
+import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
+import { composeEnvironment } from "../domain/process-environment";
 import type { TargetRecord } from "../domain/runtime";
 import type {
   Supervisor,
@@ -109,26 +110,43 @@ export function createTargetEffects(
       );
     return provider;
   };
-  /** The environment the Project declares: envFile, lane env, and Component env. This is what a build's receipt is keyed on. */
-  const declaredEnvironment = async (
-    target: TargetRecord,
-    component?: ManagedComponent | InstalledComponent,
-  ): Promise<Record<string, string>> => {
-    const file = component?.envFile ?? target.plan.envFile;
-    return {
-      ...(file ? await readEnvironmentFile(file) : {}),
-      ...target.plan.env,
-      ...component?.env,
-    };
-  };
-  /** The declared environment over the daemon's inherited base; what a process, hook, or build actually runs with. */
+  const ignored = gitIgnoreCheck(options.run, options.environment);
+  const noted = new Set<string>();
+  /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, then its env files.
+   * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment. */
   const environment = async (
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent,
-  ): Promise<Record<string, string>> => ({
-    ...options.environment,
-    ...(await declaredEnvironment(target, component)),
-  });
+  ): Promise<Record<string, string>> => {
+    const scope = component ?? target.plan;
+    const loaded = await loadEnvironmentFiles(
+      scope.envFiles ?? [],
+      target.plan.workspacePath,
+      ignored,
+    );
+    const tmp = join(options.root, "tmp", target.id);
+    const composed = composeEnvironment({
+      baseline: { ...options.environment, TMPDIR: tmp },
+      publicEnv: scope.env ?? {},
+      files: loaded.files,
+      guarded: component?.commandInputs ?? [],
+      ...(component ? { component: component.name } : {}),
+    });
+    await mkdir(tmp, { recursive: true, mode: 0o700 });
+    const notes = [
+      ...loaded.warnings,
+      ...composed.overrides.map(
+        (override) =>
+          `Environment name ${override.key} comes from ${override.sources.at(-1)}, overriding ${override.sources.slice(0, -1).join(", ")}.`,
+      ),
+    ];
+    // Readiness polls compose too; a note is evidence once per Target, not once per poll.
+    const fresh = notes.filter((note) => !noted.has(`${target.id}:${note}`));
+    for (const note of fresh) noted.add(`${target.id}:${note}`);
+    if (fresh.length)
+      await recordLines(target, component?.name ?? "setup", "stderr", fresh);
+    return composed.env;
+  };
   /** Runs a shell command in the Target workspace within a budget in seconds and records its output,
    * including what a killed command printed before its budget ran out, under the Component name. */
   const runTarget = async (
@@ -492,13 +510,11 @@ export function createTargetEffects(
         target: target.name,
       };
       await ownership.inspect(identity);
-      const declared = await declaredEnvironment(target, component);
-      const env = { ...options.environment, ...declared };
+      const env = await environment(target, component);
       const key = installationPolicyKey(
         target.plan.workspacePath,
         component,
         destination,
-        declared,
       );
       const receiptFile = receiptPath(target, component);
       const receipt = await readInstallReceipt(receiptFile);
@@ -618,7 +634,6 @@ export function createTargetEffects(
             target.plan.workspacePath,
             component,
             destination,
-            await declaredEnvironment(target, component),
           );
           if (
             !receipt ||
@@ -692,13 +707,16 @@ async function digestFile(path: string): Promise<string | undefined> {
   }
 }
 
-/** Keys a build receipt on the policy the Project declares; the daemon's inherited base (PATH, HOME, ...) is deliberately excluded
- * so a daemon restarted from another shell does not rebuild every installed Component. */
+/** Keys a build receipt on the public policy the Project declares: its public env and which env files it names, never their contents,
+ * so a secret never reaches a receipt and a changed operator file does not silently rerun a completed build. The baseline (PATH, HOME, ...) is
+ * excluded too, so a daemon restarted from another shell does not rebuild every installed Component. */
 function installationPolicyKey(
   workspace: string,
-  component: Pick<InstalledComponent, "entrypoint" | "build">,
+  component: Pick<
+    InstalledComponent,
+    "entrypoint" | "build" | "env" | "envFiles"
+  >,
   destination: string,
-  env: Readonly<Record<string, string>>,
 ): string {
   return createHash("sha256")
     .update(
@@ -707,7 +725,8 @@ function installationPolicyKey(
         entrypoint: component.entrypoint,
         build: component.build,
         destination,
-        env,
+        env: component.env,
+        envFiles: (component.envFiles ?? []).map((file) => file.path),
       }),
     )
     .digest("hex");

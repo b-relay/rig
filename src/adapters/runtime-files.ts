@@ -11,14 +11,23 @@ export function createRuntimeFiles(): RuntimeFiles {
     async selectPorts({ requests, occupied, policy }) {
       const dynamic = policy === "dynamic";
       const selected: Record<string, number> = {},
-        used = new Set(occupied);
+        used = new Set(occupied.keys());
       for (const request of requests) {
-        if (request.preferred && used.has(request.preferred) && !dynamic)
+        if (request.preferred && used.has(request.preferred) && !dynamic) {
+          const owner = occupied.get(request.preferred);
           throw new RigError(
             "PORT_RESERVED",
-            `Port ${request.preferred} is reserved by another Target.`,
-            "Configure a distinct local/live port.",
+            owner
+              ? `Port ${request.preferred} pinned for Service '${request.name}' belongs to Target '${owner.target}' of Project '${owner.project}'.`
+              : `Port ${request.preferred} is pinned for more than one Service.`,
+            "Pin a different port for this Target, or change or destroy the Target that holds it. Rig keeps ports apart among its own Targets only; it does not reserve them against other processes.",
+            {
+              port: request.preferred,
+              service: request.name,
+              ...(owner ? { owner } : {}),
+            },
           );
+        }
         let port = await availablePort(dynamic ? 0 : (request.preferred ?? 0));
         while (used.has(port)) port = await availablePort(0);
         used.add(port);

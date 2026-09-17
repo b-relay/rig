@@ -8,77 +8,20 @@ import {
   targetNames,
   localhostCommand,
   localhostHealth,
+  isHealthUrl,
   validHostname,
 } from "./schema.js";
+import { referenceResolver, type PublicInput } from "./references.js";
 import type {
+  EnvFileRef,
   ProjectConfig,
   PlanComponent,
+  ResolveHost,
   ResolveTargetPlanInput,
   TargetPlan,
 } from "./types.js";
-type Properties = Record<string, string | number>;
-type TargetKind = ResolveTargetPlanInput["target"];
 type Service = NonNullable<ProjectConfig["services"]>[string];
 
-const shellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]*$/;
-/** Pure substitution: unknown names fail, naming the config field `at`, instead of becoming empty strings; shell ${ENV} stays explicit only through env. */
-function interpolate(
-  value: string,
-  properties: Properties,
-  at: string,
-): string {
-  return substitute(value, properties, at, (result) => result);
-}
-/** Substitution for text that /bin/sh -c will run: a value that would split or expand is single-quoted unless the author already quoted the placeholder. */
-function interpolateShell(
-  value: string,
-  properties: Properties,
-  at: string,
-): string {
-  return substitute(value, properties, at, (result, offset) =>
-    shellSafe.test(result) || insideShellQuotes(value.slice(0, offset))
-      ? result
-      : shellArg(result),
-  );
-}
-function substitute(
-  value: string,
-  properties: Properties,
-  at: string,
-  render: (result: string, offset: number) => string,
-): string {
-  return value.replace(
-    /\$\{([^}]+)\}/g,
-    (match: string, key: string, offset: number) => {
-      const result = Object.hasOwn(properties, key.trim())
-        ? properties[key.trim()]
-        : undefined;
-      if (result === undefined)
-        throw new ConfigError(
-          `Unknown reference '${match}' in ${at}.`,
-          "unknown_reference",
-          { key, path: at },
-          "A reference names a declared port such as ${services.web.ports.http} or a Rig value such as ${rig.target}; shell expansion such as ${VAR:-default} belongs in env, an env_file, or a script the command runs.",
-        );
-      return render(String(result), offset);
-    },
-  );
-}
-/** Whether a position in shell text sits inside an open single or double quote. */
-function insideShellQuotes(prefix: string): boolean {
-  let quote: "'" | '"' | undefined;
-  for (let i = 0; i < prefix.length; i++) {
-    const char = prefix[i];
-    if (quote === "'") {
-      if (char === "'") quote = undefined;
-    } else if (char === "\\") i++;
-    else if (quote === '"') {
-      if (char === '"') quote = undefined;
-    } else if (char === "'" || char === '"') quote = char;
-  }
-  return quote !== undefined;
-}
 /** Orders every Component once; dependency validity/cycles are checked by Project validation. */
 function dependencyOrder(components: PlanComponent[]): PlanComponent[] {
   const byName = new Map(
@@ -109,19 +52,29 @@ function unsupported(setting: string, path: string): ConfigError {
     `Remove ${path} for now; the configuration is valid, but this build of rigd cannot run it.`,
   );
 }
-/** Resolves portable Project policy into a materialized Target plan without reading files or allocating ports.
- * The caller owns assigned port numbers (not live socket reservations), workspace/data roots, the actual Target name, and Branch/Commit identity.
- * Both acquired roots must be absolute; portable config paths may remain relative.
- * Throws ConfigError for relative roots, incomplete ports, unknown references, collisions, invalid resolved bindings, or settings this runtime cannot run yet.
+/** Resolves portable Project policy into a materialized Target plan without reading files, the environment or ports.
+ * The caller owns assigned port numbers (not live socket reservations), workspace/data roots, the actual Target name, and Branch/Commit identity;
+ * `host` carries the operator home and convention-file root that env-file references are built from.
+ * Every acquired root must be absolute; portable config paths resolve against the workspace.
+ * The plan carries public values and env-file references only: file contents are composed per invocation by the execution adapter.
+ * Throws ConfigError for relative roots, incomplete ports, invalid references, collisions, invalid resolved bindings, or settings this runtime cannot run yet.
  */
-export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
-  for (const field of ["workspacePath", "dataRoot"] as const)
-    if (!isAbsolute(input[field]))
+export function resolveTargetPlan(
+  input: ResolveTargetPlanInput,
+  host: ResolveHost,
+): TargetPlan {
+  for (const [field, value] of [
+    ["workspacePath", input.workspacePath],
+    ["dataRoot", input.dataRoot],
+    ["operatorHome", host.operatorHome],
+    ["envRoot", host.envRoot],
+  ] as const)
+    if (!isAbsolute(value))
       throw new ConfigError(
         `Target plan ${field} must be an absolute path.`,
         "relative_root",
         { field },
-        "Supply absolute workspace and Persistent storage roots from discovery or runtime composition.",
+        "Supply absolute workspace, Persistent storage, operator home and env roots from discovery or runtime composition.",
       );
   const config = parseProjectConfig(input.config),
     role = ROLE_OF[input.target],
@@ -151,42 +104,42 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
   const ports = resolvePorts(services, input);
   const proxied = settings.proxy ? proxyService(settings.proxy) : undefined;
   const rootPort = proxied ? ports[`services.${proxied}.ports`] : undefined;
-  const properties: Properties = {
-    ...Object.fromEntries(
-      services.flatMap(([name, service]) =>
-        Object.keys(service.ports ?? {}).map((port) => [
-          `services.${name}.ports.${port}`,
-          ports[`services.${name}.ports`]!,
-        ]),
-      ),
-    ),
-    "rig.target": deploymentName,
-    "rig.workspace": input.workspacePath,
-    "rig.host": proxied && resolvedDomain ? resolvedDomain : "",
-    "rig.url": !proxied
+  const references = referenceResolver(settings, {
+    target: deploymentName,
+    workspace: input.workspacePath,
+    host: proxied && resolvedDomain ? resolvedDomain : "",
+    url: !proxied
       ? ""
       : resolvedDomain
         ? `https://${resolvedDomain}`
         : `http://127.0.0.1:${rootPort}`,
-  };
-  const envFile = (
-    value: string | string[] | undefined,
+    data: (service) => join(input.dataRoot, service),
+    port: (service) => ports[`services.${service}.ports`]!,
+  });
+  /** Listed files, then the operator's optional all.env and role file for this scope. */
+  const envFiles = (
+    listed: string | string[] | undefined,
     at: string,
-  ): string | undefined => {
-    const files = value === undefined ? [] : [value].flat();
-    if (files.length > 1) throw unsupported("A list of env files", at);
-    if (files[0]?.startsWith("~"))
-      throw unsupported("An env file under the operator's home (~)", at);
-    return files[0] === undefined
-      ? undefined
-      : targetPath(
-          input.target,
-          input.workspacePath,
-          interpolate(files[0], properties, at),
-          at,
-        );
-  };
-  const projectEnvFile = envFile(settings.env_file, "env_file");
+    scope: string[],
+  ): EnvFileRef[] => [
+    ...(listed === undefined ? [] : [listed].flat()).map((file) => ({
+      path: envFilePath(references.text(file, at).value, at, input, host),
+      required: true,
+    })),
+    ...["all", role].map((file) => ({
+      path: join(host.envRoot, config.name, ...scope, `${file}.env`),
+      required: false,
+    })),
+  ];
+  const publicEnv = (values: Readonly<Record<string, string>>, at: string) =>
+    Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [
+        key,
+        references.text(value, `${at}.${key}`).value,
+      ]),
+    );
+  const projectEnv = publicEnv(settings.env ?? {}, "env");
+  const projectFiles = envFiles(settings.env_file, "env_file", []);
   const projectSupervisor = settings.supervisor ?? "rigd";
   const components: PlanComponent[] = [
     ...services.map(([name, service]): PlanComponent => {
@@ -202,9 +155,8 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
         );
       if ((service.supervisor ?? projectSupervisor) !== projectSupervisor)
         throw unsupported("A per-Service supervisor", `${at}.supervisor`);
-      const scoped = { ...properties, "rig.data": join(input.dataRoot, name) };
-      const run = interpolateShell(service.run, scoped, `${at}.run`);
-      if (!localhostCommand(run))
+      const run = references.shell(service.run, `${at}.run`);
+      if (!localhostCommand(run.value))
         throw new ConfigError(
           "Resolved run command binds outside localhost.",
           "invalid_binding",
@@ -213,32 +165,31 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
       const ready =
         service.ready === undefined
           ? undefined
-          : interpolateShell(service.ready, scoped, `${at}.ready`);
-      if (ready !== undefined && !localhostHealth(ready))
+          : references.shell(service.ready, `${at}.ready`);
+      if (ready !== undefined && !localhostHealth(ready.value))
         throw new ConfigError(
           "Resolved readiness check addresses a host outside localhost.",
           "invalid_binding",
           { service: name, field: "ready" },
         );
-      const file =
-        envFile(service.env_file, `${at}.env_file`) ?? projectEnvFile;
+      const inputs = commandInputs(
+        run.inputs,
+        ready && !isHealthUrl(ready.value) ? ready.inputs : [],
+      );
       return {
         name,
         kind: "managed",
-        env: Object.fromEntries(
-          Object.entries({ ...settings.env, ...service.env }).map(
-            ([key, value]) => [
-              key,
-              interpolate(value, scoped, `${at}.env.${key}`),
-            ],
-          ),
-        ),
+        env: { ...projectEnv, ...publicEnv(service.env ?? {}, `${at}.env`) },
         dependsOn: service.depends_on ?? [],
-        ...(file ? { envFile: file } : {}),
-        command: run,
+        envFiles: [
+          ...projectFiles,
+          ...envFiles(service.env_file, `${at}.env_file`, [name]),
+        ],
+        ...(inputs.length ? { commandInputs: inputs } : {}),
+        command: run.value,
         port: ports[`services.${name}.ports`]!,
         readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
-        ...(ready !== undefined ? { health: ready } : {}),
+        ...(ready !== undefined ? { health: ready.value } : {}),
       };
     }),
     ...Object.entries(settings.tools ?? {})
@@ -246,24 +197,23 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
       .map(([name, tool]): PlanComponent => {
         const at = `tools.${name}`;
         const timeout = tool.build_timeout ?? settings.build_timeout;
+        const build = tool.build
+          ? references.shell(tool.build, `${at}.build`)
+          : undefined;
         return {
           name,
           kind: "installed",
-          env: Object.fromEntries(
-            Object.entries(settings.env ?? {}).map(([key, value]) => [
-              key,
-              interpolate(value, properties, `env.${key}`),
-            ]),
-          ),
+          env: projectEnv,
           dependsOn: [],
-          ...(projectEnvFile ? { envFile: projectEnvFile } : {}),
+          envFiles: projectFiles,
+          ...(build?.inputs.length
+            ? { commandInputs: commandInputs(build.inputs) }
+            : {}),
           entrypoint: resolve(
             input.workspacePath,
-            interpolate(tool.bin, properties, `${at}.bin`),
+            references.text(tool.bin, `${at}.bin`).value,
           ),
-          ...(tool.build
-            ? { build: interpolateShell(tool.build, properties, `${at}.build`) }
-            : {}),
+          ...(build ? { build: build.value } : {}),
           ...(timeout ? { buildTimeout: durationSeconds(timeout) } : {}),
         };
       }),
@@ -280,6 +230,8 @@ export function resolveTargetPlan(input: ResolveTargetPlanInput): TargetPlan {
     ...(input.commit ? { commit: input.commit } : {}),
     providerProfile: "default",
     providers: { processSupervisor: projectSupervisor },
+    env: projectEnv,
+    envFiles: projectFiles,
     components: dependencyOrder(components),
     preparedComponents: [],
     ...(resolvedDomain !== undefined && proxied
@@ -305,27 +257,43 @@ function slug(branch: string): string {
       .replace(/^-|-$/g, "") || "preview"
   );
 }
-/** Resolves an env file against the workspace. Deployed Targets own their workspace,
- * so a path that lands outside it is rejected as ConfigError `path_outside_target`; the developer's
- * Working copy keeps whatever path they wrote.
- */
-function targetPath(
-  target: TargetKind,
-  root: string,
+/** Every public env leaf a Component's commands were built from, once per config path. */
+function commandInputs(...lists: readonly PublicInput[][]): PublicInput[] {
+  return [
+    ...new Map(lists.flat().map((input) => [input.source, input])).values(),
+  ];
+}
+/** An env_file path made absolute: `~` is the operator home, an absolute path stays, and a relative path resolves against the workspace.
+ * A deployed Target's relative path that leaves its checkout is ConfigError `path_outside_target`: it would name rigd's own storage beside the revision;
+ * operator files are addressed absolutely or through `~`. The developer's Working copy keeps whatever relative path they wrote. */
+function envFilePath(
   value: string,
   at: string,
+  input: Pick<ResolveTargetPlanInput, "target" | "workspacePath">,
+  host: Pick<ResolveHost, "operatorHome">,
 ): string {
-  const path = resolve(root, value),
+  if (value === "~" || value.startsWith("~/"))
+    return join(host.operatorHome, value.slice(1));
+  if (value.startsWith("~"))
+    throw new ConfigError(
+      `${at} '${value}' names another user's home.`,
+      "invalid_path",
+      { field: at },
+      "Use ~/ for the operator home, or an absolute path.",
+    );
+  if (isAbsolute(value)) return value;
+  const root = input.workspacePath,
+    path = resolve(root, value),
     inside = relative(root, path);
   if (
-    target !== "local" &&
+    input.target !== "local" &&
     (inside === "" || inside.startsWith("..") || isAbsolute(inside))
   )
     throw new ConfigError(
       `${at} '${value}' resolves outside the Target's workspace (${root}).`,
       "path_outside_target",
       { field: at, path, root },
-      `Give ${at} a relative path inside the Target; rigd only creates, protects, and destroys files it owns.`,
+      `Give ${at} a relative path inside the Target, or address an operator file absolutely or under ~/.`,
     );
   return path;
 }

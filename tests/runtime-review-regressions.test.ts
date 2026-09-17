@@ -14,12 +14,15 @@ import {
   discoverProject,
   readProjectConfig,
   parseProjectConfig,
-  resolveTargetPlan,
+  resolveTargetPlan as resolvePlanWithHost,
   ConfigError,
 } from "../src/config";
 import { RigError } from "../src/domain/errors";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
+const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
+  resolvePlanWithHost(input, RESOLVE_HOST);
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))

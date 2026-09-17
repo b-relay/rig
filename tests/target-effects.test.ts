@@ -77,9 +77,12 @@ test("global and component hooks receive their resolved environment and write ra
   const root = await mkdtemp(join(tmpdir(), "rig-hook-env-"));
   roots.push(root);
   const record = target(root);
-  record.plan.envFile = join(root, "global.env");
-  await writeFile(record.plan.envFile, "VALUE=global\n");
-  await writeFile(join(root, "component.env"), "VALUE=component\n");
+  const globalFile = { path: join(root, "global.env"), required: true };
+  record.plan.envFiles = [globalFile];
+  await writeFile(globalFile.path, "VALUE=global\n", { mode: 0o600 });
+  await writeFile(join(root, "component.env"), "VALUE=component\n", {
+    mode: 0o600,
+  });
   const component = {
     name: "web",
     kind: "managed" as const,
@@ -87,7 +90,10 @@ test("global and component hooks receive their resolved environment and write ra
     port: 3000,
     readyTimeout: 1,
     env: { OVERRIDE: "component-policy" },
-    envFile: join(root, "component.env"),
+    envFiles: [
+      globalFile,
+      { path: join(root, "component.env"), required: true },
+    ],
     dependsOn: [],
   };
   const adapter = effects(root);
@@ -109,9 +115,10 @@ test("global and component hooks receive their resolved environment and write ra
     .map((line) => JSON.parse(line));
   expect(entries.map((entry) => entry.line)).toEqual([
     "host:global",
+    `Environment name VALUE comes from ${join(root, "component.env")}, overriding ${globalFile.path}.`,
     "host:component:component-policy",
   ]);
-  expect(entries[1].component).toBe("web");
+  expect(entries[2].component).toBe("web");
 });
 test("installed components build once per deployment and a failed replacement keeps the usable artifact", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-install-policy-"));
@@ -458,9 +465,12 @@ test("a health URL with an uppercase scheme is probed over HTTP rather than run 
   }
 });
 
-test("an installation receipt survives a change in the daemon's inherited environment but not in the Project's declared env", async () => {
+test("an installation receipt survives a change in the daemon's inherited environment or an env file's contents but not in the Project's declared env", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-install-receipt-env-"));
-  roots.push(root);
+  const operator = await mkdtemp(join(tmpdir(), "rig-install-operator-"));
+  roots.push(root, operator);
+  const secrets = join(operator, "all.env");
+  await writeFile(secrets, "TOKEN=first\n", { mode: 0o600 });
   // A deployed Target relies on the receipt alone; local rebuilds every time regardless.
   const record = {
     ...target(root),
@@ -476,11 +486,13 @@ test("an installation receipt survives a change in the daemon's inherited enviro
     build:
       "printf 'built\\n' >> builds; printf '#!/bin/sh\\necho ready\\n' > tool",
     env: { FLAVOR: "plain" },
+    envFiles: [{ path: secrets, required: false }],
     dependsOn: [],
   };
   expect(await effects(root).install(component, record)).toEqual({
     outcome: "installed",
   });
+  await writeFile(secrets, "TOKEN=rotated\n", { mode: 0o600 });
   const later = effects(root, undefined, {
     PATH: process.env.PATH!,
     TERM_SESSION_ID: "another-tab",
@@ -817,11 +829,11 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
   );
 });
 
-test("a missing envFile fails as ENV_FILE_MISSING naming the path, before any hook runs", async () => {
+test("a missing listed env file fails as ENV_FILE_MISSING naming the path, before any hook runs", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-env-missing-"));
   roots.push(root);
   const record = target(root);
-  record.plan.envFile = join(root, ".env");
+  record.plan.envFiles = [{ path: join(root, ".env"), required: true }];
   await expect(
     effects(root).hook("touch ran", record, undefined, "preStart"),
   ).rejects.toMatchObject({

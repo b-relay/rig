@@ -18,6 +18,7 @@ export const commandSchema = z
       "status",
       "doctor",
       "config",
+      "recipe-diff",
       "init",
       "up",
       "down",
@@ -60,6 +61,8 @@ export const commandSchema = z
       })
       .strict()
       .optional(),
+    /** The one Service a recipe comparison is narrowed to. */
+    serviceName: z.string().min(1).max(128).optional(),
     createGit: z.boolean().optional(),
     productionBranch: z.string().optional(),
     force: z.boolean().optional(),
@@ -81,6 +84,7 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "status",
   "doctor",
   "config",
+  "recipe-diff",
   "logs",
   "activity",
   "queue",

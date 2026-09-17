@@ -283,6 +283,20 @@ A named executable a Project makes available for invocation, rather than a
 Service kept running by Rig. A Project can contain Tools, Services, or both.
 _Avoid_: Service, background process
 
+### Recipe
+
+A versioned, bundled template that prints an ordinary Service block for the user
+to paste into Project config and then own. A comment above the Service records
+which recipe version it came from.
+_Avoid_: plugin, provider, managed database
+
+_Relationship_: A generated Service is config like any other. Planning and
+running a Target never read the recipe comment or the recipe catalog; only
+`rig recipe diff` and doctor's notices do.
+
+_Relationship_: Rig never regenerates or rewrites a generated Service. A newer
+recipe version is an informational notice, never a failing check.
+
 ### Target class
 
 The role of a Target: Working copy, Stable, or Preview. A Target's class is

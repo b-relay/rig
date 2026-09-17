@@ -1,3 +1,4 @@
+import type { Recipe } from "../recipes/catalog";
 import type { ProxyPublication } from "../domain/proxy-publication";
 import type { FailureCauses } from "../domain/errors";
 import type {
@@ -117,6 +118,8 @@ export interface RuntimeDependencies {
   root: string;
   /** Background failures the daemon has noted since it started; doctor reports each one. */
   notices?(): RuntimeNotice[];
+  /** The recipes that recipe comparisons are made against; the bundled catalog when absent. */
+  recipes?: readonly Recipe[];
   assertOwnershipReady(): Promise<void>;
   readAdminActivity(): Promise<OperationRecord[]>;
   inspectHost(): Promise<

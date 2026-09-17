@@ -10,6 +10,8 @@ import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_VERSION } from "../domain/version";
 import type { UserOutput } from "./types";
+import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
+import { addRecipeCommands } from "./recipe-commands";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
@@ -27,6 +29,7 @@ export function createRigCommand(
   cwd: string,
   output: UserOutput,
   execute: ExecuteCommand,
+  recipes: readonly Recipe[] = BUNDLED_RECIPES,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -80,6 +83,13 @@ export function createRigCommand(
   addDeployCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
   addLogsCommand(command, cwd, execute);
+  addRecipeCommands(command, {
+    cwd,
+    output,
+    recipes,
+    execute,
+    projectScope,
+  });
   addHelpCommand(command, "rig");
   command
     .command("rename")

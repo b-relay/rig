@@ -1,6 +1,8 @@
 import type { z } from "zod";
 import type { projectConfigSchema, hostConfigSchema } from "./schema.js";
 import type { PublicInput } from "./references.js";
+import type { RecipeMarker } from "./recipe-markers.js";
+export type { RecipeMarker } from "./recipe-markers.js";
 
 export type ProjectConfig = z.infer<typeof projectConfigSchema>;
 export type HostConfig = z.infer<typeof hostConfigSchema>;
@@ -8,6 +10,9 @@ export interface ConfigDocument<T> {
   path: string;
   revision: string;
   config: T;
+  /** Recipe provenance comments found in a Project document's source, from the same bytes as `config`. Reports compare them;
+   * planning and running never read them. Absent when the source carries none. */
+  recipeMarkers?: RecipeMarker[];
 }
 export interface Hooks {
   preStart?: string;

@@ -62,3 +62,17 @@ test("preview commands still accept a Branch alone or --deployment alone", async
   expect(byName.requests[0]).toMatchObject({ action: "down", target: "preview", deployment: "feature-b-1a2b3c4d" });
   expect(byName.requests[0]).not.toHaveProperty("branch");
 });
+
+test("recipe diff is one read request naming the Project scope and the optional Service; list and generate ask the daemon nothing", async () => {
+  const all = harness(() => ({ project: "demo", path: "/workspace/rig.yaml", findings: [] }));
+  expect(await runRigCli(["recipe", "diff"], all.deps)).toBe(0);
+  expect(all.requests).toEqual([{ action: "recipe-diff", repoPath: "/workspace", operationId: "op-1" }]);
+  const one = harness(() => ({ project: "demo", path: "/workspace/rig.yaml", findings: [] }));
+  expect(await runRigCli(["recipe", "diff", "db", "--project", "demo"], one.deps)).toBe(0);
+  expect(one.requests).toEqual([{ action: "recipe-diff", repoPath: "/workspace", project: "demo", serviceName: "db", operationId: "op-1" }]);
+  for (const args of [["recipe", "list"], ["recipe", "generate", "postgres"]]) {
+    const local = harness();
+    expect(await runRigCli(args, local.deps)).toBe(0);
+    expect(local.requests).toEqual([]);
+  }
+});

@@ -494,6 +494,10 @@ test("every command supports both help flags without side effects; removed globa
     ["rename"],
     ["repoint"],
     ["forget"],
+    ["recipe"],
+    ["recipe", "list"],
+    ["recipe", "generate"],
+    ["recipe", "diff"],
   ]) {
     for (const flag of ["--help", "-h"]) {
       text = "";

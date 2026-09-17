@@ -134,7 +134,7 @@ tools:
       value: "local-preserved",
       setting: "fixture-literal",
     });
-    await invoke("bundle-tool-dev");
+    await invoke("bundle-tool-local");
 
     expect(
       JSON.parse(success(await f.rig(["deploy", "live", "--no-up", "--json"]))),
@@ -260,7 +260,7 @@ tools:
       directory: preview.directory,
       value: "preview-preserved",
     });
-    await invoke("bundle-tool-dev");
+    await invoke("bundle-tool-local");
     await invoke("bundle-tool");
     await invoke("bundle-tool-battle");
   } finally {

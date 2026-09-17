@@ -1,4 +1,5 @@
 import type {
+  BuildUnit,
   Hooks,
   InstalledComponent,
   ManagedComponent,
@@ -9,7 +10,7 @@ import type {
   ProcessObservation,
   Supervisor,
 } from "../providers/contracts";
-import { RigError, failureCauses } from "../domain/errors";
+import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
 
 export interface TargetEffectCheckpoint {
   readonly targetId: string;
@@ -59,12 +60,27 @@ export interface TargetEffects {
     target: TargetRecord,
     signal: AbortSignal,
   ): Promise<HealthCheck>;
+  /** Runs one build command in the Target workspace within the unit's budget, in its Component's environment scope
+   * (the Project scope for the shared unit). Fails BUILD_FAILED or BUILD_TIMEOUT; a build past its budget has been killed. */
+  build(unit: BuildUnit, target: TargetRecord): Promise<void>;
+  /** Publishes a Tool's executable; never builds. */
   install(
     component: InstalledComponent,
     target: TargetRecord,
   ): Promise<{ outcome: "installed" | "unchanged" }>;
   route(target: TargetRecord): Promise<void>;
   removeRoute(target: TargetRecord): Promise<void>;
+}
+/** Where build outcomes are kept. `started` must be durable before it returns: it is the only evidence a crashed build leaves. */
+export interface BuildJournal {
+  started(unit: BuildUnit): Promise<void>;
+  finished(unit: BuildUnit, state: "succeeded" | "failed"): Promise<void>;
+}
+export interface PreparationRequest {
+  /** `all` runs every unit. `stopped` is a Working copy up: the units of Services that are not running and of every Tool,
+   * after the shared unit when any Service is to start or any Tool exists; nothing when every Service runs and there is no Tool. */
+  select: "all" | "stopped";
+  journal: BuildJournal;
 }
 export interface TargetLifecycle {
   pruneCheckpoints(live: ReadonlySet<string>): Promise<PrunedCheckpoint[]>;
@@ -78,6 +94,15 @@ export interface TargetLifecycle {
     previous: TargetRecord,
     candidate: TargetRecord,
   ): Promise<void>;
+  /** Installs the workspace's dependencies, then runs the selected build units in plan order, journaling each before and after.
+   * Starts no Service and publishes nothing. The first failing unit stops preparation with BUILD_FAILED or BUILD_TIMEOUT.
+   * BUILD_UNKNOWN means a command succeeded but its outcome could not be recorded; the journal still says `started`. */
+  prepare(
+    target: TargetRecord,
+    request: PreparationRequest,
+  ): Promise<{ built: string[] }>;
+  /** Starts the recorded plan and publishes its Tools; never builds. A deployed Target whose recorded preparation is not
+   * complete is refused with PREPARATION_INCOMPLETE, or BUILD_UNKNOWN when a unit's outcome is unknown. */
   up(
     target: TargetRecord,
     checkpoint?: TargetEffectCheckpoint,
@@ -197,8 +222,39 @@ export function createTargetLifecycle(
         throw error;
       }
     },
+    async prepare(target, { select, journal }) {
+      assertProviderProfile(target);
+      await effects.prepare(target);
+      const units = await selectUnits(target, select, effects);
+      for (const unit of units) {
+        await journal.started(unit);
+        try {
+          await effects.build(unit, target);
+        } catch (error) {
+          try {
+            await journal.finished(unit, "failed");
+          } catch (recordError) {
+            throw retainFailureCauses(error, error, recordError);
+          }
+          throw error;
+        }
+        try {
+          await journal.finished(unit, "succeeded");
+        } catch (error) {
+          throw new RigError(
+            "BUILD_UNKNOWN",
+            `The ${unitLabel(unit)} finished, but its outcome could not be recorded.`,
+            forceHint(target),
+            { unit: unit.id },
+            failureCauses(error),
+          );
+        }
+      }
+      return { built: units.map((unit) => unit.id) };
+    },
     async up(target, providedCheckpoint) {
       assertProviderProfile(target);
+      assertPrepared(target);
       if (providedCheckpoint && providedCheckpoint.targetId !== target.id)
         throw new RigError(
           "EFFECTS_SCOPE",
@@ -401,6 +457,87 @@ export function createTargetLifecycle(
     },
   };
   return lifecycle;
+}
+/** The units one preparation runs, in plan order. */
+async function selectUnits(
+  target: TargetRecord,
+  select: PreparationRequest["select"],
+  effects: Pick<TargetEffects, "supervisor">,
+): Promise<BuildUnit[]> {
+  const units = target.plan.builds ?? [];
+  if (select === "all") return units;
+  const observations = await observeManaged(target, effects.supervisor(target));
+  // The work an explicit Working copy up does: start each Service that is not running, and publish every Tool.
+  const work = new Set(
+    target.plan.components
+      .filter(
+        (component) =>
+          component.kind === "installed" ||
+          (component.kind === "managed" &&
+            observations.get(`${target.id}:${component.name}`)?.state !==
+              "running"),
+      )
+      .map((component) => component.name),
+  );
+  if (!work.size) return [];
+  return units.filter(
+    (unit) => unit.component === undefined || work.has(unit.component),
+  );
+}
+function unitLabel(unit: Pick<BuildUnit, "component">): string {
+  return unit.component === undefined
+    ? "shared build"
+    : `${unit.component} build`;
+}
+/** Only a forced deployment gives an incomplete or uncertain preparation a fresh scope. */
+function forceHint(target: Pick<TargetRecord, "kind" | "name">): string {
+  if (target.kind === "local")
+    return "Run rig restart for the Working copy to build it again.";
+  const selector =
+    target.kind === "preview"
+      ? `preview --deployment ${target.name}`
+      : target.name;
+  return `Run rig deploy ${selector} --force to build a fresh Deployment; rig never reruns a build whose outcome it does not know.`;
+}
+/** The outcomes recorded for the Target's current workspace; another workspace's outcomes prove nothing here. */
+function recordedUnits(
+  target: Pick<TargetRecord, "preparation" | "plan">,
+): NonNullable<TargetRecord["preparation"]>["units"] {
+  return target.preparation?.deployment === target.plan.workspacePath
+    ? target.preparation.units
+    : {};
+}
+/** Rejects BUILD_UNKNOWN when a unit of the recorded plan was started and never recorded as finished. */
+export function assertBuildsKnown(target: TargetRecord): void {
+  const recorded = recordedUnits(target);
+  const unit = (target.plan.builds ?? []).find(
+    (unit) => recorded[unit.id]?.state === "started",
+  );
+  if (unit)
+    throw new RigError(
+      "BUILD_UNKNOWN",
+      `Whether the ${unitLabel(unit)} of ${target.name} finished is unknown.`,
+      forceHint(target),
+      { unit: unit.id },
+    );
+}
+/** A deployed Target starts only from a preparation whose every unit is recorded as succeeded for this workspace. */
+function assertPrepared(target: TargetRecord): void {
+  if (target.kind === "local") return;
+  assertBuildsKnown(target);
+  const recorded = recordedUnits(target);
+  for (const unit of target.plan.builds ?? []) {
+    const state = recorded[unit.id]?.state;
+    if (state === "succeeded") continue;
+    throw new RigError(
+      "PREPARATION_INCOMPLETE",
+      state === "failed"
+        ? `The ${unitLabel(unit)} of ${target.name} failed, so this Deployment was never prepared.`
+        : `The ${unitLabel(unit)} of ${target.name} never ran, so this Deployment was never prepared.`,
+      forceHint(target),
+      { unit: unit.id },
+    );
+  }
 }
 /** The supervised process behind one component; readiness only counts while it is alive. */
 interface SupervisedProcess {

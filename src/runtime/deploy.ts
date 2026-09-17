@@ -10,6 +10,7 @@ import { within } from "../domain/paths";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
 import { stopForTransition } from "./lifecycle";
+import { prepareTarget } from "./preparation";
 /** Unresolved recovery must be rejected before accepting any deployment outcome. */
 export function assertDeploymentRecovered(
   previous: Pick<TargetRecord, "recovery"> | undefined,
@@ -21,7 +22,9 @@ export function assertDeploymentRecovered(
       "Run down for this Target to finish stopping both plans before deploying again.",
     );
 }
-/** The saved recovery record owns both plans until candidate activation or verified rollback finishes. */
+/** The saved recovery record owns both plans until candidate activation or verified rollback finishes.
+ * The candidate is prepared (dependencies, then every build unit) while the previous plan keeps serving, so a failed
+ * build never stops it; `prepare` ends there, leaving every Service stopped. */
 export async function activateDeployment(
   candidate: TargetRecord,
   previous: TargetRecord | undefined,
@@ -33,6 +36,7 @@ export async function activateDeployment(
   candidate.recovery = {
     ...(intent.operationId ? { operationId: intent.operationId } : {}),
     plan: previous?.plan ?? candidate.plan,
+    ...(previous?.preparation ? { preparation: previous.preparation } : {}),
     branch: previous?.branch ?? candidate.branch,
     commit: previous?.commit ?? candidate.commit,
     desired: previous?.desired ?? "stopped",
@@ -40,7 +44,8 @@ export async function activateDeployment(
     stage: "pending",
   };
   const checkpoint = await deps.lifecycle.checkpoint(candidate, previous);
-  let commitDecided = false;
+  let commitDecided = false,
+    previousTouched = false;
   try {
     await persistTarget(candidate, deps.store);
   } catch (error) {
@@ -52,7 +57,9 @@ export async function activateDeployment(
     throw error;
   }
   try {
+    await prepareTarget(candidate, "all", deps);
     if (previous) {
+      previousTouched = true;
       await stopForTransition(previous, deps.lifecycle);
       await deps.lifecycle.retireSuperseded(previous, candidate);
     }
@@ -83,7 +90,8 @@ export async function activateDeployment(
       );
     try {
       await stopForTransition(candidate, deps.lifecycle);
-      if (previous) await stopForTransition(previous, deps.lifecycle);
+      if (previous && previousTouched)
+        await stopForTransition(previous, deps.lifecycle);
       await checkpoint.rollback();
     } catch (recoveryError) {
       candidate.recovery ??= {
@@ -156,12 +164,18 @@ export async function stopForRecovery(
   const previous: TargetRecord = {
     ...target,
     plan: target.recovery.plan,
+    // A first deployment recovers to its own plan, and keeps what is known about its builds.
+    preparation:
+      target.recovery.plan.workspacePath === target.plan.workspacePath
+        ? target.preparation
+        : target.recovery.preparation,
     branch: target.recovery.branch,
     commit: target.recovery.commit,
     desired: "stopped",
     deploymentIncomplete: target.recovery.deploymentIncomplete,
   };
   delete previous.recovery;
+  if (!previous.preparation) delete previous.preparation;
   await stopForTransition(previous, deps.lifecycle);
   await deps.lifecycle.restoreEffects(target);
   await persistTarget(previous, deps.store);

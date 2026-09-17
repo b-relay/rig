@@ -46,15 +46,24 @@ export interface ManagedComponent extends ComponentContext {
 export interface InstalledComponent extends ComponentContext {
   kind: "installed";
   entrypoint: string;
-  build?: string;
-  /** Seconds; absent means 600. */
-  buildTimeout?: number;
   installName?: string;
 }
 export interface PersistentComponent extends ComponentContext {
   kind: "persistent";
   uses: "sqlite";
   path: string;
+}
+/** One build command of a Target plan. Units never merge, even when two declare the same shell text. */
+export interface BuildUnit {
+  /** `shared`, `service:<name>` or `tool:<name>`: the identity the unit's outcome is recorded under. */
+  id: string;
+  /** The Service or Tool whose environment scope the command runs in; absent for the shared Project build. */
+  component?: string;
+  command: string;
+  /** Seconds before the build is killed and recorded as failed. */
+  timeout: number;
+  /** Public env leaves the shared command was built from; a Component's unit is guarded by its Component's commandInputs. */
+  commandInputs?: PublicInput[];
 }
 export type PlanComponent =
   ManagedComponent | InstalledComponent | PersistentComponent;
@@ -77,6 +86,8 @@ export interface TargetPlan {
   providerProfile: string;
   env?: Record<string, string>;
   components: PlanComponent[];
+  /** Build units in run order: shared, Services in dependency order, then Tools by name. Absent on plans recorded before builds were units. */
+  builds?: BuildUnit[];
   preparedComponents: PreparedComponent[];
   domain?: string;
   proxy?: { upstream: string };

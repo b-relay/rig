@@ -227,7 +227,9 @@ export async function planTarget(
     createdAt: existing?.createdAt ?? deps.now(),
     updatedAt: deps.now(),
     logRoot: existing?.logRoot ?? join(base, "logs"),
-    ...(kind !== "local" ? { sourceRoot: join(base, "revisions") } : {}),
+    ...(kind !== "local"
+      ? { sourceRoot: join(base, "revisions") }
+      : { configRevision: document.revision }),
   };
 }
 export async function persistTarget(

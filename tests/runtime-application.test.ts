@@ -133,6 +133,9 @@ function fixture() {
       async retire(_target, publishRemoval) {
         await publishRemoval?.();
       },
+      async prepare() {
+        return { built: [] };
+      },
       async up(target) {
         plans.push(target);
         return { outcome: "started" };
@@ -240,6 +243,35 @@ test("deployed source policy survives down/up and same commit is no-op", async (
     repoPath: "/tmp/developer",
     productionBranch: "main",
   });
+});
+
+test("a plain deploy of the same Commit is refused while a build's outcome is unknown, and force deploys a fresh scope", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deploy = { action: "deploy", project: "demo", target: "live" } as const;
+  await runtime.command({ ...deploy, branch: "main" });
+  // What an interrupted first deployment leaves once down has recovered it: incomplete, with one unit never finished.
+  const recorded = state.targets[0]!;
+  const workspace = recorded.plan.workspacePath;
+  recorded.deploymentIncomplete = true;
+  recorded.plan.builds = [{ id: "shared", command: "make", timeout: 600 }];
+  recorded.preparation = {
+    deployment: workspace,
+    units: { shared: { state: "started", policy: "p", startedAt: "then" } },
+  };
+  await expect(
+    runtime.command({ ...deploy, branch: "main" }),
+  ).rejects.toMatchObject({
+    code: "BUILD_UNKNOWN",
+    details: { unit: "shared" },
+    hint: expect.stringContaining("rig deploy live --force"),
+  });
+  expect(state.targets[0]!.plan.workspacePath).toBe(workspace);
+  expect(
+    await runtime.command({ ...deploy, branch: "main", force: true }),
+  ).toMatchObject({ outcome: "deployed" });
+  expect(state.targets[0]!.plan.workspacePath).not.toBe(workspace);
+  expect(state.targets[0]!.preparation?.deployment).not.toBe(workspace);
 });
 
 test("a Preview deploy stays deployed when retiring the oldest Preview fails, and the next Preview deploy retires enough to meet the cap", async () => {
@@ -3048,6 +3080,7 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     async health() {
       return { ready: true };
     },
+    async build() {},
     async install() {
       return { outcome: "unchanged" };
     },

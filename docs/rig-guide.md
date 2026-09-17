@@ -430,12 +430,15 @@ a warning naming the Preview and the `rig down preview <branch> --destroy`
 command that finishes it; the Project is over its cap until then. Under
 `replacePolicy: reject`, a deploy at the cap fails with `PREVIEW_LIMIT`.
 
-A deploy whose activation fails (a build or readiness failure) leaves the
-Target recorded at the new Commit but incomplete: its effects were rolled back
-and nothing is running. `rig status` and `rig doctor` say so. `rig up` finishes
-it, installing, routing, and starting the recorded plan under its own
-checkpoint, after which a deploy of the same Commit is `unchanged` again;
-redeploying the same Commit also works.
+A deploy builds the new Commit before it touches the Deployment that is
+running, so a failed build leaves the previous Deployment serving. A first
+deploy whose build or activation fails leaves the Target recorded at the new
+Commit but incomplete: its effects were rolled back and nothing is running.
+`rig status` and `rig doctor` say so. After a readiness failure `rig up`
+finishes it, installing, routing, and starting the recorded plan under its own
+checkpoint, after which a deploy of the same Commit is `unchanged` again. After
+a build failure `rig up` is refused as `PREPARATION_INCOMPLETE`; redeploying
+the same Commit builds it again in a fresh Deployment.
 
 Every port recorded by any Target in any Project is reserved while that record
 exists, whether the Target is running or stopped. A Target whose deployment
@@ -991,8 +994,6 @@ refused as `unsupported_setting`, naming the path (for example
 `services.api.workdir`), rather than silently dropping the policy. Remove the
 setting for now.
 
-- a shared `build` at the top level or in a role patch, and a Service `build`
-  (a Tool `build` is supported)
 - a Service `workdir`
 - a Service `restart` other than `always`
 - a Service `supervisor` that differs from the Project's
@@ -1066,30 +1067,58 @@ a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
 `ENV_FILE` naming the file and line. Its contents are plain data and never
 take part in `${...}` references.
 
-A Tool's `build` runs within `build_timeout` (the Tool's own, else the
-top-level one, else ten minutes), and dependency installation on the Stable
-Target and Previews within a fixed ten minutes. A command past its budget is
-killed together with anything it started, what it printed until then is kept
-in the Target logs, and the command fails as `BUILD_TIMEOUT` or
-`DEPENDENCIES_TIMEOUT`, naming the Tool and the budget that ran out. A build
-that times out leaves the previous installed executable in place.
+Each declared `build` is one build unit: the top-level `build` is the shared
+unit, and every Service and Tool `build` is its own. Units run one at a time,
+the shared unit first, then Service units in dependency order, then Tool units
+by name. Two units with the same command text are still two units. A unit runs
+within `build_timeout` (its Service's or Tool's own, else the top-level one,
+else ten minutes), and dependency installation on the Stable Target and
+Previews within a fixed ten minutes. A command past its budget is killed
+together with anything it started, what it printed until then is kept in the
+Target logs, and the command fails as `BUILD_TIMEOUT` or
+`DEPENDENCIES_TIMEOUT`, naming the unit and the budget that ran out. A failed
+or timed-out build starts nothing and leaves the previous installed executable
+in place.
 
-`rig up`, `rig restart`, and every deploy work in this order:
+On the Stable Target and Previews, builds belong to the Deployment. Every
+deploy, including `--no-up`, builds all units of the new Commit's checkout
+before the previous Deployment is stopped, and records each unit as started,
+then succeeded or failed. `rig up` and `rig restart` start that prepared
+Deployment and never build, whatever happened to a build's output since; if a
+Service no longer starts because its build output is gone, deploy with
+`--force`. A deploy of the same Commit is `unchanged`; `--force` checks the
+Commit out again and builds a fresh Deployment. Rig cannot know what a shell
+command did when `rigd` stopped before its outcome was recorded, so it never
+runs that unit again under the same Deployment: `rig up`, `rig restart`, and a
+plain deploy of the same Commit are refused as `BUILD_UNKNOWN`, and
+`rig deploy <target> --force` (or a new Commit) is the way through. A
+Deployment with a failed or missing unit is refused as
+`PREPARATION_INCOMPLETE` the same way. Builds see `env_file` values when they
+run, but a changed value never reruns a completed build; it reaches the next
+process start.
 
-1. Tools are built and installed. On the Stable Target and Previews the
-   checkout is immutable, so a Tool is rebuilt only when its `bin`, `build`,
-   destination, or declared environment (`env_file`, `env`) changes, or when
-   its source or installed executable no longer matches the receipt; a daemon
-   restarted from another shell does not rebuild anything. On the Working
-   copy, Rig cannot see which files a build reads, so `build` runs on every
-   `rig up` and `rig restart`; the executable is republished only when the
-   build output actually changed, and an identical output is reported
-   `unchanged`. Installed executables share one `bin/` directory across every
-   Project and Target on the Host: `<tool>` for the Stable Target,
-   `<tool>-dev` for the Working copy, and `<tool>-<preview name>` for a
-   Preview. Two Projects that both install `cli` on their Stable Target
-   therefore collide, and the second is refused with `ARTIFACT_CONFLICT`,
-   which names the owning Project, Target, and Tool; rename one of the Tools.
+On the Working copy, Rig cannot see which files a build reads, so explicit
+commands build current source: `rig up` runs the unit of every Service that is
+not running and of every Tool, with the shared unit first when any of them
+runs; with every Service running and no Tool it builds nothing. `rig restart`
+runs every unit. A Working copy that is already planned keeps its plan across
+`rig up`; when `rig.yaml` changed since, the result carries a warning that
+running Services still use the earlier plan, and `rig restart` applies the
+current file.
+
+`rig up`, `rig restart`, and an activating deploy then work in this order:
+
+1. Tools are installed. The executable is republished only when the built
+   file, its destination, or the Tool's declared policy changed, and is
+   otherwise reported `unchanged`; a daemon restarted from another shell
+   republishes nothing. `deploy --no-up` publishes no Tool; the later `rig up`
+   does, under its own checkpoint. Installed executables share one `bin/`
+   directory across every Project and Target on the Host: `<tool>` for the
+   Stable Target, and `<tool>-<target name>` for the Working copy (by default
+   `<tool>-local`) and for a Preview. Two Projects that both install `cli` on
+   their Stable Target therefore collide, and the second is refused with
+   `ARTIFACT_CONFLICT`, which names the owning Project, Target, and Tool;
+   rename one of the Tools.
    An executable Rig did not install is never overwritten
    (`ARTIFACT_UNOWNED`), and one that was edited by hand after installation
    is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks

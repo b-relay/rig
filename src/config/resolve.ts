@@ -13,6 +13,7 @@ import {
 } from "./schema.js";
 import { referenceResolver, type PublicInput } from "./references.js";
 import type {
+  BuildUnit,
   EnvFileRef,
   ProjectConfig,
   PlanComponent,
@@ -84,8 +85,6 @@ export function resolveTargetPlan(
     (role === "preview"
       ? slug(input.branch ?? "preview")
       : targetNames(config)[role]);
-  if (settings.build !== undefined)
-    throw unsupported("A shared build", "build");
   const domain =
     role === "stable" || config.targets?.[role]?.domain
       ? settings.domain
@@ -141,11 +140,12 @@ export function resolveTargetPlan(
   const projectEnv = publicEnv(settings.env ?? {}, "env");
   const projectFiles = envFiles(settings.env_file, "env_file", []);
   const projectSupervisor = settings.supervisor ?? "rigd";
+  const buildTimeout = (override: string | undefined) =>
+    durationSeconds(override ?? settings.build_timeout ?? "10m");
+  const builds: BuildUnit[] = [];
   const components: PlanComponent[] = [
     ...services.map(([name, service]): PlanComponent => {
       const at = `services.${name}`;
-      if (service.build !== undefined)
-        throw unsupported("A Service build", `${at}.build`);
       if (service.workdir !== undefined)
         throw unsupported("A Service workdir", `${at}.workdir`);
       if ((service.restart ?? "always") !== "always")
@@ -177,9 +177,21 @@ export function resolveTargetPlan(
           "invalid_binding",
           { service: name, field: "ready" },
         );
+      const build =
+        service.build === undefined
+          ? undefined
+          : references.shell(service.build, `${at}.build`);
+      if (build)
+        builds.push({
+          id: `service:${name}`,
+          component: name,
+          command: build.value,
+          timeout: buildTimeout(service.build_timeout),
+        });
       const inputs = commandInputs(
         run.inputs,
         ready && !isHealthUrl(ready.value) ? ready.inputs : [],
+        build?.inputs ?? [],
       );
       return {
         name,
@@ -201,10 +213,16 @@ export function resolveTargetPlan(
       .sort(([a], [b]) => (a < b ? -1 : 1))
       .map(([name, tool]): PlanComponent => {
         const at = `tools.${name}`;
-        const timeout = tool.build_timeout ?? settings.build_timeout;
         const build = tool.build
           ? references.shell(tool.build, `${at}.build`)
           : undefined;
+        if (build)
+          builds.push({
+            id: `tool:${name}`,
+            component: name,
+            command: build.value,
+            timeout: buildTimeout(tool.build_timeout),
+          });
         return {
           name,
           kind: "installed",
@@ -218,10 +236,31 @@ export function resolveTargetPlan(
             input.workspacePath,
             references.text(tool.bin, `${at}.bin`).value,
           ),
-          ...(build ? { build: build.value } : {}),
-          ...(timeout ? { buildTimeout: durationSeconds(timeout) } : {}),
         };
       }),
+  ];
+  const ordered = dependencyOrder(components);
+  const shared =
+    settings.build === undefined
+      ? undefined
+      : references.shell(settings.build, "build");
+  // Shared work first, then each Component's unit in plan order: Services by dependency, then Tools by name.
+  const units: BuildUnit[] = [
+    ...(shared
+      ? [
+          {
+            id: "shared",
+            command: shared.value,
+            timeout: buildTimeout(undefined),
+            ...(shared.inputs.length
+              ? { commandInputs: commandInputs(shared.inputs) }
+              : {}),
+          },
+        ]
+      : []),
+    ...ordered.flatMap((component) =>
+      builds.filter((unit) => unit.component === component.name),
+    ),
   ];
   return {
     project: config.name,
@@ -237,7 +276,8 @@ export function resolveTargetPlan(
     providers: { processSupervisor: projectSupervisor },
     env: projectEnv,
     envFiles: projectFiles,
-    components: dependencyOrder(components),
+    components: ordered,
+    ...(units.length ? { builds: units } : {}),
     preparedComponents: [],
     ...(resolvedDomain !== undefined && proxied
       ? { domain: resolvedDomain, proxy: { upstream: proxied } }

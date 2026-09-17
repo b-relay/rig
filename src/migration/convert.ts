@@ -274,7 +274,6 @@ function convertPlan(
           ...common,
           kind: "installed",
           entrypoint: resolve(record.workspacePath, component.entrypoint),
-          ...(component.build ? { build: component.build } : {}),
           ...(component.installName
             ? { installName: component.installName }
             : {}),

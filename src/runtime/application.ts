@@ -41,6 +41,8 @@ import {
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
+import { assertBuildsKnown } from "./lifecycle";
+import { prepareTarget } from "./preparation";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
 import {
@@ -487,6 +489,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             warnings: preflight.warnings,
             ...previous,
           });
+        // The same source again would otherwise look like an ordinary retry of an incomplete deployment.
+        if (
+          target &&
+          target.commit === commit &&
+          target.branch === branch &&
+          !command.force
+        )
+          assertBuildsKnown(target);
         const replacements =
           kind === "preview" && !target
             ? previewsToReplace(
@@ -622,6 +632,22 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               deps,
             );
         }
+        // Only the Working copy builds here, from current source; a deployed Target starts from its deployment's preparation.
+        if (target.kind === "local")
+          await prepareTarget(
+            target,
+            command.action === "restart" ? "all" : "stopped",
+            deps,
+          );
+        const drift =
+          target.kind === "local" &&
+          target.configRevision !== undefined &&
+          configured.document !== undefined &&
+          configured.document.revision !== target.configRevision;
+        if (drift)
+          warnings.push(
+            `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${target.name} to apply the current rig.yaml.`,
+          );
         outcome = (await deps.lifecycle.up(target)).outcome;
         // up installs, routes, and starts the recorded plan under its own
         // committed checkpoint, which is everything an incomplete deployment lacked.
@@ -916,6 +942,8 @@ async function replanWorkingCopy(
     { command, kind: "local", project, document, existing: target },
     deps,
   );
+  // The plan being replaced is stopped; an executable only it names (a removed Tool, or an alias under the old Target name) goes with it.
+  await deps.lifecycle.retireSuperseded(target, replanned);
   await persistTarget(replanned, deps.store);
   return replanned;
 }

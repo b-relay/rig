@@ -97,6 +97,7 @@ test("readiness expires even when a health provider ignores cancellation, then r
       healthSignal = signal;
       return new Promise<never>(() => {});
     },
+    async build() {},
     async install() {
       return { outcome: "unchanged" };
     },
@@ -156,6 +157,7 @@ test("up preserves running components and rollback stops only newly started comp
     async health() {
       return { ready: true };
     },
+    async build() {},
     async install() {
       return { outcome: "unchanged" };
     },
@@ -200,6 +202,7 @@ test("down uses recorded plan and reports no-op only when every process was stop
     async health() {
       return { ready: true };
     },
+    async build() {},
     async install() {
       return { outcome: "unchanged" };
     },
@@ -247,6 +250,7 @@ test("down attempts every process even when a hook or another process stop fails
     async health() {
       return { ready: true };
     },
+    async build() {},
     async install() {
       return { outcome: "unchanged" };
     },
@@ -381,7 +385,7 @@ test("port contention after selection fails startup and preserves an already run
     supervisor: () => supervisor, async prepare() {}, async environment(_target, component) { return component.env; },
     async hook() {}, async health(component) {
       try { return (await fetch(component.health!)).ok ? { ready: true } : { ready: false, reason: "not ok" }; } catch { return { ready: false, reason: "unreachable" }; }
-    }, async install() { return { outcome: "unchanged" }; },
+    }, async build() {}, async install() { return { outcome: "unchanged" }; },
     async route() {}, async removeRoute() {},
   };
   const lifecycle = createTargetLifecycle(effects);
@@ -456,6 +460,7 @@ test("the Project preStart hook runs before installs and Component hooks, and on
     async health() {
       return { ready: true };
     },
+    async build() {},
     async install(component) {
       events.push(`install:${component.name}`);
       return { outcome: "installed" };

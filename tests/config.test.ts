@@ -2110,3 +2110,58 @@ test("env_file paths resolve against the operator home or the workspace, and the
       expect.objectContaining({ code: "relative_root", context: { field } }),
     );
 });
+
+test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a backquoted reference is refused", () => {
+  const issues = (extra: Record<string, unknown>) => {
+    try {
+      parseProjectConfig({
+        name: "app",
+        services: {
+          db: { ...web().web, env: { DATA: "${rig.data}", NAME: "db" } },
+        },
+        ...extra,
+      });
+    } catch (error) {
+      return (error as { hint?: string }).hint;
+    }
+    return "accepted";
+  };
+  expect(
+    issues({
+      tools: { ctl: { bin: "ctl", build: "make ${services.db.env.NAME}" } },
+    }),
+  ).toContain(
+    "Fix tools.ctl.build: tools.ctl.build reaches '${services.db.env.NAME}'",
+  );
+  expect(
+    issues({
+      env: { VIA: "${services.db.env.DATA}" },
+      tools: { ctl: { bin: "ctl", build: "make ${env.VIA}" } },
+    }),
+  ).toContain(
+    "tools.ctl.build reaches '${services.db.env.DATA}' through env.VIA",
+  );
+  expect(issues({ build: "make ${services.db.env.NAME}" })).toContain(
+    "Fix build: build reaches",
+  );
+  // A Service may name another Service's public value.
+  expect(
+    issues({
+      tools: { ctl: { bin: "ctl" } },
+      env: { OK: "${services.db.env.NAME}" },
+    }),
+  ).toBe("accepted");
+  const config = parseProjectConfig({
+    name: "app",
+    services: { web: { ...web().web, run: "echo `echo ${rig.target}`" } },
+  });
+  expect(() =>
+    resolveTargetPlan({
+      config,
+      target: "local",
+      workspacePath: "/work",
+      dataRoot: "/data",
+      assignedPorts: { web: 3000 },
+    }),
+  ).toThrow(expect.objectContaining({ code: "invalid_context" }));
+});

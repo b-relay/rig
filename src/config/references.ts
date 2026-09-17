@@ -34,6 +34,7 @@ export interface ReferenceResolver {
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
 const HINT =
   "A reference names an exact config path such as ${services.web.ports.http} or ${env.NAME}, or a Rig value such as ${rig.target}. Write $${VAR} for a literal shell ${VAR}; $VAR is left to the shell.";
+const PROJECT_BUILD = /^(?:build|tools\.[^.]+\.build)$/;
 const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]+$/;
 /** A value as literal shell data at a position that is bare, inside double quotes, or inside single quotes. */
 function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
@@ -57,6 +58,19 @@ export function referenceResolver(
     at: string,
     stack: readonly string[],
   ): ResolvedText => {
+    // stack[0] is the field being resolved for an invocation; a Project or Tool build has no Service scope, however the value is reached.
+    const consumer = stack[0]!;
+    if (
+      PROJECT_BUILD.test(consumer) &&
+      ((key === "rig.data" && at !== consumer) ||
+        /^services\.[^.]+\.env\./.test(key))
+    )
+      throw fail(
+        "invalid_context",
+        `${consumer} reaches '\${${key}}'${at === consumer ? "" : ` through ${at}`}: a Project or Tool build runs with Project inputs and cannot use a Service's env or data.`,
+        key,
+        at,
+      );
     const segments = key.split(".");
     const plain = (value: string | number) => ({
       value: String(value),
@@ -169,22 +183,41 @@ export function referenceResolver(
   return {
     text: (value, at) => substitute(value, at, [at], (result) => result),
     shell: (value, at) =>
-      substitute(value, at, [at], (result, offset) =>
-        shellLiteral(result, openShellQuote(value.slice(0, offset))),
-      ),
+      substitute(value, at, [at], (result, offset) => {
+        const quote = openShellQuote(value.slice(0, offset));
+        if (quote === "`")
+          throw new ConfigError(
+            `A reference in ${at} sits inside a backquoted command, where Rig cannot keep its value literal.`,
+            "invalid_context",
+            { path: at },
+            "Write the command substitution as $(...) instead of backquotes.",
+          );
+        return shellLiteral(result, quote);
+      }),
   };
 }
-/** The quote still open at the end of a prefix of shell text, if any. */
-function openShellQuote(prefix: string): "'" | '"' | undefined {
-  let quote: "'" | '"' | undefined;
+/** The quoting in force at the end of a prefix of shell text: the open quote of the innermost command, where `$(...)` and `(...)` each start
+ * a command of their own with no quote open. "`" means the position is inside a backquoted command, whose escaping rules differ. */
+function openShellQuote(prefix: string): "'" | '"' | "`" | undefined {
+  // One entry per nested command, innermost last; each holds that command's open quote.
+  const commands: ("'" | '"' | undefined)[] = [undefined];
+  let backquoted = false;
   for (let i = 0; i < prefix.length; i++) {
     const char = prefix[i];
+    const quote = commands.at(-1);
     if (quote === "'") {
-      if (char === "'") quote = undefined;
+      if (char === "'") commands[commands.length - 1] = undefined;
     } else if (char === "\\") i++;
-    else if (quote === '"') {
-      if (char === '"') quote = undefined;
-    } else if (char === "'" || char === '"') quote = char;
+    else if (char === "`") backquoted = !backquoted;
+    else if (char === "$" && prefix[i + 1] === "(") {
+      commands.push(undefined);
+      i++;
+    } else if (quote === '"') {
+      if (char === '"') commands[commands.length - 1] = undefined;
+    } else if (char === "'" || char === '"')
+      commands[commands.length - 1] = char;
+    else if (char === "(") commands.push(undefined);
+    else if (char === ")" && commands.length > 1) commands.pop();
   }
-  return quote;
+  return backquoted ? "`" : commands.at(-1);
 }

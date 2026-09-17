@@ -115,12 +115,18 @@ Round 1 found five items.
   replace the stored environment with recomposition at restart. The public
   plan, state, receipts, errors and Target logs written here carry no file
   value.
-- Declined: keeping the consumer's scope while resolving a referenced leaf. A
-  leaf such as `services.db.env.DATA: ${rig.data}` has one public value, the
-  db Service's directory, whoever names it; resolving it in the consumer's
-  scope would give `api` its own directory under db's name. A Tool that names
-  `${services.db.env.DATA}` does so explicitly; `${rig.data}` written in a
-  Project or Tool field is still `invalid_context`.
+
+Round 2 accepted the #241 handoff and left two items, both fixed.
+
+- A reference inside `$(...)` or `(...)` is quoted for that inner command,
+  not for the quote around it; a reference inside backquotes is refused as
+  `invalid_context` with a hint to use `$(...)`. Proven through child argv.
+- Spec Q20 ("Service-specific environment/data references cannot be used in a
+  Project or Tool build"): the shared `build` and a Tool `build` refuse a
+  Service `env` leaf or `rig.data`, reached directly or through another
+  value, as `invalid_context` naming the build and the path it came through.
+  A leaf still resolves in its declaring Service's scope for Service
+  consumers.
 
 ## Remaining dependencies
 

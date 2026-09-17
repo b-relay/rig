@@ -1170,7 +1170,10 @@ names the field that holds the reference, such as `services.web.run`:
 - `reference_into_targets`: the path reaches into `targets`. A reference reads
   the selected Target's settings, not another role's patch.
 - `reference_cycle`: values reference each other in a loop.
-- `invalid_context`: `${rig.data}` outside a Service.
+- `invalid_context`: `${rig.data}` outside a Service, or a shared or Tool
+  `build` that reaches a Service's `env` or data, directly or through another
+  value. Those builds run with Project inputs only. A reference inside a
+  backquoted command is refused the same way; write `$(...)` instead.
 
 Because the base config is checked by itself, a value that only a role patch
 defines cannot be referenced from the base; give it a base value and let the
@@ -1183,7 +1186,8 @@ substitutes every value as literal data, never as shell code. A bare
 reference is single-quoted when its value is empty or contains a space or
 other shell-special character, so a repository or `RIG_ROOT` under a path
 like `~/Projects/My App` still resolves to one argument. Inside the author's
-own double or single quotes the value is escaped for that quote, so a `$`, a
+own double or single quotes the value is escaped for that quote (a `$(...)`
+inside them starts a command of its own and is quoted as such), so a `$`, a
 backquote, or a quote character in the value stays part of the argument. A
 `ready` value that resolves to an HTTP URL is handed to the HTTP probe
 unquoted. Values substituted into `env`, `domain`, `env_file`, and `bin` are

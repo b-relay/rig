@@ -385,7 +385,7 @@ test("a substituted value reaches the child as one literal argument whether the 
     env: values,
     services: {
       api: {
-        run: `printf '<%s>\\n' "\${env.CODE}" '\${env.APOSTROPHE}' \${env.EMPTY} \${env.SPACED} \${env.APOSTROPHE} "\${env.APOSTROPHE}" $\${HOME}`,
+        run: `printf '<%s>\\n' "\${env.CODE}" '\${env.APOSTROPHE}' \${env.EMPTY} \${env.SPACED} \${env.APOSTROPHE} "\${env.APOSTROPHE}" $\${HOME} "$(printf '%s|' \${env.SPACED} \${env.CODE})" "$( (printf '%s' "\${env.CODE}") )"`,
         ports: { http: "auto" },
       },
     },
@@ -404,6 +404,8 @@ test("a substituted value reaches the child as one literal argument whether the 
     "<it's fine>",
     "<it's fine>",
     "</shell/home>",
+    `<a b|${values.CODE}|>`,
+    `<${values.CODE}>`,
   ]);
 });
 

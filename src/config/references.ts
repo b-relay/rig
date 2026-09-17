@@ -208,7 +208,15 @@ function openShellQuote(prefix: string): "'" | '"' | "`" | undefined {
     if (quote === "'") {
       if (char === "'") commands[commands.length - 1] = undefined;
     } else if (char === "\\") i++;
-    else if (char === "`") backquoted = !backquoted;
+    else if (
+      char === "#" &&
+      quote === undefined &&
+      (i === 0 || /[\s;&|()]/.test(prefix[i - 1]!))
+    ) {
+      // A comment runs to the end of its line; a quote character in it opens nothing.
+      const end = prefix.indexOf("\n", i);
+      i = end === -1 ? prefix.length : end;
+    } else if (char === "`") backquoted = !backquoted;
     else if (char === "$" && prefix[i + 1] === "(") {
       commands.push(undefined);
       i++;

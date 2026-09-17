@@ -128,6 +128,9 @@ Round 2 accepted the #241 handoff and left two items, both fixed.
   A leaf still resolves in its declaring Service's scope for Service
   consumers.
 
+Round 3 left one item, fixed: the quote scanner skips shell comments, so an
+apostrophe in a comment no longer hides a bare reference.
+
 ## Remaining dependencies
 
 - #240: shared `build`, Service `build` and `workdir` are still

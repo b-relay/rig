@@ -396,6 +396,23 @@ test("a substituted value reaches the child as one literal argument whether the 
     env: { PATH: process.env.PATH!, HOME: "/shell/home" },
     timeoutMs: 5000,
   });
+  const commented = await selected("", {
+    name: "app",
+    env: values,
+    services: {
+      api: {
+        run: "# Print the worker's value\nprintf '<%s>' ${env.CODE} # it's done\nprintf '<%s>' a#${env.SPACED}",
+        ports: { http: "auto" },
+      },
+    },
+  });
+  const afterComment = await runCommand({
+    command: ["/bin/sh", "-c", commented.api.command],
+    cwd: commented.workspace,
+    env: { PATH: process.env.PATH! },
+    timeoutMs: 5000,
+  });
+  expect(afterComment.stdout).toBe(`<${values.CODE}><a#a b>`);
   expect(result.stdout.split("\n").slice(0, -1)).toEqual([
     `<${values.CODE}>`,
     "<it's fine>",

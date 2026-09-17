@@ -10,8 +10,11 @@ import { inspectHost } from "../src/adapters/host-inspection";
 import { projectStatus } from "../src/runtime/project-status";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { renderStatus } from "../src/cli/output";
-import { parseProjectConfig, resolveTargetPlan } from "../src/config";
+import { parseProjectConfig, resolveTargetPlan as resolvePlanWithHost } from "../src/config";
 import type { TargetRecord } from "../src/domain/runtime";
+const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
+  resolvePlanWithHost(input, RESOLVE_HOST);
 
 const proxyFile = "/rig/proxy/Caddyfile";
 const block = "# rig begin abc\nexample.test {\n  reverse_proxy 127.0.0.1:4000\n}\n# rig end abc\n";

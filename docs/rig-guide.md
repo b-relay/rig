@@ -300,11 +300,11 @@ repoint or rig forget <name>)`, and `--json` carries `missing: true`.
 
 Rig commands act on Targets:
 
-| Target form | Meaning |
-|---|---|
-| `local` | Working copy Target backed by the current checkout. `local` is its default name; `targets.working.name` renames it. |
-| `live` | Stable Target, deployed from the Production branch. `live` is its default name; `targets.stable.name` renames it. |
-| `preview <branch>` | Preview Target for a Branch. Branch names may include slashes. |
+| Target form        | Meaning                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `local`            | Working copy Target backed by the current checkout. `local` is its default name; `targets.working.name` renames it. |
+| `live`             | Stable Target, deployed from the Production branch. `live` is its default name; `targets.stable.name` renames it.   |
+| `preview <branch>` | Preview Target for a Branch. Branch names may include slashes.                                                      |
 
 A Project has one Working copy Target, one Stable Target, and any number of
 generated Previews. The examples in this guide use the default names `local`
@@ -440,7 +440,10 @@ redeploying the same Commit also works.
 Every port recorded by any Target in any Project is reserved while that record
 exists, whether the Target is running or stopped. A Target whose deployment
 transition is unresolved also keeps the ports of the plan that `rig down` may
-restore, so no other Target can be planned onto them in the meantime.
+restore, so no other Target can be planned onto them in the meantime. A pinned
+port another Target holds is refused as `PORT_RESERVED`, naming the owning
+Target and Project. Rig keeps ports apart among its own Targets only; it does
+not reserve them against other processes on the machine.
 
 CLI deploy uses local Branches only. It should warn, not block, when the Branch
 is ahead or behind its configured upstream. It should not fetch implicitly.
@@ -558,7 +561,7 @@ checkpoint under `<RIG_ROOT>/effect-checkpoints`. The journal records each
 write before it starts and the result after it finishes, so a daemon killed in
 between is recovered by the next `rig down` (rollback) or the recorded commit
 decision (roll-forward) without treating its own half-finished write as an
-external edit. Only a change made to an owned file *after* the journal
+external edit. Only a change made to an owned file _after_ the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
 Each journal carries a format version (currently 1). A journal written by a
@@ -758,8 +761,7 @@ visible cause; the command then keeps waiting for its own result.
 
 Ctrl-C (or SIGTERM) before a lifecycle or deploy command is submitted cancels
 it: `rig` exits 0 and no runtime change was requested. Ctrl-C during a read
-such as `rig list` or a `rig logs --follow` poll abandons the read and exits
-0. Once a mutation is submitted the first Ctrl-C is acknowledged but not
+such as `rig list` or a `rig logs --follow` poll abandons the read and exits 0. Once a mutation is submitted the first Ctrl-C is acknowledged but not
 honoured, because `rigd` finishes the mutation either way: `rig` prints
 `rigd is still running up (operation <id>); it finishes in the background.
 Press Ctrl-C again to detach.` on stderr and keeps waiting, and a mutation
@@ -995,40 +997,74 @@ setting for now.
 - a Service `restart` other than `always`
 - a Service `supervisor` that differs from the Project's
 - a Service with no port or with more than one port
-- an `env_file` list of more than one file
-- an `env_file` path under `~`
 - a `proxy` prefix other than `/`
 
 ### Environment, builds, and startup
 
-Every build and process runs under `/bin/sh -c` in the Target workspace. Its
-environment is an inherited base, then the env file, then the top-level `env`,
-then the Service's own `env`, each layer replacing keys of the one before. A
-Service's `env_file` is used instead of the top-level one, not in addition to
-it; a Tool build gets the top-level `env` and `env_file`. `env` is public
-configuration and is recorded in the Target plan: keep secrets in an env file.
-The inherited base is the same for builds and Services under either
-supervisor: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`,
-`LC_ALL`, `LC_CTYPE`, and `TZ` from the shell that ran `rigd install`. Tokens
-and other variables in that shell never reach rigd or a Project's processes;
-declare what a process needs in `env_file` or `env`. Git discovery (`rig
-init`, `rig select`, and `git push rig`) runs with the same base and ignores
-`GIT_DIR` and `GIT_WORK_TREE`, so it always describes the directory it was
-asked about. A build writes its output to the Target's logs under the Tool
-name, and dependency installation under `setup`.
+Every build and process runs under `/bin/sh -c` in the Target workspace. Rig
+composes its environment fresh for each invocation, each layer replacing names
+of the one before:
 
-An `env_file` holds one `KEY=value` per line, with an optional `export`, single
+1. the baseline: `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, and `TZ` from
+   the shell that ran `rigd install`, plus a `TMPDIR` Rig owns for the Target
+   (`<RIG_ROOT>/tmp/<target>`, mode 700)
+2. the top-level `env`
+3. the Service's own `env`
+4. the top-level `env_file` entries, in the order listed
+5. the operator's Project files `<RIG_ROOT>/env/<project>/all.env`, then
+   `<role>.env` (`working.env`, `stable.env`, or `preview.env`)
+6. the Service's `env_file` entries, in the order listed
+7. the operator's Service files `<RIG_ROOT>/env/<project>/<service>/all.env`,
+   then `<role>.env`
+
+A Service never reads another Service's `env` or files. A Tool build and
+dependency installation get the Project layers only (1, 2, 4, 5). Nothing else
+of the daemon's or the installing shell's environment reaches a Project's
+processes: no `USER`, `SHELL`, tokens, or Rig's own variables. Declare what a
+process needs in `env` or an env file. Git discovery (`rig init`, `rig select`,
+and `git push rig`) is Rig's own tooling; it runs with the login basics of
+that shell and ignores `GIT_DIR` and `GIT_WORK_TREE`, so it always describes
+the directory it was asked about. A build writes its output to the Target's
+logs under the Tool name, and dependency installation under `setup`.
+
+`env` is public configuration and is recorded in the Target plan. Secrets
+belong in env files: their values are read when an invocation starts and go
+only into that process's environment, never into references, plans, build
+receipts, errors, or logs. Because files are read again on every start,
+`rig restart` picks up a changed file; a changed file does not rerun a
+completed build.
+
+A listed `env_file` is required: when it is missing the command fails as
+`ENV_FILE_MISSING` naming the path before any build or process runs. The
+operator files under `<RIG_ROOT>/env/` are optional and are the usual home for
+secrets, since they sit outside every checkout and so work for the Stable
+Target and Previews too. A listed path may be absolute, start with `~/` (the
+operator's home; `~user` is rejected as `invalid_path`), or be relative to the
+Target workspace. On the Stable Target and Previews a relative path must stay
+inside that workspace (`path_outside_target` otherwise) and is read from the
+checked-out revision. An env file inside a Git repository must be ignored by
+Git, otherwise the command fails as `ENV_FILE_TRACKED`: never commit a file
+that holds secrets. When Git is present but cannot answer, the command fails
+as `ENV_FILE_UNVERIFIED` rather than loading an unchecked file. A file other users can read still loads, with a warning in
+the Target log asking for `chmod 600`.
+
+When a file supplies a name that `env` or a lower file also supplies, the
+Target log notes the name and the sources, never the values. One case is
+refused rather than noted. If a `run`, `build`, or shell `ready` command
+reaches a public env value through a reference, directly or through another
+`env` value, that value is already part of the command text. A file that gives
+the same name a different final value would make the command text and the
+process environment disagree, so the invocation fails as `ENV_CONFLICT`,
+naming the name, the Component, and the two sources. An equal value is no
+conflict. Remove the name from the file, or have the command read `$NAME` from
+the environment instead of referencing it.
+
+An env file holds one `KEY=value` per line, with an optional `export`, single
 or double quotes, and a `# comment` after the value (after the closing quote of
 a quoted one; a `#` inside quotes is part of the value). Anything else, such as
 a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
 `ENV_FILE` naming the file and line. Its contents are plain data and never
-take part in `${...}` references. A relative path resolves against the Target
-workspace. On the Stable Target and Previews the path must stay inside that
-workspace (`path_outside_target` otherwise), and the file is read from the
-checked-out revision, so a gitignored `.env` is absent there and the command
-fails as `ENV_FILE_MISSING` naming the path before any build or process runs:
-commit the file, declare the values in `env` under that role's patch, or
-remove `env_file`. The Working copy keeps whatever path you wrote.
+take part in `${...}` references.
 
 A Tool's `build` runs within `build_timeout` (the Tool's own, else the
 top-level one, else ten minutes), and dependency installation on the Stable
@@ -1100,9 +1136,15 @@ and follows the command rule.
 
 ### References
 
-`run`, `ready`, `build`, `bin`, `env` values, and `env_file` paths may use
-`${...}` references. The available references are:
+`run`, `ready`, `build`, `bin`, `workdir`, `env` values, and `env_file` paths
+may use `${...}` references. A reference is the exact path of one value in the
+selected Target's own settings (the base config with that role's patch
+applied), or one of the `rig.*` values Rig generates:
 
+- `${env.<NAME>}` and `${services.<service>.env.<NAME>}`: a public `env`
+  value. Values may reference each other; Rig resolves them recursively.
+- any other scalar setting by its path, such as
+  `${services.api.ready_timeout}`.
 - `${services.<service>.ports.<port>}`: the concrete number of a declared
   port in this Target. `proxy` values must be exactly one such reference.
 - `${rig.target}`: the Target's actual name, configured or generated. It is
@@ -1117,18 +1159,39 @@ and follows the command rule.
   `http://127.0.0.1:<port>` of the `/` upstream when it has a `proxy` but no
   hostname; empty without a `proxy`.
 
-Any other reference is rejected as `unknown_reference` when the Target is
-planned, so a typo never reaches a shell. That rejection names the field,
-such as `services.web.run`, and the hint points shell expansion like
-`${VAR:-default}` to `env`, an `env_file`, or a script the command runs. The
-retired placeholders (`${subdomain}`, `${branchSlug}`, `${lane}`,
-`${workspace}`, `${dataRoot}`, `${<name>.port}`, and `${<name>.url}`) are
-rejected the same way. Because `run`, `ready`, and `build` run under
-`/bin/sh -c`, Rig single-quotes any substituted value that contains a space
-or other shell-special character, so a repository or `RIG_ROOT` under a path
-like `~/Projects/My App` still resolves to one argument. A reference the
-author already wrapped in quotes is substituted as is. Values substituted
-into `env`, `domain`, `env_file`, and `bin` are never quoted.
+References are checked when the config is parsed, for the base config and for
+each role's patched settings, so a typo never reaches a shell. Each rejection
+names the field that holds the reference, such as `services.web.run`:
+
+- `unknown_reference`: no such path. The retired placeholders
+  (`${subdomain}`, `${branchSlug}`, `${lane}`, `${workspace}`, `${dataRoot}`,
+  `${<name>.port}`, and `${<name>.url}`) are rejected this way.
+- `reference_not_scalar`: the path names a map or list, not one value.
+- `reference_into_targets`: the path reaches into `targets`. A reference reads
+  the selected Target's settings, not another role's patch.
+- `reference_cycle`: values reference each other in a loop.
+- `invalid_context`: `${rig.data}` outside a Service, or a shared or Tool
+  `build` that reaches a Service's `env` or data, directly or through another
+  value. Those builds run with Project inputs only. A reference inside a
+  backquoted command is refused the same way; write `$(...)` instead.
+
+Because the base config is checked by itself, a value that only a role patch
+defines cannot be referenced from the base; give it a base value and let the
+patch replace it. Env file contents are never referenceable. Write `$${VAR}`
+for a literal `${VAR}` the shell should expand; `$VAR` is always left to the
+shell.
+
+Because `run`, a shell `ready`, and `build` run under `/bin/sh -c`, Rig
+substitutes every value as literal data, never as shell code. A bare
+reference is single-quoted when its value is empty or contains a space or
+other shell-special character, so a repository or `RIG_ROOT` under a path
+like `~/Projects/My App` still resolves to one argument. Inside the author's
+own double or single quotes the value is escaped for that quote (a `$(...)`
+inside them starts a command of its own and is quoted as such), so a `$`, a
+backquote, or a quote character in the value stays part of the argument. A
+`ready` value that resolves to an HTTP URL is handed to the HTTP probe
+unquoted. Values substituted into `env`, `domain`, `env_file`, and `bin` are
+never quoted.
 
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while

@@ -2,11 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseProjectConfig, resolveTargetPlan } from "../src/config/index";
+import { parseProjectConfig, resolveTargetPlan as resolvePlanWithHost } from "../src/config/index";
 import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
+const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
+  resolvePlanWithHost(input, RESOLVE_HOST);
 
 const roots: string[] = [];
 afterEach(async () => {

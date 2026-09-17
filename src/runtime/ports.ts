@@ -18,19 +18,24 @@ export function recordedPorts(
     ),
   );
 }
-/** Every port other Targets own: their recorded plan and, while a deployment transition is unresolved, the plan that recovery may restore. */
-export function occupiedPorts(
-  targets: readonly Pick<TargetRecord, "id" | "plan" | "recovery">[],
+/** Every port other Targets own, with its owner: their recorded plan and, while a deployment transition is unresolved, the plan that recovery may restore. */
+export function portOwners(
+  targets: readonly Pick<TargetRecord, "id" | "name" | "plan" | "recovery">[],
   except: string,
-): Set<number> {
-  return new Set(
+): Map<number, { target: string; project: string }> {
+  return new Map(
     targets
       .filter((target) => target.id !== except)
-      .flatMap((target) => [
-        ...Object.values(recordedPorts(target.plan.components)),
-        ...(target.recovery
-          ? Object.values(recordedPorts(target.recovery.plan.components))
-          : []),
-      ]),
+      .flatMap((target) =>
+        [
+          ...Object.values(recordedPorts(target.plan.components)),
+          ...(target.recovery
+            ? Object.values(recordedPorts(target.recovery.plan.components))
+            : []),
+        ].map((port): [number, { target: string; project: string }] => [
+          port,
+          { target: target.name, project: target.plan.project },
+        ]),
+      ),
   );
 }

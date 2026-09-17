@@ -64,7 +64,7 @@ async function fixture() {
     fail = false;
   const deps: Pick<RuntimeDependencies, "store" | "documents" | "id" | "now"> =
     {
-      documents: createProjectDocuments(root, run, {}),
+      documents: createProjectDocuments(root, run, {}, join(root, "home")),
       store: {
         async read() {
           return structuredClone(state);

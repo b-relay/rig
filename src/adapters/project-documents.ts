@@ -1,4 +1,4 @@
-import { basename, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import { ConfigError } from "../config/errors";
 import {
   discoverProject,
@@ -30,7 +30,10 @@ export function createProjectDocuments(
   run: CommandRunner,
   /** The environment git discovery runs with. */
   env: Readonly<Record<string, string>>,
+  /** Absolute operator home that `~` in an env_file path means. */
+  operatorHome: string,
 ): ProjectDocuments {
+  const host = { operatorHome, envRoot: join(root, "env") };
   const discovery = createProjectDiscovery(run, env);
   // The adapter is the effect owner: it binds the config documents on disk once, here.
   const reads: InitializationReads = {
@@ -64,7 +67,7 @@ export function createProjectDocuments(
       return { ...found, gitRequired: location.gitRequired };
     },
     read: readProjectConfig,
-    resolve: resolveTargetPlan,
+    resolve: (input) => resolveTargetPlan(input, host),
     host: () => readHostConfig(root),
     async initializationInfo(path) {
       const info = await inspectInitialization(

@@ -19,8 +19,11 @@ import type { RuntimeDependencies } from "../src/runtime/contracts";
 import {
   parseProjectConfig,
   parseHostConfig,
-  resolveTargetPlan,
+  resolveTargetPlan as resolvePlanWithHost,
 } from "../src/config";
+const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
+  resolvePlanWithHost(input, RESOLVE_HOST);
 function fixture() {
   const deadline = controlledDeadline();
   const state: RuntimeState = {
@@ -668,8 +671,8 @@ test("repoint refuses a config whose port another Target records and leaves the 
       if (request.preferred && occupied.has(request.preferred))
         throw new RigError(
           "PORT_RESERVED",
-          `Port ${request.preferred} is reserved by another Target.`,
-          "Configure a distinct local/live port.",
+          `Port ${request.preferred} belongs to ${JSON.stringify(occupied.get(request.preferred))}.`,
+          "Configure a distinct port.",
         );
     return Object.fromEntries(
       requests.map((request) => [request.name, request.preferred ?? 6000]),
@@ -697,7 +700,11 @@ test("repoint refuses a config whose port another Target records and leaves the 
       project: "demo",
       newPath: "/tmp/moved",
     }),
-  ).rejects.toMatchObject({ code: "PORT_RESERVED" });
+  ).rejects.toMatchObject({
+    code: "PORT_RESERVED",
+    // The selection capability is told which Target owns each occupied port.
+    message: 'Port 4600 belongs to {"target":"live","project":"demo"}.',
+  });
   expect(state.projects[0]).toMatchObject({ repoPath: "/tmp/developer" });
   expect(state.targets[0]!.plan).toMatchObject({
     workspacePath: "/tmp/developer",
@@ -724,7 +731,7 @@ test("ports owned by a Target's unresolved recovery plan stay reserved while oth
   const { runtime, state, deps } = fixture();
   const occupiedSeen: number[][] = [];
   deps.files.selectPorts = async ({ requests, occupied }) => {
-    occupiedSeen.push([...occupied].sort((a, b) => a - b));
+    occupiedSeen.push([...occupied.keys()].sort((a, b) => a - b));
     return Object.fromEntries(
       requests.map((request) => [request.name, request.preferred ?? 6000]),
     );

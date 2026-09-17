@@ -70,7 +70,17 @@ test("a complete Project runs a web Service with SQLite under ${rig.data} and an
       join(f.repo, "cli", "main.ts"),
       "import {kind} from './shared'; process.stdout.write(JSON.stringify({kind,argument:process.argv[2],source:import.meta.dir})+'\\n');\n",
     );
-    await writeFile(join(f.repo, ".env"), "SAFE_SETTING=fixture-literal\n");
+    // The Working copy lists its own ignored file; every Target also reads the operator's convention file.
+    await writeFile(join(f.repo, ".gitignore"), ".env\n");
+    await writeFile(join(f.repo, ".env"), "SAFE_SETTING=fixture-literal\n", {
+      mode: 0o600,
+    });
+    await mkdir(join(f.root, "env", "demo"), { recursive: true });
+    await writeFile(
+      join(f.root, "env", "demo", "all.env"),
+      "SAFE_SETTING=fixture-literal\n",
+      { mode: 0o600 },
+    );
     await writeFile(
       join(f.repo, "server.ts"),
       `
@@ -95,7 +105,9 @@ process.stderr.write('bundle diagnostic fixture\\n');
     await writeFile(
       join(f.repo, "rig.yaml"),
       `name: demo
-env_file: .env
+targets:
+  working:
+    env_file: .env
 services:
   web:
     run: "'${process.execPath}' server.ts"

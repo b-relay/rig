@@ -1,5 +1,87 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { isAbsolute, relative } from "node:path";
 import { RigError } from "../domain/errors";
+import type { EnvFileRef } from "../config/types";
+import type { LoadedEnvFile } from "../domain/process-environment";
+import type { CommandRunner } from "../providers/contracts";
+
+/** Whether Git ignores a path inside a workspace; undefined when the workspace is verified not to be a Git checkout. A tracked file is never ignored.
+ * Rejects ENV_FILE_UNVERIFIED when Git is there but cannot answer, so an unchecked file never loads. */
+export type IgnoredByGit = (
+  workspace: string,
+  path: string,
+) => Promise<boolean | undefined>;
+export function gitIgnoreCheck(
+  run: CommandRunner,
+  env: Readonly<Record<string, string>>,
+): IgnoredByGit {
+  return async (workspace, path) => {
+    const result = await run({
+      command: ["git", "check-ignore", "-q", "--", path],
+      cwd: workspace,
+      env: { ...env },
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode === 0) return true;
+    if (result.exitCode === 1) return false;
+    const checkout = await run({
+      command: ["git", "rev-parse", "--is-inside-work-tree"],
+      cwd: workspace,
+      env: { ...env, LC_ALL: "C" },
+      timeoutMs: 10_000,
+    });
+    if (
+      checkout.exitCode !== 0 &&
+      /not a git repository/i.test(checkout.stderr)
+    )
+      return undefined;
+    throw new RigError(
+      "ENV_FILE_UNVERIFIED",
+      `Git could not say whether ${path} is ignored.`,
+      "An env file inside a repository loads only once Git confirms it is ignored. Run git check-ignore on it in that repository and fix what Git reports, or keep the file outside the repository.",
+      { path, exitCode: result.exitCode },
+    );
+  };
+}
+/** Loads one invocation's env files in order. A listed file must exist (ENV_FILE_MISSING); an optional one is skipped when absent.
+ * A file inside the workspace that Git does not ignore is refused as ENV_FILE_TRACKED before it is read.
+ * `warnings` name files other users can access. Contents go to the caller only; no error or warning carries a value. */
+export async function loadEnvironmentFiles(
+  refs: readonly EnvFileRef[],
+  workspace: string,
+  ignored: IgnoredByGit,
+): Promise<{ files: LoadedEnvFile[]; warnings: string[] }> {
+  const files: LoadedEnvFile[] = [],
+    warnings: string[] = [];
+  for (const ref of refs) {
+    const info = await stat(ref.path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" && !ref.required) return undefined;
+      return error;
+    });
+    if (info === undefined) continue;
+    if (!(info instanceof Error)) {
+      const inside = relative(workspace, ref.path);
+      if (
+        inside !== "" &&
+        !inside.startsWith("..") &&
+        !isAbsolute(inside) &&
+        (await ignored(workspace, ref.path)) === false
+      )
+        throw new RigError(
+          "ENV_FILE_TRACKED",
+          `The environment file ${ref.path} is inside the repository and Git does not ignore it.`,
+          "Env files hold operator values: add the path to .gitignore and stop tracking it, or keep the file outside the repository, for example under ~/.rig/env/<project>/.",
+          { path: ref.path },
+        );
+      if (info.mode & 0o077)
+        warnings.push(
+          `Environment file ${ref.path} is accessible to other users (mode ${(info.mode & 0o777).toString(8).padStart(3, "0")}); run chmod 600 on it.`,
+        );
+    }
+    files.push({ path: ref.path, values: await readEnvironmentFile(ref.path) });
+  }
+  return { files, warnings };
+}
 
 /** Reads a dotenv-style file for a Target. A file that does not exist is ENV_FILE_MISSING,
  * one that cannot be read is ENV_FILE, and each parse rejection names the path and line. */
@@ -15,7 +97,7 @@ export async function readEnvironmentFile(
       throw new RigError(
         "ENV_FILE_MISSING",
         `The environment file ${path} does not exist.`,
-        "A deployed Target reads its envFile from the checked-out revision, so a gitignored file is absent there: commit it, declare the values in env for that lane, or remove envFile.",
+        "A listed env_file is required. A deployed Target resolves a relative path inside its checked-out Commit, where an ignored file is absent: provide the values under ~/.rig/env/<project>/, or list an absolute or ~/ path outside the repository. Never commit a file that holds secrets.",
         { path },
       );
     throw new RigError(

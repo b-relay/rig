@@ -25,10 +25,19 @@ import {
   readHostConfig,
   readProjectConfig,
   readProjectConfigSource,
-  resolveTargetPlan,
+  resolveTargetPlan as resolvePlanWithHost,
   scaffoldProjectConfig,
   targetNames,
 } from "../src/config/index.js";
+const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+/** The operator's optional convention files for one scope, in precedence order. */
+const conventionFiles = (role: string, ...scope: string[]) =>
+  ["all", role].map((file) => ({
+    path: ["/rig/env", ...scope, `${file}.env`].join("/"),
+    required: false,
+  }));
+const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
+  resolvePlanWithHost(input, RESOLVE_HOST);
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -607,6 +616,7 @@ test("a Project needs a Service or a Tool; a Tool-only Project needs no Service,
       name: "report",
       kind: "installed",
       env: {},
+      envFiles: conventionFiles("stable", "report"),
       dependsOn: [],
       entrypoint: "/work/.rig-build/report",
       build: "make",
@@ -1394,6 +1404,10 @@ test("Target resolution provides forward port references, environment inheritanc
       DATA_DIR: "/state/data/api",
       ROOT: "/repo",
     },
+    envFiles: [
+      ...conventionFiles("working", "pantry"),
+      ...conventionFiles("working", "pantry", "api"),
+    ],
   });
   expect(plan.components[2]).toMatchObject({
     command: "serve --host 127.0.0.1 --port 5173 --data /state/data/web",
@@ -1415,6 +1429,7 @@ test("Target resolution provides forward port references, environment inheritanc
     entrypoint: "/repo/bin/ctl",
     dependsOn: [],
     env: { MODE: "dev", LOG: "json" },
+    envFiles: conventionFiles("working", "pantry"),
   });
 });
 
@@ -1555,49 +1570,112 @@ test("an auto port colliding with another Service's pin is refused for the Worki
 });
 
 test.each(["constructor", "__proto__", "toString", "rig.nope", "web.port"])(
-  "reference ${%s} is unknown, never an inherited object property",
+  "reference ${%s} is unknown when the document is read, never an inherited object property",
   (key) => {
-    const config = parseProjectConfig({
-      name: "app",
-      services: web({ run: "run ${" + key + "}" }),
-    });
-    expect(() =>
-      resolveTargetPlan({ config, target: "local", ...roots_ }),
-    ).toThrow(expect.objectContaining({ code: "unknown_reference" }));
+    expect(
+      hintOf({ name: "app", services: web({ run: "run ${" + key + "}" }) }),
+    ).toBe(
+      "Fix services.web.run: Unknown reference '${" +
+        key +
+        "}' in services.web.run.",
+    );
   },
 );
 
-test("an unknown reference names its field and tells shell expansion to move into env", () => {
-  const config = parseProjectConfig({
-    name: "app",
-    services: web({ run: "serve --port ${PORT:-3000}" }),
-  });
-  let failure: unknown;
-  try {
-    resolveTargetPlan({ config, target: "local", ...roots_ });
-  } catch (error) {
-    failure = error;
-  }
-  expect(failure).toMatchObject({
-    _tag: "ConfigError",
-    code: "unknown_reference",
-    message: "Unknown reference '${PORT:-3000}' in services.web.run.",
-    context: { key: "PORT:-3000", path: "services.web.run" },
-    hint: expect.stringContaining("env"),
-  });
-  // rig.data belongs to one Service, so a Tool or Project-level value cannot name it.
-  const tool = parseProjectConfig({
-    name: "app",
-    tools: { ctl: { bin: "bin/ctl", build: "make DATA=${rig.data}" } },
-  });
-  expect(() =>
-    resolveTargetPlan({ config: tool, target: "local", ...roots_ }),
-  ).toThrow(
-    expect.objectContaining({
-      code: "unknown_reference",
-      context: { key: "rig.data", path: "tools.ctl.build" },
-    }),
+test("a reference is an exact path to one public value: shell expansion, collections, targets, cycles and Project-level rig.data are refused by field", () => {
+  const refusal = (extra: Record<string, unknown>) =>
+    hintOf({ name: "app", services: web(), ...extra });
+  expect(
+    refusal({ services: web({ run: "serve --port ${PORT:-3000}" }) }),
+  ).toBe(
+    "Fix services.web.run: Unknown reference '${PORT:-3000}' in services.web.run.",
   );
+  expect(refusal({ env: { ALL: "${services.web.ports}" } })).toBe(
+    "Fix env.ALL: Reference '${services.web.ports}' in env.ALL names a collection, not one value.",
+  );
+  expect(
+    refusal({
+      env: { NAME: "${targets.stable.name}" },
+      targets: { stable: { name: "production" } },
+    }),
+  ).toBe(
+    "Fix env.NAME: Reference '${targets.stable.name}' in env.NAME reaches into targets; a reference reads the selected Target's own settings.",
+  );
+  expect(refusal({ env: { A: "${env.B}", B: "x${env.A}" } })).toBe(
+    "Fix env.A: References form a cycle: env.A -> env.B -> env.A; env.B: References form a cycle: env.B -> env.A -> env.B.",
+  );
+  // rig.data belongs to one Service, so a Tool or Project-level value cannot name it.
+  expect(refusal({ env: { DATA: "${rig.data}" } })).toBe(
+    "Fix env.DATA: ${rig.data} in env.DATA has no Service: persistent data belongs to one Service.",
+  );
+  expect(
+    hintOf({
+      name: "app",
+      tools: { ctl: { bin: "bin/ctl", build: "make DATA=${rig.data}" } },
+    }),
+  ).toBe(
+    "Fix tools.ctl.build: ${rig.data} in tools.ctl.build has no Service: persistent data belongs to one Service.",
+  );
+  // A patch is checked as the graph it produces.
+  expect(
+    issuePaths({
+      name: "app",
+      services: web(),
+      targets: { preview: { env: { API: "${services.api.ports.http}" } } },
+    }),
+  ).toEqual(["targets.preview.env.API"]);
+});
+
+test("references resolve through other public values, a Service's rig.data stays that Service's, and $${VAR} passes a braced shell reference through", () => {
+  const plan = resolveTargetPlan({
+    config: parseProjectConfig({
+      name: "app",
+      env: { REGION: "eu", LITERAL: "$${HOME}/x" },
+      services: {
+        db: {
+          run: "db --dir ${rig.data}",
+          ports: { pg: 5432 },
+          env: { PGDATA: "${rig.data}/pg", URL: "pg://base" },
+        },
+        web: {
+          run: 'serve --db ${services.db.env.URL} --home "$${HOME}" --user $USER',
+          ports: { http: 3000 },
+          env: {
+            DB: "${services.db.env.PGDATA}",
+            WHERE: "${env.REGION}-${services.db.ports.pg}",
+          },
+        },
+      },
+      targets: {
+        working: {
+          services: {
+            db: { env: { URL: "pg://127.0.0.1:${services.db.ports.pg}/a b" } },
+          },
+        },
+      },
+    }),
+    target: "local",
+    ...roots_,
+  });
+  const web_ = plan.components.find((c) => c.name === "web")!;
+  expect(web_).toMatchObject({
+    command:
+      "serve --db 'pg://127.0.0.1:5432/a b' --home \"${HOME}\" --user $USER",
+    env: {
+      REGION: "eu",
+      LITERAL: "${HOME}/x",
+      DB: "/data/db/pg",
+      WHERE: "eu-5432",
+    },
+    // Only leaves the command was built from are guarded; WHERE and DB are not.
+    commandInputs: [
+      {
+        name: "URL",
+        source: "services.db.env.URL",
+        value: "pg://127.0.0.1:5432/a b",
+      },
+    ],
+  });
 });
 
 test.each([
@@ -1621,11 +1699,6 @@ test.each([
     "a patch that introduces one",
     { targets: { stable: { services: { web: { workdir: "apps/web" } } } } },
     "services.web.workdir",
-  ],
-  [
-    "an env file under the operator's home",
-    { services: web({ env_file: "~/.rig/env/app/secrets.env" }) },
-    "services.web.env_file",
   ],
 ])(
   "%s is valid config that this runtime refuses loudly instead of dropping",
@@ -1704,11 +1777,11 @@ test.each([
 ])(
   "Target resolution rejects unsupported roots %s and %s before policy calculation",
   (workspacePath, dataRoot, field) => {
-    // An unknown reference and an unsupported build would fail if plan calculation started first.
+    // An unsupported build would fail if plan calculation started first.
     const config = parseProjectConfig({
       name: "app",
       build: "make",
-      services: web({ run: "serve ${unknown}" }),
+      services: web(),
     });
     expect(() =>
       resolveTargetPlan({ config, target: "local", workspacePath, dataRoot }),
@@ -1757,7 +1830,7 @@ test("complete accepted plans are independent of process cwd with portable paths
     deploymentName: "feature-test-0a1b2c3d",
     assignedPorts: { web: 4100, db: 5433 },
   };
-  const script = `import { resolveTargetPlan } from ${JSON.stringify(join(import.meta.dir, "../src/config/index.ts"))}; process.stdout.write(JSON.stringify(resolveTargetPlan(${JSON.stringify(input)})));`;
+  const script = `import { resolveTargetPlan } from ${JSON.stringify(join(import.meta.dir, "../src/config/index.ts"))}; process.stdout.write(JSON.stringify(resolveTargetPlan(${JSON.stringify(input)}, ${JSON.stringify(RESOLVE_HOST)})));`;
   const plans = await Promise.all(
     [cwdA, cwdB].map(async (cwd) => {
       const child = Bun.spawn([process.execPath, "--eval", script], {
@@ -1783,14 +1856,18 @@ test("complete accepted plans are independent of process cwd with portable paths
     "web",
     "tool",
   ]);
-  expect(plan.components[0]).toMatchObject({
-    envFile: "/work space/项目/env/db.env",
-  });
+  const listed = (index: number) =>
+    plan.components[index]!.envFiles!.filter((file) => file.required).map(
+      (file) => file.path,
+    );
+  expect(listed(0)).toEqual([
+    "/work space/项目/env/feature-test-0a1b2c3d.env",
+    "/work space/项目/env/db.env",
+  ]);
   expect(plan.components[1]).toMatchObject({
     port: 4100,
     command:
       "serve --port 4100 --db '/persistent space/数据/web'/数据库.sqlite",
-    envFile: "/work space/项目/env/feature-test-0a1b2c3d.env",
     env: {
       ROOT: "/work space/项目",
       DATA: "/persistent space/数据/web",
@@ -1799,8 +1876,9 @@ test("complete accepted plans are independent of process cwd with portable paths
   });
   expect(plan.components[2]).toMatchObject({
     entrypoint: "/work space/项目/bin/工具",
-    envFile: "/work space/项目/env/feature-test-0a1b2c3d.env",
   });
+  expect(listed(1)).toEqual(["/work space/项目/env/feature-test-0a1b2c3d.env"]);
+  expect(listed(2)).toEqual(["/work space/项目/env/feature-test-0a1b2c3d.env"]);
 });
 
 test.each([
@@ -1924,12 +2002,6 @@ test("paths substituted into run, ready and build commands are shell-quoted unle
 
 test.each([
   [
-    "live",
-    { services: web({ env_file: "/etc/app.env" }) },
-    "services.web.env_file",
-    "/etc/app.env",
-  ],
-  [
     "preview",
     { services: web({ env_file: "../shared/.env" }) },
     "services.web.env_file",
@@ -1938,19 +2010,13 @@ test.each([
   ["live", { env_file: "../shared/.env" }, "env_file", "/shared/.env"],
   [
     "preview",
-    { targets: { preview: { env_file: "/etc/preview.env" } } },
-    "env_file",
-    "/etc/preview.env",
-  ],
-  [
-    "preview",
-    { env_file: "${rig.workspace}/../${rig.target}.env" },
+    { env_file: "env/../../${rig.target}.env" },
     "env_file",
     "/pr-0a1b2c3d.env",
   ],
   ["live", { env_file: "." }, "env_file", "/work"],
 ])(
-  "%s Targets reject an env file that resolves outside the Target's workspace, naming the field",
+  "%s Targets reject a relative env file that leaves the Target's workspace, naming the field",
   (target, extra, field, path) => {
     const config = parseProjectConfig({
       name: "app",
@@ -1996,16 +2062,106 @@ test("the Working copy keeps the developer's env file wherever it is; a deployed
   const envFiles = (target: "local" | "live") =>
     Object.fromEntries(
       resolveTargetPlan({ config, target, ...roots_ }).components.map(
-        (component) => [component.name, component.envFile],
+        (component) => [
+          component.name,
+          (component.envFiles ?? [])
+            .filter((file) => file.required)
+            .map((file) => file.path),
+        ],
       ),
     );
-  // A Service's own file stands in for the Project's; a Service without one inherits it.
+  // Project files come first and a Service's own files layer over them.
   expect(envFiles("local")).toEqual({
-    web: "/etc/app.env",
-    api: "/shared/.env",
+    web: ["/shared/.env", "/etc/app.env"],
+    api: ["/shared/.env"],
   });
   expect(envFiles("live")).toEqual({
-    web: "/work/env/web.env",
-    api: "/work/env/live.env",
+    web: ["/work/env/live.env", "/work/env/web.env"],
+    api: ["/work/env/live.env"],
   });
+});
+
+test("env_file paths resolve against the operator home or the workspace, and the resolution host must be absolute", () => {
+  const config = (file: string) =>
+    parseProjectConfig({ name: "app", env_file: file, services: web() });
+  const input = {
+    target: "local" as const,
+    workspacePath: "/work",
+    dataRoot: "/data",
+  };
+  const listed = (file: string) =>
+    resolveTargetPlan({ ...input, config: config(file) }).envFiles![0];
+  expect(listed("~/secrets/app.env")).toEqual({
+    path: "/home/operator/secrets/app.env",
+    required: true,
+  });
+  expect(listed("/etc/app.env").path).toBe("/etc/app.env");
+  expect(listed("config/app.env").path).toBe("/work/config/app.env");
+  expect(() => listed("~other/app.env")).toThrow(
+    expect.objectContaining({ _tag: "ConfigError", code: "invalid_path" }),
+  );
+  for (const [host, field] of [
+    [{ operatorHome: "home", envRoot: "/rig/env" }, "operatorHome"],
+    [{ operatorHome: "/home/operator", envRoot: "env" }, "envRoot"],
+  ] as const)
+    expect(() =>
+      resolvePlanWithHost({ ...input, config: config("a.env") }, host),
+    ).toThrow(
+      expect.objectContaining({ code: "relative_root", context: { field } }),
+    );
+});
+
+test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a backquoted reference is refused", () => {
+  const issues = (extra: Record<string, unknown>) => {
+    try {
+      parseProjectConfig({
+        name: "app",
+        services: {
+          db: { ...web().web, env: { DATA: "${rig.data}", NAME: "db" } },
+        },
+        ...extra,
+      });
+    } catch (error) {
+      return (error as { hint?: string }).hint;
+    }
+    return "accepted";
+  };
+  expect(
+    issues({
+      tools: { ctl: { bin: "ctl", build: "make ${services.db.env.NAME}" } },
+    }),
+  ).toContain(
+    "Fix tools.ctl.build: tools.ctl.build reaches '${services.db.env.NAME}'",
+  );
+  expect(
+    issues({
+      env: { VIA: "${services.db.env.DATA}" },
+      tools: { ctl: { bin: "ctl", build: "make ${env.VIA}" } },
+    }),
+  ).toContain(
+    "tools.ctl.build reaches '${services.db.env.DATA}' through env.VIA",
+  );
+  expect(issues({ build: "make ${services.db.env.NAME}" })).toContain(
+    "Fix build: build reaches",
+  );
+  // A Service may name another Service's public value.
+  expect(
+    issues({
+      tools: { ctl: { bin: "ctl" } },
+      env: { OK: "${services.db.env.NAME}" },
+    }),
+  ).toBe("accepted");
+  const config = parseProjectConfig({
+    name: "app",
+    services: { web: { ...web().web, run: "echo `echo ${rig.target}`" } },
+  });
+  expect(() =>
+    resolveTargetPlan({
+      config,
+      target: "local",
+      workspacePath: "/work",
+      dataRoot: "/data",
+      assignedPorts: { web: 3000 },
+    }),
+  ).toThrow(expect.objectContaining({ code: "invalid_context" }));
 });

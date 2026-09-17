@@ -1,27 +1,20 @@
 import { z } from "zod";
-import { mergeComponentOverride } from "./override.js";
 import { ConfigError } from "./errors.js";
 const text = z.string().min(1);
-/** A budget in seconds; one day is the most a timer can be asked to hold without overflowing. */
-const seconds = z.number().min(1).max(86400);
 const name = text
   .regex(
     /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/,
     "must start with a letter or digit and contain only letters, digits, '_' or '-'",
   )
   .describe("Stable registered Project name.");
-const componentName = text
+const entryName = text
   .regex(
     /^[a-z0-9][a-z0-9-]*$/,
     "must start with a lowercase letter or digit and contain only lowercase letters, digits or '-'",
   )
-  .describe("Component name used in dependencies and output.");
-const port = z
-  .number()
-  .int()
-  .min(1)
-  .max(65535)
-  .describe("Local TCP port from 1 to 65535.");
+  .describe(
+    "Service or Tool name used in references, dependencies and output.",
+  );
 /** Validates explicit bind flags, descending into quoted sub-commands such as `sh -c "..."`;
  * ordinary command URL arguments may reference remote services. */
 export function localhostCommand(value: string): boolean {
@@ -47,16 +40,6 @@ export function localhostCommand(value: string): boolean {
 const BIND_KEY =
   /^(?:HOST|HOSTNAME|BIND|BIND_ADDR|BIND_ADDRESS|BIND_HOST|LISTEN|LISTEN_ADDR|LISTEN_ADDRESS|LISTEN_HOST|ADDR|ADDRESS)$/;
 const WILDCARD_ADDRESS = /^(?:0\.0\.0\.0|\[::\]|::)(?::\d+)?$/;
-/** Inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
-const environment = z.record(z.string(), z.string()).superRefine((env, ctx) => {
-  for (const [key, value] of Object.entries(env))
-    if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
-      ctx.addIssue({
-        code: "custom",
-        path: [key],
-        message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
-      });
-});
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -100,321 +83,481 @@ export function validHostname(value: string): boolean {
     /^[a-zA-Z0-9-]{1,63}(\.[a-zA-Z0-9-]{1,63})*$/.test(value)
   );
 }
-const hostnameRule =
-  "must be a hostname such as app.test or ${subdomain}.app.test; schemes, ports, paths, wildcards and lists are not allowed";
-const route = text
+/** The one hostname substitution: the actual Target name, which is always a single valid label. */
+const TARGET_REFERENCE = "${rig.target}";
+const domain = text
   .refine(
     (value) =>
-      value.includes("${")
-        ? /^\$\{[^}]+\}[^\s;"`]*$/.test(value)
-        : validHostname(value),
-    hostnameRule,
+      !value.replaceAll(TARGET_REFERENCE, "").includes("${") &&
+      validHostname(value.replaceAll(TARGET_REFERENCE, "target")),
+    "must be a hostname such as app.test or ${rig.target}.app.test; schemes, ports, paths, wildcards, lists and other references are not allowed",
   )
-  .describe("Single domain token; interpolation is supported.");
-/** Hook commands run with /bin/sh -c and are held to the same localhost rule as Component commands; interpolated values are shell-quoted the same way.
- * A lane override merges hooks per key, like env. */
-const hooks = z.strictObject({
-  preStart: command
+  .describe(
+    "Single hostname; ${rig.target} is the only reference a hostname may contain.",
+  );
+const DURATION_UNITS = { s: 1, m: 60, h: 3600 } as const;
+/** Whole seconds of a validated duration such as 30s, 10m or 1h. */
+export function durationSeconds(value: string): number {
+  const match = /^([1-9]\d{0,5})(s|m|h)$/.exec(value);
+  return match
+    ? Number(match[1]) * DURATION_UNITS[match[2] as keyof typeof DURATION_UNITS]
+    : Number.NaN;
+}
+/** One day is the most a timer can be asked to hold without overflowing. */
+const duration = text.refine((value) => {
+  const seconds = durationSeconds(value);
+  return seconds >= 1 && seconds <= 86400;
+}, "must be a positive duration of at most one day, such as 30s, 10m or 1h");
+const supervisor = z
+  .enum(["rigd", "launchd"])
+  .describe(
+    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Host default is overridden by the Project and then by a Service.",
+  );
+const envName = z
+  .string()
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_]*$/,
+    "must be an environment variable name: letters, digits and '_', not starting with a digit",
+  );
+/** Public inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
+const environment = z
+  .unknown()
+  // The record parser drops a __proto__ key without a word, so it is refused before it gets there.
+  .refine(
+    (env) =>
+      typeof env !== "object" ||
+      env === null ||
+      !Object.hasOwn(env, "__proto__"),
+    "__proto__ is not an environment variable name.",
+  )
+  .pipe(z.record(envName, z.string()))
+  .superRefine((env, ctx) => {
+    for (const [key, value] of Object.entries(env))
+      if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
+        });
+  });
+const env = environment.describe(
+  "Public environment values passed to the process; never put secrets here. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+);
+const envFile = z
+  .union([text, z.array(text).min(1)])
+  .describe(
+    "Environment file path, or an ordered list of paths where later files win. Listed files are required, hold plain KEY=value data and never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home.",
+  );
+const build = command.describe(
+  "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only.",
+);
+const buildTimeout = duration.describe(
+  "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed.",
+);
+const portName = text
+  .regex(
+    /^[a-z0-9][a-z0-9-]*$/,
+    "must start with a lowercase letter or digit and contain only lowercase letters, digits or '-'",
+  )
+  .describe("Port name used in ${services.<service>.ports.<port>} references.");
+const ports = z
+  .record(
+    portName,
+    z.union([z.literal("auto"), z.number().int().min(1).max(65535)]),
+  )
+  .describe(
+    "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
+  );
+const restart = z
+  .enum(["always", "on-failure", "no"])
+  .describe(
+    "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
+  );
+const serviceFields = {
+  run: command.describe(
+    "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted.",
+  ),
+  build: build.optional(),
+  build_timeout: buildTimeout.optional(),
+  ports: ports.optional(),
+  ready: health.optional(),
+  ready_timeout: duration
+    .optional()
+    .describe("Startup readiness budget such as 30s (the default)."),
+  depends_on: z
+    .array(entryName)
     .optional()
     .describe(
-      "Run before starting; skipped when nothing needs to start. A Project preStart runs before installs and Component hooks.",
+      "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
     ),
-  postStart: command
+  restart: restart.optional(),
+  supervisor: supervisor.optional(),
+  workdir: text
     .optional()
-    .describe(
-      "Run after readiness: after the health check passes, or after the start grace period when the Component has no health check. A Project postStart runs after routing.",
-    ),
-  preStop: command
-    .optional()
-    .describe(
-      "Run before stopping active managed processes; skipped when already stopped.",
-    ),
-  postStop: command.optional().describe("Run after stopping."),
-});
-const common = {
-  env: environment
-    .optional()
-    .describe(
-      "Inline process environment. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
-    ),
-  envFile: text
-    .optional()
-    .describe(
-      "Environment file relative to the workspace. live and Preview files must stay inside the workspace; only local may point elsewhere.",
-    ),
-  hooks: hooks
-    .optional()
-    .describe(
-      "Component lifecycle hooks; a lane override merges them per key.",
-    ),
-  hookTimeout: seconds
-    .optional()
-    .describe(
-      "Budget in seconds for this Component's hooks; a hook past it is killed and its output so far is kept in the Target logs. Defaults to the Project hookTimeout, then 120.",
-    ),
+    .describe("Working directory relative to the workspace (the default)."),
+  env: env.optional(),
+  env_file: envFile.optional(),
 };
-const runtime = {
-  command: command.optional(),
-  port: port.optional(),
-  health: health.optional(),
-  readyTimeout: seconds
-    .optional()
-    .describe("Startup readiness timeout in seconds."),
-  dependsOn: z
-    .array(componentName)
-    .optional()
-    .describe("Components that must become ready first."),
+const service = z.strictObject(serviceFields);
+const toolFields = {
+  build: build.optional(),
+  build_timeout: buildTimeout.optional(),
+  bin: text.describe(
+    "Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere.",
+  ),
 };
-/** `ports.<name>` and `port.<name>` are property namespaces; a Component of that name would publish `<name>.port` into them. */
-const reservedComponentNames: ReadonlySet<string> = new Set(["port", "ports"]);
-const component = z.union([
-  z.strictObject({
-    mode: z.literal("managed").describe("Supervised long-running process."),
-    ...runtime,
-    command,
-    ...common,
-  }),
-  z.strictObject({
-    mode: z.literal("installed").describe("Installed executable."),
-    entrypoint: text.describe("Executable path relative to the workspace."),
-    build: z
+const tool = z.strictObject(toolFields);
+const proxy = z
+  .record(
+    z
       .string()
-      .optional()
-      .describe(
-        "Build command before installation, run with /bin/sh -c; interpolated values are shell-quoted.",
+      .regex(
+        /^\/[A-Za-z0-9._~/-]*$/,
+        "must be a path prefix starting with '/' without wildcards or references",
       ),
-    installName: componentName
-      .optional()
-      .describe("Installed executable name."),
-    buildTimeout: seconds
-      .optional()
-      .describe(
-        "Budget in seconds for build; a build past it is killed, its output so far is kept in the Target logs, and the previous installed artifact stays (default 600).",
+    z
+      .string()
+      .regex(
+        /^\$\{services\.[a-z0-9][a-z0-9-]*\.ports\.[a-z0-9][a-z0-9-]*\}$/,
+        "must be one declared port reference such as ${services.web.ports.http}",
       ),
-    ...common,
-  }),
-  z.strictObject({
-    uses: z.literal("sqlite").describe("Persistent SQLite dependency."),
-    path: text
-      .optional()
-      .describe(
-        "Database path; defaults to Target persistent storage. A relative path is inside the working copy for local and inside Target persistent storage for live and Previews, whose checkouts are replaced on every deploy. live and Preview paths must stay inside that storage; only local may point elsewhere.",
-      ),
-  }),
-  z.strictObject({
-    uses: z.literal("convex").describe("Convex Local dependency."),
-    ...runtime,
-    sitePort: port
-      .optional()
-      .describe(
-        "Convex site-proxy port. Defaults to the port after the component's own port; when another Target already records that port, a free port is selected and recorded instead.",
-      ),
-    ...common,
-  }),
-  z.strictObject({
-    uses: z.literal("postgres").describe("Postgres dependency."),
-    ...runtime,
-    ...common,
-  }),
-]);
-const override = z.strictObject({
-  ...runtime,
-  sitePort: port.optional().describe("Convex site-proxy port."),
-  entrypoint: text.optional().describe("Installed executable path override."),
-  build: z.string().optional().describe("Build command override."),
-  installName: componentName
-    .optional()
-    .describe("Installed executable name override."),
-  buildTimeout: seconds
-    .optional()
-    .describe("Build budget override in seconds."),
-  path: text.optional().describe("SQLite path override."),
-  ...common,
-});
-const lane = z.strictObject({
-  components: z
-    .record(componentName, override)
-    .optional()
-    .describe("Overrides keyed by shared Component name."),
-  env: environment
+  )
+  .describe(
+    "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required.",
+  );
+/** Settings every role may patch. Maps merge per key; lists and scalars replace. */
+const patchFields = {
+  domain: domain.optional().describe("Hostname for this role's Targets."),
+  supervisor: supervisor.optional(),
+  build: build.optional(),
+  build_timeout: buildTimeout.optional(),
+  env: env.optional(),
+  env_file: envFile.optional(),
+  proxy: proxy.optional(),
+  services: z
+    .record(entryName, z.strictObject(serviceFields).partial())
     .optional()
     .describe(
-      "Environment inherited by every Component. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+      "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
     ),
-  envFile: text
+  tools: z
+    .record(entryName, z.strictObject(toolFields).partial())
     .optional()
     .describe(
-      "Default environment file relative to the workspace, inherited by every Component. live and Preview files must stay inside the workspace.",
+      "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
     ),
-  proxy: z
+};
+export const PREVIEW_SELECTOR = "preview";
+/** Generated Preview names end in a dash and eight hex digits of the Branch hash. */
+const GENERATED_PREVIEW_NAME = /-[0-9a-f]{8}$/;
+const targetName = text
+  .max(63)
+  .regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/,
+    "must start with a letter or digit and contain only letters, digits, '_' or '-'",
+  )
+  .refine(
+    (value) => value !== PREVIEW_SELECTOR,
+    "cannot be 'preview', which always selects Previews",
+  )
+  .refine(
+    (value) => !GENERATED_PREVIEW_NAME.test(value),
+    "cannot end like a generated Preview name (a dash and eight hex digits)",
+  );
+const targets = z.strictObject({
+  working: z
     .strictObject({
-      upstream: componentName.describe(
-        "Managed Component receiving route traffic.",
-      ),
-    })
-    .optional()
-    .describe("Reverse proxy policy."),
-  daemon: z
-    .strictObject({
-      enabled: z
-        .boolean()
-        .optional()
-        .describe("Install persistent supervision."),
-      keepAlive: z.boolean().optional().describe("Restart exited processes."),
-    })
-    .optional()
-    .describe("Legacy supervision policy."),
-  providers: z
-    .strictObject({
-      processSupervisor: z
-        .enum(["rigd", "child", "launchd"])
+      name: targetName
         .optional()
         .describe(
-          "Process supervisor for managed Components: rigd (default; child processes owned by the daemon), child (alias of rigd), or launchd (per-Component launchd agents). Unknown names are rejected before any plan is recorded.",
+          "Name that selects and displays the Working copy Target (default local). Renaming keeps its identity and stored data.",
         ),
+      ...patchFields,
     })
     .optional()
-    .describe("Provider selections."),
-  domain: route
+    .describe("Working copy Target name and settings patch."),
+  stable: z
+    .strictObject({
+      name: targetName
+        .optional()
+        .describe(
+          "Name that selects and displays the Stable Target (default live). Renaming keeps its identity and stored data.",
+        ),
+      ...patchFields,
+    })
+    .optional()
+    .describe("Stable Target name and settings patch."),
+  preview: z
+    .strictObject(patchFields)
     .optional()
     .describe(
-      "Hostname for this lane's Targets, replacing the Project domain; may use ${subdomain}.",
-    ),
-  subdomain: route.optional().describe("Preview subdomain template."),
-  deployBranch: text
-    .optional()
-    .describe("Production branch for the Stable Target."),
-  providerProfile: z
-    .literal("default")
-    .optional()
-    .describe(
-      "Provider profile. Only default is supported; test isolation uses explicit provider interfaces and RIG_ROOT.",
+      "Settings patch for every generated Preview; Preview names come from their Branch.",
     ),
 });
+export const TARGET_ROLES = ["working", "stable", "preview"] as const;
+export type TargetRole = (typeof TARGET_ROLES)[number];
+export const DEFAULT_TARGET_NAMES = {
+  working: "local",
+  stable: "live",
+} as const;
+type Fields = Readonly<Record<string, unknown>>;
+const isRecord = (value: unknown): value is Fields =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+/** Settings patch rule: maps merge per key, lists and scalars replace. */
+function mergeSettings(base: Fields, patch: Fields): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch))
+    merged[key] =
+      isRecord(merged[key]) && isRecord(value)
+        ? mergeSettings(merged[key], value)
+        : value;
+  return merged;
+}
 export const projectConfigSchema = z
   .strictObject({
     name,
     description: z.string().optional().describe("Project description."),
-    domain: route
+    production_branch: text
       .optional()
       .describe(
-        "Hostname template for every Target. Use ${subdomain} (local, live, or the Preview branch slug) so Targets do not share a route.",
+        "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.productionBranch, then main.",
       ),
-    hooks: hooks.optional().describe("Project lifecycle hooks."),
-    hookTimeout: seconds
+    domain: domain
       .optional()
       .describe(
-        "Budget in seconds for Project hooks, and the default for Component hooks; a hook past it is killed and its output so far is kept in the Target logs (default 120).",
+        "Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one.",
       ),
-    installTimeout: seconds
+    supervisor: supervisor.optional(),
+    build: build
       .optional()
       .describe(
-        "Budget in seconds for dependency installation on live and Preview Targets; an install past it is killed and its output so far is kept in the Target logs (default 600).",
+        "Shared shell build command, run once in the workspace before any Service or Tool build.",
       ),
-    components: z
-      .record(componentName, component)
-      .superRefine((components, ctx) => {
-        for (const name of Object.keys(components))
-          if (reservedComponentNames.has(name))
-            ctx.addIssue({
-              code: "custom",
-              path: [name],
-              message:
-                "is reserved for the port properties; choose another Component name",
-            });
-      })
-      .describe("Shared Component definitions."),
-    local: lane.optional().describe("Working copy Target overrides."),
-    live: lane.optional().describe("Stable Target overrides."),
-    deployments: lane.optional().describe("Preview template overrides."),
+    build_timeout: buildTimeout
+      .optional()
+      .describe(
+        "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
+      ),
+    env: env.optional(),
+    env_file: envFile.optional(),
+    services: z
+      .record(entryName, service)
+      .optional()
+      .describe("Long-running Services keyed by name."),
+    tools: z
+      .record(entryName, tool)
+      .optional()
+      .describe("Installed command-line Tools keyed by name."),
+    proxy: proxy.optional(),
+    targets: targets
+      .optional()
+      .describe(
+        "Role-keyed Target names and settings patches: working, stable and the preview template.",
+      ),
   })
   .superRefine((config, ctx) => {
-    for (let [laneName, target] of Object.entries({
-      base: undefined as z.infer<typeof lane> | undefined,
-      local: config.local,
-      live: config.live,
-      deployments: config.deployments,
-    })) {
-      if (!target && laneName !== "base") continue;
-      target ??= {};
-      const definitions: Record<
-        string,
-        Record<string, unknown>
-      > = Object.create(null);
-      for (const [key, base] of Object.entries(config.components)) {
-        const merged = mergeComponentOverride(base, target.components?.[key]);
-        const result = component.safeParse(merged);
-        // A base Component that fails on its own is reported by its own parse; only a real override can mismatch the kind.
-        if (!result.success && target.components?.[key])
-          ctx.addIssue({
-            code: "custom",
-            path: [laneName, "components", key],
-            message: "Overrides must match the Component kind",
-          });
-        definitions[key] = merged;
-        if (definitions[key].mode === "installed" && definitions[key].hooks)
-          ctx.addIssue({
-            code: "custom",
-            path: [laneName, "components", key, "hooks"],
-            message:
-              "Hooks run around a Component's process; an installed executable has none. Use build for steps before installation.",
-          });
-      }
-      for (const key of Object.keys(target.components ?? {}))
-        if (!Object.hasOwn(config.components, key))
-          ctx.addIssue({
-            code: "custom",
-            path: [laneName, "components", key],
-            message: "Override references an unknown Component.",
-          });
-      const visiting = new Set<string>(),
-        done = new Set<string>();
-      const visit = (key: string): void => {
-        if (visiting.has(key)) {
-          ctx.addIssue({
-            code: "custom",
-            path: [laneName, "components", key, "dependsOn"],
-            message: "Component dependencies contain a cycle.",
-          });
-          return;
-        }
-        if (done.has(key)) return;
-        visiting.add(key);
-        for (const dependency of (definitions[key]?.dependsOn as
-          string[] | undefined) ?? []) {
-          if (
-            !definitions[dependency] ||
-            definitions[dependency]?.mode === "installed"
-          )
-            ctx.addIssue({
-              code: "custom",
-              path: [laneName, "components", key, "dependsOn"],
-              message: `Dependency '${dependency}' must reference a managed or persistent Component.`,
-            });
-          else visit(dependency);
-        }
-        visiting.delete(key);
-        done.add(key);
-      };
-      for (const key of Object.keys(definitions)) visit(key);
-      if (
-        "proxy" in target &&
-        target.proxy &&
-        !(
-          definitions[target.proxy.upstream]?.mode === "managed" ||
-          ["convex", "postgres"].includes(
-            String(definitions[target.proxy.upstream]?.uses),
-          )
-        )
-      )
+    const services = Object.keys(config.services ?? {}),
+      tools = Object.keys(config.tools ?? {});
+    if (!services.length && !tools.length)
+      ctx.addIssue({
+        code: "custom",
+        path: ["services"],
+        message: "A Project needs at least one Service or Tool.",
+      });
+    for (const name of services)
+      if (tools.includes(name))
         ctx.addIssue({
           code: "custom",
-          path: [laneName, "proxy"],
-          message: "Proxy upstream must reference a managed Component.",
+          path: ["tools", name],
+          message: "A Tool cannot share its name with a Service.",
         });
+    const names = targetNames(config);
+    if (names.working === names.stable)
+      ctx.addIssue({
+        code: "custom",
+        path: [
+          "targets",
+          config.targets?.stable?.name ? "stable" : "working",
+          "name",
+        ],
+        message: `The Working copy and Stable Target cannot both be named '${names.working}'.`,
+      });
+    const reported = new Set<string>();
+    const report = (path: PropertyKey[], message: string) => {
+      if (reported.has(message)) return;
+      reported.add(message);
+      ctx.addIssue({ code: "custom", path, message });
+    };
+    // The unpatched graph is checked first so a base mistake is reported at its own path, once.
+    validateGraph(config, [], report);
+    for (const role of TARGET_ROLES) {
+      const patch = config.targets?.[role];
+      if (!patch) continue;
+      const at = ["targets", role];
+      for (const kind of ["services", "tools"] as const)
+        for (const key of Object.keys(patch[kind] ?? {}))
+          if (!Object.hasOwn(config[kind] ?? {}, key))
+            report(
+              [...at, kind, key],
+              `A Target patch cannot add the ${kind === "services" ? "Service" : "Tool"} '${key}'; declare it at the top level.`,
+            );
+      if (role === "preview")
+        for (const [key, entry] of Object.entries(patch.services ?? {}))
+          for (const [port, value] of Object.entries(entry.ports ?? {}))
+            if (value !== "auto")
+              report(
+                [...at, "services", key, "ports", port],
+                "Previews always use chosen ports; only the Working copy and Stable Target can pin one.",
+              );
+      validateGraph(patchedSettings(config, role), at, report);
     }
   });
+type ParsedProject = z.infer<typeof projectConfigSchema>;
+/** Project settings with one role's patch applied; Target name metadata never merges into them. */
+export type ProjectSettings = Omit<ParsedProject, "targets">;
+export function patchedSettings(
+  config: ParsedProject,
+  role: TargetRole,
+): ProjectSettings {
+  const { targets, ...base } = config;
+  const patch: Record<string, unknown> = { ...targets?.[role] };
+  delete patch.name;
+  // A patch naming an unknown entry is reported by validation; merging would otherwise invent a partial entry.
+  for (const kind of ["services", "tools"] as const)
+    if (isRecord(patch[kind]))
+      patch[kind] = Object.fromEntries(
+        Object.entries(patch[kind]).filter(([key]) =>
+          Object.hasOwn(base[kind] ?? {}, key),
+        ),
+      );
+  return mergeSettings(base, patch) as ProjectSettings;
+}
+/** The names that select and display the Working copy and Stable Target. */
+export function targetNames(
+  config: Pick<ParsedProject, "targets">,
+): Record<"working" | "stable", string> {
+  return {
+    working: config.targets?.working?.name ?? DEFAULT_TARGET_NAMES.working,
+    stable: config.targets?.stable?.name ?? DEFAULT_TARGET_NAMES.stable,
+  };
+}
+const PORT_REFERENCE = /^\$\{services\.([^.}]+)\.ports\.([^.}]+)\}$/;
+/** The Service and port a proxy value names. */
+export function proxyUpstream(
+  reference: string,
+): { service: string; port: string } | undefined {
+  const match = PORT_REFERENCE.exec(reference);
+  return match ? { service: match[1]!, port: match[2]! } : undefined;
+}
+/** Structural rules of one settings graph: dependency references and cycles, pinned ports, and proxy references. */
+function validateGraph(
+  settings: ProjectSettings,
+  at: readonly PropertyKey[],
+  report: (path: PropertyKey[], message: string) => void,
+): void {
+  const services = settings.services ?? {};
+  const visiting = new Set<string>(),
+    done = new Set<string>();
+  const visit = (key: string): void => {
+    if (visiting.has(key))
+      return report(
+        [...at, "services", key, "depends_on"],
+        `Service dependencies contain a cycle through '${key}'.`,
+      );
+    if (done.has(key)) return;
+    visiting.add(key);
+    for (const dependency of services[key]?.depends_on ?? [])
+      if (!Object.hasOwn(services, dependency))
+        report(
+          [...at, "services", key, "depends_on"],
+          `Dependency '${dependency}' of Service '${key}' is not a declared Service.`,
+        );
+      else visit(dependency);
+    visiting.delete(key);
+    done.add(key);
+  };
+  for (const key of Object.keys(services)) visit(key);
+  const pinned = new Map<number, string>();
+  for (const [key, entry] of Object.entries(services))
+    for (const [port, value] of Object.entries(entry.ports ?? {})) {
+      if (value === "auto") continue;
+      const owner = pinned.get(value);
+      if (owner)
+        report(
+          [...at, "services", key, "ports", port],
+          `Port ${value} is pinned by both ${owner} and ${key}.${port}.`,
+        );
+      else pinned.set(value, `${key}.${port}`);
+    }
+  if (!settings.proxy) return;
+  if (!Object.hasOwn(settings.proxy, "/"))
+    report([...at, "proxy"], "A proxy needs a '/' entry.");
+  for (const [prefix, reference] of Object.entries(settings.proxy)) {
+    const upstream = proxyUpstream(reference);
+    if (
+      upstream &&
+      !Object.hasOwn(services[upstream.service]?.ports ?? {}, upstream.port)
+    )
+      report(
+        [...at, "proxy", prefix],
+        `Proxy '${prefix}' references '${upstream.service}.${upstream.port}', which is not a declared Service port.`,
+      );
+  }
+}
+const LEGACY_KEYS = [
+  "components",
+  "local",
+  "live",
+  "deployments",
+  "hooks",
+  "hookTimeout",
+  "installTimeout",
+];
+const PATCH_IDENTITY_KEYS: Readonly<Record<string, string>> = {
+  production_branch:
+    "The Production branch is Project-wide; set production_branch at the top level.",
+  description: "The Project description is not a Target setting.",
+  targets: "A Target patch cannot contain targets.",
+  role: "A Target's role is its fixed key (working, stable or preview) and cannot change.",
+};
+/** Refusals that need their own guidance, checked before the schema so they are not reported as generic unknown keys. */
+function refuseUnsupportedShapes(value: unknown): void {
+  if (!isRecord(value)) return;
+  const legacy = LEGACY_KEYS.filter((key) => Object.hasOwn(value, key));
+  if (legacy.length)
+    throw new ConfigError(
+      "This Project config uses the retired component schema.",
+      "legacy_config",
+      { keys: legacy },
+      `Convert it to the services/tools/targets schema: ${legacy.join(", ")} ${legacy.length === 1 ? "is" : "are"} no longer read. See docs/rig-guide.md; Rig never converts or guesses a config silently.`,
+    );
+  if (!isRecord(value.targets)) return;
+  const issues: { path: string[]; message: string }[] = [];
+  for (const [role, patch] of Object.entries(value.targets)) {
+    if (!isRecord(patch)) continue;
+    for (const [key, message] of Object.entries(PATCH_IDENTITY_KEYS))
+      if (Object.hasOwn(patch, key))
+        issues.push({ path: ["targets", role, key], message });
+    if (role === "preview" && Object.hasOwn(patch, "name"))
+      issues.push({
+        path: ["targets", role, "name"],
+        message:
+          "Preview names are generated from their Branch; only working and stable take a name.",
+      });
+    for (const kind of ["services", "tools"])
+      if (isRecord(patch[kind]))
+        for (const [key, entry] of Object.entries(patch[kind]))
+          if (entry === null)
+            issues.push({
+              path: ["targets", role, kind, key],
+              message:
+                "Removing or disabling an inherited Service or Tool in a Target patch is not supported.",
+            });
+  }
+  if (issues.length) throw issuesError("Project", issues);
+}
 export function parseProjectConfig(value: unknown) {
+  refuseUnsupportedShapes(value);
   const result = projectConfigSchema.safeParse(value);
   if (!result.success) throw validationError("Project", result.error.issues);
   return result.data;
@@ -548,15 +691,26 @@ function validationError(
 ): ConfigError {
   const safe = (value: string) =>
     value.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160);
-  const details = issues.map(explainIssue).map((issue) => ({
-    path: issue.path.map((part) => safe(String(part))),
-    message: safe(issue.message),
-  }));
+  return issuesError(
+    scope,
+    issues.map(explainIssue).map((issue) => ({
+      path: issue.path.map((part) => safe(String(part))),
+      message: safe(issue.message),
+    })),
+  );
+}
+function issuesError(
+  scope: string,
+  details: readonly { path: string[]; message: string }[],
+): ConfigError {
   const hint =
     "Fix " +
     details
       .slice(0, 3)
-      .map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`)
+      .map(
+        (issue) =>
+          `${issue.path.join(".") || "config"}: ${issue.message.replace(/\.$/, "")}`,
+      )
       .join("; ") +
     ".";
   return new ConfigError(

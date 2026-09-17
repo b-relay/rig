@@ -3,6 +3,7 @@ import { terminalText } from "./terminal-text";
 import { RigError, cancelled } from "../domain/errors";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
+import { PREVIEW_SELECTOR } from "../config/schema";
 export interface CliInteraction {
   select(
     message: string,
@@ -23,6 +24,8 @@ const deployment = z.object({
   repoPath: z.string(),
   productionBranch: z.string(),
   currentBranch: z.string().nullable(),
+  /** The names this Project gives its Working copy and Stable Target. */
+  targets: z.object({ working: z.string(), stable: z.string() }),
 });
 /** Resolve human choices through read-only daemon queries before submitting any mutation. */
 export async function prepareInteractiveRequest(
@@ -40,7 +43,7 @@ export async function prepareInteractiveRequest(
       throw new RigError(
         "TARGET_REQUIRED",
         "Choose a Target explicitly.",
-        "Pass local, live, or preview <branch>; interactive terminals offer a Target picker.",
+        "Pass a Target name or preview <branch>; interactive terminals offer a Target picker.",
       );
     const report = await deps.client.status({
       project: request.project,
@@ -51,7 +54,7 @@ export async function prepareInteractiveRequest(
       throw new RigError(
         "TARGET_REQUIRED",
         "This Project has no available Targets.",
-        "Configure a local Target or deploy a Branch first.",
+        "Run rig up for the Working copy or deploy a Branch first.",
       );
     const name = await interaction.select(
       "Choose a Target",
@@ -70,8 +73,9 @@ export async function prepareInteractiveRequest(
       );
     return {
       ...request,
-      target: selected.kind,
-      ...(selected.kind === "preview" ? { deployment: selected.name } : {}),
+      ...(selected.kind === "preview"
+        ? { target: PREVIEW_SELECTOR, deployment: selected.name }
+        : { target: selected.name }),
     };
   }
   if (request.action === "init" && interaction) {
@@ -111,7 +115,7 @@ export async function prepareInteractiveRequest(
         };
     }
   }
-  if (request.action === "deploy" && request.target !== "local") {
+  if (request.action === "deploy") {
     const info = readReply(
       deployment,
       await deps.client.command({
@@ -124,14 +128,17 @@ export async function prepareInteractiveRequest(
     // A deploy resolved from the working directory must be visible before it acts, not only in its final line; structured callers get only the result.
     const branch =
       request.branch ??
-      (request.target === "live" ? info.productionBranch : info.currentBranch);
+      (request.target === info.targets.stable
+        ? info.productionBranch
+        : info.currentBranch);
     if (!options.json)
       deps.output.error(
         `Deploying ${terminalText(info.project)} (${terminalText(info.repoPath)}) to ${terminalText(
           request.deployment ?? request.target ?? "preview",
         )} from ${branch === null ? "a detached HEAD" : terminalText(branch)}.\n`,
       );
-    if (request.target !== "live" || request.branch) return request;
+    if (request.target !== info.targets.stable || request.branch)
+      return request;
     if (
       info.currentBranch !== null &&
       info.currentBranch !== info.productionBranch
@@ -140,7 +147,7 @@ export async function prepareInteractiveRequest(
         throw new RigError(
           "PRODUCTION_CONFIRMATION",
           `The current Branch differs from Production '${terminalText(info.productionBranch)}'.`,
-          `Pass the Production Branch explicitly: rig deploy live ${terminalText(info.productionBranch)}.`,
+          `Pass the Production Branch explicitly: rig deploy ${terminalText(info.targets.stable)} ${terminalText(info.productionBranch)}.`,
         );
       if (
         !(await interaction.confirm(

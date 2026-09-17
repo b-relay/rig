@@ -120,7 +120,8 @@ export type ProjectStatusReport = z.infer<typeof projectStatusSchema>;
 export interface StatusSelection {
   project?: string;
   repoPath?: string;
-  target?: "local" | "live" | "preview";
+  /** `preview`, or a Working copy or Stable Target name. */
+  target?: string;
   deployment?: string;
   branch?: string;
   operationId?: string;

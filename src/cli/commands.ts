@@ -6,6 +6,7 @@ import {
   type RuntimeCommand,
 } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
+import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_VERSION } from "../domain/version";
 import type { UserOutput } from "./types";
@@ -210,7 +211,10 @@ function addLifecycleCommands(
       .description(
         `${action === "up" ? "Start" : action === "down" ? "Stop" : "Restart"} a recorded Target.`,
       )
-      .argument("[target]", "local, live, or preview")
+      .argument(
+        "[target]",
+        "Target name (local and live unless rig.yaml renames them) or preview",
+      )
       .argument("[branch]", "Preview Branch or name", nonEmpty)
       .option("--project <name>", "Registered Project identity")
       .option("--json", "Render the final domain result as JSON")
@@ -226,7 +230,7 @@ function addLifecycleCommands(
         branch: string | undefined,
         options: ScopeOptions,
       ) => {
-        if (options.destroy && target !== "preview")
+        if (options.destroy && target !== PREVIEW_SELECTOR)
           throw new RigError(
             "USAGE",
             "Only a Preview can be destroyed.",
@@ -251,64 +255,52 @@ function addDeployCommands(
 ): void {
   const deploy = command
     .command("deploy")
-    .description("Deploy a Branch to a Stable Target or Preview.")
-    .argument("[target]", "live or preview");
-  // Subcommands win over the argument, so only a bare, help, or unknown Target reaches here.
-  deploy.action((target?: string) => {
-    if (target === undefined || target === "help") deploy.help();
-    throw new RigError(
-      "USAGE",
-      `Deploy Targets are live or preview, not '${terminalText(String(target))}'.`,
-      "Run rig deploy --help.",
-    );
-  });
-  for (const target of ["live", "preview"] as const) {
-    const child = deploy
-      .command(target)
-      .description(
-        target === "live"
-          ? "Deploy the Production Branch."
-          : "Deploy a Branch as a Preview.",
-      )
-      .argument(
-        "[branch]",
-        "Source Branch (defaults to Production for live, current Branch for preview)",
-        nonEmpty,
-      )
-      .option("--project <name>", "Registered Project identity")
-      .option("--force", "Redeploy even when the selected Commit is unchanged")
-      .option(
-        "--no-up",
-        "Deploy without starting; a running Target is stopped until rig up",
-      )
-      .option("--json", "Render the final domain result as JSON");
-    if (target === "preview")
-      child.option("--deployment <name>", "Explicit Preview name");
-    child.action(
-      async (
-        branch: string | undefined,
-        options: ScopeOptions & {
-          force?: boolean;
-          up?: boolean;
-          deployment?: string;
-        },
-      ) => {
-        await execute(
-          {
-            action: "deploy",
-            repoPath: cwd,
-            target,
-            ...projectScope(options),
-            ...(branch ? { branch } : {}),
-            ...(options.force ? { force: true } : {}),
-            ...(options.up === false ? { noUp: true } : {}),
-            ...previewScope(options),
-          },
-          { json: options.json },
+    .description("Deploy a Branch to the Stable Target or a Preview.")
+    .argument(
+      "[target]",
+      "The Stable Target's name (live unless rig.yaml renames it) or preview",
+    )
+    .argument(
+      "[branch]",
+      "Source Branch (defaults to Production for the Stable Target, current Branch for preview)",
+      nonEmpty,
+    )
+    .option("--project <name>", "Registered Project identity")
+    .option("--force", "Redeploy even when the selected Commit is unchanged")
+    .option(
+      "--no-up",
+      "Deploy without starting; a running Target is stopped until rig up",
+    )
+    .option("--deployment <name>", "Explicit Preview name")
+    .option("--json", "Render the final domain result as JSON");
+  deploy.action(
+    async (
+      target: string | undefined,
+      branch: string | undefined,
+      options: ScopeOptions & { force?: boolean; up?: boolean },
+    ) => {
+      if (target === undefined || target === "help") deploy.help();
+      if (options.deployment && target !== PREVIEW_SELECTOR)
+        throw new RigError(
+          "USAGE",
+          "Only a Preview takes --deployment.",
+          "Use rig deploy preview --deployment <name>.",
         );
-      },
-    );
-  }
+      await execute(
+        {
+          action: "deploy",
+          repoPath: cwd,
+          target,
+          ...projectScope(options),
+          ...(branch ? { branch } : {}),
+          ...(options.force ? { force: true } : {}),
+          ...(options.up === false ? { noUp: true } : {}),
+          ...previewScope(options),
+        },
+        { json: options.json },
+      );
+    },
+  );
 }
 function addLogsCommand(
   command: Command,
@@ -318,7 +310,10 @@ function addLogsCommand(
   command
     .command("logs")
     .description("Read recent Target logs, including stopped Targets.")
-    .argument("[target]", "local, live, or preview")
+    .argument(
+      "[target]",
+      "Target name (local and live unless rig.yaml renames them) or preview",
+    )
     .argument("[branch]", "Preview Branch or name", nonEmpty)
     .option("--project <name>", "Registered Project identity")
     .option("--deployment <name>", "Explicit Preview name")
@@ -350,16 +345,13 @@ interface InitOptions extends ScopeOptions {
   path?: string;
   productionBranch?: string;
   domain?: string;
-  proxy?: string;
-  uses?: string;
-  managed?: string;
-  managedCommand?: string;
-  managedPort?: number;
-  managedHealth?: string;
-  installed?: string;
-  installedEntrypoint?: string;
-  installedBuild?: string;
-  installedName?: string;
+  service?: string;
+  run?: string;
+  port?: number;
+  ready?: string;
+  tool?: string;
+  bin?: string;
+  toolBuild?: string;
   createGit?: boolean;
 }
 function addInitCommand(
@@ -377,7 +369,7 @@ function addInitCommand(
     .option("--path <path>", "Repository to initialize", nonEmpty, ".")
     .option(
       "--production-branch <branch>",
-      "Production Branch for the live Target",
+      "Production Branch for the Stable Target",
       nonEmpty,
     )
     .option(
@@ -386,89 +378,49 @@ function addInitCommand(
     )
     .option(
       "--domain <domain>",
-      "Base domain: live serves it, local and Previews get subdomains under it",
+      "Domain the Stable Target serves; Previews get subdomains under it",
       nonEmpty,
     )
-    .option("--proxy <component>", "Proxy upstream component", nonEmpty)
+    .option("--service <name>", "Service name", nonEmpty)
+    .option("--run <command>", "Command that runs the Service", nonEmpty)
     .option(
-      "--uses <plugins>",
-      "Comma-separated sqlite, postgres, or convex components",
-      nonEmpty,
-    )
-    .option("--managed <name>", "Managed component name", nonEmpty)
-    .option(
-      "--managed-command <command>",
-      "Managed component command",
-      nonEmpty,
-    )
-    .option(
-      "--managed-port <port>",
-      "Managed component localhost port",
+      "--port <port>",
+      "Service localhost port (assigned automatically when omitted)",
       positiveInteger,
     )
-    .option(
-      "--managed-health <check>",
-      "Managed component health check",
-      nonEmpty,
-    )
-    .option("--installed <name>", "Installed component name", nonEmpty)
-    .option(
-      "--installed-entrypoint <path>",
-      "Installed executable entrypoint",
-      nonEmpty,
-    )
-    .option(
-      "--installed-build <command>",
-      "Build command for the installed executable",
-      nonEmpty,
-    )
-    .option("--installed-name <name>", "Installed executable name", nonEmpty)
+    .option("--ready <check>", "Service readiness check", nonEmpty)
+    .option("--tool <name>", "Tool name", nonEmpty)
+    .option("--bin <path>", "Executable the Tool installs", nonEmpty)
+    .option("--tool-build <command>", "Command that builds the Tool", nonEmpty)
     .action(async (options: InitOptions) => execute(initRequest(cwd, options)));
 }
 function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
-  const uses = options.uses?.split(",").map((value) => value.trim());
-  if (uses?.some((value) => !["sqlite", "postgres", "convex"].includes(value)))
+  const serviceRequested =
+    options.service || options.run || options.port || options.ready;
+  const toolRequested = options.tool || options.bin || options.toolBuild;
+  if (serviceRequested && (!options.service || !options.run))
     throw new RigError(
       "USAGE",
-      "Choose sqlite, postgres, or convex for --uses.",
+      "A Service requires --service and --run.",
       "Run rig init --help.",
     );
-  const managedRequested =
-    options.managed ||
-    options.managedCommand ||
-    options.managedPort ||
-    options.managedHealth;
-  const installedRequested =
-    options.installed ||
-    options.installedEntrypoint ||
-    options.installedBuild ||
-    options.installedName;
-  if (managedRequested && (!options.managed || !options.managedCommand))
+  if (toolRequested && (!options.tool || !options.bin))
     throw new RigError(
       "USAGE",
-      "Managed components require --managed and --managed-command.",
+      "A Tool requires --tool and --bin.",
       "Run rig init --help.",
     );
-  if (
-    installedRequested &&
-    (!options.installed || !options.installedEntrypoint)
-  )
-    throw new RigError(
-      "USAGE",
-      "Installed components require --installed and --installed-entrypoint.",
-      "Run rig init --help.",
-    );
-  if (options.managedPort && options.managedPort > 65535)
+  if (options.port && options.port > 65535)
     throw new RigError(
       "USAGE",
       "A port must be between 1 and 65535.",
-      "Correct --managed-port.",
+      "Correct --port.",
     );
-  if (options.managed && options.managed === options.installed)
+  if (options.service && options.service === options.tool)
     throw new RigError(
       "USAGE",
-      "Component names must be distinct.",
-      "Choose different managed and installed names.",
+      "A Tool cannot share a Service's name.",
+      "Choose different --service and --tool names.",
     );
   return {
     action: "init",
@@ -479,29 +431,22 @@ function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
       : {}),
     ...(options.createGit ? { createGit: true } : {}),
     ...(options.domain ? { domain: options.domain } : {}),
-    ...(options.proxy ? { proxy: options.proxy } : {}),
-    ...(uses ? { uses: uses as ("sqlite" | "postgres" | "convex")[] } : {}),
-    ...(options.managed && options.managedCommand
+    ...(options.service && options.run
       ? {
-          managed: {
-            name: options.managed,
-            command: options.managedCommand,
-            ...(options.managedPort ? { port: options.managedPort } : {}),
-            ...(options.managedHealth ? { health: options.managedHealth } : {}),
+          service: {
+            name: options.service,
+            run: options.run,
+            ...(options.port ? { port: options.port } : {}),
+            ...(options.ready ? { ready: options.ready } : {}),
           },
         }
       : {}),
-    ...(options.installed && options.installedEntrypoint
+    ...(options.tool && options.bin
       ? {
-          installed: {
-            name: options.installed,
-            entrypoint: options.installedEntrypoint,
-            ...(options.installedBuild
-              ? { build: options.installedBuild }
-              : {}),
-            ...(options.installedName
-              ? { installName: options.installedName }
-              : {}),
+          tool: {
+            name: options.tool,
+            bin: options.bin,
+            ...(options.toolBuild ? { build: options.toolBuild } : {}),
           },
         }
       : {}),
@@ -519,23 +464,22 @@ function targetRequest(
     if (branch || options.deployment)
       throw new RigError(
         "USAGE",
-        "A Target kind is required.",
-        "Pass local, live, or preview.",
+        "A Target is required.",
+        "Pass a Target name or preview.",
       );
     return { action, repoPath: cwd, ...projectScope(options) };
   }
   if (
-    !["local", "live", "preview"].includes(target) ||
-    (target === "preview" && !branch && !options.deployment) ||
-    (target !== "preview" && (branch || options.deployment))
+    (target === PREVIEW_SELECTOR && !branch && !options.deployment) ||
+    (target !== PREVIEW_SELECTOR && (branch || options.deployment))
   )
     throw new RigError(
       "USAGE",
-      "Choose local, live, or preview <branch>.",
+      "Choose a Target name or preview <branch>.",
       `Run rig ${action} --help.`,
     );
   // A Branch and --deployment can name different Previews; acting on one while the user typed the other is never safe.
-  if (target === "preview" && branch && options.deployment)
+  if (target === PREVIEW_SELECTOR && branch && options.deployment)
     throw new RigError(
       "USAGE",
       "Pass a Preview Branch or --deployment, not both.",
@@ -544,7 +488,7 @@ function targetRequest(
   return {
     action,
     repoPath: cwd,
-    target: target as RuntimeCommand["target"],
+    target,
     ...(branch ? { branch } : {}),
     ...preview,
     ...projectScope(options),

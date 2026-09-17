@@ -7,5 +7,11 @@ export {
   parseHostConfig,
   projectConfigSchema,
   hostConfigSchema,
+  patchedSettings,
+  targetNames,
+  DEFAULT_TARGET_NAMES,
+  PREVIEW_SELECTOR,
+  type TargetRole,
+  type ProjectSettings,
 } from "./schema.js";
 export { resolveTargetPlan } from "./resolve.js";

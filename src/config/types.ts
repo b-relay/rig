@@ -5,7 +5,6 @@ export type ProjectConfig = z.infer<typeof projectConfigSchema>;
 export type HostConfig = z.infer<typeof hostConfigSchema>;
 export interface ConfigDocument<T> {
   path: string;
-  format: "yaml" | "json";
   revision: string;
   config: T;
 }
@@ -46,9 +45,7 @@ export interface PersistentComponent extends ComponentContext {
   path: string;
 }
 export type PlanComponent =
-  | ManagedComponent
-  | InstalledComponent
-  | PersistentComponent;
+  ManagedComponent | InstalledComponent | PersistentComponent;
 export type PreparedComponent =
   | { name: string; uses: "sqlite"; path: string }
   | { name: string; uses: "convex"; stateDir: string }

@@ -8,21 +8,22 @@ import type {
 } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
+import { ConfigError } from "../config/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { occupiedPorts, recordedPorts } from "./ports";
-export function targetName(
-  command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
+import {
+  PREVIEW_SELECTOR,
+  patchedSettings,
+  targetNames,
+} from "../config/schema";
+type TargetKind = TargetRecord["kind"];
+const KIND_OF = { working: "local", stable: "live" } as const;
+const ROLE_OF = { local: "working", live: "stable" } as const;
+/** The generated name of a Branch's Preview, or the explicit deployment name. */
+export function previewName(
+  command: Pick<RuntimeCommand, "deployment" | "branch">,
 ): string {
-  if (command.target !== "preview") return command.target ?? "local";
-  if (command.deployment) {
-    if (["local", "live"].includes(command.deployment))
-      throw new RigError(
-        "PREVIEW_NAME",
-        "Preview names cannot be local or live.",
-        "Choose a distinct Preview deployment name.",
-      );
-    return command.deployment;
-  }
+  if (command.deployment) return command.deployment;
   if (!command.branch)
     throw new RigError(
       "PREVIEW_REQUIRED",
@@ -37,22 +38,68 @@ export function targetName(
       .slice(0, 40) || "branch";
   return `${slug}-${createHash("sha256").update(command.branch).digest("hex").slice(0, 8)}`;
 }
+/** Which Target a command's selector means. The selector is `preview`, the configured name of the Working copy or
+ * Stable Target, or a name one of them is still recorded under, so a Target stays reachable while its config is unreadable
+ * or names it differently. No selector means the Working copy. `name` is absent for a Working copy or Stable Target nothing names yet.
+ * Rejects TARGET_UNKNOWN for any other selector and PREVIEW_NAME for a new Preview named like the Working copy or Stable Target. */
+export function selectTarget(
+  command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
+  configured: Readonly<Record<"working" | "stable", string>> | undefined,
+  recorded: readonly Pick<TargetRecord, "kind" | "name">[],
+): { kind: TargetKind; name?: string } {
+  const named = (kind: "local" | "live") =>
+    configured?.[ROLE_OF[kind]] ?? recorded.find((t) => t.kind === kind)?.name;
+  const known = (["local", "live"] as const).flatMap((kind) => [
+    ...(configured ? [configured[ROLE_OF[kind]]] : []),
+    ...recorded.filter((t) => t.kind === kind).map((t) => t.name),
+  ]);
+  if (command.target === PREVIEW_SELECTOR) {
+    const name = previewName(command);
+    // A Preview recorded before the name was taken stays selectable, so it can still be stopped or destroyed.
+    if (
+      known.includes(name) &&
+      !recorded.some((t) => t.kind === "preview" && t.name === name)
+    )
+      throw new RigError(
+        "PREVIEW_NAME",
+        `'${name}' names this Project's Working copy or Stable Target.`,
+        "Choose a distinct Preview deployment name.",
+      );
+    return { kind: "preview", name };
+  }
+  if (command.target === undefined)
+    return { kind: "local", name: named("local") };
+  const role = (["working", "stable"] as const).find(
+    (role) => configured?.[role] === command.target,
+  );
+  const kind = role
+    ? KIND_OF[role]
+    : recorded.find((t) => t.kind !== "preview" && t.name === command.target)
+        ?.kind;
+  if (!kind || kind === "preview")
+    throw new RigError(
+      "TARGET_UNKNOWN",
+      `This Project has no Target named '${command.target}'.`,
+      `Select ${[...new Set(known)].join(", ") || "a configured Target"} or ${PREVIEW_SELECTOR}.`,
+    );
+  return { kind, name: named(kind) };
+}
 export async function planTarget(
   input: {
     command: RuntimeCommand;
+    /** The selected Target's kind; its name comes from the config the plan is made from. */
+    kind: TargetKind;
     project: ProjectRecord;
     document: ConfigDocument<ProjectConfig>;
     existing?: TargetRecord;
   },
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
-  const { command, project, document, existing } = input;
-  const kind = command.target ?? "local";
-  const name = targetName(command);
+  const { command, kind, project, document, existing } = input;
   if (
     existing &&
     (existing.kind !== kind ||
-      existing.name !== name ||
+      (kind === "preview" && existing.name !== previewName(command)) ||
       existing.projectId !== project.id)
   )
     throw new RigError(
@@ -69,7 +116,7 @@ export async function planTarget(
   if (kind !== "local") {
     const host = await deps.documents.host();
     const production =
-      document.config.live?.deployBranch ?? host.deploy.productionBranch;
+      document.config.production_branch ?? host.deploy.productionBranch;
     branch =
       branch ??
       (kind === "live"
@@ -82,7 +129,7 @@ export async function planTarget(
       throw new RigError(
         "BRANCH_POLICY",
         `Branch '${branch}' does not match this Target's deployment policy.`,
-        "Deploy the Production Branch to live and other Branches to Previews.",
+        "Deploy the Production Branch to the Stable Target and other Branches to Previews.",
       );
     const prepared = await deps.sources.prepare({
       project: project.id,
@@ -95,43 +142,46 @@ export async function planTarget(
     // The deployed revision serves its own committed config; the working copy only identified the Project.
     config = await committedConfig(prepared.workspacePath, project, deps);
   }
+  const name =
+    kind === "preview"
+      ? previewName(command)
+      : targetNames(config)[ROLE_OF[kind]];
+  const targets = (await deps.store.read()).targets;
+  // A Working copy or Stable Target keeps its identity under a new configured name, but never takes a Preview's.
+  if (
+    kind !== "preview" &&
+    targets.some(
+      (t) =>
+        t.projectId === project.id && t.kind === "preview" && t.name === name,
+    )
+  )
+    throw new RigError(
+      "TARGET_NAME",
+      `Target name '${name}' already belongs to a Preview of this Project.`,
+      `Choose another targets.${ROLE_OF[kind]}.name, or destroy that Preview first.`,
+    );
   const planInput = {
     config,
     target: kind,
     workspacePath,
     dataRoot: existing?.plan.dataRoot ?? join(base, "data"),
     deploymentName: name,
-    branchSlug: name,
     ...(branch ? { branch } : {}),
     ...(commit ? { commit } : {}),
   };
-  const occupied = occupiedPorts((await deps.store.read()).targets, id);
-  const lane =
-    kind === "local"
-      ? config.local
-      : kind === "live"
-        ? config.live
-        : config.deployments;
-  const requests = Object.entries(config.components).flatMap(
-    ([name, base]) => {
-      const component = { ...base, ...lane?.components?.[name] };
-      if (
-        ("mode" in component && component.mode === "managed") ||
-        ("uses" in component && component.uses !== "sqlite")
-      )
-        return [
-          { name, preferred: "port" in component ? component.port : undefined },
-          ...("uses" in component && component.uses === "convex"
-            ? [
-                {
-                  name: `${name}.site`,
-                  preferred: preferredSitePort(component),
-                },
-              ]
-            : []),
-        ];
-      return [];
-    },
+  const occupied = occupiedPorts(targets, id);
+  const settings = patchedSettings(
+    config,
+    kind === "preview" ? "preview" : ROLE_OF[kind],
+  );
+  const requests = Object.entries(settings.services ?? {}).flatMap(
+    ([name, service]) =>
+      Object.values(service.ports ?? {})
+        .slice(0, 1)
+        .map((port) => ({
+          name,
+          preferred: port === "auto" ? undefined : port,
+        })),
   );
   const previousPorts: Record<string, number> = existing
     ? recordedPorts(existing.plan.components)
@@ -185,7 +235,22 @@ async function committedConfig(
   project: ProjectRecord,
   deps: Pick<RuntimeDependencies, "documents">,
 ): Promise<ProjectConfig> {
-  const revision = await deps.documents.read(workspacePath);
+  const revision = await deps.documents
+    .read(workspacePath)
+    .catch((error: unknown) => {
+      // The refusal names files in rigd's checkout of the Commit; the way through is a new Commit, not editing them.
+      if (
+        error instanceof ConfigError &&
+        (error.code === "legacy_format" || error.code === "legacy_config")
+      )
+        throw new ConfigError(
+          `The deployed Commit carries retired configuration. ${error.message}`,
+          error.code,
+          error.context,
+          "Commit rig.yaml in the current schema, without rig.json beside it, then deploy that Commit.",
+        );
+      throw error;
+    });
   if (revision.config.name !== project.name)
     throw new RigError(
       "PROJECT_IDENTITY",
@@ -194,14 +259,4 @@ async function committedConfig(
       { revisionPath: revision.path },
     );
   return revision.config;
-}
-/** A Convex site port prefers its configured value, then the port after the component's own; none when neither is configured. */
-function preferredSitePort(component: {
-  port?: number;
-  sitePort?: number;
-}): number | undefined {
-  return (
-    component.sitePort ??
-    (component.port !== undefined ? component.port + 1 : undefined)
-  );
 }

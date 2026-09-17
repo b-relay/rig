@@ -7,6 +7,7 @@ import { observeTargets, OBSERVATION_EXPIRED } from "./status";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
+import { targetNames } from "../config/schema";
 import { recordedPorts } from "./ports";
 import { transitionInProgress } from "./project-status";
 import {
@@ -181,7 +182,7 @@ export async function doctor(
       checks.push(
         productionBranchCheck(
           target,
-          repository.document.config.live?.deployBranch ??
+          repository.document.config.production_branch ??
             (await deps.documents.host()).deploy.productionBranch,
         ),
       );
@@ -228,7 +229,7 @@ function productionBranchCheck(
     ok: false,
     message: `${target.name} was deployed from '${target.branch}', but Production is now '${production}'.`,
     reason: "production-branch-drift",
-    hint: `Run rig deploy ${target.name} to deploy '${production}', or set ${target.name}.deployBranch back to '${target.branch}'.`,
+    hint: `Run rig deploy ${target.name} to deploy '${production}', or set production_branch back to '${target.branch}'.`,
   };
 }
 /** One read of a config document, kept apart by why it cannot serve a comparison. */
@@ -329,7 +330,7 @@ async function configCheck(
       message,
       "config-drift",
       target.kind === "local"
-        ? "Run rig restart local (or rig down local, then rig up local) to apply the current configuration."
+        ? `Run rig restart ${target.name} (or rig down ${target.name}, then rig up) to apply the current configuration.`
         : `Run rig deploy ${deployArguments(target)} --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
     );
   const invalid = (failure: ConfigError) =>
@@ -360,8 +361,8 @@ async function configCheck(
   }
   const { config } = source.document;
   const recorded = new Set(target.plan.components.map((c) => c.name));
-  const added = Object.keys(config.components).filter(
-    (component) => !recorded.has(component),
+  const added = Object.keys(config.services ?? {}).filter(
+    (service) => !recorded.has(service),
   );
   try {
     const current = deps.documents.resolve({
@@ -369,8 +370,11 @@ async function configCheck(
       target: target.kind,
       workspacePath: target.plan.workspacePath,
       dataRoot: target.plan.dataRoot,
-      deploymentName: target.name,
-      branchSlug: target.plan.branchSlug,
+      // A renamed Working copy or Stable Target is drift until it is planned again.
+      deploymentName:
+        target.kind === "preview"
+          ? target.name
+          : targetNames(config)[target.kind === "local" ? "working" : "stable"],
       branch: target.branch,
       commit: target.commit,
       assignedPorts: recordedPorts(target.plan.components),
@@ -389,7 +393,7 @@ async function configCheck(
     if (!(error instanceof ConfigError)) throw error;
     return error.code === "missing_port" && added.length
       ? drift(
-          `${label} adds components the recorded Target policy does not have (${added.join(", ")}).`,
+          `${label} adds Services the recorded Target policy does not have (${added.join(", ")}).`,
         )
       : invalid(error);
   }
@@ -399,7 +403,7 @@ function deployArguments(
   target: Pick<TargetRecord, "kind" | "name" | "branch">,
 ): string {
   return target.kind === "live"
-    ? "live"
+    ? target.name
     : `preview ${target.branch ?? target.name}`;
 }
 const HEALTHY_STATES = new Set([

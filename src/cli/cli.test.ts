@@ -348,6 +348,7 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
             repoPath: "/workspace",
             productionBranch: "main",
             currentBranch: "main",
+            targets: { working: "local", stable: "live" },
           };
         return { project: "test", outcome: "unchanged" };
       },
@@ -404,17 +405,15 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
         "app",
         "--production-branch",
         "production",
-        "--uses",
-        "sqlite,postgres",
-        "--managed",
+        "--service",
         "web",
-        "--managed-command",
+        "--run",
         "bun web.ts",
-        "--managed-port",
+        "--port",
         "3010",
-        "--installed",
+        "--tool",
         "app",
-        "--installed-entrypoint",
+        "--bin",
         "app.ts",
       ],
       dependencies,
@@ -425,9 +424,8 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     repoPath: "/other",
     project: "app",
     productionBranch: "production",
-    uses: ["sqlite", "postgres"],
-    managed: { name: "web", command: "bun web.ts", port: 3010 },
-    installed: { name: "app", entrypoint: "app.ts" },
+    service: { name: "web", run: "bun web.ts", port: 3010 },
+    tool: { name: "app", bin: "app.ts" },
   });
   expect(
     await runRigCli(
@@ -723,7 +721,7 @@ test("scoped JSON also renders usage failures before a daemon request is created
     wait: async () => {},
     newOperationId: () => "unused",
   };
-  expect(await runRigCli(["up", "nonsense", "--json"], dependencies)).toBe(1);
+  expect(await runRigCli(["up", "preview", "--json"], dependencies)).toBe(1);
   expect(JSON.parse(text)).toMatchObject({ error: { code: "USAGE" } });
   expect(errors).toBe("");
   expect(calls).toBe(0);
@@ -1186,7 +1184,6 @@ test("help names an unknown command and fails, while help <command> and <command
   for (const path of [
     ["help", "deploy"],
     ["deploy", "help"],
-    ["help", "deploy", "preview"],
     ["help"],
   ]) {
     sink.text = "";
@@ -1201,8 +1198,8 @@ test("a usage error hints the failing subcommand's own help", async () => {
   const dependencies = quietDependencies(sink);
   for (const [path, hint] of [
     [["up", "--bogus"], "Run rig up --help."],
-    [["deploy", "preview", "--bogus"], "Run rig deploy preview --help."],
-    [["deploy", "bogus"], "Run rig deploy --help."],
+    [["deploy", "preview", "--bogus"], "Run rig deploy --help."],
+    [["deploy", "live", "--deployment", "x"], "rig deploy preview --deployment"],
     [["nonsense"], "Run rig --help."],
   ] as const) {
     sink.text = "";

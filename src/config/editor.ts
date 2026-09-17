@@ -63,30 +63,3 @@ export function applyYamlEdits(
     } else document.setIn(path, edit.value);
   }
 }
-
-/** Mutates a private JSON object; callers validate the complete resulting document before writing. */
-export function applyJsonEdits(
-  config: Record<string, unknown>,
-  edits: readonly ConfigEdit[],
-): void {
-  for (const edit of edits) {
-    validateEditPath(edit.path);
-    let cursor: Record<string, unknown> | undefined = config;
-    for (const key of edit.path.slice(0, -1)) {
-      if (cursor[key] === undefined) {
-        if (edit.op === "remove") {
-          cursor = undefined;
-          break;
-        }
-        cursor[key] = {};
-      }
-      const next: unknown = cursor[key];
-      if (typeof next !== "object" || next === null || Array.isArray(next))
-        throw new ConfigError("Edit path is not an object.", "invalid_edit");
-      cursor = next as Record<string, unknown>;
-    }
-    if (!cursor) continue;
-    if (edit.op === "remove") delete cursor[edit.path.at(-1)!];
-    else cursor[edit.path.at(-1)!] = edit.value;
-  }
-}

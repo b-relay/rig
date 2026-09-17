@@ -45,6 +45,7 @@ function fixture() {
             project: "demo",
             repoPath: "/repo",
             productionBranch: "main",
+            targets: { working: "local", stable: "live" },
             currentBranch: "feature",
           };
         return {
@@ -133,6 +134,28 @@ test("implicit Production deployment requires explicit branch noninteractively o
   ).toMatchObject({ branch: "main" });
 });
 
+test("Production confirmation follows the Stable Target's configured name, not the word live", async () => {
+  const { deps } = fixture();
+  deps.client.command = async () => ({
+    project: "demo",
+    repoPath: "/repo",
+    productionBranch: "main",
+    targets: { working: "dev", stable: "production" },
+    currentBranch: "feature",
+  });
+  delete deps.interaction;
+  await expect(
+    prepareInteractiveRequest({ action: "deploy", target: "production" }, deps),
+  ).rejects.toMatchObject({
+    code: "PRODUCTION_CONFIRMATION",
+    hint: "Pass the Production Branch explicitly: rig deploy production main.",
+  });
+  // 'live' names nothing here, so the daemon decides; no Production Branch is assumed for it.
+  expect(
+    await prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+  ).toEqual({ action: "deploy", target: "live" });
+});
+
 test("interactive read protocol errors are safe structured daemon failures", async () => {
   const { deps } = fixture();
   deps.client.command = async () => ({ unexpected: "secret-value" });
@@ -151,6 +174,7 @@ test("cancellation while a context query is pending prevents a deploy request fr
       project: "demo",
       repoPath: "/repo",
       productionBranch: "main",
+      targets: { working: "local", stable: "live" },
       currentBranch: "main",
     };
   };

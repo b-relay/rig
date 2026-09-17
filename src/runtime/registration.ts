@@ -170,7 +170,8 @@ export async function updateRegistration(
         target.id,
         await planTarget(
           {
-            command: { ...command, target: "local" },
+            command,
+            kind: "local",
             project: { ...project, repoPath },
             document,
             existing: target,

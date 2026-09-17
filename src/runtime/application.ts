@@ -39,7 +39,8 @@ import {
   assertIdentity,
   registeredDirectoryMissing,
 } from "./projects";
-import { persistTarget, planTarget, targetName } from "./targets";
+import { persistTarget, planTarget, selectTarget } from "./targets";
+import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
 import {
@@ -310,9 +311,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           project: project.name,
           repoPath: project.repoPath,
           productionBranch:
-            selection.document!.config.live?.deployBranch ??
+            selection.document!.config.production_branch ??
             (await deps.documents.host()).deploy.productionBranch,
           currentBranch,
+          targets: targetNames(selection.document!.config),
         };
       }
       if (command.action === "config")
@@ -345,26 +347,51 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             "Push a local Branch to the rig remote.",
           );
         const production =
-          selection.document!.config.live?.deployBranch ??
+          selection.document!.config.production_branch ??
           (await deps.documents.host()).deploy.productionBranch;
+        // A push selects by role: the Production Branch is the Stable Target whatever it is named.
         command = {
           ...command,
-          target: command.branch === production ? "live" : "preview",
+          target:
+            command.branch === production
+              ? targetNames(selection.document!.config).stable
+              : PREVIEW_SELECTOR,
         };
       }
       if (
         command.action === "deploy" &&
-        command.target === "preview" &&
+        command.target === PREVIEW_SELECTOR &&
         !command.branch
       )
         command = {
           ...command,
           branch: await deps.sources.currentBranch(project.repoPath),
         };
-      const name = targetName(command);
+      const configured = await configuredNames(
+        selection.document,
+        project,
+        deps,
+      );
+      const selected = ((): ReturnType<typeof selectTarget> => {
+        try {
+          return selectTarget(command, configured.names, targets);
+        } catch (error) {
+          // A name only the unreadable config could define is that config's failure, not an unknown Target.
+          throw error instanceof RigError &&
+            error.code === "TARGET_UNKNOWN" &&
+            configured.failure
+            ? configured.failure
+            : error;
+        }
+      })();
+      const kind = selected.kind;
+      const name = selected.name ?? command.target ?? "the Working copy";
       aimed = name;
-      target = targets.find((t) => t.name === name);
-      if (target && target.kind !== (command.target ?? "local"))
+      target =
+        kind === "preview"
+          ? targets.find((t) => t.name === name)
+          : targets.find((t) => t.kind === kind);
+      if (target && target.kind !== kind)
         throw new RigError(
           "TARGET_IDENTITY",
           "The selected Target kind does not match its recorded identity.",
@@ -392,17 +419,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         } satisfies LogsResult;
       }
       if (command.action === "deploy" || command.action === "git-push") {
-        if ((command.target ?? "local") === "local")
+        if (kind === "local")
           throw new RigError(
             "DEPLOY_TARGET",
-            "Deploy needs live or preview.",
+            "Deploy needs the Stable Target or a Preview.",
             "Use rig up for the Working copy Target.",
           );
         const document = selection.document!;
         const branch =
           command.branch ??
-          (command.target === "live"
-            ? (document.config.live?.deployBranch ??
+          (kind === "live"
+            ? (document.config.production_branch ??
               (await deps.documents.host()).deploy.productionBranch)
             : await deps.sources.currentBranch(project.repoPath));
         attempted = true;
@@ -419,7 +446,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
                 repoPath: project.repoPath,
                 branch,
                 productionBranch:
-                  document.config.live?.deployBranch ??
+                  document.config.production_branch ??
                   (await deps.documents.host()).deploy.productionBranch,
               });
         const commit = command.commit
@@ -440,7 +467,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             ...previous,
           });
         const replacements =
-          command.target === "preview" && !target
+          kind === "preview" && !target
             ? previewsToReplace(
                 targets,
                 (await deps.documents.host()).deploy.generated,
@@ -449,6 +476,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         const candidate = await planTarget(
           {
             command: { ...command, branch, commit },
+            kind,
             project,
             document,
             existing: target,
@@ -504,11 +532,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         });
       }
       if (command.action === "destroy") {
-        if (command.target !== "preview")
+        if (kind !== "preview")
           throw new RigError(
             "DESTROY_TARGET",
             "Only Previews can be destroyed.",
-            "Use down to stop local or live.",
+            "Use down to stop the Working copy or Stable Target.",
           );
         if (!target) throw missingTarget(command, name);
         attempted = true;
@@ -516,16 +544,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await destroyPreview(target, deps);
         return await finish("stopped");
       }
-      if (
-        !target &&
-        (command.action !== "up" || (command.target ?? "local") !== "local")
-      )
+      if (!target && (command.action !== "up" || kind !== "local"))
         throw missingTarget(command, name);
       attempted = true;
       if (!target) {
         target = await planTarget(
           {
             command,
+            kind,
             project,
             document: await workingCopyDocument(project, deps),
           },
@@ -799,19 +825,37 @@ async function pruneCheckpoints(
     });
   }
 }
+/** The names the Project's current rig.yaml gives its Working copy and Stable Target. A config that cannot be read, or
+ * that names another Project, yields its failure instead so recorded names keep selecting Targets to stop or inspect. */
+async function configuredNames(
+  document: ConfigDocument<ProjectConfig> | undefined,
+  project: ProjectRecord,
+  deps: Pick<RuntimeDependencies, "documents">,
+): Promise<{
+  names?: ReturnType<typeof targetNames>;
+  failure?: unknown;
+}> {
+  try {
+    const current = document ?? (await deps.documents.read(project.repoPath));
+    assertIdentity(project, current);
+    return { names: targetNames(current.config) };
+  } catch (failure) {
+    return { failure };
+  }
+}
 /** Names the Preview by the Branch or deployment the user typed; the hashed slug stays internal. */
 function missingTarget(
   command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
   name: string,
 ): RigError {
   const label =
-    command.target === "preview"
+    command.target === PREVIEW_SELECTOR
       ? `Preview '${command.deployment ?? command.branch ?? name}'`
       : `Target '${name}'`;
   return new RigError(
     "TARGET_MISSING",
     `${label} has no recorded deployment.`,
-    "Use rig up for local, or deploy this Target first.",
+    "Use rig up for the Working copy, or deploy this Target first.",
   );
 }
 /** A --no-up deploy leaves nothing serving; the warning carries the exact command that starts the new deployment. */
@@ -845,7 +889,7 @@ async function replanWorkingCopy(
 ): Promise<TargetRecord> {
   const document = await workingCopyDocument(project, deps);
   const replanned = await planTarget(
-    { command, project, document, existing: target },
+    { command, kind: "local", project, document, existing: target },
     deps,
   );
   await persistTarget(replanned, deps.store);
@@ -997,10 +1041,8 @@ function unappliedInitFlags(command: RuntimeCommand): string[] {
   const flags: [keyof RuntimeCommand, string][] = [
     ["productionBranch", "--production-branch"],
     ["domain", "--domain"],
-    ["proxy", "--proxy"],
-    ["uses", "--uses"],
-    ["managed", "--managed"],
-    ["installed", "--installed"],
+    ["service", "--service"],
+    ["tool", "--tool"],
   ];
   return flags
     .filter(([field]) => command[field] !== undefined)

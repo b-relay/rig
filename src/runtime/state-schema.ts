@@ -31,7 +31,8 @@ const component = z.discriminatedUnion("kind", [
     ...common,
     kind: z.literal("managed"),
     command: text,
-    port: z.number().int().min(1).max(65535),
+    port: z.number().int().min(1).max(65535).optional(),
+    ports: z.record(text, z.number().int().min(1).max(65535)).optional(),
     sitePort: z.number().int().min(1).max(65535).optional(),
     health: text.optional(),
     readyTimeout: z.number().positive(),
@@ -89,7 +90,20 @@ export const targetPlanSchema = z.object({
     ]),
   ),
   domain: text.optional(),
-  proxy: z.object({ upstream: text }).optional(),
+  proxy: z
+    .object({
+      upstream: text,
+      routes: z
+        .array(
+          z.object({
+            prefix: text,
+            service: text,
+            port: z.number().int().min(1).max(65535),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
   hooks: hooks.optional(),
   hookTimeout: z.number().positive().optional(),
   installTimeout: z.number().positive().optional(),

@@ -187,26 +187,29 @@ export async function planTarget(
   );
   const requests = Object.entries(settings.services ?? {}).flatMap(
     ([name, service]) =>
-      Object.values(service.ports ?? {})
-        .slice(0, 1)
-        .map((port) => ({
-          name,
-          preferred: port === "auto" ? undefined : port,
-        })),
+      Object.entries(service.ports ?? {}).map(([port, value], index) => ({
+        name: `${name}.${port}`,
+        // A plan recorded before named ports kept its one assignment under the Service's name.
+        legacy: index === 0 ? name : undefined,
+        preferred: value === "auto" ? undefined : value,
+      })),
   );
-  const previousPorts: Record<string, number> = existing
+  const recorded: Record<string, number> = existing
     ? recordedPorts(existing.plan.components)
     : {};
+  const previous = (request: (typeof requests)[number]) =>
+    recorded[request.name] ??
+    (request.legacy === undefined ? undefined : recorded[request.legacy]);
   const prior = Object.fromEntries(
     requests
       .filter(
         (request) =>
-          previousPorts[request.name] !== undefined &&
+          previous(request) !== undefined &&
           (kind === "preview" ||
             request.preferred === undefined ||
-            request.preferred === previousPorts[request.name]),
+            request.preferred === previous(request)),
       )
-      .map((request) => [request.name, previousPorts[request.name]!]),
+      .map((request) => [request.name, previous(request)!]),
   );
   const selected = await deps.files.selectPorts({
     requests: requests.filter((r) => !prior[r.name]),

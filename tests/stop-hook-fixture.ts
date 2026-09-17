@@ -1,3 +1,4 @@
+import { loopbackListeners } from "./support/activation-doubles";
 import type { TargetEffects } from "../src/runtime/lifecycle";
 import { createTargetLifecycle } from "../src/runtime/lifecycle";
 import type { ProcessObservation } from "../src/providers/contracts";
@@ -23,7 +24,7 @@ export function stopHookFixture(active: string[] = []) {
       async observe(key) {
         const observation = observations.get(key);
         if (observation instanceof Error) throw observation;
-        return observation ?? { state: running.has(key) ? "running" : "stopped" };
+        return observation ?? (running.has(key) ? { state: "running", pid: 1 } : { state: "stopped" });
       },
       async stop(key) {
         stops.push(key);
@@ -49,6 +50,7 @@ export function stopHookFixture(active: string[] = []) {
     async install() { return { outcome: "unchanged" }; },
     async route() {},
     async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001, 4567]),
   };
   return { lifecycle: createTargetLifecycle(effects), running, hooks, stops, observations, hookFailures, stopFailures };
 }

@@ -1,3 +1,4 @@
+import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -40,7 +41,9 @@ async function fixture() {
   const transitions: string[] = [];
   const supervisor: Supervisor = {
     async observe(key) {
-      return { state: running.has(key) ? "running" : "stopped" };
+      return running.has(key)
+        ? { state: "running", pid: 1 }
+        : { state: "stopped" };
     },
     async ensureRunning(request) {
       transitions.push(`start ${request.key}`);
@@ -55,6 +58,7 @@ async function fixture() {
     async detach() {},
   };
   const effects = createTargetEffects({
+    ...localActivation([12345, 12346]),
     recordingTime: () => new Date().toISOString(),
     root,
     environment: {},

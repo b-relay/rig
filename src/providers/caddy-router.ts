@@ -11,10 +11,18 @@ import {
 import { dirname } from "node:path";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
+/** One path prefix of a hostname. It matches the prefix itself and everything below its next slash, and the upstream sees the
+ * path unchanged. A `null` upstream is withheld: its requests are answered 503 and reach no process. */
+export interface RoutePath {
+  readonly prefix: string;
+  readonly upstream: string | null;
+}
+/** The whole route map of one hostname, in matching order: the first path that matches a request takes it, so the caller lists
+ * longer prefixes first. '/' must be among them. */
 export interface RouteRequest {
   readonly key: string;
   readonly hostname: string;
-  readonly upstream: string;
+  readonly routes: readonly RoutePath[];
 }
 export interface RouteCheckpoint {
   readonly key: string;
@@ -23,6 +31,8 @@ export interface RouteCheckpoint {
 export interface Router {
   apply(route: RouteRequest): Promise<void>;
   remove(key: string): Promise<void>;
+  /** The prefixes of the published route that reach no process; empty without a route. */
+  withheld(key: string): Promise<string[]>;
   checkpoint(key: string): Promise<RouteCheckpoint>;
   restore(saved: RouteCheckpoint, expected: RouteCheckpoint): Promise<void>;
 }
@@ -48,8 +58,14 @@ export function createCaddyRouter(options: {
       (!/^(?:https?:\/\/)?[a-zA-Z0-9][a-zA-Z0-9.\-]*(?::\d{1,5})?$/.test(
         route.hostname,
       ) ||
-        !/^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):\d{1,5}$/.test(
-          route.upstream,
+        !route.routes.some((path) => path.prefix === "/") ||
+        route.routes.some(
+          (path) =>
+            !/^\/[A-Za-z0-9._~\/-]*$/.test(path.prefix) ||
+            (path.upstream !== null &&
+              !/^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):\d{1,5}$/.test(
+                path.upstream,
+              )),
         ))
     )
       throw new RigError(
@@ -88,13 +104,16 @@ export function createCaddyRouter(options: {
     const block = restoration
       ? (restoration.saved.value ?? "")
       : route
-        ? `${begin}\n${route.hostname} {\n  reverse_proxy ${route.upstream}\n${(options.extraConfig ?? []).map((line) => "  " + line + "\n").join("")}}\n${end}\n`
+        ? `${begin}\n${route.hostname} {\n${siteRoutes(route.routes)}${(options.extraConfig ?? []).map((line) => "  " + line + "\n").join("")}}\n${end}\n`
         : "";
     // Nothing owned to remove and nothing to add leaves the file, and Caddy, untouched.
     if (!block && existing === null) return;
     const after =
       without + (without && !without.endsWith("\n") ? "\n" : "") + block;
-    if (after === before) return;
+    // A withdrawal is reloaded even when the file already says it: what Caddy serves can differ from the file after a reload
+    // that failed, and a process is about to start behind whatever Caddy serves now.
+    const withdrawing = route?.routes.some((path) => path.upstream === null);
+    if (after === before && !withdrawing) return;
     // Write through a symlinked Caddyfile so the file Caddy reads changes and the link survives.
     const file = await realpath(options.caddyfile).catch(
       () => options.caddyfile,
@@ -192,6 +211,14 @@ export function createCaddyRouter(options: {
   return {
     apply: (route) => serialized(route.key, route),
     remove: (key) => serialized(key),
+    async withheld(key) {
+      await pending.catch(() => {});
+      const text = await readFile(options.caddyfile, "utf8").catch((error) => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      return withheldPrefixes(ownedBlock(text, key) ?? "");
+    },
     async checkpoint(key) {
       await pending.catch(() => {});
       const text = await readFile(options.caddyfile, "utf8").catch((error) => {
@@ -215,6 +242,34 @@ function describeStartFailure(error: unknown): string {
     return typeof cause === "string" ? cause : error.message;
   }
   return error instanceof Error ? error.message : String(error);
+}
+/** A lone '/' is the site's one handler. Several paths become mutually exclusive `handle` blocks in the given order; each
+ * matcher names the prefix and its subtree, so '/api' never takes '/apix'. */
+function siteRoutes(routes: readonly RoutePath[]): string {
+  const handler = (path: RoutePath) =>
+    path.upstream === null ? "respond 503" : `reverse_proxy ${path.upstream}`;
+  if (routes.length === 1) return `  ${handler(routes[0]!)}\n`;
+  return routes
+    .map((path, index) =>
+      path.prefix === "/"
+        ? `  handle {\n    ${handler(path)}\n  }\n`
+        : `  @rig${index} path ${path.prefix} ${path.prefix}/*\n  handle @rig${index} {\n    ${handler(path)}\n  }\n`,
+    )
+    .join("");
+}
+/** Reads back what `siteRoutes` wrote: the prefixes whose handler is `respond 503`. */
+function withheldPrefixes(block: string): string[] {
+  const matchers = new Map<string, string>();
+  const withheld: string[] = [];
+  let prefix = "/";
+  for (const line of block.split("\n").map((text) => text.trim())) {
+    const matcher = /^(@rig\d+) path (\S+) /.exec(line);
+    if (matcher) matchers.set(matcher[1]!, matcher[2]!);
+    const handle = /^handle(?: (@rig\d+))? \{$/.exec(line);
+    if (handle) prefix = handle[1] ? (matchers.get(handle[1]) ?? "/") : "/";
+    if (line === "respond 503") withheld.push(prefix);
+  }
+  return withheld;
 }
 /** Caddy serves one site per host and port; a bare address defaults to 443
  * (80 under http://), so `example.com` and `example.com:443` are one site and

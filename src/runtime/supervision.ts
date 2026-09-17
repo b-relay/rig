@@ -153,7 +153,7 @@ export function activationJournal(
       begun.push(service);
       return incarnation;
     },
-    // #242 inspects the activation's listeners here, before the route is published.
+    // The lifecycle has verified readiness and listeners by now; nothing more is recorded for the transition.
     async activated() {},
     async failed(error) {
       for (const service of begun.splice(0)) {

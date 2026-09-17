@@ -918,6 +918,19 @@ test("a proxy must include '/' and reference declared Service ports", () => {
       "/api/*": "${services.api.ports.http}",
     }),
   ).toContain("must be a path prefix starting with '/' without wildcards");
+  expect(
+    hint({
+      "/": "${services.web.ports.http}",
+      "/api": "${services.api.ports.http}",
+      "/api/": "${services.web.ports.http}",
+    }),
+  ).toContain("proxy./api/: Proxy '/api/' and '/api' are the same path.");
+  expect(
+    hint({
+      "/": "${services.web.ports.http}",
+      "//": "${services.api.ports.http}",
+    }),
+  ).toContain("proxy.//: Proxy '//' names no path.");
 });
 
 // ---------------------------------------------------------------------------
@@ -1397,6 +1410,7 @@ test("Target resolution provides forward port references, environment inheritanc
     kind: "managed",
     command: "api --port 8081",
     port: 8081,
+    ports: { http: 8081 },
     readyTimeout: 30,
     restart: "always",
     dependsOn: [],
@@ -1762,12 +1776,53 @@ test.each([
   },
 );
 
+test("every declared port is assigned and referable, a Service may declare none, and the route map is planned longest prefix first", () => {
+  const plan = resolveTargetPlan({
+    config: parseProjectConfig({
+      name: "app",
+      domain: "app.test",
+      services: {
+        web: {
+          run: "serve ${services.web.ports.http} ${services.web.ports.admin}",
+          ports: { http: "auto", admin: 4200 },
+        },
+        api: { run: "api", ports: { http: "auto" } },
+        worker: { run: "work ${services.api.ports.http}" },
+      },
+      proxy: {
+        "/": "${services.web.ports.http}",
+        "/api": "${services.api.ports.http}",
+        "/api/admin/": "${services.web.ports.admin}",
+      },
+    }),
+    target: "live",
+    ...roots_,
+    // A plan saved before ports had names assigned the first port under the Service's own name.
+    assignedPorts: { web: 4100, "api.http": 4300 },
+  });
+  expect(plan.components).toMatchObject([
+    {
+      name: "web",
+      command: "serve 4100 4200",
+      port: 4100,
+      ports: { http: 4100, admin: 4200 },
+    },
+    { name: "api", port: 4300, ports: { http: 4300 } },
+    { name: "worker", command: "work 4300" },
+  ]);
+  const worker = plan.components[2]!;
+  expect("port" in worker || "ports" in worker).toBe(false);
+  expect(plan.proxy).toEqual({
+    upstream: "web",
+    routes: [
+      { prefix: "/api/admin", service: "web", port: 4200 },
+      { prefix: "/api", service: "api", port: 4300 },
+      { prefix: "/", service: "web", port: 4100 },
+    ],
+  });
+});
+
 test.each([
-  [
-    "a Service with several ports",
-    { services: web({ ports: { http: "auto", admin: "auto" } }) },
-    "services.web.ports",
-  ],
   [
     "a patch that introduces one",
     { targets: { stable: { services: { web: { workdir: "apps/web" } } } } },

@@ -32,6 +32,9 @@ import type {
 import { isSourceEntrypoint } from "../providers/artifact-installer";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
+import type { ListenerInspection } from "../providers/listener-inspection";
+import type { PortProbe } from "../providers/port-probe";
+import { declaredPorts, plannedRoutes } from "../runtime/ports";
 import type { TargetEffects } from "../runtime/lifecycle";
 /** The last non-empty output line, trimmed to fit one log line, or undefined. */
 function lastLine(output: string): string | undefined {
@@ -61,6 +64,9 @@ export interface TargetAdapterOptions {
   run: CommandRunner;
   installer: ArtifactInstaller;
   router: Router;
+  /** Asks whether a declared port accepts connections; `probeLocalPort` on the platform. */
+  connect: PortProbe;
+  listeners: ListenerInspection;
   environment: Readonly<Record<string, string>>;
 }
 export function installedPath(
@@ -242,8 +248,9 @@ export function createTargetEffects(
     target: TargetRecord,
     signal: AbortSignal,
   ): Promise<HealthCheck> => {
-    if (!component.health) return { ready: false, reason: "no health check" };
-    const check = await probe(component, target, signal);
+    const check = component.health
+      ? await probe(component, target, signal)
+      : await connections(component, signal);
     const evidence = check.ready ? "ready" : check.reason;
     const key = `${target.id}:${component.name}`;
     if (lastHealth.get(key) !== evidence) {
@@ -251,6 +258,20 @@ export function createTargetEffects(
       await recordLines(target, component.name, "health", [evidence]);
     }
     return check;
+  };
+  /** Without a check of its own a Service is ready once every port it declares accepts a connection. */
+  const connections = async (
+    component: ManagedComponent,
+    signal: AbortSignal,
+  ): Promise<HealthCheck> => {
+    const ports = Object.entries(declaredPorts(component));
+    if (!ports.length) return { ready: false, reason: "no health check" };
+    for (const [name, port] of ports) {
+      const check = await options.connect(port, signal);
+      if (!check.ready)
+        return { ready: false, reason: `${name}: ${check.reason}` };
+    }
+    return { ready: true };
   };
   /** An HTTP answer below 400, a redirect included, means the process is serving; a shell probe passes on exit 0. */
   const probe = async (
@@ -588,26 +609,39 @@ export function createTargetEffects(
       );
       return { outcome: "installed" };
     },
-    async route(target) {
+    listeners: (pid, signal) => options.listeners.inspect(pid, signal),
+    async route(target, change) {
       if (!target.plan.domain || !target.plan.proxy)
         return transactions.withRouteChange(target.id, () =>
           options.router.remove(target.id),
         );
-      const component = target.plan.components.find(
-        (c) => c.name === target.plan.proxy!.upstream,
-      );
-      if (component?.kind !== "managed")
+      const routes = plannedRoutes(target.plan);
+      if (!routes.length)
         throw new RigError(
           "ROUTE_UPSTREAM",
           "The route upstream is not a managed Component.",
           "Correct the Project proxy configuration.",
         );
       const domain = target.plan.domain;
+      const held = new Set(await options.router.withheld(target.id));
+      const withheld = new Set([
+        ...routes
+          .filter((route) => held.has(route.prefix))
+          .map((route) => route.service),
+        ...("withhold" in change ? change.withhold : []),
+      ]);
+      if ("verified" in change)
+        for (const service of change.verified) withheld.delete(service);
       await transactions.withRouteChange(target.id, () =>
         options.router.apply({
           key: target.id,
           hostname: domain,
-          upstream: `127.0.0.1:${component.port}`,
+          routes: routes.map((route) => ({
+            prefix: route.prefix,
+            upstream: withheld.has(route.service)
+              ? null
+              : `127.0.0.1:${route.port}`,
+          })),
         }),
       );
     },

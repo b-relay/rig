@@ -1,3 +1,4 @@
+import { loopbackListeners } from "./support/activation-doubles";
 import { RigError } from "../src/domain/errors";
 import { ConfigError } from "../src/config/errors";
 import {
@@ -814,7 +815,10 @@ test("repoint refuses a config whose port another Target records and leaves the 
     name: "live",
     kind: "live",
   });
-  (foreign.plan.components[0] as { port: number }).port = 4600;
+  Object.assign(foreign.plan.components[0]!, {
+    port: 4600,
+    ports: { http: 4600 },
+  });
   state.targets.push(foreign);
   config.services!.web = {
     run: "serve --host 127.0.0.1",
@@ -871,7 +875,10 @@ test("ports owned by a Target's unresolved recovery plan stay reserved while oth
   });
   const live = state.targets[0]!;
   const previousPlan = structuredClone(live.plan);
-  (previousPlan.components[0] as { port: number }).port = 4600;
+  Object.assign(previousPlan.components[0]!, {
+    port: 4600,
+    ports: { http: 4600 },
+  });
   live.recovery = {
     plan: previousPlan,
     branch: "main",
@@ -2698,7 +2705,7 @@ test("local and Preview planning use real selection with inventory exclusion and
   const local = state.targets.find((record) => record.kind === "local")!;
   const localWeb = local.plan.components[0]!;
   if (localWeb.kind !== "managed") throw new Error("Expected managed web");
-  config.services!.web!.ports = { http: localWeb.port };
+  config.services!.web!.ports = { http: localWeb.port! };
   await runtime.command({
     action: "deploy",
     project: "demo",
@@ -3194,6 +3201,7 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
       return { outcome: "unchanged" };
     },
     async route() {},
+    listeners: async (pid: number) => loopbackListeners(pid, []),
     async removeRoute() {},
   });
   try {

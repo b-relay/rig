@@ -1,7 +1,36 @@
-import type { PlanComponent } from "../config/types";
+import type {
+  ManagedComponent,
+  PlanComponent,
+  PlanRoute,
+  TargetPlan,
+} from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 
-/** Reuses recorded assignments, including the separate Convex site port. */
+/** Every port a Service declares, by name. A plan recorded before named ports names its one port `port`. */
+export function declaredPorts(
+  component: Pick<ManagedComponent, "port" | "ports">,
+): Record<string, number> {
+  return (
+    component.ports ??
+    (component.port === undefined ? {} : { port: component.port })
+  );
+}
+/** The Target's route map, longest prefix first; empty without a hostname or a proxy. A plan recorded before route maps
+ * routes '/' to its upstream's one port. */
+export function plannedRoutes(
+  plan: Pick<TargetPlan, "domain" | "proxy" | "components">,
+): PlanRoute[] {
+  if (!plan.domain || !plan.proxy) return [];
+  if (plan.proxy.routes) return plan.proxy.routes;
+  const upstream = plan.components.find(
+    (component) => component.name === plan.proxy!.upstream,
+  );
+  return upstream?.kind === "managed" && upstream.port !== undefined
+    ? [{ prefix: "/", service: upstream.name, port: upstream.port }]
+    : [];
+}
+/** Recorded assignments keyed `<service>.<port>`, as `resolveTargetPlan` takes them back; a plan recorded before named
+ * ports yields its Service name alone. Includes the separate Convex site port. */
 export function recordedPorts(
   components: readonly PlanComponent[],
 ): Record<string, number> {
@@ -9,7 +38,14 @@ export function recordedPorts(
     components.flatMap((component) =>
       component.kind === "managed"
         ? [
-            [component.name, component.port],
+            ...(component.ports
+              ? Object.entries(component.ports).map(([port, value]) => [
+                  `${component.name}.${port}`,
+                  value,
+                ])
+              : component.port === undefined
+                ? []
+                : [[component.name, component.port]]),
             ...(component.sitePort
               ? [[`${component.name}.site`, component.sitePort]]
               : []),

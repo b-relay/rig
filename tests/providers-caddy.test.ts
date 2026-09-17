@@ -77,7 +77,7 @@ test("route changes preserve unrelated text and rollback the file if reload fail
   await router.apply({
     key: "target/web",
     hostname: "app.example.test",
-    upstream: "127.0.0.1:3000",
+    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
   });
   const deployed = await readFile(file, "utf8");
   expect(deployed.startsWith(unrelated)).toBe(true);
@@ -87,7 +87,7 @@ test("route changes preserve unrelated text and rollback the file if reload fail
     router.apply({
       key: "target/web",
       hostname: "app.example.test",
-      upstream: "127.0.0.1:3001",
+      routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
     }),
   ).rejects.toThrow();
   expect(await readFile(file, "utf8")).toBe(deployed);
@@ -98,7 +98,7 @@ test("route changes preserve unrelated text and rollback the file if reload fail
     router.apply({
       key: "other",
       hostname: "other.example.test",
-      upstream: "127.0.0.1:3002",
+      routes: [{ prefix: "/", upstream: "127.0.0.1:3002" }],
     }),
   ).rejects.toThrow("owned");
 });
@@ -118,6 +118,11 @@ test("real Caddy applies and removes an isolated route without affecting another
     hostname: "127.0.0.1",
     port: 0,
     fetch: () => new Response("managed app"),
+  });
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => new Response(`api ${new URL(request.url).pathname}`),
   });
   const reserve = () => {
     const server = Bun.serve({
@@ -175,7 +180,7 @@ test("real Caddy applies and removes an isolated route without affecting another
     await router.apply({
       key: "real-route",
       hostname: `http://127.0.0.1:${site}`,
-      upstream: `127.0.0.1:${upstream.port}`,
+      routes: [{ prefix: "/", upstream: `127.0.0.1:${upstream.port}` }],
     });
     expect(await (await fetch(`http://127.0.0.1:${site}`)).text()).toBe(
       "managed app",
@@ -183,6 +188,31 @@ test("real Caddy applies and removes an isolated route without affecting another
     expect(await (await fetch(`http://127.0.0.1:${other}`)).text()).toBe(
       "other app",
     );
+    // A route map: a prefix matches at a slash boundary only, the longest first, and the upstream sees the path unchanged.
+    const routes = (apiUpstream: string | null) => [
+      { prefix: "/api", upstream: apiUpstream },
+      { prefix: "/", upstream: `127.0.0.1:${upstream.port}` },
+    ];
+    const get = async (path: string) => {
+      const response = await fetch(`http://127.0.0.1:${site}${path}`);
+      return `${response.status} ${await response.text()}`;
+    };
+    await router.apply({
+      key: "real-route",
+      hostname: `http://127.0.0.1:${site}`,
+      routes: routes(`127.0.0.1:${api.port}`),
+    });
+    expect(await get("/api/users")).toBe("200 api /api/users");
+    expect(await get("/api")).toBe("200 api /api");
+    expect(await get("/apix")).toBe("200 managed app");
+    // A withheld path reaches no process; its sibling and the other site are untouched.
+    await router.apply({
+      key: "real-route",
+      hostname: `http://127.0.0.1:${site}`,
+      routes: routes(null),
+    });
+    expect(await get("/api/users")).toBe("503 ");
+    expect(await get("/")).toBe("200 managed app");
     await router.remove("real-route");
     expect(await (await fetch(`http://127.0.0.1:${other}`)).text()).toBe(
       "other app",
@@ -192,6 +222,7 @@ test("real Caddy applies and removes an isolated route without affecting another
     child.kill();
     await child.exited;
     upstream.stop(true);
+    api.stop(true);
   }
 }, 15000);
 test("host route directives and the configured reload command are preserved", async () => {
@@ -211,7 +242,7 @@ test("host route directives and the configured reload command are preserved", as
   await router.apply({
     key: "host",
     hostname: "app.example.test",
-    upstream: "localhost:3000",
+    routes: [{ prefix: "/", upstream: "localhost:3000" }],
   });
   expect(await readFile(caddyfile, "utf8")).toContain(
     "  encode gzip\n  header X-Rig managed\n",
@@ -230,19 +261,19 @@ test("a route checkpoint restores its exact owned block and refuses to overwrite
   await router.apply({
     key: "target",
     hostname: "old.test",
-    upstream: "localhost:3000",
+    routes: [{ prefix: "/", upstream: "localhost:3000" }],
   });
   const previous = await router.checkpoint("target");
   await router.apply({
     key: "target",
     hostname: "new.test",
-    upstream: "localhost:4000",
+    routes: [{ prefix: "/", upstream: "localhost:4000" }],
   });
   const candidate = await router.checkpoint("target");
   await router.apply({
     key: "other",
     hostname: "unrelated.test",
-    upstream: "localhost:5000",
+    routes: [{ prefix: "/", upstream: "localhost:5000" }],
   });
   await router.restore(previous, candidate);
   expect(await router.checkpoint("target")).toEqual(previous);
@@ -271,7 +302,7 @@ test("a symlinked Caddyfile is updated through the link, so the file Caddy reads
   await router.apply({
     key: "t1",
     hostname: "demo.localhost",
-    upstream: "127.0.0.1:3000",
+    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
   });
   expect((await lstat(link)).isSymbolicLink()).toBe(true);
   expect(await readFile(real, "utf8")).toContain("demo.localhost");
@@ -319,7 +350,7 @@ test("validation and reload failures carry Caddy's last stderr line, the rejecte
   const route = {
     key: "target/web",
     hostname: "app.example.test:99999",
-    upstream: "127.0.0.1:3000",
+    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
   };
   await expect(router.apply(route)).rejects.toMatchObject({
     code: "ROUTE_VALIDATE",
@@ -374,13 +405,13 @@ test("the conflict check compares site addresses the way Caddy does: an explicit
       router.apply({
         key: `t/${hostname}`,
         hostname,
-        upstream: "127.0.0.1:3000",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
       }),
     ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
   await router.apply({
     key: "t/third",
     hostname: "third.example.test",
-    upstream: "127.0.0.1:3000",
+    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
   });
   expect(await readFile(file, "utf8")).toContain(
     "third.example.test {\n  reverse_proxy 127.0.0.1:3000",
@@ -408,4 +439,99 @@ test("removing a route that was never applied neither rewrites the Caddyfile nor
   await router.remove("never/applied");
   await expect(lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
   expect(commands).toEqual([]);
+});
+
+test("a route map renders in the order given with a withheld path answering 503, and is refused without a root path, with a wildcard, or with an upstream beyond this machine", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-map-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+  });
+  await router.apply({
+    key: "map",
+    hostname: "app.test",
+    routes: [
+      { prefix: "/api/admin", upstream: "127.0.0.1:3003" },
+      { prefix: "/api", upstream: null },
+      { prefix: "/", upstream: "127.0.0.1:3001" },
+    ],
+  });
+  const text = await readFile(file, "utf8");
+  expect(text).toContain(
+    [
+      "  @rig0 path /api/admin /api/admin/*",
+      "  handle @rig0 {",
+      "    reverse_proxy 127.0.0.1:3003",
+      "  }",
+      "  @rig1 path /api /api/*",
+      "  handle @rig1 {",
+      "    respond 503",
+      "  }",
+      "  handle {",
+      "    reverse_proxy 127.0.0.1:3001",
+      "  }",
+    ].join("\n"),
+  );
+  for (const routes of [
+    [{ prefix: "/api", upstream: "127.0.0.1:3001" }],
+    [
+      { prefix: "/", upstream: "127.0.0.1:3001" },
+      { prefix: "/api/*", upstream: "127.0.0.1:3002" },
+    ],
+    [{ prefix: "/", upstream: "10.0.0.5:3001" }],
+  ])
+    await expect(
+      router.apply({ key: "map", hostname: "app.test", routes }),
+    ).rejects.toMatchObject({ code: "ROUTE_INVALID" });
+  expect(await readFile(file, "utf8")).toBe(text);
+});
+
+test("the router reports which published paths are withheld, and reloads a withdrawal the file already states but not an unchanged publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-withheld-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  const reloads: string[][] = [];
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async ({ command }) => {
+      if (command[1] === "reload") reloads.push([...command]);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  expect(await router.withheld("map")).toEqual([]);
+  const withdrawal = {
+    key: "map",
+    hostname: "app.test",
+    routes: [
+      { prefix: "/api/admin", upstream: null },
+      { prefix: "/api", upstream: "127.0.0.1:3002" },
+      { prefix: "/", upstream: null },
+    ],
+  };
+  await router.apply(withdrawal);
+  expect(await router.withheld("map")).toEqual(["/api/admin", "/"]);
+  expect(await router.withheld("other")).toEqual([]);
+  // Caddy may be serving something older than the file: a withdrawal is never assumed to be live.
+  const text = await readFile(file, "utf8");
+  await router.apply(withdrawal);
+  expect(reloads).toHaveLength(2);
+  expect(await readFile(file, "utf8")).toBe(text);
+
+  const lone = {
+    key: "map",
+    hostname: "app.test",
+    routes: [{ prefix: "/", upstream: null }],
+  };
+  await router.apply(lone);
+  expect(await router.withheld("map")).toEqual(["/"]);
+  const published = {
+    ...lone,
+    routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+  };
+  await router.apply(published);
+  await router.apply(published);
+  expect(reloads).toHaveLength(4);
+  expect(await router.withheld("map")).toEqual([]);
 });

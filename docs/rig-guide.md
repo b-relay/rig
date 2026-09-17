@@ -554,10 +554,26 @@ example `web did not become ready (last check: HTTP 503).` or `(last check:
 exit code 3: probing)`, and the Target log records each change in that
 observation as a `health` line, so a probe that never answers, a 5xx, or a
 check command's last output line is visible in `rig logs` rather than
-discarded. A Service without a `ready` check must survive a short
+discarded. A Service without a `ready` check is ready once every port it
+declares accepts a connection on `127.0.0.1` or `::1`, within the same
+`ready_timeout`. A Service with neither a check nor a port must survive a short
 start grace period (half a second) before it counts as started; a command that
 exits earlier, such as a missing binary or a port already in use, fails `up`
-and rolls the start back.
+and rolls the start back. `HEALTH_FAILED` details carry `outcome`:
+`unanswered` when no check answered within the budget, `unready` when the last
+answer said not ready.
+
+After readiness and before anything is published, Rig inspects what the
+Service's process and its descendants listen on (TCP). A listener bound
+beyond loopback, such as `*`, `0.0.0.0`, or a LAN address, fails the start as
+`LISTENER_NONLOCAL`; `127.0.0.0/8`, `::1`, and IPv4-mapped loopback are
+accepted. When the owning process or its sockets cannot be established the
+start fails as `LISTENER_UNKNOWN` rather than being assumed safe. A routed
+port, and a port used as readiness evidence, must be listened on by the
+Service's own process tree: an answer from anyone else keeps the Service
+unready. This inspection happens at activation. It is evidence about that
+moment, not containment: a process can bind another address later, and Rig
+does not watch for it. UDP and Unix sockets are not inspected.
 
 Route and installed-executable changes run inside a durable effect
 checkpoint under `<RIG_ROOT>/effect-checkpoints`. The journal records each
@@ -943,6 +959,18 @@ one day.
 
 `domain` is the hostname the Stable Target serves, and `proxy` maps a path
 prefix to a declared port reference; `/` is required when `proxy` is present.
+A prefix matches at a slash boundary (`/api` serves `/api` and `/api/users`,
+not `/apix`), the longest matching prefix wins, and the upstream receives the
+path unchanged. Wildcards are not prefixes, and two prefixes that differ only
+by a trailing slash (`/api` and `/api/`) are one path and are refused. Upstreams are reached at
+`127.0.0.1:<port>`, so a routed port must listen on IPv4 loopback.
+While a routed Service is being started, by `up` or automatically, its paths
+answer `503` until it is verified; the other paths of the Target keep their
+upstreams. A replacement that fails verification is stopped and its paths stay
+at `503`, also while other Services of the Target start or recover: a path is
+released only when its own Service is next verified, by an automatic retry or
+by `rig up` or `rig restart`. If the route cannot be withdrawn, the start is
+not attempted.
 A Preview serves `<preview name>.<domain>`, or `targets.preview.domain` with
 `${rig.target}` replaced by the Preview's name. The Working copy has no route
 unless `targets.working.domain` is set. A Target with no resolved hostname or
@@ -1033,8 +1061,6 @@ setting for now.
 
 - a Service `workdir`
 - a Service `supervisor` that differs from the Project's
-- a Service with no port or with more than one port
-- a `proxy` prefix other than `/`
 
 ### Environment, builds, and startup
 
@@ -1161,11 +1187,14 @@ current file.
    `rig down preview --destroy` too): both name the file, and moving or
    deleting it is the way through.
 2. Each Service in dependency order: the process start, then readiness.
-   Readiness means the `ready` check passed, or, for a Service without
-   `ready`, that the process survived the start grace period. A Service that
-   was already running is skipped, except that one another Service lists in
-   `depends_on` must pass its `ready` check first, so a dependent never starts
-   against a running but unready dependency.
+   Readiness means the `ready` check passed; without `ready`, that every
+   declared port accepts a connection; without ports either, that the process
+   survived the start grace period. Then its listeners are inspected. A
+   Service that was already running is skipped, except that one another
+   Service lists in `depends_on` is verified the same way first, so a
+   dependent never starts against a running but unready dependency.
+   `depends_on` gates starting only: a dependency that stops later does not
+   stop its dependents.
 3. Routing.
 
 `rig down` stops each running Service. A start that fails rolls back the

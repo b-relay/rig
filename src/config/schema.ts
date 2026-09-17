@@ -498,7 +498,19 @@ function validateGraph(
   if (!settings.proxy) return;
   if (!Object.hasOwn(settings.proxy, "/"))
     report([...at, "proxy"], "A proxy needs a '/' entry.");
+  // '/api' and '/api/' are one path to the router, and '//' is no path at all.
+  const paths = new Map<string, string>();
   for (const [prefix, reference] of Object.entries(settings.proxy)) {
+    const path = prefix.replace(/\/+$/, "");
+    const twin = paths.get(path);
+    if (prefix !== "/" && path === "")
+      report([...at, "proxy", prefix], `Proxy '${prefix}' names no path.`);
+    else if (twin !== undefined)
+      report(
+        [...at, "proxy", prefix],
+        `Proxy '${prefix}' and '${twin}' are the same path.`,
+      );
+    else paths.set(path, prefix);
     const upstream = proxyUpstream(reference);
     if (
       upstream &&

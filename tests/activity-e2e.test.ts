@@ -15,7 +15,6 @@ test("daemon records observed terminal crashes once and exposes verified adminis
 services:
   worker:
     run: "'${process.execPath}' app.ts"
-    ports: { http: auto }
     restart: "no"
 `,
     );

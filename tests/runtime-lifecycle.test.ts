@@ -1,3 +1,4 @@
+import { loopbackListeners } from "./support/activation-doubles";
 import { expect, test } from "bun:test";
 import {
   createTargetLifecycle,
@@ -75,7 +76,7 @@ test("readiness expires even when a health provider ignores cancellation, then r
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {
-        return { state: running.has(key) ? "running" : "stopped" };
+        return (running.has(key) ? { state: "running", pid: 1 } : { state: "stopped" });
       },
       async ensureRunning(request) {
         running.add(request.key);
@@ -103,6 +104,7 @@ test("readiness expires even when a health provider ignores cancellation, then r
     },
     async route() {},
     async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -134,7 +136,7 @@ test("up preserves running components and rollback stops only newly started comp
       return { outcome: "stopped" };
     },
     async observe(key) {
-      return { state: key.endsWith(":api") ? "running" : "stopped" };
+      return (key.endsWith(":api") ? { state: "running", pid: 1 } : { state: "stopped" });
     },
     async shutdown() {},
     async detach() {},
@@ -163,6 +165,7 @@ test("up preserves running components and rollback stops only newly started comp
     },
     async route() {},
     async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
   await expect(lifecycle.up(target)).rejects.toThrow("start failed");
   expect(started).toEqual(["t1:web"]);
@@ -208,6 +211,7 @@ test("down uses recorded plan and reports no-op only when every process was stop
     },
     async route() {},
     async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
   expect(await lifecycle.down(target)).toEqual({ outcome: "stopped" });
   expect(keys).toEqual(["t1:web", "t1:api"]);
@@ -225,7 +229,7 @@ test("down attempts every process even when a hook or another process stop fails
       return { outcome: "stopped" };
     },
     async observe() {
-      return { state: "running" };
+      return { state: "running", pid: 1 };
     },
     async shutdown() {},
     async detach() {},
@@ -256,6 +260,7 @@ test("down attempts every process even when a hook or another process stop fails
     },
     async route() {},
     async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
   await expect(
     lifecycle.down({
@@ -386,6 +391,7 @@ test("port contention after selection fails startup and preserves an already run
       try { return (await fetch(component.health!)).ok ? { ready: true } : { ready: false, reason: "not ok" }; } catch { return { ready: false, reason: "unreachable" }; }
     }, async build() {}, async install() { return { outcome: "unchanged" }; },
     async route() {}, async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   const lifecycle = createTargetLifecycle(effects);
   const prior = structuredClone(record);
@@ -433,7 +439,7 @@ test("the Project preStart hook runs before installs and Component hooks, and on
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {
-        return { state: running.has(key) ? "running" : "stopped" };
+        return (running.has(key) ? { state: "running", pid: 1 } : { state: "stopped" });
       },
       async ensureRunning(request) {
         events.push(`start:${request.componentName}`);
@@ -466,6 +472,7 @@ test("the Project preStart hook runs before installs and Component hooks, and on
     },
     async route() {},
     async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   const lifecycle = createTargetLifecycle(effects, {
     schedule(delayMs, fire) {

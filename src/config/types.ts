@@ -38,12 +38,21 @@ interface ComponentContext {
 export interface ManagedComponent extends ComponentContext {
   kind: "managed";
   command: string;
-  port: number;
+  /** The first declared port, the one status reports; absent when the Service declares none. */
+  port?: number;
+  /** Every declared port by name. A plan recorded before named ports carries only `port`. */
+  ports?: Record<string, number>;
   sitePort?: number;
   health?: string;
   readyTimeout: number;
   /** When Rig starts the Service again after a known exit; a plan recorded without it means always. */
   restart?: RestartPolicy;
+}
+/** One path prefix of a Target's hostname and the declared port behind it. A prefix matches at a slash boundary and the upstream sees the path unchanged. */
+export interface PlanRoute {
+  prefix: string;
+  service: string;
+  port: number;
 }
 export type RestartPolicy = "always" | "on-failure" | "no";
 export interface InstalledComponent extends ComponentContext {
@@ -93,7 +102,8 @@ export interface TargetPlan {
   builds?: BuildUnit[];
   preparedComponents: PreparedComponent[];
   domain?: string;
-  proxy?: { upstream: string };
+  /** `upstream` is the Service behind '/'. `routes` is the whole map, longest prefix first; a plan recorded before route maps has only `upstream`. */
+  proxy?: { upstream: string; routes?: PlanRoute[] };
   hooks?: Hooks;
   /** Seconds for Project hooks and the Component default; absent means 120. */
   hookTimeout?: number;

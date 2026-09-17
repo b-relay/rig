@@ -300,11 +300,11 @@ repoint or rig forget <name>)`, and `--json` carries `missing: true`.
 
 Rig commands act on Targets:
 
-| Target form | Meaning |
-|---|---|
-| `local` | Working copy Target backed by the current checkout. `local` is its default name; `targets.working.name` renames it. |
-| `live` | Stable Target, deployed from the Production branch. `live` is its default name; `targets.stable.name` renames it. |
-| `preview <branch>` | Preview Target for a Branch. Branch names may include slashes. |
+| Target form        | Meaning                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `local`            | Working copy Target backed by the current checkout. `local` is its default name; `targets.working.name` renames it. |
+| `live`             | Stable Target, deployed from the Production branch. `live` is its default name; `targets.stable.name` renames it.   |
+| `preview <branch>` | Preview Target for a Branch. Branch names may include slashes.                                                      |
 
 A Project has one Working copy Target, one Stable Target, and any number of
 generated Previews. The examples in this guide use the default names `local`
@@ -561,7 +561,7 @@ checkpoint under `<RIG_ROOT>/effect-checkpoints`. The journal records each
 write before it starts and the result after it finishes, so a daemon killed in
 between is recovered by the next `rig down` (rollback) or the recorded commit
 decision (roll-forward) without treating its own half-finished write as an
-external edit. Only a change made to an owned file *after* the journal
+external edit. Only a change made to an owned file _after_ the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
 Each journal carries a format version (currently 1). A journal written by a
@@ -761,8 +761,7 @@ visible cause; the command then keeps waiting for its own result.
 
 Ctrl-C (or SIGTERM) before a lifecycle or deploy command is submitted cancels
 it: `rig` exits 0 and no runtime change was requested. Ctrl-C during a read
-such as `rig list` or a `rig logs --follow` poll abandons the read and exits
-0. Once a mutation is submitted the first Ctrl-C is acknowledged but not
+such as `rig list` or a `rig logs --follow` poll abandons the read and exits 0. Once a mutation is submitted the first Ctrl-C is acknowledged but not
 honoured, because `rigd` finishes the mutation either way: `rig` prints
 `rigd is still running up (operation <id>); it finishes in the background.
 Press Ctrl-C again to detach.` on stderr and keeps waiting, and a mutation
@@ -1045,7 +1044,8 @@ Target workspace. On the Stable Target and Previews a relative path must stay
 inside that workspace (`path_outside_target` otherwise) and is read from the
 checked-out revision. An env file inside a Git repository must be ignored by
 Git, otherwise the command fails as `ENV_FILE_TRACKED`: never commit a file
-that holds secrets. A file other users can read still loads, with a warning in
+that holds secrets. When Git is present but cannot answer, the command fails
+as `ENV_FILE_UNVERIFIED` rather than loading an unchecked file. A file other users can read still loads, with a warning in
 the Target log asking for `chmod 600`.
 
 When a file supplies a name that `env` or a lower file also supplies, the
@@ -1176,12 +1176,18 @@ Because the base config is checked by itself, a value that only a role patch
 defines cannot be referenced from the base; give it a base value and let the
 patch replace it. Env file contents are never referenceable. Write `$${VAR}`
 for a literal `${VAR}` the shell should expand; `$VAR` is always left to the
-shell. Because `run`, `ready`, and `build` run under
-`/bin/sh -c`, Rig single-quotes any substituted value that contains a space
-or other shell-special character, so a repository or `RIG_ROOT` under a path
-like `~/Projects/My App` still resolves to one argument. A reference the
-author already wrapped in quotes is substituted as is. Values substituted
-into `env`, `domain`, `env_file`, and `bin` are never quoted.
+shell.
+
+Because `run`, a shell `ready`, and `build` run under `/bin/sh -c`, Rig
+substitutes every value as literal data, never as shell code. A bare
+reference is single-quoted when its value is empty or contains a space or
+other shell-special character, so a repository or `RIG_ROOT` under a path
+like `~/Projects/My App` still resolves to one argument. Inside the author's
+own double or single quotes the value is escaped for that quote, so a `$`, a
+backquote, or a quote character in the value stays part of the argument. A
+`ready` value that resolves to an HTTP URL is handed to the HTTP probe
+unquoted. Values substituted into `env`, `domain`, `env_file`, and `bin` are
+never quoted.
 
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while

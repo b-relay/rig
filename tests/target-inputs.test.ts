@@ -372,3 +372,77 @@ test("an env file inside the repository must be ignored by Git, and one other us
     `Environment file ${join(workspace, ".env")} is accessible to other users (mode 644); run chmod 600 on it.`,
   ]);
 });
+
+test("a substituted value reaches the child as one literal argument whether the author left it bare, double-quoted or single-quoted", async () => {
+  const values = {
+    CODE: '$(echo ran) `echo ran` "q" \\ $HOME',
+    APOSTROPHE: "it's fine",
+    EMPTY: "",
+    SPACED: "a b",
+  };
+  const { api, workspace } = await selected("", {
+    name: "app",
+    env: values,
+    services: {
+      api: {
+        run: `printf '<%s>\\n' "\${env.CODE}" '\${env.APOSTROPHE}' \${env.EMPTY} \${env.SPACED} \${env.APOSTROPHE} "\${env.APOSTROPHE}" $\${HOME}`,
+        ports: { http: "auto" },
+      },
+    },
+  });
+  const result = await runCommand({
+    command: ["/bin/sh", "-c", api.command],
+    cwd: workspace,
+    env: { PATH: process.env.PATH!, HOME: "/shell/home" },
+    timeoutMs: 5000,
+  });
+  expect(result.stdout.split("\n").slice(0, -1)).toEqual([
+    `<${values.CODE}>`,
+    "<it's fine>",
+    "<>",
+    "<a b>",
+    "<it's fine>",
+    "<it's fine>",
+    "</shell/home>",
+  ]);
+});
+
+test("a readiness URL built from a reference stays an HTTP probe, and only a shell check guards its inputs", async () => {
+  const { api } = await selected("", {
+    name: "app",
+    env: { HEALTH: "http://127.0.0.1:4100/health?check=1&mode=2" },
+    services: {
+      api: { run: "api", ports: { http: "auto" }, ready: "${env.HEALTH}" },
+    },
+  });
+  expect(api.health).toBe("http://127.0.0.1:4100/health?check=1&mode=2");
+  expect(api.commandInputs ?? []).toEqual([]);
+});
+
+test("an env file in a repository Git cannot inspect is refused rather than loaded unchecked", async () => {
+  const { adapter, record, api, workspace } = await selected("", {
+    name: "app",
+    services: {
+      api: { run: "api", ports: { http: "auto" }, env_file: ".env" },
+    },
+  });
+  await writeFile(join(workspace, ".env"), `TOKEN=${SECRET}\n`, {
+    mode: 0o600,
+  });
+  // Not a repository at all: nothing to leak into, so the file loads.
+  expect((await adapter.environment(record, api)).TOKEN).toBe(SECRET);
+  // A repository whose metadata Git rejects: check-ignore fails, which proves nothing about the file.
+  await mkdir(join(workspace, ".git"));
+  await writeFile(join(workspace, ".git", "HEAD"), "ref: refs/heads/main\n");
+  await mkdir(join(workspace, ".git", "objects"));
+  await mkdir(join(workspace, ".git", "refs"));
+  await writeFile(join(workspace, ".git", "config"), "[core\n");
+  const failure = (await adapter
+    .environment(record, api)
+    .catch((error: unknown) => error)) as RigError;
+  expect(failure).toMatchObject({
+    code: "ENV_FILE_UNVERIFIED",
+    details: { path: join(workspace, ".env") },
+  });
+  expect(JSON.stringify([failure.message, failure.hint])).not.toContain(SECRET);
+});

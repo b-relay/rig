@@ -26,15 +26,22 @@ export interface GeneratedValues {
 export interface ReferenceResolver {
   /** Resolves `${...}` in the string declared at config path `at`; that path decides the Service scope. */
   text(value: string, at: string): ResolvedText;
-  /** The same for text /bin/sh -c will run: a value that would split or expand is single-quoted unless the author already quoted the placeholder. */
+  /** The same for text /bin/sh -c will run. Every substituted value reaches the command as literal data: bare, it is single-quoted when it is empty or would
+   * split or expand; inside the author's double or single quotes it is escaped for that quote, so it never closes the quote or runs as shell code. */
   shell(value: string, at: string): ResolvedText;
 }
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
 const HINT =
   "A reference names an exact config path such as ${services.web.ports.http} or ${env.NAME}, or a Rig value such as ${rig.target}. Write $${VAR} for a literal shell ${VAR}; $VAR is left to the shell.";
-const shellArg = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]*$/;
+const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]+$/;
+/** A value as literal shell data at a position that is bare, inside double quotes, or inside single quotes. */
+function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
+  if (quote === '"') return value.replace(/[\\"$`]/g, "\\$&");
+  const closed = value.replaceAll("'", "'\\''");
+  if (quote === "'") return closed;
+  return shellSafe.test(value) ? value : `'${closed}'`;
+}
 
 /** Pure recursive resolution over one patched settings graph. A reference is an exact path to a scalar in that graph or a rig.* value;
  * `$${` escapes to a literal `${`. Throws ConfigError `unknown_reference`, `reference_not_scalar`, `reference_into_targets`,
@@ -163,14 +170,12 @@ export function referenceResolver(
     text: (value, at) => substitute(value, at, [at], (result) => result),
     shell: (value, at) =>
       substitute(value, at, [at], (result, offset) =>
-        shellSafe.test(result) || insideShellQuotes(value.slice(0, offset))
-          ? result
-          : shellArg(result),
+        shellLiteral(result, openShellQuote(value.slice(0, offset))),
       ),
   };
 }
-/** Whether a position in shell text sits inside an open single or double quote. */
-function insideShellQuotes(prefix: string): boolean {
+/** The quote still open at the end of a prefix of shell text, if any. */
+function openShellQuote(prefix: string): "'" | '"' | undefined {
   let quote: "'" | '"' | undefined;
   for (let i = 0; i < prefix.length; i++) {
     const char = prefix[i];
@@ -181,5 +186,5 @@ function insideShellQuotes(prefix: string): boolean {
       if (char === '"') quote = undefined;
     } else if (char === "'" || char === '"') quote = char;
   }
-  return quote !== undefined;
+  return quote;
 }

@@ -5,7 +5,8 @@ import type { EnvFileRef } from "../config/types";
 import type { LoadedEnvFile } from "../domain/process-environment";
 import type { CommandRunner } from "../providers/contracts";
 
-/** Whether Git ignores a path inside a workspace; undefined when the workspace is not a Git checkout. A tracked file is never ignored. */
+/** Whether Git ignores a path inside a workspace; undefined when the workspace is verified not to be a Git checkout. A tracked file is never ignored.
+ * Rejects ENV_FILE_UNVERIFIED when Git is there but cannot answer, so an unchecked file never loads. */
 export type IgnoredByGit = (
   workspace: string,
   path: string,
@@ -21,11 +22,25 @@ export function gitIgnoreCheck(
       env: { ...env },
       timeoutMs: 10_000,
     });
-    return result.exitCode === 0
-      ? true
-      : result.exitCode === 1
-        ? false
-        : undefined;
+    if (result.exitCode === 0) return true;
+    if (result.exitCode === 1) return false;
+    const checkout = await run({
+      command: ["git", "rev-parse", "--is-inside-work-tree"],
+      cwd: workspace,
+      env: { ...env, LC_ALL: "C" },
+      timeoutMs: 10_000,
+    });
+    if (
+      checkout.exitCode !== 0 &&
+      /not a git repository/i.test(checkout.stderr)
+    )
+      return undefined;
+    throw new RigError(
+      "ENV_FILE_UNVERIFIED",
+      `Git could not say whether ${path} is ignored.`,
+      "An env file inside a repository loads only once Git confirms it is ignored. Run git check-ignore on it in that repository and fix what Git reports, or keep the file outside the repository.",
+      { path, exitCode: result.exitCode },
+    );
   };
 }
 /** Loads one invocation's env files in order. A listed file must exist (ENV_FILE_MISSING); an optional one is skipped when absent.

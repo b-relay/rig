@@ -96,6 +96,32 @@ contents change (`tests/target-effects.test.ts`), and the named port owner
   second lookup in `planTarget`, so the adapter that detects the conflict also
   names the owner.
 
+## Review (Codex, gpt-6-astra, high, read-only; one session for this PR)
+
+Round 1 found five items.
+
+- Fixed: substituted values are literal data in every shell context (bare,
+  double-quoted, single-quoted), and an empty bare value keeps its argument;
+  proven through real child argv.
+- Fixed: a `ready` value that resolves to an HTTP URL is not shell-quoted and
+  guards no inputs.
+- Fixed: a Git failure other than "not a repository" is `ENV_FILE_UNVERIFIED`
+  instead of loading the file unchecked.
+- Handed to #241: the rigd and launchd supervisors persist the request they
+  were given, environment included, in a 0600 lease/capture file and the
+  launchd plist, so that they can restart a process without the daemon. That
+  predates this ticket and is the supervisors' restart contract; #241 owns
+  "saved policy and fresh env-file behavior" for both supervisors and must
+  replace the stored environment with recomposition at restart. The public
+  plan, state, receipts, errors and Target logs written here carry no file
+  value.
+- Declined: keeping the consumer's scope while resolving a referenced leaf. A
+  leaf such as `services.db.env.DATA: ${rig.data}` has one public value, the
+  db Service's directory, whoever names it; resolving it in the consumer's
+  scope would give `api` its own directory under db's name. A Tool that names
+  `${services.db.env.DATA}` does so explicitly; `${rig.data}` written in a
+  Project or Tool field is still `invalid_context`.
+
 ## Remaining dependencies
 
 - #240: shared `build`, Service `build` and `workdir` are still

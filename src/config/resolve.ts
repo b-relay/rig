@@ -162,10 +162,15 @@ export function resolveTargetPlan(
           "invalid_binding",
           { service: name },
         );
-      const ready =
+      // A readiness URL is data for the HTTP probe; only a shell check is quoted for /bin/sh.
+      const probe =
         service.ready === undefined
           ? undefined
-          : references.shell(service.ready, `${at}.ready`);
+          : references.text(service.ready, `${at}.ready`);
+      const ready =
+        probe === undefined || isHealthUrl(probe.value)
+          ? probe
+          : references.shell(service.ready!, `${at}.ready`);
       if (ready !== undefined && !localhostHealth(ready.value))
         throw new ConfigError(
           "Resolved readiness check addresses a host outside localhost.",

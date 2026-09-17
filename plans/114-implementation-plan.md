@@ -1,6 +1,6 @@
 # Issue 114 implementation plan
 
-Status: accepted product design; implementation queue prepared September 17, 2026. The [specification](114-config-spec.md) and [interview record](114-design-interview.md) are authoritative. No runtime changes or live migration are completed by this plan.
+Status: accepted product design; implementation tickets published September 17, 2026. The [specification](114-config-spec.md) and [interview record](114-design-interview.md) are authoritative. No runtime changes or live migration are completed by this plan.
 
 ## Scope and delivery
 
@@ -12,25 +12,25 @@ Runtime interface changes must compare at least two materially different shapes 
 
 ## Ticket graph
 
-Ticket numbers below are local plan IDs until GitHub publication. Replace them with links on publication; native blocking edges are authoritative.
+All eight tickets are native sub-issues of [#114](https://github.com/b-relay/rig/issues/114), labelled ready-for-agent. Native blocking edges are authoritative; #238 is the initial unblocked implementation ticket.
 
 | ID | Complete behavior | Blocked by |
 |---|---|---|
-| T1 | Initialize and inspect strict YAML-only Project/Host config with working/stable roles and configurable Target names | None |
-| T2 | Resolve a selected Target's public inputs, ports and process environment with safe provenance and conflict errors | T1 |
-| T3 | Deploy/build/prepare/start a Service and install a Tool with durable build completion and no-up reuse | T2 |
-| T4 | Enforce durable per-Service restart policy across exits, explicit commands and daemon recovery under both supervisors | T3 |
-| T5 | Activate a dependency graph only after readiness and owned local-listener checks, then publish correct routes | T4 |
-| T6 | Generate portable recipes and report/diff bundled recipe updates without rewriting user configuration | T2 |
-| T7 | Convert old config/saved deployments using a reviewed manifest and rehearse data-preserving recovery | T5 |
-| T8 | Pass the full-release behavior matrix and deliver an executable cutover/rollback runbook | T6, T7 |
+| [#238](https://github.com/b-relay/rig/issues/238) | Initialize and inspect strict YAML-only Project/Host config with working/stable roles and configurable Target names | None |
+| [#239](https://github.com/b-relay/rig/issues/239) | Resolve a selected Target's public inputs, ports and process environment with safe provenance and conflict errors | [#238](https://github.com/b-relay/rig/issues/238) |
+| [#240](https://github.com/b-relay/rig/issues/240) | Deploy/build/prepare/start a Service and install a Tool with durable build completion and no-up reuse | [#239](https://github.com/b-relay/rig/issues/239) |
+| [#241](https://github.com/b-relay/rig/issues/241) | Enforce durable per-Service restart policy across exits, explicit commands and daemon recovery under both supervisors | [#240](https://github.com/b-relay/rig/issues/240) |
+| [#242](https://github.com/b-relay/rig/issues/242) | Activate a dependency graph only after readiness and owned local-listener checks, then publish correct routes | [#241](https://github.com/b-relay/rig/issues/241) |
+| [#243](https://github.com/b-relay/rig/issues/243) | Generate portable recipes and report/diff bundled recipe updates without rewriting user configuration | [#239](https://github.com/b-relay/rig/issues/239) |
+| [#244](https://github.com/b-relay/rig/issues/244) | Convert old config/saved deployments using a reviewed manifest and rehearse data-preserving recovery | [#242](https://github.com/b-relay/rig/issues/242) |
+| [#245](https://github.com/b-relay/rig/issues/245) | Pass the full-release behavior matrix and deliver an executable cutover/rollback runbook | [#243](https://github.com/b-relay/rig/issues/243), [#244](https://github.com/b-relay/rig/issues/244) |
 
 ```text
-T1 -> T2 -> T3 -> T4 -> T5 -> T7 -> T8
-       \-> T6 --------------------/
+#238 -> #239 -> #240 -> #241 -> #242 -> #244 -> #245
+       \-> #243 --------------------/
 ```
 
-T6 can proceed independently of the runtime work once resolved-config contracts exist. T7 does not depend on recipe version tooling; T8 joins both paths. No ticket is blocked merely because another may touch nearby files. Coordinate overlapping edits in isolated worktrees; do not weaken genuine sequencing of runtime-plan and state contracts.
+#243 can proceed independently of the runtime work once resolved-config contracts exist. #244 does not depend on recipe version tooling; #245 joins both paths. No ticket is blocked merely because another may touch nearby files. Coordinate overlapping edits in isolated worktrees; do not weaken genuine sequencing of runtime-plan and state contracts.
 
 ## Public acceptance demonstrations
 

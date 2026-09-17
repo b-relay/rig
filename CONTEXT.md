@@ -176,11 +176,8 @@ A computer that can run `rigd` and own Rig runtime state.
 The user-authored configuration for one Host, stored canonically at
 `~/.rig/config.yaml`.
 
-_Relationship_: Existing `~/.rig/config.json` files remain readable for
-compatibility, but Rig should create and prefer YAML for new Host config.
-
-_Relationship_: If both `config.yaml` and `config.json` exist, Rig should fail
-with a clear ambiguity error rather than silently choosing or merging them.
+_Decision history_: The accepted YAML-only cutover for user-authored config is
+recorded in [ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md).
 
 _Relationship_: Host config migration is manual. Rig should not expose a
 config migration command or silently rewrite an existing JSON file.
@@ -273,13 +270,29 @@ _Relationship_: Configured routes should remain visible in `rig status` when a
 Target is stopped. The Target and component states communicate that the route
 is not currently available.
 
+### Service
+
+A named Project process managed within a Target, such as an API, worker, or
+database server. Its application accepts ordinary inputs and can run independently
+of Rig.
+_Avoid_: Tool, Deployment
+
+### Tool
+
+A named executable a Project makes available for invocation, rather than a
+Service kept running by Rig. A Project can contain Tools, Services, or both.
+_Avoid_: Service, background process
+
+### Target class
+
+The role of a Target: Working copy, Stable, or Preview. A Target's class is
+distinct from its configured or generated name.
+_Avoid_: Target name
+
 ### Working copy Target
 
 The Target backed by the current Working copy, with a configurable alias that
 defaults to `local`.
-
-_Relationship_: The first release uses `local` as the Working copy Target
-name; the model should leave room for renaming it later.
 
 _Relationship_: The Working copy Target name and Stable Target names must be
 unique.
@@ -443,8 +456,7 @@ Production branch option is provided.
 Reading or changing Rig configuration through Rig commands.
 
 _Decision history_: [ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md)
-supersedes the previous Project JSON compatibility decision. Host config is a
-separate scope in the #114 design interview.
+supersedes the previous Project and Host JSON compatibility decisions.
 
 _Relationship_: YAML config should accept one ordinary YAML 1.2 document and
 comments. Rig should reject duplicate keys, custom tags, anchors, aliases,
@@ -494,17 +506,9 @@ the normal terminal response.
 A named non-local Target intended for durable shared use. The first Stable
 Target defaults to `live`.
 
-_Relationship_: The first release has one Stable Target; the model should
-leave room for future ordered Stable stages such as `alpha`, `beta`, and
-`prod`, with promotion between stages.
-
-_Relationship_: The first release uses `live` as the Stable Target name; the
-model should leave room for renaming it and adding more Stable Target names
-later.
-
-_Relationship_: Stable Target names belong in committed Project config. The
-first release may only support the default `live`, but storing it as config
-keeps Project policy explicit and migration-ready.
+Stable Target names are configurable, and a Project may have multiple Stable
+Targets alongside generated Previews. A Stable Target is not inherently a
+promotion stage.
 
 _Relationship_: Default Stable Target routing should include Project identity
 so Stable Targets from different Projects do not collide.

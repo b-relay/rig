@@ -1,0 +1,31 @@
+# Review draft for #114, conditional on Q20-Q25; not accepted by today's schema.
+# The example notes application reads HOST, PORT and DATA_DIR itself.
+name: notes
+production_branch: main
+domain: notes.example.com
+
+services:
+  api:
+    build: go build -o .rig-build/notes ./cmd/notes
+    run: ./.rig-build/notes
+    ports: {http: auto}
+    env:
+      HOST: 127.0.0.1
+      PORT: ${services.api.ports.http}
+      DATA_DIR: ${rig.data}
+      LOG_LEVEL: info
+    ready: http://127.0.0.1:${services.api.ports.http}/health
+
+proxy:
+  /: ${services.api.ports.http}
+
+targets:
+  local:
+    name: dev
+    services:
+      api:
+        env: {LOG_LEVEL: debug}
+  stable:
+    name: production
+  preview:
+    domain: ${rig.target}.preview.notes.example.com

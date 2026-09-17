@@ -1,0 +1,67 @@
+# Review draft for #114, conditional on Q20-Q25; not accepted by today's schema.
+# These example programs use ordinary application-defined environment inputs.
+name: acme
+production_branch: main
+domain: acme.example.com
+supervisor: launchd
+build: bun install --frozen-lockfile
+
+env:
+  LOG_FORMAT: json
+
+services:
+  web:
+    build: bun run build:web
+    run: bun apps/web/dist/server.js
+    ports: {http: auto}
+    env:
+      HOST: 127.0.0.1
+      PORT: ${services.web.ports.http}
+    ready: http://127.0.0.1:${services.web.ports.http}/health
+    depends_on: [api]
+
+  api:
+    build: go build -o .rig-build/api ./cmd/api
+    run: ./.rig-build/api
+    ports: {http: auto}
+    env:
+      HOST: 127.0.0.1
+      PORT: ${services.api.ports.http}
+      DATA_DIR: ${rig.data}
+      DATABASE_URL: postgres://postgres@127.0.0.1:${services.db.ports.pg}/postgres
+    env_file: ~/.rig/env/acme/api-secrets.env
+    ready: http://127.0.0.1:${services.api.ports.http}/health
+    depends_on: [db]
+
+  # rig-recipe: postgres@1 (illustrative recipe version)
+  db:
+    run: >-
+      test -s "$PGDATA/PG_VERSION" || initdb -D "$PGDATA" -U postgres --auth=trust || exit $?;
+      exec postgres -D "$PGDATA" -h "$PGHOST" -p "$PGPORT"
+    ports: {pg: auto}
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: ${services.db.ports.pg}
+      PGDATA: ${rig.data}/pg
+    ready: pg_isready -h ${services.db.env.PGHOST} -p ${services.db.ports.pg}
+
+tools:
+  acmectl:
+    build: go build -o .rig-build/acmectl ./cmd/acmectl
+    bin: .rig-build/acmectl
+
+proxy:
+  /api: ${services.api.ports.http}
+  /: ${services.web.ports.http}
+
+targets:
+  local:
+    name: dev
+    services:
+      api:
+        ports: {http: 8787}
+    env: {LOG_FORMAT: pretty}
+  stable:
+    name: production
+  preview:
+    domain: ${rig.target}.preview.acme.example.com

@@ -1,0 +1,15 @@
+# Review draft for #114, conditional on Q20-Q25; not accepted by today's schema.
+# This Project has no server, port, hostname or proxy.
+name: report
+production_branch: main
+build: go build -o .rig-build/report ./cmd/report
+
+tools:
+  report:
+    bin: .rig-build/report
+
+targets:
+  local:
+    name: dev
+  stable:
+    name: production

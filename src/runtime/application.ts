@@ -1,3 +1,4 @@
+import { recipeReport } from "./recipes";
 import type {
   ProjectStatusReader,
   ProjectStatusReport,
@@ -306,6 +307,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         deps,
         [
           "config",
+          "recipe-diff",
           "deploy",
           "deployment-context",
           "git-push",
@@ -348,6 +350,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "config")
         return { project: project.name, ...selection.document };
+      if (command.action === "recipe-diff")
+        return recipeReport(
+          project.name,
+          selection.document!,
+          command,
+          deps.recipes,
+        );
       if (command.action === "activity")
         return selectActivity(
           state.activity.filter((o) => o.projectId === project!.id),

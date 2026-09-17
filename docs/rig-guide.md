@@ -1062,6 +1062,53 @@ setting for now.
 - a Service `workdir`
 - a Service `supervisor` that differs from the Project's
 
+### Recipes
+
+A recipe prints an ordinary Service for a common local dependency. There is no
+plugin behind it: the block uses the same `run`, `ports`, `env` and `ready` you
+would write by hand, and once pasted it is yours to edit.
+
+```sh
+rig recipe list
+rig recipe generate postgres                 # prints a Service named db
+rig recipe generate postgres@1 --name orders-db
+rig recipe diff                              # every Service with a recipe comment
+rig recipe diff orders-db --project pantry
+```
+
+`list` and `generate` need neither `rigd` nor a Project, and write nothing.
+`generate` prints to stdout; paste the block under `services:` (it is indented
+for that). `--name` renames the Service and every reference the block makes to
+itself. The recipe's programs (`initdb`, `postgres`, `pg_isready`; `bunx` for
+Convex) must be on the supervisor's `PATH`; Rig does not install them.
+
+The first line of the block records where it came from:
+
+```yaml
+services:
+  # rig-recipe: postgres@1 name=db
+  db:
+    run: ...
+```
+
+Keep that comment directly above the Service key. It is only a comment: Rig
+never plans or runs from it, and deleting it just means `rig recipe diff` has
+nothing to compare the Service with. `rig recipe diff` reads the config and
+reports, field by field, what a newer bundled version changed (`Changed in`)
+and what you changed since generating (`Your changes to`). It never edits
+`rig.yaml`; to adopt a newer version, generate it and merge by hand.
+
+`rig doctor` adds a `Notices` section when a Service was generated from an
+older version than the one bundled, or when a recipe comment names a recipe or
+version this Rig does not bundle or is not in the form Rig writes. Notices are
+information: they do not fail doctor or change its exit code. A Service that
+matches the bundled version, customized or not, is not mentioned. The offline
+doctor (when `rigd` is unreachable) does not compute notices.
+
+The Convex recipe keeps its backend state where the Convex CLI puts it (under
+the user's home directory, per Convex project), not in `${rig.data}`: the CLI
+offers no option for it. Targets of one Project may therefore share that state.
+
 ### Environment, builds, and startup
 
 Every build and process runs under `/bin/sh -c` in the Target workspace. Rig

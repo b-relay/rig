@@ -14,13 +14,14 @@ const hooks = z.object({
 const envFiles = z
   .array(z.object({ path: absolutePath, required: z.boolean() }))
   .optional();
+const commandInputs = z
+  .array(z.object({ name: text, source: text, value: z.string() }))
+  .optional();
 const common = {
   name: text,
   env: z.record(z.string(), z.string()),
   envFiles,
-  commandInputs: z
-    .array(z.object({ name: text, source: text, value: z.string() }))
-    .optional(),
+  commandInputs,
   hooks: hooks.optional(),
   hookTimeout: z.number().positive().optional(),
   dependsOn: z.array(text),
@@ -39,8 +40,6 @@ const component = z.discriminatedUnion("kind", [
     ...common,
     kind: z.literal("installed"),
     entrypoint: text,
-    build: z.string().optional(),
-    buildTimeout: z.number().positive().optional(),
     installName: text.optional(),
   }),
   z.object({
@@ -70,6 +69,17 @@ export const targetPlanSchema = z.object({
     })
     .optional(),
   components: z.array(component),
+  builds: z
+    .array(
+      z.object({
+        id: text,
+        component: text.optional(),
+        command: text,
+        timeout: z.number().positive(),
+        commandInputs,
+      }),
+    )
+    .optional(),
   preparedComponents: z.array(
     z.discriminatedUnion("uses", [
       z.object({ name: text, uses: z.literal("sqlite"), path: text }),
@@ -84,6 +94,29 @@ export const targetPlanSchema = z.object({
   installTimeout: z.number().positive().optional(),
   envFiles,
 });
+const preparation = z
+  .object({
+    deployment: text.describe(
+      "The workspace the outcomes belong to; outcomes never carry over to another workspace.",
+    ),
+    units: z.record(
+      text,
+      z.object({
+        state: z
+          .enum(["started", "succeeded", "failed"])
+          .describe(
+            "started outside a running operation means the outcome is unknown.",
+          ),
+        policy: text.describe(
+          "Digest of the unit's public policy; never env-file values.",
+        ),
+        commit: text.optional(),
+        startedAt: text,
+        finishedAt: text.optional(),
+      }),
+    ),
+  })
+  .optional();
 const project = z.object({
   id: text,
   name: text,
@@ -114,9 +147,26 @@ const target = z.object({
     .literal(true)
     .optional()
     .describe("Deployment has not committed; matching source must be retried."),
+  preparation,
+  uncertainBuild: z
+    .object({
+      branch: text.optional().describe("Branch of the attempted source."),
+      commit: text.optional().describe("Commit of the attempted source."),
+      unit: text.describe("The build unit whose outcome is unknown."),
+    })
+    .optional()
+    .describe(
+      "A rolled-back deployment attempt whose build outcome is unknown; that source deploys again only with force.",
+    ),
+  configRevision: text
+    .optional()
+    .describe(
+      "Revision of the rig.yaml a Working copy plan was made from, for reporting drift.",
+    ),
   recovery: z
     .object({
       plan: targetPlanSchema,
+      preparation,
       branch: text.optional(),
       commit: text.optional(),
       desired: z.enum(["running", "stopped"]),

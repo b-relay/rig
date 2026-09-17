@@ -46,6 +46,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
   const effects: TargetEffects = {
     async checkpoint() { return checkpoint; }, async restoreEffects() {}, async commitEffects() {},
     async retireSuperseded() {}, async retireArtifacts() {}, async pruneCheckpoints() { return []; }, async prepare() {}, async environment() { return {}; },
+    async build() {},
     async install() { return { outcome: "unchanged" }; }, async removeRoute() {},
     supervisor: () => ({
       async observe(key) {

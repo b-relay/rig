@@ -8,6 +8,23 @@ export interface ProjectRecord {
   createdAt: string;
 }
 
+/** The recorded outcome of one build unit. `started` read by anything but the operation that wrote it means the
+ * command may or may not have finished: the outcome is unknown and the unit is never rerun under this identity. */
+export interface BuildOutcome {
+  state: "started" | "succeeded" | "failed";
+  /** Digest of the unit's public policy: command, public env, env-file paths and workspace; never env-file values. */
+  policy: string;
+  commit?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+/** Build outcomes of one Deployment, by unit id. */
+export interface Preparation {
+  /** The workspace the outcomes belong to; a new revision starts a fresh scope. */
+  deployment: string;
+  units: Record<string, BuildOutcome>;
+}
+
 export interface TargetRecord {
   id: string;
   projectId: string;
@@ -26,8 +43,15 @@ export interface TargetRecord {
   destructionPending?: true;
   /** Present until deployment commits; absence retains legacy completion semantics. */
   deploymentIncomplete?: true;
+  preparation?: Preparation;
+  /** A rolled-back deployment attempt of this source left a build whose outcome is unknown. */
+  uncertainBuild?: { branch?: string; commit?: string; unit: string };
+  /** Revision of the rig.yaml a Working copy plan was made from. */
+  configRevision?: string;
   recovery?: {
     plan: TargetPlan;
+    /** Build outcomes of the plan restored by rollback. */
+    preparation?: Preparation;
     branch?: string;
     commit?: string;
     desired: "running" | "stopped";

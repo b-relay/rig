@@ -133,6 +133,9 @@ function fixture() {
       async retire(_target, publishRemoval) {
         await publishRemoval?.();
       },
+      async prepare() {
+        return { built: [] };
+      },
       async up(target) {
         plans.push(target);
         return { outcome: "started" };
@@ -240,6 +243,126 @@ test("deployed source policy survives down/up and same commit is no-op", async (
     repoPath: "/tmp/developer",
     productionBranch: "main",
   });
+});
+
+test("a plain deploy of the same Commit is refused while a build's outcome is unknown, and force deploys a fresh scope", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deploy = { action: "deploy", project: "demo", target: "live" } as const;
+  await runtime.command({ ...deploy, branch: "main" });
+  // What an interrupted first deployment leaves once down has recovered it: incomplete, with one unit never finished.
+  const recorded = state.targets[0]!;
+  const workspace = recorded.plan.workspacePath;
+  recorded.deploymentIncomplete = true;
+  recorded.plan.builds = [{ id: "shared", command: "make", timeout: 600 }];
+  recorded.preparation = {
+    deployment: workspace,
+    units: { shared: { state: "started", policy: "p", startedAt: "then" } },
+  };
+  await expect(
+    runtime.command({ ...deploy, branch: "main" }),
+  ).rejects.toMatchObject({
+    code: "BUILD_UNKNOWN",
+    details: { unit: "shared" },
+    hint: expect.stringContaining("rig deploy live --force"),
+  });
+  expect(state.targets[0]!.plan.workspacePath).toBe(workspace);
+  expect(
+    await runtime.command({ ...deploy, branch: "main", force: true }),
+  ).toMatchObject({ outcome: "deployed" });
+  expect(state.targets[0]!.plan.workspacePath).not.toBe(workspace);
+  expect(state.targets[0]!.preparation?.deployment).not.toBe(workspace);
+  // A completed Deployment of the same source is not a no-op while a rolled-back attempt of it is uncertain.
+  state.targets[0]!.uncertainBuild = {
+    branch: "main",
+    commit: "abc",
+    unit: "shared",
+  };
+  await expect(
+    runtime.command({ ...deploy, branch: "main" }),
+  ).rejects.toMatchObject({ code: "BUILD_UNKNOWN" });
+  expect(
+    await runtime.command({ ...deploy, branch: "main", force: true }),
+  ).toMatchObject({ outcome: "deployed" });
+  expect(state.targets[0]!.uncertainBuild).toBeUndefined();
+  expect(await runtime.command({ ...deploy, branch: "main" })).toMatchObject({
+    outcome: "unchanged",
+  });
+});
+
+test("a Working copy restart retires superseded executables and publishes the new plan under one checkpoint, rolled back when the plan cannot be saved", async () => {
+  const { runtime, deps, state } = fixture();
+  const calls: string[] = [];
+  deps.lifecycle.checkpoint = async (target) => ({
+    targetId: target.id,
+    async commit() {
+      calls.push("commit");
+    },
+    async rollback() {
+      calls.push("rollback");
+    },
+  });
+  deps.lifecycle.retireSuperseded = async () => {
+    calls.push("retire");
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  calls.length = 0;
+  await runtime.command({ action: "restart", project: "demo" });
+  expect(calls.slice(0, 2)).toEqual(["retire", "commit"]);
+  calls.length = 0;
+  const update = deps.store.update.bind(deps.store);
+  deps.store.update = async (change) => {
+    if (calls.at(-1) === "retire") {
+      calls.push("refused");
+      throw new Error("store refused the write");
+    }
+    await update(change);
+  };
+  const before = structuredClone(state.targets[0]!.plan);
+  await expect(
+    runtime.command({ action: "restart", project: "demo" }),
+  ).rejects.toThrow("store refused the write");
+  expect(calls).toEqual(["retire", "refused", "rollback"]);
+  expect(state.targets[0]!.plan).toEqual(before);
+  // Interrupted after the plan was saved: down finishes the commit and never restores the retired executables.
+  deps.store.update = update;
+  deps.lifecycle.checkpoint = async (target) => ({
+    targetId: target.id,
+    async commit() {
+      throw new Error("journal unavailable");
+    },
+    async rollback() {
+      calls.push("rollback");
+    },
+  });
+  deps.lifecycle.commitEffects = async () => {
+    calls.push("commitEffects");
+  };
+  deps.lifecycle.restoreEffects = async () => {
+    calls.push("restoreEffects");
+  };
+  calls.length = 0;
+  await expect(
+    runtime.command({ action: "restart", project: "demo" }),
+  ).rejects.toMatchObject({
+    code: "REPLAN_COMMIT_PENDING",
+    hint: expect.stringContaining("rig down local"),
+  });
+  expect(state.targets[0]!.recovery).toMatchObject({ stage: "committing" });
+  await expect(
+    runtime.command({ action: "up", project: "demo" }),
+  ).rejects.toMatchObject({ code: "DEPLOY_RECOVERY" });
+  expect(state.targets[0]!.recovery).toMatchObject({ stage: "committing" });
+  await runtime.command({ action: "down", project: "demo" });
+  // The commit is finished first, so the stop's routine restore finds nothing pending.
+  expect(calls).toEqual([
+    "restoreEffects",
+    "retire",
+    "commitEffects",
+    "restoreEffects",
+  ]);
+  expect(state.targets[0]!.recovery).toBeUndefined();
 });
 
 test("a Preview deploy stays deployed when retiring the oldest Preview fails, and the next Preview deploy retires enough to meet the cap", async () => {
@@ -3048,6 +3171,7 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     async health() {
       return { ready: true };
     },
+    async build() {},
     async install() {
       return { outcome: "unchanged" };
     },

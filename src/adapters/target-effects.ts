@@ -13,7 +13,11 @@ import { dirname, join, resolve } from "node:path";
 import { createReadStream } from "node:fs";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import type { InstalledComponent, ManagedComponent } from "../config/types";
+import type {
+  BuildUnit,
+  InstalledComponent,
+  ManagedComponent,
+} from "../config/types";
 import { isHealthUrl } from "../config/schema";
 import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
 import { composeEnvironment } from "../domain/process-environment";
@@ -64,12 +68,8 @@ export function installedPath(
   target: TargetRecord,
   component: InstalledComponent,
 ): string {
-  const suffix =
-    target.kind === "local"
-      ? "-dev"
-      : target.kind === "preview"
-        ? `-${target.name}`
-        : "";
+  // The Stable Target owns the plain command; every other Target's alias carries its own name.
+  const suffix = target.kind === "live" ? "" : `-${target.name}`;
   return join(
     root,
     "bin",
@@ -78,7 +78,6 @@ export function installedPath(
 }
 /** Budgets in seconds when the Project config declares none. */
 const DEFAULT_HOOK_TIMEOUT_SECONDS = 120;
-const DEFAULT_BUILD_TIMEOUT_SECONDS = 600;
 const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
@@ -117,6 +116,8 @@ export function createTargetEffects(
   const environment = async (
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent,
+    /** Inputs of a Project-scope command, which no Component carries. */
+    projectInputs: NonNullable<BuildUnit["commandInputs"]> = [],
   ): Promise<Record<string, string>> => {
     const scope = component ?? target.plan;
     const loaded = await loadEnvironmentFiles(
@@ -129,7 +130,7 @@ export function createTargetEffects(
       baseline: { ...options.environment, TMPDIR: tmp },
       publicEnv: scope.env ?? {},
       files: loaded.files,
-      guarded: component?.commandInputs ?? [],
+      guarded: component?.commandInputs ?? projectInputs,
       ...(component ? { component: component.name } : {}),
     });
     await mkdir(tmp, { recursive: true, mode: 0o700 });
@@ -499,6 +500,46 @@ export function createTargetEffects(
           },
         );
     },
+    async build(unit, target) {
+      const component = target.plan.components.find(
+        (candidate) => candidate.name === unit.component,
+      );
+      if (unit.component !== undefined && !component)
+        throw new RigError(
+          "BUILD_SCOPE",
+          `Build unit ${unit.id} names no Component of this plan.`,
+          "Deploy again so the plan and its build units are recorded together.",
+          { unit: unit.id },
+        );
+      const name = unit.component ?? "setup";
+      const result = await runTarget(
+        unit.command,
+        target,
+        await environment(
+          target,
+          component?.kind === "persistent" ? undefined : component,
+          unit.commandInputs,
+        ),
+        unit.timeout,
+        name,
+      );
+      const label =
+        unit.component === undefined ? "shared" : `${unit.component}`;
+      if (result.timedOut)
+        throw new RigError(
+          "BUILD_TIMEOUT",
+          `The ${label} build did not finish within ${unit.timeout} s and was killed.`,
+          `Inspect the ${name} Target logs for its output so far; set build_timeout if it needs longer. Nothing was started or published.`,
+          { unit: unit.id, timeoutSeconds: unit.timeout },
+        );
+      if (result.exitCode)
+        throw new RigError(
+          "BUILD_FAILED",
+          `The ${label} build failed.`,
+          `Inspect the ${name} Target logs. Nothing was started or published.`,
+          { unit: unit.id, exitCode: result.exitCode },
+        );
+    },
     async install(component, target) {
       const destination = installedPath(options.root, target, component),
         source = resolve(target.plan.workspacePath, component.entrypoint);
@@ -525,35 +566,6 @@ export function createTargetEffects(
       const unchanged = async () =>
         published &&
         (await installedSourceRevision(source)) === receipt!.sourceRevision;
-      // A deployed checkout is immutable, so a matching receipt proves the build is current. A local working copy's
-      // build inputs are unobservable here, so its build runs every time and only its output decides.
-      if (target.plan.target !== "local" && (await unchanged()))
-        return { outcome: "unchanged" };
-      if (component.build) {
-        const timeoutSeconds =
-          component.buildTimeout ?? DEFAULT_BUILD_TIMEOUT_SECONDS;
-        const result = await runTarget(
-          component.build,
-          target,
-          env,
-          timeoutSeconds,
-          component.name,
-        );
-        if (result.timedOut)
-          throw new RigError(
-            "BUILD_TIMEOUT",
-            `The ${component.name} build did not finish within ${timeoutSeconds} s and was killed.`,
-            "Inspect Target logs for its output so far; set buildTimeout on the Component if it needs longer. The previous installed artifact is unchanged.",
-            { component: component.name, timeoutSeconds },
-          );
-        if (result.exitCode)
-          throw new RigError(
-            "BUILD_FAILED",
-            `The ${component.name} build failed.`,
-            "Inspect Target logs; the previous installed artifact is unchanged.",
-            { exitCode: result.exitCode },
-          );
-      }
       if (await unchanged()) return { outcome: "unchanged" };
       await transactions.withArtifactChange(
         target.id,
@@ -707,15 +719,12 @@ async function digestFile(path: string): Promise<string | undefined> {
   }
 }
 
-/** Keys a build receipt on the public policy the Project declares: its public env and which env files it names, never their contents,
- * so a secret never reaches a receipt and a changed operator file does not silently rerun a completed build. The baseline (PATH, HOME, ...) is
- * excluded too, so a daemon restarted from another shell does not rebuild every installed Component. */
+/** Keys a publication receipt on the public policy the Project declares: its public env and which env files it names, never their contents,
+ * so a secret never reaches a receipt and a changed operator file does not republish a Tool. The baseline (PATH, HOME, ...) is
+ * excluded too, so a daemon restarted from another shell does not republish every installed Component. */
 function installationPolicyKey(
   workspace: string,
-  component: Pick<
-    InstalledComponent,
-    "entrypoint" | "build" | "env" | "envFiles"
-  >,
+  component: Pick<InstalledComponent, "entrypoint" | "env" | "envFiles">,
   destination: string,
 ): string {
   return createHash("sha256")
@@ -723,7 +732,6 @@ function installationPolicyKey(
       JSON.stringify({
         workspace,
         entrypoint: component.entrypoint,
-        build: component.build,
         destination,
         env: component.env,
         envFiles: (component.envFiles ?? []).map((file) => file.path),

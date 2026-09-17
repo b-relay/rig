@@ -29,6 +29,8 @@ import {
   diagnosticErrorCode,
   diagnosticEvidence,
   type FailureCauses,
+  retainFailureCauses,
+  failureCauses,
 } from "../domain/errors";
 import { resolve as resolvePath } from "node:path";
 import type { RuntimeDependencies } from "./contracts";
@@ -41,6 +43,8 @@ import {
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
+import { assertSourceBuildsKnown } from "./lifecycle";
+import { prepareTarget } from "./preparation";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
 import {
@@ -477,6 +481,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         const previous = target?.commit
           ? { previousCommit: target.commit }
           : {};
+        // An uncertain attempt of this source is neither a completed no-op nor an ordinary retry of an incomplete deployment.
+        if (target && !command.force)
+          assertSourceBuildsKnown(target, { branch, commit });
         if (
           target?.commit === commit &&
           target.branch === branch &&
@@ -582,7 +589,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       } else if (
         command.action === "up" &&
         target.kind === "local" &&
-        target.desired === "stopped"
+        target.desired === "stopped" &&
+        // An unresolved transition is settled by down before anything plans over it.
+        !target.recovery
       )
         target = await replanWorkingCopy(
           target,
@@ -622,6 +631,22 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               deps,
             );
         }
+        // Only the Working copy builds here, from current source; a deployed Target starts from its deployment's preparation.
+        if (target.kind === "local")
+          await prepareTarget(
+            target,
+            command.action === "restart" ? "all" : "stopped",
+            deps,
+          );
+        const drift =
+          target.kind === "local" &&
+          target.configRevision !== undefined &&
+          configured.document !== undefined &&
+          configured.document.revision !== target.configRevision;
+        if (drift)
+          warnings.push(
+            `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${target.name} to apply the current rig.yaml.`,
+          );
         outcome = (await deps.lifecycle.up(target)).outcome;
         // up installs, routes, and starts the recorded plan under its own
         // committed checkpoint, which is everything an incomplete deployment lacked.
@@ -916,7 +941,43 @@ async function replanWorkingCopy(
     { command, kind: "local", project, document, existing: target },
     deps,
   );
-  await persistTarget(replanned, deps.store);
+  // The plan being replaced is stopped; an executable only it names (a removed Tool, or an alias under the old Target name) goes with it.
+  // Retirement and the new plan are published together or not at all.
+  const checkpoint = await deps.lifecycle.checkpoint(replanned, target);
+  try {
+    await deps.lifecycle.retireSuperseded(target, replanned);
+    // Saved with the plan, the decision makes an interrupted finalization finish the commit instead of restoring retired executables.
+    await persistTarget(
+      {
+        ...replanned,
+        recovery: {
+          plan: target.plan,
+          desired: "stopped",
+          stage: "committing",
+        },
+      },
+      deps.store,
+    );
+  } catch (error) {
+    try {
+      await checkpoint.rollback();
+    } catch (recoveryError) {
+      throw retainFailureCauses(error, error, recoveryError);
+    }
+    throw error;
+  }
+  try {
+    await checkpoint.commit();
+    await persistTarget(replanned, deps.store);
+  } catch (error) {
+    throw new RigError(
+      "REPLAN_COMMIT_PENDING",
+      `The new plan of ${replanned.name} was saved, but its commit finalization is incomplete.`,
+      `Run rig down ${replanned.name} to finish the recorded commit, then run the command again.`,
+      {},
+      failureCauses(error),
+    );
+  }
   return replanned;
 }
 /** The oldest Previews that must leave so a new Preview fits under the Host limit; none while the Project is under it.

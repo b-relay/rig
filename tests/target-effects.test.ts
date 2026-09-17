@@ -14,6 +14,7 @@ import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
+import type { InstalledComponent } from "../src/config/types";
 import { RigError } from "../src/domain/errors";
 const roots: string[] = [];
 afterEach(async () => {
@@ -42,6 +43,21 @@ function target(root: string): TargetRecord {
       providerProfile: "default",
       components: [],
       preparedComponents: [],
+    },
+  };
+}
+/** The Tool's build unit, and the record with the Tool in its plan so the unit resolves its scope. */
+function toolBuild(
+  record: TargetRecord,
+  component: InstalledComponent,
+  command: string,
+  timeout = 600,
+) {
+  return {
+    unit: { id: `tool:${component.name}`, component: component.name, command, timeout },
+    record: {
+      ...record,
+      plan: { ...record.plan, components: [component] },
     },
   };
 }
@@ -120,34 +136,40 @@ test("global and component hooks receive their resolved environment and write ra
   ]);
   expect(entries[2].component).toBe("web");
 });
-test("installed components build once per deployment and a failed replacement keeps the usable artifact", async () => {
+test("a build unit runs its command once, install only publishes, and a failed rebuild keeps the usable artifact", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-install-policy-"));
   roots.push(root);
-  const record = target(root),
-    adapter = effects(root);
+  const adapter = effects(root);
   const component = {
     name: "tool",
     kind: "installed" as const,
     entrypoint: "tool",
-    build:
-      "printf 'built\\n' >> builds; printf '#!/bin/sh\\necho ready\\n' > tool",
     env: {},
     dependsOn: [],
   };
+  const { unit, record } = toolBuild(
+    target(root),
+    component,
+    "printf 'built\\n' >> builds; printf '#!/bin/sh\\necho ready\\n' > tool",
+  );
+  await adapter.build(unit, record);
   expect(await adapter.install(component, record)).toEqual({
     outcome: "installed",
   });
-  // local Targets run build on every up; identical output is reported unchanged and left in place.
+  // Publishing never builds; identical output is reported unchanged and left in place.
   expect(await adapter.install(component, record)).toEqual({
     outcome: "unchanged",
   });
-  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
+  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\n");
   await expect(
-    adapter.install(
-      { ...component, build: "printf 'build failed\\n' >&2; exit 7" },
+    adapter.build(
+      { ...unit, command: "printf 'build failed\\n' >&2; exit 7" },
       record,
     ),
-  ).rejects.toThrow();
+  ).rejects.toMatchObject({
+    code: "BUILD_FAILED",
+    details: { unit: "tool:tool", exitCode: 7 },
+  });
   const entries = (await readFile(join(record.logRoot, "target.jsonl"), "utf8"))
     .trim()
     .split("\n")
@@ -161,7 +183,7 @@ test("installed components build once per deployment and a failed replacement ke
     }),
   );
   expect(
-    (await runCommand({ command: [join(root, "bin", "tool-dev")] })).stdout,
+    (await runCommand({ command: [join(root, "bin", "tool-local")] })).stdout,
   ).toBe("ready\n");
 });
 test("cancelling a command health check terminates its probe process group", async () => {
@@ -227,7 +249,7 @@ test("editing a local source tool keeps its shim usable without reinstalling it"
     outcome: "unchanged",
   });
   expect(
-    (await runCommand({ command: [join(root, "bin", "tool-dev")] })).stdout,
+    (await runCommand({ command: [join(root, "bin", "tool-local")] })).stdout,
   ).toBe("after");
   await rm(join(root, "tool.ts"));
   expect(
@@ -252,7 +274,7 @@ test("installed names reject another Target owner and unmanaged executables with
     };
   await writeFile(join(root, "tool.ts"), "process.stdout.write('first')");
   await adapter.install(component, record);
-  const before = await readFile(join(root, "bin", "tool-dev"), "utf8");
+  const before = await readFile(join(root, "bin", "tool-local"), "utf8");
   await expect(
     adapter.install(component, {
       ...record,
@@ -260,19 +282,19 @@ test("installed names reject another Target owner and unmanaged executables with
       projectId: "other-project",
     }),
   ).rejects.toMatchObject({ code: "ARTIFACT_CONFLICT" });
-  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toBe(before);
+  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toBe(before);
   await writeFile(
-    join(root, "bin", "unmanaged-dev"),
+    join(root, "bin", "unmanaged-local"),
     "precious unmanaged executable",
     { mode: 0o755 },
   );
   await expect(
     adapter.install({ ...component, name: "unmanaged" }, record),
   ).rejects.toMatchObject({ code: "ARTIFACT_UNOWNED" });
-  expect(await readFile(join(root, "bin", "unmanaged-dev"), "utf8")).toBe(
+  expect(await readFile(join(root, "bin", "unmanaged-local"), "utf8")).toBe(
     "precious unmanaged executable",
   );
-  await writeFile(join(root, "bin", "tool-dev"), "outside modification");
+  await writeFile(join(root, "bin", "tool-local"), "outside modification");
   expect(
     await adapter.observations.artifact(
       record,
@@ -296,7 +318,7 @@ test("explicit artifact adoption requires the exact backed-up bytes and then per
       env: {},
       dependsOn: [],
     },
-    destination = join(root, "bin", "tool-dev");
+    destination = join(root, "bin", "tool-local");
   await mkdir(join(root, "bin"));
   await writeFile(destination, "old tool", { mode: 0o755 });
   const identity = {
@@ -471,7 +493,6 @@ test("an installation receipt survives a change in the daemon's inherited enviro
   roots.push(root, operator);
   const secrets = join(operator, "all.env");
   await writeFile(secrets, "TOKEN=first\n", { mode: 0o600 });
-  // A deployed Target relies on the receipt alone; local rebuilds every time regardless.
   const record = {
     ...target(root),
     id: "live",
@@ -483,12 +504,11 @@ test("an installation receipt survives a change in the daemon's inherited enviro
     name: "tool",
     kind: "installed" as const,
     entrypoint: "tool",
-    build:
-      "printf 'built\\n' >> builds; printf '#!/bin/sh\\necho ready\\n' > tool",
     env: { FLAVOR: "plain" },
     envFiles: [{ path: secrets, required: false }],
     dependsOn: [],
   };
+  await writeFile(join(root, "tool"), "#!/bin/sh\necho ready\n");
   expect(await effects(root).install(component, record)).toEqual({
     outcome: "installed",
   });
@@ -511,10 +531,9 @@ test("an installation receipt survives a change in the daemon's inherited enviro
   expect(
     await later.install({ ...component, env: { FLAVOR: "spicy" } }, record),
   ).toEqual({ outcome: "installed" });
-  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
 });
 
-test("a local Target rebuilds on every install and republishes only when the build output changed; a deployed Target builds once", async () => {
+test("install republishes exactly when the built executable changed, on any Target", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-install-local-rebuild-"));
   roots.push(root);
   const adapter = effects(root);
@@ -522,23 +541,31 @@ test("a local Target rebuilds on every install and republishes only when the bui
     name: "tool",
     kind: "installed" as const,
     entrypoint: "tool",
-    build: "printf 'built\\n' >> builds; cp src.txt tool; chmod +x tool",
     env: {},
     dependsOn: [],
   };
+  const local = toolBuild(
+    target(root),
+    component,
+    "cp src.txt tool; chmod +x tool",
+  );
   await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v1\n");
-  const local = target(root);
-  expect(await adapter.install(component, local)).toEqual({
+  await adapter.build(local.unit, local.record);
+  expect(await adapter.install(component, local.record)).toEqual({
     outcome: "installed",
   });
   await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v2\n");
-  expect(await adapter.install(component, local)).toEqual({
+  // Source the build has not consumed yet changes nothing.
+  expect(await adapter.install(component, local.record)).toEqual({
+    outcome: "unchanged",
+  });
+  await adapter.build(local.unit, local.record);
+  expect(await adapter.install(component, local.record)).toEqual({
     outcome: "installed",
   });
-  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toContain(
+  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toContain(
     "echo v2",
   );
-  expect(await readFile(join(root, "builds"), "utf8")).toBe("built\nbuilt\n");
   const live = {
     ...target(root),
     id: "live",
@@ -549,12 +576,12 @@ test("a local Target rebuilds on every install and republishes only when the bui
   expect(await adapter.install(component, live)).toEqual({
     outcome: "installed",
   });
-  await writeFile(join(root, "src.txt"), "#!/bin/sh\necho v3\n");
   expect(await adapter.install(component, live)).toEqual({
     outcome: "unchanged",
   });
-  expect(await readFile(join(root, "builds"), "utf8")).toBe(
-    "built\nbuilt\nbuilt\n",
+  // The Stable Target owns the plain command; the Working copy's alias carries its Target name.
+  expect(await readFile(join(root, "bin", "tool"), "utf8")).toContain(
+    "echo v2",
   );
 });
 
@@ -568,10 +595,10 @@ test("a renamed Component takes over its own Target's installed executable, whil
     kind: "installed" as const,
     entrypoint: "tool",
     installName: "tool",
-    build: "printf '#!/bin/sh\\necho ready\\n' > tool",
     env: {},
     dependsOn: [],
   };
+  await writeFile(join(root, "tool"), "#!/bin/sh\necho ready\n");
   expect(await adapter.install(cli, record)).toEqual({ outcome: "installed" });
   const launcher = { ...cli, name: "launcher" };
   expect(await adapter.install(launcher, record)).toEqual({
@@ -591,10 +618,10 @@ test("a renamed Component takes over its own Target's installed executable, whil
   };
   await expect(adapter.install(cli, other)).rejects.toMatchObject({
     code: "ARTIFACT_CONFLICT",
-    message: `Project 'demo' Target 'local' Component 'launcher' owns the installed executable ${join(root, "bin", "tool-dev")}.`,
+    message: `Project 'demo' Target 'local' Component 'launcher' owns the installed executable ${join(root, "bin", "tool-local")}.`,
     hint: "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
     details: {
-      destination: join(root, "bin", "tool-dev"),
+      destination: join(root, "bin", "tool-local"),
       owner: {
         targetId: "t",
         componentName: "launcher",
@@ -603,20 +630,20 @@ test("a renamed Component takes over its own Target's installed executable, whil
       },
     },
   });
-  await writeFile(join(root, "bin", "tool-dev"), "hand edit", { mode: 0o755 });
+  await writeFile(join(root, "bin", "tool-local"), "hand edit", { mode: 0o755 });
   const installed = {
     ...record,
     plan: { ...record.plan, components: [launcher] },
   };
   await expect(adapter.retireArtifacts(installed)).rejects.toMatchObject({
     code: "ARTIFACT_CHANGED",
-    message: `The installed executable ${join(root, "bin", "tool-dev")} changed outside its owning Component launcher.`,
-    hint: `Move or delete ${join(root, "bin", "tool-dev")} to keep or discard that change, then retry.`,
+    message: `The installed executable ${join(root, "bin", "tool-local")} changed outside its owning Component launcher.`,
+    hint: `Move or delete ${join(root, "bin", "tool-local")} to keep or discard that change, then retry.`,
   });
-  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toBe("hand edit");
-  await rm(join(root, "bin", "tool-dev"));
+  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toBe("hand edit");
+  await rm(join(root, "bin", "tool-local"));
   await adapter.retireArtifacts(installed);
-  expect(await Bun.file(join(root, "bin", "tool-dev")).exists()).toBe(false);
+  expect(await Bun.file(join(root, "bin", "tool-local")).exists()).toBe(false);
   expect(
     await adapter.observations.artifact(
       installed,
@@ -762,24 +789,22 @@ test("a hook past its budget fails as HOOK_TIMEOUT naming the hook and budget, w
 test("a build past its budget fails as BUILD_TIMEOUT and dependency installation past its budget as DEPENDENCIES_TIMEOUT", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-build-timeout-"));
   roots.push(root);
-  const record = target(root);
-  await expect(
-    effects(root).install(
-      {
-        name: "tool",
-        kind: "installed" as const,
-        entrypoint: "tool",
-        build: "echo building; sleep 30",
-        buildTimeout: 1,
-        env: {},
-        dependsOn: [],
-      },
-      record,
-    ),
-  ).rejects.toMatchObject({
+  const { unit, record } = toolBuild(
+    target(root),
+    {
+      name: "tool",
+      kind: "installed" as const,
+      entrypoint: "tool",
+      env: {},
+      dependsOn: [],
+    },
+    "echo building; sleep 30",
+    1,
+  );
+  await expect(effects(root).build(unit, record)).rejects.toMatchObject({
     code: "BUILD_TIMEOUT",
     message: "The tool build did not finish within 1 s and was killed.",
-    details: { component: "tool", timeoutSeconds: 1 },
+    details: { unit: "tool:tool", timeoutSeconds: 1 },
   });
   expect(await readFile(join(root, "logs", "target.jsonl"), "utf8")).toContain(
     '"component":"tool","stream":"stdout","line":"building"',

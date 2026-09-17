@@ -619,8 +619,10 @@ test("a Project needs a Service or a Tool; a Tool-only Project needs no Service,
       envFiles: conventionFiles("stable", "report"),
       dependsOn: [],
       entrypoint: "/work/.rig-build/report",
-      build: "make",
     },
+  ]);
+  expect(plan.builds).toEqual([
+    { id: "tool:report", component: "report", command: "make", timeout: 600 },
   ]);
 });
 
@@ -1171,19 +1173,18 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
     },
     targets: { stable: { tools: { ctl: { build_timeout: "30m" } } } },
   });
-  const budgets = (target: "local" | "live") =>
-    Object.fromEntries(
-      resolveTargetPlan({ config, target, ...roots_ }).components.map(
-        (component) => [
-          component.name,
-          component.kind === "managed"
-            ? component.readyTimeout
-            : component.kind === "installed"
-              ? component.buildTimeout
-              : undefined,
-        ],
-      ),
+  const budgets = (target: "local" | "live") => {
+    const plan = resolveTargetPlan({ config, target, ...roots_ });
+    return Object.fromEntries(
+      plan.components.map((component) => [
+        component.name,
+        component.kind === "managed"
+          ? component.readyTimeout
+          : plan.builds?.find((unit) => unit.component === component.name)
+              ?.timeout,
+      ]),
     );
+  };
   // A Service defaults to 30s; a Tool falls back to the Project build budget; a patch overrides both.
   expect(budgets("local")).toEqual({
     web: 86400,
@@ -1515,7 +1516,6 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
       name: "tool",
       kind: "installed",
       entrypoint: "/work/bin/tool",
-      build: "bun build",
     },
   ]);
   // The same config pins its ports for the Stable Target, where a pin beats an assignment.
@@ -1678,13 +1678,73 @@ test("references resolve through other public values, a Service's rig.data stays
   });
 });
 
+test("builds resolve to units: shared first, Services in dependency order, Tools by name, never merged by shell text", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    build: "make ${env.MODE}",
+    build_timeout: "20m",
+    env: { MODE: "fast" },
+    services: {
+      web: {
+        run: "serve",
+        build: "make",
+        ports: { http: 4100 },
+        depends_on: ["api"],
+      },
+      api: {
+        run: "api",
+        build: "make",
+        build_timeout: "90s",
+        ports: { http: 4101 },
+      },
+      plain: { run: "plain", ports: { http: 4102 } },
+    },
+    tools: {
+      zed: { bin: "z", build: "make" },
+      ctl: { bin: "c", build: "make" },
+    },
+    targets: { stable: { tools: { ctl: { build_timeout: "30m" } } } },
+  });
+  const units = (target: "local" | "live") =>
+    resolveTargetPlan({ config, target, ...roots_ }).builds;
+  expect(units("live")).toEqual([
+    {
+      id: "shared",
+      command: "make fast",
+      timeout: 1200,
+      commandInputs: [{ name: "MODE", source: "env.MODE", value: "fast" }],
+    },
+    { id: "service:api", component: "api", command: "make", timeout: 90 },
+    { id: "service:web", component: "web", command: "make", timeout: 1200 },
+    { id: "tool:ctl", component: "ctl", command: "make", timeout: 1800 },
+    { id: "tool:zed", component: "zed", command: "make", timeout: 1200 },
+  ]);
+  expect(units("local")!.map((unit) => unit.timeout)).toEqual([
+    1200, 90, 1200, 1200, 1200,
+  ]);
+  // Without build_timeout the budget is ten minutes; a plan without builds records none.
+  expect(
+    resolveTargetPlan({
+      config: parseProjectConfig({
+        name: "app",
+        tools: { ctl: { bin: "c", build: "make" } },
+      }),
+      target: "live",
+      ...roots_,
+    }).builds,
+  ).toEqual([
+    { id: "tool:ctl", component: "ctl", command: "make", timeout: 600 },
+  ]);
+  expect(
+    resolveTargetPlan({
+      config: parseProjectConfig({ name: "app", tools: { ctl: { bin: "c" } } }),
+      target: "live",
+      ...roots_,
+    }).builds,
+  ).toBeUndefined();
+});
+
 test.each([
-  ["a shared build", { build: "bun install" }, "build"],
-  [
-    "a Service build",
-    { services: web({ build: "bun run build" }) },
-    "services.web.build",
-  ],
   [
     "a restart policy other than always",
     { services: web({ restart: "no" }) },
@@ -1981,10 +2041,8 @@ test("paths substituted into run, ready and build commands are shell-quoted unle
     command: `node '/repos/my app/api.js' --log "/state/it's data/api/log" --port 4001`,
     health: "http://127.0.0.1:4001/",
   });
-  expect(
-    plan.components.find((component) => component.name === "tool"),
-  ).toMatchObject({
-    build: "bun build '/repos/my app'/src/tool.ts",
+  expect(plan.builds?.find((unit) => unit.id === "tool:tool")).toMatchObject({
+    command: "bun build '/repos/my app'/src/tool.ts",
   });
   const printed = Bun.spawnSync([
     "/bin/sh",

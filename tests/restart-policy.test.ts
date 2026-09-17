@@ -66,7 +66,8 @@ async function fixture(
   const processes = new Map<string, ProcessObservation>();
   const starts: string[] = [];
   const refusal: {
-    start?: (request: ManagedProcess) => boolean;
+    /** The supervisor fails the start; with an exit, the process had run and left this evidence first. */
+    start?: (request: ManagedProcess) => boolean | { exitCode: number };
     /** The process is spawned and ends on its own before it is ready, leaving this evidence; `{}` is none. */
     dies?: (request: ManagedProcess) => { exitCode?: number } | undefined;
     stop?: (key: string) => boolean;
@@ -78,7 +79,14 @@ async function fixture(
     async ensureRunning(request) {
       if (processes.get(request.key)?.state === "running")
         return { outcome: "unchanged" };
-      if (refusal.start?.(request)) throw new Error("spawn refused");
+      const refused = refusal.start?.(request);
+      if (typeof refused === "object")
+        processes.set(request.key, {
+          state: "stopped",
+          incarnation: request.incarnation,
+          ...refused,
+        });
+      if (refused) throw new Error("spawn refused");
       starts.push(request.componentName);
       const death = refusal.dies?.(request);
       if (death)
@@ -469,16 +477,32 @@ test("an automatic start the supervisor fails leaves an unknown outcome, because
   await f.exit("api", { exitCode: 1 });
   f.refusal.start = () => true;
   await settle(f);
-  f.refusal.start = undefined;
   expect((await f.target()).services!.api!.outcome).toMatchObject({
     kind: "unknown",
   });
+  f.refusal.start = undefined;
   f.clock.ms += 60_000;
   f.reopen();
   await f.reconcile();
   await settle(f);
   expect(f.starts).toEqual(["api"]);
   expect((await f.status()).api).toMatchObject({ exit: "unknown" });
+});
+
+test("an automatic start the supervisor fails after its process already left exit evidence is that known exit, and is tried again", async () => {
+  const f = await fixture({ api: SERVICES.api });
+  await f.command("up");
+  await f.exit("api", { exitCode: 1 });
+  f.refusal.start = () => ({ exitCode: 7 });
+  await settle(f);
+  expect((await f.target()).services!.api).toMatchObject({
+    outcome: { kind: "exited", exitCode: 7 },
+    attempts: [expect.any(Number)],
+  });
+  f.refusal.start = undefined;
+  await settle(f);
+  expect(f.starts).toEqual(["api", "api"]);
+  expect(await f.running("api")).toBe(true);
 });
 
 test("an explicit up that fails is never retried automatically", async () => {

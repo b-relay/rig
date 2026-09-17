@@ -166,6 +166,15 @@ carrying its observation, keeps its own error; anything else is
 `START_UNVERIFIED`, which supervision records as `unknown`. The budget test now
 fails through a real readiness command so Rig's verified stop is what is retried.
 
+Round 4: a supervisor's `stop` answering `stopped` does not prove the
+application was running (launchd unloads a pid-less job), and a start launchd
+fails can still have left trustworthy exit evidence. `recover` now observes the
+process once *before* its cleanup: running means Rig ended it (the step's own
+error, retryable); stopped means it ended on its own (`PROCESS_EXITED` with the
+evidence recorded for this incarnation, else none, hence `unknown`); anything
+else is `START_UNVERIFIED`. The rule rests only on the observe contract both
+supervisors already prove in `providers-exit-contract`.
+
 ## Handoff
 
 - **#242** consumes `ActivationJournal.activated(service, incarnation)` (called

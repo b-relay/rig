@@ -121,8 +121,9 @@ export interface TargetLifecycle {
   ): Promise<{ outcome: "started" | "unchanged" }>;
   /** Starts one stopped Service of a running Target again under the same rules as `up`: fresh environment, readiness, then the
    * route. Never builds, installs or starts another Service. SERVICE_DEPENDENCY when a Service it depends on is not running;
-   * a process started by a failed attempt has been stopped. START_UNVERIFIED when the start was journalled and then neither
-   * this rollback stopped its process nor its exit was observed (the supervisor failed the start, or the process was gone). */
+   * a process started by a failed attempt has been stopped. Once the start was journalled, the failure says how the process
+   * ended: the step's own error when it was still running and this rollback stopped it; PROCESS_EXITED, with the `exitCode` or
+   * `signal` recorded for this start if any, when it had ended on its own; START_UNVERIFIED when it could not be observed. */
   recover(
     target: TargetRecord,
     service: string,
@@ -389,14 +390,12 @@ export function createTargetLifecycle(
           { service, dependency: missing },
         );
       const started: string[] = [];
-      let journalled = false;
+      let incarnation: string | undefined;
       const tracked: ActivationJournal = {
         async starting(name) {
-          const incarnation = await journal.starting(name);
-          journalled = true;
-          return incarnation;
+          return (incarnation = await journal.starting(name));
         },
-        activated: (name, incarnation) => journal.activated(name, incarnation),
+        activated: (name, started) => journal.activated(name, started),
       };
       try {
         await effects.prepare(target);
@@ -404,34 +403,45 @@ export function createTargetLifecycle(
         await effects.route(target);
         return { outcome: started.length ? "started" : "unchanged" };
       } catch (error) {
-        let stopped = started.length > 0;
-        for (const key of started)
-          try {
-            if ((await supervisor.stop(key)).outcome !== "stopped")
-              stopped = false;
-          } catch (failure) {
-            throw new RigError(
-              "START_ROLLBACK_FAILED",
-              "The Service could not be started again and its new process could not be verified stopped.",
-              "Run rig doctor and rig down before retrying.",
-              {},
-              failureCauses(error, failure),
-            );
-          }
-        // Refused before anything was asked of the supervisor, a process this rollback stopped itself, and an exit that
-        // carries its own observation each say how the attempt ended. Anything else after the start was journalled (the
-        // supervisor failed the start, or the process was already gone) leaves a process whose end nobody witnessed.
-        if (
-          !journalled ||
-          stopped ||
-          (error instanceof RigError && error.code === "PROCESS_EXITED")
-        )
-          throw error;
+        // Nothing was asked of the supervisor: the refusal itself says how the attempt ended.
+        if (incarnation === undefined) throw error;
+        // Seen before the cleanup below removes the evidence, because only a process found running here is one Rig ended.
+        const key = `${target.id}:${service}`;
+        const seen = await supervisor.observe(key).catch(() => undefined);
+        try {
+          await supervisor.stop(key);
+        } catch (failure) {
+          throw new RigError(
+            "START_ROLLBACK_FAILED",
+            "The Service could not be started again and its new process could not be verified stopped.",
+            "Run rig doctor and rig down before retrying.",
+            {},
+            failureCauses(error, failure),
+          );
+        }
+        if (seen?.state === "running") throw error;
+        if (seen?.state !== "stopped")
+          throw new RigError(
+            "START_UNVERIFIED",
+            `${service} was asked to start, but how that start ended could not be established.`,
+            `Inspect Target logs, then run rig up ${target.name} to start it again.`,
+            { service },
+            failureCauses(error),
+          );
+        const evidence = seen.incarnation === incarnation ? seen : undefined;
         throw new RigError(
-          "START_UNVERIFIED",
-          `${service} was asked to start, but how that start ended could not be established.`,
-          `Inspect Target logs, then run rig up ${target.name} to start it again.`,
-          { service },
+          "PROCESS_EXITED",
+          `${service} ended on its own before its start was complete.`,
+          "Inspect Target logs for the start-up failure.",
+          {
+            component: service,
+            ...(evidence?.exitCode === undefined
+              ? {}
+              : { exitCode: evidence.exitCode }),
+            ...(evidence?.signal === undefined
+              ? {}
+              : { signal: evidence.signal }),
+          },
           failureCauses(error),
         );
       }

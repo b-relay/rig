@@ -175,6 +175,9 @@ evidence recorded for this incarnation, else none, hence `unknown`); anything
 else is `START_UNVERIFIED`. The rule rests only on the observe contract both
 supervisors already prove in `providers-exit-contract`.
 
+Round 5: no material findings remain. Left undone by agreement: a live-launchd
+duplicate of the regression, per-Service deployment rollback, and #242's work.
+
 ## Handoff
 
 - **#242** consumes `ActivationJournal.activated(service, incarnation)` (called

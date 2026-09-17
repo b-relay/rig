@@ -128,3 +128,6 @@ two-version `cache` recipe through the same public paths.
 `services` map the first Service could inherit a `# rig-recipe:` line from a
 scalar before `services`. The scan now starts at the `services` key and skips
 flow-style maps (the documented limit). Red confirmed.
+
+**Round 3**: "Nothing material remains." Full `bun test` on the final revision:
+787 pass, 0 fail.

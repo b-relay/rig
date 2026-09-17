@@ -167,6 +167,20 @@ test("Production confirmation follows the role rigd says the selector means, wha
   ]);
 });
 
+test("a deployment context that does not say which Target was selected is a protocol failure, not an unconfirmed deploy", async () => {
+  const { deps } = fixture();
+  deps.client.command = async () => ({
+    project: "demo",
+    repoPath: "/repo",
+    productionBranch: "main",
+    targets: { working: "local", stable: "live" },
+    currentBranch: "feature",
+  });
+  await expect(
+    prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+  ).rejects.toMatchObject({ code: "DAEMON_PROTOCOL" });
+});
+
 test("interactive read protocol errors are safe structured daemon failures", async () => {
   const { deps } = fixture();
   deps.client.command = async () => ({ unexpected: "secret-value" });

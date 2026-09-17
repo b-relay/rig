@@ -117,6 +117,10 @@ Round 1 raised four findings, all fixed:
 4. `help` was a legal Target name that `rig deploy help` could never reach;
    it is now reserved in the schema.
 
+Round 2 raised one finding, fixed: `selected` was optional in the CLI's reply
+schema, so a reply without it skipped the Production confirmation; it is now
+required and its absence is `DAEMON_PROTOCOL`.
+
 ## Remaining integration dependencies
 
 - `unsupported_setting` until the owning ticket lands: shared and Service

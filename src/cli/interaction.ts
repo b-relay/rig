@@ -26,7 +26,8 @@ const deployment = z.object({
   currentBranch: z.string().nullable(),
   /** The names this Project gives its Working copy and Stable Target. */
   targets: z.object({ working: z.string(), stable: z.string() }),
-  selected: z.enum(["working", "stable", "preview"]).optional(),
+  // Required: a reply without it would let a Stable deploy skip its Production confirmation.
+  selected: z.enum(["working", "stable", "preview"]),
 });
 /** Resolve human choices through read-only daemon queries before submitting any mutation. */
 export async function prepareInteractiveRequest(

@@ -121,7 +121,8 @@ export interface TargetLifecycle {
   ): Promise<{ outcome: "started" | "unchanged" }>;
   /** Starts one stopped Service of a running Target again under the same rules as `up`: fresh environment, readiness, then the
    * route. Never builds, installs or starts another Service. SERVICE_DEPENDENCY when a Service it depends on is not running;
-   * a process started by a failed attempt has been stopped. */
+   * a process started by a failed attempt has been stopped. START_UNVERIFIED when the start was journalled and then neither
+   * this rollback stopped its process nor its exit was observed (the supervisor failed the start, or the process was gone). */
   recover(
     target: TargetRecord,
     service: string,
@@ -388,15 +389,26 @@ export function createTargetLifecycle(
           { service, dependency: missing },
         );
       const started: string[] = [];
+      let journalled = false;
+      const tracked: ActivationJournal = {
+        async starting(name) {
+          const incarnation = await journal.starting(name);
+          journalled = true;
+          return incarnation;
+        },
+        activated: (name, incarnation) => journal.activated(name, incarnation),
+      };
       try {
         await effects.prepare(target);
-        await startService(target, component, supervisor, journal, started);
+        await startService(target, component, supervisor, tracked, started);
         await effects.route(target);
         return { outcome: started.length ? "started" : "unchanged" };
       } catch (error) {
+        let stopped = started.length > 0;
         for (const key of started)
           try {
-            await supervisor.stop(key);
+            if ((await supervisor.stop(key)).outcome !== "stopped")
+              stopped = false;
           } catch (failure) {
             throw new RigError(
               "START_ROLLBACK_FAILED",
@@ -406,7 +418,22 @@ export function createTargetLifecycle(
               failureCauses(error, failure),
             );
           }
-        throw error;
+        // Refused before anything was asked of the supervisor, a process this rollback stopped itself, and an exit that
+        // carries its own observation each say how the attempt ended. Anything else after the start was journalled (the
+        // supervisor failed the start, or the process was already gone) leaves a process whose end nobody witnessed.
+        if (
+          !journalled ||
+          stopped ||
+          (error instanceof RigError && error.code === "PROCESS_EXITED")
+        )
+          throw error;
+        throw new RigError(
+          "START_UNVERIFIED",
+          `${service} was asked to start, but how that start ended could not be established.`,
+          `Inspect Target logs, then run rig up ${target.name} to start it again.`,
+          { service },
+          failureCauses(error),
+        );
       }
     },
     async down(target) {

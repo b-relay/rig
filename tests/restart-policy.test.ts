@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTargetEffects } from "../src/adapters/target-effects";
@@ -50,6 +50,7 @@ async function fixture(
     {
       run: string;
       restart?: string;
+      ready?: string;
       depends_on?: string[];
       ports: { http: number };
     }
@@ -120,9 +121,14 @@ async function fixture(
   });
   /** A grace above zero makes a start observe its process once before it counts as started. */
   const timing = {
-    schedule(_delayMs: number, fire: () => void) {
-      queueMicrotask(fire);
-      return () => {};
+    // Polls fire at once; a readiness deadline (seconds) is given long enough for a real health command to answer.
+    schedule(delayMs: number, fire: () => void) {
+      if (delayMs < 1000) {
+        queueMicrotask(fire);
+        return () => {};
+      }
+      const timer = setTimeout(fire, 250);
+      return () => clearTimeout(timer);
     },
     startGraceMs: 0,
   };
@@ -427,17 +433,22 @@ test("an exit whose record cannot be saved is not retried until it can be", asyn
   expect(f.starts).toHaveLength(2);
 });
 
-test("an automatic start that fails spends budget like any other, so a Service that cannot start ends exhausted, not retried forever", async () => {
-  const f = await fixture({ api: SERVICES.api });
+test("an automatic start that never becomes ready is stopped by Rig and spends budget like any other, so it ends exhausted, not retried forever", async () => {
+  const unready = join(tmpdir(), `rig-restart-policy-unready-${process.pid}`);
+  roots.push(unready);
+  const f = await fixture({
+    api: { ...SERVICES.api, ready: `test ! -e '${unready}'` },
+  });
   await f.command("up");
   await f.exit("api", { exitCode: 1 });
-  f.refusal.start = () => true;
+  await writeFile(unready, "");
   for (let pass = 0; pass < 12; pass++) {
     const { nextRetryAt } = await f.supervise();
     if (nextRetryAt === undefined) break;
     f.clock.ms = nextRetryAt;
   }
-  expect(f.starts).toHaveLength(1);
+  expect(f.starts).toHaveLength(6);
+  expect(await f.running("api")).toBe(false);
   const run = (await f.target()).services!.api!;
   expect(run).toMatchObject({
     exhausted: true,
@@ -450,6 +461,24 @@ test("an automatic start that fails spends budget like any other, so a Service t
       (entry) => entry.action === "restart" && entry.outcome === "failed",
     ),
   ).toHaveLength(6);
+});
+
+test("an automatic start the supervisor fails leaves an unknown outcome, because nobody saw how that start ended", async () => {
+  const f = await fixture({ api: SERVICES.api });
+  await f.command("up");
+  await f.exit("api", { exitCode: 1 });
+  f.refusal.start = () => true;
+  await settle(f);
+  f.refusal.start = undefined;
+  expect((await f.target()).services!.api!.outcome).toMatchObject({
+    kind: "unknown",
+  });
+  f.clock.ms += 60_000;
+  f.reopen();
+  await f.reconcile();
+  await settle(f);
+  expect(f.starts).toEqual(["api"]);
+  expect((await f.status()).api).toMatchObject({ exit: "unknown" });
 });
 
 test("an explicit up that fails is never retried automatically", async () => {

@@ -158,6 +158,14 @@ process succeeds. Fixed: `failedAttemptOutcome` judges `PROCESS_EXITED` by the
 exit evidence the error carries (`exited`, retried by policy) and records
 `unknown` without any; only a start Rig itself stopped stays `activation-failed`.
 
+Round 3: provider start failures (`LAUNCHD_START`, a child cleanup failure)
+reject `ensureRunning` after the start was journalled and were still recorded
+`activation-failed`. Fixed generically in `lifecycle.recover`: once a start is
+journalled, only a process the rollback itself stopped, or a `PROCESS_EXITED`
+carrying its observation, keeps its own error; anything else is
+`START_UNVERIFIED`, which supervision records as `unknown`. The budget test now
+fails through a real readiness command so Rig's verified stop is what is retried.
+
 ## Handoff
 
 - **#242** consumes `ActivationJournal.activated(service, incarnation)` (called

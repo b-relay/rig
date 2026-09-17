@@ -318,12 +318,13 @@ async function superviseService(
   return undefined;
 }
 
-/** What a failed automatic attempt leaves on record. A start Rig itself stopped is a failure it witnessed. A process that
+/** What a failed automatic attempt leaves on record. A start refused before it was journalled, or one Rig itself stopped, is a failure it witnessed. A process that
  * ended on its own before it was ready is judged like any other exit: by its evidence, and `unknown` without any. A rollback
- * that could not be verified may have left the process behind, and how that one ends will not be known. */
+ * that could not be verified may have left the process behind, and a start the supervisor failed may have ended unseen. */
 function failedAttemptOutcome(error: unknown, at: string): ServiceOutcome {
   const code = diagnosticErrorCode(error);
-  if (code === "START_ROLLBACK_FAILED") return { kind: "unknown", at };
+  if (code === "START_ROLLBACK_FAILED" || code === "START_UNVERIFIED")
+    return { kind: "unknown", at };
   if (code !== "PROCESS_EXITED")
     return { kind: "activation-failed", errorCode: code, at };
   const { exitCode, signal } = (error as RigError).details;

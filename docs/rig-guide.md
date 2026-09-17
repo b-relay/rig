@@ -991,12 +991,12 @@ bootstrap removes them too.
 `rigd` decides whether a Service that ended is started again; a supervisor
 only starts it once and records how it ended. `restart` selects the policy:
 
-| The Service | `always` | `on-failure` | `no` |
-| --- | --- | --- | --- |
-| exited with code 0 | started again | stays stopped | stays stopped |
+| The Service                                                | `always`      | `on-failure`  | `no`          |
+| ---------------------------------------------------------- | ------------- | ------------- | ------------- |
+| exited with code 0                                         | started again | stays stopped | stays stopped |
 | exited non-zero, or was ended by a signal Rig did not send | started again | started again | stays stopped |
-| is gone and nothing recorded how it ended | stays stopped | stays stopped | stays stopped |
-| was stopped by `rig down` or `rig restart` | stays stopped | stays stopped | stays stopped |
+| is gone and nothing recorded how it ended                  | stays stopped | stays stopped | stays stopped |
+| was stopped by `rig down` or `rig restart`                 | stays stopped | stays stopped | stays stopped |
 
 Each start is named, and an exit only counts when its record names the start
 Rig last made. A Service that is gone without such a record (after a reboot,
@@ -1009,7 +1009,9 @@ Activity records each exit and each automatic restart.
 A Service gets five automatic attempts within any 60 seconds, the first
 100 ms after the exit and each further one after twice the previous delay. An
 attempt that fails to start, including one refused because a Service it
-depends on is down, spends an attempt. A Service that used them all stays
+depends on is down, spends an attempt. An attempt whose end nobody saw (the
+supervisor could not start it, or its process was gone without a record before
+it was ready) is an unknown exit like any other and ends the attempts. A Service that used them all stays
 stopped, and stays so across `rigd` restarts, until `rig up`, `rig restart`,
 or a new deployment starts it, which also resets the count. An `up` that finds
 a Service already running changes nothing about it. `rig down` cancels any

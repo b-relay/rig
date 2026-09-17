@@ -955,6 +955,8 @@ async function replanWorkingCopy(
     { command, kind: "local", project, document, existing: target },
     deps,
   );
+  // A Service a failed down left running is adopted by the next up, not started; its record is what explains its later exit.
+  if (target.services) replanned.services = target.services;
   // The plan being replaced is stopped; an executable only it names (a removed Tool, or an alias under the old Target name) goes with it.
   // Retirement and the new plan are published together or not at all.
   const checkpoint = await deps.lifecycle.checkpoint(replanned, target);

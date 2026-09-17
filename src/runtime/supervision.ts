@@ -280,6 +280,8 @@ async function superviseService(
   } catch (error) {
     // Every failed attempt spends budget, one refused before anything was spawned too, so a Service that cannot start
     // (a dependency that stays down, say) ends exhausted and visible instead of being asked again forever.
+    // A rollback that could not be verified may have left the new process behind; how that one ends is not known here.
+    const code = diagnosticErrorCode(error);
     const { retryAt: _retryAt, ...current } = currentRun(target, service)!;
     await saveRun(
       target,
@@ -290,17 +292,16 @@ async function superviseService(
           current.incarnation === run.incarnation
             ? [...current.attempts, now]
             : current.attempts,
-        outcome: {
-          kind: "activation-failed",
-          errorCode: diagnosticErrorCode(error),
-          at: deps.now(),
-        },
+        outcome:
+          code === "START_ROLLBACK_FAILED"
+            ? { kind: "unknown", at: deps.now() }
+            : { kind: "activation-failed", errorCode: code, at: deps.now() },
       },
       deps,
       {
         action: "restart",
         outcome: "failed",
-        message: `${service} could not be started again automatically (${diagnosticErrorCode(error)}).`,
+        message: `${service} could not be started again automatically (${code}).`,
       },
     );
     return await superviseService(target, component, deps);

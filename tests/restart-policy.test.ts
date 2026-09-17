@@ -64,7 +64,12 @@ async function fixture(
   const clock = { ms: Date.parse("2026-09-17T00:00:00.000Z") };
   const processes = new Map<string, ProcessObservation>();
   const starts: string[] = [];
-  const refusal: { start?: (request: ManagedProcess) => boolean } = {};
+  const refusal: {
+    start?: (request: ManagedProcess) => boolean;
+    /** The process is spawned and is gone, with no record, before it is ready. */
+    survive?: (request: ManagedProcess) => boolean;
+    stop?: (key: string) => boolean;
+  } = {};
   const supervisor: Supervisor = {
     async observe(key) {
       return processes.get(key) ?? { state: "stopped" };
@@ -74,14 +79,17 @@ async function fixture(
         return { outcome: "unchanged" };
       if (refusal.start?.(request)) throw new Error("spawn refused");
       starts.push(request.componentName);
-      processes.set(request.key, {
-        state: "running",
-        pid: 1000 + starts.length,
-        incarnation: request.incarnation,
-      });
+      if (refusal.survive?.(request)) processes.delete(request.key);
+      else
+        processes.set(request.key, {
+          state: "running",
+          pid: 1000 + starts.length,
+          incarnation: request.incarnation,
+        });
       return { outcome: "started" };
     },
     async stop(key) {
+      if (refusal.stop?.(key)) throw new Error("stop could not be verified");
       const running = processes.get(key)?.state === "running";
       processes.delete(key);
       return { outcome: running ? "stopped" : "unchanged" };
@@ -104,6 +112,14 @@ async function fixture(
     }),
     run: runCommand,
   });
+  /** A grace above zero makes a start observe its process once before it counts as started. */
+  const timing = {
+    schedule(_delayMs: number, fire: () => void) {
+      queueMicrotask(fire);
+      return () => {};
+    },
+    startGraceMs: 0,
+  };
   const store = new FileStateStore(root);
   const storeFailure: { update?: boolean } = {};
   let id = 0;
@@ -156,13 +172,7 @@ async function fixture(
         return parseHostConfig({});
       },
     },
-    lifecycle: createTargetLifecycle(effects, {
-      schedule(_delayMs, fire) {
-        queueMicrotask(fire);
-        return () => {};
-      },
-      startGraceMs: 0,
-    }),
+    lifecycle: createTargetLifecycle(effects, timing),
     observations: effects.observations,
     observationBudgetMs: 2000,
     observationDeadline: timerObservationDeadline,
@@ -197,6 +207,7 @@ async function fixture(
   };
   return {
     clock,
+    timing,
     starts,
     refusal,
     storeFailure,
@@ -219,6 +230,10 @@ async function fixture(
       const k = await key(service);
       incarnation ??= processes.get(k)!.incarnation;
       processes.set(k, { state: "stopped", incarnation, ...exit });
+    },
+    /** The supervisor cannot tell whether the process runs. */
+    async uncertain(service: string) {
+      processes.set(await key(service), { state: "unknown" });
     },
     /** The process is gone and nothing recorded how. */
     async vanish(service: string) {
@@ -520,6 +535,61 @@ test("smoke: a real process that fails under the rigd supervisor is recorded and
   } finally {
     await supervisor.shutdown();
   }
+});
+
+test("a Service whose sibling cannot be observed is still started again, and the sibling costs it no budget", async () => {
+  const f = await fixture({
+    api: { run: "api", ports: { http: 46031 } },
+    other: { run: "other", ports: { http: 46032 } },
+  });
+  await f.command("up");
+  await f.exit("api", { exitCode: 1 });
+  await f.uncertain("other");
+  await settle(f);
+  expect(f.starts).toEqual(["api", "other", "api"]);
+  expect((await f.target()).services!.api).toMatchObject({
+    attempts: [expect.any(Number)],
+  });
+  expect((await f.target()).services!.api!.outcome).toBeUndefined();
+});
+
+test("an automatic start whose rollback cannot be verified leaves an unknown outcome: nothing starts it again", async () => {
+  const f = await fixture({ api: { run: "api", ports: { http: 46041 } } });
+  await f.command("up");
+  await f.exit("api", { exitCode: 1 });
+  f.timing.startGraceMs = 1;
+  f.refusal.survive = () => true;
+  f.refusal.stop = () => true;
+  await settle(f);
+  expect(f.starts).toEqual(["api", "api"]);
+  expect((await f.target()).services!.api!.outcome).toMatchObject({
+    kind: "unknown",
+  });
+  delete f.refusal.survive;
+  delete f.refusal.stop;
+  f.clock.ms += 60_000;
+  f.reopen();
+  await f.reconcile();
+  await settle(f);
+  expect(f.starts).toEqual(["api", "api"]);
+  expect((await f.status()).api).toMatchObject({
+    state: "failed",
+    exit: "unknown",
+  });
+});
+
+test("a Service a failed down left running keeps its record through the next up, so its later failure is still started again", async () => {
+  const f = await fixture({ api: { run: "api", ports: { http: 46051 } } });
+  await f.command("up");
+  f.refusal.stop = () => true;
+  await expect(f.command("down")).rejects.toBeDefined();
+  delete f.refusal.stop;
+  await f.command("up");
+  expect(f.starts).toEqual(["api"]);
+  expect((await f.target()).services!.api).toMatchObject({ intent: "running" });
+  await f.exit("api", { exitCode: 3 });
+  await settle(f);
+  expect(f.starts).toEqual(["api", "api"]);
 });
 
 test("a successful up means every recorded Service to run again, also one a failed down left running and up therefore never started", () => {

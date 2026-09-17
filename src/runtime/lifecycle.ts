@@ -161,10 +161,12 @@ const OBSERVATION_INTERVAL_MS = 100;
 async function observeManaged(
   target: TargetRecord,
   supervisor: Supervisor,
+  only?: string[],
 ): Promise<Map<string, ProcessObservation>> {
   const observations = new Map<string, ProcessObservation>();
   for (const component of target.plan.components) {
     if (component.kind !== "managed") continue;
+    if (only && !only.includes(component.name)) continue;
     const observation = await supervisor.observe(
       `${target.id}:${component.name}`,
     );
@@ -368,7 +370,11 @@ export function createTargetLifecycle(
           { service },
         );
       const supervisor = effects.supervisor(target);
-      const observations = await observeManaged(target, supervisor);
+      // Only what this start depends on decides it; a sibling that cannot be observed is not its concern.
+      const observations = await observeManaged(target, supervisor, [
+        service,
+        ...component.dependsOn,
+      ]);
       if (observations.get(`${target.id}:${service}`)!.state === "running")
         return { outcome: "unchanged" };
       const missing = component.dependsOn.find(

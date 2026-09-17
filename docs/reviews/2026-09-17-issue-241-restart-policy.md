@@ -133,6 +133,24 @@ reports `running` while the wrapper lives, whatever the application does.
   `activity-e2e` uses `restart: "no"` so one crash is one Activity entry.
 - `bun run typecheck`, `bun run build`: clean. Full `bun test`: see the PR body.
 
+## Review (Codex, gpt-6-astra, high, read-only)
+
+Round 1, four findings:
+
+1. *Unknown exits during recovery are retried.* Partly taken. An attempt whose
+   rollback was verified is a failure the runtime witnessed itself, so
+   `activation-failed` stays retryable within the budget. An attempt whose
+   rollback could not be verified (`START_ROLLBACK_FAILED`) may leave a process
+   whose end nobody will record; it now records `unknown` and is never retried.
+2. *A failed `down` survivor loses its record on the next local `up`.* Fixed:
+   `replanWorkingCopy` carries `services` over; regression through `down`/`up`.
+3. *Deployment rollback restarts a previous `no` Service that had exited.*
+   Not done. Rollback has always restored the previous Deployment with `up`,
+   an explicit start of the whole Target; per-Service restore is a change to
+   deployment rollback, not to restart policy.
+4. *An unobservable sibling exhausts a Service's budget.* Fixed: `recover`
+   observes only the Service and what it depends on.
+
 ## Handoff
 
 - **#242** consumes `ActivationJournal.activated(service, incarnation)` (called

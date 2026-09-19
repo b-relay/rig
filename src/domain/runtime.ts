@@ -79,6 +79,8 @@ export interface TargetRecord {
   uncertainBuild?: { branch?: string; commit?: string; unit: string };
   /** Revision of the rig.yaml a Working copy plan was made from. */
   configRevision?: string;
+  /** Set by the configuration cutover on a saved Deployment whose old behavior the converted plan cannot reproduce. */
+  conversion?: { needsDeploy: string[] };
   recovery?: {
     plan: TargetPlan;
     /** Build outcomes of the plan restored by rollback. */
@@ -117,7 +119,7 @@ export interface OperationRecord {
 }
 
 export interface RuntimeState {
-  version: 3;
+  version: 4;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];

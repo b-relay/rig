@@ -180,7 +180,8 @@ _Decision history_: The accepted YAML-only cutover for user-authored config is
 recorded in [ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md).
 
 _Relationship_: Host config migration is manual. Rig should not expose a
-config migration command or silently rewrite an existing JSON file.
+config migration command or silently rewrite an existing JSON file. The
+Configuration conversion only shows a candidate `config.yaml`.
 
 _Relationship_: Runtime records and Diagnostic logs are machine-owned state,
 not Host config, and may remain JSON or JSONL.
@@ -724,7 +725,9 @@ whether or not a `rig.yaml` sits beside it. Rig never reads, merges, or chooses
 between the two.
 
 _Relationship_: Project config migration is manual. Rig should not expose a
-config migration command or silently rewrite an existing JSON file.
+config migration command or silently rewrite an existing JSON file. The
+Configuration conversion only writes a candidate `rig.yaml` beside its report,
+never into a repository.
 
 _Relationship_: User-authored YAML should remain ordinary, deterministic
 configuration. Runtime records and Diagnostic logs are machine-owned state and
@@ -733,6 +736,34 @@ may remain JSON or JSONL.
 _Relationship_: Deploy, init, config editing, and doctor use current Project
 config. A deploy is the moment when current Project config becomes the recorded
 runtime policy for the deployed Target.
+
+### Configuration conversion
+
+The one-time, reviewed conversion of a Rig root written before the
+configuration cutover (runtime state version 2 or 3) into the current state
+format. It is run from a source checkout (`bun run cutover`), is not a `rig`
+or `rigd` command, and the runtime holds no reader for the retired format: it
+refuses such a root as `STATE_UNCONVERTED`.
+_Avoid_: migration command, compatibility mode, legacy reader
+
+_Relationship_: The conversion keeps every Target's identity and exact data,
+log and workspace locations, never relocates data, never opens an env file,
+and invents no build success or exit record. It never substitutes Working copy
+policy for a saved Deployment.
+
+_Relationship_: Every retired hook needs an explicit decision in the
+**Conversion review**: a build, or replaced by something named. No hook is
+assumed equivalent, and the converted state carries none.
+
+_Relationship_: A converted Stable Target or Preview whose saved Deployment
+cannot be reproduced (a hook became a build that never ran, or its env file is
+part of the Commit) is marked as needing a Deployment; `rig up` refuses it
+until a new Commit is deployed.
+
+_Relationship_: Applying requires the revision of a reviewed preview and an
+exact metadata backup; the state file is replaced last, so an interrupted
+conversion leaves a root that is still refused. Rollback restores metadata
+only.
 
 ### Deployment record
 

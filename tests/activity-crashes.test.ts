@@ -30,7 +30,7 @@ const target = {
 /** One supervision pass over the recorded Target with a scripted observation; the `no` policy keeps the lifecycle out of it. */
 function fixture() {
   const state: RuntimeState = {
-    version: 3,
+    version: 4,
     projects: [
       {
         id: "p",

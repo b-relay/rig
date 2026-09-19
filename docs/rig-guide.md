@@ -742,7 +742,9 @@ other command fails with that same message. Every state write is flushed to
 disk before it replaces the file, and the version it replaces stays beside it
 as `state.json.bak`; the failure message points at that copy when it exists.
 `rigd uninstall` refuses until the file is repaired, because it cannot verify
-that Targets are stopped without it. Registered `repoPath` and `configPath`
+that Targets are stopped without it; the one exception is a state file from
+before the configuration cutover (below), on which this `rigd` never started
+anything. Registered `repoPath` and `configPath`
 values must be absolute; a hand-edited relative path is reported as a
 malformed record rather than resolved against the daemon's working directory,
 and a command that sends a relative path is refused as an invalid request
@@ -756,9 +758,13 @@ No `rigd` command produces or finalizes the manifest in this release: verify
 each legacy process and route it lists yourself, then move the file aside or
 delete it to release runtime control.
 
-The state file carries a format version (currently 3; version 2 files are
-read and rewritten as 3). A file written by a newer `rigd` is refused as
-`STATE_VERSION`, naming both versions, rather than loaded with fields dropped.
+The state file carries a format version (currently 4). A file written by a
+newer `rigd` is refused as `STATE_VERSION`, naming both versions, rather than
+loaded with fields dropped. A version 2 or 3 file was written before the
+configuration cutover: its saved plans carry hooks, Commit env files and
+build fields this `rigd` has no meaning for, so it is refused as
+`STATE_UNCONVERTED` instead of being read with those dropped. See
+[Configuration cutover](#configuration-cutover).
 Keys this `rigd` does not know are kept through every read and write, so a
 newer version's fields survive a temporary downgrade.
 
@@ -856,6 +862,107 @@ time; a lock left by a writer that died or was replaced, or an unreadable lock
 older than a minute, is reclaimed by the next administration. When activity
 cannot be recorded, the warning names the journal or lock file to inspect, and
 the administration outcome itself is unchanged.
+
+## Configuration cutover
+
+A Rig root written by the last JSON-configuration runtime (state version 2 or
+3) is refused by this `rig` and `rigd` with `STATE_UNCONVERTED`. Converting it
+is a one-time, reviewed step run from a Rig source checkout. It is not a `rig`
+or `rigd` command and the runtime contains no reader for the old format.
+
+```sh
+bun run cutover inventory                       # read-only: what the root holds
+bun run cutover preview --review review.yaml    # read-only: the conversion and its revision
+bun run cutover apply --review review.yaml --revision <sha256>
+bun run cutover rollback --backup <backupPath>
+```
+
+The root is `RIG_ROOT`, or `~/.rig`. Every command prints JSON and supports
+`--help`.
+
+**Stop the old runtime first, with the old runtime.** `rig down` every Target
+and `rigd uninstall` using the version that started them. The conversion stops
+nothing and refuses while `daemon/owner.json` or a process lease names a live
+pid (`daemon_running`, `live_process`), while a Target is recorded as running,
+has unresolved recovery, an incomplete deployment or a pending destruction, or
+while an effect journal is unfinished. Two daemons never share a root. A pid
+that was reused by an unrelated process also blocks; remove the stale record
+only after checking it.
+
+**The review** is the only input besides the root. Rig has no hooks any more,
+and no hook is assumed equivalent to anything:
+
+```yaml
+hooks:
+  demo/web/preStart: { as: build }     # it only compiles: becomes the Service's build
+  demo/web/postStop: { as: replaced, by: "alerting on the Service log" }
+ambient: [USER]      # inherited names a command uses that you accept as unset
+activate: [demo]     # Projects you plan to activate first; recorded only
+```
+
+Every hook of every saved Target needs its own decision
+(`<project>/<component or @project>/<hook>`), otherwise `unmapped_hook` blocks.
+Only a managed Component's `preStart` can be a build; anything else marked as
+one is `unsupported_hook_mapping`. A `replaced` hook is dropped and the text
+is kept in the report. Commands that name `$USER`, `$LOGNAME` or `$SHELL`,
+which the retired daemon passed through and this one does not, block as
+`ambient_name` until the name is set in `env` or acknowledged.
+
+**What the preview shows.** Per Target: identity, exact data, log and
+workspace paths (kept as they are; nothing is relocated), builds with the
+budget they had (`hookTimeout`, `buildTimeout`, or the retired defaults 120 s
+and 600 s written out), env-file paths, and how it starts afterwards:
+
+- `saved-plan`: the new runtime starts the saved Deployment from its saved
+  policy. Working copy policy is never substituted for it.
+- `needs-deploy`: the saved Deployment cannot be reproduced: a hook became a
+  build that never ran as one (no build success is invented), a hook was
+  replaced, or its env file is part of the checked-out Commit, which this
+  runtime refuses to load. `rig up` refuses it with
+  `CONVERSION_NEEDS_DEPLOY` until a new Commit is deployed.
+- `working-copy`: planned again from `rig.yaml` at every start.
+
+Per Project it shows a candidate `rig.yaml` and notes for everything without
+an equivalent: env files (put the values in
+`<RIG_ROOT>/env/<project>/[<service>/]{all,working,stable,preview}.env`, mode
+600; `local`/`live`/`deployments` lanes map to `working`/`stable`/`preview`;
+a file value now overrides `env`, where the retired runtime let `env` win),
+dependencies Rig no longer provides, Project hooks, `installTimeout`, and
+references it could not rewrite. A Host `config.json` is shown as a candidate
+`config.yaml` and blocks (`host_config`) until you have put it in place and
+removed the JSON file; both the retired and the current runtime read
+`config.yaml`. Rig writes neither into a repository nor over a config. Env
+files are never opened: reports carry paths and names only.
+
+Also blocking: a data directory that is missing (`data_root_missing`) or
+shared between Targets (`data_root_overlap`), a checked-out Commit that is
+gone (`missing_evidence`), a published Tool owned by a Target the root does
+not record (`ambiguous_ownership`), an unreadable Project config
+(`project_config`), and any saved field the conversion does not know
+(`unsupported_mapping`).
+
+**Apply** takes the previewed `revision` (a digest of the state, the owner
+records, each Project config, the review and the converter version) and
+refuses with `CONVERSION_CHANGED` if any of them differs, or
+`CONVERSION_BLOCKED` while a blocker remains. It copies the root's metadata
+byte for byte to `<RIG_ROOT>/backups/config-cutover-<revision>/` with a
+manifest of digests (data, logs, checkouts, Tools and repositories are listed
+as untouched, not copied), writes the report and candidates to
+`<RIG_ROOT>/conversion/<revision>/`, and replaces `runtime/state.json` last,
+atomically. That replacement is the only change to existing files and the only
+thing that lets the new runtime read the root, so an interruption before it
+leaves the root unconverted and refused; `runtime/conversion-pending.json`
+names the backup meanwhile and `preview` reports it as `interrupted`. Applying
+to a converted root changes nothing.
+
+Afterwards install the new `rigd`, check `rig status`, commit each reviewed
+`rig.yaml` (without `rig.json` and without secret files) and `rig deploy` the
+Targets that need it. Deploying an old-format Commit fails with guidance.
+
+**Rollback** verifies the backup against its manifest and puts
+`runtime/state.json` back. Stop Targets and uninstall the new `rigd` first; it
+refuses otherwise. Data and everything the new runtime wrote stay in place;
+Deployments made after the conversion are unknown to the restored state.
 
 ## Config
 

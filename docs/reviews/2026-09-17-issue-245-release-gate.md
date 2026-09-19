@@ -152,3 +152,8 @@ Five should-fix findings:
 4. `src/migration/` is tests-only apart from `adoption.ts`. Not deleted; see
    "Inherited debt" for why, and the deferred-items register.
 5. The deferred-items row for #194 still named `STOP_HOOKS`. Closed.
+
+Round 2, on the fix commit: "Nothing material was found." The reviewer checked
+each fix against the code and confirmed that `src/migration/files.ts` writes the
+manifest the startup adoption guard enforces, so keeping it is accurate. The full
+suite was run again on the final tree after this round.

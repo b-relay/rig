@@ -595,12 +595,10 @@ one that cannot be read, is left in place and recorded in the diagnostic log
 with its reason, since only rollback or a person should decide about it.
 
 `down` stops a Target and retains its inventory, data, logs, and source history.
-A process that could not be stopped aborts `down` and `restart`. Hooks are no
-longer part of the config, but a Target whose plan was recorded from the
-retired schema keeps its hooks until it is next planned: when every process is
-verified stopped but one of its stop hooks fails, `down` reports `STOP_HOOKS`
-with the Target stopped, while `restart` continues to the start half and lists
-the failed hook as a warning.
+A process that could not be stopped aborts `down` and `restart`. Rig runs no
+hooks: they are not part of the config, and a saved plan cannot hold one (the
+[configuration cutover](#configuration-cutover) requires a decision for every
+hook of the retired runtime).
 
 Preview records written by older Rig versions, before the source history root
 was recorded, are repaired when rigd reads its state: a Preview whose checkout
@@ -869,6 +867,10 @@ A Rig root written by the last JSON-configuration runtime (state version 2 or
 3) is refused by this `rig` and `rigd` with `STATE_UNCONVERTED`. Converting it
 is a one-time, reviewed step run from a Rig source checkout. It is not a `rig`
 or `rigd` command and the runtime contains no reader for the old format.
+
+The ordered procedure for a real Host, with backup, checks and rollback triggers,
+is the [rollout runbook](rig-114-rollout.md). This section explains the commands
+it uses.
 
 ```sh
 bun run cutover inventory                       # read-only: what the root holds
@@ -1174,6 +1176,10 @@ setting for now.
 
 - a Service `workdir`
 - a Service `supervisor` that differs from the Project's
+
+The accepted design also names a Host-wide `supervisor` default. The Host
+`config.yaml` has no such key in this build (it is refused as unknown); set
+`supervisor` in the Project.
 
 ### Recipes
 

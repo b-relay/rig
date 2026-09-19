@@ -14,12 +14,6 @@ export interface ConfigDocument<T> {
    * planning and running never read them. Absent when the source carries none. */
   recipeMarkers?: RecipeMarker[];
 }
-export interface Hooks {
-  preStart?: string;
-  postStart?: string;
-  preStop?: string;
-  postStop?: string;
-}
 /** One env file an invocation loads; only the reference is recorded, never the contents. */
 export interface EnvFileRef {
   /** Absolute path. */
@@ -35,9 +29,6 @@ interface ComponentContext {
   envFiles?: EnvFileRef[];
   /** Public env leaves the run, build and shell readiness commands were built from; a file may not change them. */
   commandInputs?: PublicInput[];
-  hooks?: Hooks;
-  /** Seconds; absent means the Project hookTimeout, then 120. */
-  hookTimeout?: number;
   dependsOn: string[];
 }
 export interface ManagedComponent extends ComponentContext {
@@ -109,9 +100,6 @@ export interface TargetPlan {
   domain?: string;
   /** `upstream` is the Service behind '/'. `routes` is the whole map, longest prefix first; a plan recorded before route maps has only `upstream`. */
   proxy?: { upstream: string; routes?: PlanRoute[] };
-  hooks?: Hooks;
-  /** Seconds for Project hooks and the Component default; absent means 120. */
-  hookTimeout?: number;
   /** Seconds for dependency installation; absent means 600. */
   installTimeout?: number;
   /** The Project-scope files a Project or Tool invocation loads, lowest to highest precedence. */

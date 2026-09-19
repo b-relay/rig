@@ -80,7 +80,7 @@ async function fixture() {
       run: async () => ({
         exitCode: 1,
         stdout: "",
-        stderr: "fixture hook failure",
+        stderr: "fixture command failure",
       }),
     });
   const effects = adapters(),
@@ -161,12 +161,20 @@ async function fixture() {
     running,
   };
 }
+/** Makes the candidate's Service fail its readiness gate, so activation fails after its Tool and route were published. */
+function failReadiness(candidate: TargetRecord): void {
+  const web = candidate.plan.components.find(
+    (component) => component.kind === "managed",
+  );
+  if (web?.kind !== "managed") throw new Error("missing fixture service");
+  web.health = "false";
+}
 test("failed candidate restores stopped previous binaries and route before restoring its inventory", async () => {
   const f = await fixture();
   await f.lifecycle.up(f.previous);
   await f.lifecycle.down(f.previous);
   const route = await f.router.checkpoint(f.previous.id);
-  f.candidate.plan.hooks = { postStart: "false" };
+  failReadiness(f.candidate);
   await expect(
     activateDeployment(
       f.candidate,
@@ -175,9 +183,8 @@ test("failed candidate restores stopped previous binaries and route before resto
       f.deps,
     ),
   ).rejects.toMatchObject({
-    code: "HOOK_FAILED",
-    message: "Hook postStart for the Project exited with code 1.",
-    details: { hook: "postStart", exitCode: 1 },
+    code: "HEALTH_FAILED",
+    details: { component: "web", outcome: "unready" },
   });
   expect(f.state.targets[0]).toMatchObject({
     commit: "old",
@@ -340,32 +347,6 @@ test("rollback refuses an external artifact edit and retains blocked recovery ev
     stopForRecovery(f.state.targets[0]!, f.deps),
   ).rejects.toMatchObject({ code: "EFFECTS_CHANGED" });
   expect(f.state.targets[0]!.recovery?.stage).toBe("blocked");
-});
-test("failed shutdown hooks do not prevent verified process rollback or explicit recovery", async () => {
-  const f = await fixture();
-  f.previous.plan.hooks = { preStop: "false" };
-  await f.lifecycle.up(f.previous);
-  await expect(f.lifecycle.down(f.previous)).rejects.toMatchObject({
-    code: "STOP_HOOKS",
-    details: { processesStopped: true },
-  });
-  f.candidate.plan.hooks = { postStart: "false", preStop: "false" };
-  await expect(
-    activateDeployment(
-      f.candidate,
-      f.previous,
-      { activation: "start" },
-      f.deps,
-    ),
-  ).rejects.toMatchObject({ code: "HOOK_FAILED" });
-  expect(f.state.targets[0]).toMatchObject({
-    commit: "old",
-    desired: "stopped",
-  });
-  expect(f.state.targets[0]!.recovery).toBeUndefined();
-  expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
-    "#!/bin/sh\necho old\n",
-  );
 });
 test("unsupported historical profiles never invoke real lifecycle effects", async () => {
   const f = await fixture();
@@ -698,7 +679,7 @@ test("changing installName retires the old destination and preserves receipt rol
   )!;
   if (tool.kind !== "installed") throw new Error("missing fixture tool");
   tool.installName = "next-tool";
-  f.candidate.plan.hooks = { postStart: "false" };
+  failReadiness(f.candidate);
   await expect(
     activateDeployment(
       f.candidate,
@@ -706,14 +687,18 @@ test("changing installName retires the old destination and preserves receipt rol
       { activation: "start" },
       f.deps,
     ),
-  ).rejects.toMatchObject({ code: "HOOK_FAILED" });
+  ).rejects.toMatchObject({ code: "HEALTH_FAILED" });
   expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
     "#!/bin/sh\necho old\n",
   );
   await expect(
     readFile(join(f.root, "bin", "next-tool")),
   ).rejects.toMatchObject({ code: "ENOENT" });
-  delete f.candidate.plan.hooks;
+  const web = f.candidate.plan.components.find(
+    (component) => component.kind === "managed",
+  )!;
+  if (web.kind !== "managed") throw new Error("missing fixture service");
+  delete web.health;
   delete f.candidate.recovery;
   await activateDeployment(
     f.candidate,

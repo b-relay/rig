@@ -1,4 +1,4 @@
-# Accepted #114 design; the new schema is not implemented yet.
+# Accepted #114 design. The schema is implemented; tests/config-examples-e2e.test.ts validates this file.
 # These example programs use ordinary application-defined environment inputs.
 name: acme
 production_branch: main

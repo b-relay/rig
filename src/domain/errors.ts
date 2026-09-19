@@ -66,8 +66,6 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "PORT_RESERVED",
   "PORT_UNAVAILABLE",
   "HEALTH_FAILED",
-  "HOOK_FAILED",
-  "HOOK_TIMEOUT",
   "BUILD_FAILED",
   "BUILD_TIMEOUT",
   "BUILD_UNKNOWN",

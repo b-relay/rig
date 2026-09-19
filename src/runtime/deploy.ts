@@ -10,7 +10,7 @@ import {
 import { within } from "../domain/paths";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
-import { stopForTransition, uncertainAttempt } from "./lifecycle";
+import { uncertainAttempt } from "./lifecycle";
 import { prepareTarget } from "./preparation";
 /** Unresolved recovery must be rejected before accepting any deployment outcome. */
 export function assertDeploymentRecovered(
@@ -62,7 +62,7 @@ export async function activateDeployment(
     await prepareTarget(candidate, "all", deps);
     transitioned = true;
     if (previous) {
-      await stopForTransition(previous, deps.lifecycle);
+      await deps.lifecycle.down(previous);
       await deps.lifecycle.retireSuperseded(previous, candidate);
     }
     if (intent.activation === "start") {
@@ -97,8 +97,8 @@ export async function activateDeployment(
     try {
       // A failed preparation changed nothing: the previous Deployment, whose process keys the candidate shares, keeps running.
       if (transitioned) {
-        await stopForTransition(candidate, deps.lifecycle);
-        if (previous) await stopForTransition(previous, deps.lifecycle);
+        await deps.lifecycle.down(candidate);
+        if (previous) await deps.lifecycle.down(previous);
       }
       await checkpoint.rollback();
     } catch (recoveryError) {
@@ -172,7 +172,7 @@ export async function stopForRecovery(
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
   if (!target.recovery) return target;
-  await stopForTransition(target, deps.lifecycle);
+  await deps.lifecycle.down(target);
   if (target.recovery.stage === "committing") {
     await deps.lifecycle.commitEffects(target);
     const completed = { ...target, desired: "stopped" as const };
@@ -201,7 +201,7 @@ export async function stopForRecovery(
     const uncertain = uncertainAttempt(target);
     if (uncertain) previous.uncertainBuild = uncertain;
   }
-  await stopForTransition(previous, deps.lifecycle);
+  await deps.lifecycle.down(previous);
   await deps.lifecycle.restoreEffects(target);
   await persistTarget(previous, deps.store);
   return previous;

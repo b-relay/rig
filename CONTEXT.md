@@ -939,7 +939,7 @@ a Target can run. Another process may acquire a selected port before startup.
 ### Preflight
 
 The safety gate `rigd` runs before lifecycle or deploy actions mutate runtime
-state. Preflight gathers evidence about dependencies, binaries, env, hooks,
+state. Preflight gathers evidence about dependencies, binaries, env,
 health ownership, ports, provider readiness, and stale state. Doctor reports
 the same evidence for humans, but `rigd` owns enforcing the gate.
 
@@ -949,7 +949,7 @@ The resolved Rig shape that runtime execution, preflight, and provider
 adapters consume. The runtime plan uses Rig concepts: Projects, Targets,
 Deployments, Branches, Commits, managed components, installed components,
 workspace roots, Persistent storage roots, log roots, runtime roots, proxy
-config, provider selections, hooks, env, health, and dependencies. Older
+config, provider selections, env, health, and dependencies. Older
 `Environment`, `server`, `bin`, `dev`, `prod`, `lane`, and generated
 deployment language is historical context, not the active product model.
 
@@ -961,8 +961,8 @@ helpers.
 ### Provider contract
 
 The small interface for a provider family, such as process supervision, proxy
-routing, workspace materialization, health checking, event transport, lifecycle
-hooks, package management, SCM, tunnel exposure, or control-plane transport.
+routing, workspace materialization, health checking, event transport,
+package management, SCM, tunnel exposure, or control-plane transport.
 
 _Relationship_: Provider contracts should be expressed in Rig domain language
 and should accept resolved provider context from `rigd`. Providers should not

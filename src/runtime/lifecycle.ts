@@ -1,6 +1,5 @@
 import type {
   BuildUnit,
-  Hooks,
   InstalledComponent,
   ManagedComponent,
 } from "../config/types";
@@ -50,13 +49,6 @@ export interface TargetEffects {
     target: TargetRecord,
     component: ManagedComponent | InstalledComponent,
   ): Promise<Record<string, string>>;
-  /** Runs one hook command for the Project (no component) or a Component; name identifies the hook in failures. */
-  hook(
-    command: string,
-    target: TargetRecord,
-    component: ManagedComponent | undefined,
-    name: keyof Hooks,
-  ): Promise<void>;
   /** The Service's own check, or without one a connection to every port it declares.
    * May block or ignore cancellation. A not-ready result retries after 100ms and its reason is kept for the failure; rejection fails startup. */
   health(
@@ -170,7 +162,7 @@ const DEFAULT_START_GRACE_MS = 500;
 /** Cadence for health retries and for confirming the supervised process is still alive. */
 const OBSERVATION_INTERVAL_MS = 100;
 
-/** Observes every managed Component before anything starts; an unknown owner aborts before hooks or installs run. */
+/** Observes every managed Component before anything starts; an unknown owner aborts before any install runs. */
 async function observeManaged(
   target: TargetRecord,
   supervisor: Supervisor,
@@ -223,7 +215,7 @@ export function createTargetLifecycle(
       const checkpoint = await effects.checkpoint(target);
       let finalizationPending = false;
       try {
-        await stopForTransition(target, lifecycle);
+        await lifecycle.down(target);
         await effects.removeRoute(target);
         await effects.retireArtifacts(target);
         await publishRemoval?.();
@@ -301,11 +293,9 @@ export function createTargetLifecycle(
         providedCheckpoint ?? (await effects.checkpoint(target));
       const started: string[] = [];
       let installed = false;
-      let began = false;
       try {
         await effects.prepare(target);
         const observations = await observeManaged(target, supervisor);
-        began = [...observations.values()].some((o) => o.state === "stopped");
         // A route that survives from an earlier start would hand requests to the new process the moment it binds its port.
         const unverified = routedServices(
           target,
@@ -315,13 +305,6 @@ export function createTargetLifecycle(
         if (unverified.size)
           await effects.route(target, { withhold: unverified });
         const verified = new Set<string>();
-        if (began && target.plan.hooks?.preStart)
-          await effects.hook(
-            target.plan.hooks.preStart,
-            target,
-            undefined,
-            "preStart",
-          );
         // Dependencies are ordered during plan resolution, before any process starts.
         for (const component of target.plan.components) {
           if (component.kind === "persistent") continue;
@@ -346,13 +329,6 @@ export function createTargetLifecycle(
         }
         // A path an earlier failed start left withheld is released only by that Service passing the gate itself.
         await effects.route(target, { verified });
-        if (began && target.plan.hooks?.postStart)
-          await effects.hook(
-            target.plan.hooks.postStart,
-            target,
-            undefined,
-            "postStart",
-          );
         if (!providedCheckpoint) await checkpoint.commit();
         return {
           outcome: started.length || installed ? "started" : "unchanged",
@@ -494,97 +470,29 @@ export function createTargetLifecycle(
       assertProviderProfile(target);
       const supervisor = effects.supervisor(target);
       let changed = false;
-      const hookFailures: unknown[] = [],
-        processFailures: unknown[] = [];
-      const attempt = async (work: () => Promise<void>, process = false) => {
-        try {
-          await work();
-        } catch (error) {
-          (process ? processFailures : hookFailures).push(error);
-        }
-      };
-      let began = false;
+      const processFailures: unknown[] = [];
       for (const component of [...target.plan.components].reverse()) {
         if (component.kind !== "managed") continue;
-        let needsPreStop = true;
         try {
-          const observation = await supervisor.observe(
-            `${target.id}:${component.name}`,
-          );
-          needsPreStop = observation.state !== "stopped";
-        } catch {
-          // Failed observation is not proof of absence; stop still verifies shutdown.
-        }
-        if (needsPreStop && !began) {
-          began = true;
-          if (target.plan.hooks?.preStop)
-            await attempt(() =>
-              effects.hook(
-                target.plan.hooks!.preStop!,
-                target,
-                undefined,
-                "preStop",
-              ),
-            );
-        }
-        if (needsPreStop && component.hooks?.preStop)
-          await attempt(() =>
-            effects.hook(
-              component.hooks!.preStop!,
-              target,
-              component,
-              "preStop",
-            ),
-          );
-        let stopped = false;
-        await attempt(async () => {
           const result = await supervisor.stop(
             `${target.id}:${component.name}`,
           );
-          stopped = result.outcome === "stopped";
-          changed = stopped || changed;
-        }, true);
-        if (component.hooks?.postStop && stopped)
-          await attempt(() =>
-            effects.hook(
-              component.hooks!.postStop!,
-              target,
-              component,
-              "postStop",
-            ),
-          );
+          changed = result.outcome === "stopped" || changed;
+        } catch (error) {
+          processFailures.push(error);
+        }
       }
-      if (changed && target.plan.hooks?.postStop)
-        await attempt(() =>
-          effects.hook(
-            target.plan.hooks!.postStop!,
-            target,
-            undefined,
-            "postStop",
-          ),
-        );
       if (processFailures.length)
         throw new RigError(
           "STOP_INCOMPLETE",
           "One or more managed processes could not be stopped.",
           "All managed Components were attempted. Inspect Target logs and status before retrying.",
-          { processFailures, hookFailures },
-        );
-      if (hookFailures.length)
-        throw new RigError(
-          "STOP_HOOKS",
-          "Managed processes are stopped, but shutdown hooks failed.",
-          "Inspect Target logs and correct the shutdown hooks.",
-          {
-            processesStopped: true,
-            outcome: changed ? "stopped" : "unchanged",
-            hookFailures,
-          },
+          { processFailures },
         );
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
-  /** One Service start: hook, approval, spawn with a fresh environment, readiness, report, hook. `started` gains the process key
+  /** One Service start: approval, spawn with a fresh environment, readiness, report. `started` gains the process key
    * as soon as a process was spawned, so the caller can stop it when a later step fails. */
   async function startService(
     target: TargetRecord,
@@ -594,13 +502,6 @@ export function createTargetLifecycle(
     started: string[],
   ): Promise<void> {
     const key = `${target.id}:${component.name}`;
-    if (component.hooks?.preStart)
-      await effects.hook(
-        component.hooks.preStart,
-        target,
-        component,
-        "preStart",
-      );
     // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
     const env = await effects.environment(target, component);
     const incarnation = journal
@@ -621,13 +522,6 @@ export function createTargetLifecycle(
       await awaitSurvival(component, timing, process);
     await awaitActivation(component, target, effects, timing, process);
     await journal?.activated(component.name, incarnation);
-    if (component.hooks?.postStart && result.outcome === "started")
-      await effects.hook(
-        component.hooks.postStart,
-        target,
-        component,
-        "postStart",
-      );
   }
   return lifecycle;
 }
@@ -994,18 +888,6 @@ async function assertAlive(
         : { signal: observation.signal }),
     },
   );
-}
-
-export async function stopForTransition(
-  target: TargetRecord,
-  lifecycle: Pick<TargetLifecycle, "down">,
-): Promise<void> {
-  try {
-    await lifecycle.down(target);
-  } catch (error) {
-    if (!(error instanceof RigError) || error.code !== "STOP_HOOKS")
-      throw error;
-  }
 }
 function assertProviderProfile(target: TargetRecord): void {
   if (target.plan.providerProfile !== "default")

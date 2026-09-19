@@ -264,16 +264,6 @@ tools:
     await invoke("bundle-tool");
     await invoke("bundle-tool-battle");
   } finally {
-    for (const name of new Set([project, "demo", "renamed"])) {
-      for (const args of [
-        ["local"],
-        ["live"],
-        ["preview", "--deployment", "battle", "--destroy"],
-      ])
-        await f
-          .rig(["down", ...args, "--project", name], f.base)
-          .catch(() => {});
-    }
     await f.cleanup();
   }
 }, 120000);

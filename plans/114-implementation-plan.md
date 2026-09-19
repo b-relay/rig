@@ -1,6 +1,6 @@
 # Issue 114 implementation plan
 
-Status: accepted product design; implementation tickets published September 17, 2026. The [specification](114-config-spec.md) and [interview record](114-design-interview.md) are authoritative. No runtime changes or live migration are completed by this plan.
+Status: accepted product design; implementation tickets published September 17, 2026. The [specification](114-config-spec.md) and [interview record](114-design-interview.md) are authoritative. All eight tickets (#238–#245) are implemented and passed the release gate; see [the #245 run notes](../docs/reviews/2026-09-17-issue-245-release-gate.md). The conversion has been rehearsed only under temporary roots. No live Host has been migrated; [the rollout runbook](../docs/rig-114-rollout.md) is the procedure for that.
 
 ## Scope and delivery
 

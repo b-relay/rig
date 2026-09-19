@@ -1520,11 +1520,11 @@ test("a stop failure preserves stopped intent so daemon reconciliation never res
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   deps.lifecycle.down = async () => {
-    throw new Error("hook failed");
+    throw new Error("stop failed");
   };
   await expect(
     runtime.command({ action: "down", project: "demo" }),
-  ).rejects.toThrow("hook failed");
+  ).rejects.toThrow("stop failed");
   expect(state.targets[0]?.desired).toBe("stopped");
   const before = plans.length;
   await runtime.reconcile();
@@ -1607,59 +1607,30 @@ test("host Activity merges final daemon administration chronologically without a
   ).toEqual({ operations: [], operation: "missing" });
 });
 
-test("explicit down restores interrupted non-process effects after verified stop even when stop hooks fail", async () => {
+test("restart aborts when its stop half fails, without starting anything again", async () => {
   const { runtime, state, deps } = fixture();
   const { RigError } = await import("../src/domain/errors");
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
-  let restored = false;
-  deps.lifecycle.down = async () => {
-    throw new RigError("STOP_HOOKS", "Hook failed.", "Fix hook.");
+  const up = deps.lifecycle.up.bind(deps.lifecycle);
+  let started = false;
+  deps.lifecycle.up = async (...args: Parameters<typeof up>) => {
+    started = true;
+    return await up(...args);
   };
-  deps.lifecycle.restoreEffects = async () => {
-    restored = true;
-  };
-  await expect(
-    runtime.command({ action: "down", project: "demo" }),
-  ).rejects.toMatchObject({ code: "STOP_HOOKS" });
-  expect(restored).toBe(true);
-  expect(state.targets[0]?.desired).toBe("stopped");
-});
-
-test("restart proceeds to up after failed shutdown hooks and reports them as warnings", async () => {
-  const { runtime, state, deps } = fixture();
-  const { RigError } = await import("../src/domain/errors");
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({ action: "up", project: "demo" });
-  let restored = false;
   deps.lifecycle.down = async () => {
     throw new RigError(
-      "STOP_HOOKS",
-      "Managed processes are stopped, but shutdown hooks failed.",
-      "Inspect Target logs and correct the shutdown hooks.",
-      {
-        processesStopped: true,
-        outcome: "stopped",
-        hookFailures: [new Error("postStop exited with code 1")],
-      },
+      "STOP_INCOMPLETE",
+      "One or more managed processes could not be stopped.",
+      "All managed Components were attempted. Inspect Target logs and status before retrying.",
+      { processFailures: [new Error("provider failed")] },
     );
   };
-  deps.lifecycle.restoreEffects = async () => {
-    restored = true;
-  };
-  expect(
-    await runtime.command({ action: "restart", project: "demo" }),
-  ).toMatchObject({
-    action: "restart",
-    outcome: "started",
-    warnings: ["Shutdown hook failed: postStop exited with code 1"],
-  });
-  expect(restored).toBe(true);
-  expect(state.targets[0]?.desired).toBe("running");
-  expect(state.activity.at(-1)).toMatchObject({
-    action: "restart",
-    outcome: "started",
-  });
+  await expect(
+    runtime.command({ action: "restart", project: "demo" }),
+  ).rejects.toMatchObject({ code: "STOP_INCOMPLETE" });
+  expect(started).toBe(false);
+  expect(state.targets[0]?.desired).toBe("stopped");
 });
 
 test.each(["pending", "blocked", "committing"] as const)(
@@ -1922,10 +1893,10 @@ test("legacy completion metadata is neither inferred nor rewritten on reopen", a
   }
 });
 
-test("repeated down and daemon reconciliation skip stopped pre-stop hooks while reconciling active processes", async () => {
-  const { stopHookFixture } = await import("./stop-hook-fixture");
+test("repeated down and daemon reconciliation keep stopped intent while stopping what still runs", async () => {
+  const { stopFixture } = await import("./stop-fixture");
   const { runtime, deps, state } = fixture();
-  const f = stopHookFixture();
+  const f = stopFixture();
   deps.lifecycle = f.lifecycle;
   const diagnostics: unknown[] = [];
   deps.diagnostic = async (event) => {
@@ -1933,42 +1904,23 @@ test("repeated down and daemon reconciliation skip stopped pre-stop hooks while 
   };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
-  // Project config no longer declares hooks; a recorded plan still carries the ones it was made with.
-  state.targets[0]!.plan.hooks = {
-    preStop: "target-pre",
-    postStop: "target-post",
-  };
-  state.targets[0]!.plan.components[0]!.hooks = {
-    preStop: "web-pre",
-    postStop: "web-post",
-  };
+  const key = `${state.targets[0]!.id}:web`;
+  expect([...f.running]).toEqual([key]);
   expect(
     await runtime.command({ action: "down", project: "demo" }),
   ).toMatchObject({ outcome: "stopped" });
-  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
-  f.hookFailures.add("target-pre");
-  f.hookFailures.add("web-pre");
   expect(
     await runtime.command({ action: "down", project: "demo" }),
   ).toMatchObject({ outcome: "unchanged" });
   await createRuntime(deps).reconcile();
-  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
   expect(diagnostics).toEqual([]);
   expect(state.targets[0]?.desired).toBe("stopped");
+  // Down, the repeat, and reconciliation each verify shutdown through the supervisor rather than trusting an observation.
+  expect(f.stops).toEqual([key, key, key]);
 
-  f.hookFailures.clear();
-  f.running.add(`${state.targets[0]!.id}:web`);
+  f.running.add(key);
   await createRuntime(deps).reconcile();
-  expect(f.hooks).toEqual([
-    "target-pre",
-    "web-pre",
-    "web-post",
-    "target-post",
-    "target-pre",
-    "web-pre",
-    "web-post",
-    "target-post",
-  ]);
+  expect(f.stops).toEqual([key, key, key, key]);
   expect([...f.running]).toEqual([]);
   expect(diagnostics).toEqual([]);
 });
@@ -3192,7 +3144,6 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     async environment() {
       return {};
     },
-    async hook() {},
     async health() {
       return { ready: true };
     },

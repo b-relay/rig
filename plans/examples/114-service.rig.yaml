@@ -1,4 +1,4 @@
-# Accepted #114 design; the new schema is not implemented yet.
+# Accepted #114 design. The schema is implemented; tests/config-examples-e2e.test.ts validates this file.
 # The example notes application reads HOST, PORT and DATA_DIR itself.
 name: notes
 production_branch: main

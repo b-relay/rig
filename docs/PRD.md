@@ -239,16 +239,9 @@ presentation model and `rigd` journal evidence.
 Establish final-outcome evidence during earlier slices. Optional activity
 filters in interview examples are not required command contracts in this PRD.
 
-Pre-stop hooks run only before stopping relevant active managed processes: once
-per Target if any managed component needs stopping, and once per such component.
-A definitive stopped observation skips its pre-stop hook; unknown, failed, or
-restart-pending observations remain conservative and retain hooks. Every process
-still receives a stop attempt so provider shutdown remains the final authority.
-Repeated down and daemon reconciliation use this same policy. Post-stop cleanup
-is unchanged: component hooks follow a successful changed stop, and the Target
-hook follows any changed stop. Hook failures report `STOP_HOOKS` with verified
-process-stop outcome; process-stop failures report `STOP_INCOMPLETE` and retain
-hook failure evidence. See [the #81 evidence](reviews/2026-09-09-issue-81-pre-stop-hooks.md).
+Superseded by #114: Rig runs no hooks any more. Every managed process receives a
+stop attempt, and process-stop failures report `STOP_INCOMPLETE`. The pre-stop
+hook policy this paragraph used to describe is history. See [the #81 evidence](reviews/2026-09-09-issue-81-pre-stop-hooks.md).
 
 ## Scope And Dependencies
 
@@ -357,7 +350,7 @@ not make status claim the process exited. Restart cancellation, owned output
 draining, and lease/capture-request cleanup remain part of stop's contract.
 See [the #91 evidence](reviews/2026-09-09-issue-91-process-inspection.md).
 
-Buffered setup/hook/build output acquires a recording timestamp for each retained
+Buffered setup/build output acquires a recording timestamp for each retained
 line after the command finishes; it does not claim execution-time interleaving.
 Target recording and CLI follow scheduling have separate explicit owners. Follow
 uses opaque reader cursors and a cancellation-aware 250 ms poll wait; cancellation

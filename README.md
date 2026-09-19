@@ -51,7 +51,9 @@ bun run src/rigd.ts --help
 Integration tests create temporary daemons, processes, and provider resources.
 They need permission to bind localhost and a local Caddy executable. Existing
 Host upgrades follow the [state preservation policy](docs/state-preservation-policy.md)
-and [cutover procedure](docs/rig-cutover-readiness.md).
+and, for a root written before the `rig.yaml` configuration (#114), the
+[configuration cutover runbook](docs/rig-114-rollout.md). The September
+[TypeScript cutover record](docs/rig-cutover-readiness.md) is history.
 
 ## Module Map
 

@@ -4,7 +4,7 @@ import type {
   ProjectStatusReport,
   StatusSelection,
 } from "../domain/project-status";
-import { stopBeforeRestart, stopRecordedTarget } from "./stop";
+import { stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
 import { forgetProject, updateRegistration } from "./registration";
 import { recordActivity } from "../domain/activity";
@@ -644,7 +644,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target = await stopForRecovery(target, deps);
       }
       let outcome: OperationRecord["outcome"];
-      let warnings: string[] = [];
+      const warnings: string[] = [];
       if (command.action === "down") {
         target.desired = "stopped";
         intendStopped(target);
@@ -657,7 +657,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           intendStopped(target);
           target.updatedAt = deps.now();
           await persistTarget(target, deps.store);
-          warnings = (await stopBeforeRestart(target, deps.lifecycle)).warnings;
+          await stopRecordedTarget(target, deps.lifecycle);
           if (target.kind === "local")
             target = await replanWorkingCopy(
               target,

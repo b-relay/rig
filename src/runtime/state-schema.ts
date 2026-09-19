@@ -5,12 +5,6 @@ const text = z.string().min(1);
 const absolutePath = text.refine(isAbsolute, {
   message: "must be an absolute path",
 });
-const hooks = z.object({
-  preStart: z.string().optional(),
-  postStart: z.string().optional(),
-  preStop: z.string().optional(),
-  postStop: z.string().optional(),
-});
 const envFiles = z
   .array(z.object({ path: absolutePath, required: z.boolean() }))
   .optional();
@@ -22,8 +16,6 @@ const common = {
   env: z.record(z.string(), z.string()),
   envFiles,
   commandInputs,
-  hooks: hooks.optional(),
-  hookTimeout: z.number().positive().optional(),
   dependsOn: z.array(text),
 };
 const component = z.discriminatedUnion("kind", [
@@ -104,8 +96,6 @@ export const targetPlanSchema = z.object({
         .optional(),
     })
     .optional(),
-  hooks: hooks.optional(),
-  hookTimeout: z.number().positive().optional(),
   installTimeout: z.number().positive().optional(),
   envFiles,
 });

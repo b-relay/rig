@@ -93,7 +93,6 @@ test("readiness expires even when a health provider ignores cancellation, then r
     async environment() {
       return {};
     },
-    async hook() {},
     health(_component, _target, signal) {
       healthSignal = signal;
       return new Promise<never>(() => {});
@@ -155,7 +154,6 @@ test("up preserves running components and rollback stops only newly started comp
     async environment() {
       return {};
     },
-    async hook() {},
     async health() {
       return { ready: true };
     },
@@ -201,7 +199,6 @@ test("down uses recorded plan and reports no-op only when every process was stop
     async environment() {
       return {};
     },
-    async hook() {},
     async health() {
       return { ready: true };
     },
@@ -217,7 +214,7 @@ test("down uses recorded plan and reports no-op only when every process was stop
   expect(keys).toEqual(["t1:web", "t1:api"]);
 });
 
-test("down attempts every process even when a hook or another process stop fails", async () => {
+test("down attempts every process even when one process stop fails", async () => {
   const stopped: string[] = [];
   const supervisor: Supervisor = {
     async ensureRunning() {
@@ -248,9 +245,6 @@ test("down attempts every process even when a hook or another process stop fails
     async environment() {
       return {};
     },
-    async hook() {
-      throw new Error("hook failed");
-    },
     async health() {
       return { ready: true };
     },
@@ -262,90 +256,56 @@ test("down attempts every process even when a hook or another process stop fails
     async removeRoute() {},
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
-  await expect(
-    lifecycle.down({
-      ...target,
-      plan: { ...target.plan, hooks: { preStop: "cleanup" } },
-    }),
-  ).rejects.toThrow();
+  await expect(lifecycle.down(target)).rejects.toThrow();
   expect(stopped).toEqual(["t1:web", "t1:api"]);
 });
 
-import { stopHookFixture } from "./stop-hook-fixture";
+import { stopFixture } from "./stop-fixture";
 
-function targetWithStopHooks(): TargetRecord {
-  const record = structuredClone(target);
-  record.plan.hooks = { preStop: "target-pre", postStop: "target-post" };
-  for (const component of record.plan.components) {
-    if (component.kind === "managed")
-      component.hooks = { preStop: `${component.name}-pre`, postStop: `${component.name}-post` };
-  }
-  return record;
-}
-
-test("down on an already-stopped Target skips all pre-stop hooks and remains unchanged", async () => {
-  const f = stopHookFixture();
-  f.hookFailures.add("target-pre");
-  expect(await f.lifecycle.down(targetWithStopHooks())).toEqual({ outcome: "unchanged" });
-  expect(f.hooks).toEqual([]);
+test("down on an already-stopped Target attempts every process and remains unchanged", async () => {
+  const f = stopFixture();
+  expect(await f.lifecycle.down(structuredClone(target))).toEqual({ outcome: "unchanged" });
   expect(f.stops).toEqual(["t1:web", "t1:api"]);
 });
 
-test("mixed Targets run pre-stop only for active components, and repeated down invokes no hooks", async () => {
-  const f = stopHookFixture(["t1:api"]);
-  const record = targetWithStopHooks();
+test("a mixed Target stops what still runs, and repeated down is unchanged", async () => {
+  const f = stopFixture(["t1:api"]);
+  const record = structuredClone(target);
   expect(await f.lifecycle.down(record)).toEqual({ outcome: "stopped" });
-  expect(f.hooks).toEqual(["target-pre", "api-pre", "api-post", "target-post"]);
   expect(await f.lifecycle.down(record)).toEqual({ outcome: "unchanged" });
-  expect(f.hooks).toEqual(["target-pre", "api-pre", "api-post", "target-post"]);
   expect(f.stops).toEqual(["t1:web", "t1:api", "t1:web", "t1:api"]);
   expect([...f.running]).toEqual([]);
 });
 
 test.each(["unknown", "failed-observation"] as const)(
-  "%s is not proof of absence and keeps pre-stop hooks before verified shutdown",
+  "%s is not proof of absence and still ends in verified shutdown",
   async (state) => {
-    const f = stopHookFixture(["t1:web"]);
+    const f = stopFixture(["t1:web"]);
     f.observations.set("t1:web", state === "failed-observation"
       ? new Error("Observation failed")
       : { state: "unknown" });
-    expect(await f.lifecycle.down(targetWithStopHooks())).toEqual({ outcome: "stopped" });
-    expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "target-post"]);
+    expect(await f.lifecycle.down(structuredClone(target))).toEqual({ outcome: "stopped" });
+    expect(f.stops).toEqual(["t1:web", "t1:api"]);
     expect([...f.running]).toEqual([]);
   },
 );
 
-test("pre-stop failure reports STOP_HOOKS after successful shutdown and retains post-stop cleanup", async () => {
-  const f = stopHookFixture(["t1:web", "t1:api"]);
-  f.hookFailures.add("target-pre");
-  f.hookFailures.add("web-pre");
-  await expect(f.lifecycle.down(targetWithStopHooks())).rejects.toMatchObject({
-    code: "STOP_HOOKS",
-    details: { processesStopped: true, outcome: "stopped", hookFailures: [expect.any(Error), expect.any(Error)] },
-  });
-  expect(f.hooks).toEqual(["target-pre", "web-pre", "web-post", "api-pre", "api-post", "target-post"]);
-  expect([...f.running]).toEqual([]);
-});
-
-test("failed process shutdown reports STOP_INCOMPLETE with hook failures and still stops other components", async () => {
-  const f = stopHookFixture(["t1:web", "t1:api"]);
-  f.hookFailures.add("web-pre");
+test("failed process shutdown reports STOP_INCOMPLETE and still stops the other components", async () => {
+  const f = stopFixture(["t1:web", "t1:api"]);
   f.stopFailures.add("t1:web");
-  await expect(f.lifecycle.down(targetWithStopHooks())).rejects.toMatchObject({
+  await expect(f.lifecycle.down(structuredClone(target))).rejects.toMatchObject({
     code: "STOP_INCOMPLETE",
-    details: { processFailures: [expect.any(Error)], hookFailures: [expect.any(Error)] },
+    details: { processFailures: [expect.any(Error)] },
   });
-  expect(f.hooks).toEqual(["target-pre", "web-pre", "api-pre", "api-post", "target-post"]);
   expect([...f.running]).toEqual(["t1:web"]);
   expect(f.stops).toEqual(["t1:web", "t1:api"]);
 });
 
-test("Targets without managed components have no pre-stop work", async () => {
-  const f = stopHookFixture();
-  const record = targetWithStopHooks();
+test("Targets without managed components have no shutdown work", async () => {
+  const f = stopFixture();
+  const record = structuredClone(target);
   record.plan.components = [];
   expect(await f.lifecycle.down(record)).toEqual({ outcome: "unchanged" });
-  expect(f.hooks).toEqual([]);
   expect(f.stops).toEqual([]);
 });
 
@@ -387,7 +347,7 @@ test("port contention after selection fails startup and preserves an already run
     async restoreEffects() {}, async commitEffects() {}, async retireSuperseded() {}, async retireArtifacts() {},
     async pruneCheckpoints() { return []; },
     supervisor: () => supervisor, async prepare() {}, async environment(_target, component) { return component.env; },
-    async hook() {}, async health(component) {
+    async health(component) {
       try { return (await fetch(component.health!)).ok ? { ready: true } : { ready: false, reason: "not ok" }; } catch { return { ready: false, reason: "unreachable" }; }
     }, async build() {}, async install() { return { outcome: "unchanged" }; },
     async route() {}, async removeRoute() {},
@@ -419,12 +379,11 @@ test("port contention after selection fails startup and preserves an already run
   }
 }, 15000);
 
-test("the Project preStart hook runs before installs and Component hooks, and only when a process will start", async () => {
+test("up prepares the workspace, publishes Tools in plan order, and starts only what is not running", async () => {
   const record = structuredClone(target);
-  record.plan.hooks = { preStart: "project-pre", postStart: "project-post" };
   record.plan.components = [
     { name: "tool", kind: "installed", entrypoint: "tool", env: {}, dependsOn: [] },
-    { ...record.plan.components[0]!, hooks: { preStart: "api-pre" } },
+    record.plan.components[0]!,
   ];
   const events: string[] = [];
   const running = new Set<string>();
@@ -459,9 +418,6 @@ test("the Project preStart hook runs before installs and Component hooks, and on
     async environment() {
       return {};
     },
-    async hook(command, _target, component, name) {
-      events.push(`${name}:${component?.name ?? "project"}:${command}`);
-    },
     async health() {
       return { ready: true };
     },
@@ -482,14 +438,7 @@ test("the Project preStart hook runs before installs and Component hooks, and on
     startGraceMs: 0,
   });
   expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
-  expect(events).toEqual([
-    "prepare",
-    "preStart:project:project-pre",
-    "install:tool",
-    "preStart:api:api-pre",
-    "start:api",
-    "postStart:project:project-post",
-  ]);
+  expect(events).toEqual(["prepare", "install:tool", "start:api"]);
   events.length = 0;
   expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
   expect(events).toEqual(["prepare", "install:tool"]);

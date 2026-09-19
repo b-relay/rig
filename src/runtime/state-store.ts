@@ -89,12 +89,20 @@ export class FileStateStore implements StateStore {
     const state = parsed as RuntimeState;
     return backfillSourceRoots({ ...state, version: STATE_VERSION }, this.root);
   }
-  /** A file from a newer rigd is refused by version before its shape is judged. */
+  /** A file from a newer rigd, or from before the configuration cutover, is refused by version before its shape is judged. */
   private assertSupportedVersion(parsed: unknown): void {
     const version =
       typeof parsed === "object" && parsed !== null && "version" in parsed
         ? parsed.version
         : undefined;
+    // Versions 2 and 3 are what the last runtime before the cutover wrote; anything older was never a supported file.
+    if (version === 2 || version === 3)
+      throw new RigError(
+        "STATE_UNCONVERTED",
+        "Runtime state was written before the configuration cutover; nothing was changed.",
+        `Runtime state at ${this.path} is version ${version}, but this rigd reads version ${STATE_VERSION}. Keep using the rigd that wrote it, or stop it and convert this root from a Rig source checkout: bun run cutover inventory, then preview and apply (see "Configuration cutover" in docs/rig-guide.md).`,
+        { path: this.path, version, supported: STATE_VERSION },
+      );
     if (typeof version === "number" && version > STATE_VERSION)
       throw new RigError(
         "STATE_VERSION",

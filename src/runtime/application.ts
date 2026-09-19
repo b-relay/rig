@@ -174,7 +174,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         );
       if (!reads.has(command.action)) await deps.assertOwnershipReady();
       if (command.action === "prepare-uninstall") {
-        const state = await deps.store.read();
+        let state;
+        try {
+          state = await deps.store.read();
+        } catch (error) {
+          // This rigd refused every operation on a root it cannot read, so it started nothing there: stopping it is
+          // safe, and is the first step of converting the root.
+          if (!(
+            error instanceof RigError && error.code === "STATE_UNCONVERTED"
+          ))
+            throw error;
+          draining = true;
+          return { ready: true };
+        }
         if (state.targets.some((t) => t.recovery || t.destructionPending))
           throw new RigError(
             "DEPLOY_RECOVERY",

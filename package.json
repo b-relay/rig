@@ -6,7 +6,8 @@
   "scripts": {
     "build": "bun build --compile src/index.ts --outfile rig && bun build --compile src/rigd.ts --outfile rigd && bun build --compile src/git/remote-helper.ts --outfile git-remote-rig",
     "start": "bun run src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cutover": "bun run src/cutover.ts"
   },
   "bin": {
     "rig": "./rig",

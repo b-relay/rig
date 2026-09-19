@@ -22,6 +22,8 @@ export class RigError extends Error {
 const userCorrectableCodes: ReadonlySet<string> = new Set([
   "USAGE",
   "CANCELLED",
+  "STATE_UNCONVERTED",
+  "CONVERSION_NEEDS_DEPLOY",
   "PRODUCTION_CONFIRMATION",
   "TARGET_REQUIRED",
   "TARGET_MISSING",

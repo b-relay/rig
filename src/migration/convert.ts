@@ -116,7 +116,7 @@ export function convertLegacyState({
       logRoot: record.logRoot,
     });
   }
-  const state: RuntimeState = { version: 3, projects, targets, activity: [] };
+  const state: RuntimeState = { version: 4, projects, targets, activity: [] };
   const checked = runtimeStateSchema.safeParse(state);
   if (!checked.success)
     issues.push({

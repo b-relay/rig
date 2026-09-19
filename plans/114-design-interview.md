@@ -100,7 +100,7 @@ At 5c5b57e, one configured Production branch maps to live; other pushed branches
 
 ## Round 3: review and acceptance (September 17)
 
-The [consolidated spec](114-config-spec.md) and [three complete YAML examples](examples/114-service.rig.yaml) provided concrete rules for all remaining branches, which the user accepted with the working role-key correction. Their new schema is not implemented; the examples have only been checked for YAML syntax and basic internal consistency.
+The [consolidated spec](114-config-spec.md) and [three complete YAML examples](examples/114-service.rig.yaml) provided concrete rules for all remaining branches, which the user accepted with the working role-key correction. At the time of the interview the schema was not implemented; since #238 the examples are validated by `tests/config-examples-e2e.test.ts`.
 
 The following six packages were presented and are now **accepted**. Recommendations below are the historical question wording; the final spec contains the corrected working/stable config keys:
 

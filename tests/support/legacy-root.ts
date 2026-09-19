@@ -315,16 +315,8 @@ export async function legacyRoot(options: LegacyRootOptions = {}) {
       ],
       base,
     );
-  const cleanup = async () => {
-    for (const project of ["demo", "plain"])
-      await fixture
-        .rig(["down", "live", "--project", project], base)
-        .catch(() => {});
-    await fixture.cleanup();
-  };
   return {
     ...fixture,
-    cleanup,
     /** For tests that started no daemon and no process. */
     remove: () => rm(base, { recursive: true, force: true }),
     cutover,

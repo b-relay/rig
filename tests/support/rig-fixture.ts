@@ -1,6 +1,28 @@
-import { mkdtemp, mkdir, rm, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+/** Names come from the root's own record, so renamed Targets and generated Previews are found as well as local and live. */
+async function recordedTargets(root: string) {
+  try {
+    const state = JSON.parse(
+      await readFile(join(root, "runtime", "state.json"), "utf8"),
+    ) as {
+      projects: { id: string; name: string }[];
+      targets: { projectId: string; name: string; kind: string }[];
+    };
+    return state.targets.map((target) => ({
+      name: target.name,
+      kind: target.kind,
+      project: [
+        "--project",
+        state.projects.find((project) => project.id === target.projectId)
+          ?.name ?? "",
+      ],
+    }));
+  } catch {
+    return [];
+  }
+}
 export async function rigFixture() {
   const base = await mkdtemp(join(tmpdir(), "rig-battle-")),
     root = join(base, ".rig"),
@@ -51,9 +73,14 @@ export async function rigFixture() {
     return await git(["rev-parse", "HEAD"]);
   };
   const cleanup = async () => {
-    // Tests explicitly stop their recorded Targets; cleanup still stops local/live if a failed assertion left them running.
-    for (const target of ["local", "live"])
-      await rig(["down", target, "--project", "demo"], base).catch(() => {});
+    // Tests stop their own Targets; after a failed assertion, whatever the root records is stopped under its actual name.
+    for (const target of await recordedTargets(root))
+      await rig(
+        target.kind === "preview"
+          ? ["down", "preview", "--deployment", target.name, ...target.project]
+          : ["down", target.name, ...target.project],
+        base,
+      ).catch(() => {});
     await rigd(["uninstall"]).catch(() => {});
     await rm(base, { recursive: true, force: true });
   };

@@ -3,13 +3,11 @@ import type { TargetEffects } from "../src/runtime/lifecycle";
 import { createTargetLifecycle } from "../src/runtime/lifecycle";
 import type { ProcessObservation } from "../src/providers/contracts";
 
-/** In-memory process and hook boundary; never starts Host processes. */
-export function stopHookFixture(active: string[] = []) {
+/** In-memory process boundary for shutdown tests; never starts Host processes. */
+export function stopFixture(active: string[] = []) {
   const running = new Set(active);
-  const hooks: string[] = [];
   const stops: string[] = [];
   const observations = new Map<string, ProcessObservation | Error>();
-  const hookFailures = new Set<string>();
   const stopFailures = new Set<string>();
   const effects: TargetEffects = {
     async checkpoint(target) {
@@ -41,10 +39,6 @@ export function stopHookFixture(active: string[] = []) {
     }),
     async prepare() {},
     async environment() { return {}; },
-    async hook(command) {
-      hooks.push(command);
-      if (hookFailures.has(command)) throw new Error(`Hook failed: ${command}`);
-    },
     async health() { return { ready: true }; },
     async build() {},
     async install() { return { outcome: "unchanged" }; },
@@ -52,5 +46,5 @@ export function stopHookFixture(active: string[] = []) {
     async removeRoute() {},
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001, 4567]),
   };
-  return { lifecycle: createTargetLifecycle(effects), running, hooks, stops, observations, hookFailures, stopFailures };
+  return { lifecycle: createTargetLifecycle(effects), running, stops, observations, stopFailures };
 }

@@ -35,9 +35,8 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
       project: "demo", target: "local", workspacePath: `${root}/workspace`, dataRoot: `${root}/data`,
       deploymentName: "local", branchSlug: "local", subdomain: "local",
       providers: { processSupervisor: "child" }, providerProfile: "default", preparedComponents: [],
-      hooks: { postStart: "target-post" },
       components: ["prior", "new"].map(name => ({ name, kind: "managed", command: "serve", ...(options.healthChecks === false ? {} : { port: 4000 }), readyTimeout: 1,
-        env: {}, dependsOn: options.dependsOn?.[name] ?? [], ...(options.healthChecks === false ? {} : { health: "http://127.0.0.1/health" }), hooks: { postStart: `${name}-post` } })),
+        env: {}, dependsOn: options.dependsOn?.[name] ?? [], ...(options.healthChecks === false ? {} : { health: "http://127.0.0.1/health" }) })),
     },
   };
   const running = new Set(["readiness:prior"]);
@@ -68,7 +67,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
       },
       async stop(key) { running.delete(key); events.push(`stop:${key}`); return { outcome: "stopped" }; }, async shutdown() {}, async detach() {},
     }),
-    async hook(command) { events.push(command); }, async route() { events.push("route"); }, health,
+    async route() { events.push("route"); }, health,
   };
   const timing = scheduleFixture();
   return { record, running, exitCodes, stalled, events, checkpoint, timing, lifecycle: createTargetLifecycle(effects, timing) };
@@ -112,7 +111,7 @@ test("a component with no health check counts as started only after surviving th
   expect(f.events).toEqual(["start:readiness:new"]);
   f.timing.advance(500);
   expect(await result).toEqual({ outcome: "started" });
-  expect(f.events).toEqual(["start:readiness:new", "new-post", "route", "target-post", "commit"]);
+  expect(f.events).toEqual(["start:readiness:new", "route", "commit"]);
   expect(f.timing.pending).toBe(0);
 });
 
@@ -170,14 +169,14 @@ test("a supervisor that never answers the liveness observation is bounded by the
   expect(polls).toBe(0);
   answer();
   await flush();
-  expect(f.events.filter(event => event === "route" || event.endsWith("-post"))).toEqual([]);
+  expect(f.events.filter(event => event === "route")).toEqual([]);
   expect(f.timing.pending).toBe(0);
 });
 
 test("immediate health permits post-start and route publication and cancels the deadline", async () => {
   const f = fixture(async () => ready);
   expect(await f.lifecycle.up(f.record)).toEqual({ outcome: "started" });
-  expect(f.events).toEqual(["start:readiness:new", "new-post", "route", "target-post", "commit"]);
+  expect(f.events).toEqual(["start:readiness:new", "route", "commit"]);
   expect(f.timing.pending).toBe(0);
   f.timing.advance(1000);
   expect([...f.running]).toEqual(["readiness:prior", "readiness:new"]);
@@ -298,5 +297,5 @@ test("an already running dependency must pass its health check before a dependen
   expect([...f.running]).toEqual(["readiness:prior"]);
   const healthy = fixture(async () => ({ ready: true }), { dependsOn: { new: ["prior"] } });
   expect(await healthy.lifecycle.up(healthy.record)).toEqual({ outcome: "started" });
-  expect(healthy.events).toEqual(["start:readiness:new", "new-post", "route", "target-post", "commit"]);
+  expect(healthy.events).toEqual(["start:readiness:new", "route", "commit"]);
 });

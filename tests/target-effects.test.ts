@@ -94,8 +94,8 @@ function effects(
     environment,
   });
 }
-test("global and component hooks receive their resolved environment and write raw output only to Target logs", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rig-hook-env-"));
+test("shared and Component builds receive their resolved environment and write raw output only to Target logs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-build-env-"));
   roots.push(root);
   const record = target(root);
   const globalFile = { path: join(root, "global.env"), required: true };
@@ -117,18 +117,24 @@ test("global and component hooks receive their resolved environment and write ra
     ],
     dependsOn: [],
   };
+  record.plan.components = [component];
   const adapter = effects(root);
-  await adapter.hook(
-    'printf "%s:%s\\n" "$HOST" "$VALUE"',
+  await adapter.build(
+    {
+      id: "shared",
+      command: 'printf "%s:%s\\n" "$HOST" "$VALUE"',
+      timeout: 600,
+    },
     record,
-    undefined,
-    "preStart",
   );
-  await adapter.hook(
-    'printf "%s:%s:%s\\n" "$HOST" "$VALUE" "$OVERRIDE"',
+  await adapter.build(
+    {
+      id: "service:web",
+      component: "web",
+      command: 'printf "%s:%s:%s\\n" "$HOST" "$VALUE" "$OVERRIDE"',
+      timeout: 600,
+    },
     record,
-    component,
-    "preStart",
   );
   const entries = (await readFile(join(record.logRoot, "target.jsonl"), "utf8"))
     .trim()
@@ -366,13 +372,15 @@ test("setup recording acquires time for each retained line and reads unchanged s
   ];
   let acquired = 0;
   const adapter = effects(root, () => timestamps[acquired++]!);
-  await adapter.hook(
-    "printf 'one\\n\\ntwo\\n'; printf 'error\\n' >&2",
+  await adapter.build(
+    {
+      id: "shared",
+      command: "printf 'one\\n\\ntwo\\n'; printf 'error\\n' >&2",
+      timeout: 600,
+    },
     record,
-    undefined,
-    "preStart",
   );
-  await adapter.hook("true", record, undefined, "postStart");
+  await adapter.build({ id: "shared", command: "true", timeout: 600 }, record);
   const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
   const page = await createRuntimeFiles().logs(record, undefined, 100);
   expect(page.entries).toEqual([
@@ -765,40 +773,6 @@ test("dependency installation runs once per deployed revision and its marker lea
   expect(installs).toHaveLength(2);
 });
 
-test("a hook past its budget fails as HOOK_TIMEOUT naming the hook and budget, with its output so far in the Target logs", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rig-hook-timeout-"));
-  roots.push(root);
-  const record = target(root);
-  record.plan.hookTimeout = 1;
-  const web = {
-    name: "web",
-    kind: "managed" as const,
-    command: "serve",
-    port: 4000,
-    readyTimeout: 30,
-    env: {},
-    dependsOn: [],
-  };
-  await expect(
-    effects(root).hook("echo before; sleep 30", record, undefined, "preStart"),
-  ).rejects.toMatchObject({
-    code: "HOOK_TIMEOUT",
-    message:
-      "Hook preStart for the Project did not finish within 1 s and was killed.",
-    details: { hook: "preStart", timeoutSeconds: 1 },
-  });
-  // A Component inherits the Project budget unless it sets its own.
-  await expect(
-    effects(root).hook("sleep 30", record, { ...web, hookTimeout: 2 }, "postStart"),
-  ).rejects.toMatchObject({
-    code: "HOOK_TIMEOUT",
-    message: "Hook postStart for web did not finish within 2 s and was killed.",
-    details: { hook: "postStart", component: "web", timeoutSeconds: 2 },
-  });
-  const log = await readFile(join(root, "logs", "target.jsonl"), "utf8");
-  expect(log).toContain('"component":"setup","stream":"stdout","line":"before"');
-});
-
 test("a build past its budget fails as BUILD_TIMEOUT and dependency installation past its budget as DEPENDENCIES_TIMEOUT", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-build-timeout-"));
   roots.push(root);
@@ -871,13 +845,13 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
   );
 });
 
-test("a missing listed env file fails as ENV_FILE_MISSING naming the path, before any hook runs", async () => {
+test("a missing listed env file fails as ENV_FILE_MISSING naming the path, before any build runs", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-env-missing-"));
   roots.push(root);
   const record = target(root);
   record.plan.envFiles = [{ path: join(root, ".env"), required: true }];
   await expect(
-    effects(root).hook("touch ran", record, undefined, "preStart"),
+    effects(root).build({ id: "shared", command: "touch ran", timeout: 600 }, record),
   ).rejects.toMatchObject({
     code: "ENV_FILE_MISSING",
     message: `The environment file ${join(root, ".env")} does not exist.`,
@@ -962,8 +936,8 @@ test("an HTTP health probe treats a redirect as ready, reports a failed status, 
   }
 });
 
-test("hook output is recorded line by line as it arrives, with the time each line was seen", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rig-hook-stream-"));
+test("build output is recorded line by line as it arrives, with the time each line was seen", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-build-stream-"));
   roots.push(root);
   let tick = 0;
   const adapter = createTargetEffects({
@@ -997,7 +971,7 @@ test("hook output is recorded line by line as it arrives, with the time each lin
     environment: {},
   });
   const record = target(root);
-  await adapter.hook("build", record, undefined, "preStart");
+  await adapter.build({ id: "shared", command: "build", timeout: 600 }, record);
   const lines = (await readFile(join(record.logRoot, "target.jsonl"), "utf8"))
     .trim()
     .split("\n")

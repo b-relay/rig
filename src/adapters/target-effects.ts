@@ -82,8 +82,7 @@ export function installedPath(
     `${component.installName ?? component.name}${suffix}`,
   );
 }
-/** Budgets in seconds when the Project config declares none. */
-const DEFAULT_HOOK_TIMEOUT_SECONDS = 120;
+/** Budget in seconds when the Project config declares none. */
 const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
@@ -485,41 +484,6 @@ export function createTargetEffects(
           );
       }
       await writeFile(marker, "prepared\n", { mode: 0o600 });
-    },
-    async hook(command, target, component, name) {
-      const timeoutSeconds =
-        component?.hookTimeout ??
-        target.plan.hookTimeout ??
-        DEFAULT_HOOK_TIMEOUT_SECONDS;
-      const result = await runTarget(
-        command,
-        target,
-        await environment(target, component),
-        timeoutSeconds,
-        component?.name ?? "setup",
-      );
-      if (result.timedOut)
-        throw new RigError(
-          "HOOK_TIMEOUT",
-          `Hook ${name} for ${component ? component.name : "the Project"} did not finish within ${timeoutSeconds} s and was killed.`,
-          `Inspect the ${component?.name ?? "setup"} Target logs for its output so far; set hookTimeout on the ${component ? "Component" : "Project"} if it needs longer.`,
-          {
-            hook: name,
-            ...(component ? { component: component.name } : {}),
-            timeoutSeconds,
-          },
-        );
-      if (result.exitCode)
-        throw new RigError(
-          "HOOK_FAILED",
-          `Hook ${name} for ${component ? component.name : "the Project"} exited with code ${result.exitCode}.`,
-          `Inspect the ${component?.name ?? "setup"} Target logs.`,
-          {
-            hook: name,
-            ...(component ? { component: component.name } : {}),
-            exitCode: result.exitCode,
-          },
-        );
     },
     async build(unit, target) {
       const component = target.plan.components.find(

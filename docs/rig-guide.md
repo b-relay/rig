@@ -917,9 +917,12 @@ and 600 s written out), env-file paths, and how it starts afterwards:
   policy. Working copy policy is never substituted for it.
 - `needs-deploy`: the saved Deployment cannot be reproduced: a hook became a
   build that never ran as one (no build success is invented), a hook was
-  replaced, or its env file is part of the checked-out Commit, which this
-  runtime refuses to load. `rig up` refuses it with
-  `CONVERSION_NEEDS_DEPLOY` until a new Commit is deployed.
+  replaced, its env file is part of the checked-out Commit, which this
+  runtime refuses to load, or it sets `env` next to an env file that still
+  loads (a name in both now takes the file's value, where the retired runtime
+  let `env` win; the file is never opened to find out). `rig up` refuses it
+  with `CONVERSION_NEEDS_DEPLOY` until a new Commit is deployed; a deploy that
+  fails or is interrupted does not lift the refusal.
 - `working-copy`: planned again from `rig.yaml` at every start.
 
 Per Project it shows a candidate `rig.yaml` and notes for everything without
@@ -951,7 +954,9 @@ as untouched, not copied), writes the report and candidates to
 `<RIG_ROOT>/conversion/<revision>/`, and replaces `runtime/state.json` last,
 atomically. That replacement is the only change to existing files and the only
 thing that lets the new runtime read the root, so an interruption before it
-leaves the root unconverted and refused; `runtime/conversion-pending.json`
+leaves the root unconverted and refused. Blockers are checked again right
+before it, so a daemon or process that came back during the copy stops the
+apply with the state unconverted. `runtime/conversion-pending.json`
 names the backup meanwhile and `preview` reports it as `interrupted`. Applying
 to a converted root changes nothing.
 
@@ -959,7 +964,8 @@ Afterwards install the new `rigd`, check `rig status`, commit each reviewed
 `rig.yaml` (without `rig.json` and without secret files) and `rig deploy` the
 Targets that need it. Deploying an old-format Commit fails with guidance.
 
-**Rollback** verifies the backup against its manifest and puts
+**Rollback** verifies that the backup was taken from this root, checks it
+against its manifest and puts
 `runtime/state.json` back. Stop Targets and uninstall the new `rigd` first; it
 refuses otherwise. Data and everything the new runtime wrote stay in place;
 Deployments made after the conversion are unknown to the restored state.

@@ -19,6 +19,7 @@ const backupManifestSchema = z.looseObject({
   version: z.literal(1),
   kind: z.literal("config-cutover"),
   revision: z.string(),
+  root: z.string(),
   files: z.array(
     z.object({
       relativePath: z.string(),
@@ -71,7 +72,7 @@ export async function applyConversion(
     // Only the marker of a conversion whose state was already published can be left here.
     if (first.preview.status === "converted")
       await rm(join(root, PENDING), { force: true });
-    return { status: "unchanged", revision: first.preview.revision };
+    return unchanged(first.preview);
   }
   const lockPath = join(root, "runtime", "conversion.lock");
   let lock;
@@ -89,13 +90,12 @@ export async function applyConversion(
   try {
     const work = await readConversion(root, options.review, deps),
       preview = work.preview;
-    assertReviewed(preview, options.expectedRevision);
-    if (preview.blockers.length || work.state === undefined)
+    assertConvertible(preview, options.expectedRevision);
+    if (work.state === undefined)
       throw new RigError(
         "CONVERSION_BLOCKED",
-        `The conversion is blocked: ${preview.blockers.map((blocker) => `${blocker.code}${blocker.subject ? ` (${blocker.subject})` : ""}`).join(", ")}.`,
-        "Resolve every blocker the preview lists, then preview again. Nothing was changed.",
-        { blockers: preview.blockers },
+        "The root has no state this conversion can convert.",
+        "Run the cutover preview and resolve what it lists. Nothing was changed.",
       );
     const backupPath = join(
         root,
@@ -122,7 +122,7 @@ export async function applyConversion(
       }),
       { mode: 0o600 },
     );
-    deps.checkpoint?.("backup");
+    await deps.checkpoint?.("backup");
     await mkdir(reportPath, { recursive: true, mode: 0o700 });
     for (const project of preview.projects)
       if (project.candidate)
@@ -136,8 +136,9 @@ export async function applyConversion(
       json({ version: 1, appliedAt: deps.now(), backupPath, ...preview }),
       { mode: 0o600 },
     );
-    // The evidence is read a third time: whatever changed it since the lock was taken is not what was reviewed.
-    assertReviewed(
+    // The evidence is read a third time: whatever changed since the lock was taken is not what was reviewed, and a daemon
+    // or process that came back meanwhile (liveness is not part of the revision) must not find a converted state.
+    assertConvertible(
       (await readConversion(root, options.review, deps)).preview,
       options.expectedRevision,
     );
@@ -146,7 +147,7 @@ export async function applyConversion(
       json({ revision: preview.revision, backupPath, startedAt: deps.now() }),
       { mode: 0o600 },
     );
-    deps.checkpoint?.("publish");
+    await deps.checkpoint?.("publish");
     temporary = join(root, "runtime", `conversion-${randomUUID()}.tmp`);
     const pending = await open(temporary, "wx", 0o600);
     try {
@@ -195,6 +196,13 @@ export async function rollbackConversion(
       { backupPath },
     );
   }
+  if (resolve(manifest.root) !== root)
+    throw new RigError(
+      "CONVERSION_BACKUP",
+      `This backup was taken from ${manifest.root}, not from ${root}.`,
+      "Pass the backupPath that the cutover apply printed for this root. Nothing was changed.",
+      { root, backupRoot: manifest.root, backupPath },
+    );
   const live = (
     await readConversion(root, reviewSchema.parse({}), deps)
   ).preview.blockers.filter((blocker) =>
@@ -229,13 +237,25 @@ export async function rollbackConversion(
   return { restored: [STATE] };
 }
 
-function assertReviewed(preview: ConversionPreview, expected: string): void {
+const unchanged = (preview: ConversionPreview): ConversionResult => ({
+  status: "unchanged",
+  revision: preview.revision,
+});
+/** The one gate before anything is written and again before the state is published: the reviewed revision, unblocked. */
+function assertConvertible(preview: ConversionPreview, expected: string): void {
   if (preview.revision !== expected)
     throw new RigError(
       "CONVERSION_CHANGED",
       "The root, a Project configuration or the review changed since the reviewed preview.",
       "Run the cutover preview again and review the new revision. Nothing was changed.",
       { expected, actual: preview.revision },
+    );
+  if (preview.blockers.length)
+    throw new RigError(
+      "CONVERSION_BLOCKED",
+      `The conversion is blocked: ${preview.blockers.map((blocker) => `${blocker.code}${blocker.subject ? ` (${blocker.subject})` : ""}`).join(", ")}.`,
+      "Resolve every blocker the preview lists, then preview again. The state was not converted.",
+      { blockers: preview.blockers },
     );
 }
 async function readOptional(path: string): Promise<Buffer | undefined> {

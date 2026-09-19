@@ -162,6 +162,32 @@ test("an env file keeps its exact path: outside the checkout it still loads, ins
   expect(working.target.conversion).toBeUndefined();
 });
 
+test("env set next to an env file needs a new Deployment: the file now wins where env used to", () => {
+  const deployed = convertTarget(
+      saved({ envFile: "/etc/demo/app.env", env: { PORT: "3000" } }),
+      review(),
+    ),
+    lane = convertTarget(
+      saved({ envFile: "/etc/demo/app.env" }, { env: { SHARED: "lane" } }),
+      review(),
+    ),
+    working = convertTarget(
+      saved(
+        { envFile: "/etc/demo/app.env", env: { PORT: "3000" } },
+        { workspacePath: "/repo" },
+        { kind: "local", name: "local" },
+      ),
+      review(),
+    );
+  expect(deployed.mapping.start).toBe("needs-deploy");
+  expect(deployed.mapping.reasons).toEqual([
+    "web sets env (PORT) next to the env file /etc/demo/app.env: a name in both now takes the file's value, where the retired runtime let env win",
+  ]);
+  expect(lane.mapping.start).toBe("needs-deploy");
+  expect(working.mapping.start).toBe("working-copy");
+  expect(working.warnings.join("\n")).toContain("now takes the file's value");
+});
+
 test("a command that names an inherited variable the new runtime drops blocks until it is acknowledged", () => {
   const legacy = saved({ command: "run --as $USER --shell ${SHELL}" });
   expect(

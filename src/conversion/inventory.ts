@@ -32,7 +32,7 @@ export interface ConversionDeps {
   pidAlive(pid: number): boolean;
   now(): string;
   /** Named points between the writes of `applyConversion`; a test makes one throw to leave a partial conversion. */
-  checkpoint?(step: "backup" | "publish"): void;
+  checkpoint?(step: "backup" | "publish"): void | Promise<void>;
 }
 export interface EvidenceFile {
   relativePath: string;

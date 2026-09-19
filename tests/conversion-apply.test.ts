@@ -237,6 +237,59 @@ test("a Host config.json blocks with a candidate config.yaml; the conversion nev
   );
 });
 
+test("a daemon that appears while apply is copying stops it before the state is published", async () => {
+  const root = await legacy(),
+    preview = await previewConversion(root.root, review, stopped);
+  let revived = false;
+  const applied = applyConversion(
+    root.root,
+    { review, expectedRevision: preview.revision },
+    {
+      ...stopped,
+      pidAlive: () => revived,
+      async checkpoint(step) {
+        if (step !== "backup") return;
+        await mkdir(join(root.root, "daemon"), { recursive: true });
+        await writeFile(
+          join(root.root, "daemon/owner.json"),
+          JSON.stringify({ pid: 77 }),
+        );
+        revived = true;
+      },
+    },
+  );
+  await expect(applied).rejects.toMatchObject({
+    code: "CONVERSION_BLOCKED",
+    details: { blockers: [{ code: "daemon_running" }] },
+  });
+  await expect(new FileStateStore(root.root).read()).rejects.toMatchObject({
+    code: "STATE_UNCONVERTED",
+  });
+});
+
+test("rollback refuses the backup of another root", async () => {
+  const [one, other] = [await legacy(), await legacy()],
+    options = async (root: string) => ({
+      review,
+      expectedRevision: (await previewConversion(root, review, stopped))
+        .revision,
+    });
+  const applied = await applyConversion(
+    one.root,
+    await options(one.root),
+    stopped,
+  );
+  await applyConversion(other.root, await options(other.root), stopped);
+  const converted = await tree(other.base);
+  await expect(
+    rollbackConversion(other.root, applied.backupPath!, stopped),
+  ).rejects.toMatchObject({
+    code: "CONVERSION_BACKUP",
+    details: { root: other.root, backupRoot: one.root },
+  });
+  expect(await tree(other.base)).toEqual(converted);
+});
+
 test("rollback refuses a live root and a backup that does not match its manifest", async () => {
   const root = await legacy(),
     preview = await previewConversion(root.root, review, stopped),

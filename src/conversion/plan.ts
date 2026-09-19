@@ -274,6 +274,14 @@ export function convertTarget(
         reasons.push(
           `the env file of ${component.name} is part of the checked-out Commit, which the new runtime refuses to load`,
         );
+      // A file outside the Commit still loads. Which names it sets is not known, because it is never opened: any env next to it may now lose.
+      const names = Object.keys({ ...plan.env, ...component.env });
+      if (names.length) {
+        const flipped = `${component.name} sets env (${names.join(", ")}) next to the env file ${envFile}: a name in both now takes the file's value, where the retired runtime let env win`;
+        if (deployed && !inside) reasons.push(flipped);
+        else if (!deployed)
+          warnings.push(`${project}/${legacy.name}: ${flipped}`);
+      }
     }
     const {
       envFile: _envFile,

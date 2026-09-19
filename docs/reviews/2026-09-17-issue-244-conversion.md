@@ -90,6 +90,31 @@ immediately before publication.
 | `assertSupportedVersion` | first draft refused every version below 4 as unconverted | only 2 and 3; version 1 stays `STATE_CORRUPT` as before |
 | `prepare-uninstall` | read state unconditionally, so an unconverted root could not be uninstalled | catches `STATE_UNCONVERTED` only |
 
+## Review
+
+Codex (Astra, high) was unavailable: usage limit until 2026-09-24. By the
+user's choice the single reviewer for this PR was a Claude Opus subagent with
+the same brief. Round 1 found five material issues, all reproduced by a failing
+test first and fixed:
+
+1. Apply re-checked only the revision before publishing, and liveness is not in
+   the revision, so a daemon revived during the copy got a converted state
+   under it. `assertConvertible` (revision and blockers) now runs under the
+   lock and again immediately before publication.
+2. `conversion.needsDeploy` was lost when a deploy over a converted Target
+   went through recovery. `recovery.conversion` carries it and
+   `stopForRecovery` restores it.
+3. Rollback accepted the backup of another root. The manifest `root` is now
+   required and compared (`CONVERSION_BACKUP`).
+4. Env-file precedence flipped silently for saved plans whose env file still
+   loads. A deployed Target with env next to such a file is `needs-deploy`; a
+   Working copy gets a warning. The file is not opened, so this is
+   conservative by design.
+5. The pre-TypeScript metadata migration (`src/migration/convert.ts`, tests
+   only) was stamped version 4 while still emitting `envFile`, `hooks` and
+   `build`, which the schema strips. It now rejects a recorded plan that has
+   any of them instead of dropping them.
+
 ## Evidence
 
 - Legacy shapes were captured from a root written by origin/main `28ccaed`

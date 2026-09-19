@@ -198,6 +198,15 @@ const project = z.object({
   configPath: absolutePath,
   createdAt: text,
 });
+const conversion = z
+  .object({
+    needsDeploy: z
+      .array(text)
+      .describe(
+        "Why the saved Deployment cannot start as converted; a new Deployment clears it.",
+      ),
+  })
+  .optional();
 const target = z.object({
   id: text,
   projectId: text,
@@ -238,16 +247,9 @@ const target = z.object({
     .describe(
       "Revision of the rig.yaml a Working copy plan was made from, for reporting drift.",
     ),
-  conversion: z
-    .object({
-      needsDeploy: z
-        .array(text)
-        .describe(
-          "Why the saved Deployment cannot start as converted; a new Deployment clears it.",
-        ),
-    })
-    .optional()
-    .describe("Left by the configuration cutover on a converted Target."),
+  conversion: conversion.describe(
+    "Left by the configuration cutover on a converted Target.",
+  ),
   recovery: z
     .object({
       plan: targetPlanSchema,
@@ -259,6 +261,9 @@ const target = z.object({
         .literal(true)
         .optional()
         .describe("The rollback plan has not completed a deployment."),
+      conversion: conversion.describe(
+        "Why the rollback plan, converted by the configuration cutover, cannot start as it was saved.",
+      ),
       stage: z.enum(["pending", "blocked", "committing"]),
     })
     .optional(),

@@ -90,6 +90,8 @@ export interface TargetRecord {
     desired: "running" | "stopped";
     /** Completion state of the plan restored by rollback. */
     deploymentIncomplete?: true;
+    /** The conversion marker of the plan restored by rollback. */
+    conversion?: { needsDeploy: string[] };
     stage: "pending" | "blocked" | "committing";
     /** Operation that opened the transition; live only inside the daemon that ran it. */
     operationId?: string;

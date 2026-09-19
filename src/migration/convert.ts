@@ -259,6 +259,20 @@ function convertPlan(
     );
     return;
   }
+  // This migration writes the current state version directly, past the configuration cutover that reviews these.
+  if (
+    [old, ...old.components].some(
+      (saved) =>
+        saved.envFile !== undefined ||
+        saved.hooks !== undefined ||
+        ("build" in saved && saved.build !== undefined),
+    )
+  ) {
+    complain(
+      "The recorded runtime plan has an env file, hook or build. The current state has no saved form for them, and none is dropped silently.",
+    );
+    return;
+  }
   const components: PlanComponent[] = old.components.map((component) => {
     const common = {
       ...component,

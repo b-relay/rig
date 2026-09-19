@@ -323,6 +323,29 @@ test("conflicting recorded provider selections are rejected instead of silently 
   ).toBe(true);
 });
 
+test("a recorded plan with an env file, hook or build is rejected: the current state has no saved form for them", async () => {
+  for (const change of [
+    (plan: Record<string, unknown>) => (plan.envFile = ".env"),
+    (plan: Record<string, unknown>) => (plan.hooks = { preStart: "make" }),
+    (plan: Record<string, unknown>) =>
+      ((plan.components as Record<string, unknown>[])[0]!.envFile = ".env"),
+  ]) {
+    const root = await fixture(),
+      state = legacy(root);
+    change(state.desiredDeployments[0]!.record.resolved.runtimePlan);
+    await writeFile(
+      join(root, "runtime", "rigd-state.json"),
+      JSON.stringify(state),
+    );
+    const preview = await readLegacyState(root);
+    expect(preview.state).toBeUndefined();
+    expect(
+      preview.issues.find((issue) => issue.code === "invalid_recorded_plan")
+        ?.message,
+    ).toContain("no saved form");
+  }
+});
+
 test("migration preview reports missing repositories, legacy-format or retired-schema current config, and mismatched identities", async () => {
   const root = await fixture(),
     path = join(root, "runtime", "rigd-state.json"),

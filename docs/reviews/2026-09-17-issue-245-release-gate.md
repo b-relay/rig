@@ -119,8 +119,14 @@ saved plan can still carry these retired fields, so their runtime paths are
 reachable and were kept: `daemon.keepAlive`, `installTimeout`, `sitePort`,
 `installName`, persistent and `uses` Components, `preparedComponents`. They go
 away when no converted Target from before the cutover remains, or when the
-converter learns to refuse them. `src/migration/` apart from `adoption.ts` is
-used by tests only.
+converter learns to refuse them.
+**`src/migration/` is kept deliberately.** Apart from `adoption.ts` (the guard
+`rigd` runs at startup) it is used by tests only. It is not a reader on any
+normal path and not part of #114: it is the explicit metadata migration of the
+earlier TypeScript rewrite, with no command that reaches it, and it writes the
+`runtime/legacy-adoption.json` that the adoption guard still enforces. #245
+grants no deletion scope beyond the #114 scaffolding, so removing it is listed
+in `docs/reviews/2026-09-16-deferred-items.md` for its own decision.
 
 ## Review
 
@@ -129,4 +135,20 @@ choice the single reviewer of this PR was a Claude Opus subagent, briefed for
 both the repository standards (function contracts) and the ticket and spec, on
 the final integrated revision.
 
-Findings and their resolution are recorded here after each round.
+Round 1: no blocker. The reviewer confirmed the hook removal (no reachable path
+relied on `STOP_HOOKS` or the pre-stop observation), that the daemon itself
+refuses to destroy a Working copy or Stable Target (`DESTROY_TARGET`), every
+runbook command and flag, secret safety of the conversion, and reran the matrix.
+Five should-fix findings:
+
+1. The spec claimed a full implementation while `services.<name>.workdir`, a
+   per-Service `supervisor` and the Host-wide `supervisor` default are not
+   runnable. Fixed: the spec status and the guide's "Not yet runnable" say so.
+2. The `supervisor` schema description promised the Host/Service override
+   chain. Fixed.
+3. The README sent Host upgrades to the September TypeScript cutover record,
+   which still described JSON compatibility in the present tense. Fixed: the
+   README points at the runbook and the record is marked as history.
+4. `src/migration/` is tests-only apart from `adoption.ts`. Not deleted; see
+   "Inherited debt" for why, and the deferred-items register.
+5. The deferred-items row for #194 still named `STOP_HOOKS`. Closed.

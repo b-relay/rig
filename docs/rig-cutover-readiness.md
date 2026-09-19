@@ -18,7 +18,9 @@ interfaces, and process/Git/artifact/Caddy adapters. The build packages all thre
 executables. Effect code and dependencies are removed from the current source;
 Git retains the predecessor implementation.
 
-Project and Host documents are YAML-first with legacy JSON compatibility.
+Project and Host documents were YAML-first with legacy JSON compatibility at
+this cutover; since #114 only YAML is read (see
+[the configuration cutover runbook](rig-114-rollout.md)).
 Only the default provider profile is supported. Tests use injected providers
 and isolated `RIG_ROOT`; a historical stub profile must never select real effects.
 User config is not automatically converted during runtime cutover.

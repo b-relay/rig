@@ -1177,6 +1177,10 @@ setting for now.
 - a Service `workdir`
 - a Service `supervisor` that differs from the Project's
 
+The accepted design also names a Host-wide `supervisor` default. The Host
+`config.yaml` has no such key in this build (it is refused as unknown); set
+`supervisor` in the Project.
+
 ### Recipes
 
 A recipe prints an ordinary Service for a common local dependency. There is no

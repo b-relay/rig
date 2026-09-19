@@ -1,6 +1,6 @@
 # Issue 114: consolidated configuration design
 
-Status: **accepted design, September 17, 2026**. The user accepted Q20–Q25 and specified config role keys `working` and `stable`, with display names defaulting to `local` and `live`. The grilling frontier is closed. The design is implemented in source and passed the release gate (#245) with an isolated rehearsal; no live Host has been cut over. See the [implementation plan](114-implementation-plan.md) and the [rollout runbook](../docs/rig-114-rollout.md).
+Status: **accepted design, September 17, 2026**. The user accepted Q20–Q25 and specified config role keys `working` and `stable`, with display names defaulting to `local` and `live`. The grilling frontier is closed. The design is implemented in source and passed the release gate (#245) with an isolated rehearsal; no live Host has been cut over. Three accepted settings are not runnable in this build: `services.<name>.workdir` and a per-Service `supervisor` parse but are refused at planning as `unsupported_setting`, and the Host-wide `supervisor` default has no key in the Host config (see "Not yet runnable" in the guide). See the [implementation plan](114-implementation-plan.md) and the [rollout runbook](../docs/rig-114-rollout.md).
 
 This document is the consolidated specification for [issue 114](https://github.com/b-relay/rig/issues/114). It supersedes conflicting historical draft wording. The [interview record](114-design-interview.md) and [ADRs](../docs/adr/) preserve the accepted decisions and explicit deferrals.
 

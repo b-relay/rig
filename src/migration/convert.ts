@@ -116,7 +116,7 @@ export function convertLegacyState({
       logRoot: record.logRoot,
     });
   }
-  const state: RuntimeState = { version: 3, projects, targets, activity: [] };
+  const state: RuntimeState = { version: 4, projects, targets, activity: [] };
   const checked = runtimeStateSchema.safeParse(state);
   if (!checked.success)
     issues.push({
@@ -256,6 +256,20 @@ function convertPlan(
   ) {
     complain(
       "Recorded provider, identity, or path selections conflict across the deployment snapshot.",
+    );
+    return;
+  }
+  // This migration writes the current state version directly, past the configuration cutover that reviews these.
+  if (
+    [old, ...old.components].some(
+      (saved) =>
+        saved.envFile !== undefined ||
+        saved.hooks !== undefined ||
+        ("build" in saved && saved.build !== undefined),
+    )
+  ) {
+    complain(
+      "The recorded runtime plan has an env file, hook or build. The current state has no saved form for them, and none is dropped silently.",
     );
     return;
   }

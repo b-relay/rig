@@ -29,7 +29,7 @@ test("registration survives reopening and serialized concurrent updates preserve
     expect(
       JSON.parse(await readFile(join(root, "runtime", "state.json"), "utf8"))
         .version,
-    ).toBe(3);
+    ).toBe(4);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -59,7 +59,7 @@ test("valid JSON with an incomplete saved Target plan fails closed", async () =>
   try {
     await mkdir(join(root, "runtime"), { recursive: true });
     const content = JSON.stringify({
-      version: 2,
+      version: 4,
       projects: [
         {
           id: "p",
@@ -106,7 +106,7 @@ test("a state file with a relative repository path is refused as corrupt and nam
   try {
     await mkdir(join(root, "runtime"), { recursive: true });
     const content = JSON.stringify({
-      version: 3,
+      version: 4,
       projects: [
         {
           id: "p",
@@ -168,7 +168,7 @@ test("a deployed Target recorded before sourceRoot existed is backfilled on read
     await writeFile(
       join(root, "runtime", "state.json"),
       JSON.stringify({
-        version: 2,
+        version: 4,
         projects: [
           {
             id: "p",
@@ -207,7 +207,7 @@ test.each([
   ["null", "at the top level"],
   ['{"version":1,"projects":[],"targets":[],"activity":[]}', "at version:"],
   [
-    '{"version":2,"projects":[],"targets":[{"id":"t","projectId":"p","name":"local","kind":"local","desired":"running","createdAt":"now","updatedAt":"now","logRoot":"/tmp/logs","plan":{"project":"demo","workspacePath":"/tmp/demo","dataRoot":"/tmp/data","components":[{"kind":"managed","name":"web"}]}}],"activity":[]}',
+    '{"version":4,"projects":[],"targets":[{"id":"t","projectId":"p","name":"local","kind":"local","desired":"running","createdAt":"now","updatedAt":"now","logRoot":"/tmp/logs","plan":{"project":"demo","workspacePath":"/tmp/demo","dataRoot":"/tmp/data","components":[{"kind":"managed","name":"web"}]}}],"activity":[]}',
     "at targets.0.plan.",
   ],
 ])(
@@ -318,7 +318,7 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
     const path = join(root, "runtime", "state.json");
     await writeFile(
       path,
-      JSON.stringify({ version: 3, futureTopLevel: [1], ...inventory }),
+      JSON.stringify({ version: 4, futureTopLevel: [1], ...inventory }),
     );
     const store = new FileStateStore(root);
     expect(await store.read()).toMatchObject({ futureTopLevel: [1] });
@@ -327,7 +327,7 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
     });
     const written = JSON.parse(await readFile(path, "utf8"));
     expect(written).toMatchObject({
-      version: 3,
+      version: 4,
       futureTopLevel: [1],
       projects: [{ futureProjectField: "kept" }],
       targets: [{ desired: "running", futureTargetField: { nested: true } }],
@@ -337,23 +337,32 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
   }
 });
 
-test("a state file written by a newer rigd is refused with both versions named, and a version 2 file is read and rewritten as version 3", async () => {
+test("a state file written by a newer rigd is refused with both versions named, and one written before the configuration cutover is refused unread", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-version-"));
   try {
     await mkdir(join(root, "runtime"));
     const path = join(root, "runtime", "state.json");
     const store = new FileStateStore(root);
-    await writeFile(path, JSON.stringify({ version: 4, ...inventory }));
+    await writeFile(path, JSON.stringify({ version: 5, ...inventory }));
     await expect(store.read()).rejects.toMatchObject({
       code: "STATE_VERSION",
-      hint: expect.stringMatching(/version 4.*version 3/s),
-      details: { path, version: 4, supported: 3 },
+      hint: expect.stringMatching(/version 5.*version 4/s),
+      details: { path, version: 5, supported: 4 },
     });
-    expect(await readFile(path, "utf8")).toContain('"version":4');
-    await writeFile(path, JSON.stringify({ version: 2, ...inventory }));
-    expect((await store.read()).version).toBe(3);
-    await store.update(() => {});
-    expect(JSON.parse(await readFile(path, "utf8")).version).toBe(3);
+    expect(await readFile(path, "utf8")).toContain('"version":5');
+    for (const version of [2, 3]) {
+      const old = JSON.stringify({ version, ...inventory });
+      await writeFile(path, old);
+      await expect(store.read()).rejects.toMatchObject({
+        code: "STATE_UNCONVERTED",
+        hint: expect.stringContaining("bun run cutover"),
+        details: { path, version, supported: 4 },
+      });
+      await expect(store.update(() => {})).rejects.toMatchObject({
+        code: "STATE_UNCONVERTED",
+      });
+      expect(await readFile(path, "utf8")).toBe(old);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

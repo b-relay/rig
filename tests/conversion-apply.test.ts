@@ -88,7 +88,6 @@ test("each kind of unsafe evidence blocks the conversion, and a blocked apply ch
     new Set([
       "unresolved_recovery",
       "target_running",
-      "data_root_missing",
       "data_root_overlap",
       "missing_evidence",
       "unsupported_mapping",
@@ -98,6 +97,8 @@ test("each kind of unsafe evidence blocks the conversion, and a blocked apply ch
       "project_config",
     ]),
   );
+  // A Target that never stored anything has no data directory; Rig creates it on start.
+  expect(preview.warnings.join("\n")).toContain("has no data directory yet");
   const applied = applyConversion(
     root.root,
     { review, expectedRevision: preview.revision },

@@ -108,6 +108,9 @@ Read the preview completely:
 - Per Target, `dataRoot`, `logRoot`, `workspacePath` must be exactly the paths
   in use today.
 - Per Project, the candidate `rig.yaml` and its `notes`.
+- Every entry of `warnings`. A Target with no data directory is warned about
+  here, not blocked: check against step 1 that it really never stored data, and
+  restore the directory before applying if it did.
 - Note the `revision`.
 
 Both commands are read-only; repeat them as often as needed.
@@ -149,16 +152,16 @@ this step with `NEW/rig up <target> --project <p>`.
 
 Compare with the manifest from step 1.
 
-| Check    | Command                                                                          | Expected                                                                              |
-| -------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| State    | `NEW/rig status --project <p>`                                                   | every Target listed, same names, running ones `running`                               |
-| Health   | `curl -fsS http://127.0.0.1:<port><ready path>`                                  | 2xx                                                                                   |
-| Listener | `lsof -nP -iTCP:<port> -sTCP:LISTEN`                                             | bound on `127.0.0.1` only                                                             |
-| Route    | `curl -fsS -H 'Host: <domain>' http://127.0.0.1:<caddy port>/` or the public URL | the application, not a Caddy error                                                    |
-| Tools    | `ls -l ROOT/bin`; run each with a harmless argument                              | Stable Tool under its plain name; Working copy and Preview Tools as `<tool>-<target>` |
-| Data     | application-level read of a known record; `ls <dataRoot>`                        | present and unchanged; same path as in the preview                                    |
-| Logs     | `NEW/rig logs <target> --project <p>`                                            | new lines appended under the same `logRoot`                                           |
-| Doctor   | `NEW/rig doctor --project <p>`                                                   | no failed check                                                                       |
+| Check    | Command                                                                          | Expected                                                                                                          |
+| -------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| State    | `NEW/rig status --project <p>`                                                   | every Target listed, same names, running ones `running`                                                           |
+| Health   | `curl -fsS http://127.0.0.1:<port><ready path>`                                  | 2xx                                                                                                               |
+| Listener | `lsof -nP -iTCP:<port> -sTCP:LISTEN`                                             | bound on `127.0.0.1` only                                                                                         |
+| Route    | `curl -fsS -H 'Host: <domain>' http://127.0.0.1:<caddy port>/` or the public URL | the application, not a Caddy error                                                                                |
+| Tools    | `ls -l ROOT/bin`; run each with a harmless argument                              | Stable Tool under its plain name; Working copy and Preview Tools as `<tool>-<target>`                             |
+| Data     | application-level read of a known record; `ls <dataRoot>`                        | present and unchanged; same path as in the preview (absent until first start for a Target warned about in step 4) |
+| Logs     | `NEW/rig logs <target> --project <p>`                                            | new lines appended under the same `logRoot`                                                                       |
+| Doctor   | `NEW/rig doctor --project <p>`                                                   | no failed check                                                                                                   |
 
 ## 8. Rollback
 

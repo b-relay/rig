@@ -939,12 +939,17 @@ removed the JSON file; both the retired and the current runtime read
 `config.yaml`. Rig writes neither into a repository nor over a config. Env
 files are never opened: reports carry paths and names only.
 
-Also blocking: a data directory that is missing (`data_root_missing`) or
-shared between Targets (`data_root_overlap`), a checked-out Commit that is
-gone (`missing_evidence`), a published Tool owned by a Target the root does
+Also blocking: a data directory shared between Targets
+(`data_root_overlap`), a checked-out Commit that is gone (`missing_evidence`), a published Tool owned by a Target the root does
 not record (`ambiguous_ownership`), an unreadable Project config
 (`project_config`), and any saved field the conversion does not know
 (`unsupported_mapping`).
+
+A Target whose data directory does not exist is a warning, not a blocker. Rig
+recreates a Target's storage directories when it starts, so a missing one
+normally means nothing was stored. The warning names the path; if data did
+exist there, restore the directory before applying, or the storage starts
+empty.
 
 **Apply** takes the previewed `revision` (a digest of the state, the owner
 records, each Project config, the review and the converter version) and

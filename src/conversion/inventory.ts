@@ -306,12 +306,9 @@ export async function readConversion(
         present: dataPresent,
       });
       if (!dataPresent)
-        blockers.push({
-          ...at,
-          code: "data_root_missing",
-          subject: target.plan.dataRoot,
-          message: `The data directory ${target.plan.dataRoot} does not exist. The conversion keeps every data location exactly and relocates nothing: restore it, or destroy the Target with the runtime that recorded it.`,
-        });
+        warnings.push(
+          `${at.project}/${target.name}: has no data directory yet (${target.plan.dataRoot}). Rig recreates a Target's storage directories when it starts, so a missing one means nothing was stored there. If this Target did store data, restore that directory before converting, or its storage starts empty.`,
+        );
       if (
         target.kind !== "local" &&
         !(await present(target.plan.workspacePath))

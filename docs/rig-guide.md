@@ -863,7 +863,8 @@ the administration outcome itself is unchanged.
 
 ## Configuration cutover
 
-A Rig root written by the last JSON-configuration runtime (state version 2 or 3) is refused by this `rig` and `rigd` with `STATE_UNCONVERTED`. Converting it
+A Rig root written by the last JSON-configuration runtime (state version 2 or
+3) is refused by this `rig` and `rigd` with `STATE_UNCONVERTED`. Converting it
 is a one-time, reviewed step run from a Rig source checkout. It is not a `rig`
 or `rigd` command and the runtime contains no reader for the old format.
 
@@ -895,10 +896,10 @@ and no hook is assumed equivalent to anything:
 
 ```yaml
 hooks:
-  demo/web/preStart: { as: build } # it only compiles: becomes the Service's build
+  demo/web/preStart: { as: build }     # it only compiles: becomes the Service's build
   demo/web/postStop: { as: replaced, by: "alerting on the Service log" }
-ambient: [USER] # inherited names a command uses that you accept as unset
-activate: [demo] # Projects you plan to activate first; recorded only
+ambient: [USER]      # inherited names a command uses that you accept as unset
+activate: [demo]     # Projects you plan to activate first; recorded only
 ```
 
 Every hook of every saved Target needs its own decision
@@ -939,13 +940,16 @@ removed the JSON file; both the retired and the current runtime read
 files are never opened: reports carry paths and names only.
 
 Also blocking: a data directory shared between Targets
-(`data_root_overlap`), a checked-out Commit that is
-gone (`missing_evidence`), a published Tool owned by a Target the root does
+(`data_root_overlap`), a checked-out Commit that is gone (`missing_evidence`), a published Tool owned by a Target the root does
 not record (`ambiguous_ownership`), an unreadable Project config
 (`project_config`), and any saved field the conversion does not know
-(`unsupported_mapping`). A Target whose data directory does not exist is a
-warning, not a blocker: it never stored anything, and Rig creates the
-directory when the Target starts.
+(`unsupported_mapping`).
+
+A Target whose data directory does not exist is a warning, not a blocker. Rig
+recreates a Target's storage directories when it starts, so a missing one
+normally means nothing was stored. The warning names the path; if data did
+exist there, restore the directory before applying, or the storage starts
+empty.
 
 **Apply** takes the previewed `revision` (a digest of the state, the owner
 records, each Project config, the review and the converter version) and

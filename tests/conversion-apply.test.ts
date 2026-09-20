@@ -351,3 +351,26 @@ test("no value of an env file reaches the preview, the report or the backup", as
     { relativePath: "runtime/state.json", action: "replace" },
   ]);
 });
+
+test("a Target that never stored data converts with a warning instead of a blocker", async () => {
+  const root = await legacy();
+  const state = JSON.parse(
+    await readFile(join(root.root, "runtime/state.json"), "utf8"),
+  ) as LegacyState;
+  const data = String(target(state, PLAIN_LIVE).plan.dataRoot);
+  await rm(data, { recursive: true, force: true });
+
+  const preview = await previewConversion(root.root, review, stopped);
+  expect(preview.blockers).toEqual([]);
+  expect(preview.warnings.join("\n")).toContain("has no data directory yet");
+  expect(preview.evidence.dataPaths).toContainEqual({
+    path: data,
+    present: false,
+  });
+  const applied = await applyConversion(
+    root.root,
+    { review, expectedRevision: preview.revision },
+    stopped,
+  );
+  expect(applied.status).toBe("converted");
+});

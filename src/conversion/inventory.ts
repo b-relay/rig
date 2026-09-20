@@ -307,7 +307,7 @@ export async function readConversion(
       });
       if (!dataPresent)
         warnings.push(
-          `${at.project}/${target.name}: has no data directory yet (${target.plan.dataRoot}). Rig creates it when the Target starts. If this Target did store data, restore that directory before converting.`,
+          `${at.project}/${target.name}: has no data directory yet (${target.plan.dataRoot}). Rig recreates a Target's storage directories when it starts, so a missing one means nothing was stored there. If this Target did store data, restore that directory before converting, or its storage starts empty.`,
         );
       if (
         target.kind !== "local" &&

@@ -405,40 +405,65 @@ function Text({
   );
 }
 const UNSET = "__unset";
+/** A setting with a closed set of values. With `defaultOption`, each value is listed once: an absent
+ * setting shows the default as a placeholder, picking any value (the default too) writes it, and
+ * "Unset" removes it again. With `unsetLabel`, absence is a choice of its own in the list. */
 function Choice({
   path,
   label,
   options,
-  unsetLabel,
+  ...absence
 }: {
   path: string[];
   label: string;
-  options: readonly (readonly [string, string])[];
-  unsetLabel: string;
-}) {
+  options: readonly string[];
+} & ({ unsetLabel: string } | { defaultOption: string })) {
   const draft = useDraft();
   const value = getAt(draft.tree, path);
   const id = path.join(".");
+  const chosen = typeof value === "string" ? value : undefined;
+  const byDefault = "defaultOption" in absence;
+  const text = (option: string) =>
+    byDefault && option === absence.defaultOption
+      ? `${option} (default)`
+      : option;
   return (
     <Field label={label} htmlFor={id} help={useHelp(path)}>
-      <Select
-        value={typeof value === "string" ? value : UNSET}
-        onValueChange={(next) =>
-          next === UNSET ? draft.remove(path) : draft.set(path, next)
-        }
-      >
-        <SelectTrigger id={id} className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={UNSET}>{unsetLabel}</SelectItem>
-          {options.map(([option, text]) => (
-            <SelectItem key={option} value={option}>
-              {text}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <div className="flex gap-2">
+        <Select
+          // Radix reports no change when the shown value is picked again, so an absent setting
+          // selects nothing: picking the default then counts as the write it is.
+          value={chosen ?? (byDefault ? "" : UNSET)}
+          onValueChange={(next) =>
+            next === UNSET ? draft.remove(path) : draft.set(path, next)
+          }
+        >
+          <SelectTrigger id={id} className="w-full">
+            <SelectValue
+              placeholder={byDefault ? text(absence.defaultOption) : undefined}
+            />
+          </SelectTrigger>
+          <SelectContent>
+            {byDefault ? null : (
+              <SelectItem value={UNSET}>{absence.unsetLabel}</SelectItem>
+            )}
+            {options.map((option) => (
+              <SelectItem key={option} value={option}>
+                {text(option)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {byDefault && chosen !== undefined ? (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => draft.remove(path)}
+          >
+            Unset
+          </Button>
+        ) : null}
+      </div>
     </Field>
   );
 }
@@ -639,11 +664,8 @@ function ProjectSection() {
       <Choice
         path={["supervisor"]}
         label="Supervisor"
-        unsetLabel="rigd (default)"
-        options={[
-          ["rigd", "rigd"],
-          ["launchd", "launchd"],
-        ]}
+        defaultOption="rigd"
+        options={["rigd", "launchd"]}
       />
       <Text path={["build"]} label="Build command" mono />
       <Text
@@ -705,12 +727,8 @@ function ServiceFields({
         <Choice
           path={[...path, "restart"]}
           label="Restart"
-          unsetLabel="always (default)"
-          options={[
-            ["always", "always"],
-            ["on-failure", "on-failure"],
-            ["no", "no"],
-          ]}
+          defaultOption="always"
+          options={["always", "on-failure", "no"]}
         />
       </div>
       <Records
@@ -911,10 +929,7 @@ function TargetsSection() {
           path={[...path, "supervisor"]}
           label="Supervisor"
           unsetLabel="As the Project"
-          options={[
-            ["rigd", "rigd"],
-            ["launchd", "launchd"],
-          ]}
+          options={["rigd", "launchd"]}
         />
         <div className="grid gap-4 sm:grid-cols-2">
           <Text path={[...path, "build"]} label="Build command" mono />

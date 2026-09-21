@@ -24,8 +24,11 @@ runtime state for lifecycle and deploy actions: deployment inventory,
 Preview materialization, port selections and inventory exclusions, runtime events,
 receipts, health state, and process execution all sit behind `rigd`.
 
-_Relationship_: A future Rig web UI should be a client of `rigd` through a
-control-plane API, not logic deeply embedded in daemon internals.
+_Relationship_: The Rig website (`web/`, published at `rig.b-relay.com`) is a
+client of `rigd` through the control-plane API, not logic embedded in daemon
+internals. It is a Rig Service whose localhost relay reads the control-plane
+address and token from the Rig root as `rig` does; the browser never holds the
+token. See `docs/website.md`.
 
 _Relationship_: The control plane is HTTP on `127.0.0.1` only, authenticated with a
 Bearer token stored at `<RIG_ROOT>/auth/control-plane.token`. The port is

@@ -2177,3 +2177,23 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
     }),
   ).toThrow(expect.objectContaining({ code: "invalid_context" }));
 });
+
+test("YAML editing replaces or removes an uncommented mapping or sequence in place", async () => {
+  const root = await fixture(),
+    raw =
+      "name: app # keep\nservices:\n  web:\n    run: serve\n    depends_on: [db, cache]\n  db:\n    run: postgres\n  cache:\n    run: redis\n  old:\n    run: legacy\n";
+  await writeFile(join(root, "rig.yaml"), raw);
+  const document = await readProjectConfig(root);
+  await editProjectConfig({
+    repoPath: root,
+    expectedRevision: document.revision,
+    edits: [
+      { op: "remove", path: ["services", "old"] },
+      { path: ["services", "web", "depends_on"], value: ["cache"] },
+    ],
+  });
+  const written = await readFile(join(root, "rig.yaml"), "utf8");
+  expect(written).toContain("name: app # keep");
+  expect(written).not.toContain("legacy");
+  expect(parse(written).services.web.depends_on).toEqual(["cache"]);
+});

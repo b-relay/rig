@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Rig is a local Mac deployment manager: push a Branch and it runs on your own Mac with a hostname, health checks, and logs."
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; font-src 'self' data:; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+    />
+    <title>Rig: push a Branch, it runs on your Mac</title>
+    <link rel="stylesheet" href="./site.css" />
+  </head>
+  <body>
+    <header class="top">
+      <span class="brand">Rig</span>
+      <nav>
+        <a class="plain" href="https://github.com/b-relay/rig">GitHub</a>
+        <a
+          class="plain"
+          href="https://github.com/b-relay/rig/blob/main/docs/rig-guide.md"
+          >Guide</a
+        >
+        <a class="open" href="/dashboard">Open dashboard</a>
+      </nav>
+    </header>
+    <main>
+      <div class="hero">
+        <h1>Push a Branch. It runs on your Mac.</h1>
+        <ul class="bay" aria-label="Where each Branch runs">
+          <li>
+            <span class="jack from"
+              >main<small>your Production Branch</small></span
+            >
+            <svg
+              viewBox="0 0 100 20"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <path d="M0 6 C 30 22, 70 22, 100 6" />
+            </svg>
+            <span class="jack"
+              >app.example.com<small>the Stable Target</small></span
+            >
+          </li>
+          <li>
+            <span class="jack from"
+              >feature-x<small>any other Branch</small></span
+            >
+            <svg
+              viewBox="0 0 100 20"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <path d="M0 6 C 30 22, 70 22, 100 6" />
+            </svg>
+            <span class="jack"
+              >feature-x.app.example.com<small
+                >a Preview, with its own data and logs</small
+              ></span
+            >
+          </li>
+          <li>
+            <span class="jack from"
+              >files on disk<small>no push needed</small></span
+            >
+            <svg
+              viewBox="0 0 100 20"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <path d="M0 6 C 30 22, 70 22, 100 6" />
+            </svg>
+            <span class="jack"
+              >127.0.0.1:3000<small>the Working copy</small></span
+            >
+          </li>
+        </ul>
+        <p class="lede">
+          Rig deploys your Projects to the Mac on your desk. Each Branch gets a
+          hostname, health checks, logs, and a record of every deploy. There is
+          no cloud account and there are no containers.
+        </p>
+        <p>
+          <a class="open" href="/dashboard">Open dashboard</a>
+          <a class="install" href="https://github.com/b-relay/rig#readme"
+            >Install Rig</a
+          >
+        </p>
+      </div>
+      <section>
+        <h2>Set up a Project</h2>
+        <ol class="steps">
+          <li>
+            <div>
+              <h3>Install the daemon</h3>
+              <p>
+                <code>rigd</code> starts at login and runs everything: deploys,
+                ports, health checks, and logs.
+              </p>
+              <pre><code>rigd install</code></pre>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>Describe the Project</h3>
+              <p>
+                This writes a <code>rig.yaml</code> with your Services and
+                domain, and adds a <code>rig</code> git remote. You can edit it
+                later from the dashboard; comments are kept.
+              </p>
+              <pre><code>rig init --service web --run "bun run start" --domain app.example.com</code></pre>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>Push</h3>
+              <p>
+                Rig builds the commit, starts it, waits for it to be healthy,
+                and points Caddy at it.
+              </p>
+              <pre><code>git push rig main
+git push rig feature-x</code></pre>
+            </div>
+          </li>
+        </ol>
+      </section>
+      <section>
+        <h2>The words Rig uses</h2>
+        <dl class="words">
+          <dt>Project</dt>
+          <dd>
+            One repository with a <code>rig.yaml</code>: its Services, Tools,
+            domain, and proxy map. Every address is checked to be
+            localhost-only.
+          </dd>
+          <dt>Target</dt>
+          <dd>
+            One running copy of a Project. The Working copy runs the files on
+            disk, the Stable Target follows your Production Branch, and every
+            other Branch becomes a Preview on its own subdomain.
+          </dd>
+          <dt>rigd</dt>
+          <dd>
+            The daemon that does the work. The <code>rig</code> command,
+            <code>git push rig</code>, and the dashboard all ask it, so they
+            always agree.
+          </dd>
+          <dt>Route</dt>
+          <dd>
+            Rig writes the Caddy site for each Target that has a hostname and
+            reloads Caddy. This page reaches you that way.
+          </dd>
+          <dt>Activity</dt>
+          <dd>
+            Every deploy, start, and stop is kept with its outcome. Status shows
+            what Rig observed, not what it expects.
+          </dd>
+          <dt>Doctor</dt>
+          <dd>
+            Checks the Mac and each Project, and says how to fix what it finds.
+          </dd>
+          <dt>Recipe</dt>
+          <dd>
+            A ready-made Service block for Postgres or Convex. Rig can compare
+            yours with newer versions.
+          </dd>
+        </dl>
+      </section>
+    </main>
+    <footer>
+      <p>
+        The dashboard controls rigd on the Mac that serves this page. It opens
+        only from that Mac or from addresses that Mac trusts.
+      </p>
+    </footer>
+  </body>
+</html>

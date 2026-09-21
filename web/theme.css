@@ -1,0 +1,61 @@
+/* Latin subsets only; Bun inlines them, so the pages allow data: fonts and nothing remote.
+   format("woff2"), not "woff2-variations": Bun unquotes it, and the unquoted form voids the rule. */
+@font-face {
+  font-family: "Archivo Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  src: url("@fontsource-variable/archivo/files/archivo-latin-standard-normal.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "Martian Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("@fontsource-variable/martian-mono/files/martian-mono-latin-wght-normal.woff2")
+    format("woff2");
+}
+
+/* Steel, ink, and one hazard yellow: the colours of rigging hardware. Yellow is
+   only ever a fill behind ink, never text, so it stays legible in both schemes. */
+:root {
+  color-scheme: light dark;
+  --steel: light-dark(#e8ebee, #17212c);
+  --sheet: light-dark(#ffffff, #1f2b38);
+  --rule: light-dark(#c3cad2, #35444f);
+  --ink: light-dark(#16202b, #e6ebf0);
+  --muted-ink: light-dark(#566270, #93a1ae);
+  --link: light-dark(#1a4fd6, #8fb0ff);
+  --hazard: #ffc400;
+  --on-hazard: #16202b;
+  --deck: light-dark(#16202b, #0e151c);
+  --on-deck: #e6ebf0;
+  --sans: "Archivo Variable", "Helvetica Neue", Arial, sans-serif;
+  --mono: "Martian Mono Variable", ui-monospace, Menlo, monospace;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--steel);
+  color: var(--ink);
+  font-family: var(--sans);
+}
+a {
+  color: var(--link);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+:focus-visible {
+  outline: 3px solid var(--hazard);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--on-hazard);
+}
+code,
+pre {
+  font-family: var(--mono);
+  font-size: 0.82em;
+}

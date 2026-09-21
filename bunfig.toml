@@ -1,0 +1,3 @@
+# Tailwind runs inside Bun's HTML bundler, so `bun web/server/main.ts` serves compiled utility CSS.
+[serve.static]
+plugins = ["bun-plugin-tailwind"]

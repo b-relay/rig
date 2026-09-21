@@ -1,6 +1,25 @@
 name: rig
-description: Rig project config for the CLI, daemon, and Git remote helper binaries.
+description: Rig project config for the CLI, daemon, Git remote helper binaries, and the Rig website.
 production_branch: main
+# The Stable Target serves the website here; each Preview gets <preview>.rig.b-relay.com.
+domain: rig.b-relay.com
+
+services:
+  # The landing page, the dashboard, and the relay to this Host's rigd. The relay reads the
+  # control-plane address and token from the Rig root the way rig does, so the browser never holds them.
+  web:
+    build: bun install --frozen-lockfile
+    run: bun web/server/main.ts
+    ports: { http: auto }
+    env:
+      PORT: ${services.web.ports.http}
+      # The name this Target is published under; empty for the Working copy, which is loopback only.
+      RIG_WEB_HOST: ${rig.host}
+      RIG_WEB_DASHBOARD_HOST: rig.b-relay.com
+    ready: http://127.0.0.1:${services.web.ports.http}/healthz
+
+proxy:
+  /: ${services.web.ports.http}
 
 tools:
   rig:

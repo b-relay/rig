@@ -2,11 +2,16 @@ import { DaemonClient } from "./client";
 import { readDaemonAddress, readDaemonToken } from "./files";
 import { recordedProcess } from "./process-identity";
 import { RigError } from "../domain/errors";
+import type { DaemonAddress } from "./protocol";
 
 /** Acquire fresh Host discovery and credentials for one transport operation. No probe or retry.
  * The credential is only handed to a port whose recorded owner process still exists;
  * a record left behind by a dead daemon is reported as stale, never contacted. */
 export async function connectDaemon(root: string): Promise<DaemonClient> {
+  return new DaemonClient(await liveDaemonAddress(root));
+}
+/** The port and credential of the daemon whose recorded owner process still exists. */
+export async function liveDaemonAddress(root: string): Promise<DaemonAddress> {
   const address = await readDaemonAddress(root);
   if (!address)
     throw new RigError(
@@ -22,10 +27,7 @@ export async function connectDaemon(root: string): Promise<DaemonClient> {
       "Run 'rigd status'; 'rigd install' starts the daemon again.",
       { pid: address.pid, port: address.port },
     );
-  return new DaemonClient({
-    port: address.port,
-    token: await readDaemonToken(root),
-  });
+  return { port: address.port, token: await readDaemonToken(root) };
 }
 
 /** Missing setup and transport unreachability permit read-only offline diagnosis. */

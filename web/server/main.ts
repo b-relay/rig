@@ -5,6 +5,8 @@ import { rigRoot } from "../../src/cli/entry-environment";
 import { RigError } from "../../src/domain/errors";
 import { accessPolicy, admit, parseTrustedClients } from "./guard";
 import { createRelay, RELAYED, type RelayedPath } from "./relay";
+import { sandboxDaemon } from "./sandbox";
+import { join } from "node:path";
 
 /** Effect owner for the Rig website: the landing page, the dashboard, and the relay to this Host's rigd. */
 const port = Number(process.env.PORT);
@@ -15,13 +17,16 @@ if (!Number.isInteger(port) || port <= 0)
     "Run it as a Rig Service, or set PORT, for example PORT=4173.",
     { port: process.env.PORT },
   );
-const root = rigRoot();
+// A Preview names a sandbox root: the site then runs a throwaway rigd there and relays to it, never to the Host's.
+const sandboxRoot = process.env.RIG_WEB_SANDBOX_ROOT;
+const root = sandboxRoot ?? rigRoot();
 const policy = accessPolicy({
   port,
   ...(process.env.RIG_WEB_HOST ? { publicHost: process.env.RIG_WEB_HOST } : {}),
   ...(process.env.RIG_WEB_DASHBOARD_HOST
     ? { dashboardHost: process.env.RIG_WEB_DASHBOARD_HOST }
     : {}),
+  sandboxed: sandboxRoot !== undefined,
   trustedClients: parseTrustedClients(
     process.env.RIG_WEB_TRUSTED_CLIENTS ?? "",
   ),
@@ -30,6 +35,28 @@ const relay = createRelay({
   address: () => liveDaemonAddress(root),
   send: (url, init) => fetch(url, init),
 });
+if (sandboxRoot) {
+  const daemon = sandboxDaemon(sandboxRoot, async (command, sandbox) => {
+    const rigd = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "../../src/rigd.ts"), command],
+      {
+        env: { ...process.env, RIG_ROOT: sandbox },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [out, err] = await Promise.all([
+      new Response(rigd.stdout).text(),
+      new Response(rigd.stderr).text(),
+    ]);
+    return { exitCode: await rigd.exited, output: out + err };
+  });
+  await daemon.start();
+  for (const signal of ["SIGTERM", "SIGINT"] as const)
+    process.once(signal, () => {
+      void daemon.stop().finally(() => process.exit(0));
+    });
+}
 const isRelayed = (path: string): path is RelayedPath =>
   Object.hasOwn(RELAYED, path);
 

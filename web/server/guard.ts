@@ -145,6 +145,8 @@ export function accessPolicy(site: {
   trustedClients?: readonly TrustedClient[];
   /** The one published host whose dashboard controls rigd; other published hosts are Previews. */
   dashboardHost?: string;
+  /** This copy relays to a sandbox rigd of its own, so a Preview may relay too: it never reaches the Host's rigd. */
+  sandboxed?: boolean;
 }): AccessPolicy {
   const local = [`127.0.0.1:${site.port}`, `localhost:${site.port}`];
   const published = site.publicHost ? [site.publicHost.toLowerCase()] : [];
@@ -155,7 +157,8 @@ export function accessPolicy(site: {
       ...published.map((host) => `https://${host}`),
     ]),
     trustedClients: site.trustedClients ?? [],
-    ...(site.publicHost &&
+    ...(!site.sandboxed &&
+    site.publicHost &&
     site.dashboardHost &&
     site.publicHost.toLowerCase() !== site.dashboardHost.toLowerCase()
       ? { relaysAt: site.dashboardHost }

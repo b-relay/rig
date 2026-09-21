@@ -21,6 +21,15 @@ services:
 proxy:
   /: ${services.web.ports.http}
 
+targets:
+  preview:
+    services:
+      web:
+        env:
+          # A Preview's dashboard drives a throwaway rigd of its own, kept in the Preview's data
+          # directory and destroyed with it, so an unreviewed Branch never holds the Host's rigd.
+          RIG_WEB_SANDBOX_ROOT: ${rig.data}/rigd
+
 tools:
   rig:
     build: bun install --frozen-lockfile && bun build --compile src/index.ts --outfile rig

@@ -6,6 +6,7 @@ import {
   trustedClient,
 } from "../web/server/guard";
 import { createRelay } from "../web/server/relay";
+import { sandboxDaemon } from "../web/server/sandbox";
 
 const policy = accessPolicy({
   publicHost: "rig.b-relay.com",
@@ -219,4 +220,54 @@ test("a Preview of the site never relays and names the host that does", () => {
   expect(
     accessPolicy({ dashboardHost: "rig.b-relay.com", port: 4100 }).relaysAt,
   ).toBeUndefined();
+});
+
+test("a sandboxed Preview relays, since it only reaches its own rigd", () => {
+  const sandboxed = accessPolicy({
+    publicHost: "feature.rig.b-relay.com",
+    dashboardHost: "rig.b-relay.com",
+    port: 4100,
+    sandboxed: true,
+  });
+  expect(sandboxed.relaysAt).toBeUndefined();
+  expect(
+    admit(
+      post({
+        host: "feature.rig.b-relay.com",
+        origin: "https://feature.rig.b-relay.com",
+        "x-forwarded-for": "127.0.0.1",
+      }),
+      sandboxed,
+    ),
+  ).toEqual({ admitted: true });
+  // Sandboxing lifts only the Preview rule; strangers are still refused.
+  expect(
+    admit(
+      post({
+        host: "feature.rig.b-relay.com",
+        origin: "https://feature.rig.b-relay.com",
+        "x-forwarded-for": "203.0.113.9",
+      }),
+      sandboxed,
+    ),
+  ).toMatchObject({ code: "CLIENT" });
+});
+
+test("the sandbox daemon installs into its own root and reports a refused stop", async () => {
+  const calls: string[] = [];
+  const sandbox = sandboxDaemon("/tmp/box", async (command, root) => {
+    calls.push(`${command} ${root}`);
+    return { exitCode: command === "install" ? 0 : 1, output: "" };
+  });
+  await sandbox.start();
+  expect(await sandbox.stop()).toBe(false);
+  expect(calls).toEqual(["install /tmp/box", "uninstall /tmp/box"]);
+  const broken = sandboxDaemon("/tmp/box", async () => ({
+    exitCode: 1,
+    output: "port refused",
+  }));
+  await expect(broken.start()).rejects.toMatchObject({
+    code: "WEB_SANDBOX_FAILED",
+    details: { output: "port refused" },
+  });
 });

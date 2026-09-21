@@ -47,10 +47,10 @@ only when all of these hold:
   Caddy sees the tunnel's loopback address for every visitor, so such requests
   are refused outright. Do not publish the dashboard through cloudflared,
   Tailscale Funnel, ngrok, or `ssh -R`.
-- This copy of the site is not a Preview. `RIG_WEB_DASHBOARD_HOST` names the one
-  published host whose dashboard controls `rigd`; a Preview at
-  `<preview>.rig.b-relay.com` serves the pages but refuses every relay request,
-  so an unreviewed Branch never holds Host control.
+- This copy of the site is not a Preview of the Host's dashboard.
+  `RIG_WEB_DASHBOARD_HOST` names the one published host whose dashboard controls
+  the Host's `rigd`; any other published copy refuses every relay request unless
+  it is sandboxed (below), so an unreviewed Branch never holds Host control.
 
 A malformed `RIG_WEB_TRUSTED_CLIENTS` entry stops the server at startup rather
 than being skipped or widened. The dashboard also refuses to render inside
@@ -66,6 +66,22 @@ There is no login. Do not add public addresses to `RIG_WEB_TRUSTED_CLIENTS`:
 anyone admitted has full control of every Project on the Host. Put an
 authenticating proxy in front first.
 
+## Preview sandboxes
+
+`targets.preview` in `rig.yaml` sets `RIG_WEB_SANDBOX_ROOT` to
+`${rig.data}/rigd`. With it set, `web/server/main.ts` runs `rigd install`
+against that root before serving and `rigd uninstall` when the Service stops,
+and the relay reads that root instead of `~/.rig`. A Rig root other than
+`~/.rig` runs `rigd` as a plain process, never in launchd, with its own token,
+state, and Caddyfile (`<root>/proxy/Caddyfile`, never reloaded), so a Preview's
+dashboard is fully usable and cannot touch the Host's Projects or routes. The
+sandbox starts empty, its Targets get ports but no published URLs, and
+`rig down preview <branch> --destroy` deletes it with the Preview's data.
+
+The sandbox isolates state, not privileges: a Project registered in it still
+runs its commands as you. `rigd uninstall` refuses while a sandbox Target runs;
+the sandbox `rigd` is then left running and the next start adopts it.
+
 ## Layout
 
 | Path                        | Responsibility                                                         |
@@ -78,7 +94,8 @@ authenticating proxy in front first.
 | `web/dashboard/config-form` | Pure draft helpers: path edits, the draft-to-patch diff, field help.   |
 | `web/dashboard/components`  | shadcn/ui primitives (fetched from the registry, edited in place).     |
 | `web/dashboard/styles.css`  | Tailwind entry mapping shadcn tokens onto the Rig palette.             |
-| `web/server`                | `main.ts` (effect owner), `guard.ts` (access policy), `relay.ts`.      |
+| `web/server`                | `main.ts` (effect owner), `guard.ts` (access policy), `relay.ts`,      |
+|                             | `sandbox.ts` (a Preview's own rigd).                                   |
 
 The dashboard is styled with Tailwind v4 and shadcn/ui. Tailwind compiles
 inside Bun's HTML bundler through `bun-plugin-tailwind`, registered in

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ConfigError } from "./errors.js";
 import {
   DEFAULT_TARGET_NAMES,
   hostConfigSchema,
@@ -14,6 +15,11 @@ export const HOST_SCHEMA_URL = `${SCHEMA_BASE}/host-config.schema.json`;
 export const PROJECT_SCHEMA_COMMENT = `# yaml-language-server: $schema=${PROJECT_SCHEMA_URL}\n`;
 
 export type JsonSchema = Record<string, unknown>;
+/** One schema per committed file, keyed by its name in schemas/. */
+export interface ConfigJsonSchemas {
+  readonly "rig.schema.json": JsonSchema;
+  readonly "host-config.schema.json": JsonSchema;
+}
 
 /** Defaults planning applies when a setting is absent, by the setting's path in the Project schema. The Zod schema leaves these
  * settings optional so the parsed config stays what the author wrote; the JSON Schema shows the value for an editor. Only fixed
@@ -37,8 +43,11 @@ function settingAt(schema: JsonSchema, path: readonly string[]): JsonSchema {
         ? node.additionalProperties
         : (node.properties as Record<string, unknown> | undefined)?.[segment];
     if (typeof next !== "object" || next === null)
-      throw new Error(
-        `No setting ${path.join(".")} in the Project schema; update PLANNING_DEFAULTS in src/config/json-schema.ts.`,
+      throw new ConfigError(
+        `No setting ${path.join(".")} in the Project schema.`,
+        "SCHEMA_DEFAULT_PATH",
+        { path: path.join(".") },
+        "Update PLANNING_DEFAULTS in src/config/json-schema.ts to match the Project schema.",
       );
     node = next as JsonSchema;
   }
@@ -51,15 +60,15 @@ function jsonSchemaOf(schema: z.ZodType): JsonSchema {
     unrepresentable: "any",
     override: ({ zodSchema, jsonSchema }) => {
       // A pipe that starts from `unknown` only pre-checks raw input; the shape an author writes is its output side.
-      const def = zodSchema._zod.def as {
-        type: string;
-        in?: z.core.$ZodType;
-        out?: z.core.$ZodType;
-      };
-      if (def.type === "pipe" && def.in?._zod.def.type === "unknown" && def.out)
+      if (
+        zodSchema instanceof z.ZodPipe &&
+        zodSchema.in instanceof z.ZodUnknown
+      )
         Object.assign(
           jsonSchema,
-          withoutDialect(z.toJSONSchema(def.out, { unrepresentable: "any" })),
+          withoutDialect(
+            z.toJSONSchema(zodSchema.out, { unrepresentable: "any" }),
+          ),
         );
     },
   }) as JsonSchema;
@@ -70,7 +79,7 @@ function withoutDialect(schema: JsonSchema): JsonSchema {
 }
 
 /** Pure: the JSON Schemas of the Project and Host config, keyed by the file name each is committed under in schemas/. */
-export function configJsonSchemas(): Record<string, JsonSchema> {
+export function configJsonSchemas(): ConfigJsonSchemas {
   const { $schema: dialect, ...project } = jsonSchemaOf(projectConfigSchema);
   for (const [path, value] of PLANNING_DEFAULTS)
     settingAt(project, path).default = value;

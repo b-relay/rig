@@ -15,13 +15,13 @@ const host = schemas["host-config.schema.json"] as Json;
 const service = project.properties.services.additionalProperties as Json;
 const tool = project.properties.tools.additionalProperties as Json;
 
-test.each(Object.keys(schemas))(
+test.each(Object.keys(schemas) as (keyof typeof schemas)[])(
   "the committed schemas/%s is the schema the code generates",
   async (file) => {
     const committed = await readFile(join(REPO, "schemas", file), "utf8").catch(
       () => "",
     );
-    if (committed !== renderJsonSchema(schemas[file]!))
+    if (committed !== renderJsonSchema(schemas[file]))
       throw new Error(
         `schemas/${file} is out of date with src/config/schema.ts. Run \`bun run schema\` and commit the result.`,
       );

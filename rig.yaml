@@ -16,6 +16,8 @@ services:
       # The name this Target is published under; empty for the Working copy, which is loopback only.
       RIG_WEB_HOST: ${rig.host}
       RIG_WEB_DASHBOARD_HOST: rig.b-relay.com
+      # Browsers beyond this Mac sign in with the key in this file; the Service creates it on first start.
+      RIG_WEB_KEY_FILE: ${rig.data}/access.key
     ready: http://127.0.0.1:${services.web.ports.http}/healthz
 
 proxy:

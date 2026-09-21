@@ -5,11 +5,21 @@ import type { ListResult } from "../../src/daemon/protocol";
 import { liveDaemonAddress } from "../../src/daemon/connection";
 import { rigRoot } from "../../src/cli/entry-environment";
 import { RigError } from "../../src/domain/errors";
-import { accessPolicy, admit, parseTrustedClients } from "./guard";
+import {
+  accessPolicy,
+  admit,
+  keyMatches,
+  parseTrustedClients,
+  SESSION_COOKIE,
+  SESSION_SECONDS,
+  sessionValue,
+} from "./guard";
 import { createRelay, RELAYED, type RelayedPath } from "./relay";
 import { sandboxDaemon } from "./sandbox";
 import { downCommands, seedSandbox } from "./seed";
-import { mkdir, stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { z } from "zod";
 import { dirname, join } from "node:path";
 
 /** Effect owner for the Rig website: the landing page, the dashboard, and the relay to this Host's rigd. */
@@ -24,7 +34,28 @@ if (!Number.isInteger(port) || port <= 0)
 // A Preview names a sandbox root: the site then runs a throwaway rigd there and relays to it, never to the Host's.
 const sandboxRoot = process.env.RIG_WEB_SANDBOX_ROOT;
 const root = sandboxRoot ?? rigRoot();
+/** The key in `file`, created on first start. It is never logged; read it with `cat`. */
+async function accessKey(file: string): Promise<string> {
+  const existing = await readFile(file, "utf8").catch(() => "");
+  if (existing.trim().length >= 32) {
+    // A key someone placed here by hand may be readable by others; it never should be.
+    await chmod(file, 0o600);
+    return existing.trim();
+  }
+  const key = randomBytes(32).toString("base64url");
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, `${key}\n`, { mode: 0o600 });
+  await chmod(file, 0o600);
+  return key;
+}
+const keyFile = process.env.RIG_WEB_KEY_FILE;
+const key = keyFile ? await accessKey(keyFile) : undefined;
+if (keyFile)
+  process.stdout.write(
+    `Clients beyond this Mac sign in with the access key in ${keyFile}\n`,
+  );
 const policy = accessPolicy({
+  ...(key ? { accessKey: key } : {}),
   port,
   ...(process.env.RIG_WEB_HOST ? { publicHost: process.env.RIG_WEB_HOST } : {}),
   ...(process.env.RIG_WEB_DASHBOARD_HOST
@@ -106,6 +137,41 @@ if (sandboxRoot) {
         .finally(() => process.exit(0));
     });
 }
+const credentials = z.strictObject({ key: z.string().min(1).max(256) });
+/** Trades the access key for a session cookie the dashboard's later requests carry. */
+async function signIn(request: Request): Promise<Response> {
+  const admission = admit(request, policy, {
+    now: Date.now(),
+    signingIn: true,
+  });
+  if (!admission.admitted)
+    return Response.json(
+      { error: { code: admission.code, message: admission.message } },
+      { status: admission.status },
+    );
+  const offered = credentials.safeParse(await request.json().catch(() => null));
+  if (!key || !offered.success || !keyMatches(offered.data.key, key))
+    return Response.json(
+      {
+        error: {
+          code: "KEY_REFUSED",
+          message: "That is not this Host's access key.",
+          hint: "On the Mac that serves this site, the web Service's log names the key file: rig logs live --project rig.",
+        },
+      },
+      { status: 401 },
+    );
+  const expires = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
+  return Response.json(
+    { result: { signedIn: true } },
+    {
+      headers: {
+        "cache-control": "no-store",
+        "set-cookie": `${SESSION_COOKIE}=${sessionValue(key, expires)}; Max-Age=${SESSION_SECONDS}; Path=/api; HttpOnly; Secure; SameSite=Strict`,
+      },
+    },
+  );
+}
 const isRelayed = (path: string): path is RelayedPath =>
   Object.hasOwn(RELAYED, path);
 
@@ -122,9 +188,11 @@ Bun.serve({
   },
   async fetch(request, server) {
     const path = new URL(request.url).pathname;
+    if (path === "/api/session" && request.method === "POST")
+      return signIn(request);
     if (!isRelayed(path) || request.method !== RELAYED[path].method)
       return new Response("Not found", { status: 404 });
-    const admission = admit(request, policy);
+    const admission = admit(request, policy, { now: Date.now() });
     if (!admission.admitted)
       return Response.json(
         { error: { code: admission.code, message: admission.message } },

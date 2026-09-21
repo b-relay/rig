@@ -48,6 +48,8 @@ export type Reply<A extends RuntimeCommand["action"]> = A extends keyof Replies
   : OperationResult;
 export interface RigdApi {
   health(): Promise<DaemonHealth>;
+  /** Trades the Host's access key for a session cookie; rejects with `KEY_REFUSED` when it is wrong. */
+  signIn(key: string): Promise<void>;
   command<A extends RuntimeCommand["action"]>(
     command: RuntimeCommand & { action: A },
     signal?: AbortSignal,
@@ -121,6 +123,9 @@ export function createRigdApi(send: Fetch): RigdApi {
     return payload.result;
   };
   return {
+    signIn: async (key) => {
+      await request("/api/session", { key });
+    },
     health: async () => (await request("/api/health")) as DaemonHealth,
     command: async (command, signal) =>
       (await result(

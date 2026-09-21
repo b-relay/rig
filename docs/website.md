@@ -22,6 +22,8 @@ token, and a restarted `rigd` on a new port is found on the next request.
 | `POST /api/command` | `POST /v1/command` |
 | `POST /api/config`  | `POST /v1/config`  |
 
+`POST /api/session` is the site's own: it trades the access key for a session.
+
 `rigd` itself is unchanged: it still binds loopback, still requires the token,
 and still refuses foreign browser origins.
 
@@ -56,15 +58,31 @@ A malformed `RIG_WEB_TRUSTED_CLIENTS` entry stops the server at startup rather
 than being skipped or widened. The dashboard also refuses to render inside
 another page's frame.
 
-There is no login, which leaves one known gap: a process on this Mac that cannot
-read the token file (another macOS user, a sandboxed app) can still reach the
-Service's loopback port and forge the headers above. `rigd` alone does not have
-this gap. On a single-user Mac the practical difference is small, since your own
-processes can read the token anyway. Closing it needs a sign-in step.
+## Signing in from another device
 
-There is no login. Do not add public addresses to `RIG_WEB_TRUSTED_CLIENTS`:
-anyone admitted has full control of every Project on the Host. Put an
-authenticating proxy in front first.
+`RIG_WEB_KEY_FILE` (set to `${rig.data}/access.key` in `rig.yaml`) names a file
+holding a random access key; the Service creates it, mode 600, on first start and
+logs the file's path, never the key. A client that is not loopback or in
+`RIG_WEB_TRUSTED_CLIENTS` gets `401 KEY_REQUIRED`, and the dashboard shows a
+sign-in form. `POST /api/session` with the key answers a `rig_session` cookie
+(`HttpOnly`, `Secure`, `SameSite=Strict`, 30 days) that is an HMAC of its expiry
+under the key, so there is no session store: delete the key file and restart the
+Service to replace the key and end every session. The host, origin, and tunnel
+rules above still apply to a signed-in client.
+
+This matters even on the Mac itself when `rig.b-relay.com` resolves to a
+Tailscale or LAN address: Caddy then sees the browser arrive from that address,
+not from loopback. Read the key with `cat` on the path the log names
+(`rig logs live --project rig`).
+
+Anyone holding the key has full control of every Project on the Host. Without
+`RIG_WEB_KEY_FILE`, clients beyond the trusted addresses are refused outright.
+
+One gap remains: a process on this Mac that cannot read the token file (another
+macOS user, a sandboxed app) can still reach the Service's loopback port, where
+no key is asked for, and forge the headers above. `rigd` alone does not have this
+gap. On a single-user Mac the practical difference is small, since your own
+processes can read the token anyway.
 
 ## Preview sandboxes
 

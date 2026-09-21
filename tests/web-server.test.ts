@@ -2,6 +2,9 @@ import { test, expect } from "bun:test";
 import {
   accessPolicy,
   admit,
+  keyMatches,
+  sessionValue,
+  signedIn,
   parseTrustedClients,
   trustedClient,
 } from "../web/server/guard";
@@ -342,4 +345,92 @@ test("shutdown stops every started Target, naming a Preview by its deployment", 
       deployment: "feat-x-0a1b2c3d",
     },
   ]);
+});
+
+test("a client beyond the trusted addresses signs in with the access key", () => {
+  const keyed = accessPolicy({
+    publicHost: "rig.b-relay.com",
+    port: 4100,
+    accessKey: "k".repeat(43),
+  });
+  const now = 1_800_000_000_000;
+  const stranger = { "x-forwarded-for": "100.85.72.39" };
+  expect(admit(post(stranger), keyed, { now })).toMatchObject({
+    status: 401,
+    code: "KEY_REQUIRED",
+  });
+  // Presenting the key is allowed from anywhere, but still only from the site's own page.
+  expect(admit(post(stranger), keyed, { now, signingIn: true })).toEqual({
+    admitted: true,
+  });
+  expect(
+    admit(post({ ...stranger, origin: "https://evil.test" }), keyed, {
+      now,
+      signingIn: true,
+    }),
+  ).toMatchObject({ code: "ORIGIN" });
+  const cookie = `other=1; rig_session=${sessionValue(keyed.accessKey!, now / 1000 + 60)}`;
+  expect(admit(post({ ...stranger, cookie }), keyed, { now })).toEqual({
+    admitted: true,
+  });
+  // Loopback needs no key, and a tunnel is refused even with a session.
+  expect(
+    admit(post({ "x-forwarded-for": "127.0.0.1" }), keyed, { now }),
+  ).toEqual({ admitted: true });
+  expect(
+    admit(post({ ...stranger, cookie, "cf-ray": "1" }), keyed, { now }),
+  ).toMatchObject({ code: "CLIENT" });
+  // Without a key configured, the old refusal stands.
+  expect(
+    admit(post({ "x-forwarded-for": "203.0.113.9" }), policy, { now }),
+  ).toMatchObject({
+    status: 403,
+    code: "CLIENT",
+  });
+});
+
+test("a session is refused once expired, forged, or signed with a replaced key", () => {
+  const now = 1_800_000_000_000;
+  const expires = now / 1000 + 60;
+  const cookie = (value: string) => `rig_session=${value}`;
+  expect(signedIn(cookie(sessionValue("key-a", expires)), "key-a", now)).toBe(
+    true,
+  );
+  expect(signedIn(cookie(sessionValue("key-a", expires)), "key-b", now)).toBe(
+    false,
+  );
+  expect(
+    signedIn(cookie(sessionValue("key-a", expires)), "key-a", now + 61_000),
+  ).toBe(false);
+  // Extending the expiry without the key breaks the signature.
+  const [, signature] = sessionValue("key-a", expires).split(".");
+  expect(signedIn(cookie(`${expires + 999}.${signature}`), "key-a", now)).toBe(
+    false,
+  );
+  expect(
+    signedIn(
+      `rig_session=planted; ${cookie(sessionValue("key-a", expires))}`,
+      "key-a",
+      now,
+    ),
+  ).toBe(true);
+  expect(signedIn(null, "key-a", now)).toBe(false);
+  expect(signedIn(cookie("junk"), "key-a", now)).toBe(false);
+  // A caller that forgets the clock gets no session at all.
+  expect(
+    admit(
+      post({
+        "x-forwarded-for": "100.85.72.39",
+        cookie: cookie(sessionValue("key-a", expires)),
+      }),
+      accessPolicy({
+        publicHost: "rig.b-relay.com",
+        port: 4100,
+        accessKey: "key-a",
+      }),
+    ),
+  ).toMatchObject({ code: "KEY_REQUIRED" });
+  expect(keyMatches("key-a", "key-a")).toBe(true);
+  expect(keyMatches("key-a ", "key-a")).toBe(false);
+  expect(keyMatches("", "key-a")).toBe(false);
 });

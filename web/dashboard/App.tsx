@@ -7,10 +7,11 @@ import {
   Server,
   Stethoscope,
 } from "lucide-react";
-import { createRigdApi } from "./api";
+import { createRigdApi, RigdError } from "./api";
 import { ApiContext, href, useApi, useRead, useRoute } from "./hooks";
 import { Failure } from "./ui";
 import { Overview } from "./views/Overview";
+import { SignIn } from "./views/SignIn";
 import { Project } from "./views/Project";
 import { NewProject } from "./views/NewProject";
 import { ActivityView } from "./views/Activity";
@@ -47,6 +48,8 @@ function Shell() {
     5000,
   );
   const [section, name, tab] = route;
+  const needsKey =
+    health.error instanceof RigdError && health.error.code === "KEY_REQUIRED";
   // Following a link closes the drawer; the route array is new on every hash change.
   useEffect(() => setOpen(false), [route]);
   const daemon = health.data
@@ -135,8 +138,12 @@ function Shell() {
         </span>
       </header>
       <main className="flex min-w-0 max-w-6xl flex-col gap-4 p-4 md:p-8">
-        {health.error ? <Failure error={health.error} /> : null}
-        {section === "projects" && name ? (
+        {needsKey ? (
+          <SignIn onSignedIn={() => window.location.reload()} />
+        ) : health.error ? (
+          <Failure error={health.error} />
+        ) : null}
+        {needsKey ? null : section === "projects" && name ? (
           <Project
             key={name}
             name={name}

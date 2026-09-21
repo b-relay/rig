@@ -31,7 +31,7 @@
         "rigd",
         "launchd"
       ],
-      "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused.",
+      "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor.",
       "default": "rigd"
     },
     "build": {
@@ -155,14 +155,6 @@
             "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
             "default": "always"
           },
-          "supervisor": {
-            "type": "string",
-            "enum": [
-              "rigd",
-              "launchd"
-            ],
-            "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
-          },
           "env": {
             "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
             "type": "object",
@@ -273,7 +265,7 @@
                 "rigd",
                 "launchd"
               ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
             },
             "build": {
               "type": "string",
@@ -405,14 +397,6 @@
                       "no"
                     ],
                     "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
-                  },
-                  "supervisor": {
-                    "type": "string",
-                    "enum": [
-                      "rigd",
-                      "launchd"
-                    ],
-                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
                   },
                   "env": {
                     "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
@@ -504,7 +488,7 @@
                 "rigd",
                 "launchd"
               ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
             },
             "build": {
               "type": "string",
@@ -636,14 +620,6 @@
                       "no"
                     ],
                     "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
-                  },
-                  "supervisor": {
-                    "type": "string",
-                    "enum": [
-                      "rigd",
-                      "launchd"
-                    ],
-                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
                   },
                   "env": {
                     "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
@@ -727,7 +703,7 @@
                 "rigd",
                 "launchd"
               ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
             },
             "build": {
               "type": "string",
@@ -859,14 +835,6 @@
                       "no"
                     ],
                     "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
-                  },
-                  "supervisor": {
-                    "type": "string",
-                    "enum": [
-                      "rigd",
-                      "launchd"
-                    ],
-                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
                   },
                   "env": {
                     "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",

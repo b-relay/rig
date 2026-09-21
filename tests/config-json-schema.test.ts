@@ -104,7 +104,6 @@ test("every default the schema shows is the value planning applies when the sett
   // Settings that inherit from another setting have no fixed default to show.
   expect(service.properties.build_timeout.default).toBeUndefined();
   expect(tool.properties.build_timeout.default).toBeUndefined();
-  expect(service.properties.supervisor.default).toBeUndefined();
   expect(
     names.working.properties.services.additionalProperties.properties.restart
       .default,

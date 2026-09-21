@@ -1036,7 +1036,6 @@ test.each([
 test("an unknown supervisor is rejected with the valid choices, at every level that takes one", () => {
   for (const [path, extra] of [
     ["supervisor", { supervisor: "launchdd" }],
-    ["services.web.supervisor", { services: web({ supervisor: "child" }) }],
     [
       "targets.stable.supervisor",
       { targets: { stable: { supervisor: "systemd" } } },
@@ -1740,40 +1739,6 @@ test("every declared port is assigned and referable, a Service may declare none,
     ],
   });
 });
-
-test.each([
-  [
-    "a patch that introduces one",
-    {
-      targets: { stable: { services: { web: { supervisor: "launchd" } } } },
-    },
-    "services.web.supervisor",
-  ],
-])(
-  "%s is valid config that this runtime refuses loudly instead of dropping",
-  (_label, extra, path) => {
-    const config = parseProjectConfig({
-      name: "app",
-      services: web(),
-      ...extra,
-    });
-    expect(() =>
-      resolveTargetPlan({
-        config,
-        target: "live",
-        ...roots_,
-        assignedPorts: { web: 4100 },
-      }),
-    ).toThrow(
-      expect.objectContaining({
-        _tag: "ConfigError",
-        code: "unsupported_setting",
-        context: { path },
-        hint: expect.stringContaining(path),
-      }),
-    );
-  },
-);
 
 test("a Preview resolved without a deployment name takes a hostname-safe name from its Branch", () => {
   const plan = resolveTargetPlan({

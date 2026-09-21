@@ -885,7 +885,7 @@ Host capabilities rather than treating portable Project config as invalid.
 
 _Relationship_: The one provider choice in Project config is `supervisor`:
 `rigd` or `launchd`, set for the whole Project or per role under
-`targets.<role>.supervisor`. A differing per-Service value is refused.
+`targets.<role>.supervisor`. A Service has no `supervisor` setting of its own.
 
 _Relationship_: Test doubles for providers live in tests. They do not appear in
 config, help, or provider choices.

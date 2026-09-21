@@ -116,7 +116,7 @@ const duration = text.refine((value) => {
 const supervisor = z
   .enum(["rigd", "launchd"])
   .describe(
-    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused.",
+    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor.",
   );
 const envName = z
   .string()
@@ -216,7 +216,6 @@ const serviceFields = {
       "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
     ),
   restart: restart.optional(),
-  supervisor: supervisor.optional(),
   env: env("service").optional(),
   env_file: envFile("service").optional(),
 };

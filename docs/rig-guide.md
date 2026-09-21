@@ -960,7 +960,6 @@ A Service is a long-running process Rig starts and supervises. Its fields:
   restart".
 - `build` and `build_timeout`: the Service's own build unit; see
   "Environment, builds, and startup".
-- `supervisor` is part of the schema but see "Not runnable".
 
 A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
@@ -1017,7 +1016,7 @@ or a port pinned twice is reported under `targets.<role>`.
 
 `supervisor` selects `rigd` (default; the daemon owns child processes) or
 `launchd` (one launchd agent per Service), at the top level or in a role
-patch. Any other name is rejected when the config is parsed, so a typo can
+patch; a single Service cannot choose its own. Any other name is rejected when the config is parsed, so a typo can
 never be recorded in a Target plan. Neither supervisor starts a Service again
 by itself (launchd jobs are written with `KeepAlive` false); see "Automatic
 restart". Stopping a launchd Service
@@ -1063,17 +1062,6 @@ adopted, not started twice.
 Nothing is started again while `rigd` itself is down; the first pass of the
 next daemon applies the same rules to what it finds. Every start, automatic
 or not, reads the env files fresh.
-
-### Not runnable
-
-This setting is valid config: it parses, and `rig config` shows it.
-`rigd` cannot run it, so planning a Target that uses it is refused as
-`unsupported_setting`, naming the path (for example
-`services.api.supervisor`), rather than silently dropping the policy.
-
-- a Service `supervisor` that differs from the Project's
-
-`supervisor` is a Project setting; the Host `config.yaml` has no such key.
 
 ### Recipes
 

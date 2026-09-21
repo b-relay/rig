@@ -25,7 +25,7 @@ test("Host config refuses the settings Rig never read and the old key names", ()
     expect(() => parseHostConfig(config)).toThrow("Invalid Host configuration");
 });
 
-test("a Project cannot select a provider profile or a Service workdir", () => {
+test("a Project cannot select a provider profile, a Service workdir or a Service supervisor", () => {
   const project = { name: "app", tools: { cli: { bin: "bin/cli" } } };
   expect(() =>
     parseProjectConfig({ ...project, providerProfile: "default" }),
@@ -34,6 +34,14 @@ test("a Project cannot select a provider profile or a Service workdir", () => {
     parseProjectConfig({
       name: "app",
       services: { web: { run: "./web", workdir: "apps/web" } },
+    }),
+  ).toThrow("Invalid Project configuration");
+  // The supervisor is chosen for a whole Target, never for one Service.
+  expect(() =>
+    parseProjectConfig({
+      name: "app",
+      supervisor: "rigd",
+      services: { web: { run: "./web", supervisor: "rigd" } },
     }),
   ).toThrow("Invalid Project configuration");
 });

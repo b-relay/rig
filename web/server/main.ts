@@ -10,9 +10,8 @@ import {
   admit,
   keyMatches,
   parseTrustedClients,
-  SESSION_COOKIE,
-  SESSION_SECONDS,
-  sessionValue,
+  sessionCookie,
+  signedIn,
 } from "./guard";
 import { createRelay, RELAYED, type RelayedPath } from "./relay";
 import { sandboxDaemon } from "./sandbox";
@@ -161,13 +160,12 @@ async function signIn(request: Request): Promise<Response> {
       },
       { status: 401 },
     );
-  const expires = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
   return Response.json(
     { result: { signedIn: true } },
     {
       headers: {
         "cache-control": "no-store",
-        "set-cookie": `${SESSION_COOKIE}=${sessionValue(key, expires)}; Max-Age=${SESSION_SECONDS}; Path=/api; HttpOnly; Secure; SameSite=Strict`,
+        "set-cookie": sessionCookie(key, Date.now()),
       },
     },
   );
@@ -200,10 +198,21 @@ Bun.serve({
       );
     // Deploys legitimately run for minutes; rigd owns their budgets.
     server.timeout(request, 0);
-    return relay(
+    const answer = await relay(
       path,
       request.method === "POST" ? await request.text() : undefined,
       request.signal,
     );
+    // The dashboard asks for health on every load, so a browser in use never reaches its expiry.
+    const now = Date.now();
+    if (
+      path !== "/api/health" ||
+      !key ||
+      !signedIn(request.headers.get("cookie"), key, now)
+    )
+      return answer;
+    const headers = new Headers(answer.headers);
+    headers.set("set-cookie", sessionCookie(key, now));
+    return new Response(answer.body, { status: answer.status, headers });
   },
 });

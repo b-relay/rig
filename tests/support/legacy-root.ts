@@ -169,7 +169,6 @@ export async function legacyRoot(options: LegacyRootOptions = {}) {
       branchSlug: target,
       subdomain: target,
       ...(target === "live" ? { branch: "main", commit: demoCommit } : {}),
-      providerProfile: "default",
       providers: { processSupervisor: "rigd" },
       components: [
         {
@@ -262,7 +261,6 @@ export async function legacyRoot(options: LegacyRootOptions = {}) {
           subdomain: "live",
           branch: "main",
           commit: plainCommit,
-          providerProfile: "default",
           providers: { processSupervisor: "rigd" },
           env: { SHARED: "from-lane" },
           daemon: { keepAlive: false },

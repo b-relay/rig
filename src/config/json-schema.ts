@@ -23,7 +23,7 @@ export interface ConfigJsonSchemas {
 
 /** Defaults planning applies when a setting is absent, by the setting's path in the Project schema. The Zod schema leaves these
  * settings optional so the parsed config stays what the author wrote; the JSON Schema shows the value for an editor. Only fixed
- * values belong here: a setting that falls back to another setting (a Service build_timeout, a Service supervisor) has none.
+ * values belong here: a setting that falls back to another setting (a Service build_timeout) has none.
  * tests/config-json-schema.test.ts holds each entry to what resolveTargetPlan does. */
 const PLANNING_DEFAULTS: readonly (readonly [string[], string])[] = [
   [["supervisor"], "rigd"],

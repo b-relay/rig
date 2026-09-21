@@ -24,7 +24,6 @@ const target: TargetRecord = {
     branchSlug: "local",
     subdomain: "local",
     providers: { processSupervisor: "child" },
-    providerProfile: "default",
     preparedComponents: [],
     components: [
       {

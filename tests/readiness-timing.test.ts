@@ -34,7 +34,7 @@ function fixture(health: TargetEffects["health"], options: { healthChecks?: bool
     plan: {
       project: "demo", target: "local", workspacePath: `${root}/workspace`, dataRoot: `${root}/data`,
       deploymentName: "local", branchSlug: "local", subdomain: "local",
-      providers: { processSupervisor: "child" }, providerProfile: "default", preparedComponents: [],
+      providers: { processSupervisor: "child" }, preparedComponents: [],
       components: ["prior", "new"].map(name => ({ name, kind: "managed", command: "serve", ...(options.healthChecks === false ? {} : { port: 4000 }), readyTimeout: 1,
         env: {}, dependsOn: options.dependsOn?.[name] ?? [], ...(options.healthChecks === false ? {} : { health: "http://127.0.0.1/health" }) })),
     },

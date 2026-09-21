@@ -87,7 +87,7 @@ export function proxyCheck(publication: ProxyPublication): ProxyCheck {
       ? `Host Caddyfile ${hostCaddyfile} does not import ${proxyFile}; its ${routes} Rig route${routes === 1 ? "" : "s"} are inert.`
       : `No host Caddyfile loads ${proxyFile}; its ${routes} Rig route${routes === 1 ? "" : "s"} are inert.`,
     reason: "proxy-unpublished",
-    hint: `Add "import ${proxyFile}" to the Caddyfile the running Caddy loads and reload Caddy, or set providers.caddy.hostCaddyfile to that Caddyfile.`,
+    hint: `Add "import ${proxyFile}" to the Caddyfile the running Caddy loads and reload Caddy, or set providers.caddy.host_caddyfile to that Caddyfile.`,
   };
 }
 export function countOwnedRoutes(text: string): number {

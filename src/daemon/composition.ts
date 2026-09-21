@@ -100,7 +100,7 @@ export async function composeDaemon(
         host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
       run: runCommand,
       reload: host.providers.caddy.reload.mode === "command",
-      extraConfig: host.providers.caddy.extraConfig,
+      extraConfig: host.providers.caddy.extra_config,
       ...(host.providers.caddy.reload.command
         ? {
             reloadCommand: [

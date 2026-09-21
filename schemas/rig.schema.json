@@ -16,7 +16,7 @@
       "type": "string"
     },
     "production_branch": {
-      "description": "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.productionBranch, then main.",
+      "description": "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.production_branch, then main.",
       "type": "string",
       "minLength": 1
     },
@@ -31,7 +31,7 @@
         "rigd",
         "launchd"
       ],
-      "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused.",
+      "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor.",
       "default": "rigd"
     },
     "build": {
@@ -155,19 +155,6 @@
             "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
             "default": "always"
           },
-          "supervisor": {
-            "type": "string",
-            "enum": [
-              "rigd",
-              "launchd"
-            ],
-            "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
-          },
-          "workdir": {
-            "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
-            "type": "string",
-            "minLength": 1
-          },
           "env": {
             "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
             "type": "object",
@@ -278,7 +265,7 @@
                 "rigd",
                 "launchd"
               ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
             },
             "build": {
               "type": "string",
@@ -410,19 +397,6 @@
                       "no"
                     ],
                     "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
-                  },
-                  "supervisor": {
-                    "type": "string",
-                    "enum": [
-                      "rigd",
-                      "launchd"
-                    ],
-                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
-                  },
-                  "workdir": {
-                    "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
-                    "type": "string",
-                    "minLength": 1
                   },
                   "env": {
                     "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
@@ -514,7 +488,7 @@
                 "rigd",
                 "launchd"
               ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
             },
             "build": {
               "type": "string",
@@ -646,19 +620,6 @@
                       "no"
                     ],
                     "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
-                  },
-                  "supervisor": {
-                    "type": "string",
-                    "enum": [
-                      "rigd",
-                      "launchd"
-                    ],
-                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
-                  },
-                  "workdir": {
-                    "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
-                    "type": "string",
-                    "minLength": 1
                   },
                   "env": {
                     "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
@@ -742,7 +703,7 @@
                 "rigd",
                 "launchd"
               ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
             },
             "build": {
               "type": "string",
@@ -874,19 +835,6 @@
                       "no"
                     ],
                     "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
-                  },
-                  "supervisor": {
-                    "type": "string",
-                    "enum": [
-                      "rigd",
-                      "launchd"
-                    ],
-                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
-                  },
-                  "workdir": {
-                    "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
-                    "type": "string",
-                    "minLength": 1
                   },
                   "env": {
                     "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",

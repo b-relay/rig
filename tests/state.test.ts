@@ -234,7 +234,6 @@ const inventory = {
         branchSlug: "local",
         subdomain: "local",
         providers: { processSupervisor: "child" },
-        providerProfile: "default",
         components: [],
         preparedComponents: [],
       },

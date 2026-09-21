@@ -178,12 +178,12 @@ test("discovery searches upward and never falls through a nearer invalid or reti
 
 test("Host config reads config.yaml and defaults when absent", async () => {
   const root = await fixture();
-  expect((await readHostConfig(root)).diagnostics.retentionDays).toBe(14);
+  expect((await readHostConfig(root)).diagnostics.retention_days).toBe(14);
   await writeFile(
     join(root, "config.yaml"),
-    "deploy:\n  productionBranch: release\n",
+    "deploy:\n  production_branch: release\n",
   );
-  expect((await readHostConfig(root)).deploy.productionBranch).toBe("release");
+  expect((await readHostConfig(root)).deploy.production_branch).toBe("release");
 });
 
 // ---------------------------------------------------------------------------
@@ -1036,7 +1036,6 @@ test.each([
 test("an unknown supervisor is rejected with the valid choices, at every level that takes one", () => {
   for (const [path, extra] of [
     ["supervisor", { supervisor: "launchdd" }],
-    ["services.web.supervisor", { services: web({ supervisor: "child" }) }],
     [
       "targets.stable.supervisor",
       { targets: { stable: { supervisor: "systemd" } } },
@@ -1740,38 +1739,6 @@ test("every declared port is assigned and referable, a Service may declare none,
     ],
   });
 });
-
-test.each([
-  [
-    "a patch that introduces one",
-    { targets: { stable: { services: { web: { workdir: "apps/web" } } } } },
-    "services.web.workdir",
-  ],
-])(
-  "%s is valid config that this runtime refuses loudly instead of dropping",
-  (_label, extra, path) => {
-    const config = parseProjectConfig({
-      name: "app",
-      services: web(),
-      ...extra,
-    });
-    expect(() =>
-      resolveTargetPlan({
-        config,
-        target: "live",
-        ...roots_,
-        assignedPorts: { web: 4100 },
-      }),
-    ).toThrow(
-      expect.objectContaining({
-        _tag: "ConfigError",
-        code: "unsupported_setting",
-        context: { path },
-        hint: expect.stringContaining(path),
-      }),
-    );
-  },
-);
 
 test("a Preview resolved without a deployment name takes a hostname-safe name from its Branch", () => {
   const plan = resolveTargetPlan({

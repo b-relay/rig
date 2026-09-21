@@ -46,15 +46,6 @@ const ROLE_OF = {
   live: "stable",
   preview: "preview",
 } as const;
-/** Settings the recorded Target plan cannot carry until their owning runtime work lands; refusing beats silently dropping policy. */
-function unsupported(setting: string, path: string): ConfigError {
-  return new ConfigError(
-    `${setting} is not supported by this runtime yet.`,
-    "unsupported_setting",
-    { path },
-    `Remove ${path} for now; the configuration is valid, but this build of rigd cannot run it.`,
-  );
-}
 /** Resolves portable Project policy into a materialized Target plan without reading files, the environment or ports.
  * The caller owns assigned port numbers (not live socket reservations), workspace/data roots, the actual Target name, and Branch/Commit identity;
  * `host` carries the operator home and convention-file root that env-file references are built from.
@@ -150,10 +141,6 @@ export function resolveTargetPlan(
   const components: PlanComponent[] = [
     ...services.map(([name, service]): PlanComponent => {
       const at = `services.${name}`;
-      if (service.workdir !== undefined)
-        throw unsupported("A Service workdir", `${at}.workdir`);
-      if ((service.supervisor ?? projectSupervisor) !== projectSupervisor)
-        throw unsupported("A per-Service supervisor", `${at}.supervisor`);
       const run = references.shell(service.run, `${at}.run`);
       if (!localhostCommand(run.value))
         throw new ConfigError(
@@ -272,7 +259,6 @@ export function resolveTargetPlan(
     subdomain: deploymentName,
     ...(input.branch ? { branch: input.branch } : {}),
     ...(input.commit ? { commit: input.commit } : {}),
-    providerProfile: "default",
     providers: { processSupervisor: projectSupervisor },
     env: projectEnv,
     envFiles: projectFiles,

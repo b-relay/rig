@@ -12,7 +12,12 @@ export function createHostDiagnosticLog(
   return {
     async record(entry) {
       selected ??= readHostConfig(options.root).then(
-        (host) => createFileDiagnosticLog({ ...options, ...host.diagnostics }),
+        (host) =>
+          createFileDiagnosticLog({
+            ...options,
+            retentionDays: host.diagnostics.retention_days,
+            level: host.diagnostics.level,
+          }),
         () => createFileDiagnosticLog(options),
       );
       return await (await selected).record(entry);

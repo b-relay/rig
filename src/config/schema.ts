@@ -116,7 +116,7 @@ const duration = text.refine((value) => {
 const supervisor = z
   .enum(["rigd", "launchd"])
   .describe(
-    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused.",
+    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor.",
   );
 const envName = z
   .string()
@@ -216,12 +216,6 @@ const serviceFields = {
       "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
     ),
   restart: restart.optional(),
-  supervisor: supervisor.optional(),
-  workdir: text
-    .optional()
-    .describe(
-      `Working directory relative to the workspace (the default). ${referencesIn("service")}`,
-    ),
   env: env("service").optional(),
   env_file: envFile("service").optional(),
 };
@@ -358,7 +352,7 @@ export const projectConfigSchema = z
     production_branch: text
       .optional()
       .describe(
-        "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.productionBranch, then main.",
+        "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.production_branch, then main.",
       ),
     domain: domain
       .optional()
@@ -581,7 +575,7 @@ function validateReferences(
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];
-    for (const field of ["run", "build", "ready", "workdir"] as const)
+    for (const field of ["run", "build", "ready"] as const)
       fields.push([[...own, field], service[field]]);
     for (const [key, value] of Object.entries(service.env ?? {}))
       fields.push([[...own, "env", key], value]);
@@ -645,35 +639,35 @@ export function parseProjectConfig(value: unknown) {
 export const hostConfigSchema = z.strictObject({
   deploy: z
     .strictObject({
-      productionBranch: text
+      production_branch: text
         .default("main")
-        .describe("Default Production branch."),
-      generated: z
+        .describe(
+          "Production branch for a Project whose rig.yaml sets none, and the rig init default when origin/HEAD names no branch.",
+        ),
+      previews: z
         .strictObject({
-          maxActive: z
+          max: z
             .number()
             .int()
             .min(1)
-            .default(5)
-            .describe("Maximum active Previews per Project."),
-          replacePolicy: z
+            .default(25)
+            .describe(
+              "Most Previews one Project may have; every recorded Preview counts, running or stopped.",
+            ),
+          replace_policy: z
             .enum(["oldest", "reject"])
             .default("oldest")
-            .describe("Policy at the Preview limit."),
+            .describe(
+              "At the limit: oldest destroys the oldest Preview to make room (incomplete deploys first, then stopped, then running); reject refuses the deploy.",
+            ),
         })
         .prefault({})
-        .describe("Preview inventory limits."),
+        .describe("Preview limit."),
     })
     .prefault({})
     .describe("Host deployment defaults."),
   providers: z
     .strictObject({
-      defaultProfile: z
-        .literal("default")
-        .default("default")
-        .describe(
-          "Host provider profile. Only default is supported; unsupported profiles fail before runtime effects.",
-        ),
       caddy: z
         .strictObject({
           caddyfile: text
@@ -681,25 +675,29 @@ export const hostConfigSchema = z.strictObject({
             .describe(
               "File Rig writes its marked route blocks into; defaults to proxy/Caddyfile under the Rig state directory.",
             ),
-          hostCaddyfile: text
+          host_caddyfile: text
             .optional()
             .describe(
               "Caddyfile the running Caddy loads; it must be the route file or import it. Defaults to the first of /usr/local/etc/Caddyfile, /opt/homebrew/etc/Caddyfile, /etc/caddy/Caddyfile that exists.",
             ),
-          extraConfig: z
+          extra_config: z
             .array(text)
             .default([])
-            .describe("Extra trusted Caddy site directives."),
+            .describe(
+              "Extra trusted Caddy directives added inside every site block Rig writes.",
+            ),
           reload: z
             .strictObject({
               mode: z
-                .enum(["manual", "command", "disabled"])
+                .enum(["manual", "command"])
                 .default("manual")
-                .describe("Caddy reload policy."),
+                .describe(
+                  "manual: Rig writes the route file and you reload Caddy. command: Rig runs the reload command after each route change and restores the previous routes when it fails.",
+                ),
               command: text
                 .optional()
                 .describe(
-                  "Explicit Host Caddy reload command; required when mode is command.",
+                  "Host Caddy reload command; required when mode is command.",
                 ),
             })
             .superRefine((reload, context) => {
@@ -715,48 +713,25 @@ export const hostConfigSchema = z.strictObject({
             .describe("Reload behavior."),
         })
         .prefault({})
-        .describe("Caddy provider capability."),
+        .describe("Caddy provider settings."),
     })
     .prefault({})
-    .describe("Provider defaults."),
-  web: z
-    .strictObject({
-      controlPlane: z
-        .enum(["localhost", "tailscale", "cloudflare", "disabled"])
-        .default("localhost")
-        .describe("Control-plane exposure preference."),
-      hosted: z
-        .strictObject({
-          enabled: z
-            .boolean()
-            .default(false)
-            .describe("Enable outbound hosted connection."),
-          endpoint: text.optional().describe("Hosted control-plane endpoint."),
-          machineId: text.optional().describe("Hosted machine identity."),
-          pairingToken: text
-            .optional()
-            .describe("Secret hosted pairing token."),
-        })
-        .prefault({})
-        .describe("Hosted connection settings."),
-    })
-    .prefault({})
-    .describe("Web control defaults."),
+    .describe("Provider settings."),
   diagnostics: z
     .strictObject({
-      retentionDays: z
+      retention_days: z
         .number()
         .int()
         .min(1)
         .default(14)
-        .describe("Diagnostic log retention in days."),
+        .describe("Days of Diagnostic logs to keep."),
       level: z
         .enum(["debug", "info", "warn", "error"])
         .default("info")
-        .describe("Diagnostic verbosity."),
+        .describe("Diagnostic log verbosity."),
     })
     .prefault({})
-    .describe("Rig diagnostic policy."),
+    .describe("Rig Diagnostic log policy."),
 });
 export function parseHostConfig(value: unknown) {
   const result = hostConfigSchema.safeParse(value);

@@ -91,7 +91,6 @@ export interface TargetPlan {
   commit?: string;
   providers: { processSupervisor: string };
   daemon?: { enabled?: boolean; keepAlive?: boolean };
-  providerProfile: string;
   env?: Record<string, string>;
   components: PlanComponent[];
   /** Build units in run order: shared, Services in dependency order, then Tools by name. Absent on plans recorded before builds were units. */

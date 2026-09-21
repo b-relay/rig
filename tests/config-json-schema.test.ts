@@ -46,9 +46,9 @@ test("the Project schema names its draft, identity and the public top-level sett
     "no",
   ]);
   expect(host.title).toBe("Rig Host config (config.yaml)");
-  expect(host.properties.deploy.properties.generated.properties).toMatchObject({
-    maxActive: { default: 5 },
-    replacePolicy: { default: "oldest", enum: ["oldest", "reject"] },
+  expect(host.properties.deploy.properties.previews.properties).toMatchObject({
+    max: { default: 25 },
+    replace_policy: { default: "oldest", enum: ["oldest", "reject"] },
   });
 });
 
@@ -104,7 +104,6 @@ test("every default the schema shows is the value planning applies when the sett
   // Settings that inherit from another setting have no fixed default to show.
   expect(service.properties.build_timeout.default).toBeUndefined();
   expect(tool.properties.build_timeout.default).toBeUndefined();
-  expect(service.properties.supervisor.default).toBeUndefined();
   expect(
     names.working.properties.services.additionalProperties.properties.restart
       .default,
@@ -125,7 +124,6 @@ test("each field that takes references lists the references valid there", () => 
     service.properties.run,
     service.properties.build,
     service.properties.ready,
-    service.properties.workdir,
     service.properties.env.additionalProperties,
     service.properties.env_file,
   ];

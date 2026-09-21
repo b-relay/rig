@@ -10,27 +10,27 @@
       "default": {},
       "type": "object",
       "properties": {
-        "productionBranch": {
+        "production_branch": {
           "default": "main",
-          "description": "Default Production branch.",
+          "description": "Production branch for a Project whose rig.yaml sets none, and the rig init default when origin/HEAD names no branch.",
           "type": "string",
           "minLength": 1
         },
-        "generated": {
-          "description": "Preview inventory limits.",
+        "previews": {
+          "description": "Preview limit.",
           "default": {},
           "type": "object",
           "properties": {
-            "maxActive": {
-              "default": 5,
-              "description": "Maximum active Previews per Project.",
+            "max": {
+              "default": 25,
+              "description": "Most Previews one Project may have; every recorded Preview counts, running or stopped.",
               "type": "integer",
               "minimum": 1,
               "maximum": 9007199254740991
             },
-            "replacePolicy": {
+            "replace_policy": {
               "default": "oldest",
-              "description": "Policy at the Preview limit.",
+              "description": "At the limit: oldest destroys the oldest Preview to make room (incomplete deploys first, then stopped, then running); reject refuses the deploy.",
               "type": "string",
               "enum": [
                 "oldest",
@@ -44,18 +44,12 @@
       "additionalProperties": false
     },
     "providers": {
-      "description": "Provider defaults.",
+      "description": "Provider settings.",
       "default": {},
       "type": "object",
       "properties": {
-        "defaultProfile": {
-          "default": "default",
-          "description": "Host provider profile. Only default is supported; unsupported profiles fail before runtime effects.",
-          "type": "string",
-          "const": "default"
-        },
         "caddy": {
-          "description": "Caddy provider capability.",
+          "description": "Caddy provider settings.",
           "default": {},
           "type": "object",
           "properties": {
@@ -64,14 +58,14 @@
               "type": "string",
               "minLength": 1
             },
-            "hostCaddyfile": {
+            "host_caddyfile": {
               "description": "Caddyfile the running Caddy loads; it must be the route file or import it. Defaults to the first of /usr/local/etc/Caddyfile, /opt/homebrew/etc/Caddyfile, /etc/caddy/Caddyfile that exists.",
               "type": "string",
               "minLength": 1
             },
-            "extraConfig": {
+            "extra_config": {
               "default": [],
-              "description": "Extra trusted Caddy site directives.",
+              "description": "Extra trusted Caddy directives added inside every site block Rig writes.",
               "type": "array",
               "items": {
                 "type": "string",
@@ -85,16 +79,15 @@
               "properties": {
                 "mode": {
                   "default": "manual",
-                  "description": "Caddy reload policy.",
+                  "description": "manual: Rig writes the route file and you reload Caddy. command: Rig runs the reload command after each route change and restores the previous routes when it fails.",
                   "type": "string",
                   "enum": [
                     "manual",
-                    "command",
-                    "disabled"
+                    "command"
                   ]
                 },
                 "command": {
-                  "description": "Explicit Host Caddy reload command; required when mode is command.",
+                  "description": "Host Caddy reload command; required when mode is command.",
                   "type": "string",
                   "minLength": 1
                 }
@@ -107,68 +100,21 @@
       },
       "additionalProperties": false
     },
-    "web": {
-      "description": "Web control defaults.",
-      "default": {},
-      "type": "object",
-      "properties": {
-        "controlPlane": {
-          "default": "localhost",
-          "description": "Control-plane exposure preference.",
-          "type": "string",
-          "enum": [
-            "localhost",
-            "tailscale",
-            "cloudflare",
-            "disabled"
-          ]
-        },
-        "hosted": {
-          "description": "Hosted connection settings.",
-          "default": {},
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "default": false,
-              "description": "Enable outbound hosted connection.",
-              "type": "boolean"
-            },
-            "endpoint": {
-              "description": "Hosted control-plane endpoint.",
-              "type": "string",
-              "minLength": 1
-            },
-            "machineId": {
-              "description": "Hosted machine identity.",
-              "type": "string",
-              "minLength": 1
-            },
-            "pairingToken": {
-              "description": "Secret hosted pairing token.",
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
-    },
     "diagnostics": {
-      "description": "Rig diagnostic policy.",
+      "description": "Rig Diagnostic log policy.",
       "default": {},
       "type": "object",
       "properties": {
-        "retentionDays": {
+        "retention_days": {
           "default": 14,
-          "description": "Diagnostic log retention in days.",
+          "description": "Days of Diagnostic logs to keep.",
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
         },
         "level": {
           "default": "info",
-          "description": "Diagnostic verbosity.",
+          "description": "Diagnostic log verbosity.",
           "type": "string",
           "enum": [
             "debug",

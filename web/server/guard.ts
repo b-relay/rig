@@ -85,8 +85,9 @@ export function parseTrustedClients(list: string): TrustedClient[] {
     });
 }
 export const SESSION_COOKIE = "rig_session";
-/** How long a sign-in lasts. */
-export const SESSION_SECONDS = 30 * 24 * 60 * 60;
+/** How long a sign-in lasts without a visit: browsers keep no cookie longer than 400 days. Each
+ * visit renews it, so a browser in use stays signed in until the access key is replaced. */
+export const SESSION_SECONDS = 400 * 24 * 60 * 60;
 const signature = (key: string, expires: number) =>
   createHmac("sha256", key)
     .update(`rig-session:${expires}`)
@@ -95,6 +96,9 @@ const signature = (key: string, expires: number) =>
  * state: replacing the access key ends every session. */
 export const sessionValue = (key: string, expires: number): string =>
   `${expires}.${signature(key, expires)}`;
+/** Pure: the Set-Cookie header that signs a browser in from `now` (epoch milliseconds). */
+export const sessionCookie = (key: string, now: number): string =>
+  `${SESSION_COOKIE}=${sessionValue(key, Math.floor(now / 1000) + SESSION_SECONDS)}; Max-Age=${SESSION_SECONDS}; Path=/api; HttpOnly; Secure; SameSite=Strict`;
 const sameText = (a: string, b: string): boolean => {
   const [left, right] = [Buffer.from(a), Buffer.from(b)];
   return left.length === right.length && timingSafeEqual(left, right);

@@ -65,9 +65,12 @@ holding a random access key; the Service creates it, mode 600, on first start an
 logs the file's path, never the key. A client that is not loopback or in
 `RIG_WEB_TRUSTED_CLIENTS` gets `401 KEY_REQUIRED`, and the dashboard shows a
 sign-in form. `POST /api/session` with the key answers a `rig_session` cookie
-(`HttpOnly`, `Secure`, `SameSite=Strict`, 30 days) that is an HMAC of its expiry
-under the key, so there is no session store: delete the key file and restart the
-Service to replace the key and end every session. The host, origin, and tunnel
+(`HttpOnly`, `Secure`, `SameSite=Strict`) that is an HMAC of its expiry under the
+key, so there is no session store: delete the key file and restart the Service to
+replace the key and end every session. The cookie lasts 400 days, the longest a
+browser keeps one, and every dashboard load renews it, so a browser in use stays
+signed in until the key is replaced. The key itself is never stored in the
+browser. The host, origin, and tunnel
 rules above still apply to a signed-in client.
 
 This matters even on the Mac itself when `rig.b-relay.com` resolves to a

@@ -3,6 +3,7 @@ import {
   accessPolicy,
   admit,
   keyMatches,
+  sessionCookie,
   sessionValue,
   signedIn,
   parseTrustedClients,
@@ -433,4 +434,19 @@ test("a session is refused once expired, forged, or signed with a replaced key",
   expect(keyMatches("key-a", "key-a")).toBe(true);
   expect(keyMatches("key-a ", "key-a")).toBe(false);
   expect(keyMatches("", "key-a")).toBe(false);
+});
+
+test("a sign-in cookie lasts 400 days from its issue and is renewable", () => {
+  const now = 1_800_000_000_000;
+  const header = sessionCookie("key-a", now);
+  const value = header.split(";")[0]!;
+  const days = (count: number) => count * 24 * 60 * 60 * 1000;
+  expect(signedIn(value, "key-a", now + days(399))).toBe(true);
+  expect(signedIn(value, "key-a", now + days(401))).toBe(false);
+  expect(signedIn(value, "key-b", now)).toBe(false);
+  expect(header).toContain("Max-Age=34560000");
+  expect(header).toContain("HttpOnly; Secure; SameSite=Strict");
+  // A visit on day 399 issues a cookie that outlives the first.
+  const renewed = sessionCookie("key-a", now + days(399)).split(";")[0]!;
+  expect(signedIn(renewed, "key-a", now + days(700))).toBe(true);
 });

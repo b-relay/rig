@@ -1,0 +1,966 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json",
+  "title": "Rig Project config (rig.yaml)",
+  "description": "Committed Project intent: identity, Services, Tools, routes and Target patches.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+      "description": "Stable registered Project name."
+    },
+    "description": {
+      "description": "Project description.",
+      "type": "string"
+    },
+    "production_branch": {
+      "description": "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.productionBranch, then main.",
+      "type": "string",
+      "minLength": 1
+    },
+    "domain": {
+      "description": "Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${rig.target} is the only reference a hostname may contain.",
+      "type": "string",
+      "minLength": 1
+    },
+    "supervisor": {
+      "type": "string",
+      "enum": [
+        "rigd",
+        "launchd"
+      ],
+      "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused.",
+      "default": "rigd"
+    },
+    "build": {
+      "description": "Shared shell build command, run once in the workspace before any Service or Tool build. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here.",
+      "type": "string",
+      "minLength": 1
+    },
+    "build_timeout": {
+      "description": "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
+      "type": "string",
+      "minLength": 1,
+      "default": "10m"
+    },
+    "env": {
+      "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+      }
+    },
+    "env_file": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+    },
+    "services": {
+      "description": "Long-running Services keyed by name.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9-]*$",
+        "description": "Service or Tool name used in references, dependencies and output."
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+          },
+          "build": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+          },
+          "build_timeout": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+          },
+          "ports": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "description": "Port name used in ${services.<service>.ports.<port>} references."
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "auto"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              ]
+            },
+            "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+          },
+          "ready": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+          },
+          "ready_timeout": {
+            "description": "Startup readiness budget such as 30s (the default).",
+            "type": "string",
+            "minLength": 1,
+            "default": "30s"
+          },
+          "depends_on": {
+            "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "description": "Service or Tool name used in references, dependencies and output."
+            }
+          },
+          "restart": {
+            "type": "string",
+            "enum": [
+              "always",
+              "on-failure",
+              "no"
+            ],
+            "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
+            "default": "always"
+          },
+          "supervisor": {
+            "type": "string",
+            "enum": [
+              "rigd",
+              "launchd"
+            ],
+            "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+          },
+          "workdir": {
+            "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
+            "type": "string",
+            "minLength": 1
+          },
+          "env": {
+            "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+            }
+          },
+          "env_file": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            ],
+            "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "tools": {
+      "description": "Installed command-line Tools keyed by name.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9-]*$",
+        "description": "Service or Tool name used in references, dependencies and output."
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "build": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+          },
+          "build_timeout": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+          },
+          "bin": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+          }
+        },
+        "required": [
+          "bin"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "proxy": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^\\/[A-Za-z0-9._~/-]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
+        "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+      },
+      "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+    },
+    "targets": {
+      "description": "Role-keyed Target names and settings patches: working, stable and the preview template.",
+      "type": "object",
+      "properties": {
+        "working": {
+          "description": "Working copy Target name and settings patch.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Name that selects and displays the Working copy Target (default local). Renaming keeps its identity and stored data.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+              "default": "local"
+            },
+            "domain": {
+              "description": "Hostname for this role's Targets, such as ${rig.target}.preview.app.test. ${rig.target} is the only reference a hostname may contain.",
+              "type": "string",
+              "minLength": 1
+            },
+            "supervisor": {
+              "type": "string",
+              "enum": [
+                "rigd",
+                "launchd"
+              ],
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+            },
+            "build": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+            },
+            "build_timeout": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+            },
+            "env": {
+              "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+              }
+            },
+            "env_file": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              ],
+              "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+            },
+            "proxy": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^\\/[A-Za-z0-9._~/-]*$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
+                "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+              },
+              "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+            },
+            "services": {
+              "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "description": "Service or Tool name used in references, dependencies and output."
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "run": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "build": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "build_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+                  },
+                  "ports": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9][a-z0-9-]*$",
+                      "description": "Port name used in ${services.<service>.ports.<port>} references."
+                    },
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "auto"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
+                      ]
+                    },
+                    "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+                  },
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "ready_timeout": {
+                    "description": "Startup readiness budget such as 30s (the default).",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "depends_on": {
+                    "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9][a-z0-9-]*$",
+                      "description": "Service or Tool name used in references, dependencies and output."
+                    }
+                  },
+                  "restart": {
+                    "type": "string",
+                    "enum": [
+                      "always",
+                      "on-failure",
+                      "no"
+                    ],
+                    "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
+                  },
+                  "supervisor": {
+                    "type": "string",
+                    "enum": [
+                      "rigd",
+                      "launchd"
+                    ],
+                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+                  },
+                  "workdir": {
+                    "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "env": {
+                    "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                    }
+                  },
+                  "env_file": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    ],
+                    "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "tools": {
+              "description": "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "description": "Service or Tool name used in references, dependencies and output."
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "build": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                  },
+                  "build_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+                  },
+                  "bin": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "stable": {
+          "description": "Stable Target name and settings patch.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Name that selects and displays the Stable Target (default live). Renaming keeps its identity and stored data.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+              "default": "live"
+            },
+            "domain": {
+              "description": "Hostname for this role's Targets, such as ${rig.target}.preview.app.test. ${rig.target} is the only reference a hostname may contain.",
+              "type": "string",
+              "minLength": 1
+            },
+            "supervisor": {
+              "type": "string",
+              "enum": [
+                "rigd",
+                "launchd"
+              ],
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+            },
+            "build": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+            },
+            "build_timeout": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+            },
+            "env": {
+              "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+              }
+            },
+            "env_file": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              ],
+              "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+            },
+            "proxy": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^\\/[A-Za-z0-9._~/-]*$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
+                "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+              },
+              "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+            },
+            "services": {
+              "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "description": "Service or Tool name used in references, dependencies and output."
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "run": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "build": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "build_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+                  },
+                  "ports": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9][a-z0-9-]*$",
+                      "description": "Port name used in ${services.<service>.ports.<port>} references."
+                    },
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "auto"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
+                      ]
+                    },
+                    "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+                  },
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "ready_timeout": {
+                    "description": "Startup readiness budget such as 30s (the default).",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "depends_on": {
+                    "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9][a-z0-9-]*$",
+                      "description": "Service or Tool name used in references, dependencies and output."
+                    }
+                  },
+                  "restart": {
+                    "type": "string",
+                    "enum": [
+                      "always",
+                      "on-failure",
+                      "no"
+                    ],
+                    "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
+                  },
+                  "supervisor": {
+                    "type": "string",
+                    "enum": [
+                      "rigd",
+                      "launchd"
+                    ],
+                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+                  },
+                  "workdir": {
+                    "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "env": {
+                    "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                    }
+                  },
+                  "env_file": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    ],
+                    "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "tools": {
+              "description": "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "description": "Service or Tool name used in references, dependencies and output."
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "build": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                  },
+                  "build_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+                  },
+                  "bin": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "preview": {
+          "description": "Settings patch for every generated Preview; Preview names come from their Branch.",
+          "type": "object",
+          "properties": {
+            "domain": {
+              "description": "Hostname for this role's Targets, such as ${rig.target}.preview.app.test. ${rig.target} is the only reference a hostname may contain.",
+              "type": "string",
+              "minLength": 1
+            },
+            "supervisor": {
+              "type": "string",
+              "enum": [
+                "rigd",
+                "launchd"
+              ],
+              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+            },
+            "build": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+            },
+            "build_timeout": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+            },
+            "env": {
+              "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+              }
+            },
+            "env_file": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              ],
+              "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+            },
+            "proxy": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^\\/[A-Za-z0-9._~/-]*$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
+                "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+              },
+              "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+            },
+            "services": {
+              "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "description": "Service or Tool name used in references, dependencies and output."
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "run": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "build": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "build_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+                  },
+                  "ports": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9][a-z0-9-]*$",
+                      "description": "Port name used in ${services.<service>.ports.<port>} references."
+                    },
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "auto"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
+                      ]
+                    },
+                    "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+                  },
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "ready_timeout": {
+                    "description": "Startup readiness budget such as 30s (the default).",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "depends_on": {
+                    "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9][a-z0-9-]*$",
+                      "description": "Service or Tool name used in references, dependencies and output."
+                    }
+                  },
+                  "restart": {
+                    "type": "string",
+                    "enum": [
+                      "always",
+                      "on-failure",
+                      "no"
+                    ],
+                    "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
+                  },
+                  "supervisor": {
+                    "type": "string",
+                    "enum": [
+                      "rigd",
+                      "launchd"
+                    ],
+                    "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused."
+                  },
+                  "workdir": {
+                    "description": "Working directory relative to the workspace (the default). References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "env": {
+                    "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                    }
+                  },
+                  "env_file": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    ],
+                    "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "tools": {
+              "description": "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "description": "Service or Tool name used in references, dependencies and output."
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "build": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                  },
+                  "build_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
+                  },
+                  "bin": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.ready_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "additionalProperties": false
+}

@@ -19,6 +19,7 @@ import {
 } from "yaml";
 import { acquireProcessLock, type LockHeld } from "../adapters/process-lock";
 import { ConfigError } from "./errors.js";
+import { PROJECT_SCHEMA_COMMENT } from "./json-schema.js";
 import { applyYamlEdits, type ConfigEdit } from "./editor.js";
 import { recipeMarkers, type RecipeMarker } from "./recipe-markers.js";
 export type { ConfigEdit } from "./editor.js";
@@ -224,7 +225,9 @@ export async function initializeProjectConfig(
       "Use rig config to inspect the existing Project.",
     );
   const path = join(repoPath, "rig.yaml");
-  await writeFile(path, stringify(config), { flag: "wx" });
+  await writeFile(path, PROJECT_SCHEMA_COMMENT + stringify(config), {
+    flag: "wx",
+  });
   return readDocument(path, parseProjectConfig);
 }
 export interface ConfigEditInput {

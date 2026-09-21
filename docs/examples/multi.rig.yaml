@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../schemas/rig.schema.json
 # tests/config-examples-e2e.test.ts validates this file.
 # These example programs use ordinary application-defined environment inputs.
 name: acme

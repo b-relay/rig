@@ -16,6 +16,8 @@ services:
       LOG_LEVEL: info
     ready: http://127.0.0.1:${services.api.ports.http}/health
 
+# Requests for the domain go to the api Service's http port. Each key is a
+# URL path prefix; the longest match wins and "/" is required.
 proxy:
   /: ${services.api.ports.http}
 

@@ -112,7 +112,7 @@ const duration = text.refine((value) => {
 const supervisor = z
   .enum(["rigd", "launchd"])
   .describe(
-    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. A Service value that differs from the Project's, and a Host-wide default, are not runnable in this build.",
+    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor. A Service value that differs from its Target's is refused.",
   );
 const envName = z
   .string()

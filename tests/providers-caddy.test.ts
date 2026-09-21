@@ -535,3 +535,63 @@ test("the router reports which published paths are withheld, and reloads a withd
   expect(reloads).toHaveLength(4);
   expect(await router.withheld("map")).toEqual([]);
 });
+test("routes that use Host snippets are checked through the Host Caddyfile that imports them", async () => {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "rig-caddy-snippets-")),
+  );
+  roots.push(root);
+  const caddyfile = join(root, "routes");
+  const hostCaddyfile = join(root, "Caddyfile");
+  await writeFile(
+    hostCaddyfile,
+    `(cloudflare) {\n\ttls internal\n}\nimport ${caddyfile}\n`,
+  );
+  const checked: { command: string[]; routes: string }[] = [];
+  let reject = false;
+  const router = createCaddyRouter({
+    caddyfile,
+    hostCaddyfile: async () => hostCaddyfile,
+    extraConfig: ["import cloudflare"],
+    reload: false,
+    // Like Caddy: the route file alone cannot resolve a snippet the Host Caddyfile defines.
+    run: async ({ command }) => {
+      const routes = await readFile(caddyfile, "utf8").catch(() => "");
+      checked.push({ command: [...command], routes });
+      const alone = command[command.indexOf("--config") + 1] !== hostCaddyfile;
+      return alone || reject
+        ? { exitCode: 1, stdout: "", stderr: "Error: File to import not found" }
+        : { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  const route = {
+    key: "app",
+    hostname: "app.example.test",
+    routes: [{ prefix: "/", upstream: "127.0.0.1:4100" }],
+  };
+  await router.apply(route);
+  expect(checked).toHaveLength(1);
+  expect(checked[0]!.command).toEqual([
+    "caddy",
+    "adapt",
+    "--config",
+    hostCaddyfile,
+    "--adapter",
+    "caddyfile",
+  ]);
+  // Caddy read the new routes through the import, so they were in place when it checked.
+  expect(checked[0]!.routes).toContain("  import cloudflare\n");
+  const published = await readFile(caddyfile, "utf8");
+  expect(published).toBe(checked[0]!.routes);
+
+  reject = true;
+  await expect(
+    router.apply({ ...route, hostname: "other.example.test" }),
+  ).rejects.toMatchObject({
+    code: "ROUTE_VALIDATE",
+    details: { rejectedPath: `${caddyfile}.rejected` },
+  });
+  expect(await readFile(caddyfile, "utf8")).toBe(published);
+  expect(await readFile(`${caddyfile}.rejected`, "utf8")).toContain(
+    "other.example.test",
+  );
+});

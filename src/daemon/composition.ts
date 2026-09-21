@@ -101,6 +101,12 @@ export async function composeDaemon(
       run: runCommand,
       reload: host.providers.caddy.reload.mode === "command",
       extraConfig: host.providers.caddy.extra_config,
+      hostCaddyfile: async () => {
+        const publication = await inspectHostProxy(root, host, environment);
+        return publication.state === "imported"
+          ? publication.hostCaddyfile
+          : undefined;
+      },
       ...(host.providers.caddy.reload.command
         ? {
             reloadCommand: [

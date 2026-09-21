@@ -1,6 +1,4 @@
-# AGENTS.md - Rig Development Guide
-
-<!-- AGENTS.md is the source of truth. CLAUDE.md is a symlink to this file. DO NOT rename, delete, or revert this setup. -->
+# Rig Development Guide
 
 Rig is a local Mac deployment manager built around `rigd` as the runtime
 authority, strict TypeScript, Bun, Zod validation, and provider-backed modular
@@ -8,19 +6,14 @@ interfaces. Rig does not use Effect TS.
 
 ## Agent skills
 
-These override the global defaults in `~/.claude/CLAUDE.md` and
-`~/.codex/docs/agents/`.
-
 ### Issue tracker
 
-Issues are tracked as GitHub Issues on `b-relay/rig` via the `gh` CLI, not
-Linear. See `docs/agents/issue-tracker.md`.
+Issues are tracked as GitHub Issues on `b-relay/rig`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
 The five canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`,
-`ready-for-human`, `wontfix`) plus `in-progress` and `in-review` for the
-supervisor flow. See `docs/agents/triage-labels.md`.
+`ready-for-human`, `wontfix`) plus `in-progress` and `in-review`. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
@@ -29,27 +22,13 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 
 ## Default Workflow
 
-- Use the PRD skills for product work:
-  - Use `to-prd` when conversation context needs to become a PRD issue.
-  - Use `to-issues` to break PRDs into independently grabbable GitHub issues
-    using tracer-bullet vertical slices.
-  - Keep PRD issues, docs, and issue comments in sync as implementation
-    changes reality. Finished plans are not kept in the repo.
-- Use `design-an-interface` before adding or changing major module, provider, or
-  plugin contracts. Compare at least two materially different shapes, then choose
-  the smallest interface that hides the most implementation complexity.
-- Use `tdd` for implementation work:
-  - Write one public-behavior test first.
-  - Make it fail for the expected reason.
-  - Implement the smallest vertical slice that makes it pass.
-  - Refactor only after green.
 - Prefer thin vertical slices over horizontal layer work. Each slice should be
   independently verifiable through public behavior.
 
 ## TypeScript implementation
 
 - Use plain TypeScript functions, explicit dependency interfaces, async/await,
-  and structured tagged errors. Effect TS is not part of the runtime or tests.
+  and structured tagged errors.
 - Validate external input with Zod; keep domain calculations independent of I/O.
 - Follow `function-design` and the current PRD issue. Keep contract ledgers and
   review evidence in `docs/reviews/`, not scattered through production code.

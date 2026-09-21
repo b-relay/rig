@@ -1,0 +1,3 @@
+#!/bin/sh
+# Demo Tool for the Rig website Preview sandbox.
+echo "quill: nothing to write today"

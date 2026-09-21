@@ -64,9 +64,11 @@ They need permission to bind localhost and a local Caddy executable.
 | `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.                |
 | `src/git`                          | Branch preflight, repository registration, and Git remote protocol.               |
 | `src/recipes`                      | Bundled recipe catalog, rendering, and comparison against a Project's config.     |
+| `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.       |
 
 ## Documentation
 
+- [The Rig website and dashboard](docs/website.md)
 - [User guide](docs/rig-guide.md), [command reference](docs/commands.md), and [example configs](docs/examples)
 - [Editor JSON Schemas](schemas) for `rig.yaml` and the Host `config.yaml` (see "Config" in the guide)
 - [Domain terms](CONTEXT.md) and [architecture](DESIGN.md)

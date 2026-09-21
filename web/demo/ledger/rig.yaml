@@ -1,0 +1,20 @@
+name: ledger
+description: Demo Project. An API with a background worker that waits for it.
+production_branch: main
+domain: ledger.test
+
+services:
+  api:
+    run: bun api.ts
+    ports: { http: auto }
+    env:
+      PORT: ${services.api.ports.http}
+    ready: http://127.0.0.1:${services.api.ports.http}/healthz
+  worker:
+    run: bun worker.ts
+    depends_on: [api]
+    env:
+      API_URL: http://127.0.0.1:${services.api.ports.http}
+
+proxy:
+  /: ${services.api.ports.http}

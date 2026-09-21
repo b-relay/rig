@@ -26,7 +26,7 @@ export function Overview({ projects }: { projects: Read<ListResult> }) {
             <code>rig init</code> in a repository.
           </Empty>
         ) : null}
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {projects.data?.projects.map((project) => (
             <ProjectCard key={project.name} project={project} />
           ))}
@@ -46,13 +46,13 @@ function ProjectCard({ project }: { project: ListResult["projects"][number] }) {
   return (
     <a
       href={href("projects", project.name)}
-      className="block text-foreground no-underline hover:no-underline"
+      className="block min-w-0 text-foreground no-underline hover:no-underline"
     >
       <Card className="h-full gap-3 border-l-4 border-l-transparent py-4 transition-colors hover:border-l-primary">
         <CardContent className="flex flex-col gap-2 px-4">
           <div className="text-lg font-semibold">{project.name}</div>
           <Mono
-            className="truncate break-normal text-muted-foreground"
+            className="block truncate break-normal text-muted-foreground"
             title={project.repoPath}
           >
             {project.repoPath}

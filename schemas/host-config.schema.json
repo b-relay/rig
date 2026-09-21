@@ -65,7 +65,7 @@
             },
             "extra_config": {
               "default": [],
-              "description": "Extra trusted Caddy directives added inside every site block Rig writes.",
+              "description": "Extra trusted Caddy directives added inside every site block Rig writes, such as import cloudflare. They may use snippets the Host Caddyfile defines once it imports the route file.",
               "type": "array",
               "items": {
                 "type": "string",

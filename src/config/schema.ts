@@ -684,7 +684,7 @@ export const hostConfigSchema = z.strictObject({
             .array(text)
             .default([])
             .describe(
-              "Extra trusted Caddy directives added inside every site block Rig writes.",
+              "Extra trusted Caddy directives added inside every site block Rig writes, such as import cloudflare. They may use snippets the Host Caddyfile defines once it imports the route file.",
             ),
           reload: z
             .strictObject({

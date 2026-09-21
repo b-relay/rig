@@ -160,7 +160,36 @@ Reload Caddy after adding the line. Until then every Rig route is inert:
 in `/usr/local/etc/Caddyfile`, `/opt/homebrew/etc/Caddyfile`, and
 `/etc/caddy/Caddyfile` when unset. Host TLS or error snippets that every
 generated site block needs, such as `import cloudflare`, go in
-`providers.caddy.extra_config`. `providers.caddy.reload.mode` is `manual` by
+`providers.caddy.extra_config`. When the Host Caddyfile imports the route file,
+Rig checks each change by adapting the Host Caddyfile (`caddy adapt`), so those
+lines may use snippets the Host Caddyfile defines; a change Caddy rejects is
+put back and kept beside the route file as `.rejected`. Until the import
+exists, the route file is validated alone, where such a snippet is unknown.
+Rig runs `caddy` as your user, without the Host Caddy's secrets, so write a
+secret in the Host Caddyfile as `{env.NAME}`, which the running Caddy fills
+in, not as `{$NAME}`, which whoever parses the file must hold:
+
+```caddyfile
+(cloudflare) {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+}
+```
+
+```yaml
+# <RIG_ROOT>/config.yaml
+providers:
+  caddy:
+    extra_config:
+      - import cloudflare
+    reload:
+      mode: command
+      command: caddy reload --config /usr/local/etc/Caddyfile
+```
+
+A changed `extra_config` reaches a route the next time that Target starts or
+deploys. `providers.caddy.reload.mode` is `manual` by
 default: Rig writes the route file and leaves every reload to you. With
 `mode: command` and a `reload.command`, Rig runs that command after each route
 change. The route file and

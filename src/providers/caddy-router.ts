@@ -45,6 +45,9 @@ export function createCaddyRouter(options: {
   readonly reload?: boolean;
   readonly reloadCommand?: readonly string[];
   readonly extraConfig?: readonly string[];
+  /** The Host Caddyfile that imports the route file, asked on every change because the import can be added while rigd runs.
+   * With one, routes are checked through it, so they may use snippets it defines; without one, the route file is checked alone. */
+  readonly hostCaddyfile?: () => Promise<string | undefined>;
 }): Router {
   const { run } = options;
   let pending: Promise<unknown> = Promise.resolve();
@@ -130,19 +133,45 @@ export function createCaddyRouter(options: {
       "caddyfile",
     ];
     const rejected = `${file}.rejected`;
+    const hostCaddyfile = await options.hostCaddyfile?.();
     try {
       await writeFile(temporary, after, { mode });
-      const validation = await runCaddy([
-        executable,
-        "validate",
-        "--config",
-        temporary,
-        "--adapter",
-        "caddyfile",
-      ]);
+      // Caddy reads an import from disk, so a check through the Host Caddyfile needs the new routes in place first. Caddy serves
+      // what it last loaded, not the file, so a rejected change is put back before anything reloads. It is adapted rather than
+      // validated: validating provisions TLS with Host secrets rigd does not hold, and the reload provisions it inside Caddy anyway.
+      if (hostCaddyfile) {
+        await writeFile(`${file}.rig-backup`, before, { mode });
+        await rename(temporary, file);
+      }
+      const validation = await runCaddy(
+        hostCaddyfile
+          ? [
+              executable,
+              "adapt",
+              "--config",
+              hostCaddyfile,
+              "--adapter",
+              "caddyfile",
+            ]
+          : [
+              executable,
+              "validate",
+              "--config",
+              temporary,
+              "--adapter",
+              "caddyfile",
+            ],
+      ).catch(async (error) => {
+        if (hostCaddyfile) await writeFile(file, before, { mode });
+        throw error;
+      });
       if (validation.exitCode !== 0) {
         // The rejected text is kept where the hint names it so the user can read what Caddy saw.
-        await rename(temporary, rejected);
+        if (hostCaddyfile) {
+          await writeFile(rejected, after, { mode });
+          await writeFile(temporary, before, { mode });
+          await rename(temporary, file);
+        } else await rename(temporary, rejected);
         const reason = lastOutputLine(validation.stderr);
         throw new RigError(
           "ROUTE_VALIDATE",
@@ -155,8 +184,10 @@ export function createCaddyRouter(options: {
           },
         );
       }
-      await writeFile(`${file}.rig-backup`, before, { mode });
-      await rename(temporary, file);
+      if (!hostCaddyfile) {
+        await writeFile(`${file}.rig-backup`, before, { mode });
+        await rename(temporary, file);
+      }
       if (options.reload !== false) {
         const reload = await runCaddy(reloadCommand).catch((error) => ({
           exitCode: 1,

@@ -101,7 +101,6 @@ change touches shared behavior.
 
 ## Git Workflow
 
-- Push directly to `main`.
 - Use conventional commit messages: `feat:`, `fix:`, `test:`, `docs:`,
   `refactor:`, etc.
 - Do not revert user changes unless explicitly asked.

@@ -150,8 +150,6 @@ export function resolveTargetPlan(
   const components: PlanComponent[] = [
     ...services.map(([name, service]): PlanComponent => {
       const at = `services.${name}`;
-      if (service.workdir !== undefined)
-        throw unsupported("A Service workdir", `${at}.workdir`);
       if ((service.supervisor ?? projectSupervisor) !== projectSupervisor)
         throw unsupported("A per-Service supervisor", `${at}.supervisor`);
       const run = references.shell(service.run, `${at}.run`);
@@ -272,7 +270,6 @@ export function resolveTargetPlan(
     subdomain: deploymentName,
     ...(input.branch ? { branch: input.branch } : {}),
     ...(input.commit ? { commit: input.commit } : {}),
-    providerProfile: "default",
     providers: { processSupervisor: projectSupervisor },
     env: projectEnv,
     envFiles: projectFiles,

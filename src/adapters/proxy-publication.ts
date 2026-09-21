@@ -20,8 +20,8 @@ export function inspectHostProxy(
   const caddy = host.providers.caddy;
   return inspectProxyPublication({
     proxyFile: caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
-    hostCaddyfiles: caddy.hostCaddyfile
-      ? [caddy.hostCaddyfile]
+    hostCaddyfiles: caddy.host_caddyfile
+      ? [caddy.host_caddyfile]
       : wellKnownHostCaddyfiles,
     environment,
     read: (file) =>

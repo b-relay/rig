@@ -31,7 +31,7 @@ test("initialization takes the existing Project config from its reads, so a conf
       document ? { repoPath: path, document } : undefined,
     hostConfig: async () => {
       hostReads += 1;
-      return { deploy: { productionBranch: "main" } } as HostConfig;
+      return { deploy: { production_branch: "main" } } as HostConfig;
     },
   });
   await expect(

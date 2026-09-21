@@ -116,7 +116,7 @@ test("rig doctor reports an inert proxy file from the configured host Caddyfile"
     await writeFile(join(root, "proxy", "Caddyfile"), block);
     await writeFile(
       join(root, "config.yaml"),
-      `providers:\n  caddy:\n    hostCaddyfile: ${hostCaddyfile}\n`,
+      `providers:\n  caddy:\n    host_caddyfile: ${hostCaddyfile}\n`,
     );
     const failing = (await inspectHost(root)).find((c) => c.name === "caddy-proxy");
     expect(failing).toMatchObject({ ok: false, reason: "proxy-unpublished" });

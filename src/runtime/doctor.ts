@@ -175,7 +175,7 @@ export async function doctor(
         productionBranchCheck(
           target,
           repository.document.config.production_branch ??
-            (await deps.documents.host()).deploy.productionBranch,
+            (await deps.documents.host()).deploy.production_branch,
         ),
       );
   }

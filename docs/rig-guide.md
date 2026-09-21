@@ -156,14 +156,14 @@ never written leaves the file and Caddy untouched.
 
 Reload Caddy after adding the line. Until then every Rig route is inert:
 `rig doctor` reports `caddy-proxy` as failed and `rig status` marks routes
-`unpublished`. Rig looks for the import in `providers.caddy.hostCaddyfile`, or
+`unpublished`. Rig looks for the import in `providers.caddy.host_caddyfile`, or
 in `/usr/local/etc/Caddyfile`, `/opt/homebrew/etc/Caddyfile`, and
 `/etc/caddy/Caddyfile` when unset. Host TLS or error snippets that every
 generated site block needs, such as `import cloudflare`, go in
-`providers.caddy.extraConfig`. `providers.caddy.reload.mode` is `manual` by
+`providers.caddy.extra_config`. `providers.caddy.reload.mode` is `manual` by
 default: Rig writes the route file and leaves every reload to you. With
 `mode: command` and a `reload.command`, Rig runs that command after each route
-change; `disabled`, like `manual`, runs no reload. The route file and
+change. The route file and
 `rig.yaml` may be symlinks: Rig writes through the link, so the linked file
 changes and the link stays in place, with the `.rig-backup` and `.bak` copies
 beside the linked file. A config edit keeps exactly one `rig.yaml.bak`, the
@@ -198,7 +198,7 @@ rig init
 - choose a Project identity, defaulting to a slug from the repo directory
 - confirm the Production branch interactively; the default is, in order,
   `--production-branch`, the branch `origin/HEAD` names, the host
-  `deploy.productionBranch` default, then `main`. The checked-out branch is
+  `deploy.production_branch` default, then `main`. The checked-out branch is
   never assumed to be Production: a non-interactive `rig init` on `feature/wip`
   records the host default, and the interactive prompt names the differing
   checkout so a deliberate answer can override it
@@ -353,7 +353,7 @@ Stable Target's configured name (`live` unless `rig.yaml` renames it) or
 `preview`. Naming the Working copy Target fails as `DEPLOY_TARGET`; use `rig
 up` for it. `rig deploy live` deploys the configured Production branch:
 `production_branch` in the Project config, else the Host config's
-`deploy.productionBranch`, else `main`. It can run from
+`deploy.production_branch`, else `main`. It can run from
 detached HEAD because it does not deploy the current checkout; it then prints
 which Production branch it deploys. If the current checkout is on another
 Branch, a terminal asks for confirmation and a non-interactive run is refused
@@ -413,8 +413,8 @@ Target, the old process is stopped rather than left running on stale code, so
 nothing serves until `rig up`; the deploy output warns and names that command.
 `--force` redeploys even when the same Commit is already deployed.
 
-The Host config's `deploy.generated.maxActive` caps Previews per Project;
-every recorded Preview counts, running or not. Under `replacePolicy: oldest`, a
+The Host config's `deploy.previews.max` caps Previews per Project (default 25);
+every recorded Preview counts, running or not. Under `replace_policy: oldest`, a
 new Preview destroys as many Previews as needed to fit under the cap once the
 new one is committed, choosing Previews whose deploy never completed first,
 then stopped Previews, then running ones, oldest first within each group. Each
@@ -429,7 +429,7 @@ data root that cannot be deleted), the new Preview stays deployed, the old
 record is kept with pending-destruction evidence, and the deploy result carries
 a warning naming the Preview and the `rig down preview <branch> --destroy`
 command that finishes it; the Project is over its cap until then. Under
-`replacePolicy: reject`, a deploy at the cap fails with `PREVIEW_LIMIT`.
+`replace_policy: reject`, a deploy at the cap fails with `PREVIEW_LIMIT`.
 
 A deploy builds the new Commit before it touches the Deployment that is
 running, so a failed build leaves the previous Deployment serving. A first
@@ -854,13 +854,13 @@ Project config is committed and owns portable Project intent:
 Host config (`<RIG_ROOT>/config.yaml`, every key optional) owns machine
 capability:
 
-- `deploy.productionBranch`: the Production branch of Projects that set none
+- `deploy.production_branch`: the Production branch of Projects that set none
   (default `main`)
-- `deploy.generated.maxActive` and `deploy.generated.replacePolicy`: the
-  Preview limit and what happens at it (see Deploy)
-- `providers.caddy`: the route file, the Host Caddyfile, `extraConfig`, and the
+- `deploy.previews.max` (default 25) and `deploy.previews.replace_policy`
+  (default `oldest`): the Preview limit and what happens at it (see Deploy)
+- `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
   reload mode (see Setup)
-- `diagnostics.retentionDays` (default 14) and `diagnostics.level`
+- `diagnostics.retention_days` (default 14) and `diagnostics.level`
 
 Editors can check and complete both files from JSON Schemas generated from
 the same validation Rig runs: [`schemas/rig.schema.json`](../schemas/rig.schema.json)
@@ -960,7 +960,7 @@ A Service is a long-running process Rig starts and supervises. Its fields:
   restart".
 - `build` and `build_timeout`: the Service's own build unit; see
   "Environment, builds, and startup".
-- `workdir` and `supervisor` are part of the schema but see "Not runnable".
+- `supervisor` is part of the schema but see "Not runnable".
 
 A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
@@ -990,7 +990,7 @@ unless `targets.working.domain` is set. A Target with no resolved hostname or
 no `proxy` gets no route. A Tool-only Project needs neither.
 
 The Production branch is `production_branch`, else the Host config's
-`deploy.productionBranch`, else `main`.
+`deploy.production_branch`, else `main`.
 
 ### Target names and settings patches
 
@@ -1066,12 +1066,11 @@ or not, reads the env files fresh.
 
 ### Not runnable
 
-These settings are valid config: they parse, and `rig config` shows them.
-`rigd` cannot run them, so planning a Target that uses one is refused as
-`unsupported_setting`, naming the path (for example `services.api.workdir`),
-rather than silently dropping the policy.
+This setting is valid config: it parses, and `rig config` shows it.
+`rigd` cannot run it, so planning a Target that uses it is refused as
+`unsupported_setting`, naming the path (for example
+`services.api.supervisor`), rather than silently dropping the policy.
 
-- a Service `workdir`
 - a Service `supervisor` that differs from the Project's
 
 `supervisor` is a Project setting; the Host `config.yaml` has no such key.
@@ -1289,7 +1288,7 @@ and follows the command rule.
 
 ### References
 
-`run`, `ready`, `build`, `bin`, `workdir`, `env` values, and `env_file` paths
+`run`, `ready`, `build`, `bin`, `env` values, and `env_file` paths
 may use `${...}` references. A reference is the exact path of one value in the
 selected Target's own settings (the base config with that role's patch
 applied), or one of the `rig.*` values Rig generates:
@@ -1422,5 +1421,5 @@ runner; their contracts live in `src/providers/contracts.ts`.
 
 Tests supply isolated provider interfaces and `RIG_ROOT`. There are no
 `--state-root` or `--config` path overrides.
-Caddy command reload requires an explicit nonblank command; manual/disabled
-policies never substitute a default reload command.
+Caddy command reload requires an explicit nonblank command; the manual
+policy never substitutes a default reload command.

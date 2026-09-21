@@ -82,7 +82,6 @@ function record(root: string, workspacePath: string, stateDir: string): TargetRe
       branchSlug: "main",
       subdomain: "live",
       providers: { processSupervisor: "child" },
-      providerProfile: "default",
       components: [],
       preparedComponents: [{ name: "api", uses: "convex", stateDir }],
     },

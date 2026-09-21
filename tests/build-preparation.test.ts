@@ -101,7 +101,6 @@ async function fixture() {
       deploymentName: "live",
       branchSlug: "live",
       subdomain: "live",
-      providerProfile: "default",
       providers: { processSupervisor: "child" },
       components: [
         {

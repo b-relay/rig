@@ -178,12 +178,12 @@ test("discovery searches upward and never falls through a nearer invalid or reti
 
 test("Host config reads config.yaml and defaults when absent", async () => {
   const root = await fixture();
-  expect((await readHostConfig(root)).diagnostics.retentionDays).toBe(14);
+  expect((await readHostConfig(root)).diagnostics.retention_days).toBe(14);
   await writeFile(
     join(root, "config.yaml"),
-    "deploy:\n  productionBranch: release\n",
+    "deploy:\n  production_branch: release\n",
   );
-  expect((await readHostConfig(root)).deploy.productionBranch).toBe("release");
+  expect((await readHostConfig(root)).deploy.production_branch).toBe("release");
 });
 
 // ---------------------------------------------------------------------------
@@ -1744,8 +1744,10 @@ test("every declared port is assigned and referable, a Service may declare none,
 test.each([
   [
     "a patch that introduces one",
-    { targets: { stable: { services: { web: { workdir: "apps/web" } } } } },
-    "services.web.workdir",
+    {
+      targets: { stable: { services: { web: { supervisor: "launchd" } } } },
+    },
+    "services.web.supervisor",
   ],
 ])(
   "%s is valid config that this runtime refuses loudly instead of dropping",

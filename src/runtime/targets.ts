@@ -122,7 +122,7 @@ export async function planTarget(
   if (kind !== "local") {
     const host = await deps.documents.host();
     const production =
-      document.config.production_branch ?? host.deploy.productionBranch;
+      document.config.production_branch ?? host.deploy.production_branch;
     branch =
       branch ??
       (kind === "live"

@@ -147,7 +147,7 @@ test("the Host productionBranch is a Project's Production Branch until the Proje
     await mkdir(f.root, { recursive: true });
     await writeFile(
       join(f.root, "config.yaml"),
-      "deploy:\n  productionBranch: trunk\n",
+      "deploy:\n  production_branch: trunk\n",
     );
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     for (const [name, extra, production] of [

@@ -105,7 +105,6 @@ async function fixture() {
       deploymentName: "live",
       branchSlug: "live",
       subdomain: "live",
-      providerProfile: "default",
       providers: { processSupervisor: "child" },
       components: [
         { ...common, name: "tool", kind: "installed", entrypoint: "tool" },
@@ -347,24 +346,6 @@ test("rollback refuses an external artifact edit and retains blocked recovery ev
     stopForRecovery(f.state.targets[0]!, f.deps),
   ).rejects.toMatchObject({ code: "EFFECTS_CHANGED" });
   expect(f.state.targets[0]!.recovery?.stage).toBe("blocked");
-});
-test("unsupported historical profiles never invoke real lifecycle effects", async () => {
-  const f = await fixture();
-  f.previous.plan.providerProfile = "isolated-e2e";
-  for (const invoke of [
-    () => f.lifecycle.checkpoint(f.previous),
-    () => f.lifecycle.up(f.previous),
-    () => f.lifecycle.down(f.previous),
-    () => f.lifecycle.restoreEffects(f.previous),
-    () => f.lifecycle.retire(f.previous),
-  ])
-    await expect(invoke()).rejects.toMatchObject({
-      code: "PROVIDER_PROFILE_UNSUPPORTED",
-    });
-  expect(f.running.size).toBe(0);
-  await expect(readFile(join(f.root, "bin", "tool"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
 });
 test("retired Preview executables release their names without deleting persistent data or source", async () => {
   const f = await fixture();

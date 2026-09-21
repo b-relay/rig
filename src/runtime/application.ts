@@ -324,7 +324,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           repoPath: project.repoPath,
           productionBranch:
             selection.document!.config.production_branch ??
-            (await deps.documents.host()).deploy.productionBranch,
+            (await deps.documents.host()).deploy.production_branch,
           currentBranch,
           targets: names,
           // The role the selector means under the daemon's own rule, so a recorded name is confirmed like the configured one.
@@ -378,7 +378,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           );
         const production =
           selection.document!.config.production_branch ??
-          (await deps.documents.host()).deploy.productionBranch;
+          (await deps.documents.host()).deploy.production_branch;
         // A push selects by role: the Production Branch is the Stable Target whatever it is named.
         command = {
           ...command,
@@ -469,7 +469,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           command.branch ??
           (kind === "live"
             ? (document.config.production_branch ??
-              (await deps.documents.host()).deploy.productionBranch)
+              (await deps.documents.host()).deploy.production_branch)
             : await deps.sources.currentBranch(project.repoPath));
         attempted = true;
         const preflight =
@@ -486,7 +486,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
                 branch,
                 productionBranch:
                   document.config.production_branch ??
-                  (await deps.documents.host()).deploy.productionBranch,
+                  (await deps.documents.host()).deploy.production_branch,
               });
         const commit = command.commit
           ? await deps.sources.resolve(project.repoPath, command.commit)
@@ -512,7 +512,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           kind === "preview" && !target
             ? previewsToReplace(
                 targets,
-                (await deps.documents.host()).deploy.generated,
+                (await deps.documents.host()).deploy.previews,
               )
             : [];
         const candidate = await planTarget(
@@ -999,12 +999,12 @@ async function replanWorkingCopy(
  * Rejects PREVIEW_LIMIT under the reject policy and DEPLOY_RECOVERY when a chosen Preview is mid-transition. */
 function previewsToReplace(
   targets: readonly TargetRecord[],
-  policy: { maxActive: number; replacePolicy: "oldest" | "reject" },
+  policy: { max: number; replace_policy: "oldest" | "reject" },
 ): TargetRecord[] {
   const previews = targets.filter((t) => t.kind === "preview");
-  const overflow = previews.length - policy.maxActive + 1;
+  const overflow = previews.length - policy.max + 1;
   if (overflow <= 0) return [];
-  if (policy.replacePolicy === "reject")
+  if (policy.replace_policy === "reject")
     throw new RigError(
       "PREVIEW_LIMIT",
       "The Project has reached its Preview limit.",

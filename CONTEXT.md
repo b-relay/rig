@@ -424,7 +424,7 @@ clearly until the relevant Branch resolves to a Commit.
 
 _Relationship_: `rig init` picks the Production branch from, in order,
 `--production-branch`, the branch `origin/HEAD` names, the Host
-`deploy.productionBranch` default, then `main`. The checked-out branch is never
+`deploy.production_branch` default, then `main`. The checked-out branch is never
 assumed to be Production.
 
 _Relationship_: Interactive `rig init` shows that default, names a differing
@@ -815,11 +815,11 @@ _Avoid_: data root in user-facing language
 ### Replacement policy
 
 The rule for what happens when a Project exceeds the Preview limit
-(`deploy.generated.maxActive`, default 5; every recorded Preview counts,
+(`deploy.previews.max`, default 25; every recorded Preview counts,
 running or stopped). Under `oldest`, incomplete deploys are replaced first,
 then stopped Previews, then running ones; `reject` fails with `PREVIEW_LIMIT`.
 Host config
-owns it (`deploy.generated.maxActive` and `deploy.generated.replacePolicy`);
+owns it (`deploy.previews.max` and `deploy.previews.replace_policy`);
 Project config has no override. `rigd` enforces the policy because rejecting,
 replacing, or destroying Previews mutates runtime state.
 

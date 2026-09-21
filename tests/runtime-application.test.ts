@@ -372,7 +372,7 @@ test("a Preview deploy stays deployed when retiring the oldest Preview fails, an
   const { runtime, state, deps } = fixture();
   deps.documents.host = async () =>
     parseHostConfig({
-      deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } },
+      deploy: { previews: { max: 1, replace_policy: "oldest" } },
     });
   const preview = (branch: string) =>
     runtime.command({
@@ -425,7 +425,7 @@ test("replacing the oldest Preview destroys its owned storage after verified shu
   const { runtime, state, deps } = fixture();
   deps.documents.host = async () =>
     parseHostConfig({
-      deploy: { generated: { maxActive: 1, replacePolicy: "oldest" } },
+      deploy: { previews: { max: 1, replace_policy: "oldest" } },
     });
   const preview = (branch: string) =>
     runtime.command({
@@ -486,7 +486,7 @@ test("Preview replacement evicts incomplete and stopped Previews before the olde
   const { runtime, state, deps } = fixture();
   deps.documents.host = async () =>
     parseHostConfig({
-      deploy: { generated: { maxActive: 3, replacePolicy: "oldest" } },
+      deploy: { previews: { max: 3, replace_policy: "oldest" } },
     });
   const preview = (branch: string) =>
     runtime.command({
@@ -4099,7 +4099,7 @@ test("status selects by the same names as every other command and rejects an unk
 test("the Host Production Branch applies when the Project sets none, and the Project's production_branch wins when set", async () => {
   const { runtime, state, deps, config } = fixture();
   deps.documents.host = async () =>
-    parseHostConfig({ deploy: { productionBranch: "trunk" } });
+    parseHostConfig({ deploy: { production_branch: "trunk" } });
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   const context = async () =>
     (

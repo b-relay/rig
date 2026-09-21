@@ -54,7 +54,6 @@ export const targetPlanSchema = z.object({
   branch: text.optional(),
   commit: text.optional(),
   providers: z.object({ processSupervisor: text }),
-  providerProfile: text,
   env: z.record(z.string(), z.string()).optional(),
   daemon: z
     .object({

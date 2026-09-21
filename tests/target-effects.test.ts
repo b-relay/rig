@@ -41,7 +41,6 @@ function target(root: string): TargetRecord {
       branchSlug: "local",
       subdomain: "local",
       providers: { processSupervisor: "child" },
-      providerProfile: "default",
       components: [],
       preparedComponents: [],
     },

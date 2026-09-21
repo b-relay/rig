@@ -21,7 +21,7 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
         ok: false,
         message: `Rig's route file or the host Caddyfile could not be read: ${String((error as Error).message ?? error)}`,
         reason: "proxy-unreadable",
-        hint: "Make the Caddyfiles readable by the rigd user, or set providers.caddy.hostCaddyfile.",
+        hint: "Make the Caddyfiles readable by the rigd user, or set providers.caddy.host_caddyfile.",
       })),
     );
   } catch (error) {

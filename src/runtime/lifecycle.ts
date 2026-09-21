@@ -194,24 +194,18 @@ export function createTargetLifecycle(
   const lifecycle: TargetLifecycle = {
     pruneCheckpoints: (live) => effects.pruneCheckpoints(live),
     async checkpoint(target, previous) {
-      assertProviderProfile(target);
       return await effects.checkpoint(target, previous);
     },
     async restoreEffects(target) {
-      assertProviderProfile(target);
       await effects.restoreEffects(target);
     },
     async commitEffects(target) {
-      assertProviderProfile(target);
       await effects.commitEffects(target);
     },
     async retireSuperseded(previous, candidate) {
-      assertProviderProfile(previous);
-      assertProviderProfile(candidate);
       await effects.retireSuperseded(previous, candidate);
     },
     async retire(target, publishRemoval) {
-      assertProviderProfile(target);
       const checkpoint = await effects.checkpoint(target);
       let finalizationPending = false;
       try {
@@ -250,7 +244,6 @@ export function createTargetLifecycle(
       }
     },
     async prepare(target, { select, journal }) {
-      assertProviderProfile(target);
       await effects.prepare(target);
       const units = await selectUnits(target, select, effects);
       for (const unit of units) {
@@ -280,7 +273,6 @@ export function createTargetLifecycle(
       return { built: units.map((unit) => unit.id) };
     },
     async up(target, providedCheckpoint, journal) {
-      assertProviderProfile(target);
       assertPrepared(target);
       if (providedCheckpoint && providedCheckpoint.targetId !== target.id)
         throw new RigError(
@@ -358,7 +350,6 @@ export function createTargetLifecycle(
       }
     },
     async recover(target, service, journal) {
-      assertProviderProfile(target);
       assertPrepared(target);
       const component = target.plan.components.find(
         (candidate): candidate is ManagedComponent =>
@@ -467,7 +458,6 @@ export function createTargetLifecycle(
       }
     },
     async down(target) {
-      assertProviderProfile(target);
       const supervisor = effects.supervisor(target);
       let changed = false;
       const processFailures: unknown[] = [];
@@ -881,13 +871,4 @@ async function assertAlive(
         : { signal: observation.signal }),
     },
   );
-}
-function assertProviderProfile(target: TargetRecord): void {
-  if (target.plan.providerProfile !== "default")
-    throw new RigError(
-      "PROVIDER_PROFILE_UNSUPPORTED",
-      "The recorded Target uses an unsupported provider profile.",
-      "Reconcile its historical provider state explicitly before running real adapters.",
-      { profile: target.plan.providerProfile },
-    );
 }

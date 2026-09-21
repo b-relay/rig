@@ -265,7 +265,7 @@ test("init records the host's Production branch default, never the checked-out b
   });
   await writeFile(
     join(f.root, "config.yaml"),
-    "deploy:\n  productionBranch: trunk\n",
+    "deploy:\n  production_branch: trunk\n",
   );
   expect(await f.deps.documents.initializationInfo(f.repo)).toMatchObject({
     productionBranch: "trunk",

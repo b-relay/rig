@@ -174,7 +174,7 @@ export async function inspectInitialization(
     existing?.config.production_branch ??
     command.productionBranch ??
     location.productionBranch ??
-    (await reads.hostConfig()).deploy.productionBranch;
+    (await reads.hostConfig()).deploy.production_branch;
   return {
     repoPath,
     name,

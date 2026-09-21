@@ -244,7 +244,9 @@ different names. `--run`, `--port`, or `--ready` without `--service`, and
 Service nor a Tool and no existing `rig.yaml`, init fails as `empty_project`:
 pass the flags, or write `rig.yaml` by hand and run `rig init` again to
 register it. The scaffold also writes `production_branch` and the default
-Target names (`targets.working.name: local`, `targets.stable.name: live`).
+Target names (`targets.working.name: local`, `targets.stable.name: live`),
+under a first-line comment that points editors at the config schema (see
+"Config").
 
 Config is always `rig.yaml`. Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
@@ -859,6 +861,34 @@ capability:
 - `providers.caddy`: the route file, the Host Caddyfile, `extraConfig`, and the
   reload mode (see Setup)
 - `diagnostics.retentionDays` (default 14) and `diagnostics.level`
+
+Editors can check and complete both files from JSON Schemas generated from
+the same validation Rig runs: [`schemas/rig.schema.json`](../schemas/rig.schema.json)
+for `rig.yaml` and
+[`schemas/host-config.schema.json`](../schemas/host-config.schema.json) for the
+Host `config.yaml`. Make this comment the first line of the file:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json
+```
+
+For the Host config, use `host-config.schema.json` in the same address. Inside
+this repository a relative path such as `../../schemas/rig.schema.json` works
+too, as in `docs/examples`. `rig init` writes the line into the `rig.yaml` it
+scaffolds. The line is an ordinary YAML comment, so Rig ignores it. With it, an
+editor running
+[yaml-language-server](https://github.com/redhat-developer/yaml-language-server)
+(the Red Hat YAML extension in VS Code, or the same server in Neovim, Zed,
+Helix and others) offers field names and the allowed values of settings such
+as `supervisor` and `restart`, flags unknown keys, and shows each field's
+documentation on hover, including its default and, for a field that takes
+`${...}` references, the references valid there. An editor cannot complete
+inside a string, so the reference list is hover text. The schema covers field
+shapes only; rules that span fields (a declared port behind each `proxy`
+value, dependency cycles, reference resolution) are still reported by
+`rig config` and `rig doctor`. Contributors regenerate the files with
+`bun run schema` after changing `src/config/schema.ts`; a test fails until
+they match.
 
 A small `rig.yaml` with two Services, a Tool, and a route:
 

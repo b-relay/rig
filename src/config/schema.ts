@@ -41,6 +41,11 @@ export function localhostCommand(value: string): boolean {
 const BIND_KEY =
   /^(?:HOST|HOSTNAME|BIND|BIND_ADDR|BIND_ADDRESS|BIND_HOST|LISTEN|LISTEN_ADDR|LISTEN_ADDRESS|LISTEN_HOST|ADDR|ADDRESS)$/;
 const WILDCARD_ADDRESS = /^(?:0\.0\.0\.0|\[::\]|::)(?::\d+)?$/;
+type ReferenceScope = "project" | "service";
+/** The one owner of the reference list an editor shows on hover; the long form is "References" in docs/rig-guide.md.
+ * ${rig.data} is one Service's directory, so only a Service's own fields offer it. */
+const referencesIn = (scope: ReferenceScope) =>
+  `References: \${env.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.ready_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -86,6 +91,7 @@ export function validHostname(value: string): boolean {
 }
 /** The one hostname substitution: the actual Target name, which is always a single valid label. */
 const TARGET_REFERENCE = "${rig.target}";
+const DOMAIN_REFERENCE = `${TARGET_REFERENCE} is the only reference a hostname may contain.`;
 const domain = text
   .refine(
     (value) =>
@@ -93,9 +99,7 @@ const domain = text
       validHostname(value.replaceAll(TARGET_REFERENCE, "target")),
     "must be a hostname such as app.test or ${rig.target}.app.test; schemes, ports, paths, wildcards, lists and other references are not allowed",
   )
-  .describe(
-    "Single hostname; ${rig.target} is the only reference a hostname may contain.",
-  );
+  .describe(`Single hostname. ${DOMAIN_REFERENCE}`);
 const DURATION_UNITS = { s: 1, m: 60, h: 3600 } as const;
 /** Whole seconds of a validated duration such as 30s, 10m or 1h. */
 export function durationSeconds(value: string): number {
@@ -121,36 +125,48 @@ const envName = z
     "must be an environment variable name: letters, digits and '_', not starting with a digit",
   );
 /** Public inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
-const environment = z
-  .unknown()
-  // The record parser drops a __proto__ key without a word, so it is refused before it gets there.
-  .refine(
-    (env) =>
-      typeof env !== "object" ||
-      env === null ||
-      !Object.hasOwn(env, "__proto__"),
-    "__proto__ is not an environment variable name.",
-  )
-  .pipe(z.record(envName, z.string()))
-  .superRefine((env, ctx) => {
-    for (const [key, value] of Object.entries(env))
-      if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
-        ctx.addIssue({
-          code: "custom",
-          path: [key],
-          message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
-        });
-  });
-const env = environment.describe(
-  "Public environment values passed to the process; never put secrets here. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
-);
-const envFile = z
-  .union([text, z.array(text).min(1)])
-  .describe(
-    "Environment file path, or an ordered list of paths where later files win. Listed files are required, hold plain KEY=value data and never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home.",
+const environment = (scope: ReferenceScope) =>
+  z
+    .unknown()
+    // The record parser drops a __proto__ key without a word, so it is refused before it gets there.
+    .refine(
+      (env) =>
+        typeof env !== "object" ||
+        env === null ||
+        !Object.hasOwn(env, "__proto__"),
+      "__proto__ is not an environment variable name.",
+    )
+    .pipe(
+      z.record(
+        envName,
+        z.string().describe(`Public value. ${referencesIn(scope)}`),
+      ),
+    )
+    .superRefine((env, ctx) => {
+      for (const [key, value] of Object.entries(env))
+        if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
+          });
+    });
+const env = (scope: ReferenceScope) =>
+  environment(scope).describe(
+    "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
   );
+const envFile = (scope: ReferenceScope) =>
+  z
+    .union([text, z.array(text).min(1)])
+    .describe(
+      `Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in \${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. ${referencesIn(scope)}`,
+    );
+const BUILD_RULE =
+  "run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only.";
+/** A shared or Tool build runs with Project inputs only. */
+const PROJECT_BUILD_REFERENCES = `${referencesIn("project")} A Service's env is not available here.`;
 const build = command.describe(
-  "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only.",
+  `Shell build command ${BUILD_RULE} ${PROJECT_BUILD_REFERENCES}`,
 );
 const buildTimeout = duration.describe(
   "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed.",
@@ -176,12 +192,20 @@ const restart = z
   );
 const serviceFields = {
   run: command.describe(
-    "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted.",
+    `Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
   ),
-  build: build.optional(),
+  build: command
+    .describe(
+      `Shell build command of this Service, ${BUILD_RULE} ${referencesIn("service")}`,
+    )
+    .optional(),
   build_timeout: buildTimeout.optional(),
   ports: ports.optional(),
-  ready: health.optional(),
+  ready: health
+    .describe(
+      `Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. ${referencesIn("service")}`,
+    )
+    .optional(),
   ready_timeout: duration
     .optional()
     .describe("Startup readiness budget such as 30s (the default)."),
@@ -195,16 +219,18 @@ const serviceFields = {
   supervisor: supervisor.optional(),
   workdir: text
     .optional()
-    .describe("Working directory relative to the workspace (the default)."),
-  env: env.optional(),
-  env_file: envFile.optional(),
+    .describe(
+      `Working directory relative to the workspace (the default). ${referencesIn("service")}`,
+    ),
+  env: env("service").optional(),
+  env_file: envFile("service").optional(),
 };
 const service = z.strictObject(serviceFields);
 const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   bin: text.describe(
-    "Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere.",
+    `Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. ${referencesIn("project")}`,
   ),
 };
 const tool = z.strictObject(toolFields);
@@ -221,6 +247,9 @@ const proxy = z
       .regex(
         /^\$\{services\.[a-z0-9][a-z0-9-]*\.ports\.[a-z0-9][a-z0-9-]*\}$/,
         "must be one declared port reference such as ${services.web.ports.http}",
+      )
+      .describe(
+        "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed.",
       ),
   )
   .describe(
@@ -228,12 +257,16 @@ const proxy = z
   );
 /** Settings every role may patch. Maps merge per key; lists and scalars replace. */
 const patchFields = {
-  domain: domain.optional().describe("Hostname for this role's Targets."),
+  domain: domain
+    .optional()
+    .describe(
+      `Hostname for this role's Targets, such as \${rig.target}.preview.app.test. ${DOMAIN_REFERENCE}`,
+    ),
   supervisor: supervisor.optional(),
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
-  env: env.optional(),
-  env_file: envFile.optional(),
+  env: env("project").optional(),
+  env_file: envFile("project").optional(),
   proxy: proxy.optional(),
   services: z
     .record(entryName, z.strictObject(serviceFields).partial())
@@ -330,21 +363,21 @@ export const projectConfigSchema = z
     domain: domain
       .optional()
       .describe(
-        "Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one.",
+        `Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
       ),
     supervisor: supervisor.optional(),
     build: build
       .optional()
       .describe(
-        "Shared shell build command, run once in the workspace before any Service or Tool build.",
+        `Shared shell build command, run once in the workspace before any Service or Tool build. ${PROJECT_BUILD_REFERENCES}`,
       ),
     build_timeout: buildTimeout
       .optional()
       .describe(
         "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
       ),
-    env: env.optional(),
-    env_file: envFile.optional(),
+    env: env("project").optional(),
+    env_file: envFile("project").optional(),
     services: z
       .record(entryName, service)
       .optional()

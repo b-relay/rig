@@ -266,6 +266,10 @@ test("Project init writes the scaffold as YAML once and leaves an existing docum
   expect(document.path).toBe(join(root, "rig.yaml"));
   expect(document.config).toEqual(config);
   const raw = await readFile(document.path, "utf8");
+  // The first line points an editor's YAML language server at the published Project schema.
+  expect(raw.split("\n")[0]).toBe(
+    "# yaml-language-server: $schema=https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json",
+  );
   expect(parse(raw)).toEqual(config);
   expect(await readProjectConfig(root)).toEqual(document);
   await expect(

@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/b-relay/rig/main/schemas/host-config.schema.json",
+  "title": "Rig Host config (config.yaml)",
+  "description": "Machine capability in <RIG_ROOT>/config.yaml; every key is optional.",
+  "type": "object",
+  "properties": {
+    "deploy": {
+      "description": "Host deployment defaults.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "productionBranch": {
+          "default": "main",
+          "description": "Default Production branch.",
+          "type": "string",
+          "minLength": 1
+        },
+        "generated": {
+          "description": "Preview inventory limits.",
+          "default": {},
+          "type": "object",
+          "properties": {
+            "maxActive": {
+              "default": 5,
+              "description": "Maximum active Previews per Project.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "replacePolicy": {
+              "default": "oldest",
+              "description": "Policy at the Preview limit.",
+              "type": "string",
+              "enum": [
+                "oldest",
+                "reject"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "providers": {
+      "description": "Provider defaults.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "defaultProfile": {
+          "default": "default",
+          "description": "Host provider profile. Only default is supported; unsupported profiles fail before runtime effects.",
+          "type": "string",
+          "const": "default"
+        },
+        "caddy": {
+          "description": "Caddy provider capability.",
+          "default": {},
+          "type": "object",
+          "properties": {
+            "caddyfile": {
+              "description": "File Rig writes its marked route blocks into; defaults to proxy/Caddyfile under the Rig state directory.",
+              "type": "string",
+              "minLength": 1
+            },
+            "hostCaddyfile": {
+              "description": "Caddyfile the running Caddy loads; it must be the route file or import it. Defaults to the first of /usr/local/etc/Caddyfile, /opt/homebrew/etc/Caddyfile, /etc/caddy/Caddyfile that exists.",
+              "type": "string",
+              "minLength": 1
+            },
+            "extraConfig": {
+              "default": [],
+              "description": "Extra trusted Caddy site directives.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "reload": {
+              "description": "Reload behavior.",
+              "default": {},
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "default": "manual",
+                  "description": "Caddy reload policy.",
+                  "type": "string",
+                  "enum": [
+                    "manual",
+                    "command",
+                    "disabled"
+                  ]
+                },
+                "command": {
+                  "description": "Explicit Host Caddy reload command; required when mode is command.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "web": {
+      "description": "Web control defaults.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "controlPlane": {
+          "default": "localhost",
+          "description": "Control-plane exposure preference.",
+          "type": "string",
+          "enum": [
+            "localhost",
+            "tailscale",
+            "cloudflare",
+            "disabled"
+          ]
+        },
+        "hosted": {
+          "description": "Hosted connection settings.",
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Enable outbound hosted connection.",
+              "type": "boolean"
+            },
+            "endpoint": {
+              "description": "Hosted control-plane endpoint.",
+              "type": "string",
+              "minLength": 1
+            },
+            "machineId": {
+              "description": "Hosted machine identity.",
+              "type": "string",
+              "minLength": 1
+            },
+            "pairingToken": {
+              "description": "Secret hosted pairing token.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostics": {
+      "description": "Rig diagnostic policy.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "retentionDays": {
+          "default": 14,
+          "description": "Diagnostic log retention in days.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "level": {
+          "default": "info",
+          "description": "Diagnostic verbosity.",
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

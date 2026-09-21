@@ -664,8 +664,8 @@ stopped Preview should still appear in interactive lifecycle selection until a
 separate cleanup or deletion policy removes it.
 
 _Relationship_: `rig down preview <Branch> --destroy` removes a Preview from
-inventory with its owned route, and preserves its data, source history, and
-logs. Rig does not remove stopped Previews on its own, apart from the Host
+inventory with its owned route, and deletes its own data, logs, and source
+history. Rig does not remove stopped Previews on its own, apart from the Host
 Replacement policy at the Preview limit.
 
 _Relationship_: Target-aware commands such as `rig up`, `rig down`, `rig

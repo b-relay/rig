@@ -105,7 +105,8 @@ created by deploy first.
 
 `down` stops but does not delete. Stopped Previews remain in inventory and status.
 Explicit `down preview <branch> --destroy` removes the Preview inventory and
-owned route after stopping; it preserves data, source history, and logs.
+owned route after stopping, and deletes the Preview's own data, logs, and
+source history. Other Targets and the repository are untouched.
 `rig forget` removes a stopped Project's registration once its Previews are
 destroyed; the repository, data, and activity history stay.
 

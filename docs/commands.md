@@ -76,7 +76,8 @@ rigd
 runs `rigd capture <request-file>` for each Service instead of the Service's
 own command. The wrapper starts the Service as its child, writes its output to
 the Target logs, and records its status and exit, which launchd alone would
-not give Rig.
+not give Rig. The request file is a small JSON document `rigd` writes for that
+Service: its command, working directory, environment, and log directory.
 
 ## git-remote-rig
 

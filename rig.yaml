@@ -29,6 +29,8 @@ targets:
           # A Preview's dashboard drives a throwaway rigd of its own, kept in the Preview's data
           # directory and destroyed with it, so an unreviewed Branch never holds the Host's rigd.
           RIG_WEB_SANDBOX_ROOT: ${rig.data}/rigd
+          # rig.b-relay.com resolves to this Mac's Tailscale address, so browsers reach Caddy from the tailnet.
+          RIG_WEB_TRUSTED_CLIENTS: 100.64.0.0/10
 
 tools:
   rig:

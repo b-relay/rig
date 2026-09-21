@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 /** Who may use the relay. The relay holds this Host's control-plane credential, so every
  * request it forwards must come from its own page, under its own name, from a trusted machine. */
 export interface AccessPolicy {
@@ -7,6 +9,8 @@ export interface AccessPolicy {
   origins: ReadonlySet<string>;
   /** Client addresses allowed besides loopback: exact IPs or IPv4 CIDR blocks. */
   trustedClients: readonly TrustedClient[];
+  /** The secret a client outside `trustedClients` signs in with. Without one, such clients are refused outright. */
+  accessKey?: string;
   /** Set when this copy of the site is a Preview: it shows the pages but never relays, and names the host that does. */
   relaysAt?: string;
 }
@@ -21,10 +25,15 @@ export interface RequestFacts {
 }
 export type Admission =
   | { admitted: true }
-  | { admitted: false; status: 400 | 403 | 415; code: string; message: string };
+  | {
+      admitted: false;
+      status: 400 | 401 | 403 | 415;
+      code: string;
+      message: string;
+    };
 
 const refused = (
-  status: 400 | 403 | 415,
+  status: 400 | 401 | 403 | 415,
   code: string,
   message: string,
 ): Admission => ({ admitted: false, status, code, message });
@@ -75,6 +84,48 @@ export function parseTrustedClients(list: string): TrustedClient[] {
       );
     });
 }
+export const SESSION_COOKIE = "rig_session";
+/** How long a sign-in lasts. */
+export const SESSION_SECONDS = 30 * 24 * 60 * 60;
+const signature = (key: string, expires: number) =>
+  createHmac("sha256", key)
+    .update(`rig-session:${expires}`)
+    .digest("base64url");
+/** Pure: the cookie value proving a sign-in until `expires` (epoch seconds). It names no server
+ * state: replacing the access key ends every session. */
+export const sessionValue = (key: string, expires: number): string =>
+  `${expires}.${signature(key, expires)}`;
+const sameText = (a: string, b: string): boolean => {
+  const [left, right] = [Buffer.from(a), Buffer.from(b)];
+  return left.length === right.length && timingSafeEqual(left, right);
+};
+/** Pure: whether `offered` is the access key, compared in constant time. */
+export const keyMatches = (offered: string, key: string): boolean =>
+  sameText(
+    createHmac("sha256", "rig-key").update(offered).digest("hex"),
+    createHmac("sha256", "rig-key").update(key).digest("hex"),
+  );
+/** Pure: whether a Cookie header carries an unexpired session signed with `key`. */
+export function signedIn(
+  cookies: string | null,
+  key: string,
+  now: number,
+): boolean {
+  // Any valid cookie counts: a sibling subdomain can plant a junk rig_session ahead of the real one.
+  return (cookies ?? "")
+    .split(";")
+    .map((each) => each.trim())
+    .filter((each) => each.startsWith(`${SESSION_COOKIE}=`))
+    .some((each) => {
+      const value = each.slice(SESSION_COOKIE.length + 1);
+      const expires = Number(value.split(".")[0]);
+      return (
+        Number.isInteger(expires) &&
+        expires * 1000 > now &&
+        sameText(value, sessionValue(key, expires))
+      );
+    });
+}
 /** Headers a tunnel or a second proxy adds. Behind one, Caddy sees the tunnel's loopback
  * address for every visitor, so the client check would admit the whole internet. */
 const TUNNEL_HEADERS = [
@@ -88,7 +139,13 @@ const TUNNEL_HEADERS = [
 ];
 /** Pure: decides one relay request. The server listens on loopback only, so a request without
  * X-Forwarded-For came from this machine; Caddy replaces that header with the address it saw. */
-export function admit(request: RequestFacts, policy: AccessPolicy): Admission {
+export function admit(
+  request: RequestFacts,
+  policy: AccessPolicy,
+  /** `signingIn` admits a client that is about to present the key; `now` is epoch milliseconds. */
+  // Without a clock every session counts as expired.
+  moment: { now: number; signingIn?: boolean } = { now: Infinity },
+): Admission {
   if (policy.relaysAt)
     return refused(
       403,
@@ -130,13 +187,20 @@ export function admit(request: RequestFacts, policy: AccessPolicy): Admission {
   const clients = forwarded
     ? forwarded.split(",").map((each) => each.trim())
     : [];
-  if (!clients.every((each) => trustedClient(each, policy.trustedClients)))
+  if (clients.every((each) => trustedClient(each, policy.trustedClients)))
+    return { admitted: true };
+  if (!policy.accessKey)
     return refused(
       403,
       "CLIENT",
       "The dashboard is only available from this Mac or a trusted address.",
     );
-  return { admitted: true };
+  if (
+    moment.signingIn ||
+    signedIn(request.headers.get("cookie"), policy.accessKey, moment.now)
+  )
+    return { admitted: true };
+  return refused(401, "KEY_REQUIRED", "Sign in with this Host's access key.");
 }
 /** Pure: the policy for a site published as `publicHost` and listening on a loopback port. */
 export function accessPolicy(site: {
@@ -147,6 +211,7 @@ export function accessPolicy(site: {
   dashboardHost?: string;
   /** This copy relays to a sandbox rigd of its own, so a Preview may relay too: it never reaches the Host's rigd. */
   sandboxed?: boolean;
+  accessKey?: string;
 }): AccessPolicy {
   const local = [`127.0.0.1:${site.port}`, `localhost:${site.port}`];
   const published = site.publicHost ? [site.publicHost.toLowerCase()] : [];
@@ -157,6 +222,7 @@ export function accessPolicy(site: {
       ...published.map((host) => `https://${host}`),
     ]),
     trustedClients: site.trustedClients ?? [],
+    ...(site.accessKey ? { accessKey: site.accessKey } : {}),
     ...(!site.sandboxed &&
     site.publicHost &&
     site.dashboardHost &&

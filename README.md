@@ -67,7 +67,7 @@ They need permission to bind localhost and a local Caddy executable.
 
 ## Documentation
 
-- [User guide](docs/rig-guide.md) and [example configs](docs/examples)
+- [User guide](docs/rig-guide.md), [command reference](docs/commands.md), and [example configs](docs/examples)
 - [Domain terms](CONTEXT.md) and [architecture](DESIGN.md)
 - [Decision records](docs/adr)
 - [Dated review records](docs/reviews)

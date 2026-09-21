@@ -2,6 +2,7 @@
 
 This guide describes how to set up and use Rig. Domain terms are defined in
 [CONTEXT.md](../CONTEXT.md) and the architecture in [DESIGN.md](../DESIGN.md).
+Every command and flag is listed in the [command reference](commands.md).
 Three complete example configs live in [examples](examples).
 
 ## Setup

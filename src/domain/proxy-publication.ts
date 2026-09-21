@@ -91,7 +91,9 @@ export function proxyCheck(publication: ProxyPublication): ProxyCheck {
   };
 }
 export function countOwnedRoutes(text: string): number {
-  return text.split("\n").filter((line) => /^\s*# rig begin [0-9a-f]+\s*$/.test(line)).length;
+  return text
+    .split("\n")
+    .filter((line) => /^\s*# rig begin [0-9a-f]+\s*$/.test(line)).length;
 }
 /** Absolute import patterns of a Caddyfile, following Caddy's rules: relative to the file, `{$VAR}` and `{env.VAR}` from the environment. */
 export function caddyfileImports(
@@ -100,7 +102,10 @@ export function caddyfileImports(
   environment: Readonly<Record<string, string | undefined>>,
 ): string[] {
   return text.split("\n").flatMap((line) => {
-    const tokens = line.replace(/\s#.*$|^#.*$/, "").trim().split(/\s+/);
+    const tokens = line
+      .replace(/\s#.*$|^#.*$/, "")
+      .trim()
+      .split(/\s+/);
     if (tokens[0] !== "import" || !tokens[1]) return [];
     const pattern = tokens[1].replace(
       /\{\$([A-Za-z_][A-Za-z0-9_]*)\}|\{env\.([A-Za-z_][A-Za-z0-9_]*)\}/g,

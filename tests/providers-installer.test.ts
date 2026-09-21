@@ -13,7 +13,10 @@ test("install publishes an executable and preserves the last good artifact when 
   const root = await mkdtemp(join(tmpdir(), "rig-install-"));
   roots.push(root);
   await writeFile(join(root, "entry"), "#!/bin/sh\necho ready\n");
-  const installer = createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath });
+  const installer = createArtifactInstaller({
+    run: runCommand,
+    bunExecutable: process.execPath,
+  });
   const request = {
     cwd: root,
     entrypoint: "entry",
@@ -39,7 +42,10 @@ test("source entrypoints install a runnable Bun shim that retains relative impor
     join(root, "main.ts"),
     "import {value} from './value';process.stdout.write(value+':'+process.argv[2]);",
   );
-  const installer = createArtifactInstaller({ run: runCommand, bunExecutable: process.execPath });
+  const installer = createArtifactInstaller({
+    run: runCommand,
+    bunExecutable: process.execPath,
+  });
   const installed = await installer.install({
     cwd: root,
     entrypoint: "main.ts",

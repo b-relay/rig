@@ -9,7 +9,7 @@ services:
   api:
     build: go build -o .rig-build/notes ./cmd/notes
     run: ./.rig-build/notes
-    ports: {http: auto}
+    ports: { http: auto }
     env:
       HOST: 127.0.0.1
       PORT: ${services.api.ports.http}
@@ -27,7 +27,7 @@ targets:
     name: local
     services:
       api:
-        env: {LOG_LEVEL: debug}
+        env: { LOG_LEVEL: debug }
   stable:
     name: live
   preview:

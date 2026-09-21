@@ -487,9 +487,7 @@ test("the accepted multi-Service example carries the provenance Rig writes, and 
   roots.push(root);
   await writeFile(
     join(root, "rig.yaml"),
-    await readFile(
-      join(import.meta.dir, "../docs/examples/multi.rig.yaml"),
-    ),
+    await readFile(join(import.meta.dir, "../docs/examples/multi.rig.yaml")),
   );
   expect(
     compareRecipes(await readProjectConfig(root), BUNDLED_RECIPES),

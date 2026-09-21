@@ -1,5 +1,8 @@
 /** Timer owner: cancellation resolves normally and releases the timer and listener. */
-export async function waitForLogPoll(milliseconds: number, signal?: AbortSignal): Promise<void> {
+export async function waitForLogPoll(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
   if (signal?.aborted) return;
   await new Promise<void>((resolve) => {
     const finish = () => {
@@ -11,4 +14,3 @@ export async function waitForLogPoll(milliseconds: number, signal?: AbortSignal)
     signal?.addEventListener("abort", finish, { once: true });
   });
 }
-

@@ -55,15 +55,15 @@ They need permission to bind localhost and a local Caddy executable.
 
 ## Module Map
 
-| Module | Responsibility |
-|---|---|
-| `src/config` | Validated YAML documents, revision-checked edits, and Target plan resolution. |
-| `src/runtime` and `src/domain` | Serialized operations, recorded policy, deployment recovery, and observed status. |
-| `src/daemon` | Authenticated localhost transport, administration, and adapter composition. |
-| `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects. |
-| `src/cli` and `src/diagnostics` | Command grammar, human/structured output, and diagnostic evidence. |
-| `src/git` | Branch preflight, repository registration, and Git remote protocol. |
-| `src/recipes` | Bundled recipe catalog, rendering, and comparison against a Project's config. |
+| Module                             | Responsibility                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------- |
+| `src/config`                       | Validated YAML documents, revision-checked edits, and Target plan resolution.     |
+| `src/runtime` and `src/domain`     | Serialized operations, recorded policy, deployment recovery, and observed status. |
+| `src/daemon`                       | Authenticated localhost transport, administration, and adapter composition.       |
+| `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects.              |
+| `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.                |
+| `src/git`                          | Branch preflight, repository registration, and Git remote protocol.               |
+| `src/recipes`                      | Bundled recipe catalog, rendering, and comparison against a Project's config.     |
 
 ## Documentation
 

@@ -37,7 +37,13 @@ test("remote helper advertises push and waits for a final deployment result befo
           outcome: "deployed",
           target: "live",
           route: "example.test",
-          retired: [{ target: "feature-b-9876fedc", branch: "feature/b", reason: "Preview limit" }],
+          retired: [
+            {
+              target: "feature-b-9876fedc",
+              branch: "feature/b",
+              reason: "Preview limit",
+            },
+          ],
         };
       },
     },
@@ -245,7 +251,13 @@ test("list for-push withholds incomplete or transitioning deployments so git sen
   const { previewName } = await import("../src/runtime/targets");
   let output = "";
   const targets = [
-    { name: "live", kind: "live", branch: "main", commit: "a".repeat(40), deploymentIncomplete: true },
+    {
+      name: "live",
+      kind: "live",
+      branch: "main",
+      commit: "a".repeat(40),
+      deploymentIncomplete: true,
+    },
     {
       name: previewName({ branch: "fail1" }),
       kind: "preview",
@@ -253,7 +265,12 @@ test("list for-push withholds incomplete or transitioning deployments so git sen
       commit: "b".repeat(40),
       transitionPending: true,
     },
-    { name: previewName({ branch: "done" }), kind: "preview", branch: "done", commit: "c".repeat(40) },
+    {
+      name: previewName({ branch: "done" }),
+      kind: "preview",
+      branch: "done",
+      commit: "c".repeat(40),
+    },
   ];
   const code = await runRemoteHelper("rig://localhost/example", {
     repoPath: "/repo",
@@ -290,7 +307,12 @@ test("an interrupted push names the operation rigd may still be running", async 
   const interrupt = new AbortController();
   const run = runRemoteHelper("rig://localhost/example", {
     repoPath: "/repo",
-    input: input(["list for-push", "push refs/heads/main:refs/heads/main", "", ""]),
+    input: input([
+      "list for-push",
+      "push refs/heads/main:refs/heads/main",
+      "",
+      "",
+    ]),
     output: {
       write() {},
       error(value) {
@@ -299,7 +321,8 @@ test("an interrupted push names the operation rigd may still be running", async 
     },
     client: {
       async command(command) {
-        if (command.action === "status") return { project: "example", targets: [] };
+        if (command.action === "status")
+          return { project: "example", targets: [] };
         return await new Promise((resolve) => {
           finish = resolve;
         });
@@ -347,7 +370,8 @@ test("a tag or deletion in a push batch is rejected per ref while the Branch in 
     client: {
       async command(command) {
         commands.push(command);
-        if (command.action === "status") return { project: "example", targets: [] };
+        if (command.action === "status")
+          return { project: "example", targets: [] };
         return { outcome: "deployed" };
       },
     },
@@ -375,7 +399,12 @@ test("list for-push withholds a deployment whose local Branch no longer contains
   const asked: [string, string][] = [];
   const targets = [
     { name: "live", kind: "live", branch: "main", commit: "a".repeat(40) },
-    { name: previewName({ branch: "c1" }), kind: "preview", branch: "c1", commit: "b".repeat(40) },
+    {
+      name: previewName({ branch: "c1" }),
+      kind: "preview",
+      branch: "c1",
+      commit: "b".repeat(40),
+    },
   ];
   const code = await runRemoteHelper("rig://localhost/example", {
     repoPath: "/repo",
@@ -405,5 +434,8 @@ test("list for-push withholds a deployment whose local Branch no longer contains
   });
   expect(code).toBe(0);
   expect(output).toBe(`${"a".repeat(40)} refs/heads/main\n\n`);
-  expect(asked).toEqual([["main", "a".repeat(40)], ["c1", "b".repeat(40)]]);
+  expect(asked).toEqual([
+    ["main", "a".repeat(40)],
+    ["c1", "b".repeat(40)],
+  ]);
 });

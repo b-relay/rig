@@ -462,11 +462,7 @@ test("malformed list, logs and activity replies fail as protocol errors through 
     const logs = ["logs", "local", "--project", "demo"];
     const malformed: [string[], unknown, string][] = [
       [["list"], {}, "No Projects registered."],
-      [
-        ["list"],
-        { projects: null },
-        "No Projects registered.",
-      ],
+      [["list"], { projects: null }, "No Projects registered."],
       [["list"], { projects: [{ name: 1 }] }, "Targets"],
       [logs, {}, "No logs yet."],
       [

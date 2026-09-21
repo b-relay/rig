@@ -8,7 +8,10 @@ import {
 
 const groupRows = z
   .array(
-    z.string().trim().regex(/^[1-9]\d*$/)
+    z
+      .string()
+      .trim()
+      .regex(/^[1-9]\d*$/)
       .describe("A process ID returned by process-group inspection."),
   )
   .nonempty();
@@ -47,12 +50,18 @@ export function createProcessInspection(
         command: ["/bin/ps", "-g", String(pid), "-o", "pid="],
         timeoutMs: 2000,
       }).catch(() => undefined);
-      if (result?.exitCode === 1 && !result.stdout.trim() && !result.stderr.trim())
+      if (
+        result?.exitCode === 1 &&
+        !result.stdout.trim() &&
+        !result.stderr.trim()
+      )
         return false;
       if (
-        result?.exitCode === 0 && !result.stderr.trim() &&
+        result?.exitCode === 0 &&
+        !result.stderr.trim() &&
         groupRows.safeParse(result.stdout.trim().split(/\r?\n/)).success
-      ) return true;
+      )
+        return true;
       throw new RigError(
         "PROCESS_INSPECT",
         "Process group presence could not be verified.",
@@ -61,7 +70,10 @@ export function createProcessInspection(
       );
     }
   }
-  async function signalGroup(pid: number, signal: NodeJS.Signals): Promise<void> {
+  async function signalGroup(
+    pid: number,
+    signal: NodeJS.Signals,
+  ): Promise<void> {
     try {
       kill(-pid, signal);
     } catch (error) {
@@ -79,5 +91,9 @@ export function createProcessInspection(
       );
     }
   }
-  return { identity: createProcessIdentityReader(run), groupExists, signalGroup };
+  return {
+    identity: createProcessIdentityReader(run),
+    groupExists,
+    signalGroup,
+  };
 }

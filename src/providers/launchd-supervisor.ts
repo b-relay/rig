@@ -17,11 +17,7 @@ import type {
   Supervisor,
 } from "./contracts";
 import { DEFAULT_SHUTDOWN_BUDGET_MS } from "./child-supervisor";
-import {
-  exitEvidence,
-  readExitRecord,
-  removeExitRecord,
-} from "./exit-record";
+import { exitEvidence, readExitRecord, removeExitRecord } from "./exit-record";
 export interface LaunchdOptions {
   readonly root: string;
   readonly domain: string;
@@ -112,15 +108,21 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         timeoutMs: 2000,
       });
       if (result.exitCode !== 0 && !unloaded(result))
-        return { state: "unknown", reason: "launchd could not inspect the job." };
+        return {
+          state: "unknown",
+          reason: "launchd could not inspect the job.",
+        };
       const pid = result.stdout.match(/^\s*pid = (\d+)\s*$/m);
-      if (pid) return options.captureCommand
-        ? await readCaptureObservation({
-            requestPath: join(options.root, `${label(key)}.json`),
-            wrapperPid: Number(pid[1]),
-            inspect, now, signal,
-          })
-        : { state: "running", pid: Number(pid[1]) };
+      if (pid)
+        return options.captureCommand
+          ? await readCaptureObservation({
+              requestPath: join(options.root, `${label(key)}.json`),
+              wrapperPid: Number(pid[1]),
+              inspect,
+              now,
+              signal,
+            })
+          : { state: "running", pid: Number(pid[1]) };
       // Loaded without a pid, or no longer loaded. launchd's own last exit code names no start and, under capture, is
       // the wrapper's; only the wrapper's record of its application's exit is evidence.
       return {
@@ -183,11 +185,9 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         command = [...options.captureCommand, requestPath];
       }
       const plist = join(options.root, `${jobLabel}.plist`);
-      await writeFile(
-        plist,
-        launchdPlist({ ...request, command }, jobLabel),
-        { mode: 0o600 },
-      );
+      await writeFile(plist, launchdPlist({ ...request, command }, jobLabel), {
+        mode: 0o600,
+      });
       const existing = await run({
         command: ["launchctl", "print", service(request.key)],
         timeoutMs: 2000,

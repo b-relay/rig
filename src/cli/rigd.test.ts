@@ -48,11 +48,19 @@ test("daemon administration uses observed state and never reveals private paths"
       return 0;
     },
   };
-  for (const command of [[], ["install"], ["status"], ["uninstall"], ["capture"]])
+  for (const command of [
+    [],
+    ["install"],
+    ["status"],
+    ["uninstall"],
+    ["capture"],
+  ])
     for (const flag of ["--help", "-h"]) {
       text = "";
       expect(await runRigdCli([...command, flag], options)).toBe(0);
-      expect(text).toContain(`Usage: rigd${command.length ? ` ${command[0]}` : ""}`);
+      expect(text).toContain(
+        `Usage: rigd${command.length ? ` ${command[0]}` : ""}`,
+      );
     }
   expect(calls).toBe(0);
   text = "";
@@ -77,8 +85,15 @@ test("rigd --version prints the version without touching the daemon", async () =
   };
   const code = await runRigdCli(["--version"], {
     admin: { install: count, status: count, uninstall: count },
-    output: { write: (value: string) => void (text += value), error: (value: string) => void (text += value) },
-    diagnostics: { async record() { return {}; } },
+    output: {
+      write: (value: string) => void (text += value),
+      error: (value: string) => void (text += value),
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
     newOperationId: () => "version",
     capture: async () => {
       calls++;

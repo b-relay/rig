@@ -121,8 +121,11 @@ metadata such as Target count.
 Project context is available. It is read-only by default.
 
 Observed status has one two-second total deadline. Configured checks distinguish
-healthy from merely running; timeouts remain unknown. Up/down/restart consume
-recorded Target policy, while doctor diagnoses drift against current config.
+healthy from merely running; timeouts remain unknown. Up/down/restart on the
+Stable Target and Previews use the recorded plan. The Working copy is
+re-planned from the current `rig.yaml` on `up` (when stopped) and on `restart`.
+Doctor compares the Working copy with the current `rig.yaml`, and each deployed
+Target with the config committed in its checkout.
 Final Operation activity is distinct from safe diagnostic JSONL and Target logs.
 
 ## Config
@@ -145,15 +148,17 @@ Host config (`<RIG_ROOT>/config.yaml`) owns:
 Config is YAML only: `rig.yaml` for a Project, `config.yaml` for the Host.
 Unknown keys and unsupported YAML features fail closed. `rig config` reads the
 validated document and its source path. There is no `rig config set`: config
-is edited by hand and checked by `doctor` and by deploy preflight.
+is edited by hand, checked by `doctor`, and validated again whenever a Target
+is planned. The rigd control plane has a structured, comment-preserving config
+edit endpoint (`/v1/config`); the CLI does not expose it.
 
 ## Provider Contract
 
 Providers receive what they need from the resolved runtime plan. They do not
 read Host config, Project config, or global paths themselves. The bundled
 providers (process supervisors, Caddy router, Git source store, artifact
-installer, command runner) and any future external provider use the same
-contracts in `src/providers/contracts.ts`.
+installer, command runner) all implement the contracts in
+`src/providers/contracts.ts`.
 
 ## Deliberately Absent
 

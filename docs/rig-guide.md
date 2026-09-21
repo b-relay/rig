@@ -487,7 +487,7 @@ Rig remote classification uses the pushed destination Branch:
 - Any other destination Branch creates or updates a Preview and brings it up by
   default.
 - Same-Commit pushes are no-ops and should not start a stopped Target.
-- Rig remote pushes do not support `--no-up` in the first release.
+- Rig remote pushes do not support `--no-up`.
 
 A successful push prints one line per Branch on stderr naming the Project,
 the Branch, the outcome, the Target it landed on (Preview names are derived,

@@ -1,12 +1,16 @@
 import landing from "../site/index.html";
 import dashboard from "../dashboard/index.html";
+import { DaemonClient } from "../../src/daemon/client";
+import type { ListResult } from "../../src/daemon/protocol";
 import { liveDaemonAddress } from "../../src/daemon/connection";
 import { rigRoot } from "../../src/cli/entry-environment";
 import { RigError } from "../../src/domain/errors";
 import { accessPolicy, admit, parseTrustedClients } from "./guard";
 import { createRelay, RELAYED, type RelayedPath } from "./relay";
 import { sandboxDaemon } from "./sandbox";
-import { join } from "node:path";
+import { downCommands, seedSandbox } from "./seed";
+import { mkdir, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 /** Effect owner for the Rig website: the landing page, the dashboard, and the relay to this Host's rigd. */
 const port = Number(process.env.PORT);
@@ -35,26 +39,71 @@ const relay = createRelay({
   address: () => liveDaemonAddress(root),
   send: (url, init) => fetch(url, init),
 });
+/** Runs one command to completion and answers with its exit code and everything it printed. */
+async function execute(
+  argv: string[],
+  env: Record<string, string | undefined>,
+) {
+  const child = Bun.spawn(argv, { env, stdout: "pipe", stderr: "pipe" });
+  const [out, err] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { exitCode: await child.exited, stdout: out, output: out + err };
+}
 if (sandboxRoot) {
-  const daemon = sandboxDaemon(sandboxRoot, async (command, sandbox) => {
-    const rigd = Bun.spawn(
-      [process.execPath, join(import.meta.dir, "../../src/rigd.ts"), command],
-      {
-        env: { ...process.env, RIG_ROOT: sandbox },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const [out, err] = await Promise.all([
-      new Response(rigd.stdout).text(),
-      new Response(rigd.stderr).text(),
-    ]);
-    return { exitCode: await rigd.exited, output: out + err };
-  });
+  const source = (entry: string) => join(import.meta.dir, "../../src", entry);
+  const env = { ...process.env, RIG_ROOT: sandboxRoot };
+  const rig = (args: string[]) =>
+    execute([process.execPath, source("index.ts"), ...args], env);
+  const daemon = sandboxDaemon(sandboxRoot, (command) =>
+    execute([process.execPath, source("rigd.ts"), command], env),
+  );
   await daemon.start();
+  // Demo Projects live beside the sandbox root, in the same Preview data directory.
+  const projectsRoot = join(dirname(sandboxRoot), "demo-projects");
+  await mkdir(projectsRoot, { recursive: true });
+  // Seeding deploys, which takes a while; the site serves meanwhile and the Projects appear as they land.
+  void seedSandbox(join(import.meta.dir, "../demo"), projectsRoot, {
+    exists: (path) =>
+      stat(path).then(
+        () => true,
+        () => false,
+      ),
+    run: async (step) => {
+      const done =
+        step.kind === "rig"
+          ? await rig(step.args)
+          : await execute(step.argv, env);
+      if (done.exitCode !== 0) throw new Error(done.output.trim());
+    },
+  }).then((failures) => {
+    for (const failure of failures)
+      process.stderr.write(
+        `demo Project ${failure.project} was not seeded: ${failure.cause}\n`,
+      );
+  });
+  // The Host's rigd allows a stopping Service four seconds, so this talks to the sandbox's
+  // control plane directly and stops every Project at once rather than starting a CLI per step.
+  const stopTargets = async () => {
+    const control = new DaemonClient(await liveDaemonAddress(sandboxRoot));
+    const { projects } = (await control.command({
+      action: "list",
+    })) as ListResult;
+    await Promise.all(
+      projects.map(async ({ name }) => {
+        const { targets } = await control.status({ project: name });
+        for (const down of downCommands(name, targets))
+          await control.command(down);
+      }),
+    );
+  };
   for (const signal of ["SIGTERM", "SIGINT"] as const)
     process.once(signal, () => {
-      void daemon.stop().finally(() => process.exit(0));
+      void stopTargets()
+        .catch(() => {})
+        .then(() => daemon.stop())
+        .finally(() => process.exit(0));
     });
 }
 const isRelayed = (path: string): path is RelayedPath =>

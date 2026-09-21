@@ -74,13 +74,20 @@ against that root before serving and `rigd uninstall` when the Service stops,
 and the relay reads that root instead of `~/.rig`. A Rig root other than
 `~/.rig` runs `rigd` as a plain process, never in launchd, with its own token,
 state, and Caddyfile (`<root>/proxy/Caddyfile`, never reloaded), so a Preview's
-dashboard is fully usable and cannot touch the Host's Projects or routes. The
-sandbox starts empty, its Targets get ports but no published URLs, and
-`rig down preview <branch> --destroy` deletes it with the Preview's data.
+dashboard is fully usable and cannot touch the Host's Projects or routes.
+
+A new sandbox is seeded from `web/demo`: each directory there is copied into the
+Preview's data directory, committed, and registered (`web/server/seed.ts`);
+`pantry` and `ledger` are deployed and `pantry` also gets a Preview, so every
+dashboard screen has something to show. Seeding runs after the site starts
+serving, and a Project already present is left alone, so a restart keeps what a
+visitor changed. Sandbox Targets get ports but no published URLs. When the
+Service stops, the site stops every sandbox Target through the sandbox's control
+plane and then runs `rigd uninstall`; `rig down preview <branch> --destroy`
+deletes the rest with the Preview's data.
 
 The sandbox isolates state, not privileges: a Project registered in it still
-runs its commands as you. `rigd uninstall` refuses while a sandbox Target runs;
-the sandbox `rigd` is then left running and the next start adopts it.
+runs its commands as you.
 
 ## Layout
 
@@ -94,8 +101,9 @@ the sandbox `rigd` is then left running and the next start adopts it.
 | `web/dashboard/config-form` | Pure draft helpers: path edits, the draft-to-patch diff, field help.   |
 | `web/dashboard/components`  | shadcn/ui primitives (fetched from the registry, edited in place).     |
 | `web/dashboard/styles.css`  | Tailwind entry mapping shadcn tokens onto the Rig palette.             |
+| `web/demo`                  | Demo Projects every Preview sandbox is seeded with.                    |
 | `web/server`                | `main.ts` (effect owner), `guard.ts` (access policy), `relay.ts`,      |
-|                             | `sandbox.ts` (a Preview's own rigd).                                   |
+|                             | `sandbox.ts` (a Preview's own rigd), `seed.ts` (its demo Projects).    |
 
 The dashboard is styled with Tailwind v4 and shadcn/ui. Tailwind compiles
 inside Bun's HTML bundler through `bun-plugin-tailwind`, registered in

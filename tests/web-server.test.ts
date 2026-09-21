@@ -7,6 +7,7 @@ import {
 } from "../web/server/guard";
 import { createRelay } from "../web/server/relay";
 import { sandboxDaemon } from "../web/server/sandbox";
+import { downCommands, seedSandbox, seedSteps } from "../web/server/seed";
 
 const policy = accessPolicy({
   publicHost: "rig.b-relay.com",
@@ -255,13 +256,13 @@ test("a sandboxed Preview relays, since it only reaches its own rigd", () => {
 
 test("the sandbox daemon installs into its own root and reports a refused stop", async () => {
   const calls: string[] = [];
-  const sandbox = sandboxDaemon("/tmp/box", async (command, root) => {
-    calls.push(`${command} ${root}`);
+  const sandbox = sandboxDaemon("/tmp/box", async (command) => {
+    calls.push(command);
     return { exitCode: command === "install" ? 0 : 1, output: "" };
   });
   await sandbox.start();
   expect(await sandbox.stop()).toBe(false);
-  expect(calls).toEqual(["install /tmp/box", "uninstall /tmp/box"]);
+  expect(calls).toEqual(["install", "uninstall"]);
   const broken = sandboxDaemon("/tmp/box", async () => ({
     exitCode: 1,
     output: "port refused",
@@ -270,4 +271,75 @@ test("the sandbox daemon installs into its own root and reports a refused stop",
     code: "WEB_SANDBOX_FAILED",
     details: { output: "port refused" },
   });
+});
+
+test("a demo Project is committed, registered, then deployed", () => {
+  const steps = seedSteps(
+    { name: "pantry", deployStable: true, previewBranch: "feat/x" },
+    "/site/demo/pantry",
+    "/data/pantry",
+  );
+  expect(steps[0]).toEqual({
+    kind: "exec",
+    argv: ["cp", "-R", "/site/demo/pantry", "/data/pantry"],
+  });
+  expect(steps.filter((step) => step.kind === "rig")).toEqual([
+    { kind: "rig", args: ["init", "--path", "/data/pantry"] },
+    { kind: "rig", args: ["deploy", "live", "--project", "pantry"] },
+    {
+      kind: "rig",
+      args: ["deploy", "preview", "feat/x", "--project", "pantry"],
+    },
+  ]);
+  const registerOnly = seedSteps(
+    { name: "quill", deployStable: false },
+    "/site/demo/quill",
+    "/data/quill",
+  );
+  expect(registerOnly.at(-1)).toEqual({
+    kind: "rig",
+    args: ["init", "--path", "/data/quill"],
+  });
+});
+
+test("seeding skips Projects already present and reports a failure without stopping the rest", async () => {
+  const ran: string[] = [];
+  const failures = await seedSandbox(
+    "/site/demo",
+    "/data",
+    {
+      exists: async (path) => path === "/data/kept",
+      run: async (step) => {
+        if (step.kind === "rig" && step.args.includes("/data/broken"))
+          throw new Error("init refused");
+        if (step.kind === "rig") ran.push(step.args.join(" "));
+      },
+    },
+    [
+      { name: "kept", deployStable: true },
+      { name: "broken", deployStable: true },
+      { name: "fine", deployStable: false },
+    ],
+  );
+  expect(failures).toEqual([{ project: "broken", cause: "init refused" }]);
+  expect(ran).toEqual(["init --path /data/fine"]);
+});
+
+test("shutdown stops every started Target, naming a Preview by its deployment", () => {
+  expect(
+    downCommands("pantry", [
+      { name: "live", kind: "live", state: "healthy" },
+      { name: "feat-x-0a1b2c3d", kind: "preview", state: "degraded" },
+      { name: "local", kind: "local", state: "configured" },
+      { name: "old", kind: "preview", state: "stopped" },
+    ]),
+  ).toEqual([
+    { action: "down", project: "pantry", target: "live" },
+    {
+      action: "down",
+      project: "pantry",
+      target: "preview",
+      deployment: "feat-x-0a1b2c3d",
+    },
+  ]);
 });

@@ -54,7 +54,12 @@ function toolBuild(
   timeout = 600,
 ) {
   return {
-    unit: { id: `tool:${component.name}`, component: component.name, command, timeout },
+    unit: {
+      id: `tool:${component.name}`,
+      component: component.name,
+      command,
+      timeout,
+    },
     record: {
       ...record,
       plan: { ...record.plan, components: [component] },
@@ -596,7 +601,9 @@ test("a renamed Component takes over its own Target's installed executable, whil
       },
     },
   });
-  await writeFile(join(root, "bin", "tool-local"), "hand edit", { mode: 0o755 });
+  await writeFile(join(root, "bin", "tool-local"), "hand edit", {
+    mode: 0o755,
+  });
   const installed = {
     ...record,
     plan: { ...record.plan, components: [launcher] },
@@ -606,7 +613,9 @@ test("a renamed Component takes over its own Target's installed executable, whil
     message: `The installed executable ${join(root, "bin", "tool-local")} changed outside its owning Component launcher.`,
     hint: `Move or delete ${join(root, "bin", "tool-local")} to keep or discard that change, then retry.`,
   });
-  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toBe("hand edit");
+  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toBe(
+    "hand edit",
+  );
   await rm(join(root, "bin", "tool-local"));
   await adapter.retireArtifacts(installed);
   expect(await Bun.file(join(root, "bin", "tool-local")).exists()).toBe(false);
@@ -665,11 +674,21 @@ test("a missing initdb names the tool instead of a generic start failure, and an
   };
   await expect(adapter.prepare(record)).rejects.toMatchObject({
     code: "POSTGRES_INIT",
-    message: "initdb is not installed or not on rigd's PATH, so the Postgres storage for pg could not be initialized.",
+    message:
+      "initdb is not installed or not on rigd's PATH, so the Postgres storage for pg could not be initialized.",
     hint: "Install PostgreSQL (for example brew install postgresql@17) so initdb, postgres and pg_isready are on the PATH rigd was installed from, then retry.",
   });
   expect(commands).toEqual([
-    ["initdb", "-E", "UTF8", "-A", "trust", "--no-locale", "-D", join(root, "pg")],
+    [
+      "initdb",
+      "-E",
+      "UTF8",
+      "-A",
+      "trust",
+      "--no-locale",
+      "-D",
+      join(root, "pg"),
+    ],
   ]);
 });
 
@@ -760,7 +779,12 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
     supervisors: new Map(),
     run: async ({ timeoutMs }) => {
       requests.push(timeoutMs!);
-      return { exitCode: 1, stdout: "installing\n", stderr: "", timedOut: true };
+      return {
+        exitCode: 1,
+        stdout: "installing\n",
+        stderr: "",
+        timedOut: true,
+      };
     },
     installer: createArtifactInstaller({
       run: runCommand,
@@ -784,7 +808,12 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
     kind: "live",
     name: "live",
     sourceRoot: join(root, "targets", "p", "t", "revisions"),
-    plan: { ...target(root).plan, target: "live", workspacePath: workspace, installTimeout: 7 },
+    plan: {
+      ...target(root).plan,
+      target: "live",
+      workspacePath: workspace,
+      installTimeout: 7,
+    },
   };
   await expect(adapter.prepare(live)).rejects.toMatchObject({
     code: "DEPENDENCIES_TIMEOUT",
@@ -804,7 +833,10 @@ test("a missing listed env file fails as ENV_FILE_MISSING naming the path, befor
   const record = target(root);
   record.plan.envFiles = [{ path: join(root, ".env"), required: true }];
   await expect(
-    effects(root).build({ id: "shared", command: "touch ran", timeout: 600 }, record),
+    effects(root).build(
+      { id: "shared", command: "touch ran", timeout: 600 },
+      record,
+    ),
   ).rejects.toMatchObject({
     code: "ENV_FILE_MISSING",
     message: `The environment file ${join(root, ".env")} does not exist.`,

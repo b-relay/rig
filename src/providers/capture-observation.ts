@@ -5,28 +5,54 @@ import type { ProcessObservation } from "./contracts";
 import type { ProcessIdentityReader } from "./process-identity";
 
 const observationSchema = z.object({
-  wrapperPid: z.number().int().positive()
+  wrapperPid: z
+    .number()
+    .int()
+    .positive()
     .describe("Capture wrapper process identifier."),
-  wrapperIdentity: z.string().length(64)
+  wrapperIdentity: z
+    .string()
+    .length(64)
     .describe("Capture wrapper process birth identity."),
-  observedAt: z.number().finite()
+  observedAt: z
+    .number()
+    .finite()
     .describe("Unix milliseconds when the child was observed."),
-  applicationIdentity: z.string().length(64).optional()
+  applicationIdentity: z
+    .string()
+    .length(64)
+    .optional()
     .describe("Running application process birth identity."),
-  observation: z.object({
-    state: z.enum(["running", "stopped", "unknown"])
-      .describe("Current application process state."),
-    pid: z.number().int().positive().optional()
-      .describe("Application process identifier, never the wrapper PID."),
-    exitCode: z.number().int().optional()
-      .describe("Last application exit code."),
-    signal: z.string().optional()
-      .describe("Signal that ended the application, when one did."),
-    incarnation: z.string().optional()
-      .describe("The start that produced the observed application process."),
-    reason: z.string().optional()
-      .describe("Safe explanation of uncertain application state."),
-  }).describe("Application observation owned by the capture supervisor."),
+  observation: z
+    .object({
+      state: z
+        .enum(["running", "stopped", "unknown"])
+        .describe("Current application process state."),
+      pid: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Application process identifier, never the wrapper PID."),
+      exitCode: z
+        .number()
+        .int()
+        .optional()
+        .describe("Last application exit code."),
+      signal: z
+        .string()
+        .optional()
+        .describe("Signal that ended the application, when one did."),
+      incarnation: z
+        .string()
+        .optional()
+        .describe("The start that produced the observed application process."),
+      reason: z
+        .string()
+        .optional()
+        .describe("Safe explanation of uncertain application state."),
+    })
+    .describe("Application observation owned by the capture supervisor."),
 });
 export type CaptureObservation = z.infer<typeof observationSchema>;
 
@@ -62,21 +88,27 @@ export async function readCaptureObservation(request: {
   try {
     if (request.signal?.aborted) return unknown;
     const evidence = observationSchema.parse(
-      JSON.parse(await readFile(`${request.requestPath}.observation.json`, "utf8")),
+      JSON.parse(
+        await readFile(`${request.requestPath}.observation.json`, "utf8"),
+      ),
     );
     // Freshness is judged at read time; identity inspections that follow may be slow on a loaded Host.
     const age = request.now() - evidence.observedAt;
     if (age < 0 || age > FRESHNESS_MS) return unknown;
     if (
       evidence.wrapperPid !== request.wrapperPid ||
-      await request.inspect(request.wrapperPid) !== evidence.wrapperIdentity
-    ) return unknown;
+      (await request.inspect(request.wrapperPid)) !== evidence.wrapperIdentity
+    )
+      return unknown;
     const observation = evidence.observation;
     if (
       observation.state === "running" &&
-      (!observation.pid || !evidence.applicationIdentity ||
-        await request.inspect(observation.pid) !== evidence.applicationIdentity)
-    ) return unknown;
+      (!observation.pid ||
+        !evidence.applicationIdentity ||
+        (await request.inspect(observation.pid)) !==
+          evidence.applicationIdentity)
+    )
+      return unknown;
     if (request.signal?.aborted) return unknown;
     return observation;
   } catch {

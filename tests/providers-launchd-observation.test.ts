@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createLaunchdSupervisor, createLaunchdTiming } from "../src/providers/launchd-supervisor";
+import {
+  createLaunchdSupervisor,
+  createLaunchdTiming,
+} from "../src/providers/launchd-supervisor";
 import { createProcessIdentityReader } from "../src/providers/process-identity";
 import { runCommand } from "../src/providers/command-runner";
 import { observeTargets } from "../src/runtime/status";
@@ -17,18 +20,27 @@ test("launchd reports the running application, then its recorded exit and the st
   let replayExitingWrapperSnapshot = false;
   const inspect = createProcessIdentityReader(runCommand);
   const wrapper = join(root, "capture.ts");
-  await writeFile(wrapper, `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[2]!);`);
+  await writeFile(
+    wrapper,
+    `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[2]!);`,
+  );
   const supervisor = createLaunchdSupervisor({
-    root, domain: "gui/99999", labelPrefix: "test.observation",
+    root,
+    domain: "gui/99999",
+    labelPrefix: "test.observation",
     captureCommand: [process.execPath, wrapper],
     timing: createLaunchdTiming(),
-    inspect: async pid => {
-      if (replayExitingWrapperSnapshot && pid === child?.pid) await child.exited;
+    inspect: async (pid) => {
+      if (replayExitingWrapperSnapshot && pid === child?.pid)
+        await child.exited;
       return inspect(pid);
     },
     run: async ({ command }) => {
       if (command[1] === "bootstrap") {
-        child = Bun.spawn([process.execPath, wrapper, command[3]!.replace(/\.plist$/, ".json")], { stdout: "ignore", stderr: "pipe" });
+        child = Bun.spawn(
+          [process.execPath, wrapper, command[3]!.replace(/\.plist$/, ".json")],
+          { stdout: "ignore", stderr: "pipe" },
+        );
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (command[1] === "bootout") {
@@ -37,25 +49,64 @@ test("launchd reports the running application, then its recorded exit and the st
         child = undefined;
         return { exitCode: 0, stdout: "", stderr: "" };
       }
-      if (replayExitingWrapperSnapshot && child) return { exitCode: 0, stdout: `pid = ${child.pid}\n`, stderr: "" };
+      if (replayExitingWrapperSnapshot && child)
+        return { exitCode: 0, stdout: `pid = ${child.pid}\n`, stderr: "" };
       return child
-        ? { exitCode: 0, stdout: child.exitCode === null ? `pid = ${child.pid}\n` : `last exit code = ${child.exitCode}\n`, stderr: "" }
+        ? {
+            exitCode: 0,
+            stdout:
+              child.exitCode === null
+                ? `pid = ${child.pid}\n`
+                : `last exit code = ${child.exitCode}\n`,
+            stderr: "",
+          }
         : { exitCode: 113, stdout: "", stderr: "Could not find service" };
     },
   });
   const exitNow = join(root, "exit-now");
   const request = {
-    key: "application/web", componentName: "web", cwd: root, env: {}, logRoot: root, incarnation: "start-1",
-    command: [process.execPath, "-e", `setInterval(()=>{if(require("node:fs").existsSync(${JSON.stringify(exitNow)}))process.exit(9)}, 20)`],
+    key: "application/web",
+    componentName: "web",
+    cwd: root,
+    env: {},
+    logRoot: root,
+    incarnation: "start-1",
+    command: [
+      process.execPath,
+      "-e",
+      `setInterval(()=>{if(require("node:fs").existsSync(${JSON.stringify(exitNow)}))process.exit(9)}, 20)`,
+    ],
   };
-  const target = { id: "application", name: "live", kind: "live", desired: "running", plan: { components: [
-    { name: "web", kind: "managed", port: 4444 },
-    { name: "checked", kind: "managed", port: 4445, health: "http://localhost:4445" },
-  ] } } as TargetRecord;
-  const report = () => observeTargets([target], {
-    process: (_target, _component, signal) => supervisor.observe(request.key, signal),
-    health: async () => ({ ready: true }), artifact: async () => "installed", persistent: async () => true,
-  }, 2000, timerObservationDeadline);
+  const target = {
+    id: "application",
+    name: "live",
+    kind: "live",
+    desired: "running",
+    plan: {
+      components: [
+        { name: "web", kind: "managed", port: 4444 },
+        {
+          name: "checked",
+          kind: "managed",
+          port: 4445,
+          health: "http://localhost:4445",
+        },
+      ],
+    },
+  } as TargetRecord;
+  const report = () =>
+    observeTargets(
+      [target],
+      {
+        process: (_target, _component, signal) =>
+          supervisor.observe(request.key, signal),
+        health: async () => ({ ready: true }),
+        artifact: async () => "installed",
+        persistent: async () => true,
+      },
+      2000,
+      timerObservationDeadline,
+    );
   const waitFor = async (predicate: (value: ProcessObservation) => boolean) => {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
@@ -68,24 +119,42 @@ test("launchd reports the running application, then its recorded exit and the st
   try {
     const started = await supervisor.ensureRunning(request);
     expect(started.pid).not.toBe(child!.pid);
-    expect(await supervisor.observe(request.key)).toEqual({ state: "running", pid: started.pid, incarnation: "start-1" });
+    expect(await supervisor.observe(request.key)).toEqual({
+      state: "running",
+      pid: started.pid,
+      incarnation: "start-1",
+    });
     const wrapperPid = child!.pid;
     const resumed = await supervisor.ensureRunning(request);
     expect(resumed).toEqual({ outcome: "unchanged", pid: started.pid });
     expect(child!.pid).toBe(wrapperPid);
-    expect((await report())[0]!.components.map(component => component.state)).toEqual(["running", "healthy"]);
+    expect(
+      (await report())[0]!.components.map((component) => component.state),
+    ).toEqual(["running", "healthy"]);
     await writeFile(exitNow, "");
-    expect(await waitFor(value => value.state === "stopped")).toEqual({ state: "stopped", exitCode: 9, incarnation: "start-1" });
+    expect(await waitFor((value) => value.state === "stopped")).toEqual({
+      state: "stopped",
+      exitCode: 9,
+      incarnation: "start-1",
+    });
     // Replay a launchctl PID snapshot taken just before the wrapper exits. Its
     // subsequent identity lookup must remain unknown, never trust dead ownership.
     replayExitingWrapperSnapshot = true;
-    expect((await report())[0]!.components.map(component => component.state)).toEqual(["unknown", "unknown"]);
+    expect(
+      (await report())[0]!.components.map((component) => component.state),
+    ).toEqual(["unknown", "unknown"]);
     replayExitingWrapperSnapshot = false;
     // A terminal child snapshot can precede the wrapper's own process exit.
     await child!.exited;
-    expect((await report())[0]!.components.map(component => component.state)).toEqual(["failed", "failed"]);
+    expect(
+      (await report())[0]!.components.map((component) => component.state),
+    ).toEqual(["failed", "failed"]);
     // The wrapper is gone and nothing started the application again: the recorded exit is what remains.
-    expect(await supervisor.observe(request.key)).toEqual({ state: "stopped", exitCode: 9, incarnation: "start-1" });
+    expect(await supervisor.observe(request.key)).toEqual({
+      state: "stopped",
+      exitCode: 9,
+      incarnation: "start-1",
+    });
   } finally {
     await supervisor.stop(request.key);
     await rm(root, { recursive: true, force: true });
@@ -96,17 +165,31 @@ test("capture observations reject missing, stale, corrupt, or mismatched evidenc
   const { createHash } = await import("node:crypto");
   const root = await mkdtemp(join(tmpdir(), "rig-capture-evidence-"));
   const key = "application/web";
-  const path = join(root, `test.observation.${createHash("sha256").update(key).digest("hex").slice(0, 24)}.json.observation.json`);
+  const path = join(
+    root,
+    `test.observation.${createHash("sha256").update(key).digest("hex").slice(0, 24)}.json.observation.json`,
+  );
   const wrapperIdentity = "a".repeat(64);
   const applicationIdentity = "b".repeat(64);
   const evidence = {
-    wrapperPid: 101, wrapperIdentity, observedAt: 10_000,
-    applicationIdentity, observation: { state: "running", pid: 202 },
+    wrapperPid: 101,
+    wrapperIdentity,
+    observedAt: 10_000,
+    applicationIdentity,
+    observation: { state: "running", pid: 202 },
   };
   const supervisor = createLaunchdSupervisor({
-    root, domain: "gui/99999", labelPrefix: "test.observation", captureCommand: ["capture"],
+    root,
+    domain: "gui/99999",
+    labelPrefix: "test.observation",
+    captureCommand: ["capture"],
     timing: { ...createLaunchdTiming(), now: () => 10_000 },
-    inspect: async pid => pid === 101 ? wrapperIdentity : pid === 202 ? applicationIdentity : undefined,
+    inspect: async (pid) =>
+      pid === 101
+        ? wrapperIdentity
+        : pid === 202
+          ? applicationIdentity
+          : undefined,
     run: async () => ({ exitCode: 0, stdout: "pid = 101\n", stderr: "" }),
   });
   try {
@@ -120,14 +203,22 @@ test("capture observations reject missing, stale, corrupt, or mismatched evidenc
       JSON.stringify({ ...evidence, wrapperIdentity: "c".repeat(64) }),
       JSON.stringify({ ...evidence, applicationIdentity: "c".repeat(64) }),
       JSON.stringify({ ...evidence, applicationIdentity: undefined }),
-      JSON.stringify({ ...evidence, observation: { state: "running", pid: 999 } }),
+      JSON.stringify({
+        ...evidence,
+        observation: { state: "running", pid: 999 },
+      }),
     ]) {
       await writeFile(path, invalid);
       expect((await supervisor.observe(key)).state).toBe("unknown");
     }
     await writeFile(path, JSON.stringify(evidence));
-    expect(await supervisor.observe(key)).toEqual({ state: "running", pid: 202 });
-    expect((await supervisor.observe(key, AbortSignal.abort())).state).toBe("unknown");
+    expect(await supervisor.observe(key)).toEqual({
+      state: "running",
+      pid: 202,
+    });
+    expect((await supervisor.observe(key, AbortSignal.abort())).state).toBe(
+      "unknown",
+    );
     for (const observation of [
       { state: "stopped", exitCode: 9, incarnation: "start-1" },
       { state: "stopped", signal: "SIGKILL", incarnation: "start-1" },

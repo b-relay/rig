@@ -16,13 +16,20 @@ export function stopFixture(active: string[] = []) {
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
-    async pruneCheckpoints() { return []; },
+    async pruneCheckpoints() {
+      return [];
+    },
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {
         const observation = observations.get(key);
         if (observation instanceof Error) throw observation;
-        return observation ?? (running.has(key) ? { state: "running", pid: 1 } : { state: "stopped" });
+        return (
+          observation ??
+          (running.has(key)
+            ? { state: "running", pid: 1 }
+            : { state: "stopped" })
+        );
       },
       async stop(key) {
         stops.push(key);
@@ -38,13 +45,26 @@ export function stopFixture(active: string[] = []) {
       async detach() {},
     }),
     async prepare() {},
-    async environment() { return {}; },
-    async health() { return { ready: true }; },
+    async environment() {
+      return {};
+    },
+    async health() {
+      return { ready: true };
+    },
     async build() {},
-    async install() { return { outcome: "unchanged" }; },
+    async install() {
+      return { outcome: "unchanged" };
+    },
     async route() {},
     async removeRoute() {},
-    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001, 4567]),
+    listeners: async (pid: number) =>
+      loopbackListeners(pid, [4000, 4001, 4567]),
   };
-  return { lifecycle: createTargetLifecycle(effects), running, stops, observations, stopFailures };
+  return {
+    lifecycle: createTargetLifecycle(effects),
+    running,
+    stops,
+    observations,
+    stopFailures,
+  };
 }

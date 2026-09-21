@@ -16,13 +16,16 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
       message: "Host configuration is valid.",
     });
     checks.push(
-      await inspectHostProxy(root, host, process.env).then(proxyCheck, (error) => ({
-        name: "caddy-proxy",
-        ok: false,
-        message: `Rig's route file or the host Caddyfile could not be read: ${String((error as Error).message ?? error)}`,
-        reason: "proxy-unreadable",
-        hint: "Make the Caddyfiles readable by the rigd user, or set providers.caddy.host_caddyfile.",
-      })),
+      await inspectHostProxy(root, host, process.env).then(
+        proxyCheck,
+        (error) => ({
+          name: "caddy-proxy",
+          ok: false,
+          message: `Rig's route file or the host Caddyfile could not be read: ${String((error as Error).message ?? error)}`,
+          reason: "proxy-unreadable",
+          hint: "Make the Caddyfiles readable by the rigd user, or set providers.caddy.host_caddyfile.",
+        }),
+      ),
     );
   } catch (error) {
     checks.push({

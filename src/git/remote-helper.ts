@@ -63,7 +63,9 @@ const status = z.object({
         transitionPending: z
           .boolean()
           .optional()
-          .describe("True while the Target's deployment transition is unresolved."),
+          .describe(
+            "True while the Target's deployment transition is unresolved.",
+          ),
       }),
     )
     .describe("Current recorded Targets."),
@@ -74,14 +76,22 @@ const completed = z.object({
     .describe(
       "Final deployment outcome; transport acceptance is insufficient.",
     ),
-  target: z.string().optional().describe("Recorded name of the deployed Target."),
+  target: z
+    .string()
+    .optional()
+    .describe("Recorded name of the deployed Target."),
   route: z.string().optional().describe("Hostname the Target is routed at."),
   retired: z
     .array(
       z.object({
         target: z.string().describe("Recorded name of the removed Preview."),
-        branch: z.string().optional().describe("Branch the removed Preview served."),
-        reason: z.string().describe("Why it was removed, such as the Preview limit."),
+        branch: z
+          .string()
+          .optional()
+          .describe("Branch the removed Preview served."),
+        reason: z
+          .string()
+          .describe("Why it was removed, such as the Preview limit."),
       }),
     )
     .optional()
@@ -384,13 +394,25 @@ export function createGitPushSource(
     },
     async rewritten(branch, commit) {
       const local = await run({
-        command: ["git", "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+        command: [
+          "git",
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          `refs/heads/${branch}`,
+        ],
         cwd: repoPath,
       });
       if (local.exitCode !== 0) return false;
       // A Commit git no longer has locally is as unreachable as one outside the Branch's history.
       const ancestry = await run({
-        command: ["git", "merge-base", "--is-ancestor", commit, `refs/heads/${branch}`],
+        command: [
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          commit,
+          `refs/heads/${branch}`,
+        ],
         cwd: repoPath,
       });
       return ancestry.exitCode !== 0;
@@ -421,7 +443,11 @@ export async function main(args: readonly string[]): Promise<number> {
     await verifyRigRoot(root);
     const interrupt = new AbortController();
     // Ctrl-C, a killed git, or a closed terminal all end the helper; rigd keeps running the operation.
-    for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const)
+    for (const [signal, code] of [
+      ["SIGINT", 130],
+      ["SIGTERM", 143],
+      ["SIGHUP", 129],
+    ] as const)
       process.once(signal, () => {
         interrupt.abort();
         process.exit(code);
@@ -456,7 +482,8 @@ if (import.meta.main) {
   // process alive until git gives up, so flush both streams and end explicitly.
   await Promise.all(
     [process.stdout, process.stderr].map(
-      (stream) => new Promise<void>((resolve) => stream.write("", () => resolve())),
+      (stream) =>
+        new Promise<void>((resolve) => stream.write("", () => resolve())),
     ),
   );
   process.exit(code);

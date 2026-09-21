@@ -14,7 +14,7 @@ services:
   web:
     build: bun run build:web
     run: bun apps/web/dist/server.js
-    ports: {http: auto}
+    ports: { http: auto }
     env:
       HOST: 127.0.0.1
       PORT: ${services.web.ports.http}
@@ -24,7 +24,7 @@ services:
   api:
     build: go build -o .rig-build/api ./cmd/api
     run: ./.rig-build/api
-    ports: {http: auto}
+    ports: { http: auto }
     env:
       HOST: 127.0.0.1
       PORT: ${services.api.ports.http}
@@ -39,7 +39,7 @@ services:
     run: >-
       test -s "$PGDATA/PG_VERSION" || initdb -D "$PGDATA" -U postgres --auth=trust || exit $?;
       exec postgres -D "$PGDATA" -h "$PGHOST" -p "$PGPORT"
-    ports: {pg: auto}
+    ports: { pg: auto }
     env:
       PGHOST: 127.0.0.1
       PGPORT: ${services.db.ports.pg}
@@ -60,8 +60,8 @@ targets:
     name: dev
     services:
       api:
-        ports: {http: 8787}
-    env: {LOG_FORMAT: pretty}
+        ports: { http: 8787 }
+    env: { LOG_FORMAT: pretty }
   stable:
     name: production
   preview:

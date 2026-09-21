@@ -1,5 +1,12 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, rm, writeFile, readFile, mkdir, utimes } from "node:fs/promises";
+import {
+  mkdtemp,
+  rm,
+  writeFile,
+  readFile,
+  mkdir,
+  utimes,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DaemonAdmin } from "../src/daemon/admin";
@@ -70,19 +77,43 @@ test("a cleanly stopped daemon uninstalls without a running rigd: the installati
     script,
     `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
   );
-  const admin = new DaemonAdmin({ root, command: [process.execPath, script], mode: "process", userHome: root });
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+  });
   try {
     await admin.install();
-    const address = JSON.parse(await readFile(join(root, "daemon", "address.json"), "utf8")) as { pid: number };
+    const address = JSON.parse(
+      await readFile(join(root, "daemon", "address.json"), "utf8"),
+    ) as { pid: number };
     process.kill(address.pid, "SIGTERM");
     const deadline = Date.now() + 5000;
-    while (processExists(address.pid) && Date.now() < deadline) await Bun.sleep(50);
+    while (processExists(address.pid) && Date.now() < deadline)
+      await Bun.sleep(50);
     expect(processExists(address.pid)).toBe(false);
-    expect(await admin.status()).toMatchObject({ installed: true, running: false, reachable: false });
-    expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled", installed: false, running: false });
-    await expect(readFile(join(root, "daemon", "install.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(readFile(join(root, "auth", "control-plane.token"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await admin.status()).toMatchObject({ installed: false, running: false, reachable: false });
+    expect(await admin.status()).toMatchObject({
+      installed: true,
+      running: false,
+      reachable: false,
+    });
+    expect(await admin.uninstall()).toMatchObject({
+      outcome: "uninstalled",
+      installed: false,
+      running: false,
+    });
+    await expect(
+      readFile(join(root, "daemon", "install.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(join(root, "auth", "control-plane.token")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await admin.status()).toMatchObject({
+      installed: false,
+      running: false,
+      reachable: false,
+    });
   } finally {
     await admin.uninstall().catch(() => {});
     await rm(root, { recursive: true, force: true });
@@ -96,18 +127,43 @@ test("a reachable daemon whose install record is missing is adopted by install a
     script,
     `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
   );
-  const admin = new DaemonAdmin({ root, command: [process.execPath, script], mode: "process", userHome: root });
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+  });
   try {
     await admin.install();
     await rm(join(root, "daemon", "install.json"));
-    expect(await admin.status()).toMatchObject({ installed: false, running: true, reachable: true });
-    expect(await admin.install()).toMatchObject({ outcome: "installed", installed: true, reachable: true });
-    expect(JSON.parse(await readFile(join(root, "daemon", "install.json"), "utf8"))).toMatchObject({ mode: "process" });
+    expect(await admin.status()).toMatchObject({
+      installed: false,
+      running: true,
+      reachable: true,
+    });
+    expect(await admin.install()).toMatchObject({
+      outcome: "installed",
+      installed: true,
+      reachable: true,
+    });
+    expect(
+      JSON.parse(await readFile(join(root, "daemon", "install.json"), "utf8")),
+    ).toMatchObject({ mode: "process" });
     await rm(join(root, "daemon", "install.json"));
-    const address = JSON.parse(await readFile(join(root, "daemon", "address.json"), "utf8")) as { pid: number };
-    expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled", installed: false, running: false });
+    const address = JSON.parse(
+      await readFile(join(root, "daemon", "address.json"), "utf8"),
+    ) as { pid: number };
+    expect(await admin.uninstall()).toMatchObject({
+      outcome: "uninstalled",
+      installed: false,
+      running: false,
+    });
     expect(processExists(address.pid)).toBe(false);
-    expect(await admin.status()).toMatchObject({ installed: false, running: false, reachable: false });
+    expect(await admin.status()).toMatchObject({
+      installed: false,
+      running: false,
+      reachable: false,
+    });
   } finally {
     await admin.uninstall().catch(() => {});
     await rm(root, { recursive: true, force: true });
@@ -120,13 +176,25 @@ test("a process-mode install gives rigd the login basics plus its own variables,
     script,
     `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; import {writeFile} from 'node:fs/promises'; await writeFile(process.env.RIG_ROOT+'/env.json', JSON.stringify(process.env)); await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
   );
-  const admin = new DaemonAdmin({ root, command: [process.execPath, script], mode: "process", userHome: root });
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+  });
   process.env.RIG_TEST_INSTALLER_SECRET = "hunter2";
   try {
     await admin.install();
-    const env = JSON.parse(await readFile(join(root, "env.json"), "utf8")) as Record<string, string>;
+    const env = JSON.parse(
+      await readFile(join(root, "env.json"), "utf8"),
+    ) as Record<string, string>;
     expect(env).not.toHaveProperty("RIG_TEST_INSTALLER_SECRET");
-    expect(env).toMatchObject({ RIG_ROOT: root, RIG_DAEMON_CHILD: "1", PATH: process.env.PATH!, HOME: process.env.HOME! });
+    expect(env).toMatchObject({
+      RIG_ROOT: root,
+      RIG_DAEMON_CHILD: "1",
+      PATH: process.env.PATH!,
+      HOME: process.env.HOME!,
+    });
   } finally {
     delete process.env.RIG_TEST_INSTALLER_SECRET;
     await admin.uninstall().catch(() => {});
@@ -172,7 +240,11 @@ test("status treats a dead recorded pid as a stopped daemon without contacting i
     port: 0,
     fetch(request) {
       received.push(request.headers.get("authorization") ?? "none");
-      return Response.json({ instanceId: "fixture", pid: 2147483647, running: true });
+      return Response.json({
+        instanceId: "fixture",
+        pid: 2147483647,
+        running: true,
+      });
     },
   });
   try {
@@ -180,7 +252,11 @@ test("status treats a dead recorded pid as a stopped daemon without contacting i
     await mkdir(join(root, "auth"), { recursive: true });
     await writeFile(
       join(root, "daemon", "address.json"),
-      JSON.stringify({ port: foreign.port, pid: 2147483647, instanceId: "fixture" }),
+      JSON.stringify({
+        port: foreign.port,
+        pid: 2147483647,
+        instanceId: "fixture",
+      }),
     );
     await writeFile(join(root, "auth", "control-plane.token"), "secret");
     const admin = new DaemonAdmin({
@@ -221,7 +297,10 @@ test("reinstalling with no daemon running rotates the control-plane token", asyn
     ) as { pid: number };
     process.kill(address.pid, "SIGKILL");
     while (processExists(address.pid)) await Bun.sleep(20);
-    expect(await admin.status()).toMatchObject({ running: false, reachable: false });
+    expect(await admin.status()).toMatchObject({
+      running: false,
+      reachable: false,
+    });
     await admin.install();
     expect(await readFile(tokenPath, "utf8")).not.toBe(first);
     expect(await admin.status()).toMatchObject({ reachable: true });
@@ -276,14 +355,22 @@ test("a recorded pid that now belongs to another process is a stopped daemon: no
     port: 0,
     fetch(request) {
       received.push(request.headers.get("authorization") ?? "none");
-      return Response.json({ instanceId: "fixture", pid: process.pid, running: true });
+      return Response.json({
+        instanceId: "fixture",
+        pid: process.pid,
+        running: true,
+      });
     },
   });
   try {
     await mkdir(join(root, "daemon"));
     await mkdir(join(root, "auth"));
     await writeFile(join(root, "auth", "control-plane.token"), "secret");
-    const reused = { pid: process.pid, instanceId: crypto.randomUUID(), startedAt: "Thu Jan  1 00:00:00 1970" };
+    const reused = {
+      pid: process.pid,
+      instanceId: crypto.randomUUID(),
+      startedAt: "Thu Jan  1 00:00:00 1970",
+    };
     await writeFile(join(root, "daemon", "owner.json"), JSON.stringify(reused));
     await writeFile(
       join(root, "daemon", "address.json"),
@@ -302,7 +389,9 @@ test("a recorded pid that now belongs to another process is a stopped daemon: no
     });
     expect(received).toEqual([]);
     // Past the liveness check: the next failure is the empty command.
-    await expect(admin.install()).rejects.toMatchObject({ code: "DAEMON_COMMAND" });
+    await expect(admin.install()).rejects.toMatchObject({
+      code: "DAEMON_COMMAND",
+    });
     await writeFile(
       join(root, "daemon", "install.json"),
       JSON.stringify({ mode: "process", command: [] }),
@@ -343,7 +432,11 @@ test("rigd startup reclaims a lease whose pid was reused, and refuses one record
     expect(stderr).toContain(owner);
     await writeFile(
       owner,
-      JSON.stringify({ pid: process.pid, instanceId: crypto.randomUUID(), startedAt: "Thu Jan  1 00:00:00 1970" }),
+      JSON.stringify({
+        pid: process.pid,
+        instanceId: crypto.randomUUID(),
+        startedAt: "Thu Jan  1 00:00:00 1970",
+      }),
     );
     const child = start();
     try {
@@ -551,7 +644,8 @@ function fakeLaunchd(root: string, script: string, failure?: string) {
         return { code: 0, stderr: "" };
       }
       if (args[0] === "bootout") {
-        if (!child) return { code: 3, stderr: "Boot-out failed: 3: No such process" };
+        if (!child)
+          return { code: 3, stderr: "Boot-out failed: 3: No such process" };
         try {
           process.kill(child.pid!, "SIGTERM");
         } catch {}
@@ -562,14 +656,19 @@ function fakeLaunchd(root: string, script: string, failure?: string) {
     },
   };
 }
-const label = (root: string) => `com.b-relay.rigd.${Bun.hash(root).toString(16)}`;
+const label = (root: string) =>
+  `com.b-relay.rigd.${Bun.hash(root).toString(16)}`;
 
 test("launchd install is crash-only and throttled, and a failed bootstrap reports launchctl's reason and leaves nothing installed", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-launchd-"));
   const script = await daemonScript(root);
   const plist = join(root, "Library", "LaunchAgents", `${label(root)}.plist`);
   try {
-    const broken = fakeLaunchd(root, script, "Bootstrap failed: 5: Input/output error");
+    const broken = fakeLaunchd(
+      root,
+      script,
+      "Bootstrap failed: 5: Input/output error",
+    );
     const failing = new DaemonAdmin({
       root,
       command: [process.execPath, script],
@@ -581,10 +680,17 @@ test("launchd install is crash-only and throttled, and a failed bootstrap report
     await expect(failing.install()).rejects.toMatchObject({
       code: "LAUNCHD",
       message: expect.stringContaining("Input/output error"),
-      details: { code: 5, stderr: expect.stringContaining("Input/output error") },
+      details: {
+        code: 5,
+        stderr: expect.stringContaining("Input/output error"),
+      },
     });
     await expect(readFile(plist)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await failing.status()).toMatchObject({ installed: false, running: false, reachable: false });
+    expect(await failing.status()).toMatchObject({
+      installed: false,
+      running: false,
+      reachable: false,
+    });
 
     const launchd = fakeLaunchd(root, script);
     const admin = new DaemonAdmin({
@@ -596,14 +702,29 @@ test("launchd install is crash-only and throttled, and a failed bootstrap report
       launchctl: launchd.launchctl,
     });
     try {
-      expect(await admin.install()).toMatchObject({ outcome: "installed", reachable: true });
+      expect(await admin.install()).toMatchObject({
+        outcome: "installed",
+        reachable: true,
+      });
       const content = await readFile(plist, "utf8");
-      expect(content).toContain("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>");
-      expect(content).toContain("<key>ThrottleInterval</key><integer>10</integer>");
-      expect(content).toContain(`<string>${process.execPath}</string><string>${script}</string>`);
+      expect(content).toContain(
+        "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>",
+      );
+      expect(content).toContain(
+        "<key>ThrottleInterval</key><integer>10</integer>",
+      );
+      expect(content).toContain(
+        `<string>${process.execPath}</string><string>${script}</string>`,
+      );
       expect(launchd.calls.at(-1)).toEqual(["bootstrap", "gui/501", plist]);
-      expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled", installed: false });
-      expect(launchd.calls.at(-1)).toEqual(["bootout", `gui/501/${label(root)}`]);
+      expect(await admin.uninstall()).toMatchObject({
+        outcome: "uninstalled",
+        installed: false,
+      });
+      expect(launchd.calls.at(-1)).toEqual([
+        "bootout",
+        `gui/501/${label(root)}`,
+      ]);
       await expect(readFile(plist)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await launchd.launchctl(["bootout", `gui/501/${label(root)}`]);
@@ -620,7 +741,10 @@ test("a launchd job that never became reachable can be uninstalled and status na
     await mkdir(join(root, "daemon"), { recursive: true });
     await mkdir(join(root, "Library", "LaunchAgents"), { recursive: true });
     const command = [join(root, "Cellar", "bun"), join(root, "rigd.ts")];
-    await writeFile(join(root, "daemon", "install.json"), JSON.stringify({ mode: "launchd", command }));
+    await writeFile(
+      join(root, "daemon", "install.json"),
+      JSON.stringify({ mode: "launchd", command }),
+    );
     await writeFile(plist, "<plist/>");
     const launchd = fakeLaunchd(root, "");
     const admin = new DaemonAdmin({
@@ -632,11 +756,19 @@ test("a launchd job that never became reachable can be uninstalled and status na
       launchctl: launchd.launchctl,
     });
     const status = await admin.status();
-    expect(status).toMatchObject({ installed: true, running: false, reachable: false });
+    expect(status).toMatchObject({
+      installed: true,
+      running: false,
+      reachable: false,
+    });
     expect(status.warnings).toHaveLength(1);
     expect(status.warnings?.[0]).toContain(command[0]!);
-    expect(renderResult("daemon-status", status)).toContain(`Warning: ${status.warnings?.[0]}`);
-    const doctor = (await inspectHost(root)).find((check) => check.name === "daemon-executable");
+    expect(renderResult("daemon-status", status)).toContain(
+      `Warning: ${status.warnings?.[0]}`,
+    );
+    const doctor = (await inspectHost(root)).find(
+      (check) => check.name === "daemon-executable",
+    );
     expect(doctor).toMatchObject({ ok: false, reason: "missing-executable" });
     expect(doctor?.message).toContain(command[0]!);
 
@@ -647,7 +779,9 @@ test("a launchd job that never became reachable can be uninstalled and status na
     });
     expect(launchd.calls).toEqual([["bootout", `gui/501/${label(root)}`]]);
     await expect(readFile(plist)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(readFile(join(root, "daemon", "install.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(join(root, "daemon", "install.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -662,9 +796,15 @@ test("the daemon command prefers the PATH entry that resolves to the running exe
     await symlink(process.execPath, join(root, "cellar", "bun"));
     await symlink(join(root, "cellar", "bun"), join(root, "bin", "bun"));
     await writeFile(join(root, "other", "bun"), "#!/bin/sh\n", { mode: 0o755 });
-    expect(await stableExecutablePath(process.execPath, join(root, "bin"))).toBe(join(root, "bin", "bun"));
-    expect(await stableExecutablePath(process.execPath, join(root, "other"))).toBe(process.execPath);
-    expect(await stableExecutablePath(process.execPath, join(root, "empty"))).toBe(process.execPath);
+    expect(
+      await stableExecutablePath(process.execPath, join(root, "bin")),
+    ).toBe(join(root, "bin", "bun"));
+    expect(
+      await stableExecutablePath(process.execPath, join(root, "other")),
+    ).toBe(process.execPath);
+    expect(
+      await stableExecutablePath(process.execPath, join(root, "empty")),
+    ).toBe(process.execPath);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -715,8 +855,13 @@ test("a startup lock left by a dead or replaced startup is reclaimed; a live or 
     expect(stderr).toContain(guard);
     expect(stderr).toMatch(pattern);
     expect(
-      JSON.parse(await readFile(join(root, "daemon", "startup-failure.json"), "utf8")),
-    ).toMatchObject({ code: "DAEMON_START_LOCK", hint: expect.stringContaining(guard) });
+      JSON.parse(
+        await readFile(join(root, "daemon", "startup-failure.json"), "utf8"),
+      ),
+    ).toMatchObject({
+      code: "DAEMON_START_LOCK",
+      hint: expect.stringContaining(guard),
+    });
     await rm(guard, { recursive: true, force: true });
   };
   try {
@@ -724,12 +869,18 @@ test("a startup lock left by a dead or replaced startup is reclaimed; a live or 
     await mkdir(guard);
     await writeFile(
       join(guard, "holder.json"),
-      JSON.stringify({ pid: process.pid, startedAt: "Thu Jan  1 00:00:00 1970" }),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: "Thu Jan  1 00:00:00 1970",
+      }),
     );
     await startsAndServes();
     // Holder exited: reclaimed.
     await mkdir(guard);
-    await writeFile(join(guard, "holder.json"), JSON.stringify({ pid: 2147483647, startedAt: "x" }));
+    await writeFile(
+      join(guard, "holder.json"),
+      JSON.stringify({ pid: 2147483647, startedAt: "x" }),
+    );
     await startsAndServes();
     // No holder record (older rigd) and old: reclaimed.
     await mkdir(guard);
@@ -738,7 +889,10 @@ test("a startup lock left by a dead or replaced startup is reclaimed; a live or 
     await startsAndServes();
     // Live holder: refused, naming pid and lock.
     await mkdir(guard);
-    await writeFile(join(guard, "holder.json"), JSON.stringify({ pid: process.pid }));
+    await writeFile(
+      join(guard, "holder.json"),
+      JSON.stringify({ pid: process.pid }),
+    );
     await refused(new RegExp(`pid ${process.pid}`));
     // No holder record and recent: refused.
     await mkdir(guard);
@@ -753,7 +907,10 @@ test("install reports the daemon's own startup failure as soon as it is recorded
   const script = join(root, "child.ts");
   const guard = join(root, "daemon", "acquiring");
   await mkdir(guard, { recursive: true });
-  await writeFile(join(guard, "holder.json"), JSON.stringify({ pid: process.pid }));
+  await writeFile(
+    join(guard, "holder.json"),
+    JSON.stringify({ pid: process.pid }),
+  );
   await writeFile(
     script,
     `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; await runDaemonHost({root:process.env.RIG_ROOT!,port:0,handle:async()=>({}),shutdown:async()=>{}});`,
@@ -766,15 +923,23 @@ test("install reports the daemon's own startup failure as soon as it is recorded
   });
   try {
     const began = Date.now();
-    const error = await admin.install().then(() => undefined, (error: unknown) => error);
+    const error = await admin.install().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
     expect(Date.now() - began).toBeLessThan(4000);
     expect(error).toMatchObject({
       code: "DAEMON_START",
-      message: expect.stringContaining("Another startup owns the daemon acquisition lock"),
+      message: expect.stringContaining(
+        "Another startup owns the daemon acquisition lock",
+      ),
       hint: expect.stringContaining(guard),
       details: { startup: { code: "DAEMON_START_LOCK" } },
     });
-    expect(await admin.status()).toMatchObject({ installed: false, running: false });
+    expect(await admin.status()).toMatchObject({
+      installed: false,
+      running: false,
+    });
   } finally {
     await admin.uninstall().catch(() => {});
     await rm(root, { recursive: true, force: true });
@@ -815,7 +980,9 @@ test("corrupt daemon records never mask a startup error, never block a clean rel
     let stderr = await new Response(child.stderr).text();
     expect(stderr).toContain("DAEMON_MISSING");
     expect(stderr).not.toMatch(/TypeError|SyntaxError/);
-    await expect(readFile(join(daemon, "owner.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(daemon, "owner.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(await readFile(join(daemon, "address.json"), "utf8")).toBe("null");
     await rm(join(daemon, "address.json"));
 
@@ -825,13 +992,17 @@ test("corrupt daemon records never mask a startup error, never block a clean rel
     await writeFile(join(daemon, "owner.json"), "{broken");
     child = start();
     await awaitAddress(child.pid);
-    expect(JSON.parse(await readFile(join(daemon, "owner.json"), "utf8"))).toMatchObject({ pid: child.pid });
+    expect(
+      JSON.parse(await readFile(join(daemon, "owner.json"), "utf8")),
+    ).toMatchObject({ pid: child.pid });
 
     // Records corrupted while running are left alone; this daemon still releases its own and exits cleanly.
     await writeFile(join(daemon, "owner.json"), "null");
     child.kill("SIGTERM");
     expect(await child.exited).toBe(0);
-    await expect(readFile(join(daemon, "address.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(daemon, "address.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(await readFile(join(daemon, "owner.json"), "utf8")).toBe("null");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -847,18 +1018,40 @@ test("rigd install replaces a reachable daemon recorded by another version and r
     `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
   );
   const marker = join(root, "daemon", "install.json");
-  const admin = new DaemonAdmin({ root, command: [process.execPath, script], mode: "process", userHome: root });
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+  });
   const recordedPid = async () =>
-    (JSON.parse(await readFile(join(root, "daemon", "address.json"), "utf8")) as { pid: number }).pid;
+    (
+      JSON.parse(
+        await readFile(join(root, "daemon", "address.json"), "utf8"),
+      ) as { pid: number }
+    ).pid;
   try {
     await admin.install();
-    expect(JSON.parse(await readFile(marker, "utf8"))).toMatchObject({ version: RIG_VERSION });
+    expect(JSON.parse(await readFile(marker, "utf8"))).toMatchObject({
+      version: RIG_VERSION,
+    });
     const first = await recordedPid();
     expect(await admin.install()).toMatchObject({ outcome: "unchanged" });
     expect(await recordedPid()).toBe(first);
 
-    await writeFile(marker, JSON.stringify({ mode: "process", command: [process.execPath, script], version: "0.0.0" }));
-    expect(await admin.status()).toMatchObject({ installed: true, reachable: true, version: RIG_VERSION });
+    await writeFile(
+      marker,
+      JSON.stringify({
+        mode: "process",
+        command: [process.execPath, script],
+        version: "0.0.0",
+      }),
+    );
+    expect(await admin.status()).toMatchObject({
+      installed: true,
+      reachable: true,
+      version: RIG_VERSION,
+    });
     expect(await admin.install()).toMatchObject({
       outcome: "installed",
       reachable: true,
@@ -866,8 +1059,15 @@ test("rigd install replaces a reachable daemon recorded by another version and r
     });
     expect(processExists(first)).toBe(false);
     expect(await recordedPid()).not.toBe(first);
-    expect(JSON.parse(await readFile(marker, "utf8"))).toMatchObject({ version: RIG_VERSION });
-    expect(await admin.status()).toMatchObject({ installed: true, running: true, reachable: true, version: RIG_VERSION });
+    expect(JSON.parse(await readFile(marker, "utf8"))).toMatchObject({
+      version: RIG_VERSION,
+    });
+    expect(await admin.status()).toMatchObject({
+      installed: true,
+      running: true,
+      reachable: true,
+      version: RIG_VERSION,
+    });
   } finally {
     await admin.uninstall().catch(() => {});
     await rm(root, { recursive: true, force: true });
@@ -881,19 +1081,45 @@ test("status names a serving daemon of another version and tells the user to upg
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: () => Response.json({ instanceId, pid: process.pid, running: true, version: "0.0.0" }),
+    fetch: () =>
+      Response.json({
+        instanceId,
+        pid: process.pid,
+        running: true,
+        version: "0.0.0",
+      }),
   });
   try {
     await mkdir(join(root, "daemon"));
     await mkdir(join(root, "auth"));
     await writeFile(join(root, "auth", "control-plane.token"), "secret");
-    const owner = { pid: process.pid, instanceId, startedAt: await processStartTime(process.pid) };
+    const owner = {
+      pid: process.pid,
+      instanceId,
+      startedAt: await processStartTime(process.pid),
+    };
     await writeFile(join(root, "daemon", "owner.json"), JSON.stringify(owner));
-    await writeFile(join(root, "daemon", "address.json"), JSON.stringify({ ...owner, port: server.port }));
-    await writeFile(join(root, "daemon", "install.json"), JSON.stringify({ mode: "process", command: [], version: "0.0.0" }));
-    const admin = new DaemonAdmin({ root, command: [], mode: "process", userHome: root });
+    await writeFile(
+      join(root, "daemon", "address.json"),
+      JSON.stringify({ ...owner, port: server.port }),
+    );
+    await writeFile(
+      join(root, "daemon", "install.json"),
+      JSON.stringify({ mode: "process", command: [], version: "0.0.0" }),
+    );
+    const admin = new DaemonAdmin({
+      root,
+      command: [],
+      mode: "process",
+      userHome: root,
+    });
     const status = await admin.status();
-    expect(status).toMatchObject({ installed: true, running: true, reachable: true, version: "0.0.0" });
+    expect(status).toMatchObject({
+      installed: true,
+      running: true,
+      reachable: true,
+      version: "0.0.0",
+    });
     expect(status.warnings).toEqual([expect.stringContaining("rigd install")]);
     expect(status.warnings?.[0]).toContain("0.0.0");
     expect(status.warnings?.[0]).toContain(RIG_VERSION);
@@ -930,13 +1156,18 @@ test("SIGTERM lets an in-flight command finish and answer before the daemon clos
         .catch(() => undefined);
       if (!address) await Bun.sleep(50);
     }
-    const client = new DaemonClient({ port: address!.port, token: "test-secret" });
+    const client = new DaemonClient({
+      port: address!.port,
+      token: "test-secret",
+    });
     const inFlight = client.command({ action: "doctor" });
     await Bun.sleep(300);
     child.kill("SIGTERM");
     expect(await inFlight).toEqual({ done: true });
     expect(await child.exited).toBe(0);
-    await expect(readFile(join(root, "daemon", "address.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(join(root, "daemon", "address.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     child.kill();
     await child.exited;
@@ -960,7 +1191,11 @@ test("an unusable credential beside a live daemon is named by status and refuses
     expect(await admin.status()).toMatchObject({
       running: true,
       reachable: false,
-      warnings: [expect.stringContaining(`The daemon credential at ${tokenPath} is empty.`)],
+      warnings: [
+        expect.stringContaining(
+          `The daemon credential at ${tokenPath} is empty.`,
+        ),
+      ],
     });
     const refused = await admin.install().catch((error) => error);
     expect(refused).toMatchObject({ code: "DAEMON_UNREACHABLE" });

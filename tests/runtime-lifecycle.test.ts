@@ -51,8 +51,7 @@ const target: TargetRecord = {
 test("readiness expires even when a health provider ignores cancellation, then rolls back newly started processes", async () => {
   const record = structuredClone(target);
   const component = record.plan.components[0]!;
-  if (component.kind !== "managed")
-    throw new Error("Expected managed fixture");
+  if (component.kind !== "managed") throw new Error("Expected managed fixture");
   component.health = "http://127.0.0.1:4000/health";
   component.readyTimeout = 0.01;
   const running = new Set<string>();
@@ -71,11 +70,15 @@ test("readiness expires even when a health provider ignores cancellation, then r
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
-    async pruneCheckpoints() { return []; },
+    async pruneCheckpoints() {
+      return [];
+    },
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {
-        return (running.has(key) ? { state: "running", pid: 1 } : { state: "stopped" });
+        return running.has(key)
+          ? { state: "running", pid: 1 }
+          : { state: "stopped" };
       },
       async ensureRunning(request) {
         running.add(request.key);
@@ -107,7 +110,9 @@ test("readiness expires even when a health provider ignores cancellation, then r
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
-      createTargetLifecycle(effects).up(record).catch((error: unknown) => error),
+      createTargetLifecycle(effects)
+        .up(record)
+        .catch((error: unknown) => error),
       new Promise((resolve) => {
         watchdog = setTimeout(() => resolve({ code: "TEST_DEADLINE" }), 200);
       }),
@@ -134,7 +139,9 @@ test("up preserves running components and rollback stops only newly started comp
       return { outcome: "stopped" };
     },
     async observe(key) {
-      return (key.endsWith(":api") ? { state: "running", pid: 1 } : { state: "stopped" });
+      return key.endsWith(":api")
+        ? { state: "running", pid: 1 }
+        : { state: "stopped" };
     },
     async shutdown() {},
     async detach() {},
@@ -146,7 +153,9 @@ test("up preserves running components and rollback stops only newly started comp
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
-    async pruneCheckpoints() { return []; },
+    async pruneCheckpoints() {
+      return [];
+    },
     async retireArtifacts() {},
     supervisor: () => supervisor,
     async prepare() {},
@@ -191,7 +200,9 @@ test("down uses recorded plan and reports no-op only when every process was stop
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
-    async pruneCheckpoints() { return []; },
+    async pruneCheckpoints() {
+      return [];
+    },
     async retireArtifacts() {},
     supervisor: () => supervisor,
     async prepare() {},
@@ -237,7 +248,9 @@ test("down attempts every process even when one process stop fails", async () =>
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
-    async pruneCheckpoints() { return []; },
+    async pruneCheckpoints() {
+      return [];
+    },
     async retireArtifacts() {},
     supervisor: () => supervisor,
     async prepare() {},
@@ -263,7 +276,9 @@ import { stopFixture } from "./stop-fixture";
 
 test("down on an already-stopped Target attempts every process and remains unchanged", async () => {
   const f = stopFixture();
-  expect(await f.lifecycle.down(structuredClone(target))).toEqual({ outcome: "unchanged" });
+  expect(await f.lifecycle.down(structuredClone(target))).toEqual({
+    outcome: "unchanged",
+  });
   expect(f.stops).toEqual(["t1:web", "t1:api"]);
 });
 
@@ -280,10 +295,15 @@ test.each(["unknown", "failed-observation"] as const)(
   "%s is not proof of absence and still ends in verified shutdown",
   async (state) => {
     const f = stopFixture(["t1:web"]);
-    f.observations.set("t1:web", state === "failed-observation"
-      ? new Error("Observation failed")
-      : { state: "unknown" });
-    expect(await f.lifecycle.down(structuredClone(target))).toEqual({ outcome: "stopped" });
+    f.observations.set(
+      "t1:web",
+      state === "failed-observation"
+        ? new Error("Observation failed")
+        : { state: "unknown" },
+    );
+    expect(await f.lifecycle.down(structuredClone(target))).toEqual({
+      outcome: "stopped",
+    });
     expect(f.stops).toEqual(["t1:web", "t1:api"]);
     expect([...f.running]).toEqual([]);
   },
@@ -292,10 +312,12 @@ test.each(["unknown", "failed-observation"] as const)(
 test("failed process shutdown reports STOP_INCOMPLETE and still stops the other components", async () => {
   const f = stopFixture(["t1:web", "t1:api"]);
   f.stopFailures.add("t1:web");
-  await expect(f.lifecycle.down(structuredClone(target))).rejects.toMatchObject({
-    code: "STOP_INCOMPLETE",
-    details: { processFailures: [expect.any(Error)] },
-  });
+  await expect(f.lifecycle.down(structuredClone(target))).rejects.toMatchObject(
+    {
+      code: "STOP_INCOMPLETE",
+      details: { processFailures: [expect.any(Error)] },
+    },
+  );
   expect([...f.running]).toEqual(["t1:web"]);
   expect(f.stops).toEqual(["t1:web", "t1:api"]);
 });
@@ -310,11 +332,15 @@ test("Targets without managed components have no shutdown work", async () => {
 
 test("port contention after selection fails startup and preserves an already running component", async () => {
   const { createRuntimeFiles } = await import("../src/adapters/runtime-files");
-  const { createChildSupervisor } = await import("../src/providers/child-supervisor");
+  const { createChildSupervisor } =
+    await import("../src/providers/child-supervisor");
   const { runCommand } = await import("../src/providers/command-runner");
-  const { createProcessInspection, platformKill } = await import("../src/providers/process-inspection");
-  const { createProcessTiming } = await import("../src/providers/process-timing");
-  const { mkdtemp, mkdir, rm, writeFile, readFile } = await import("node:fs/promises");
+  const { createProcessInspection, platformKill } =
+    await import("../src/providers/process-inspection");
+  const { createProcessTiming } =
+    await import("../src/providers/process-timing");
+  const { mkdtemp, mkdir, rm, writeFile, readFile } =
+    await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const base = await mkdtemp(join(tmpdir(), "rig-port-contention-"));
@@ -323,14 +349,24 @@ test("port contention after selection fails startup and preserves an already run
   const supervisor = createChildSupervisor({
     stateRoot: root,
     timing: createProcessTiming(),
-    processInspection: createProcessInspection({ run: runCommand, kill: platformKill }),
+    processInspection: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }),
   });
-  const ports = await createRuntimeFiles().selectPorts({ requests: [{ name: "api" }, { name: "web" }], occupied: new Map(), policy: "dynamic" });
+  const ports = await createRuntimeFiles().selectPorts({
+    requests: [{ name: "api" }, { name: "web" }],
+    occupied: new Map(),
+    policy: "dynamic",
+  });
   const record = structuredClone(target);
   record.plan.workspacePath = root;
   record.plan.dataRoot = root;
   record.logRoot = join(root, "logs");
-  await writeFile(join(root, "server.ts"), "Bun.serve({hostname:'127.0.0.1',port:Number(process.env.PORT),fetch:()=>new Response('owned')});");
+  await writeFile(
+    join(root, "server.ts"),
+    "Bun.serve({hostname:'127.0.0.1',port:Number(process.env.PORT),fetch:()=>new Response('owned')});",
+  );
   await writeFile(join(root, "precious"), "prior Target work");
   for (const component of record.plan.components) {
     if (component.kind !== "managed") continue;
@@ -342,14 +378,42 @@ test("port contention after selection fails startup and preserves an already run
   }
   let rollback = false;
   const effects: TargetEffects = {
-    async checkpoint(record) { return { targetId: record.id, async commit() {}, async rollback() { rollback = true; } }; },
-    async restoreEffects() {}, async commitEffects() {}, async retireSuperseded() {}, async retireArtifacts() {},
-    async pruneCheckpoints() { return []; },
-    supervisor: () => supervisor, async prepare() {}, async environment(_target, component) { return component.env; },
+    async checkpoint(record) {
+      return {
+        targetId: record.id,
+        async commit() {},
+        async rollback() {
+          rollback = true;
+        },
+      };
+    },
+    async restoreEffects() {},
+    async commitEffects() {},
+    async retireSuperseded() {},
+    async retireArtifacts() {},
+    async pruneCheckpoints() {
+      return [];
+    },
+    supervisor: () => supervisor,
+    async prepare() {},
+    async environment(_target, component) {
+      return component.env;
+    },
     async health(component) {
-      try { return (await fetch(component.health!)).ok ? { ready: true } : { ready: false, reason: "not ok" }; } catch { return { ready: false, reason: "unreachable" }; }
-    }, async build() {}, async install() { return { outcome: "unchanged" }; },
-    async route() {}, async removeRoute() {},
+      try {
+        return (await fetch(component.health!)).ok
+          ? { ready: true }
+          : { ready: false, reason: "not ok" };
+      } catch {
+        return { ready: false, reason: "unreachable" };
+      }
+    },
+    async build() {},
+    async install() {
+      return { outcome: "unchanged" };
+    },
+    async route() {},
+    async removeRoute() {},
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   const lifecycle = createTargetLifecycle(effects);
@@ -358,22 +422,44 @@ test("port contention after selection fails startup and preserves an already run
   let competitor: ReturnType<typeof Bun.serve> | undefined;
   try {
     await lifecycle.up(prior);
-    competitor = Bun.serve({ hostname: "127.0.0.1", port: ports.web!, fetch: () => new Response("competitor", { status: 503 }) });
+    competitor = Bun.serve({
+      hostname: "127.0.0.1",
+      port: ports.web!,
+      fetch: () => new Response("competitor", { status: 503 }),
+    });
     // The competitor answers on the port, but rig's own process died on EADDRINUSE: fail fast with its exit code.
-    await expect(lifecycle.up(record)).rejects.toMatchObject({ code: "PROCESS_EXITED", hint: expect.any(String), details: { component: "web", exitCode: 1 } });
+    await expect(lifecycle.up(record)).rejects.toMatchObject({
+      code: "PROCESS_EXITED",
+      hint: expect.any(String),
+      details: { component: "web", exitCode: 1 },
+    });
     expect(rollback).toBe(true);
-    expect(await supervisor.observe("t1:api")).toMatchObject({ state: "running" });
-    expect(await supervisor.observe("t1:web")).toMatchObject({ state: "stopped" });
-    expect(await (await fetch(`http://127.0.0.1:${ports.api}`)).text()).toBe("owned");
-    expect(await readFile(join(root, "precious"), "utf8")).toBe("prior Target work");
-    expect(await readFile(join(record.logRoot, "target.jsonl"), "utf8")).toContain("EADDRINUSE");
+    expect(await supervisor.observe("t1:api")).toMatchObject({
+      state: "running",
+    });
+    expect(await supervisor.observe("t1:web")).toMatchObject({
+      state: "stopped",
+    });
+    expect(await (await fetch(`http://127.0.0.1:${ports.api}`)).text()).toBe(
+      "owned",
+    );
+    expect(await readFile(join(root, "precious"), "utf8")).toBe(
+      "prior Target work",
+    );
+    expect(
+      await readFile(join(record.logRoot, "target.jsonl"), "utf8"),
+    ).toContain("EADDRINUSE");
   } finally {
     competitor?.stop(true);
     await supervisor.shutdown();
     await rm(base, { recursive: true, force: true });
   }
   for (const port of Object.values(ports)) {
-    const probe = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+    const probe = Bun.listen({
+      hostname: "127.0.0.1",
+      port,
+      socket: { data() {} },
+    });
     probe.stop();
   }
 }, 15000);
@@ -381,7 +467,13 @@ test("port contention after selection fails startup and preserves an already run
 test("up prepares the workspace, publishes Tools in plan order, and starts only what is not running", async () => {
   const record = structuredClone(target);
   record.plan.components = [
-    { name: "tool", kind: "installed", entrypoint: "tool", env: {}, dependsOn: [] },
+    {
+      name: "tool",
+      kind: "installed",
+      entrypoint: "tool",
+      env: {},
+      dependsOn: [],
+    },
     record.plan.components[0]!,
   ];
   const events: string[] = [];
@@ -393,11 +485,15 @@ test("up prepares the workspace, publishes Tools in plan order, and starts only 
     async restoreEffects() {},
     async commitEffects() {},
     async retireSuperseded() {},
-    async pruneCheckpoints() { return []; },
+    async pruneCheckpoints() {
+      return [];
+    },
     async retireArtifacts() {},
     supervisor: () => ({
       async observe(key) {
-        return (running.has(key) ? { state: "running", pid: 1 } : { state: "stopped" });
+        return running.has(key)
+          ? { state: "running", pid: 1 }
+          : { state: "stopped" };
       },
       async ensureRunning(request) {
         events.push(`start:${request.componentName}`);

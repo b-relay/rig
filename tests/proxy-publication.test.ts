@@ -10,14 +10,18 @@ import { inspectHost } from "../src/adapters/host-inspection";
 import { projectStatus } from "../src/runtime/project-status";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { renderStatus } from "../src/cli/output";
-import { parseProjectConfig, resolveTargetPlan as resolvePlanWithHost } from "../src/config";
+import {
+  parseProjectConfig,
+  resolveTargetPlan as resolvePlanWithHost,
+} from "../src/config";
 import type { TargetRecord } from "../src/domain/runtime";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
   resolvePlanWithHost(input, RESOLVE_HOST);
 
 const proxyFile = "/rig/proxy/Caddyfile";
-const block = "# rig begin abc\nexample.test {\n  reverse_proxy 127.0.0.1:4000\n}\n# rig end abc\n";
+const block =
+  "# rig begin abc\nexample.test {\n  reverse_proxy 127.0.0.1:4000\n}\n# rig end abc\n";
 function files(map: Record<string, string>) {
   return async (file: string) => map[file];
 }
@@ -56,7 +60,8 @@ test("routes are unpublished when no host Caddyfile imports the proxy file", asy
     environment: {},
     read: files({
       [proxyFile]: block + block.replace(/abc/g, "def"),
-      "/etc/caddy/Caddyfile": "example.com {\n  respond ok\n}\nimport /other/Caddyfile\n# import /rig/proxy/Caddyfile\n",
+      "/etc/caddy/Caddyfile":
+        "example.com {\n  respond ok\n}\nimport /other/Caddyfile\n# import /rig/proxy/Caddyfile\n",
     }),
   });
   expect(unpublished).toEqual({
@@ -66,7 +71,11 @@ test("routes are unpublished when no host Caddyfile imports the proxy file", asy
     state: "unpublished",
   });
   const check = proxyCheck(unpublished);
-  expect(check).toMatchObject({ name: "caddy-proxy", ok: false, reason: "proxy-unpublished" });
+  expect(check).toMatchObject({
+    name: "caddy-proxy",
+    ok: false,
+    reason: "proxy-unpublished",
+  });
   expect(check.message).toContain("/etc/caddy/Caddyfile");
   expect(check.message).toContain(proxyFile);
   expect(check.hint).toContain(`import ${proxyFile}`);
@@ -78,7 +87,10 @@ test("routes are unpublished when no host Caddyfile imports the proxy file", asy
     read: files({ [proxyFile]: block }),
   });
   expect(missing).toEqual({ proxyFile, routes: 1, state: "unpublished" });
-  expect(proxyCheck(missing)).toMatchObject({ ok: false, reason: "proxy-unpublished" });
+  expect(proxyCheck(missing)).toMatchObject({
+    ok: false,
+    reason: "proxy-unpublished",
+  });
   expect(proxyCheck(missing).message).toContain(proxyFile);
 });
 
@@ -118,11 +130,18 @@ test("rig doctor reports an inert proxy file from the configured host Caddyfile"
       join(root, "config.yaml"),
       `providers:\n  caddy:\n    host_caddyfile: ${hostCaddyfile}\n`,
     );
-    const failing = (await inspectHost(root)).find((c) => c.name === "caddy-proxy");
+    const failing = (await inspectHost(root)).find(
+      (c) => c.name === "caddy-proxy",
+    );
     expect(failing).toMatchObject({ ok: false, reason: "proxy-unpublished" });
     expect(failing?.message).toContain(hostCaddyfile);
-    await writeFile(hostCaddyfile, `import ${join(root, "proxy", "Caddyfile")}\n`);
-    expect((await inspectHost(root)).find((c) => c.name === "caddy-proxy")).toMatchObject({ ok: true });
+    await writeFile(
+      hostCaddyfile,
+      `import ${join(root, "proxy", "Caddyfile")}\n`,
+    );
+    expect(
+      (await inspectHost(root)).find((c) => c.name === "caddy-proxy"),
+    ).toMatchObject({ ok: true });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -187,12 +206,20 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
           },
         },
         async inspectProxy() {
-          return { proxyFile, routes: 1, hostCaddyfile: "/etc/caddy/Caddyfile", state };
+          return {
+            proxyFile,
+            routes: 1,
+            hostCaddyfile: "/etc/caddy/Caddyfile",
+            state,
+          };
         },
       },
     );
   const inert = await status("unpublished");
-  expect(inert.targets[0]).toMatchObject({ route: "app.example.test", routePublished: false });
+  expect(inert.targets[0]).toMatchObject({
+    route: "app.example.test",
+    routePublished: false,
+  });
   expect(renderStatus(inert)).toContain("app.example.test  unpublished");
   expect(inert.warnings).toContain(
     `Routes are unpublished: /etc/caddy/Caddyfile does not import ${proxyFile}. Run rig doctor.`,
@@ -205,10 +232,18 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
 test("rig doctor names the caddy executable as a provider capability", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-proxy-caddy-"));
   try {
-    const check = (await inspectHost(root)).find((c) => c.name === "provider/caddy");
-    expect(check).toMatchObject({ name: "provider/caddy", ok: Bun.which("caddy") !== null });
+    const check = (await inspectHost(root)).find(
+      (c) => c.name === "provider/caddy",
+    );
+    expect(check).toMatchObject({
+      name: "provider/caddy",
+      ok: Bun.which("caddy") !== null,
+    });
     if (!check?.ok)
-      expect(check).toMatchObject({ reason: "missing-capability", hint: "Install caddy and include it in PATH." });
+      expect(check).toMatchObject({
+        reason: "missing-capability",
+        hint: "Install caddy and include it in PATH.",
+      });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -217,12 +252,17 @@ test("rig doctor names the caddy executable as a provider capability", async () 
 test("a command reload mode without a command is one invalid host config, not a separate caddy-reload check", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-reload-"));
   try {
-    await writeFile(join(root, "config.yaml"), "providers:\n  caddy:\n    reload:\n      mode: command\n");
+    await writeFile(
+      join(root, "config.yaml"),
+      "providers:\n  caddy:\n    reload:\n      mode: command\n",
+    );
     const checks = await inspectHost(root);
     expect(checks.map((check) => check.name)).not.toContain("caddy-reload");
     const host = checks.find((check) => check.name === "host-config");
     expect(host).toMatchObject({ ok: false, reason: "config-invalid" });
-    expect(`${host?.message} ${host?.hint}`).toContain("providers.caddy.reload.command");
+    expect(`${host?.message} ${host?.hint}`).toContain(
+      "providers.caddy.reload.command",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

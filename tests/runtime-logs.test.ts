@@ -134,7 +134,12 @@ test("foreign cursors, truncated files and complete invalid JSON fail truthfully
     code: "LOG_CURSOR",
   });
   expect((await files.logs(target, undefined, 2)).entries).toEqual([
-    { timestamp: "unknown", component: "unknown", stream: "unknown", line: "Rig skipped an unreadable log record (2 bytes)." },
+    {
+      timestamp: "unknown",
+      component: "unknown",
+      stream: "unknown",
+      line: "Rig skipped an unreadable log record (2 bytes).",
+    },
   ]);
   expect(await readFile(path, "utf8")).toBe("{}\n");
 });
@@ -142,17 +147,40 @@ test("an unreadable complete record is reported in place and follow advances pas
   const target = await fixture(),
     files = createRuntimeFiles(),
     path = join(target.logRoot, "target.jsonl");
-  await writeFile(path, entry("one", "2026-09-09T12:00:01Z") + "{}\n" + entry("three", "2026-09-09T12:00:03Z"));
-  expect((await files.logs(target, undefined, 10)).entries.map((e) => [e.timestamp, e.stream, e.line])).toEqual([
+  await writeFile(
+    path,
+    entry("one", "2026-09-09T12:00:01Z") +
+      "{}\n" +
+      entry("three", "2026-09-09T12:00:03Z"),
+  );
+  expect(
+    (await files.logs(target, undefined, 10)).entries.map((e) => [
+      e.timestamp,
+      e.stream,
+      e.line,
+    ]),
+  ).toEqual([
     ["2026-09-09T12:00:01Z", "stdout", "one"],
-    ["2026-09-09T12:00:01Z", "unknown", "Rig skipped an unreadable log record (2 bytes)."],
+    [
+      "2026-09-09T12:00:01Z",
+      "unknown",
+      "Rig skipped an unreadable log record (2 bytes).",
+    ],
     ["2026-09-09T12:00:03Z", "stdout", "three"],
   ]);
   const initial = await files.logs(target, undefined, 10);
   // A record cut short and glued onto the next one is a single unreadable line.
-  await appendFile(path, "{\"timestamp\":\"2026-09-09T12:00:04Z\",\"glued" + entry("four", "2026-09-09T12:00:05Z") + entry("five", "2026-09-09T12:00:06Z"));
+  await appendFile(
+    path,
+    '{"timestamp":"2026-09-09T12:00:04Z","glued' +
+      entry("four", "2026-09-09T12:00:05Z") +
+      entry("five", "2026-09-09T12:00:06Z"),
+  );
   const followed = await files.logs(target, initial.cursor, 10);
-  expect(followed.entries.map((e) => e.line)).toEqual([expect.stringContaining("Rig skipped an unreadable log record ("), "five"]);
+  expect(followed.entries.map((e) => e.line)).toEqual([
+    expect.stringContaining("Rig skipped an unreadable log record ("),
+    "five",
+  ]);
   expect((await files.logs(target, followed.cursor, 10)).entries).toEqual([]);
 });
 test("a record larger than the reader window is skipped as one marked entry and reading continues", async () => {
@@ -168,10 +196,14 @@ test("a record larger than the reader window is skipped as one marked entry and 
     ["unknown", `Rig skipped an unreadable log record (${huge.length} bytes).`],
   ]);
   const next = await files.logs(target, followed.cursor, 10);
-  expect(next.entries.map((e) => [e.stream, e.line])).toEqual([["stdout", "after"]]);
+  expect(next.entries.map((e) => [e.stream, e.line])).toEqual([
+    ["stdout", "after"],
+  ]);
   expect((await files.logs(target, next.cursor, 10)).entries).toEqual([]);
   // The tail window holds the end of the huge record: recent reads still find what follows it.
-  expect((await files.logs(target, undefined, 1)).entries.map((e) => e.line)).toEqual(["after"]);
+  expect(
+    (await files.logs(target, undefined, 1)).entries.map((e) => e.line),
+  ).toEqual(["after"]);
 });
 test("recent reading selects a bounded tail and does not parse ancient complete history outside its window", async () => {
   const target = await fixture(),
@@ -187,22 +219,43 @@ test("recent reading selects a bounded tail and does not parse ancient complete 
 });
 
 test("public follow reports reader truncation failure and preserves retained bytes", async () => {
-  const target = await fixture(), files = createRuntimeFiles();
+  const target = await fixture(),
+    files = createRuntimeFiles();
   const path = join(target.logRoot, "target.jsonl");
   await writeFile(path, entry("preserved"));
   const { runRigCli } = await import("../src/cli/rig");
-  let errors = "", polls = 0;
-  expect(await runRigCli(["logs", "live", "--follow"], {
-    root: target.logRoot, cwd: target.logRoot,
-    wait: async () => { await writeFile(path, "{}\n"); },
-    client: {
-      async status() { throw new Error("Unexpected status"); },
-      async command(request) { polls++; return files.logs(target, request.after, 100); },
-    },
-    output: { write() {}, error(value) { errors += value; } },
-    diagnostics: { async record() { return {}; } },
-    newOperationId: () => "reader-failure",
-  })).toBe(1);
+  let errors = "",
+    polls = 0;
+  expect(
+    await runRigCli(["logs", "live", "--follow"], {
+      root: target.logRoot,
+      cwd: target.logRoot,
+      wait: async () => {
+        await writeFile(path, "{}\n");
+      },
+      client: {
+        async status() {
+          throw new Error("Unexpected status");
+        },
+        async command(request) {
+          polls++;
+          return files.logs(target, request.after, 100);
+        },
+      },
+      output: {
+        write() {},
+        error(value) {
+          errors += value;
+        },
+      },
+      diagnostics: {
+        async record() {
+          return {};
+        },
+      },
+      newOperationId: () => "reader-failure",
+    }),
+  ).toBe(1);
   expect(polls).toBe(2);
   expect(errors).toContain("cursor is invalid or its files changed");
   expect(await readFile(path, "utf8")).toBe("{}\n");
@@ -252,7 +305,12 @@ test("launchd wrapper stdout and stderr files are shown under their component wi
       stream: "stderr",
       line: "error: Cannot find module",
     },
-    { timestamp: "2026-09-09T12:00:00Z", component: "web", stream: "stdout", line: "dated" },
+    {
+      timestamp: "2026-09-09T12:00:00Z",
+      component: "web",
+      stream: "stdout",
+      line: "dated",
+    },
   ]);
   await appendFile(join(target.logRoot, "web.stderr.log"), "again\n");
   expect((await files.logs(target, first.cursor, 10)).entries).toEqual([
@@ -273,7 +331,9 @@ test("a rotated Target log continues a follow without repeating or losing entrie
   expect(second.entries.map((row) => row.line)).toEqual(["c", "d"]);
   await appendFile(path, entry("e", "2026-09-09T12:00:04Z"));
   expect(
-    (await files.logs(target, second.cursor, 10)).entries.map((row) => row.line),
+    (await files.logs(target, second.cursor, 10)).entries.map(
+      (row) => row.line,
+    ),
   ).toEqual(["e"]);
   expect(
     (await files.logs(target, undefined, 10)).entries.map((row) => row.line),

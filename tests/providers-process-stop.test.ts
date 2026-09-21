@@ -11,7 +11,8 @@ import type { CommandRequest, CommandResult } from "../src/providers/contracts";
 
 const roots: string[] = [];
 afterEach(async () => {
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true });
 });
 const pid = 424242;
 const birth = "Wed Sep  9 12:00:00 2026";
@@ -24,9 +25,20 @@ async function fixture(options: {
   const root = await mkdtemp(join(tmpdir(), "rig-stop-"));
   roots.push(root);
   const stateRoot = join(root, ".rig");
-  const lease = join(stateRoot, "process-leases", createHash("sha256").update("owned").digest("hex") + ".json");
+  const lease = join(
+    stateRoot,
+    "process-leases",
+    createHash("sha256").update("owned").digest("hex") + ".json",
+  );
   await mkdir(join(stateRoot, "process-leases"), { recursive: true });
-  await writeFile(lease, JSON.stringify({ key: "owned", pid, identity: createHash("sha256").update(`${pid}:${birth}`).digest("hex") }));
+  await writeFile(
+    lease,
+    JSON.stringify({
+      key: "owned",
+      pid,
+      identity: createHash("sha256").update(`${pid}:${birth}`).digest("hex"),
+    }),
+  );
   const commands: CommandRequest[] = [];
   const supervisor = createChildSupervisor({
     stateRoot,
@@ -34,10 +46,14 @@ async function fixture(options: {
     timing: createProcessTiming(),
     processInspection: createProcessInspection({
       kill: options.kill,
-      run: async request => {
+      run: async (request) => {
         commands.push(request);
         return request.command.includes("lstart=")
-          ? { exitCode: 0, stdout: options.identity ? (options.identity() ?? "") : birth, stderr: "" }
+          ? {
+              exitCode: 0,
+              stdout: options.identity ? (options.identity() ?? "") : birth,
+              stderr: "",
+            }
           : options.fallback();
       },
     }),
@@ -49,18 +65,29 @@ test("stop accepts permission-denied signals and probes only when fallback confi
   const signals: Array<NodeJS.Signals | 0> = [];
   let fallbacks = 0;
   const { supervisor, lease, commands } = await fixture({
-    kill: (target, signal) => { expect(target).toBe(-pid); signals.push(signal); throw errno("EPERM"); },
-    fallback: async () => { fallbacks++; return { exitCode: 1, stdout: "", stderr: "" }; },
+    kill: (target, signal) => {
+      expect(target).toBe(-pid);
+      signals.push(signal);
+      throw errno("EPERM");
+    },
+    fallback: async () => {
+      fallbacks++;
+      return { exitCode: 1, stdout: "", stderr: "" };
+    },
   });
   expect(await supervisor.stop("owned")).toEqual({ outcome: "stopped" });
   expect(signals).toContain("SIGTERM");
   expect(signals).not.toContain("SIGKILL");
   expect(fallbacks).toBeGreaterThan(0);
-  expect(commands.filter(request => request.command.includes("pid="))).toContainEqual({
-    command: ["/bin/ps", "-g", "424242", "-o", "pid="], timeoutMs: 2000,
+  expect(
+    commands.filter((request) => request.command.includes("pid=")),
+  ).toContainEqual({
+    command: ["/bin/ps", "-g", "424242", "-o", "pid="],
+    timeoutMs: 2000,
   });
   expect(commands[0]).toEqual({
-    command: ["/bin/ps", "-p", "424242", "-o", "lstart="], timeoutMs: 2000,
+    command: ["/bin/ps", "-p", "424242", "-o", "lstart="],
+    timeoutMs: 2000,
     env: { LC_ALL: "C", TZ: "UTC", PATH: "/usr/bin:/bin" },
   });
   await expect(readFile(lease)).rejects.toMatchObject({ code: "ENOENT" });
@@ -68,38 +95,80 @@ test("stop accepts permission-denied signals and probes only when fallback confi
 
 test("stop rejects malformed permission fallback and preserves the lease", async () => {
   const { supervisor, lease } = await fixture({
-    kill: () => { throw errno("EPERM"); },
-    fallback: async () => ({ exitCode: 0, stdout: "424242 unexpected\n", stderr: "" }),
+    kill: () => {
+      throw errno("EPERM");
+    },
+    fallback: async () => ({
+      exitCode: 0,
+      stdout: "424242 unexpected\n",
+      stderr: "",
+    }),
   });
-  await expect(supervisor.stop("owned")).rejects.toMatchObject({ code: "PROCESS_INSPECT" });
+  await expect(supervisor.stop("owned")).rejects.toMatchObject({
+    code: "PROCESS_INSPECT",
+  });
   expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(pid);
 });
 
 test("failed escalation never reports a still-present owned group as stopped", async () => {
   const signals: Array<NodeJS.Signals | 0> = [];
   const { supervisor, lease } = await fixture({
-    kill: (_target, signal) => { signals.push(signal); if (signal === 0) throw errno("EPERM"); },
-    fallback: async () => ({ exitCode: 0, stdout: " 424242\n 424243\n", stderr: "" }),
+    kill: (_target, signal) => {
+      signals.push(signal);
+      if (signal === 0) throw errno("EPERM");
+    },
+    fallback: async () => ({
+      exitCode: 0,
+      stdout: " 424242\n 424243\n",
+      stderr: "",
+    }),
   });
-  await expect(supervisor.stop("owned")).rejects.toMatchObject({ code: "STOP_TIMEOUT" });
-  expect(signals.filter(signal => signal !== 0)).toEqual(["SIGTERM", "SIGKILL"]);
+  await expect(supervisor.stop("owned")).rejects.toMatchObject({
+    code: "STOP_TIMEOUT",
+  });
+  expect(signals.filter((signal) => signal !== 0)).toEqual([
+    "SIGTERM",
+    "SIGKILL",
+  ]);
   expect((await supervisor.observe("owned")).state).toBe("running");
   expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(pid);
 });
 
 for (const [name, fallback] of [
   ["empty success", async () => ({ exitCode: 0, stdout: "", stderr: "" })],
-  ["mixed valid and malformed rows", async () => ({ exitCode: 0, stdout: "424242\nunknown\n", stderr: "" })],
-  ["diagnostic on absence", async () => ({ exitCode: 1, stdout: "", stderr: "denied" })],
-  ["diagnostic on presence", async () => ({ exitCode: 0, stdout: "424242\n", stderr: "partial result" })],
-  ["command failure", async () => ({ exitCode: 2, stdout: "", stderr: "failed" })],
-  ["command rejection", async () => { throw new Error("command timed out"); }],
+  [
+    "mixed valid and malformed rows",
+    async () => ({ exitCode: 0, stdout: "424242\nunknown\n", stderr: "" }),
+  ],
+  [
+    "diagnostic on absence",
+    async () => ({ exitCode: 1, stdout: "", stderr: "denied" }),
+  ],
+  [
+    "diagnostic on presence",
+    async () => ({ exitCode: 0, stdout: "424242\n", stderr: "partial result" }),
+  ],
+  [
+    "command failure",
+    async () => ({ exitCode: 2, stdout: "", stderr: "failed" }),
+  ],
+  [
+    "command rejection",
+    async () => {
+      throw new Error("command timed out");
+    },
+  ],
 ] as const) {
   test(`stop preserves uncertainty for ${name}`, async () => {
     const { supervisor, lease } = await fixture({
-      kill: () => { throw errno("EPERM"); }, fallback,
+      kill: () => {
+        throw errno("EPERM");
+      },
+      fallback,
     });
-    await expect(supervisor.stop("owned")).rejects.toMatchObject({ code: "PROCESS_INSPECT" });
+    await expect(supervisor.stop("owned")).rejects.toMatchObject({
+      code: "PROCESS_INSPECT",
+    });
     expect((await supervisor.observe("owned")).state).toBe("running");
     expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(pid);
   });
@@ -107,10 +176,14 @@ for (const [name, fallback] of [
 
 test("permission-denied delivery to a confirmed present group is a signal failure", async () => {
   const { supervisor, lease } = await fixture({
-    kill: () => { throw errno("EPERM"); },
+    kill: () => {
+      throw errno("EPERM");
+    },
     fallback: async () => ({ exitCode: 0, stdout: "424242\n", stderr: "" }),
   });
-  await expect(supervisor.stop("owned")).rejects.toMatchObject({ code: "PROCESS_SIGNAL" });
+  await expect(supervisor.stop("owned")).rejects.toMatchObject({
+    code: "PROCESS_SIGNAL",
+  });
   expect((await supervisor.observe("owned")).state).toBe("running");
   expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(pid);
 });
@@ -128,23 +201,34 @@ test("a successful probe followed by permission fallback presence escalates unti
     },
     fallback: async () => {
       fallbackCalls++;
-      return gone ? { exitCode: 1, stdout: "", stderr: "" }
+      return gone
+        ? { exitCode: 1, stdout: "", stderr: "" }
         : { exitCode: 0, stdout: "424242\n", stderr: "" };
     },
-    identity: () => gone ? undefined : birth,
+    identity: () => (gone ? undefined : birth),
   });
   expect(await supervisor.stop("owned")).toEqual({ outcome: "stopped" });
-  expect(signals.filter(signal => signal !== 0)).toEqual(["SIGTERM", "SIGKILL"]);
+  expect(signals.filter((signal) => signal !== 0)).toEqual([
+    "SIGTERM",
+    "SIGKILL",
+  ]);
   expect(fallbackCalls).toBeGreaterThan(0);
   expect(await supervisor.stop("owned")).toEqual({ outcome: "unchanged" });
-  expect(signals.filter(signal => signal !== 0)).toEqual(["SIGTERM", "SIGKILL"]);
+  expect(signals.filter((signal) => signal !== 0)).toEqual([
+    "SIGTERM",
+    "SIGKILL",
+  ]);
   await expect(readFile(lease)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("ESRCH confirms absence without a fallback command", async () => {
   const { supervisor } = await fixture({
-    kill: () => { throw errno("ESRCH"); },
-    fallback: async () => { throw new Error("fallback must not run"); },
+    kill: () => {
+      throw errno("ESRCH");
+    },
+    fallback: async () => {
+      throw new Error("fallback must not run");
+    },
   });
   expect(await supervisor.stop("owned")).toEqual({ outcome: "stopped" });
 });
@@ -154,9 +238,14 @@ for (const changeAt of [1, 3]) {
     let identities = 0;
     let signals = 0;
     const { supervisor } = await fixture({
-      identity: () => ++identities >= changeAt ? "a different birth time" : birth,
-      kill: () => { signals++; },
-      fallback: async () => { throw new Error("fallback must not run"); },
+      identity: () =>
+        ++identities >= changeAt ? "a different birth time" : birth,
+      kill: () => {
+        signals++;
+      },
+      fallback: async () => {
+        throw new Error("fallback must not run");
+      },
     });
     await supervisor.stop("owned");
     expect(signals).toBe(0);
@@ -174,8 +263,14 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
     stopTimeoutMs: 0,
     timing: createProcessTiming(),
     processInspection: createProcessInspection({
-      kill: (target, signal) => { probes.push([target, signal]); process.kill(target, signal); },
-      run: async request => { commands.push(request); return runCommand(request); },
+      kill: (target, signal) => {
+        probes.push([target, signal]);
+        process.kill(target, signal);
+      },
+      run: async (request) => {
+        commands.push(request);
+        return runCommand(request);
+      },
     }),
   });
   try {
@@ -190,7 +285,11 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
     });
     probes.length = 0;
     commands.length = 0;
-    expect(await supervisor.observe("live")).toEqual({ state: "running", pid: started.pid!, incarnation: "start-1" });
+    expect(await supervisor.observe("live")).toEqual({
+      state: "running",
+      pid: started.pid!,
+      incarnation: "start-1",
+    });
     expect(probes).toEqual([]);
     expect(commands).toEqual([]);
     let observation = await supervisor.observe("live");
@@ -198,7 +297,11 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
       await Bun.sleep(1);
       observation = await supervisor.observe("live");
     }
-    expect(observation).toEqual({ state: "stopped", exitCode: 9, incarnation: "start-1" });
+    expect(observation).toEqual({
+      state: "stopped",
+      exitCode: 9,
+      incarnation: "start-1",
+    });
   } finally {
     await supervisor.stop("live");
     await supervisor.shutdown();

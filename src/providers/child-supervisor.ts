@@ -150,7 +150,10 @@ export function createChildSupervisor(
     const current = await inspect(parsed.data.pid);
     // A dead leader whose group still runs is still ours: the group id stays reserved while any member lives.
     if (current !== parsed.data.identity)
-      if (current !== undefined || !(await inspection.groupExists(parsed.data.pid)))
+      if (
+        current !== undefined ||
+        !(await inspection.groupExists(parsed.data.pid))
+      )
         return undefined;
     const owned: OwnedProcess = {
       pid: parsed.data.pid,
@@ -243,13 +246,21 @@ export function createChildSupervisor(
       await inspection.signalGroup(owned.pid, "SIGTERM");
       const deadline =
         now().getTime() +
-        (options.stopTimeoutMs ?? (options.captureCommand ? 4000 : DEFAULT_STOP_TIMEOUT_MS));
-      while ((await inspection.groupExists(owned.pid)) && now().getTime() < deadline)
+        (options.stopTimeoutMs ??
+          (options.captureCommand ? 4000 : DEFAULT_STOP_TIMEOUT_MS));
+      while (
+        (await inspection.groupExists(owned.pid)) &&
+        now().getTime() < deadline
+      )
         await timing.wait(STOP_POLL_MS);
       if (await inspection.groupExists(owned.pid))
         await inspection.signalGroup(owned.pid, "SIGKILL");
-      const killDeadline = now().getTime() + (options.killWaitMs ?? DEFAULT_KILL_WAIT_MS);
-      while ((await inspection.groupExists(owned.pid)) && now().getTime() < killDeadline)
+      const killDeadline =
+        now().getTime() + (options.killWaitMs ?? DEFAULT_KILL_WAIT_MS);
+      while (
+        (await inspection.groupExists(owned.pid)) &&
+        now().getTime() < killDeadline
+      )
         await timing.wait(STOP_POLL_MS);
       if (await inspection.groupExists(owned.pid))
         throw new RigError(

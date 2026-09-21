@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLaunchdSupervisor, createLaunchdTiming } from "../src/providers/launchd-supervisor";
+import {
+  createLaunchdSupervisor,
+  createLaunchdTiming,
+} from "../src/providers/launchd-supervisor";
 import type { CommandRunner } from "../src/providers/contracts";
 import { runCommand } from "../src/providers/command-runner";
 import { createProcessIdentityReader } from "../src/providers/process-identity";
@@ -206,11 +209,15 @@ test("real launchd capture records its application's exit against the start it b
 test("ensureRunning replaces a loaded job whose application has ended instead of waiting for it to come back", async () => {
   const { createHash } = await import("node:crypto");
   const { writeFile } = await import("node:fs/promises");
-  const { writeCaptureStatus } = await import("../src/providers/capture-status");
+  const { writeCaptureStatus } =
+    await import("../src/providers/capture-status");
   const root = await mkdtemp(join(tmpdir(), "rig-launchd-"));
   roots.push(root);
   const key = "stable-id/web";
-  const requestPath = join(root, `test.rig.${createHash("sha256").update(key).digest("hex").slice(0, 24)}.json`);
+  const requestPath = join(
+    root,
+    `test.rig.${createHash("sha256").update(key).digest("hex").slice(0, 24)}.json`,
+  );
   const wrapper = { pid: 77, identity: "w".repeat(64) };
   const application = { pid: 88, identity: "a".repeat(64) };
   let clock = 0;
@@ -220,20 +227,30 @@ test("ensureRunning replaces a loaded job whose application has ended instead of
     calls.push(command[1]!);
     if (command[1] === "bootstrap") {
       replaced = true;
-      await writeCaptureStatus(requestPath, { state: "running", pid: application.pid });
+      await writeCaptureStatus(requestPath, {
+        state: "running",
+        pid: application.pid,
+      });
     }
     if (command[1] !== "print") return { exitCode: 0, stdout: "", stderr: "" };
     clock += 100;
-    await writeFile(`${requestPath}.observation.json`, JSON.stringify({
-      wrapperPid: wrapper.pid,
-      wrapperIdentity: wrapper.identity,
-      observedAt: clock,
-      ...(replaced ? { applicationIdentity: application.identity } : {}),
-      observation: replaced
-        ? { state: "running", pid: application.pid, incarnation: "start-2" }
-        : { state: "stopped", exitCode: 1, incarnation: "start-1" },
-    }));
-    return { exitCode: 0, stdout: `state = running\n\tpid = ${wrapper.pid}\n`, stderr: "" };
+    await writeFile(
+      `${requestPath}.observation.json`,
+      JSON.stringify({
+        wrapperPid: wrapper.pid,
+        wrapperIdentity: wrapper.identity,
+        observedAt: clock,
+        ...(replaced ? { applicationIdentity: application.identity } : {}),
+        observation: replaced
+          ? { state: "running", pid: application.pid, incarnation: "start-2" }
+          : { state: "stopped", exitCode: 1, incarnation: "start-1" },
+      }),
+    );
+    return {
+      exitCode: 0,
+      stdout: `state = running\n\tpid = ${wrapper.pid}\n`,
+      stderr: "",
+    };
   };
   const supervisor = createLaunchdSupervisor({
     root,
@@ -242,9 +259,18 @@ test("ensureRunning replaces a loaded job whose application has ended instead of
     captureCommand: ["/bin/true"],
     run,
     timing: { ...createLaunchdTiming(), now: () => clock },
-    inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : "x".repeat(64)),
+    inspect: async (pid) =>
+      pid === wrapper.pid
+        ? wrapper.identity
+        : pid === application.pid
+          ? application.identity
+          : "x".repeat(64),
   });
-  expect(await supervisor.observe(key)).toEqual({ state: "stopped", exitCode: 1, incarnation: "start-1" });
+  expect(await supervisor.observe(key)).toEqual({
+    state: "stopped",
+    exitCode: 1,
+    incarnation: "start-1",
+  });
   expect(
     await supervisor.ensureRunning({
       key,
@@ -256,15 +282,24 @@ test("ensureRunning replaces a loaded job whose application has ended instead of
       incarnation: "start-2",
     }),
   ).toEqual({ outcome: "started", pid: application.pid });
-  expect(calls.filter((action) => action !== "print")).toEqual(["bootout", "bootstrap"]);
-  expect(await supervisor.observe(key)).toEqual({ state: "running", pid: application.pid, incarnation: "start-2" });
+  expect(calls.filter((action) => action !== "print")).toEqual([
+    "bootout",
+    "bootstrap",
+  ]);
+  expect(await supervisor.observe(key)).toEqual({
+    state: "running",
+    pid: application.pid,
+    incarnation: "start-2",
+  });
 });
 
 test("launchd stop and a failed bootstrap remove every job file, a vanished job is cleaned as unchanged, and unloading may take the wrapper's whole shutdown budget", async () => {
   const { createHash } = await import("node:crypto");
   const { readdir, writeFile } = await import("node:fs/promises");
-  const { writeCaptureStatus } = await import("../src/providers/capture-status");
-  const { writeCaptureObservation } = await import("../src/providers/capture-observation");
+  const { writeCaptureStatus } =
+    await import("../src/providers/capture-status");
+  const { writeCaptureObservation } =
+    await import("../src/providers/capture-observation");
   const root = await mkdtemp(join(tmpdir(), "rig-launchd-"));
   roots.push(root);
   const key = "target-1:web";
@@ -278,9 +313,17 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
   const run: CommandRunner = async ({ command }) => {
     const action = command[1];
     if (action === "bootstrap") {
-      if (bootstrapExit) return { exitCode: bootstrapExit, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" };
+      if (bootstrapExit)
+        return {
+          exitCode: bootstrapExit,
+          stdout: "",
+          stderr: "Bootstrap failed: 5: Input/output error",
+        };
       loaded = true;
-      await writeCaptureStatus(requestPath, { state: "running", pid: application.pid });
+      await writeCaptureStatus(requestPath, {
+        state: "running",
+        pid: application.pid,
+      });
       await writeCaptureObservation(requestPath, {
         wrapperPid: wrapper.pid,
         wrapperIdentity: wrapper.identity,
@@ -296,8 +339,16 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     }
     if (unloadPrints > 0 && --unloadPrints === 0) loaded = false;
     return loaded
-      ? { exitCode: 0, stdout: `\tstate = running\n\tpid = ${wrapper.pid}\n`, stderr: "" }
-      : { exitCode: 113, stdout: "", stderr: 'Could not find service "x" in domain for user gui: 502' };
+      ? {
+          exitCode: 0,
+          stdout: `\tstate = running\n\tpid = ${wrapper.pid}\n`,
+          stderr: "",
+        }
+      : {
+          exitCode: 113,
+          stdout: "",
+          stderr: 'Could not find service "x" in domain for user gui: 502',
+        };
   };
   const supervisor = createLaunchdSupervisor({
     root,
@@ -306,13 +357,32 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     captureCommand: ["/fake/rigd", "capture"],
     run,
     timing: createLaunchdTiming(),
-    inspect: async (pid) => (pid === wrapper.pid ? wrapper.identity : pid === application.pid ? application.identity : undefined),
+    inspect: async (pid) =>
+      pid === wrapper.pid
+        ? wrapper.identity
+        : pid === application.pid
+          ? application.identity
+          : undefined,
   });
-  const request = { key, componentName: "web", command: ["/bin/sh", "-c", "serve"], cwd: root, env: { SECRET: "s3cret" }, logRoot: root, incarnation: "start-1" };
-  const files = async () => (await readdir(root)).filter((name) => name.startsWith(jobLabel)).sort();
+  const request = {
+    key,
+    componentName: "web",
+    command: ["/bin/sh", "-c", "serve"],
+    cwd: root,
+    env: { SECRET: "s3cret" },
+    logRoot: root,
+    incarnation: "start-1",
+  };
+  const files = async () =>
+    (await readdir(root)).filter((name) => name.startsWith(jobLabel)).sort();
 
   expect((await supervisor.ensureRunning(request)).outcome).toBe("started");
-  expect(await files()).toEqual([`${jobLabel}.json`, `${jobLabel}.json.observation.json`, `${jobLabel}.json.status.json`, `${jobLabel}.plist`]);
+  expect(await files()).toEqual([
+    `${jobLabel}.json`,
+    `${jobLabel}.json.observation.json`,
+    `${jobLabel}.json.status.json`,
+    `${jobLabel}.plist`,
+  ]);
   // The wrapper needs 40 polls (about 4 s) to finish its SIGTERM then SIGKILL shutdown; the unload wait must cover it.
   expect(await supervisor.stop(key)).toEqual({ outcome: "stopped" });
   expect(await files()).toEqual([]);

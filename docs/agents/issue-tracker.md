@@ -31,17 +31,17 @@ GitHub Issues have only open/closed, so the workflow states the skills refer to
 `Duplicate`) are represented like this. An issue carries **at most one** of the
 state labels; moving state means removing the old one and adding the new one.
 
-| Workflow state | GitHub representation |
-| --- | --- |
-| Backlog (awaiting triage) | open, `needs-triage` |
-| Todo (accepted, not yet specified) | open, no state label |
-| Blocked / waiting on info | open, `needs-info` (waiting on a person) or `ready-for-human` (needs a human action) |
-| Ready (fully specified, agent may take it) | open, `ready-for-agent`, no assignee |
-| In Progress | open, `in-progress`, assigned |
-| In Review | open, `in-review`, linked PR open |
-| Done | closed, reason `completed` |
-| Canceled | closed, reason `not planned`, `wontfix` |
-| Duplicate | closed, reason `not planned`, `duplicate` |
+| Workflow state                             | GitHub representation                                                                |
+| ------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Backlog (awaiting triage)                  | open, `needs-triage`                                                                 |
+| Todo (accepted, not yet specified)         | open, no state label                                                                 |
+| Blocked / waiting on info                  | open, `needs-info` (waiting on a person) or `ready-for-human` (needs a human action) |
+| Ready (fully specified, agent may take it) | open, `ready-for-agent`, no assignee                                                 |
+| In Progress                                | open, `in-progress`, assigned                                                        |
+| In Review                                  | open, `in-review`, linked PR open                                                    |
+| Done                                       | closed, reason `completed`                                                           |
+| Canceled                                   | closed, reason `not planned`, `wontfix`                                              |
+| Duplicate                                  | closed, reason `not planned`, `duplicate`                                            |
 
 Type labels (`bug`, `enhancement`, `documentation`) may be combined freely with
 a state label.

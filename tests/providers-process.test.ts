@@ -4,12 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
 import { runCommand } from "../src/providers/command-runner";
-import { createProcessInspection, platformKill } from "../src/providers/process-inspection";
+import {
+  createProcessInspection,
+  platformKill,
+} from "../src/providers/process-inspection";
 import { createProcessTiming } from "../src/providers/process-timing";
 /** These tests exercise real processes, so they pass the platform clock and signal path explicitly. */
 const platform = () => ({
   timing: createProcessTiming(),
-  processInspection: createProcessInspection({ run: runCommand, kill: platformKill }),
+  processInspection: createProcessInspection({
+    run: runCommand,
+    kill: platformKill,
+  }),
 });
 const roots: string[] = [];
 const supervisors: ReturnType<typeof createChildSupervisor>[] = [];
@@ -408,34 +414,59 @@ for (const captured of [false, true]) {
     const root = join(base, ".rig");
     await mkdir(root);
     const captureScript = join(root, "capture.ts");
-    if (captured) await writeFile(captureScript,
-      `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};process.exitCode=await runCapturedProcess(process.argv[2]!);`);
+    if (captured)
+      await writeFile(
+        captureScript,
+        `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};process.exitCode=await runCapturedProcess(process.argv[2]!);`,
+      );
     const supervisor = createChildSupervisor({
       ...platform(),
       stateRoot: root,
-      ...(captured ? { captureCommand: [process.execPath, captureScript] } : {}),
+      ...(captured
+        ? { captureCommand: [process.execPath, captureScript] }
+        : {}),
     });
     supervisors.push(supervisor);
     const started = await supervisor.ensureRunning({
-      key: "drain", componentName: "web", cwd: root, logRoot: root,
-      env: { RIG_ROOT: root }, incarnation: "start-1",
-      command: [process.execPath, "-e", "process.on('SIGTERM',()=>setTimeout(()=>{process.stdout.write('final stdout');process.stderr.write('final stderr');process.exit(0)},100));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+      key: "drain",
+      componentName: "web",
+      cwd: root,
+      logRoot: root,
+      env: { RIG_ROOT: root },
+      incarnation: "start-1",
+      command: [
+        process.execPath,
+        "-e",
+        "process.on('SIGTERM',()=>setTimeout(()=>{process.stdout.write('final stdout');process.stderr.write('final stderr');process.exit(0)},100));process.stdout.write('ready\\n');setInterval(()=>{},1000)",
+      ],
     });
     const log = join(root, "target.jsonl");
     for (let attempt = 0; attempt < 100; attempt++) {
-      if ((await readFile(log, "utf8")).includes('ready')) break;
+      if ((await readFile(log, "utf8")).includes("ready")) break;
       await Bun.sleep(20);
     }
-    expect(await readFile(log, "utf8")).toContain('ready');
+    expect(await readFile(log, "utf8")).toContain("ready");
     const digest = createHash("sha256").update("drain").digest("hex");
     const lease = join(root, "process-leases", `${digest}.json`);
     expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(started.pid);
     expect(await supervisor.stop("drain")).toEqual({ outcome: "stopped" });
-    const entries = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(entries.map(entry => [entry.stream, entry.line])).toContainEqual(["stdout", "final stdout"]);
-    expect(entries.map(entry => [entry.stream, entry.line])).toContainEqual(["stderr", "final stderr"]);
+    const entries = (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(entries.map((entry) => [entry.stream, entry.line])).toContainEqual([
+      "stdout",
+      "final stdout",
+    ]);
+    expect(entries.map((entry) => [entry.stream, entry.line])).toContainEqual([
+      "stderr",
+      "final stderr",
+    ]);
     await expect(readFile(lease)).rejects.toMatchObject({ code: "ENOENT" });
-    if (captured) await expect(readFile(join(root, "capture", `${digest}.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    if (captured)
+      await expect(
+        readFile(join(root, "capture", `${digest}.json`)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     expect(() => process.kill(started.pid!, 0)).toThrow();
     expect(await supervisor.stop("drain")).toEqual({ outcome: "unchanged" });
     await Bun.sleep(150);
@@ -452,18 +483,37 @@ test("stop after an owned child already exited is unchanged, keeps its exit on r
   const supervisor = createChildSupervisor({ ...platform(), stateRoot: root });
   supervisors.push(supervisor);
   await supervisor.ensureRunning({
-    key: "exited", componentName: "web", cwd: root, logRoot: root, env: { RIG_ROOT: root }, incarnation: "start-1",
-    command: [process.execPath, "-e", "process.stdout.write('attempt\\n');setTimeout(()=>process.exit(7),100)"],
+    key: "exited",
+    componentName: "web",
+    cwd: root,
+    logRoot: root,
+    env: { RIG_ROOT: root },
+    incarnation: "start-1",
+    command: [
+      process.execPath,
+      "-e",
+      "process.stdout.write('attempt\\n');setTimeout(()=>process.exit(7),100)",
+    ],
   });
   for (let attempt = 0; attempt < 100; attempt++) {
     if ((await supervisor.observe("exited")).state === "stopped") break;
     await Bun.sleep(10);
   }
-  expect(await supervisor.observe("exited")).toEqual({ state: "stopped", exitCode: 7, incarnation: "start-1" });
+  expect(await supervisor.observe("exited")).toEqual({
+    state: "stopped",
+    exitCode: 7,
+    incarnation: "start-1",
+  });
   expect(await supervisor.stop("exited")).toEqual({ outcome: "unchanged" });
   await Bun.sleep(150);
-  expect(await supervisor.observe("exited")).toEqual({ state: "stopped", exitCode: 7, incarnation: "start-1" });
-  const entries = (await readFile(join(root, "target.jsonl"), "utf8")).trim().split("\n");
+  expect(await supervisor.observe("exited")).toEqual({
+    state: "stopped",
+    exitCode: 7,
+    incarnation: "start-1",
+  });
+  const entries = (await readFile(join(root, "target.jsonl"), "utf8"))
+    .trim()
+    .split("\n");
   expect(entries).toHaveLength(1);
 });
 test("a detached daemon leaves its processes running and the next daemon adopts them without restarting", async () => {
@@ -498,7 +548,7 @@ test("a detached daemon leaves its processes running and the next daemon adopts 
   expect((await second.observe(request.key)).state).toBe("stopped");
 });
 test("after a daemon restart, a dead group leader with live members is stopped as a group and up does not spawn a duplicate", async () => {
-    const root = await mkdtemp(join(tmpdir(), "rig-orphan-group-"));
+  const root = await mkdtemp(join(tmpdir(), "rig-orphan-group-"));
   roots.push(root);
   const request = {
     key: "orphans",
@@ -512,7 +562,10 @@ test("after a daemon restart, a dead group leader with live members is stopped a
   const first = createChildSupervisor({ ...platform(), stateRoot: root });
   const leader = (await first.ensureRunning(request)).pid!;
   await first.detach();
-  const inspection = createProcessInspection({ run: runCommand, kill: platformKill });
+  const inspection = createProcessInspection({
+    run: runCommand,
+    kill: platformKill,
+  });
   await Bun.sleep(300); // let sh fork its members before the leader dies
   process.kill(leader, "SIGKILL");
   await Bun.sleep(200);
@@ -533,7 +586,10 @@ test("after a daemon restart, a dead group leader with live members is stopped a
   const restarted = await third.ensureRunning(request);
   expect(restarted.outcome).toBe("started");
   expect(await inspection.groupExists(again)).toBe(false);
-  expect((await third.observe(request.key))).toMatchObject({ state: "running", pid: restarted.pid });
+  expect(await third.observe(request.key)).toMatchObject({
+    state: "running",
+    pid: restarted.pid,
+  });
 });
 test("a deleted log directory is recreated on the next line; output that cannot be recorded is named while it lasts", async () => {
   const { mkdir, writeFile, stat } = await import("node:fs/promises");
@@ -546,7 +602,11 @@ test("a deleted log directory is recreated on the next line; output that cannot 
   const request = {
     key: "target/web",
     componentName: "web",
-    command: [process.execPath, "-e", "let n=0; setInterval(()=>process.stdout.write(`tick ${n++}\\n`), 10)"],
+    command: [
+      process.execPath,
+      "-e",
+      "let n=0; setInterval(()=>process.stdout.write(`tick ${n++}\\n`), 10)",
+    ],
     cwd: root,
     env: { ...process.env } as Record<string, string>,
     logRoot,
@@ -554,13 +614,19 @@ test("a deleted log directory is recreated on the next line; output that cannot 
   };
   await supervisor.ensureRunning(request);
   const lines = async () =>
-    (await readFile(join(logRoot, "target.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+    (await readFile(join(logRoot, "target.jsonl"), "utf8").catch(() => ""))
+      .split("\n")
+      .filter(Boolean).length;
   while ((await lines()) < 3) await Bun.sleep(10);
   // The directory disappears under the running component: the next line brings it back.
   await rm(logRoot, { recursive: true, force: true });
   for (let i = 0; i < 100 && (await lines()) < 2; i++) await Bun.sleep(10);
   expect(await lines()).toBeGreaterThanOrEqual(2);
-  expect(await supervisor.observe(request.key)).toEqual({ state: "running", pid: expect.any(Number), incarnation: "start-1" });
+  expect(await supervisor.observe(request.key)).toEqual({
+    state: "running",
+    pid: expect.any(Number),
+    incarnation: "start-1",
+  });
   // A path that cannot be a directory cannot take output: the observation says so, and recovers once it can.
   await rm(logRoot, { recursive: true, force: true });
   await writeFile(logRoot, "not a directory");
@@ -569,13 +635,22 @@ test("a deleted log directory is recreated on the next line; output that cannot 
     await Bun.sleep(10);
     observed = await supervisor.observe(request.key);
   }
-  expect(observed).toMatchObject({ state: "running", reason: expect.stringContaining(`Target output is not being recorded in ${logRoot}`) });
+  expect(observed).toMatchObject({
+    state: "running",
+    reason: expect.stringContaining(
+      `Target output is not being recorded in ${logRoot}`,
+    ),
+  });
   await rm(logRoot, { force: true });
   for (let i = 0; i < 100 && observed.reason; i++) {
     await Bun.sleep(10);
     observed = await supervisor.observe(request.key);
   }
-  expect(observed).toEqual({ state: "running", pid: expect.any(Number), incarnation: "start-1" });
+  expect(observed).toEqual({
+    state: "running",
+    pid: expect.any(Number),
+    incarnation: "start-1",
+  });
   expect((await stat(join(logRoot, "target.jsonl"))).isFile()).toBe(true);
   await supervisor.stop(request.key);
 });
@@ -587,20 +662,34 @@ test("a newline-free output run is recorded as bounded records that reassemble l
   const request = {
     key: "target/web",
     componentName: "web",
-    command: [process.execPath, "-e", "process.stdout.write(Buffer.alloc(200000, 0)); process.stdout.write('\\ndone\\n'); setInterval(()=>{},1000)"],
+    command: [
+      process.execPath,
+      "-e",
+      "process.stdout.write(Buffer.alloc(200000, 0)); process.stdout.write('\\ndone\\n'); setInterval(()=>{},1000)",
+    ],
     cwd: root,
     env: { ...process.env } as Record<string, string>,
     logRoot: root,
     incarnation: "start-1",
   };
   await supervisor.ensureRunning(request);
-  const read = async () => (await readFile(join(root, "target.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean);
-  while (!(await read()).some((line) => line.includes('"done"'))) await Bun.sleep(20);
+  const read = async () =>
+    (await readFile(join(root, "target.jsonl"), "utf8").catch(() => ""))
+      .split("\n")
+      .filter(Boolean);
+  while (!(await read()).some((line) => line.includes('"done"')))
+    await Bun.sleep(20);
   const lines = await read();
   expect(lines.length).toBeGreaterThan(2);
-  for (const line of lines) expect(Buffer.byteLength(line)).toBeLessThan(1024 * 1024);
+  for (const line of lines)
+    expect(Buffer.byteLength(line)).toBeLessThan(1024 * 1024);
   const records = lines.map((line) => JSON.parse(line) as { line: string });
-  expect(records.slice(0, -1).map((record) => record.line).join("")).toBe("\0".repeat(200000));
+  expect(
+    records
+      .slice(0, -1)
+      .map((record) => record.line)
+      .join(""),
+  ).toBe("\0".repeat(200000));
   expect(records.at(-1)!.line).toBe("done");
   await supervisor.stop(request.key);
 });

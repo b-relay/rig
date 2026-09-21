@@ -3,7 +3,10 @@ import { join } from "node:path";
 import type { HostConfig } from "../config/types";
 import { inspectProxyPublication } from "../domain/proxy-publication";
 import type { ProxyPublication } from "../domain/proxy-publication";
-export { inspectProxyPublication, proxyCheck } from "../domain/proxy-publication";
+export {
+  inspectProxyPublication,
+  proxyCheck,
+} from "../domain/proxy-publication";
 export type { ProxyPublication } from "../domain/proxy-publication";
 /** Caddyfiles the usual macOS and Linux Caddy installations load when no host Caddyfile is configured. */
 export const wellKnownHostCaddyfiles = [

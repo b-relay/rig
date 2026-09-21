@@ -132,12 +132,16 @@ process.exitCode = await runCapturedProcess(process.argv[1], { inspect: async (p
   const pid = Number(await readFile(pidFile, "utf8"));
   expect(pid).toBeGreaterThan(0);
   expect(() => process.kill(pid, 0)).toThrow();
-  const status = JSON.parse(await readFile(`${requestPath}.status.json`, "utf8"));
+  const status = JSON.parse(
+    await readFile(`${requestPath}.status.json`, "utf8"),
+  );
   expect(status.state).not.toBe("failed");
   expect(status).toMatchObject({ state: "stopped", pid });
   expect(status.message).not.toContain("could not start");
   expect(status.message).toContain("stopped");
-  const observation = JSON.parse(await readFile(`${requestPath}.observation.json`, "utf8"));
+  const observation = JSON.parse(
+    await readFile(`${requestPath}.observation.json`, "utf8"),
+  );
   expect(observation.observation.state).toBe("stopped");
   expect(observation.observation.reason).toContain("stopped");
 }, 12000);

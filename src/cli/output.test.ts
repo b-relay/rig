@@ -23,7 +23,6 @@ test("status, result and log text drop bidi overrides, zero-width and C1 control
   const rendered = [
     renderStatus(report),
     renderResult("list", {
-      ownership: "ready",
       projects: [{ name: hostile, repoPath: hostile, targetCount: 1 }],
     }),
     renderResult("up", {
@@ -57,7 +56,6 @@ test("status, result and log text drop bidi overrides, zero-width and C1 control
 test("list marks a registered directory that no longer exists", () => {
   expect(
     renderResult("list", {
-      ownership: "ready",
       projects: [
         { name: "demo", repoPath: "/gone", targetCount: 0, missing: true },
         { name: "app", repoPath: "/here", targetCount: 2 },
@@ -87,15 +85,4 @@ test("logs print the UTC clock with its zone marker so it cannot pass for local 
       false,
     ),
   ).toBe("23:30:00Z  web  > ready\n");
-});
-
-test("list says when rigd cannot observe Targets because legacy adoption is pending", () => {
-  expect(
-    renderResult("list", {
-      ownership: "unknown",
-      projects: [{ name: "app", repoPath: "/here", targetCount: 2 }],
-    }),
-  ).toBe(
-    "app  2 Targets  /here\nWarning: rigd is not observing Targets: legacy adoption is pending, so Target counts come from the registry only. Run rig doctor.\n",
-  );
 });

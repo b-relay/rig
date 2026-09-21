@@ -166,7 +166,6 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
   let id = 0;
   const deps = {
     root,
-    async assertOwnershipReady() {},
     async readAdminActivity() {
       return [];
     },

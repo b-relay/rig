@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { rigFixture } from "./support/rig-fixture";
 
-// The release gate of the configuration cutover (#245): the three Project shapes of plans/examples, under default and
+// The release matrix: the three Project shapes of docs/examples, under default and
 // renamed Target names, through the public CLI and a real rigd under a temporary RIG_ROOT.
 
 type Fixture = Awaited<ReturnType<typeof rigFixture>>;

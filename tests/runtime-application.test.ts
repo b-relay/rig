@@ -43,7 +43,6 @@ function fixture() {
   const plans: any[] = [];
   const deps: RuntimeDependencies = {
     root: "/tmp/isolated-rig",
-    async assertOwnershipReady() {},
     async readAdminActivity() {
       return [];
     },
@@ -1437,25 +1436,21 @@ test("deploy refuses a revision whose committed rig config names another Project
   expect(state.targets.some((target) => target.kind === "live")).toBe(false);
 });
 
-test("deploy refuses a Commit that carries only legacy config instead of falling back to the checkout's rig.yaml", async () => {
+test("deploy refuses a Commit whose config cannot be read instead of falling back to the checkout's rig.yaml", async () => {
   const { runtime, state, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   const workingCopy = deps.documents.read.bind(deps.documents);
   deps.documents.read = async (path) => {
     if (path === "/tmp/developer") return await workingCopy(path);
-    throw new ConfigError(
-      `${path}/rig.json is a legacy Project config.`,
-      "legacy_format",
-      { path: `${path}/rig.json` },
-      "Rewrite it as rig.yaml.",
-    );
+    throw new ConfigError(`${path} has no rig.yaml.`, "missing_config", {
+      path,
+    });
   };
   await expect(
     runtime.command({ action: "deploy", project: "demo", target: "live" }),
   ).rejects.toMatchObject({
     _tag: "ConfigError",
-    code: "legacy_format",
-    hint: "Commit rig.yaml in the current schema, without rig.json beside it, then deploy that Commit.",
+    code: "missing_config",
   });
   expect(state.targets.some((target) => target.kind === "live")).toBe(false);
 });
@@ -3486,7 +3481,6 @@ test("runtime list, logs and activity replies satisfy the client contract end to
       token: "test-secret",
     });
     expect(await client.command({ action: "list" })).toMatchObject({
-      ownership: "ready",
       projects: [{ name: "demo", repoPath: "/tmp/developer", targetCount: 1 }],
     });
     expect(
@@ -3592,7 +3586,6 @@ test("list reads the inventory without observing any Target", async () => {
     throw new Error("list must not observe Targets");
   };
   expect(await runtime.command({ action: "list" })).toEqual({
-    ownership: "ready",
     projects: [{ name: "demo", repoPath: "/tmp/developer", targetCount: 1 }],
   });
 });

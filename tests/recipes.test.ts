@@ -77,7 +77,6 @@ async function fixture(yaml: string, recipes: readonly Recipe[] = [CACHE]) {
   const deps = {
     root,
     recipes,
-    async assertOwnershipReady() {},
     async readAdminActivity() {
       return [];
     },
@@ -489,7 +488,7 @@ test("the accepted multi-Service example carries the provenance Rig writes, and 
   await writeFile(
     join(root, "rig.yaml"),
     await readFile(
-      join(import.meta.dir, "../plans/examples/114-multi.rig.yaml"),
+      join(import.meta.dir, "../docs/examples/multi.rig.yaml"),
     ),
   );
   expect(

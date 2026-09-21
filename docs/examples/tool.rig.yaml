@@ -1,4 +1,4 @@
-# Accepted #114 design. The schema is implemented; tests/config-examples-e2e.test.ts validates this file.
+# tests/config-examples-e2e.test.ts validates this file.
 # This Project has no server, port, hostname or proxy.
 name: report
 production_branch: main

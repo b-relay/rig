@@ -149,7 +149,6 @@ async function fixture(
   let id = 0;
   const deps = {
     root,
-    async assertOwnershipReady() {},
     async readAdminActivity() {
       return [];
     },

@@ -314,52 +314,6 @@ test("installed names reject another Target owner and unmanaged executables with
     ),
   ).toBe("unknown");
 });
-test("explicit artifact adoption requires the exact backed-up bytes and then permits only its owner to replace them", async () => {
-  const { adoptInstalledArtifact, artifactRevision } =
-    await import("../src/adapters/artifact-ownership");
-  const { mkdir } = await import("node:fs/promises");
-  const root = await mkdtemp(join(tmpdir(), "rig-artifact-adoption-"));
-  roots.push(root);
-  const record = target(root),
-    adapter = effects(root),
-    component = {
-      name: "tool",
-      kind: "installed" as const,
-      entrypoint: "tool.ts",
-      env: {},
-      dependsOn: [],
-    },
-    destination = join(root, "bin", "tool-local");
-  await mkdir(join(root, "bin"));
-  await writeFile(destination, "old tool", { mode: 0o755 });
-  const identity = {
-    targetId: record.id,
-    componentName: component.name,
-    destination,
-  };
-  await expect(
-    adoptInstalledArtifact(root, identity, "0".repeat(64)),
-  ).rejects.toMatchObject({ code: "ARTIFACT_CHANGED" });
-  expect(await readFile(destination, "utf8")).toBe("old tool");
-  await adoptInstalledArtifact(
-    root,
-    identity,
-    (await artifactRevision(destination))!,
-  );
-  await writeFile(join(root, "tool.ts"), "process.stdout.write('adopted')");
-  expect(await adapter.install(component, record)).toMatchObject({
-    outcome: "installed",
-  });
-  await expect(
-    adoptInstalledArtifact(
-      root,
-      { ...identity, targetId: "other" },
-      (await artifactRevision(destination))!,
-    ),
-  ).rejects.toMatchObject({ code: "ARTIFACT_CONFLICT" });
-  expect((await runCommand({ command: [destination] })).stdout).toBe("adopted");
-});
-
 test("setup recording acquires time for each retained line and reads unchanged streams and permissions", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-record-time-"));
   roots.push(root);

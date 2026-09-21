@@ -32,38 +32,21 @@ const revisionOf = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 const missing = (error: unknown): boolean =>
   error instanceof Error && "code" in error && error.code === "ENOENT";
-/** Filesystem effect owner: finds the YAML document and refuses a retired JSON document instead of reading or ignoring it; permission failures are preserved. */
+/** Filesystem effect owner: finds the YAML document; permission failures are preserved. */
 async function locateConfig(
   directory: string,
   stem: string,
 ): Promise<string | undefined> {
-  const [yaml, json] = await Promise.all(
-    [join(directory, `${stem}.yaml`), join(directory, `${stem}.json`)].map(
-      async (path) => {
-        try {
-          await access(path);
-          return path;
-        } catch (error) {
-          if (missing(error)) return undefined;
-          throw new ConfigError(
-            "Unable to inspect config document.",
-            "read_failed",
-            { path },
-          );
-        }
-      },
-    ),
-  );
-  if (json)
-    throw new ConfigError(
-      `${stem}.json is a retired configuration format.`,
-      "legacy_format",
-      { path: json, ...(yaml ? { yamlPath: yaml } : {}) },
-      yaml
-        ? `Rig reads only ${stem}.yaml and will not choose between two documents; remove ${json} once ${yaml} holds the converted configuration.`
-        : `Convert ${json} to ${stem}.yaml in the current schema, then remove it; Rig never converts or guesses a config silently.`,
-    );
-  return yaml;
+  const path = join(directory, `${stem}.yaml`);
+  try {
+    await access(path);
+    return path;
+  } catch (error) {
+    if (missing(error)) return undefined;
+    throw new ConfigError("Unable to inspect config document.", "read_failed", {
+      path,
+    });
+  }
 }
 /** Pure YAML 1.2 parser. Restrictions run on the syntax tree before domain validation. */
 function yamlDocument(raw: string, path: string) {

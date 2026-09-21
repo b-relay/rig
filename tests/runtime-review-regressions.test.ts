@@ -17,7 +17,6 @@ import {
   resolveTargetPlan as resolvePlanWithHost,
   ConfigError,
 } from "../src/config";
-import { RigError } from "../src/domain/errors";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
@@ -50,7 +49,6 @@ function fixture() {
         state: "unpublished" as const,
       };
     },
-    async assertOwnershipReady() {},
     store: {
       async read() {
         return structuredClone(state);
@@ -97,33 +95,6 @@ test("repoint through a symlink retains canonical workspace selection on the nex
   expect(
     await runtime.command({ action: "status", repoPath: alias }),
   ).toMatchObject({ project: "demo" });
-});
-test("host-only doctor exposes pending ownership while retaining independent Host observations", async () => {
-  const { runtime, deps } = fixture();
-  deps.documents.discover = async () => {
-    throw new ConfigError("No project", "missing_config");
-  };
-  deps.assertOwnershipReady = async () => {
-    throw new RigError(
-      "LEGACY_ADOPTION_PENDING",
-      "Adoption is pending.",
-      "Verify legacy owners.",
-    );
-  };
-  expect(
-    await runtime.command({ action: "doctor", repoPath: "/outside" }),
-  ).toMatchObject({
-    ok: false,
-    checks: expect.arrayContaining([
-      { name: "host-check", ok: true, message: "Host inspected." },
-      expect.objectContaining({
-        name: "runtime-ownership",
-        ok: false,
-        message: "Adoption is pending.",
-        hint: "Verify legacy owners.",
-      }),
-    ]),
-  });
 });
 test("invalid Project discovery does not suppress Host doctor checks", async () => {
   const { runtime, deps } = fixture();

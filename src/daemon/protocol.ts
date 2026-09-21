@@ -99,7 +99,6 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
  * while each collection item is reduced to the fields rig shows. */
 export const listResultSchema = z
   .object({
-    ownership: z.enum(["ready", "unknown"]),
     projects: z.array(
       z.object({
         name: z.string(),

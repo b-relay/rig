@@ -4,7 +4,7 @@
 
 Rig is a local Mac deployment manager built around `rigd` as the runtime
 authority, strict TypeScript, Bun, Zod validation, and provider-backed modular
-interfaces. The September 9 rewrite explicitly removes Effect TS.
+interfaces. Rig does not use Effect TS.
 
 ## Agent skills
 
@@ -31,12 +31,10 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 
 - Use the PRD skills for product work:
   - Use `to-prd` when conversation context needs to become a PRD issue.
-  - Turn PRDs into `plans/` docs before implementation. If a dedicated PRD-to-plan
-    skill is available in the session, use it; otherwise write the plan directly.
-  - Use `to-issues` to break PRDs or plans into independently grabbable GitHub
-    issues using tracer-bullet vertical slices.
-  - Keep PRDs, `plans/`, docs, and issue comments in sync as implementation
-    changes reality.
+  - Use `to-issues` to break PRDs into independently grabbable GitHub issues
+    using tracer-bullet vertical slices.
+  - Keep PRD issues, docs, and issue comments in sync as implementation
+    changes reality. Finished plans are not kept in the repo.
 - Use `design-an-interface` before adding or changing major module, provider, or
   plugin contracts. Compare at least two materially different shapes, then choose
   the smallest interface that hides the most implementation complexity.
@@ -53,8 +51,8 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 - Use plain TypeScript functions, explicit dependency interfaces, async/await,
   and structured tagged errors. Effect TS is not part of the runtime or tests.
 - Validate external input with Zod; keep domain calculations independent of I/O.
-- Follow `function-design` and the current PRD. Keep contract ledgers and review
-  evidence in the rewrite run notes, not scattered through production code.
+- Follow `function-design` and the current PRD issue. Keep contract ledgers and
+  review evidence in `docs/reviews/`, not scattered through production code.
 - Run review subagents after each major milestone and resolve material findings
   before marking the milestone complete.
 
@@ -95,6 +93,7 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 
 - `bun install`
 - `bun test`
+- `bun run typecheck`
 - `bun run build`
 
 Run focused tests during TDD, then broader validation before committing when the

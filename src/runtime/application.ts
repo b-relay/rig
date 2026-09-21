@@ -172,21 +172,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           "rigd is preparing to stop.",
           "Wait for administration to complete before retrying.",
         );
-      if (!reads.has(command.action)) await deps.assertOwnershipReady();
       if (command.action === "prepare-uninstall") {
-        let state;
-        try {
-          state = await deps.store.read();
-        } catch (error) {
-          // This rigd refused every operation on a root it cannot read, so it started nothing there: stopping it is
-          // safe, and is the first step of converting the root.
-          if (!(
-            error instanceof RigError && error.code === "STATE_UNCONVERTED"
-          ))
-            throw error;
-          draining = true;
-          return { ready: true };
-        }
+        const state = await deps.store.read();
         if (state.targets.some((t) => t.recovery || t.destructionPending))
           throw new RigError(
             "DEPLOY_RECOVERY",
@@ -219,15 +206,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         return { ...(running ? { running } : {}), waiting };
       if (command.action === "list") {
         const state = await deps.store.read();
-        let ownership = true;
-        try {
-          await deps.assertOwnershipReady();
-        } catch {
-          ownership = false;
-        }
         // An inventory listing reads the record only; Target liveness is status's job and is not observed here.
         return {
-          ownership: ownership ? "ready" : "unknown",
           projects: await Promise.all(
             state.projects.map(async (p) => ({
               name: p.name,
@@ -793,7 +773,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               "rigd is preparing to stop.",
               "Wait for administration to complete.",
             );
-          await deps.assertOwnershipReady();
           return await operation();
         });
       queue = result;
@@ -832,10 +811,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               ...diagnosticCauses(error),
             })
             .catch(() => {});
-        // Unreadable ownership or state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
+        // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
         let state;
         try {
-          await deps.assertOwnershipReady();
           state = await deps.store.read();
         } catch (error) {
           await failed(error);

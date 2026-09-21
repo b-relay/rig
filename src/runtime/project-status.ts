@@ -10,7 +10,6 @@ import {
   observeTargets,
   type ComponentReport,
   type TargetReport,
-  deploymentFlags,
 } from "./status";
 import { previewName, selectTarget } from "./targets";
 import {
@@ -46,7 +45,6 @@ export async function projectStatus(
   command: StatusSelection,
   deps: Pick<
     RuntimeDependencies,
-    | "assertOwnershipReady"
     | "observations"
     | "observationBudgetMs"
     | "observationDeadline"
@@ -78,35 +76,12 @@ export async function projectStatus(
   );
   const selected = targets.filter(selects);
   const warnings: string[] = [];
-  let ownershipFailure: string | undefined;
-  try {
-    await deps.assertOwnershipReady();
-  } catch (error) {
-    ownershipFailure = asRigError(error).message;
-    warnings.push(ownershipFailure);
-  }
-  const reports: TargetReport[] = ownershipFailure
-    ? selected.map((target) => ({
-        name: target.name,
-        kind: target.kind,
-        branch: target.branch,
-        commit: target.commit,
-        ...deploymentFlags(target),
-        route: target.plan.domain,
-        state: "unknown",
-        components: target.plan.components.map((c) => ({
-          name: c.name,
-          kind: c.kind,
-          state: "unknown",
-          reason: ownershipFailure,
-        })),
-      }))
-    : await observeTargets(
-        selected,
-        deps.observations,
-        deps.observationBudgetMs,
-        deps.observationDeadline,
-      );
+  const reports: TargetReport[] = await observeTargets(
+    selected,
+    deps.observations,
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
   if (configWarning) warnings.push(configWarning);
   if (document) {
     const names = targetNames(document.config);

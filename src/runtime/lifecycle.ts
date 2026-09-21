@@ -628,13 +628,6 @@ export function uncertainAttempt(
 /** A deployed Target starts only from a preparation whose every unit is recorded as succeeded for this workspace. */
 function assertPrepared(target: TargetRecord): void {
   if (target.kind === "local") return;
-  if (target.conversion?.needsDeploy.length)
-    throw new RigError(
-      "CONVERSION_NEEDS_DEPLOY",
-      `${target.name} was converted from the retired configuration and cannot start as it was saved: ${target.conversion.needsDeploy.join("; ")}.`,
-      `Commit the reviewed rig.yaml and run rig deploy ${target.kind === "preview" ? `preview --deployment ${target.name}` : target.name}; the new Deployment replaces the converted one.`,
-      { reasons: target.conversion.needsDeploy },
-    );
   assertBuildsKnown(target);
   const recorded = recordedUnits(target);
   for (const unit of target.plan.builds ?? []) {

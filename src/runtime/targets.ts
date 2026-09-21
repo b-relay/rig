@@ -8,7 +8,6 @@ import type {
 } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
-import { ConfigError } from "../config/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { portOwners, recordedPorts } from "./ports";
 import {
@@ -251,22 +250,7 @@ async function committedConfig(
   project: ProjectRecord,
   deps: Pick<RuntimeDependencies, "documents">,
 ): Promise<ProjectConfig> {
-  const revision = await deps.documents
-    .read(workspacePath)
-    .catch((error: unknown) => {
-      // The refusal names files in rigd's checkout of the Commit; the way through is a new Commit, not editing them.
-      if (
-        error instanceof ConfigError &&
-        (error.code === "legacy_format" || error.code === "legacy_config")
-      )
-        throw new ConfigError(
-          `The deployed Commit carries retired configuration. ${error.message}`,
-          error.code,
-          error.context,
-          "Commit rig.yaml in the current schema, without rig.json beside it, then deploy that Commit.",
-        );
-      throw error;
-    });
+  const revision = await deps.documents.read(workspacePath);
   if (revision.config.name !== project.name)
     throw new RigError(
       "PROJECT_IDENTITY",

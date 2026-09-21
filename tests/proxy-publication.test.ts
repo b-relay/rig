@@ -177,7 +177,6 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
       [target],
       { target: "live" },
       {
-        async assertOwnershipReady() {},
         inProgress: () => false,
         observations,
         observationBudgetMs: 2000,

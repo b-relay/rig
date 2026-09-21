@@ -568,15 +568,6 @@ function validateReferences(
     }
   }
 }
-const LEGACY_KEYS = [
-  "components",
-  "local",
-  "live",
-  "deployments",
-  "hooks",
-  "hookTimeout",
-  "installTimeout",
-];
 const PATCH_IDENTITY_KEYS: Readonly<Record<string, string>> = {
   production_branch:
     "The Production branch is Project-wide; set production_branch at the top level.",
@@ -587,14 +578,6 @@ const PATCH_IDENTITY_KEYS: Readonly<Record<string, string>> = {
 /** Refusals that need their own guidance, checked before the schema so they are not reported as generic unknown keys. */
 function refuseUnsupportedShapes(value: unknown): void {
   if (!isRecord(value)) return;
-  const legacy = LEGACY_KEYS.filter((key) => Object.hasOwn(value, key));
-  if (legacy.length)
-    throw new ConfigError(
-      "This Project config uses the retired component schema.",
-      "legacy_config",
-      { keys: legacy },
-      `Convert it to the services/tools/targets schema: ${legacy.join(", ")} ${legacy.length === 1 ? "is" : "are"} no longer read. See docs/rig-guide.md; Rig never converts or guesses a config silently.`,
-    );
   if (!isRecord(value.targets)) return;
   const issues: { path: string[]; message: string }[] = [];
   for (const [role, patch] of Object.entries(value.targets)) {

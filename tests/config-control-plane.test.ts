@@ -143,7 +143,7 @@ test("YAML scalar removal preserves unrelated comments and refuses attached comm
   expect(result.raw).toContain("ready: curl localhost # keep explanation");
 });
 
-test("apply rejects an invalid domain value without a write, and a retired rig.json is refused for read, preview and apply without being read or changed", async () => {
+test("apply rejects an invalid domain value without a write", async () => {
   const f = await fixture();
   const read = await f.editor({ action: "read", project: "pantry" });
   const request = { project: "pantry", expectedRevision: read.revision };
@@ -158,30 +158,6 @@ test("apply rejects an invalid domain value without a write, and a retired rig.j
   ).rejects.toMatchObject({ code: "invalid_config" });
   expect(await readdir(f.root)).toEqual(["rig.yaml"]);
   expect(await readFile(f.path, "utf8")).toBe(f.raw);
-  const jsonPath = join(f.root, "rig.json");
-  const original = JSON.stringify({
-    name: "pantry",
-    services: { web: { run: "serve" } },
-  });
-  await writeFile(jsonPath, original);
-  const patch = [{ op: "set", path: ["description"], value: "updated" }];
-  // The JSON document is refused whether or not a rig.yaml sits next to it.
-  for (const withYaml of [true, false]) {
-    if (!withYaml) await rm(f.path);
-    for (const input of [
-      { action: "read", project: "pantry" },
-      { action: "preview", ...request, patch },
-      { action: "apply", ...request, patch },
-    ])
-      await expect(f.editor(input)).rejects.toMatchObject({
-        code: "legacy_format",
-      });
-    expect((await readdir(f.root)).sort()).toEqual(
-      withYaml ? ["rig.json", "rig.yaml"] : ["rig.json"],
-    );
-    expect(await readFile(jsonPath, "utf8")).toBe(original);
-    if (withYaml) expect(await readFile(f.path, "utf8")).toBe(f.raw);
-  }
 });
 
 test("registration resolution occurs inside the runtime mutation gate for apply", async () => {

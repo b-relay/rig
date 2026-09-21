@@ -69,10 +69,7 @@ export async function hostDoctor(
 }
 
 async function inspectRuntimeHost(
-  deps: Pick<
-    RuntimeDependencies,
-    "inspectHost" | "assertOwnershipReady" | "store" | "notices"
-  >,
+  deps: Pick<RuntimeDependencies, "inspectHost" | "store" | "notices">,
 ) {
   const checks = await deps.inspectHost();
   checks.unshift({ name: "rigd", ok: true, message: "Daemon is reachable." });
@@ -99,23 +96,6 @@ async function inspectRuntimeHost(
         error instanceof RigError
           ? error.hint
           : "Inspect the runtime state file under the Rig root.",
-    });
-  }
-  try {
-    await deps.assertOwnershipReady();
-  } catch (error) {
-    checks.push({
-      name: "runtime-ownership",
-      ok: false,
-      message:
-        error instanceof RigError
-          ? error.message
-          : "Runtime ownership is unknown.",
-      reason: "ownership-pending",
-      hint:
-        error instanceof RigError
-          ? error.hint
-          : "Complete the explicit provider adoption before runtime control.",
     });
   }
   return checks;
@@ -199,20 +179,13 @@ export async function doctor(
         ),
       );
   }
-  const ownershipKnown = !checks.some(
-    (check) => check.name === "runtime-ownership" && !check.ok,
-  );
   // A Preview awaiting destruction has already retired its inventory; the destruction check names it, its components are not failures.
-  const reports = ownershipKnown
-    ? await observeTargets(
-        targets.filter(
-          (target) => !target.recovery && !target.destructionPending,
-        ),
-        deps.observations,
-        deps.observationBudgetMs,
-        deps.observationDeadline,
-      )
-    : [];
+  const reports = await observeTargets(
+    targets.filter((target) => !target.recovery && !target.destructionPending),
+    deps.observations,
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
   for (const report of reports)
     for (const component of report.components)
       checks.push(componentCheck(report.name, component));

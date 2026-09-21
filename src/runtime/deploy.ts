@@ -42,7 +42,6 @@ export async function activateDeployment(
     commit: previous?.commit ?? candidate.commit,
     desired: previous?.desired ?? "stopped",
     deploymentIncomplete: previous ? previous.deploymentIncomplete : true,
-    ...(previous?.conversion ? { conversion: previous.conversion } : {}),
     stage: "pending",
   };
   const checkpoint = await deps.lifecycle.checkpoint(candidate, previous);
@@ -192,10 +191,8 @@ export async function stopForRecovery(
     commit: target.recovery.commit,
     desired: "stopped",
     deploymentIncomplete: target.recovery.deploymentIncomplete,
-    conversion: target.recovery.conversion,
   };
   delete previous.recovery;
-  if (!previous.conversion) delete previous.conversion;
   if (!previous.preparation) delete previous.preparation;
   if (target.recovery.plan.workspacePath !== target.plan.workspacePath) {
     const uncertain = uncertainAttempt(target);

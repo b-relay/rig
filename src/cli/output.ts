@@ -116,10 +116,6 @@ function changeLines(change: Record<string, unknown>): string[] {
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);
-  const unobserved =
-    report.ownership === "unknown"
-      ? "Warning: rigd is not observing Targets: legacy adoption is pending, so Target counts come from the registry only. Run rig doctor.\n"
-      : "";
   return projects.length
     ? `${projects
         .map(
@@ -130,8 +126,8 @@ function renderProjects(report: Record<string, unknown>): string {
                 : ""
             }`,
         )
-        .join("\n")}\n${unobserved}`
-    : `No Projects registered.\n${unobserved}`;
+        .join("\n")}\n`
+    : "No Projects registered.\n";
 }
 /** What to do about a daemon that is not serving, or nothing when it is. */
 function daemonAdvice(report: Record<string, unknown>): string {

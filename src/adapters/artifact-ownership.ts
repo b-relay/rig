@@ -37,7 +37,7 @@ export interface ArtifactIdentity {
   project?: string;
   target?: string;
 }
-/** One daemon serializes ownership mutations; existing unowned files require explicit migration. */
+/** One daemon serializes ownership mutations; an existing unowned file is never taken over. */
 export function createArtifactOwnership(root: string) {
   const ownerPath = (destination: string) =>
     join(
@@ -126,40 +126,6 @@ export function createArtifactOwnership(root: string) {
       );
     },
   };
-}
-/** Explicit migration only: the caller must verify the backed-up bytes it intends to adopt. */
-export async function adoptInstalledArtifact(
-  root: string,
-  identity: ArtifactIdentity,
-  expectedRevision: string,
-): Promise<void> {
-  const ownership = createArtifactOwnership(root);
-  const saved = await ownership.owner(identity.destination);
-  if (
-    saved &&
-    (saved.targetId !== identity.targetId ||
-      saved.componentName !== identity.componentName)
-  )
-    throw new RigError(
-      "ARTIFACT_CONFLICT",
-      "The executable already has a different owner.",
-      "Resolve its ownership before adoption.",
-    );
-  const revision = await artifactRevision(identity.destination);
-  if (revision !== expectedRevision)
-    throw new RigError(
-      "ARTIFACT_CHANGED",
-      "The executable differs from the approved adoption bytes.",
-      "Recheck and back up the current executable before adoption.",
-    );
-  await atomicFile(
-    ownership.ownerPath(identity.destination),
-    JSON.stringify({
-      targetId: identity.targetId,
-      componentName: identity.componentName,
-      revision,
-    }),
-  );
 }
 export async function artifactRevision(
   path: string,

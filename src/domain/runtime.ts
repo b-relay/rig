@@ -79,8 +79,6 @@ export interface TargetRecord {
   uncertainBuild?: { branch?: string; commit?: string; unit: string };
   /** Revision of the rig.yaml a Working copy plan was made from. */
   configRevision?: string;
-  /** Set by the configuration cutover on a saved Deployment whose old behavior the converted plan cannot reproduce. */
-  conversion?: { needsDeploy: string[] };
   recovery?: {
     plan: TargetPlan;
     /** Build outcomes of the plan restored by rollback. */
@@ -90,8 +88,6 @@ export interface TargetRecord {
     desired: "running" | "stopped";
     /** Completion state of the plan restored by rollback. */
     deploymentIncomplete?: true;
-    /** The conversion marker of the plan restored by rollback. */
-    conversion?: { needsDeploy: string[] };
     stage: "pending" | "blocked" | "committing";
     /** Operation that opened the transition; live only inside the daemon that ran it. */
     operationId?: string;

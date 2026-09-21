@@ -7,7 +7,6 @@ import {
 import type { DaemonHostOptions } from "./host";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
-import { createAdoptionGuard } from "../migration/adoption";
 import { randomUUID, createHash } from "node:crypto";
 import { executionBaseline, inheritedEnvironment } from "./environment";
 import { homedir } from "node:os";
@@ -127,7 +126,6 @@ export async function composeDaemon(
     readAdminActivity: adminActivity.read,
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
-    assertOwnershipReady: createAdoptionGuard(root),
     store,
     documents: createProjectDocuments(root, runCommand, environment, homedir()),
     sources: createDeploymentSources(

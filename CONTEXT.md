@@ -1,19 +1,16 @@
 # Rig Context
 
-This is the accepted domain model and product contract, including planned
-interaction behavior. It is not a release-completion record. The current
-implementation uses plain strict TypeScript/Bun/Zod without Effect TS; consult
-the [PRD](docs/PRD.md), [module map](README.md#module-map), and
-[cutover readiness](docs/rig-cutover-readiness.md) for implementation scope and gates.
+This is the domain model and product contract for Rig. For the architecture see
+[DESIGN.md](DESIGN.md), for the code layout the
+[module map](README.md#module-map), and for command behavior the
+[guide](docs/rig-guide.md).
 
 ## Terms
 
 ### Rig
 
 The local Mac deployment system as a whole. Rig is repo-first,
-lifecycle-first, and provider-backed. It should not preserve older
-env/service/release assumptions unless that compatibility has a clear,
-short-lived operational purpose.
+lifecycle-first, and provider-backed.
 
 ### rig
 
@@ -63,8 +60,7 @@ _Relationship_: Unresolved Target recovery also blocks uninstall, even when
 the candidate is stopped. Keep daemon control available so explicit `rig down`
 can finish recovery before uninstall is retried.
 
-_Relationship_: `rigd uninstall --force` should not be part of the first
-release. Bulk stop/delete cleanup semantics require separate design.
+_Relationship_: There is no `rigd uninstall --force`. Bulk stop/delete cleanup semantics require separate design.
 
 _Relationship_: `rigd status` should report daemon installation, running, and
 reachability state. It may include high-level counts, but detailed Project and
@@ -145,10 +141,8 @@ Target logs, which contain managed runtime output.
 _Relationship_: Rig should avoid calling this an audit trail until retention,
 identity, immutability, and tamper-evidence guarantees are explicitly designed.
 
-_Relationship_: `rig activity` should be added after the User response and
-Diagnostic log model is cleaned up. Activity history should be presented
-through the same user-output model as other commands rather than as another
-one-off formatter.
+_Relationship_: `rig activity` presents Activity history through the same
+user-output model as other commands rather than a one-off formatter.
 
 _Relationship_: The Activity log should include Operations that reached
 `rigd`, including successful, failed, and unchanged outcomes. Usage mistakes
@@ -174,14 +168,8 @@ A computer that can run `rigd` and own Rig runtime state.
 ### Host config
 
 The user-authored configuration for one Host, stored canonically at
-`~/.rig/config.yaml`.
-
-_Decision history_: The accepted YAML-only cutover for user-authored config is
-recorded in [ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md).
-
-_Relationship_: Host config migration is manual. Rig should not expose a
-config migration command or silently rewrite an existing JSON file. The
-Configuration conversion only shows a candidate `config.yaml`.
+`~/.rig/config.yaml`. Host config is YAML only
+([ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md)).
 
 _Relationship_: Runtime records and Diagnostic logs are machine-owned state,
 not Host config, and may remain JSON or JSONL.
@@ -192,15 +180,19 @@ The destructive removal of a Rig project and some or all associated state;
 this requires a dedicated design before implementation.
 _Avoid_: archive, unrig
 
+_Relationship_: `rig forget` is not Project deletion. It removes a stopped
+Project's registration and leaves the repository, data, and Activity history
+in place. Previews must be destroyed first.
+
 ### Expert surface
 
 The advanced Rig interface for development, testing, isolated state roots,
 provider profiles, low-level diagnostics, and daemon administration.
 _Unresolved_: this may become a separate `rigx` executable, an expert mode
-enabled in home config, or remain internal for longer.
+enabled in Host config, or remain internal for longer.
 
-_Relationship_: The first release should not expose a normal user-facing
-expert mode. Stub providers, state-root overrides, and similar advanced
+_Relationship_: Rig does not expose a normal user-facing expert mode. Test
+providers, state-root overrides, and similar advanced
 testing surfaces should remain test/dev/internal mechanisms until a dedicated
 expert surface is designed.
 
@@ -298,23 +290,23 @@ running a Target never read the recipe comment or the recipe catalog; only
 _Relationship_: Rig never regenerates or rewrites a generated Service. A newer
 recipe version is an informational notice, never a failing check.
 
-### Target class
+### Target role
 
-The role of a Target: Working copy, Stable, or Preview. A Target's class is
-distinct from its configured or generated name.
-_Avoid_: Target name
+The role of a Target: Working copy, Stable, or Preview. Project config keys
+Targets by role (`working`, `stable`, `preview`). A Target's role is distinct
+from its configured or generated name.
+_Avoid_: Target name, Target class
 
 ### Working copy Target
 
 The Target backed by the current Working copy, with a configurable alias that
 defaults to `local`.
 
-_Relationship_: The Working copy Target name and Stable Target names must be
-unique.
+_Relationship_: The Working copy Target name and the Stable Target name must
+differ.
 
 _Relationship_: The Working copy Target name belongs in committed Project
-config as the default Project policy. Future user or Host overrides may rename
-it locally, but the first release should use the Project config default.
+config as the default Project policy.
 
 ### Project
 
@@ -338,10 +330,9 @@ default suggestion during initialization.
 _Relationship_: Project identity belongs in committed Project config because
 it affects routing, explicit Project selection, and Host-level uniqueness.
 
-_Relationship_: Project identity is managed config. `rig init` creates it, but
-normal config editing should not expose identity as a simple settable field.
-Changing identity requires a future dedicated rename design that coordinates
-Project config, `rigd` inventory, routes, and storage.
+_Relationship_: Project identity is managed config. `rig init` creates it, and
+`rig rename` changes it for a stopped Project, coordinating Project config and
+`rigd` inventory. A hand edit of the name is adopted with `rig rename` too.
 
 _Relationship_: `rig list` is a Host-level Project inventory command. It
 lists Projects with summary metadata such as Target count, but it does not show
@@ -428,9 +419,9 @@ _Relationship_: `rig init` should fail if existing Project config has a
 Project identity already registered in `rigd` to a different Project path.
 `rig doctor` should report this as a Project identity/path conflict.
 
-_Relationship_: Moving a Project directory should require a future explicit
-move or repair flow. Rig should not automatically update registered Project
-paths just because it sees the same Project config at a new location.
+_Relationship_: Moving a Project directory requires an explicit `rig repoint`.
+Rig should not automatically update registered Project paths just because it
+sees the same Project config at a new location.
 
 _Relationship_: Copying a Project repository to a second folder may become a
 new Rig Project on the same Host if the user chooses a new Project identity and
@@ -470,9 +461,6 @@ Production branch option is provided.
 
 Reading or changing Rig configuration through Rig commands.
 
-_Decision history_: [ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md)
-supersedes the previous Project and Host JSON compatibility decisions.
-
 _Relationship_: YAML config should accept one ordinary YAML 1.2 document and
 comments. Rig should reject duplicate keys, custom tags, anchors, aliases,
 merge keys, and multiple documents so configuration remains deterministic.
@@ -496,17 +484,13 @@ freely mutable through generic config editing. Rig should detect unsafe manual
 changes, such as Project identity drift, and report them through `rig doctor`.
 
 _Relationship_: Normal `rig` commands should not add blanket `--json` output
-flags in the first release. Machine-readable access should come through the
+flags; `--json` is per command (status, lifecycle, deploy). Machine-readable access should come through the
 `rigd` control-plane API or direct config files unless a specific command needs
 structured output.
 
-_Relationship_: `rig config get` is optional for the first release. If present,
-it should be read-only and focused rather than a broad configuration API.
-
-_Relationship_: `rig config set` should be omitted from the first cleanup
-slice. Project config should be created by `rig init`, advanced changes may be
-made by direct file edits, and `rig doctor`/preflight should validate the
-result.
+_Relationship_: There is no `rig config set` or `rig config get`. Project
+config is created by `rig init`, changed by direct file edits, and validated by
+`rig doctor` and preflight.
 
 _Relationship_: `rig config` with no subcommand should show the validated
 Project config in readable form and identify its source path. A separate
@@ -518,8 +502,8 @@ the normal terminal response.
 
 ### Stable Target
 
-A named non-local Target intended for durable shared use. The first Stable
-Target defaults to `live`.
+The named non-local Target intended for durable shared use. A Project has one
+Stable Target; its name defaults to `live`.
 
 The Stable Target has a configurable name and coexists with generated Previews.
 A Stable Target is not inherently a promotion stage.
@@ -620,8 +604,7 @@ _Relationship_: Pushing a new Commit to the Production branch through the Rig
 remote is an explicit deploy path. It should replace the Stable Target and
 bring it up by default without interactive confirmation.
 
-_Relationship_: Rig remote pushes do not support `--no-up` in the first
-release. Use CLI deploy for materializing a Deployment without starting it.
+_Relationship_: Rig remote pushes do not support `--no-up`. Use CLI deploy for materializing a Deployment without starting it.
 
 _Relationship_: Pushing a new Commit to a non-Production branch through the Rig
 remote deploys that Branch as a Preview and brings it up by default.
@@ -651,7 +634,7 @@ default branch when Rig can discover it.
 _Avoid_: deployBranch
 
 _Relationship_: Project config owns the Production branch after `rig init`;
-home config may only provide a fallback before project policy exists.
+Host config only provides the fallback for Projects that set none.
 
 _Relationship_: The Production branch setting belongs in committed Project
 config, not only in `rigd` runtime state, because it is shared Project policy.
@@ -680,9 +663,10 @@ _Relationship_: `down` stops a Target but does not remove it from inventory. A
 stopped Preview should still appear in interactive lifecycle selection until a
 separate cleanup or deletion policy removes it.
 
-_Relationship_: Preview cleanup is part of the future deletion design, not
-first-release lifecycle behavior. Rig should not automatically remove stopped
-Previews until deletion semantics are designed.
+_Relationship_: `rig down preview <Branch> --destroy` removes a Preview from
+inventory with its owned route, and preserves its data, source history, and
+logs. Rig does not remove stopped Previews on its own, apart from the Host
+Replacement policy at the Preview limit.
 
 _Relationship_: Target-aware commands such as `rig up`, `rig down`, `rig
 restart`, and `rig logs` should show an interactive Target picker when running
@@ -694,8 +678,7 @@ Targets, and existing Previews, but should not create missing Preview
 Deployments.
 
 _Relationship_: `rig status` should show stopped Previews by default because
-they remain in inventory until a separate cleanup or deletion policy removes
-them.
+they remain in inventory until they are destroyed.
 
 _Relationship_: `rig status` without arguments is Project-scoped. Host-level
 project listing should use a separate command shape, such as `rig list`.
@@ -703,8 +686,7 @@ project listing should use a separate command shape, such as `rig list`.
 _Relationship_: `rig status` should show all Targets for the selected Project
 by default, rather than requiring a Target picker.
 
-_Relationship_: The first release should keep `rig status` Project-wide only;
-Target-filtered status can be added later if needed.
+_Relationship_: `rig status` is Project-wide only; it takes no Target.
 
 _Relationship_: `rig status` should show a compact Project report with each
 Target as a heading and that Target's component state indented underneath.
@@ -717,17 +699,8 @@ The current committed `rig.yaml` policy for a Project.
 _Avoid_: using Project config to mean the recorded runtime state of an active
 Target
 
-_Decision history_: The accepted Project format boundary is recorded in
-[ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md).
-
-_Relationship_: A `rig.json` in a Project is refused as a retired format,
-whether or not a `rig.yaml` sits beside it. Rig never reads, merges, or chooses
-between the two.
-
-_Relationship_: Project config migration is manual. Rig should not expose a
-config migration command or silently rewrite an existing JSON file. The
-Configuration conversion only writes a candidate `rig.yaml` beside its report,
-never into a repository.
+_Relationship_: Project config is YAML only
+([ADR 0001](docs/adr/0001-yaml-only-project-config-cutover.md)).
 
 _Relationship_: User-authored YAML should remain ordinary, deterministic
 configuration. Runtime records and Diagnostic logs are machine-owned state and
@@ -736,34 +709,6 @@ may remain JSON or JSONL.
 _Relationship_: Deploy, init, config editing, and doctor use current Project
 config. A deploy is the moment when current Project config becomes the recorded
 runtime policy for the deployed Target.
-
-### Configuration conversion
-
-The one-time, reviewed conversion of a Rig root written before the
-configuration cutover (runtime state version 2 or 3) into the current state
-format. It is run from a source checkout (`bun run cutover`), is not a `rig`
-or `rigd` command, and the runtime holds no reader for the retired format: it
-refuses such a root as `STATE_UNCONVERTED`.
-_Avoid_: migration command, compatibility mode, legacy reader
-
-_Relationship_: The conversion keeps every Target's identity and exact data,
-log and workspace locations, never relocates data, never opens an env file,
-and invents no build success or exit record. It never substitutes Working copy
-policy for a saved Deployment.
-
-_Relationship_: Every retired hook needs an explicit decision in the
-**Conversion review**: a build, or replaced by something named. No hook is
-assumed equivalent, and the converted state carries none.
-
-_Relationship_: A converted Stable Target or Preview whose saved Deployment
-cannot be reproduced (a hook became a build that never ran, or its env file is
-part of the Commit) is marked as needing a Deployment; `rig up` refuses it
-until a new Commit is deployed.
-
-_Relationship_: Applying requires the revision of a reviewed preview and an
-exact metadata backup; the state file is replaced last, so an interrupted
-conversion leaves a root that is still refused. Rollback restores metadata
-only.
 
 ### Deployment record
 
@@ -898,13 +843,8 @@ and include concise next commands for common follow-up actions such as `up`,
 _Relationship_: Successful deploy output with `--no-up` should still include
 the exact `rig up ...` command for starting the materialized Target later.
 
-_Relationship_: `rig bump` should be removed. Deploys are Branch/Commit based,
-not version-bump based.
-
-_Relationship_: CLI cleanup should be implemented as tracer-bullet vertical
-slices. Start with one clean path end to end, such as `rig init`, `rig deploy
-live`, `rig status`, and `rig list` basics, while removing conflicting flags.
-Then add Preview, lifecycle, and logs slices.
+_Relationship_: Deploys are Branch/Commit based, not version-bump based. There
+is no `rig bump`.
 
 ### Persistent storage
 
@@ -913,23 +853,21 @@ _Avoid_: data root in user-facing language
 
 ### Replacement policy
 
-The rule for what happens when Previews exceed the active cap.
-Home config owns the machine default, and project config may later override it
-when a repo needs different behavior. `rigd` enforces the policy because
-rejecting, replacing, or destroying Previews mutates runtime state.
+The rule for what happens when Previews exceed the active cap. Host config
+owns it (`deploy.generated.maxActive` and `deploy.generated.replacePolicy`);
+Project config has no override. `rigd` enforces the policy because rejecting,
+replacing, or destroying Previews mutates runtime state.
 
-### Runtime journal
+### Runtime state
 
-The internal `rigd` module that records runtime evidence: accepted receipts,
-runtime events, health summaries, provider observations, deployment snapshots,
-port selections and inventory exclusions, desired deployment state, and managed process failures.
-Callers do not write the runtime journal directly.
+The machine-owned record `rigd` keeps at `<RIG_ROOT>/runtime/state.json`:
+registered Projects, Targets with their Deployment records and port
+selections, and the Activity log. Only `rigd` writes it, one durable replace
+at a time with the previous generation kept beside it. A file written by a
+different state version is refused unread. CLI and future UI views are derived
+from it through `rigd`, so they agree.
 
-### Read model
-
-A derived view of runtime journal evidence, shaped for CLI and web consumers.
-Project lists, deployment rows, health snapshots, and log windows should come
-from read models so CLI and web views agree.
+### Port selection
 
 Port selection probes localhost and releases every probe before returning. Recorded
 port numbers exclude conflicting Rig inventory; they do not retain OS socket
@@ -949,9 +887,7 @@ The resolved Rig shape that runtime execution, preflight, and provider
 adapters consume. The runtime plan uses Rig concepts: Projects, Targets,
 Deployments, Branches, Commits, managed components, installed components,
 workspace roots, Persistent storage roots, log roots, runtime roots, proxy
-config, provider selections, env, health, and dependencies. Older
-`Environment`, `server`, `bin`, `dev`, `prod`, `lane`, and generated
-deployment language is historical context, not the active product model.
+config, provider selections, env, health, and dependencies.
 
 _Relationship_: Runtime plans are resolved by `rigd`, not by provider
 adapters. Providers receive resolved context and capabilities rather than
@@ -960,40 +896,32 @@ helpers.
 
 ### Provider contract
 
-The small interface for a provider family, such as process supervision, proxy
-routing, workspace materialization, health checking, event transport,
-package management, SCM, tunnel exposure, or control-plane transport.
+The small interface for a provider family: process supervision, proxy routing,
+source materialization, Tool artifact installation, and command running. The
+contracts live in `src/providers/contracts.ts`.
 
 _Relationship_: Provider contracts should be expressed in Rig domain language
-and should accept resolved provider context from `rigd`. Providers should not
-read home config, Project config, or global path helpers directly.
+and should accept what they need from the runtime plan `rigd` resolved.
+Providers should not read Host config, Project config, or global path helpers
+directly.
 
-_Relationship_: Provider calls should use a consistent shape: shared Runtime
-context plus typed provider-specific config. The shared Runtime context carries
-domain facts and capabilities common to providers; provider-specific config
-carries settings only that provider understands, such as Caddyfile path for a
-Caddy proxy provider.
-
-_Relationship_: Provider-specific config may be resolved from both committed
-Project config and Host config, but those configs should avoid owning the same
-field. Project config owns Project intent that should travel with the repo,
-such as commands, health paths, route shape, Production branch, Target names,
-and Preview naming policy. Host config owns machine capability, such as local
-tool paths, base domains, port ranges, runtime roots, auth tokens, daemon
-address, and installed provider defaults. `rigd` combines Project intent and
-Host capability into the runtime plan before calling providers.
+_Relationship_: Project config and Host config should avoid owning the same
+field. Project config owns Project intent that should travel with the repo:
+commands, ports, readiness checks, builds, environment, routes, Production
+branch, and Target names. Host config owns machine capability: the default
+Production branch, the Preview limit, the Caddy provider settings, and
+diagnostics. `rigd` combines both into the runtime plan before calling
+providers.
 
 _Relationship_: Project config can be valid Project policy even on a Host that
 cannot currently satisfy it. `rig doctor` and preflight should report missing
 Host capabilities rather than treating portable Project config as invalid.
 
-_Relationship_: Provider selections in config should use stable readable IDs,
-such as `proxy.caddy` or `process.launchd`, to avoid collisions as third-party
-providers are added. CLI and UI may present friendlier display names.
+_Relationship_: The one provider choice in Project config is `supervisor`:
+`rigd` or `launchd`, set for the whole Project.
 
-_Relationship_: Stub providers are for tests, development, and expert
-diagnostics. They should not appear in normal generated Project config, normal
-help, or normal user-facing provider choices.
+_Relationship_: Test doubles for providers live in tests. They do not appear in
+config, help, or provider choices.
 
 _Relationship_: Future third-party provider/plugin support should use the same
 contract shape as first-party providers instead of a separate plugin-only API.
@@ -1001,7 +929,7 @@ contract shape as first-party providers instead of a separate plugin-only API.
 ### Provider adapter
 
 A focused concrete implementation of one provider contract, such as rigd
-process supervision, launchd process supervision, Caddy proxy routing, git
-worktree materialization, native health checks, package.json script installs,
-or stub providers. Each provider adapter should live in its own focused module
-rather than inside the provider contract module.
+process supervision, launchd process supervision, Caddy proxy routing, Git
+source materialization, or Tool artifact installation. Each provider adapter
+should live in its own focused module rather than inside the provider contract
+module.

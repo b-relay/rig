@@ -387,28 +387,6 @@ test("recovering a failed replacement restores the previous Deployment's prepara
   expect((await f.ran()).slice(4)).toEqual(["shared"]);
 });
 
-test("recovering a failed replacement of a converted Deployment keeps why it cannot start as it was saved", async () => {
-  const f = await fixture();
-  const previous = await activateDeployment(
-    f.previous,
-    undefined,
-    { activation: "prepare" },
-    f.deps,
-  );
-  previous.conversion = { needsDeploy: ["the postStop hook no longer runs"] };
-  f.candidate.plan.builds![0] = f.unit("shared", undefined, "; exit 7");
-  await expect(
-    activateDeployment(f.candidate, previous, { activation: "start" }, f.deps),
-  ).rejects.toMatchObject({ code: "BUILD_FAILED" });
-  // What a crash right after the candidate was recorded leaves behind.
-  const recovered = await stopForRecovery(f.candidate, f.deps);
-  expect(recovered.plan.workspacePath).toBe(previous.plan.workspacePath);
-  expect(recovered.conversion).toEqual(previous.conversion);
-  await expect(f.lifecycle.up(recovered)).rejects.toMatchObject({
-    code: "CONVERSION_NEEDS_DEPLOY",
-  });
-});
-
 test("a Working copy up builds the units of stopped Services and every Tool, nothing once all Services run and no Tool exists, and restart builds all", async () => {
   const f = await fixture();
   const local: TargetRecord = {

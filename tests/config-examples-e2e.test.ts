@@ -4,7 +4,6 @@ import {
   mkdir,
   readFile,
   readdir,
-  rm,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,7 +11,7 @@ import { rigFixture } from "./support/rig-fixture";
 
 type Fixture = Awaited<ReturnType<typeof rigFixture>>;
 const example = (name: string) =>
-  join(import.meta.dir, "..", "plans", "examples", `114-${name}.rig.yaml`);
+  join(import.meta.dir, "..", "docs", "examples", `${name}.rig.yaml`);
 const toolOnly = (name: string, extra = "") =>
   `name: ${name}\n${extra}tools:\n  cli:\n    bin: cli.sh\n`;
 
@@ -101,27 +100,21 @@ test("the Tool-only and multi-Service examples initialize and are inspected unde
   }
 }, 60000);
 
-test("retired JSON, the retired component schema, malformed YAML and a Host config.json are refused without changing a byte", async () => {
+test("an invalid rig.yaml and malformed YAML are refused without changing a byte", async () => {
   const f = await rigFixture();
   try {
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     const cases = [
       {
-        name: "json-only",
-        file: "rig.json",
-        raw: JSON.stringify({ name: "legacy", components: {} }),
-        message: "rig.json is a retired configuration format",
-      },
-      {
-        name: "old-schema",
+        name: "unknown-key",
         file: "rig.yaml",
-        raw: "name: legacy\ncomponents:\n  web:\n    mode: managed\n    command: serve\n",
-        message: "retired component schema",
+        raw: "name: invalid\ncomponents:\n  web:\n    mode: managed\n    command: serve\n",
+        message: "components",
       },
       {
         name: "malformed",
         file: "rig.yaml",
-        raw: "name: legacy\nservices: [unclosed\n",
+        raw: "name: invalid\nservices: [unclosed\n",
         message: undefined,
       },
     ];
@@ -139,23 +132,10 @@ test("retired JSON, the retired component schema, malformed YAML and a Host conf
         expect(output).toContain(join(entry.name, entry.file));
         if (entry.message) expect(output).toContain(entry.message);
       }
-      // Neither a repository nor a converted or scaffolded config appears.
+      // Neither a repository nor a scaffolded config appears.
       expect(await snapshot(path)).toEqual(before);
     }
-    expect((await f.rig(["list", "--json"])).stdout).not.toContain("legacy");
-
-    const hostJson = join(f.root, "config.json");
-    const hostRaw = JSON.stringify({ deploy: { productionBranch: "trunk" } });
-    await writeFile(hostJson, hostRaw);
-    const valid = await directory(f, "valid");
-    await writeFile(join(valid, "rig.yaml"), toolOnly("valid"));
-    const refused = await f.rig(["init", "--create-git"], valid);
-    expect(refused.code).not.toBe(0);
-    expect(refused.stdout + refused.stderr).toContain(
-      "config.json is a retired configuration format",
-    );
-    expect(await readFile(hostJson, "utf8")).toBe(hostRaw);
-    expect(await Bun.file(join(f.root, "config.yaml")).exists()).toBe(false);
+    expect((await f.rig(["list"])).stdout).not.toContain("invalid");
   } finally {
     await f.cleanup();
   }
@@ -194,62 +174,41 @@ test("the Host productionBranch is a Project's Production Branch until the Proje
   }
 }, 60000);
 
-test("a deployed Commit that still carries rig.json or the retired schema is refused even though the checkout's rig.yaml is valid, and no Stable Target is recorded", async () => {
+test("a deployed Commit whose rig.yaml is invalid is refused even though the checkout's rig.yaml is valid, and no Stable Target is recorded", async () => {
   const f = await rigFixture();
   try {
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     const valid = toolOnly("demo");
-    const legacyJson = JSON.stringify({ name: "demo", components: {} });
     await writeFile(join(f.repo, "cli.sh"), "#!/bin/sh\necho report\n", {
       mode: 0o755,
     });
     await writeFile(join(f.repo, "rig.yaml"), valid);
     expect(await f.rig(["init", "--create-git"])).toMatchObject({ code: 0 });
-    for (const [committed, code, message] of [
-      [
-        { "rig.yaml": valid, "rig.json": legacyJson },
-        "LEGACY_FORMAT",
-        "rig.json is a retired configuration format.",
-      ],
-      [
-        { "rig.yaml": "name: demo\ncomponents: {}\n" },
-        "LEGACY_CONFIG",
-        "This Project config uses the retired component schema.",
-      ],
-    ] as const) {
-      for (const [file, raw] of Object.entries(committed))
-        await writeFile(join(f.repo, file), raw);
-      const commit = await f.commit();
-      // The checkout is converted but not committed: the deploy reads the Commit, never the working copy.
-      await rm(join(f.repo, "rig.json"), { force: true });
-      await writeFile(join(f.repo, "rig.yaml"), valid);
-      const branch = await f.git(["branch", "--show-current"]);
-      const refused = await f.rig([
-        "deploy",
-        "live",
-        branch,
-        "--no-up",
-        "--json",
-      ]);
-      expect(refused.code).toBe(1);
-      expect(JSON.parse(refused.stdout)).toMatchObject({
-        error: {
-          code,
-          message: `The deployed Commit carries retired configuration. ${message}`,
-          hint: "Commit rig.yaml in the current schema, without rig.json beside it, then deploy that Commit.",
-        },
-      });
-      expect(await targets(f, f.repo)).toEqual([
-        expect.objectContaining({ name: "local", state: "configured" }),
-        expect.objectContaining({ name: "live", state: "configured" }),
-      ]);
-      const recorded = JSON.parse(
-        await readFile(join(f.root, "runtime", "state.json"), "utf8"),
-      ).targets as { kind: string; commit?: string }[];
-      expect(recorded.filter((target) => target.kind === "live")).toEqual([]);
-      expect(JSON.stringify(recorded)).not.toContain(commit);
-      await f.git(["rm", "-q", "--cached", "--ignore-unmatch", "rig.json"]);
-    }
+    await writeFile(join(f.repo, "rig.yaml"), "name: demo\ncomponents: {}\n");
+    const commit = await f.commit();
+    // The checkout is fixed but not committed: the deploy reads the Commit, never the working copy.
+    await writeFile(join(f.repo, "rig.yaml"), valid);
+    const branch = await f.git(["branch", "--show-current"]);
+    const refused = await f.rig([
+      "deploy",
+      "live",
+      branch,
+      "--no-up",
+      "--json",
+    ]);
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({
+      error: { code: "INVALID_CONFIG" },
+    });
+    expect(await targets(f, f.repo)).toEqual([
+      expect.objectContaining({ name: "local", state: "configured" }),
+      expect.objectContaining({ name: "live", state: "configured" }),
+    ]);
+    const recorded = JSON.parse(
+      await readFile(join(f.root, "runtime", "state.json"), "utf8"),
+    ).targets as { kind: string; commit?: string }[];
+    expect(recorded.filter((target) => target.kind === "live")).toEqual([]);
+    expect(JSON.stringify(recorded)).not.toContain(commit);
   } finally {
     await f.cleanup();
   }

@@ -134,78 +134,10 @@ test("a state file with a relative repository path is refused as corrupt and nam
   }
 });
 
-test("a deployed Target recorded before sourceRoot existed is backfilled on read when its workspace sits in the Target's revisions directory", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rig-state-sourceroot-"));
-  try {
-    await mkdir(join(root, "runtime"), { recursive: true });
-    const record = (
-      id: string,
-      kind: "local" | "preview",
-      workspacePath: string,
-    ) => ({
-      id,
-      projectId: "p",
-      name: id,
-      kind,
-      desired: "stopped",
-      createdAt: "now",
-      updatedAt: "now",
-      logRoot: join(root, "targets", "p", id, "logs"),
-      plan: {
-        project: "demo",
-        target: kind,
-        workspacePath,
-        dataRoot: join(root, "targets", "p", id, "data"),
-        deploymentName: id,
-        branchSlug: id,
-        subdomain: "",
-        providers: { processSupervisor: "rigd" },
-        providerProfile: "default",
-        components: [],
-        preparedComponents: [],
-      },
-    });
-    await writeFile(
-      join(root, "runtime", "state.json"),
-      JSON.stringify({
-        version: 4,
-        projects: [
-          {
-            id: "p",
-            name: "demo",
-            repoPath: "/tmp/demo",
-            configPath: "/tmp/demo/rig.yaml",
-            createdAt: "now",
-          },
-        ],
-        targets: [
-          record(
-            "inside",
-            "preview",
-            join(root, "targets", "p", "inside", "revisions", "abc"),
-          ),
-          record("elsewhere", "preview", "/tmp/somewhere-else"),
-          record("local", "local", "/tmp/demo"),
-        ],
-        activity: [],
-      }),
-    );
-    const state = await new FileStateStore(root).read();
-    expect(state.targets.map((t) => [t.id, t.sourceRoot])).toEqual([
-      ["inside", join(root, "targets", "p", "inside", "revisions")],
-      ["elsewhere", undefined],
-      ["local", undefined],
-    ]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test.each([
   ["{broken", "is not valid JSON"],
   ["", "is not valid JSON"],
   ["null", "at the top level"],
-  ['{"version":1,"projects":[],"targets":[],"activity":[]}', "at version:"],
   [
     '{"version":4,"projects":[],"targets":[{"id":"t","projectId":"p","name":"local","kind":"local","desired":"running","createdAt":"now","updatedAt":"now","logRoot":"/tmp/logs","plan":{"project":"demo","workspacePath":"/tmp/demo","dataRoot":"/tmp/data","components":[{"kind":"managed","name":"web"}]}}],"activity":[]}',
     "at targets.0.plan.",
@@ -337,7 +269,7 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
   }
 });
 
-test("a state file written by a newer rigd is refused with both versions named, and one written before the configuration cutover is refused unread", async () => {
+test("a state file written by a newer or an older rigd is refused unread with both versions named", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-version-"));
   try {
     await mkdir(join(root, "runtime"));
@@ -350,16 +282,16 @@ test("a state file written by a newer rigd is refused with both versions named, 
       details: { path, version: 5, supported: 4 },
     });
     expect(await readFile(path, "utf8")).toContain('"version":5');
-    for (const version of [2, 3]) {
+    for (const version of [1, 2, 3]) {
       const old = JSON.stringify({ version, ...inventory });
       await writeFile(path, old);
       await expect(store.read()).rejects.toMatchObject({
-        code: "STATE_UNCONVERTED",
-        hint: expect.stringContaining("bun run cutover"),
+        code: "STATE_VERSION",
+        message: expect.stringContaining("an older rigd"),
         details: { path, version, supported: 4 },
       });
       await expect(store.update(() => {})).rejects.toMatchObject({
-        code: "STATE_UNCONVERTED",
+        code: "STATE_VERSION",
       });
       expect(await readFile(path, "utf8")).toBe(old);
     }

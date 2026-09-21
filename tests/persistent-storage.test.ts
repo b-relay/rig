@@ -54,10 +54,10 @@ test("every Target's plan resolves ${rig.data} to the Service's directory under 
   }
 });
 
-test("a config that still declares a uses plugin is refused as the retired component schema", () => {
+test("a config that declares a uses plugin is refused", () => {
   expect(() =>
     parseProjectConfig({ name: "demo", components: { db: { uses: "sqlite", path: "data/app.db" } } }),
-  ).toThrow(expect.objectContaining({ code: "legacy_config" }));
+  ).toThrow(expect.objectContaining({ code: "invalid_config" }));
   expect(() =>
     parseProjectConfig({ name: "demo", services: { db: { uses: "sqlite" } } }),
   ).toThrow("Invalid Project configuration");

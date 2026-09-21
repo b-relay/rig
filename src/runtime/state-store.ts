@@ -10,7 +10,6 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import { STATE_VERSION, runtimeStateSchema as schema } from "./state-schema";
-import { backfillSourceRoots } from "./state-compat";
 import { RigError, describeInvalidDocument } from "../domain/errors";
 import type { RuntimeState, StateStore } from "../domain/runtime";
 
@@ -28,22 +27,6 @@ export class FileStateStore implements StateStore {
       raw = await readFile(this.path, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        for (const path of [
-          join(this.root, "runtime", "rigd-state.json"),
-          join(this.root, "registry.json"),
-        ]) {
-          try {
-            await access(path);
-          } catch (probe) {
-            if ((probe as NodeJS.ErrnoException).code === "ENOENT") continue;
-            throw probe;
-          }
-          throw new RigError(
-            "LEGACY_STATE_PRESENT",
-            "This Rig root contains legacy runtime state.",
-            "Complete the explicit backed-up compatibility cutover before starting the new runtime.",
-          );
-        }
         return {
           version: STATE_VERSION,
           projects: [],
@@ -87,29 +70,22 @@ export class FileStateStore implements StateStore {
     // The validated document is returned as read, not as the schema's stripped copy: keys a newer rigd
     // wrote survive a round trip through this one, and the next write carries them along.
     const state = parsed as RuntimeState;
-    return backfillSourceRoots({ ...state, version: STATE_VERSION }, this.root);
+    return { ...state, version: STATE_VERSION };
   }
-  /** A file from a newer rigd, or from before the configuration cutover, is refused by version before its shape is judged. */
+  /** A file from a different rigd is refused by version before its shape is judged. */
   private assertSupportedVersion(parsed: unknown): void {
     const version =
       typeof parsed === "object" && parsed !== null && "version" in parsed
         ? parsed.version
         : undefined;
-    // Versions 2 and 3 are what the last runtime before the cutover wrote; anything older was never a supported file.
-    if (version === 2 || version === 3)
-      throw new RigError(
-        "STATE_UNCONVERTED",
-        "Runtime state was written before the configuration cutover; nothing was changed.",
-        `Runtime state at ${this.path} is version ${version}, but this rigd reads version ${STATE_VERSION}. Keep using the rigd that wrote it, or stop it and convert this root from a Rig source checkout: bun run cutover inventory, then preview and apply (see "Configuration cutover" in docs/rig-guide.md).`,
-        { path: this.path, version, supported: STATE_VERSION },
-      );
-    if (typeof version === "number" && version > STATE_VERSION)
-      throw new RigError(
-        "STATE_VERSION",
-        "Runtime state was written by a newer rigd; nothing was changed.",
-        `Runtime state at ${this.path} is version ${version}, but this rigd reads version ${STATE_VERSION}. Upgrade rigd, or restore the state that version wrote, before retrying.`,
-        { path: this.path, version, supported: STATE_VERSION },
-      );
+    if (typeof version !== "number" || version === STATE_VERSION) return;
+    const newer = version > STATE_VERSION;
+    throw new RigError(
+      "STATE_VERSION",
+      `Runtime state was written by ${newer ? "a newer" : "an older"} rigd; nothing was changed.`,
+      `Runtime state at ${this.path} is version ${version}, but this rigd reads version ${STATE_VERSION}. ${newer ? "Upgrade rigd" : "Use the rigd that wrote it"}, or restore the state that version ${STATE_VERSION} wrote, before retrying.`,
+      { path: this.path, version, supported: STATE_VERSION },
+    );
   }
 
   /** Durable replace: the new state is flushed to disk before it becomes `state.json`, and the version it

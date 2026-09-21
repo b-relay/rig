@@ -6,7 +6,7 @@ import { z } from "zod";
 import { rigFixture } from "./support/rig-fixture";
 
 const example = (name: string) =>
-  join(import.meta.dir, "..", "plans", "examples", `114-${name}.rig.yaml`);
+  join(import.meta.dir, "..", "docs", "examples", `${name}.rig.yaml`);
 const result = <T extends z.ZodType>(schema: T) => z.object({ result: schema });
 const sourceSchema = result(
   z.object({

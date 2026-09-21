@@ -464,10 +464,10 @@ test("malformed list, logs and activity replies fail as protocol errors through 
       [["list"], {}, "No Projects registered."],
       [
         ["list"],
-        { ownership: "ready", projects: null },
+        { projects: null },
         "No Projects registered.",
       ],
-      [["list"], { ownership: "ready", projects: [{ name: 1 }] }, "Targets"],
+      [["list"], { projects: [{ name: 1 }] }, "Targets"],
       [logs, {}, "No logs yet."],
       [
         logs,
@@ -496,7 +496,6 @@ test("malformed list, logs and activity replies fail as protocol errors through 
     }
     expect(
       await run(["list"], {
-        ownership: "ready",
         projects: [],
       }),
     ).toBe(0);

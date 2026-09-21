@@ -120,7 +120,6 @@ export interface RuntimeDependencies {
   notices?(): RuntimeNotice[];
   /** The recipes that recipe comparisons are made against; the bundled catalog when absent. */
   recipes?: readonly Recipe[];
-  assertOwnershipReady(): Promise<void>;
   readAdminActivity(): Promise<OperationRecord[]>;
   inspectHost(): Promise<
     {

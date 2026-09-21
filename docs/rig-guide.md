@@ -1,10 +1,8 @@
 # Rig Guide
 
-This guide describes the TypeScript implementation. The latest installed release,
-rollout checks, and legacy-wrapper monitoring limitation are recorded in the
-[September 10 rollout](reviews/2026-09-10-live-rollout-results.md). Initial migration
-evidence remains in [cutover readiness](rig-cutover-readiness.md). Product acceptance criteria live
-in the [PRD](PRD.md); predecessor plans are indexed in [history](history.md).
+This guide describes how to set up and use Rig. Domain terms are defined in
+[CONTEXT.md](../CONTEXT.md) and the architecture in [DESIGN.md](../DESIGN.md).
+Three complete example configs live in [examples](examples).
 
 ## Setup
 
@@ -18,9 +16,8 @@ bun run typecheck
 
 The build produces `rig`, `rigd`, and `git-remote-rig`. Put all three in the
 chosen executable directory for Git push deployment. Source development and
-tests must set an isolated `RIG_ROOT`; do not install into the real Host simply
-to try the rewrite. Existing Host state needs the explicit backed-up cutover.
-`RIG_ROOT` must be an absolute path: an empty value means the default
+tests must set an isolated `RIG_ROOT`; do not install into the real Host to
+try a change. `RIG_ROOT` must be an absolute path: an empty value means the default
 `~/.rig`, and a relative value makes `rig`, `rigd`, and `git-remote-rig` exit
 with a usage error before they create or read anything, rather than rooting
 Rig in the current working directory. Every command writes under the root (at
@@ -32,8 +29,8 @@ that does not exist yet is fine as long as its nearest existing ancestor is a
 writable directory.
 
 Every command answers `--help` and `-h`, and `rig help <command>` (for
-example `rig help deploy preview`, or `rig deploy help`) prints that command's
-usage; `rig help nonsense` fails with `Unknown command 'nonsense'.` and exit
+example `rig help deploy`, `rig help recipe diff`, or `rig deploy help`) prints
+that command's usage; `rig help nonsense` fails with `Unknown command 'nonsense'.` and exit
 1 instead of printing nothing. A usage error names the command it belongs to
 in its hint (`rig up --bogus` says `Run rig up --help.`), and an empty value
 for an option or argument that takes one (`--path ""`, `--project ""`,
@@ -58,13 +55,14 @@ runs for each Service under the `launchd` supervisor; it is listed in
 `rigd --help` and answers `--help`, but people never run it themselves.
 
 `rigd install` owns daemon setup and creates the local control-plane auth token.
-It only runs when no daemon process exists, and it issues a fresh token every
-time, so a credential left behind by a crashed daemon does not outlive it.
+It issues a fresh token whenever it starts a daemon, so a credential left
+behind by a crashed daemon does not outlive it; a current daemon that is
+already reachable is left as it is and keeps its token.
 A credential file that exists but is empty or unreadable is a `DAEMON_TOKEN`
 error naming `<RIG_ROOT>/auth/control-plane.token` and the cause, never "not
 installed": `rigd status` reports it as a warning with the daemon unreachable,
 `rigd install` refuses to replace a daemon it cannot verify (stop it with
-`rigd uninstall`, which signals the recorded pid, or restore the file), and with
+`rigd uninstall`, or restore the file), and with
 no daemon running `rigd install` simply reissues the credential.
 Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
@@ -79,10 +77,10 @@ a record; `rigd uninstall` signals only a process proven to be the recorded
 daemon. A daemon that is reachable but has no installation record (deleted by
 hand, or started manually) is adopted by `rigd install`, which writes the
 record, and `rigd uninstall` can still stop it: it removes the launchd job if
-one exists and then signals the recorded pid. A record written by an older rigd carries no start time, so a live pid
-in it cannot be verified: `rigd status` warns, `rigd install` and `rigd
-uninstall` refuse, and a manual `rigd start` refuses, each naming the files
-under `<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.
+one exists and then signals the recorded pid. A record that carries no start
+time cannot verify a live pid: `rigd status` warns, and `rigd install`, `rigd
+uninstall` and a starting daemon refuse, naming the files under
+`<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.
 
 Both records are written whole (through a sibling temp file and rename), so a
 crash never leaves a torn record. A lease that still cannot be read is
@@ -161,8 +159,10 @@ Reload Caddy after adding the line. Until then every Rig route is inert:
 in `/usr/local/etc/Caddyfile`, `/opt/homebrew/etc/Caddyfile`, and
 `/etc/caddy/Caddyfile` when unset. Host TLS or error snippets that every
 generated site block needs, such as `import cloudflare`, go in
-`providers.caddy.extraConfig`. With `providers.caddy.reload.mode: manual` Rig
-writes the route file but leaves the reload to you. The route file and
+`providers.caddy.extraConfig`. `providers.caddy.reload.mode` is `manual` by
+default: Rig writes the route file and leaves every reload to you. With
+`mode: command` and a `reload.command`, Rig runs that command after each route
+change; `disabled`, like `manual`, runs no reload. The route file and
 `rig.yaml` may be symlinks: Rig writes through the link, so the linked file
 changes and the link stays in place, with the `.rig-backup` and `.bak` copies
 beside the linked file. A config edit keeps exactly one `rig.yaml.bak`, the
@@ -172,8 +172,9 @@ adding a file per revision.
 When Caddy rejects a route change, the failure names Caddy's last error line,
 for example `Caddy rejected the updated routes: ... port 99999 is out of
 range`, and keeps the rejected text at `<route file>.rejected` so you can read
-what Caddy saw; the live route file is left unchanged. A reload that fails
-carries the same last line and restores the previous configuration. A `caddy`
+what Caddy saw; the live route file is left unchanged (`ROUTE_VALIDATE`). In
+`command` mode a reload that fails carries the same last line and restores the
+previous configuration. A `caddy`
 executable that cannot start is reported as `CADDY_UNAVAILABLE` rather than a
 route problem, and `rig doctor` lists `provider/caddy` beside `provider/bun`
 and `provider/git`. The diagnostic log records that last line under `evidence`;
@@ -244,9 +245,7 @@ pass the flags, or write `rig.yaml` by hand and run `rig init` again to
 register it. The scaffold also writes `production_branch` and the default
 Target names (`targets.working.name: local`, `targets.stable.name: live`).
 
-New config is always `rig.yaml`. A `rig.json` in the repository is refused as
-`legacy_format`, and a `rig.yaml` in the retired component schema as
-`legacy_config`; neither is read or converted (see Config). Explicit
+Config is always `rig.yaml`. Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
 identity comes from existing config when present, not a conflicting folder name.
 `--domain app.test` with `--service web` scaffolds `domain: app.test` and a
@@ -290,11 +289,9 @@ init` there would register.
 `rig list` is host-scoped. It shows Projects plus summary metadata such as
 Target count. It does not show every Target for every Project, and it never
 observes a Target, so it is quick and says nothing about what is running
-(`rig status` does). While legacy adoption is pending (`--json` reports
-`ownership: "unknown"`), it ends with a warning that rigd is not observing
-Targets and that the counts come from the registry only. It does check that each registered directory still
+(`rig status` does). It does check that each registered directory still
 exists: a Project whose directory is gone is marked `(directory missing: rig
-repoint or rig forget <name>)`, and `--json` carries `missing: true`.
+repoint or rig forget <name>)`.
 
 ## Targets
 
@@ -326,8 +323,8 @@ recorded under (`TARGET_NAME`). While a name is configured for one Target and
 still recorded for the other, selecting it fails as `TARGET_AMBIGUOUS`; the
 hint gives the name that is safe to use first.
 
-Target-aware commands with no selected Target should show an interactive picker
-in a TTY and fail with guidance in non-interactive use:
+Target-aware commands with no selected Target show an interactive picker in a
+TTY and fail as `TARGET_REQUIRED` in non-interactive use:
 
 ```bash
 rig up
@@ -336,8 +333,8 @@ rig restart
 rig logs
 ```
 
-`rig status` is different: it shows all Targets for the selected Project by
-default.
+`rig status` is different: it takes no Target and always shows every Target of
+the selected Project. `rig deploy` with no Target prints its help.
 
 ## Deploy
 
@@ -354,9 +351,12 @@ Stable Target's configured name (`live` unless `rig.yaml` renames it) or
 up` for it. `rig deploy live` deploys the configured Production branch:
 `production_branch` in the Project config, else the Host config's
 `deploy.productionBranch`, else `main`. It can run from
-detached HEAD because it does not deploy the current checkout. If the current
-checkout differs from the Production branch, interactive commands should make
-the deployed branch clear.
+detached HEAD because it does not deploy the current checkout; it then prints
+which Production branch it deploys. If the current checkout is on another
+Branch, a terminal asks for confirmation and a non-interactive run is refused
+as `PRODUCTION_CONFIRMATION`, with `rig deploy live <production>` as the way to
+say it explicitly. The Stable Target only takes the Production branch: any
+other Branch is refused as `BRANCH_POLICY`.
 
 A deployed Target is planned from the `rig.yaml` committed on the deployed
 revision, so its Services, Tools, ports, and Target name match the code it
@@ -365,12 +365,10 @@ Target names for selection, and the Production branch policy); uncommitted
 edits to it never reach a Stable or Preview plan. A revision whose committed
 config names a different Project is refused as `PROJECT_IDENTITY`, and an
 invalid committed config fails the deploy with the revision's path in the
-message. That includes a revision that only has `rig.json` (`legacy_format`)
-or a `rig.yaml` in the retired component schema (`legacy_config`): convert the
-config on that Branch and deploy the new Commit.
+message: fix the config on that Branch and deploy the new Commit.
 
 Each deploy checks out its revision under
-`<RIG_ROOT>/targets/<project>/<id>/revisions/<uuid>` as a worktree of Rig's
+`<RIG_ROOT>/targets/<project id>/<target id>/revisions/<uuid>` as a worktree of Rig's
 own mirror and installs its dependencies once, recording that in a
 `.rig-prepared` file at the workspace root. Once the new revision is committed,
 the superseded checkout, its install output, and its worktree registration are
@@ -596,15 +594,7 @@ with its reason, since only rollback or a person should decide about it.
 
 `down` stops a Target and retains its inventory, data, logs, and source history.
 A process that could not be stopped aborts `down` and `restart`. Rig runs no
-hooks: they are not part of the config, and a saved plan cannot hold one (the
-[configuration cutover](#configuration-cutover) requires a decision for every
-hook of the retired runtime).
-
-Preview records written by older Rig versions, before the source history root
-was recorded, are repaired when rigd reads its state: a Preview whose checkout
-sits under `<RIG_ROOT>/targets/<project>/<id>/revisions` gets that directory
-as its source root, so it can be destroyed like any other. A record whose
-checkout lies elsewhere keeps failing destroy with `DESTROY_OWNERSHIP`.
+hooks: they are not part of the config.
 
 `rig down preview <branch> --destroy` verifies shutdown, retires the Preview's
 owned route and installed artifacts, deletes its canonical Target root (owned
@@ -652,10 +642,10 @@ controls are dropped, and any other control character becomes a space, so an
 untrusted repository cannot rewrite, hide, or reorder what `rig status`,
 `rig list`, `rig logs`, or a prompt displays. `--json` output is not altered.
 Output identifies component, timestamp, and stream with `>` for stdout, `!`
-for stderr, and `~` for health-check evidence; legacy records with missing
-evidence must be marked unknown. Times are the UTC clock the record was
+for stderr, and `~` for health-check evidence; a record with missing
+evidence is marked unknown. Times are the UTC clock the record was
 written at, printed with a `Z` (`23:30:00Z`) so they are not mistaken for
-local time; `--json` carries the full ISO-8601 timestamp. Build and install
+local time. Build and install
 output is recorded line by line as the command produces it, each line at
 the time it was seen, so a long build is visible in `rig logs --follow` while
 it runs rather than as one burst afterwards.
@@ -740,29 +730,15 @@ other command fails with that same message. Every state write is flushed to
 disk before it replaces the file, and the version it replaces stays beside it
 as `state.json.bak`; the failure message points at that copy when it exists.
 `rigd uninstall` refuses until the file is repaired, because it cannot verify
-that Targets are stopped without it; the one exception is a state file from
-before the configuration cutover (below), on which this `rigd` never started
-anything. Registered `repoPath` and `configPath`
+that Targets are stopped without it. Registered `repoPath` and `configPath`
 values must be absolute; a hand-edited relative path is reported as a
 malformed record rather than resolved against the daemon's working directory,
 and a command that sends a relative path is refused as an invalid request
 (`rig` resolves paths against your directory before sending).
 
-A legacy adoption manifest at `<RIG_ROOT>/runtime/legacy-adoption.json` whose
-status is still `requires-adoption` blocks every mutating command and
-`rig status` with `LEGACY_ADOPTION_PENDING`, and `rig doctor` reports
-`runtime-ownership` as failed. The error and the doctor hint name that file.
-No `rigd` command produces or finalizes the manifest in this release: verify
-each legacy process and route it lists yourself, then move the file aside or
-delete it to release runtime control.
-
 The state file carries a format version (currently 4). A file written by a
-newer `rigd` is refused as `STATE_VERSION`, naming both versions, rather than
-loaded with fields dropped. A version 2 or 3 file was written before the
-configuration cutover: its saved plans carry hooks, Commit env files and
-build fields this `rigd` has no meaning for, so it is refused as
-`STATE_UNCONVERTED` instead of being read with those dropped. See
-[Configuration cutover](#configuration-cutover).
+newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
+rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
 newer version's fields survive a temporary downgrade.
 
@@ -815,7 +791,7 @@ at least one fails its health check is unhealthy, which is distinct from failed
 is live at all: a Target whose processes are all stopped is stopped whatever
 the state of its data. A deployed Target's line shows the
 Branch and the short Commit it serves (`live  healthy  main@abc1234`); the
-Working copy shows neither. Recorded routes stay
+Working copy shows `working copy` there instead. Recorded routes stay
 visible when stopped, and show `unpublished` when no Host Caddyfile loads Rig's
 route file (see Setup). Doctor owns current-config drift and failed checks; it
 does not repair or deploy configuration implicitly.
@@ -825,8 +801,9 @@ It includes daemon administration and terminal crash evidence; two `rigd
 install` runs that overlap both record their outcome, because an
 administration waits (about five seconds) for a live writer to release the
 activity journal before warning that its record was lost. rigd keeps the
-most recent 1000 Operations in its state; older ones remain in the diagnostic
-log until its retention expires. A request rigd refuses before an Operation
+most recent 1000 Operations in its state, and `rig activity` lists the latest
+100 of them; older ones remain in the diagnostic log until its retention
+expires. A request rigd refuses before an Operation
 begins (an unregistered Project, a missing Target, a deploy aimed at local, an
 init without a directory) is a usage mistake and is not listed; a refusal after
 the attempt began (a failed preflight, an unresolved transition) is listed as
@@ -861,122 +838,6 @@ older than a minute, is reclaimed by the next administration. When activity
 cannot be recorded, the warning names the journal or lock file to inspect, and
 the administration outcome itself is unchanged.
 
-## Configuration cutover
-
-A Rig root written by the last JSON-configuration runtime (state version 2 or
-3) is refused by this `rig` and `rigd` with `STATE_UNCONVERTED`. Converting it
-is a one-time, reviewed step run from a Rig source checkout. It is not a `rig`
-or `rigd` command and the runtime contains no reader for the old format.
-
-The ordered procedure for a real Host, with backup, checks and rollback triggers,
-is the [rollout runbook](rig-114-rollout.md). This section explains the commands
-it uses.
-
-```sh
-bun run cutover inventory                       # read-only: what the root holds
-bun run cutover preview --review review.yaml    # read-only: the conversion and its revision
-bun run cutover apply --review review.yaml --revision <sha256>
-bun run cutover rollback --backup <backupPath>
-```
-
-The root is `RIG_ROOT`, or `~/.rig`. Every command prints JSON and supports
-`--help`.
-
-**Stop the old runtime first, with the old runtime.** `rig down` every Target
-and `rigd uninstall` using the version that started them. The conversion stops
-nothing and refuses while `daemon/owner.json` or a process lease names a live
-pid (`daemon_running`, `live_process`), while a Target is recorded as running,
-has unresolved recovery, an incomplete deployment or a pending destruction, or
-while an effect journal is unfinished. Two daemons never share a root. A pid
-that was reused by an unrelated process also blocks; remove the stale record
-only after checking it.
-
-**The review** is the only input besides the root. Rig has no hooks any more,
-and no hook is assumed equivalent to anything:
-
-```yaml
-hooks:
-  demo/web/preStart: { as: build }     # it only compiles: becomes the Service's build
-  demo/web/postStop: { as: replaced, by: "alerting on the Service log" }
-ambient: [USER]      # inherited names a command uses that you accept as unset
-activate: [demo]     # Projects you plan to activate first; recorded only
-```
-
-Every hook of every saved Target needs its own decision
-(`<project>/<component or @project>/<hook>`), otherwise `unmapped_hook` blocks.
-Only a managed Component's `preStart` can be a build; anything else marked as
-one is `unsupported_hook_mapping`. A `replaced` hook is dropped and the text
-is kept in the report. Commands that name `$USER`, `$LOGNAME` or `$SHELL`,
-which the retired daemon passed through and this one does not, block as
-`ambient_name` until the name is set in `env` or acknowledged.
-
-**What the preview shows.** Per Target: identity, exact data, log and
-workspace paths (kept as they are; nothing is relocated), builds with the
-budget they had (`hookTimeout`, `buildTimeout`, or the retired defaults 120 s
-and 600 s written out), env-file paths, and how it starts afterwards:
-
-- `saved-plan`: the new runtime starts the saved Deployment from its saved
-  policy. Working copy policy is never substituted for it.
-- `needs-deploy`: the saved Deployment cannot be reproduced: a hook became a
-  build that never ran as one (no build success is invented), a hook was
-  replaced, its env file is part of the checked-out Commit, which this
-  runtime refuses to load, or it sets `env` next to an env file that still
-  loads (a name in both now takes the file's value, where the retired runtime
-  let `env` win; the file is never opened to find out). `rig up` refuses it
-  with `CONVERSION_NEEDS_DEPLOY` until a new Commit is deployed; a deploy that
-  fails or is interrupted does not lift the refusal.
-- `working-copy`: planned again from `rig.yaml` at every start.
-
-Per Project it shows a candidate `rig.yaml` and notes for everything without
-an equivalent: env files (put the values in
-`<RIG_ROOT>/env/<project>/[<service>/]{all,working,stable,preview}.env`, mode
-600; `local`/`live`/`deployments` lanes map to `working`/`stable`/`preview`;
-a file value now overrides `env`, where the retired runtime let `env` win),
-dependencies Rig no longer provides, Project hooks, `installTimeout`, and
-references it could not rewrite. A Host `config.json` is shown as a candidate
-`config.yaml` and blocks (`host_config`) until you have put it in place and
-removed the JSON file; both the retired and the current runtime read
-`config.yaml`. Rig writes neither into a repository nor over a config. Env
-files are never opened: reports carry paths and names only.
-
-Also blocking: a data directory shared between Targets
-(`data_root_overlap`), a checked-out Commit that is gone (`missing_evidence`), a published Tool owned by a Target the root does
-not record (`ambiguous_ownership`), an unreadable Project config
-(`project_config`), and any saved field the conversion does not know
-(`unsupported_mapping`).
-
-A Target whose data directory does not exist is a warning, not a blocker. Rig
-recreates a Target's storage directories when it starts, so a missing one
-normally means nothing was stored. The warning names the path; if data did
-exist there, restore the directory before applying, or the storage starts
-empty.
-
-**Apply** takes the previewed `revision` (a digest of the state, the owner
-records, each Project config, the review and the converter version) and
-refuses with `CONVERSION_CHANGED` if any of them differs, or
-`CONVERSION_BLOCKED` while a blocker remains. It copies the root's metadata
-byte for byte to `<RIG_ROOT>/backups/config-cutover-<revision>/` with a
-manifest of digests (data, logs, checkouts, Tools and repositories are listed
-as untouched, not copied), writes the report and candidates to
-`<RIG_ROOT>/conversion/<revision>/`, and replaces `runtime/state.json` last,
-atomically. That replacement is the only change to existing files and the only
-thing that lets the new runtime read the root, so an interruption before it
-leaves the root unconverted and refused. Blockers are checked again right
-before it, so a daemon or process that came back during the copy stops the
-apply with the state unconverted. `runtime/conversion-pending.json`
-names the backup meanwhile and `preview` reports it as `interrupted`. Applying
-to a converted root changes nothing.
-
-Afterwards install the new `rigd`, check `rig status`, commit each reviewed
-`rig.yaml` (without `rig.json` and without secret files) and `rig deploy` the
-Targets that need it. Deploying an old-format Commit fails with guidance.
-
-**Rollback** verifies that the backup was taken from this root, checks it
-against its manifest and puts
-`runtime/state.json` back. Stop Targets and uninstall the new `rigd` first; it
-refuses otherwise. Data and everything the new runtime wrote stay in place;
-Deployments made after the conversion are unknown to the restored state.
-
 ## Config
 
 Project config is committed and owns portable Project intent:
@@ -984,18 +845,19 @@ Project config is committed and owns portable Project intent:
 - Project identity
 - Production branch
 - Target names
-- commands and health paths
-- route shape
-- Preview naming policy
+- Services and Tools: commands, ports, readiness checks, builds, environment
+- the hostname and the `proxy` routes
 
-Host config owns machine capability:
+Host config (`<RIG_ROOT>/config.yaml`, every key optional) owns machine
+capability:
 
-- local tool paths
-- base domains
-- port ranges
-- runtime roots
-- daemon address and local auth token
-- installed provider defaults
+- `deploy.productionBranch`: the Production branch of Projects that set none
+  (default `main`)
+- `deploy.generated.maxActive` and `deploy.generated.replacePolicy`: the
+  Preview limit and what happens at it (see Deploy)
+- `providers.caddy`: the route file, the Host Caddyfile, `extraConfig`, and the
+  reload mode (see Setup)
+- `diagnostics.retentionDays` (default 14) and `diagnostics.level`
 
 A small `rig.yaml` with two Services, a Tool, and a route:
 
@@ -1065,17 +927,17 @@ A Service is a long-running process Rig starts and supervises. Its fields:
 - `env` and `env_file`: see below.
 - `restart`: `always` (default), `on-failure`, or `no`; see "Automatic
   restart".
-- `build`, `build_timeout`, `workdir`, and `supervisor` are part of
-  the schema but see "Not yet runnable".
+- `build` and `build_timeout`: the Service's own build unit; see
+  "Environment, builds, and startup".
+- `workdir` and `supervisor` are part of the schema but see "Not runnable".
 
 A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
-`build_timeout` bounds that build. Tools replace the "installed" Components
-of the retired schema and Services replace the "managed" ones.
+`build_timeout` bounds that build.
 
-Durations are a whole number with a unit, such as `30s`, `10m`, or `1h`, up to
-one day.
+Durations are a positive whole number with a unit of `s`, `m`, or `h`, such as
+`30s`, `10m`, or `1h`, up to one day.
 
 `domain` is the hostname the Stable Target serves, and `proxy` maps a path
 prefix to a declared port reference; `/` is required when `proxy` is present.
@@ -1115,8 +977,8 @@ patch that sets `env.LOG_FORMAT` keeps every other shared `env` key, and a
 patch under `services.api` leaves the Service's other fields alone. Lists
 (such as `depends_on`) and scalars (such as `run` or a port) replace the
 shared value. A patch cannot add a Service or Tool that the top level does not
-declare, remove or null one out, set `production_branch` or `description`,
-contain `targets`, or pin a port under `targets.preview`. The patched result
+declare, remove or null one out, set `production_branch`, `description` or
+`role`, contain `targets`, or pin a port under `targets.preview`. The patched result
 for each role is validated when the config is parsed, so a broken dependency
 or a port pinned twice is reported under `targets.<role>`.
 
@@ -1171,20 +1033,17 @@ Nothing is started again while `rigd` itself is down; the first pass of the
 next daemon applies the same rules to what it finds. Every start, automatic
 or not, reads the env files fresh.
 
-### Not yet runnable
+### Not runnable
 
-These settings are valid config: they parse, and `rig config` shows them. This
-build of `rigd` cannot run them yet, so planning a Target that uses one is
-refused as `unsupported_setting`, naming the path (for example
-`services.api.workdir`), rather than silently dropping the policy. Remove the
-setting for now.
+These settings are valid config: they parse, and `rig config` shows them.
+`rigd` cannot run them, so planning a Target that uses one is refused as
+`unsupported_setting`, naming the path (for example `services.api.workdir`),
+rather than silently dropping the policy.
 
 - a Service `workdir`
 - a Service `supervisor` that differs from the Project's
 
-The accepted design also names a Host-wide `supervisor` default. The Host
-`config.yaml` has no such key in this build (it is refused as unknown); set
-`supervisor` in the Project.
+`supervisor` is a Project setting; the Host `config.yaml` has no such key.
 
 ### Recipes
 
@@ -1241,7 +1100,7 @@ of the one before:
 
 1. the baseline: `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, and `TZ` from
    the shell that ran `rigd install`, plus a `TMPDIR` Rig owns for the Target
-   (`<RIG_ROOT>/tmp/<target>`, mode 700)
+   (`<RIG_ROOT>/tmp/<target id>`, mode 700)
 2. the top-level `env`
 3. the Service's own `env`
 4. the top-level `env_file` entries, in the order listed
@@ -1255,7 +1114,7 @@ A Service never reads another Service's `env` or files. A Tool build and
 dependency installation get the Project layers only (1, 2, 4, 5). Nothing else
 of the daemon's or the installing shell's environment reaches a Project's
 processes: no `USER`, `SHELL`, tokens, or Rig's own variables. Declare what a
-process needs in `env` or an env file. Git discovery (`rig init`, `rig select`,
+process needs in `env` or an env file. Git discovery (`rig init`,
 and `git push rig`) is Rig's own tooling; it runs with the login basics of
 that shell and ignores `GIT_DIR` and `GIT_WORK_TREE`, so it always describes
 the directory it was asked about. A build writes its output to the Target's
@@ -1371,10 +1230,7 @@ current file.
 `rig down` stops each running Service. A start that fails rolls back the
 processes that command started.
 
-Hooks (`preStart`, `postStart`, `preStop`, `postStop`), `hookTimeout`,
-`installTimeout`, `installName`, `uses` plugins (Convex, Postgres, SQLite),
-`components`, and the `local`/`live`/`deployments` lanes are not part of the
-current config. Run a database as an ordinary Service whose `run` command
+Rig has no hooks and no plugins. Run a database as an ordinary Service whose `run` command
 starts it, and put preparation steps in a `build` or in the script `run`
 invokes. A `run` command whose executable the shell cannot find fails as
 `PROCESS_EXITED` with exit code 127 and a hint that names the missing tool
@@ -1383,9 +1239,10 @@ problem instead of waiting out `ready_timeout`.
 ### Localhost binding
 
 Every process Rig starts must listen on localhost only. `run`, `ready`, and
-`build` commands are checked when the config is parsed and again after
-references are resolved: an explicit bind flag such as `--host`, `--bind`,
-`--listen`, or `--addr` must name `127.0.0.1` or `localhost`, and a wildcard
+`build` commands are checked when the config is parsed, and `run` and `ready`
+again after references are resolved: an explicit bind flag such as `--host`,
+`--bind`, `--listen`, or `--addr` must name a literal `127.0.0.1` or
+`localhost` (not a reference), and a wildcard
 address (`0.0.0.0`, `::`, `[::]`) is rejected anywhere in the command,
 including inside a quoted wrapper like `sh -c "..."`. In `env`, bind-style
 keys (`HOST`, `HOSTNAME`, `BIND`, `BIND_ADDR`, `BIND_ADDRESS`, `BIND_HOST`,
@@ -1428,9 +1285,7 @@ References are checked when the config is parsed, for the base config and for
 each role's patched settings, so a typo never reaches a shell. Each rejection
 names the field that holds the reference, such as `services.web.run`:
 
-- `unknown_reference`: no such path. The retired placeholders
-  (`${subdomain}`, `${branchSlug}`, `${lane}`, `${workspace}`, `${dataRoot}`,
-  `${<name>.port}`, and `${<name>.url}`) are rejected this way.
+- `unknown_reference`: no such path.
 - `reference_not_scalar`: the path names a map or list, not one value.
 - `reference_into_targets`: the path reaches into `targets`. A reference reads
   the selected Target's settings, not another role's patch.
@@ -1470,18 +1325,13 @@ refused as `config_locked` names the lock file and the live pid holding it.
 Current config surface:
 
 - `rig config` prints validated Project config and its source path.
-- `rig config set` is omitted.
+- there is no `rig config set`.
 - managed fields such as Project identity are not simple settable fields.
 - `--json` is available for status/lifecycle/deploy; there is no global flag.
 
 Config is YAML only: a Project uses `rig.yaml` and the Host uses
-`<RIG_ROOT>/config.yaml`. A `rig.json` or Host `config.json` is refused as
-`legacy_format`, even beside a YAML file; it is never read, merged, or
-converted. A `rig.yaml` that still uses the retired component schema (any of
-`components`, `local`, `live`, `deployments`, `hooks`, `hookTimeout`, or
-`installTimeout` at the top level) is refused as `legacy_config`, naming the
-keys. Convert such a config by hand to the schema above, then remove the JSON
-file. `.yml` is unsupported. YAML accepts one document with comments,
+`<RIG_ROOT>/config.yaml`. No other file name or format is read; `.yml` is
+unsupported. YAML accepts one document with comments,
 rejecting duplicate keys, tags, anchors, aliases, and merge keys. Supported
 structured edits preserve comments/order or refuse before mutation.
 
@@ -1533,17 +1383,13 @@ doctor` reports `identity-drift` with the same hint.
 `rigd` resolves Host config and Project config into a runtime plan before
 calling providers.
 
-Provider calls use:
+Providers receive everything they need from that plan. They do not read Host
+config, Project config, or global path helpers themselves. The bundled
+providers are the `rigd` and `launchd` process supervisors, the Caddy router,
+the Git source store, the artifact installer for Tools, and the command
+runner; their contracts live in `src/providers/contracts.ts`.
 
-- shared Runtime context for common domain facts and capabilities
-- typed provider-specific config for settings only that provider understands
-
-Providers must not read home config, Project config, or global path helpers
-directly. First-party providers and future third-party providers should use the
-same contract shape.
-
-Only the default provider profile is supported; stub and isolated-e2e profiles
-are rejected. Tests supply isolated provider interfaces and `RIG_ROOT`.
-`--state-root` and generic `--config` path overrides are absent from normal UX.
+Tests supply isolated provider interfaces and `RIG_ROOT`. There are no
+`--state-root` or `--config` path overrides.
 Caddy command reload requires an explicit nonblank command; manual/disabled
 policies never substitute a default reload command.

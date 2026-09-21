@@ -174,78 +174,9 @@ test("discovery searches upward and never falls through a nearer invalid or reti
   await expect(
     discoverProject(join(root, "nested", "deeper")),
   ).rejects.toMatchObject({ code: "invalid_config" });
-  await rm(join(root, "nested", "rig.yaml"));
-  await writeFile(join(root, "nested", "rig.json"), "{}");
-  await expect(
-    discoverProject(join(root, "nested", "deeper")),
-  ).rejects.toMatchObject({ code: "legacy_format" });
 });
 
-test("rig.json is refused unread, alone or beside rig.yaml, and nothing is written", async () => {
-  const root = await fixture(),
-    json = join(root, "rig.json"),
-    yaml = join(root, "rig.yaml"),
-    // Not even parseable: a refusal that read the file would report a syntax error instead.
-    retired = "{ this was never read";
-  await writeFile(json, retired);
-  for (const read of [
-    readProjectConfig,
-    readProjectConfigSource,
-    discoverProject,
-  ])
-    await expect(read(root)).rejects.toMatchObject({
-      _tag: "ConfigError",
-      code: "legacy_format",
-      context: { path: expect.stringMatching(/rig\.json$/) },
-      hint: expect.stringContaining("rig.yaml"),
-    });
-  await expect(
-    initializeProjectConfig(
-      root,
-      scaffoldProjectConfig({
-        name: "app",
-        service: { name: "web", run: "serve" },
-      }),
-    ),
-  ).rejects.toMatchObject({ code: "legacy_format" });
-  expect(await readdir(root)).toEqual(["rig.json"]);
-
-  await writeFile(yaml, MINIMAL);
-  const both = await readProjectConfig(root).catch((error: unknown) => error);
-  expect(both).toMatchObject({
-    code: "legacy_format",
-    context: { path: json, yamlPath: yaml },
-    hint: expect.stringContaining("will not choose between two documents"),
-  });
-  await expect(
-    editProjectConfig({ repoPath: root, expectedRevision: "any", edits: [] }),
-  ).rejects.toMatchObject({ code: "legacy_format" });
-  expect(await readFile(json, "utf8")).toBe(retired);
-  expect(await readFile(yaml, "utf8")).toBe(MINIMAL);
-  expect((await readdir(root)).sort()).toEqual(["rig.json", "rig.yaml"]);
-});
-
-test("old-schema YAML is refused as legacy_config naming the retired keys, and the file is untouched", async () => {
-  const root = await fixture(),
-    path = join(root, "rig.yaml"),
-    raw =
-      "name: pantry\ncomponents:\n  web:\n    mode: managed\n    command: serve\nlocal:\n  env: {A: b}\nhooks:\n  preStart: echo hi\n";
-  await writeFile(path, raw);
-  const failure = await readProjectConfig(root).catch(
-    (error: unknown) => error,
-  );
-  expect((failure as { hint: string }).hint).toContain(path);
-  expect(failure).toMatchObject({
-    _tag: "ConfigError",
-    code: "legacy_config",
-    context: { keys: ["components", "local", "hooks"], path },
-    hint: expect.stringContaining("services/tools/targets"),
-  });
-  expect(await readFile(path, "utf8")).toBe(raw);
-  expect(await readdir(root)).toEqual(["rig.yaml"]);
-});
-
-test("Host config reads config.yaml, defaults when absent, and refuses config.json", async () => {
+test("Host config reads config.yaml and defaults when absent", async () => {
   const root = await fixture();
   expect((await readHostConfig(root)).diagnostics.retentionDays).toBe(14);
   await writeFile(
@@ -253,22 +184,6 @@ test("Host config reads config.yaml, defaults when absent, and refuses config.js
     "deploy:\n  productionBranch: release\n",
   );
   expect((await readHostConfig(root)).deploy.productionBranch).toBe("release");
-  await writeFile(join(root, "config.json"), "{ never read");
-  await expect(readHostConfig(root)).rejects.toMatchObject({
-    code: "legacy_format",
-    context: {
-      path: join(root, "config.json"),
-      yamlPath: join(root, "config.yaml"),
-    },
-  });
-  await rm(join(root, "config.yaml"));
-  await expect(readHostConfig(root)).rejects.toMatchObject({
-    code: "legacy_format",
-    hint: expect.stringContaining("config.yaml"),
-  });
-  expect(await readFile(join(root, "config.json"), "utf8")).toBe(
-    "{ never read",
-  );
 });
 
 // ---------------------------------------------------------------------------
@@ -582,7 +497,7 @@ test.each(["service", "tool", "multi"])(
   "the accepted %s example parses as written",
   async (example) => {
     const raw = await readFile(
-      join(import.meta.dir, `../plans/examples/114-${example}.rig.yaml`),
+      join(import.meta.dir, `../docs/examples/${example}.rig.yaml`),
       "utf8",
     );
     const root = await fixture();

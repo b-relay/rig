@@ -131,7 +131,9 @@ plus the commit the executable was built from, such as `0.1.0+cb6077187ba5`
 (`bun build --define process.env.RIG_BUILD_COMMIT=...` embeds what
 `git describe --always --dirty` reports; a build from a tree with uncommitted
 changes ends in `-dirty`, and a run from source or a build outside git reports
-`0.1.0+dev`, which is not distinguishable from another such build). A serving daemon reports its stamp to
+`0.1.0+dev`; two `-dirty` builds of one commit, or two `+dev` runs, are not
+distinguishable from each other). Deploys build from a clean checkout of the
+Commit, so their stamps are never `-dirty`. A serving daemon reports its stamp to
 `rigd status`, which warns when it differs from the `rigd` you ran. Upgrading
 is `rigd install`: when the serving daemon reports another stamp, or the
 installation record names another stamp or command, the install stops that

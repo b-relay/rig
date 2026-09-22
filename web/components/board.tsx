@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { AlertTriangle } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 import { attempt } from "@/lib/outcome";
-import { KIND_LABEL, shortCommit, targetWarnings } from "@/lib/present";
+import { KIND_LABEL, shortCommit, targetWarnings, toneOf } from "@/lib/present";
 import { routeUrl, targetKey } from "@/lib/target";
 import type {
   ComponentReport,
@@ -18,10 +18,11 @@ import { cn } from "@/lib/utils";
 type Project = ListResult["projects"][number];
 const COLUMNS = 8;
 const HEAD =
-  "px-3 py-2 text-left text-xs font-medium text-muted-foreground whitespace-nowrap";
-const CELL = "px-3 py-2.5 align-top";
-/** Every Target on this Host in one table, grouped by Project. Each Project's rows stream in as
- * its status arrives, so a slow Project never holds the others back. */
+  "px-3 py-1.5 text-left text-[11px] font-medium tracking-wide uppercase text-muted-foreground whitespace-nowrap";
+const CELL = "px-3 py-1.5 align-middle whitespace-nowrap";
+const DASH = <span className="text-muted-foreground/70">–</span>;
+/** Every Target on this Host in one table, one line each, grouped by Project. Each Project's
+ * rows stream in as its status arrives, so a slow Project never holds the others back. */
 export function Board({
   projects,
   showProjectRows = true,
@@ -31,7 +32,7 @@ export function Board({
 }) {
   return (
     <div className="-mx-4 overflow-x-auto sm:mx-0 sm:rounded-md sm:border sm:border-rule sm:bg-sheet">
-      <table className="w-full min-w-[56rem] text-sm">
+      <table className="w-full min-w-[60rem] text-[13px] leading-5">
         <thead className="border-b border-rule">
           <tr>
             <th className={HEAD}>Target</th>
@@ -41,7 +42,9 @@ export function Board({
             <th className={HEAD}>Commit</th>
             <th className={HEAD}>Route</th>
             <th className={HEAD}>Components</th>
-            <th className={cn(HEAD, "text-right")}>Actions</th>
+            <th className={cn(HEAD, "w-10")}>
+              <span className="sr-only">Actions</span>
+            </th>
           </tr>
         </thead>
         {projects.map((project) => (
@@ -95,32 +98,32 @@ function ProjectRows({
   const report = status?.ok ? status.value : undefined;
   const warnings = report?.warnings ?? [];
   const hasWorkingCopy = report?.targets.some((each) => each.kind === "local");
+  const href = `/projects/${encodeURIComponent(project.name)}`;
   return (
     <tbody className="border-b border-rule last:border-0">
       {showProjectRows ? (
-        <tr className="bg-steel/60">
-          <td colSpan={COLUMNS} className="px-3 py-2">
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <tr className="bg-muted/50">
+          <td colSpan={COLUMNS} className="px-3 py-1.5">
+            <div className="flex items-center gap-3">
               <Link
-                href={`/projects/${encodeURIComponent(project.name)}`}
-                className="title text-base text-ink no-underline hover:underline"
+                href={href}
+                className="title text-sm text-ink no-underline hover:underline"
               >
                 {project.name}
               </Link>
-              <Mono className="text-muted-foreground">{project.repoPath}</Mono>
+              <Mono
+                className="max-w-[40ch] truncate break-normal text-muted-foreground"
+                title={project.repoPath}
+              >
+                {project.repoPath}
+              </Mono>
               {project.missing ? (
-                <span className="inline-flex items-center gap-1 text-xs text-bad">
-                  <AlertTriangle className="size-3.5" aria-hidden /> repository
-                  missing
-                </span>
+                <Warning tone="bad">repository missing</Warning>
               ) : null}
               {warnings.map((warning) => (
-                <span
-                  key={warning}
-                  className="inline-flex items-center gap-1 text-xs text-warn"
-                >
-                  <AlertTriangle className="size-3.5" aria-hidden /> {warning}
-                </span>
+                <Warning key={warning} tone="warn">
+                  {warning}
+                </Warning>
               ))}
             </div>
           </td>
@@ -139,7 +142,7 @@ function ProjectRows({
       ) : null}
       {status && !status.ok ? (
         <tr>
-          <td colSpan={COLUMNS} className={CELL}>
+          <td colSpan={COLUMNS} className="px-3 py-2">
             <Failure failure={status.failure} />
           </td>
         </tr>
@@ -148,20 +151,16 @@ function ProjectRows({
         <tr>
           <td colSpan={COLUMNS} className={cn(CELL, "text-muted-foreground")}>
             The registered directory no longer exists.{" "}
-            <Link
-              href={`/projects/${encodeURIComponent(project.name)}/settings`}
-            >
-              Repoint or forget it.
-            </Link>
+            <Link href={`${href}/settings`}>Repoint or forget it.</Link>
           </td>
         </tr>
       ) : null}
       {report && !hasWorkingCopy ? (
-        <tr>
-          <td className={cn(CELL, "text-muted-foreground")}>
-            <span className="italic">not started</span>
+        <tr className="border-t border-rule/60">
+          <td className={cn(CELL, "text-muted-foreground italic")}>
+            not started
           </td>
-          <td className={CELL}>Working copy</td>
+          <td className={cn(CELL, "text-muted-foreground")}>Working copy</td>
           <td
             colSpan={COLUMNS - 3}
             className={cn(CELL, "text-muted-foreground")}
@@ -169,69 +168,69 @@ function ProjectRows({
             Runs the files on disk, without a deploy.
           </td>
           <td className={cn(CELL, "text-right")}>
-            <div className="flex justify-end">
-              <StartWorkingCopy project={project.name} />
-            </div>
+            <StartWorkingCopy project={project.name} compact />
           </td>
         </tr>
       ) : null}
       {report?.targets.map((target) => {
         const problems = targetWarnings(target);
         return (
-          <tr key={targetKey(target)} className="border-t border-rule/60">
+          <tr
+            key={targetKey(target)}
+            className="border-t border-rule/60 hover:bg-muted/30"
+          >
             <td className={cn(CELL, "font-medium")}>
               <Link
-                href={`/projects/${encodeURIComponent(project.name)}/logs?target=${encodeURIComponent(targetKey(target))}`}
+                href={`${href}/logs?target=${encodeURIComponent(targetKey(target))}`}
                 className="text-ink no-underline hover:underline"
                 title="Logs"
               >
                 {target.name}
               </Link>
             </td>
-            <td className={cn(CELL, "whitespace-nowrap text-muted-foreground")}>
+            <td className={cn(CELL, "text-muted-foreground")}>
               {KIND_LABEL[target.kind]}
             </td>
             <td className={CELL}>
-              <State value={target.state} />
-              {problems.map((problem) => (
-                <p key={problem} className="mt-1 text-xs text-warn">
-                  {problem}
-                </p>
-              ))}
+              <span className="inline-flex items-center gap-2">
+                <State value={target.state} />
+                {problems.length ? (
+                  <Warning tone="warn" iconOnly>
+                    {problems.join(" ")}
+                  </Warning>
+                ) : null}
+              </span>
             </td>
             <td className={cn(CELL, "max-w-48 truncate")} title={target.branch}>
-              {target.branch ?? (
-                <span className="text-muted-foreground">—</span>
-              )}
+              {target.branch ?? DASH}
             </td>
             <td className={CELL}>
               {target.commit ? (
-                <Mono title={target.commit}>{shortCommit(target.commit)}</Mono>
+                <Mono className="break-normal" title={target.commit}>
+                  {shortCommit(target.commit)?.slice(0, 7)}
+                </Mono>
               ) : (
-                <span className="text-muted-foreground">—</span>
+                DASH
               )}
             </td>
-            <td className={cn(CELL, "max-w-64")}>
+            <td className={cn(CELL, "max-w-72 truncate")} title={target.route}>
               {target.route ? (
                 <a
                   href={routeUrl(target.route)}
                   target="_blank"
                   rel="noreferrer"
-                  className="break-all"
                 >
                   {target.route}
                 </a>
               ) : (
-                <span className="text-muted-foreground">—</span>
+                DASH
               )}
             </td>
             <td className={CELL}>
               <Components components={target.components} />
             </td>
             <td className={cn(CELL, "text-right")}>
-              <div className="flex justify-end">
-                <TargetActions project={project.name} target={target} compact />
-              </div>
+              <TargetActions project={project.name} target={target} />
             </td>
           </tr>
         );
@@ -239,31 +238,72 @@ function ProjectRows({
     </tbody>
   );
 }
-/** Each component's name, state and port on one line, the way `rig status` prints them. */
+/** A warning in the row it belongs to: a word or two, or the icon alone with the words on hover. */
+function Warning({
+  tone,
+  iconOnly = false,
+  children,
+}: {
+  tone: "warn" | "bad";
+  iconOnly?: boolean;
+  children: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1 text-xs",
+        tone === "bad" ? "text-bad" : "text-warn",
+      )}
+      title={children}
+    >
+      <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+      <span className={cn("truncate", iconOnly ? "sr-only" : "max-w-[48ch]")}>
+        {children}
+      </span>
+    </span>
+  );
+}
+/** Each component on the one line: a state dot, its name and its port, the way `rig status` prints them. */
 function Components({
   components,
 }: {
   components: readonly ComponentReport[];
 }) {
-  if (components.length === 0)
-    return <span className="text-muted-foreground">—</span>;
+  if (components.length === 0) return DASH;
   return (
-    <ul className="flex flex-col gap-0.5">
+    <span className="inline-flex items-center gap-3">
       {components.map((component) => (
-        <li
+        <span
           key={component.name}
-          className="flex flex-wrap items-center gap-x-2 whitespace-nowrap"
+          className="inline-flex items-center gap-1.5"
+          title={[
+            component.state,
+            component.pid ? `pid ${component.pid}` : undefined,
+            component.reason,
+          ]
+            .filter(Boolean)
+            .join(", ")}
         >
-          <State value={component.state} className="text-xs" />
-          <span className="text-xs">{component.name}</span>
+          <span
+            aria-hidden
+            className={cn("size-2 rounded-full", DOT[toneOf(component.state)])}
+          />
+          <span className="sr-only">{component.state}</span>
+          {component.name}
           {component.port ? (
-            <Mono className="text-muted-foreground">:{component.port}</Mono>
+            <Mono className="break-normal text-muted-foreground">
+              :{component.port}
+            </Mono>
           ) : null}
-          {component.pid ? (
-            <Mono className="text-muted-foreground">pid {component.pid}</Mono>
-          ) : null}
-        </li>
+        </span>
       ))}
-    </ul>
+    </span>
   );
 }
+const DOT = {
+  good: "bg-good",
+  warn: "bg-warn",
+  bad: "bg-bad",
+  busy: "bg-busy busy-dot",
+  idle: "bg-muted-ink/60",
+};

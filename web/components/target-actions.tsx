@@ -1,117 +1,185 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Play, RotateCw, Square, Trash2 } from "lucide-react";
+import { Ellipsis, Play, RotateCw, Square, Trash2 } from "lucide-react";
 import { servesHost } from "@/lib/present";
 import { targetSelector } from "@/lib/target";
-import type { TargetReport } from "@/lib/types";
+import type { OperationResult, TargetReport } from "@/lib/types";
 import { Failure, OperationNotice } from "./bits";
-import { Confirm } from "./confirm";
-import { useRun } from "./operations";
+import { useRun, type Run } from "./operations";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
+type Action = "up" | "restart" | "down" | "destroy";
 const SERVES_NOTE =
   "This Target serves the dashboard you are using. The page loses its connection while rigd finishes and reconciles with rigd's record afterwards.";
-/** Up, Restart, Down and, for a Preview, Destroy; the outcome shows beneath the row. */
+const LABEL: Record<Action, string> = {
+  up: "Up",
+  restart: "Restart",
+  down: "Down",
+  destroy: "Destroy",
+};
+/** Up, Restart, Down and, for a Preview, Destroy, behind one menu button. An action that
+ * would cut this very page off, or destroy data, is confirmed first; the outcome shows
+ * beside the button, or beneath it when `stacked`. */
 export function TargetActions({
   project,
   target,
-  compact = false,
+  stacked = false,
 }: {
   project: string;
   target: Pick<TargetReport, "name" | "kind" | "route">;
-  /** Icon-only buttons for a table cell. */
-  compact?: boolean;
+  stacked?: boolean;
 }) {
   const act = useRun();
   // The host is only known in the browser; until hydration nothing serves this page.
   const [host, setHost] = useState("");
   useEffect(() => setHost(window.location.host), []);
   const servesThisPage = servesHost(target.route, host);
-  const send = (action: "up" | "down" | "restart" | "destroy") =>
+  const [confirming, setConfirming] = useState<Action>();
+  const send = (action: Action) =>
     void act.run({ action, project, ...targetSelector(target) });
-  const size = compact ? "icon-sm" : "sm";
-  const label = (text: string) =>
-    compact ? <span className="sr-only">{text}</span> : text;
+  const choose = (action: Action) => {
+    const risky = action === "destroy" || (action !== "up" && servesThisPage);
+    if (risky) setConfirming(action);
+    else send(action);
+  };
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap gap-1">
-        <Button
-          variant="outline"
-          size={size}
-          disabled={act.busy}
-          onClick={() => send("up")}
-          title="Up"
-        >
-          <Play />
-          {label("Up")}
-        </Button>
-        <Confirm
-          when={servesThisPage}
-          title={`Restart ${target.name}?`}
-          description={SERVES_NOTE}
-          confirmLabel="Restart"
-          onConfirm={() => send("restart")}
-        >
+    <div
+      className={
+        stacked
+          ? "flex flex-col items-start gap-2"
+          : "flex items-center justify-end gap-2"
+      }
+    >
+      {stacked ? null : <Outcome act={act} />}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
           <Button
-            variant="outline"
-            size={size}
+            variant="ghost"
+            size="icon-sm"
             disabled={act.busy}
-            title="Restart"
+            aria-label={`Actions for ${target.name}`}
           >
-            <RotateCw />
-            {label("Restart")}
+            {act.busy ? (
+              <span
+                aria-hidden
+                className="busy-dot size-2 rounded-full bg-busy"
+              />
+            ) : (
+              <Ellipsis />
+            )}
           </Button>
-        </Confirm>
-        <Confirm
-          when={servesThisPage}
-          title={`Stop ${target.name}?`}
-          description={SERVES_NOTE}
-          confirmLabel="Down"
-          onConfirm={() => send("down")}
-        >
-          <Button
-            variant="outline"
-            size={size}
-            disabled={act.busy}
-            title="Down"
-          >
-            <Square />
-            {label("Down")}
-          </Button>
-        </Confirm>
-        {target.kind === "preview" ? (
-          <Confirm
-            title={`Destroy Preview ${target.name}?`}
-            description={`Its data, logs, and source history are removed.${servesThisPage ? ` ${SERVES_NOTE}` : ""}`}
-            confirmLabel="Destroy"
-            destructive
-            onConfirm={() => send("destroy")}
-          >
-            <Button
-              variant="outline"
-              size={size}
-              disabled={act.busy}
-              title="Destroy"
-              className="text-bad hover:text-bad"
-            >
-              <Trash2 />
-              {label("Destroy")}
-            </Button>
-          </Confirm>
-        ) : null}
-      </div>
-      {act.busy ? (
-        <p className="text-xs text-muted-foreground">
-          <span
-            aria-hidden
-            className="busy-dot mr-1.5 inline-block size-2 rounded-full bg-busy"
-          />
-          Working…
-        </p>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => choose("up")}>
+            <Play /> Up
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => choose("restart")}>
+            <RotateCw /> Restart
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => choose("down")}>
+            <Square /> Down
+          </DropdownMenuItem>
+          {target.kind === "preview" ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => choose("destroy")}
+              >
+                <Trash2 /> Destroy
+              </DropdownMenuItem>
+            </>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {stacked ? (
+        <>
+          <Failure failure={act.failure} />
+          <OperationNotice result={act.result} />
+        </>
       ) : null}
-      <Failure failure={act.failure} />
-      <OperationNotice result={act.result} />
+      <AlertDialog
+        open={confirming !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setConfirming(undefined);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirming === "destroy"
+                ? `Destroy Preview ${target.name}?`
+                : `${LABEL[confirming ?? "down"]} ${target.name}?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirming === "destroy"
+                ? `Its data, logs, and source history are removed.${servesThisPage ? ` ${SERVES_NOTE}` : ""}`
+                : SERVES_NOTE}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant={confirming === "destroy" ? "destructive" : "default"}
+              onClick={() => {
+                if (confirming) send(confirming);
+                setConfirming(undefined);
+              }}
+            >
+              {LABEL[confirming ?? "down"]}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
+}
+/** The last outcome in a few words, sized for a table cell; the Operation link tells the rest. */
+function Outcome({ act }: { act: Run<OperationResult> }) {
+  if (act.failure)
+    return (
+      <a
+        href={
+          act.failure.operationId
+            ? `/activity?operation=${encodeURIComponent(act.failure.operationId)}`
+            : "/activity"
+        }
+        className="max-w-56 truncate text-xs text-bad no-underline hover:underline"
+        title={[act.failure.message, act.failure.hint]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        {act.failure.code}: {act.failure.message}
+      </a>
+    );
+  if (act.result)
+    return (
+      <a
+        href={`/activity?operation=${encodeURIComponent(act.result.operationId)}`}
+        className="text-xs text-good no-underline hover:underline"
+        title={act.result.warnings?.join(" ")}
+      >
+        {act.result.outcome}
+        {act.result.warnings?.length ? " ⚠" : ""}
+      </a>
+    );
+  return null;
 }

@@ -169,23 +169,23 @@ export function LogsFollower({
       ) : null}
       <div
         ref={pane}
-        className="max-h-[70vh] overflow-y-auto rounded-md bg-deck p-3 font-mono text-xs leading-5 text-on-deck"
+        className="max-h-[70vh] overflow-y-auto rounded-md bg-pane p-3 font-mono text-xs leading-5 text-on-pane"
       >
         {entries.length === 0 ? (
-          <span className="text-deck-muted">No lines yet.</span>
+          <span className="text-pane-muted">No lines yet.</span>
         ) : null}
         {entries.map((entry, index) => (
           <div key={index} className="flex flex-wrap gap-x-3">
-            <span className="text-deck-muted">{entry.timestamp}</span>
-            <span className="text-busy">{entry.component}</span>
+            <span className="text-pane-muted">{entry.timestamp}</span>
+            <span className="text-pane-accent">{entry.component}</span>
             {entry.stream !== "stdout" ? (
               <span className="sr-only">{entry.stream}</span>
             ) : null}
             <span
               className={cn(
                 "basis-full break-all whitespace-pre-wrap sm:min-w-0 sm:flex-1 sm:basis-auto",
-                entry.stream === "stderr" && "text-warn",
-                entry.stream === "health" && "text-deck-muted",
+                entry.stream === "stderr" && "text-pane-warn",
+                entry.stream === "health" && "text-pane-muted",
               )}
             >
               {entry.line}

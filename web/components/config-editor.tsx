@@ -251,7 +251,7 @@ export function ConfigEditor({
                 <TabsTrigger key={value} value={value}>
                   {label}
                   {changedIn(patch, value) ? (
-                    <span className="size-1.5 rounded-full bg-hazard">
+                    <span className="size-1.5 rounded-full bg-warn">
                       <span className="sr-only">changed</span>
                     </span>
                   ) : null}
@@ -382,7 +382,7 @@ const changedIn = (patch: { path: string[] }[], section: Section) =>
   patch.some((edit) => SECTION_ROOTS[section].includes(edit.path[0] ?? ""));
 function Source({ text }: { text: string }) {
   return (
-    <pre className="overflow-x-auto rounded-md bg-deck p-3 font-mono text-xs leading-5 whitespace-pre text-on-deck">
+    <pre className="overflow-x-auto rounded-md bg-pane p-3 font-mono text-xs leading-5 whitespace-pre text-on-pane">
       {text}
     </pre>
   );

@@ -7,21 +7,26 @@ import { LiveRefresh } from "./live-refresh";
 import { NavLinks } from "./nav";
 import { cn } from "@/lib/utils";
 
-/** The deck: wordmark, sections, and what rigd is doing right now. */
-export function TopBar() {
+/** The deck: wordmark, sections, and what rigd is doing right now. `bare` keeps the wordmark
+ * alone, for a browser that has not signed in and must learn nothing about this Mac. */
+export function TopBar({ bare = false }: { bare?: boolean }) {
   return (
     <header className="sticky top-0 z-20 bg-deck text-on-deck">
       <div className="mx-auto flex h-12 w-full max-w-6xl items-center gap-4 px-4 sm:px-6">
         <Link href="/" className="wordmark text-lg text-on-deck no-underline">
           RIG
         </Link>
-        <NavLinks />
-        <div className="ml-auto flex items-center gap-3">
-          <Suspense fallback={<DaemonMark state="probing" />}>
-            <DaemonStatus />
-          </Suspense>
-          <LiveRefresh />
-        </div>
+        {bare ? null : (
+          <>
+            <NavLinks />
+            <div className="ml-auto flex items-center gap-3">
+              <Suspense fallback={<DaemonMark state="probing" />}>
+                <DaemonStatus />
+              </Suspense>
+              <LiveRefresh />
+            </div>
+          </>
+        )}
       </div>
     </header>
   );

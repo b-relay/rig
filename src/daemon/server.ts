@@ -23,18 +23,11 @@ function ownLoopbackOrigin(origin: string, port: number): boolean {
     (host) => origin.toLowerCase() === `http://${host}:${port}`,
   );
 }
-/** HTTP effect owner; lifecycle remains owned by the injected runtime handler. Every reply is a
- * whole response (nothing streams), so `drained()` resolves once no request is being handled. */
+/** HTTP effect owner; lifecycle remains owned by the injected runtime handler. */
 export function startControlPlane(options: ControlPlaneOptions) {
   if (options.token.length === 0)
     throw new Error("A local daemon token is required.");
-  let handling = 0;
-  const drains = new Set<() => void>();
-  const finished = () => {
-    handling -= 1;
-    if (handling === 0) for (const settle of drains) settle();
-  };
-  const server = Bun.serve({
+  return Bun.serve({
     hostname: "127.0.0.1",
     port: options.port,
     maxRequestBodySize: 1024 * 1024,
@@ -42,8 +35,7 @@ export function startControlPlane(options: ControlPlaneOptions) {
     // Bun would otherwise reset a request that is still being handled after 10 s.
     idleTimeout: 0,
     fetch(request, server) {
-      handling += 1;
-      return answer(request, server.port ?? options.port).finally(finished);
+      return answer(request, server.port ?? options.port);
     },
     error() {
       return Response.json(
@@ -56,17 +48,6 @@ export function startControlPlane(options: ControlPlaneOptions) {
         { status: 500 },
       );
     },
-  });
-  return Object.assign(server, {
-    /** Resolves once every request being handled has answered; at once when none is. */
-    drained: () =>
-      new Promise<void>((settle) => {
-        if (handling === 0) return settle();
-        drains.add(() => {
-          drains.delete(settle);
-          settle();
-        });
-      }),
   });
   async function answer(request: Request, port: number): Promise<Response> {
     if (!authenticated(request, options.token))

@@ -4,6 +4,8 @@ import type { NextConfig } from "next";
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // The repository's own agent guidance lives at its root; next dev must not write another copy here.
+  agentRules: false,
   // The daemon modules under src/ are imported straight from the repository, one level up.
   outputFileTracingRoot: `${__dirname}/..`,
   turbopack: { root: `${__dirname}/..` },

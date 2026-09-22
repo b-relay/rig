@@ -1,16 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { Failure as FailureShape } from "@/lib/outcome";
 import { signIn } from "@/server/actions";
 import { transportFailure } from "@/lib/reconcile";
+import { returnPath } from "@/lib/return-path";
 import { Failure, Field } from "@/components/bits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 export function SignInForm() {
   const router = useRouter();
+  const next = returnPath(useSearchParams().get("next"));
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<FailureShape>();
@@ -24,8 +26,8 @@ export function SignInForm() {
         try {
           const outcome = await signIn(key);
           if (outcome.ok) {
-            // The rewrite kept the URL the visitor asked for, so a refresh renders that page.
-            router.refresh();
+            // Back to the page the visitor asked for; the session cookie now admits it.
+            router.replace(next);
             return;
           }
           setFailure(outcome.failure);

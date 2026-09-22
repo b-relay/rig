@@ -11,7 +11,8 @@ import { processStartTime, recordedProcess } from "./process-identity";
 
 /** How long a stop waits for a command that is still answering after the runtime has shut down. */
 const DRAIN_GRACE_MS = 30_000;
-/** Resolves when `settled` does or after `ms`, whichever is first; the timer never keeps the process alive. */
+/** Resolves when `settled` does or after `ms`, whichever is first. The timer is cleared as soon as
+ * `settled` resolves, so it holds the process open only while a reply is genuinely outstanding. */
 function withinGrace(settled: Promise<void>, ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -219,9 +220,10 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       const closed = server!.stop(false);
       // Leave ownership evidence on failed shutdown; never publish a clean stop while children are uncertain.
       await options.shutdown();
-      // A command still answering is given its reply; a handler that never returns must not
-      // keep the daemon alive, so the wait is bounded. Idle keep-alive connections are then closed.
-      await withinGrace(server!.drained(), DRAIN_GRACE_MS);
+      // The graceful stop settles once every reply in flight has been sent and idle connections
+      // are closed; forcing the close before then cuts a caller off. A handler that never
+      // returns must not keep the daemon alive, so the wait is bounded.
+      await withinGrace(closed, DRAIN_GRACE_MS);
       await server!.stop(true);
       await closed;
       await release();

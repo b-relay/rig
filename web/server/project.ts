@@ -1,5 +1,4 @@
 import { notFound } from "next/navigation";
-import { attempt, type Outcome } from "../lib/outcome";
 import type { ListResult } from "../lib/types";
 import { read } from "./daemon";
 
@@ -16,7 +15,3 @@ export async function project(
   if (!found) notFound();
   return found;
 }
-/** The same, as an outcome, for pages that should render even when rigd is down. */
-export const projectOutcome = (
-  params: Promise<{ name: string }>,
-): Promise<Outcome<Project>> => attempt(project(params));

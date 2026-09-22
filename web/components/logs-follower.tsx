@@ -46,13 +46,22 @@ export function LogsFollower({
     targets.find((each) => targetKey(each) === selected) ?? targets[0];
   const key = target ? targetKey(target) : undefined;
   const selector = target ? JSON.stringify(targetSelector(target)) : undefined;
-  const firstCursor = first?.cursor;
+  // The served page is adopted once per Target and line count. Live refreshes hand the
+  // component a newer page every few seconds; adopting each would replay lines the follow
+  // already appended, so the cursor lives here and outlasts renders and follow toggles.
+  const served = useRef(first);
+  served.current = first;
+  const cursor = useRef<string | undefined>(undefined);
+  const adopted = useRef<string>(undefined);
   useEffect(() => {
     if (!selector) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const next = () => {
+      if (follow && !stopped)
+        timer = setTimeout(() => void read(cursor.current), FOLLOW_MS);
+    };
     const read = async (after: string | undefined) => {
-      let cursor = after;
       try {
         const outcome = await runCommand({
           action: "logs",
@@ -63,7 +72,7 @@ export function LogsFollower({
         if (stopped) return;
         if (outcome.ok) {
           const page = outcome.value as LogsResult;
-          cursor = page.cursor;
+          cursor.current = page.cursor;
           setFailure(undefined);
           if (after === undefined) setEntries(page.entries);
           else if (page.entries.length)
@@ -72,7 +81,7 @@ export function LogsFollower({
           setFailure(outcome.failure);
           // A redeployed Preview is a new Target, so its old cursor never becomes valid again.
           if (after !== undefined) {
-            cursor = undefined;
+            cursor.current = undefined;
             setEntries([]);
           }
         }
@@ -80,17 +89,31 @@ export function LogsFollower({
         if (stopped) return;
         setFailure(transportFailure(error));
       }
-      if (follow) timer = setTimeout(() => void read(cursor), FOLLOW_MS);
+      next();
     };
-    // The server's page stands until the follow wants more; a changed line count reads afresh.
-    if (firstCursor && lines === 200) {
-      if (follow) timer = setTimeout(() => void read(firstCursor), FOLLOW_MS);
-    } else void read(undefined);
+    const identity = `${project}\n${selector}\n${lines}`;
+    if (adopted.current !== identity) {
+      adopted.current = identity;
+      const page = lines === 200 ? served.current : undefined;
+      if (page) {
+        setEntries(page.entries);
+        setFailure(undefined);
+        cursor.current = page.cursor;
+      } else {
+        cursor.current = undefined;
+        void read(undefined);
+        return () => {
+          stopped = true;
+          clearTimeout(timer);
+        };
+      }
+    }
+    next();
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [project, selector, lines, follow, firstCursor]);
+  }, [project, selector, lines, follow]);
   // Scrolls the log pane only; scrollIntoView would drag the whole page along.
   useEffect(() => {
     const element = pane.current;

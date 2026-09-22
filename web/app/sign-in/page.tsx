@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { SignInForm } from "./form";
 
 export const metadata: Metadata = { title: "Sign in" };
@@ -12,7 +13,9 @@ export default function SignInPage() {
           This dashboard controls the Mac that serves it. Paste its access key.
         </p>
       </div>
-      <SignInForm />
+      <Suspense>
+        <SignInForm />
+      </Suspense>
       <p className="text-xs text-muted-foreground">
         On that Mac, the web Service's log names the key file:{" "}
         <code>rig logs live --project rig</code>.

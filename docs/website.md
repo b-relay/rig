@@ -89,7 +89,8 @@ Content-Security-Policy (scripts only from the site itself, no framing) and
 `RIG_WEB_KEY_FILE` (set to `${rig.data}/access.key` in `rig.yaml`) names a file
 holding a random access key; the Service creates it, mode 600, on first start and
 logs the file's path, never the key. A client that is not loopback or in
-`RIG_WEB_TRUSTED_CLIENTS` is shown the sign-in page (`/sign-in`, status 401).
+`RIG_WEB_TRUSTED_CLIENTS` is sent to the sign-in page (`/sign-in?next=<path>`,
+which carries none of the site's frame) and returned to its page afterwards.
 Presenting the key answers a `rig_session` cookie (`HttpOnly`, `Secure`,
 `SameSite=Strict`, `Path=/`) that is an HMAC of its expiry under the key, so
 there is no session store: delete the key file and restart the Service to
@@ -144,7 +145,7 @@ runs its commands as you.
 | Path                  | Responsibility                                                                                                                                                      |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `web/app`             | Routes. `/` is the board; `/projects/[name]/*` the Project sections; `/activity`, `/doctor`, `/rigd`, `/projects/new`, `/sign-in`; `/healthz` for readiness.        |
-| `web/proxy.ts`        | Admits each request, rewrites strangers to `/sign-in`, and sets the nonce CSP.                                                                                      |
+| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                         |
 | `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads and config edits against rigd), `actions.ts` (Server Actions), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`. |
 | `web/components`      | Server and client components; `board.tsx` is the one table the root page is; `operations.tsx` owns in-flight actions and reconciliation.                            |
 | `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                  |

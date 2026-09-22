@@ -1,6 +1,7 @@
-import { test, expect } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { routeUrl, targetKey, targetSelector } from "../web/lib/target";
 import { resolveSettlement, transportFailure } from "../web/lib/reconcile";
+import { returnPath } from "../web/lib/return-path";
 import {
   ago,
   servesHost,
@@ -134,4 +135,18 @@ test("presentation helpers shorten a Commit, date an instant coarsely, and word 
       destructionPending: true,
     }),
   ).toHaveLength(4);
+});
+
+describe("returnPath", () => {
+  test("follows a path on this site and nothing else", () => {
+    expect(returnPath("/projects/app/logs?target=live")).toBe(
+      "/projects/app/logs?target=live",
+    );
+    expect(returnPath(null)).toBe("/");
+    expect(returnPath("")).toBe("/");
+    expect(returnPath("https://evil.example/")).toBe("/");
+    expect(returnPath("//evil.example/")).toBe("/");
+    expect(returnPath("/ok\r\nSet-Cookie: x")).toBe("/");
+    expect(returnPath("\\evil.example")).toBe("/");
+  });
 });

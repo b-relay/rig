@@ -34,11 +34,32 @@ and still refuses foreign browser origins.
 
 ## Live refresh
 
-The top bar's refresh button (`web/components/live-refresh.tsx`) re-renders the
-page from the server every 15 seconds while the tab is visible, every 3 seconds
-while an action this page started is still running, and once more when the tab
-comes back into view. Refreshing is a `router.refresh()`: the server re-reads
-`rigd` and streams new rows; the browser keeps its scroll and form state.
+The top bar's refresh button (`web/components/live-refresh.tsx`) keeps the page
+current while the tab is visible. Every 15 seconds (every 3 while an action this
+page started is still running, and once more when the tab comes back into view)
+it fetches `/pulse`: a small stamp (`web/lib/pulse.ts`) built from `rigd`'s
+identity, its queue and its newest recorded Operation. Only a changed stamp, a
+running Operation, or two quiet minutes trigger a `router.refresh()`, in which
+the server re-reads `rigd` and streams new rows while the browser keeps its
+scroll and form state. Because most ticks change nothing, Next's client cache
+(`staleTimes.dynamic`) can hand back a section seen in the last five minutes the
+instant its tab is tapped, and the refresh replaces it when `rigd` moves.
+
+When `/pulse` does not answer at all, the corner says `offline` and nothing
+else changes; the page is left as it was and the next tick tries again. A
+navigation attempted while the network is down waits for it to return
+(`experimental.useOffline`) instead of falling through to the browser's error
+screen.
+
+## The board
+
+`web/components/board.tsx` gathers every Project's status, and
+`web/lib/board-rows.ts` flattens the reports into one row per Target, in
+Working copy, Stable, Preview order, with a placeholder row for a Working copy
+not started yet and Project-level notices lifted above the table.
+`web/components/targets-table.tsx` renders them as a TanStack data table:
+sortable columns, a filter box, a column chooser remembered in the browser, and
+the Target and actions columns pinned to either edge while the rest scroll.
 
 ## Lost replies
 
@@ -147,7 +168,7 @@ runs its commands as you.
 | `web/app`             | Routes. `/` is the board; `/projects/[name]/*` the Project sections; `/activity`, `/doctor`, `/rigd`, `/projects/new`, `/sign-in`; `/healthz` for readiness.        |
 | `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                         |
 | `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads and config edits against rigd), `actions.ts` (Server Actions), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`. |
-| `web/components`      | Server and client components; `board.tsx` is the one table the root page is; `operations.tsx` owns in-flight actions and reconciliation.                            |
+| `web/components`      | Server and client components; `board.tsx` and `targets-table.tsx` are the one table the root page is; `operations.tsx` owns in-flight actions and reconciliation.   |
 | `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                  |
 | `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `target.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`.                       |
 | `web/app/globals.css` | Tailwind entry: the Rig palette, fonts, and the shadcn tokens mapped onto them.                                                                                     |

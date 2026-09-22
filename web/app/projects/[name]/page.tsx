@@ -8,5 +8,5 @@ export default async function ProjectPage({
   params: Promise<{ name: string }>;
 }) {
   const found = await project(params);
-  return <Board projects={[found]} showProjectRows={false} />;
+  return <Board projects={[found]} hideProject />;
 }

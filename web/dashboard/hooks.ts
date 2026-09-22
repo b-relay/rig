@@ -24,12 +24,20 @@ export interface Read<T> {
 export interface Snapshots {
   get(key: string): unknown;
   set(key: string, value: unknown): void;
+  /** Drops every snapshot, for when the browser is no longer signed in to this daemon. */
+  forget(): void;
 }
+/** Bump when a read's answer changes shape, so a dashboard never paints an older build's snapshot. */
+export const SNAPSHOT_FORMAT = 1;
+export type SnapshotStorage = Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem" | "key" | "length"
+>;
 /** Snapshots in this tab's session storage, so a view paints its last answer at once and refreshes
  * behind it; closing the tab forgets them. A browser that refuses storage keeps them in memory. */
 export function sessionSnapshots(
-  storage: Pick<Storage, "getItem" | "setItem"> | undefined,
-  prefix = "rig-dashboard:",
+  storage: SnapshotStorage | undefined,
+  prefix = `rig-dashboard:${SNAPSHOT_FORMAT}:`,
 ): Snapshots {
   const memory = new Map<string, unknown>();
   return {
@@ -48,6 +56,19 @@ export function sessionSnapshots(
         storage?.setItem(prefix + key, JSON.stringify(value));
       } catch {
         // Full or refused storage only costs the next page load its head start.
+      }
+    },
+    forget() {
+      memory.clear();
+      try {
+        const mine: string[] = [];
+        for (let i = 0; i < (storage?.length ?? 0); i++) {
+          const name = storage?.key(i);
+          if (name?.startsWith(prefix)) mine.push(name);
+        }
+        for (const name of mine) storage?.removeItem(name);
+      } catch {
+        // Nothing to forget in a browser that refused storage.
       }
     },
   };

@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { createRigdApi, RigdError } from "../web/dashboard/api";
 import { routeUrl, targetSelector } from "../web/dashboard/target";
-import { sessionSnapshots } from "../web/dashboard/hooks";
+import { SNAPSHOT_FORMAT, sessionSnapshots } from "../web/dashboard/hooks";
 
 const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status });
@@ -90,29 +90,54 @@ test("a Preview is selected by its deployment name, other Targets by their own",
   });
 });
 
+const mapStorage = (kept: Map<string, string>) => ({
+  getItem: (key: string) => kept.get(key) ?? null,
+  setItem: (key: string, value: string) => void kept.set(key, value),
+  removeItem: (key: string) => void kept.delete(key),
+  key: (index: number) => [...kept.keys()][index] ?? null,
+  get length() {
+    return kept.size;
+  },
+});
+
 test("session snapshots answer the last value and survive a refused storage", () => {
   const kept = new Map<string, string>();
-  const storage = {
-    getItem: (key: string) => kept.get(key) ?? null,
-    setItem: (key: string, value: string) => void kept.set(key, value),
-  };
-  const first = sessionSnapshots(storage);
+  const first = sessionSnapshots(mapStorage(kept));
   expect(first.get("list")).toBeUndefined();
   first.set("list", { projects: [] });
-  // A later page load reads what the earlier one stored.
-  expect(sessionSnapshots(storage).get("list")).toEqual({ projects: [] });
-  expect(kept.has("rig-dashboard:list")).toBe(true);
+  // A later page load reads what the earlier one stored, under this build's format.
+  expect(sessionSnapshots(mapStorage(kept)).get("list")).toEqual({
+    projects: [],
+  });
+  expect(kept.has(`rig-dashboard:${SNAPSHOT_FORMAT}:list`)).toBe(true);
+  expect(sessionSnapshots(mapStorage(kept), "other:").get("list")).toBe(
+    undefined,
+  );
+  const denied = () => {
+    throw new Error("denied");
+  };
   const refused = sessionSnapshots({
-    getItem: () => {
-      throw new Error("denied");
-    },
-    setItem: () => {
-      throw new Error("denied");
-    },
+    getItem: denied,
+    setItem: denied,
+    removeItem: denied,
+    key: denied,
+    length: 0,
   });
   refused.set("health", { pid: 1 });
   expect(refused.get("health")).toEqual({ pid: 1 });
   expect(refused.get("queue")).toBeUndefined();
+  refused.forget();
+  expect(refused.get("health")).toBeUndefined();
+});
+
+test("forgetting snapshots leaves other storage alone", () => {
+  const kept = new Map<string, string>([["theirs", "1"]]);
+  const snapshots = sessionSnapshots(mapStorage(kept));
+  snapshots.set("list", { projects: [] });
+  snapshots.set("health", { pid: 1 });
+  snapshots.forget();
+  expect(snapshots.get("list")).toBeUndefined();
+  expect([...kept.keys()]).toEqual(["theirs"]);
 });
 
 test("a route link carries the scheme Caddy serves it on", () => {

@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Activity,
   LayoutGrid,
@@ -61,8 +67,19 @@ function Shell() {
   const [section, name, tab] = route;
   const needsKey =
     health.error instanceof RigdError && health.error.code === "KEY_REQUIRED";
+  // A browser that is no longer signed in shows nothing it remembers from when it was.
+  const snapshots = useContext(SnapshotContext);
+  useEffect(() => {
+    if (needsKey) snapshots.forget();
+  }, [needsKey, snapshots]);
   // Following a link closes the drawer; the route array is new on every hash change.
   useEffect(() => setOpen(false), [route]);
+  if (needsKey)
+    return (
+      <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 p-4 md:p-8">
+        <SignIn onSignedIn={() => window.location.reload()} />
+      </main>
+    );
   const daemon = health.data
     ? `rigd ${health.data.version ?? ""}, pid ${health.data.pid}`
     : health.error
@@ -149,12 +166,8 @@ function Shell() {
         </span>
       </header>
       <main className="flex min-w-0 max-w-6xl flex-col gap-4 p-4 md:p-8">
-        {needsKey ? (
-          <SignIn onSignedIn={() => window.location.reload()} />
-        ) : health.error ? (
-          <Failure error={health.error} />
-        ) : null}
-        {needsKey ? null : section === "projects" && name ? (
+        {health.error ? <Failure error={health.error} /> : null}
+        {section === "projects" && name ? (
           <Project
             key={name}
             name={name}

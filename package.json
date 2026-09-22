@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "STAMP=\"$(git rev-parse --short=12 HEAD 2>/dev/null || echo dev)\" && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/index.ts --outfile rig && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/rigd.ts --outfile rigd && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/git/remote-helper.ts --outfile git-remote-rig",
+    "build": "STAMP=\"$(git describe --always --dirty --abbrev=12 --exclude='*' 2>/dev/null || echo dev)\" && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/index.ts --outfile rig && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/rigd.ts --outfile rigd && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/git/remote-helper.ts --outfile git-remote-rig",
     "start": "bun run src/index.ts",
     "schema": "bun run scripts/generate-schema.ts",
     "format": "prettier --write .",

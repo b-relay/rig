@@ -31,8 +31,9 @@ export interface ArtifactIdentity {
   project?: string;
   target?: string;
 }
-/** One daemon serializes ownership mutations; an existing unowned file is never taken over. */
-/** `digest` hashes an executable; the daemon passes a remembering one so status calls do not re-read every Tool. */
+/** One daemon serializes ownership mutations; an existing unowned file is never taken over.
+ * `digest` hashes an executable; the daemon passes a remembering one so status calls do not
+ * re-read every Tool. */
 export function createArtifactOwnership(
   root: string,
   digest: FileDigest = fileDigest,
@@ -125,8 +126,6 @@ export function createArtifactOwnership(
     },
   };
 }
-/** The uncached digest, for one-off checks during an installation. */
-export const artifactRevision = fileDigest;
 export async function optionalFile(path: string): Promise<Buffer | undefined> {
   try {
     return await readFile(path);

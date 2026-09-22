@@ -26,27 +26,33 @@ export const fileDigest: FileDigest = async (path) => {
   return digest.digest("hex");
 };
 /** A digest that hashes a file once and answers from memory while the file's identity, size, and
- * modification time stay the same. Installation publishes by atomic rename, which changes the
+ * change times stay the same. Installation publishes by atomic rename, which changes the
  * identity, so a replaced executable is always re-read. `hash` is the uncached digest. */
 export function rememberedDigests(hash: FileDigest = fileDigest): FileDigest {
   const known = new Map<string, { fingerprint: string; digest: string }>();
   return async (path) => {
-    let info;
-    try {
-      info = await lstat(path, { bigint: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        known.delete(path);
-        return undefined;
-      }
-      throw error;
+    const before = await fingerprint(path);
+    if (before === undefined) {
+      known.delete(path);
+      return undefined;
     }
-    const fingerprint = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}`;
     const seen = known.get(path);
-    if (seen?.fingerprint === fingerprint) return seen.digest;
+    if (seen?.fingerprint === before) return seen.digest;
     const digest = await hash(path);
-    if (digest === undefined) known.delete(path);
-    else known.set(path, { fingerprint, digest });
+    // A file rewritten while it was being read is hashed again next time rather than remembered.
+    if (digest !== undefined && (await fingerprint(path)) === before)
+      known.set(path, { fingerprint: before, digest });
+    else known.delete(path);
     return digest;
   };
+}
+/** What identifies one file's content without reading it, or undefined when there is no file. */
+async function fingerprint(path: string): Promise<string | undefined> {
+  try {
+    const info = await lstat(path, { bigint: true });
+    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 }

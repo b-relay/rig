@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { ConfigError } from "./errors.js";
-import { referenceResolver } from "./references.js";
+import { ConfigError } from "./errors";
+import { referenceResolver } from "./references";
 const text = z.string().min(1);
 const name = text
   .regex(

@@ -1,7 +1,7 @@
 /** Config module: document I/O, validation, and pure Target plan resolution. */
-export * from "./types.js";
-export * from "./errors.js";
-export * from "./documents.js";
+export * from "./types";
+export * from "./errors";
+export * from "./documents";
 export {
   parseProjectConfig,
   parseHostConfig,
@@ -13,8 +13,8 @@ export {
   PREVIEW_SELECTOR,
   type TargetRole,
   type ProjectSettings,
-} from "./schema.js";
-export { resolveTargetPlan } from "./resolve.js";
+} from "./schema";
+export { resolveTargetPlan } from "./resolve";
 export {
   configJsonSchemas,
   renderJsonSchema,
@@ -22,4 +22,4 @@ export {
   HOST_SCHEMA_URL,
   PROJECT_SCHEMA_COMMENT,
   type JsonSchema,
-} from "./json-schema.js";
+} from "./json-schema";

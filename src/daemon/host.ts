@@ -8,6 +8,19 @@ import type { RuntimeCommand } from "./protocol";
 import { RigError } from "../domain/errors";
 import type { z } from "zod";
 import { processStartTime, recordedProcess } from "./process-identity";
+
+/** How long a stop waits for a command that is still answering after the runtime has shut down. */
+const DRAIN_GRACE_MS = 30_000;
+/** Resolves when `settled` does or after `ms`, whichever is first; the timer never keeps the process alive. */
+function withinGrace(settled: Promise<void>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    void settled.finally(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
 export interface DaemonHostOptions {
   root: string;
   port: number;
@@ -206,7 +219,9 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       const closed = server!.stop(false);
       // Leave ownership evidence on failed shutdown; never publish a clean stop while children are uncertain.
       await options.shutdown();
-      // Whatever is still open now (a log follow, an idle connection) is closed.
+      // A command still answering is given its reply; a handler that never returns must not
+      // keep the daemon alive, so the wait is bounded. Idle keep-alive connections are then closed.
+      await withinGrace(server!.drained(), DRAIN_GRACE_MS);
       await server!.stop(true);
       await closed;
       await release();

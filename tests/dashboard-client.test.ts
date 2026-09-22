@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { createRigdApi, RigdError } from "../web/dashboard/api";
-import { targetSelector } from "../web/dashboard/target";
+import { routeUrl, targetSelector } from "../web/dashboard/target";
+import { sessionSnapshots } from "../web/dashboard/hooks";
 
 const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status });
@@ -87,4 +88,36 @@ test("a Preview is selected by its deployment name, other Targets by their own",
   expect(targetSelector({ kind: "live", name: "prod" })).toEqual({
     target: "prod",
   });
+});
+
+test("session snapshots answer the last value and survive a refused storage", () => {
+  const kept = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => kept.get(key) ?? null,
+    setItem: (key: string, value: string) => void kept.set(key, value),
+  };
+  const first = sessionSnapshots(storage);
+  expect(first.get("list")).toBeUndefined();
+  first.set("list", { projects: [] });
+  // A later page load reads what the earlier one stored.
+  expect(sessionSnapshots(storage).get("list")).toEqual({ projects: [] });
+  expect(kept.has("rig-dashboard:list")).toBe(true);
+  const refused = sessionSnapshots({
+    getItem: () => {
+      throw new Error("denied");
+    },
+    setItem: () => {
+      throw new Error("denied");
+    },
+  });
+  refused.set("health", { pid: 1 });
+  expect(refused.get("health")).toEqual({ pid: 1 });
+  expect(refused.get("queue")).toBeUndefined();
+});
+
+test("a route link carries the scheme Caddy serves it on", () => {
+  expect(routeUrl("feat-x.rig.b-relay.com")).toBe(
+    "https://feat-x.rig.b-relay.com",
+  );
+  expect(routeUrl("http://localhost:3000")).toBe("http://localhost:3000");
 });

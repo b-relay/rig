@@ -1,15 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  lstat,
-  readFile,
-  mkdir,
-  writeFile,
-  rename,
-  rm,
-} from "node:fs/promises";
+import { readFile, mkdir, writeFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
+import { fileDigest, type FileDigest } from "./file-digest";
 const ownerSchema = z
   .object({
     targetId: z.string().describe("Stable Target that owns this executable."),
@@ -38,7 +32,11 @@ export interface ArtifactIdentity {
   target?: string;
 }
 /** One daemon serializes ownership mutations; an existing unowned file is never taken over. */
-export function createArtifactOwnership(root: string) {
+/** `digest` hashes an executable; the daemon passes a remembering one so status calls do not re-read every Tool. */
+export function createArtifactOwnership(
+  root: string,
+  digest: FileDigest = fileDigest,
+) {
   const ownerPath = (destination: string) =>
     join(
       root,
@@ -63,7 +61,7 @@ export function createArtifactOwnership(root: string) {
   };
   const inspect = async (identity: ArtifactIdentity) => {
     const saved = await owner(identity.destination),
-      revision = await artifactRevision(identity.destination);
+      current = await digest(identity.destination);
     // A Target may hand its own executable to a renamed Component; only another Target is refused.
     if (saved && saved.targetId !== identity.targetId)
       throw new RigError(
@@ -84,21 +82,21 @@ export function createArtifactOwnership(root: string) {
           },
         },
       );
-    if (!saved && revision !== undefined)
+    if (!saved && current !== undefined)
       throw new RigError(
         "ARTIFACT_UNOWNED",
         `An executable Rig did not install already occupies ${identity.destination}.`,
         "Move or delete it, then retry; Rig never overwrites an executable it did not install.",
         { destination: identity.destination },
       );
-    if (saved && revision !== undefined && saved.revision !== revision)
+    if (saved && current !== undefined && saved.revision !== current)
       throw new RigError(
         "ARTIFACT_CHANGED",
         `The installed executable ${identity.destination} changed outside its owning Component ${saved.componentName}.`,
         `Move or delete ${identity.destination} to keep or discard that change, then retry.`,
         { destination: identity.destination },
       );
-    return { owner: saved, revision };
+    return { owner: saved, revision: current };
   };
   return {
     inspect,
@@ -107,8 +105,8 @@ export function createArtifactOwnership(root: string) {
     async publish(identity: ArtifactIdentity, write: () => Promise<void>) {
       await inspect(identity);
       await write();
-      const revision = await artifactRevision(identity.destination);
-      if (!revision)
+      const published = await digest(identity.destination);
+      if (!published)
         throw new RigError(
           "ARTIFACT_MISSING",
           "The installer did not publish an executable.",
@@ -121,33 +119,14 @@ export function createArtifactOwnership(root: string) {
           componentName: identity.componentName,
           ...(identity.project ? { project: identity.project } : {}),
           ...(identity.target ? { target: identity.target } : {}),
-          revision,
+          revision: published,
         }),
       );
     },
   };
 }
-export async function artifactRevision(
-  path: string,
-): Promise<string | undefined> {
-  let info;
-  try {
-    info = await lstat(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  if (!info.isFile())
-    throw new RigError(
-      "ARTIFACT_TYPE",
-      "An installation path is not a regular file.",
-      "Preserve the existing path and choose another installation name.",
-      { path },
-    );
-  return createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
-}
+/** The uncached digest, for one-off checks during an installation. */
+export const artifactRevision = fileDigest;
 export async function optionalFile(path: string): Promise<Buffer | undefined> {
   try {
     return await readFile(path);

@@ -197,6 +197,32 @@ export function Mono({
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="text-sm text-muted-foreground">{children}</p>;
 }
+/** Grey bars standing in for text that has not arrived yet; `lines` is how many, widths alternate. */
+export function Skeleton({
+  lines = 3,
+  className,
+}: {
+  lines?: number;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn("flex flex-col gap-2", className)}
+      role="status"
+      aria-label="Loading"
+    >
+      {Array.from({ length: lines }, (_, index) => (
+        <div
+          key={index}
+          className={cn(
+            "h-4 animate-pulse rounded bg-muted",
+            index % 2 ? "w-1/2" : "w-3/4",
+          )}
+        />
+      ))}
+    </div>
+  );
+}
 /** Wraps a trigger button in a confirmation when `when` holds; otherwise the trigger acts at once. */
 export function Confirm({
   when = true,

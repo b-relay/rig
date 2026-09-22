@@ -20,31 +20,73 @@ export interface Read<T> {
   loading: boolean;
   reload(): void;
 }
+/** Where the last answer to each read is kept between views and page loads. */
+export interface Snapshots {
+  get(key: string): unknown;
+  set(key: string, value: unknown): void;
+}
+/** Snapshots in this tab's session storage, so a view paints its last answer at once and refreshes
+ * behind it; closing the tab forgets them. A browser that refuses storage keeps them in memory. */
+export function sessionSnapshots(
+  storage: Pick<Storage, "getItem" | "setItem"> | undefined,
+  prefix = "rig-dashboard:",
+): Snapshots {
+  const memory = new Map<string, unknown>();
+  return {
+    get(key) {
+      if (memory.has(key)) return memory.get(key);
+      try {
+        const raw = storage?.getItem(prefix + key);
+        return raw === null || raw === undefined ? undefined : JSON.parse(raw);
+      } catch {
+        return undefined;
+      }
+    },
+    set(key, value) {
+      memory.set(key, value);
+      try {
+        storage?.setItem(prefix + key, JSON.stringify(value));
+      } catch {
+        // Full or refused storage only costs the next page load its head start.
+      }
+    },
+  };
+}
+export const SnapshotContext = createContext<Snapshots>(
+  sessionSnapshots(undefined),
+);
 /** Reads on mount, whenever `key` changes, and every `everyMs` when given. A failed poll keeps
- * the last data and reports the error beside it. */
+ * the last data and reports the error beside it. The last answer for `key` is shown at once
+ * while the first read is in flight. */
 export function useRead<T>(
   read: (signal: AbortSignal) => Promise<T>,
   key: string,
   everyMs?: number,
 ): Read<T> {
+  const snapshots = useContext(SnapshotContext);
   const [state, setState] = useState<{
     key: string;
     data?: T;
     error?: unknown;
     loading: boolean;
-  }>({ key, loading: true });
+  }>(() => ({ key, data: snapshots.get(key) as T | undefined, loading: true }));
   const [turn, setTurn] = useState(0);
   const latest = useRef(read);
   latest.current = read;
   useEffect(() => {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    setState((previous) => ({ ...previous, loading: true }));
+    setState((previous) =>
+      previous.key === key
+        ? { ...previous, loading: true }
+        : { key, data: snapshots.get(key) as T | undefined, loading: true },
+    );
     const once = async () => {
       try {
         const data = await latest.current(abort.signal);
-        if (!abort.signal.aborted)
-          setState({ key, data, error: undefined, loading: false });
+        if (abort.signal.aborted) return;
+        snapshots.set(key, data);
+        setState({ key, data, error: undefined, loading: false });
       } catch (error) {
         if (!abort.signal.aborted)
           setState((previous) => ({
@@ -61,11 +103,11 @@ export function useRead<T>(
       abort.abort();
       clearTimeout(timer);
     };
-  }, [key, everyMs, turn]);
+  }, [key, everyMs, turn, snapshots]);
   const reload = useCallback(() => setTurn((value) => value + 1), []);
   const current = state.key === key;
   return {
-    data: current ? state.data : undefined,
+    data: current ? state.data : (snapshots.get(key) as T | undefined),
     error: current ? state.error : undefined,
     loading: !current || state.loading,
     reload,

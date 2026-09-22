@@ -5,7 +5,7 @@ import type {
   TargetReport,
 } from "../types";
 import { href, useAct, useApi } from "../hooks";
-import { targetKey, targetSelector } from "../target";
+import { routeUrl, targetKey, targetSelector } from "../target";
 import {
   Confirm,
   Empty,
@@ -196,7 +196,11 @@ function TargetPanel({
             ? ([
                 "Route",
                 <span key="r" className="flex flex-wrap items-center gap-2">
-                  <a href={target.route} target="_blank" rel="noreferrer">
+                  <a
+                    href={routeUrl(target.route)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     {target.route}
                   </a>
                   {target.routePublished === false ? (

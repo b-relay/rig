@@ -8,7 +8,15 @@ import {
   Stethoscope,
 } from "lucide-react";
 import { createRigdApi, RigdError } from "./api";
-import { ApiContext, href, useApi, useRead, useRoute } from "./hooks";
+import {
+  ApiContext,
+  SnapshotContext,
+  href,
+  sessionSnapshots,
+  useApi,
+  useRead,
+  useRoute,
+} from "./hooks";
 import { Failure } from "./ui";
 import { Overview } from "./views/Overview";
 import { SignIn } from "./views/SignIn";
@@ -26,9 +34,12 @@ export function App() {
     () => createRigdApi((path, init) => fetch(path, init)),
     [],
   );
+  const snapshots = useMemo(() => sessionSnapshots(window.sessionStorage), []);
   return (
     <ApiContext.Provider value={api}>
-      <Shell />
+      <SnapshotContext.Provider value={snapshots}>
+        <Shell />
+      </SnapshotContext.Provider>
     </ApiContext.Provider>
   );
 }

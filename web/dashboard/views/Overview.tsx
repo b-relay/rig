@@ -1,7 +1,7 @@
 import { Plus } from "lucide-react";
 import type { ListResult } from "../types";
 import { href, useApi, useRead, type Read } from "../hooks";
-import { Empty, Failure, Mono, Panel, State } from "../ui";
+import { Empty, Failure, Mono, Panel, Skeleton, State } from "../ui";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -27,9 +27,19 @@ export function Overview({ projects }: { projects: Read<ListResult> }) {
           </Empty>
         ) : null}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {projects.data?.projects.map((project) => (
-            <ProjectCard key={project.name} project={project} />
-          ))}
+          {projects.data
+            ? projects.data.projects.map((project) => (
+                <ProjectCard key={project.name} project={project} />
+              ))
+            : projects.error
+              ? null
+              : [0, 1].map((each) => (
+                  <Card key={each} className="gap-3 py-4">
+                    <CardContent className="px-4">
+                      <Skeleton lines={4} />
+                    </CardContent>
+                  </Card>
+                ))}
         </div>
       </Panel>
     </>
@@ -58,6 +68,7 @@ function ProjectCard({ project }: { project: ListResult["projects"][number] }) {
             {project.repoPath}
           </Mono>
           {project.missing ? <State value="missing" /> : null}
+          {status.data || status.error ? null : <Skeleton lines={2} />}
           <ul className="flex flex-col gap-1 text-sm">
             {status.data?.targets.map((target) => (
               <li

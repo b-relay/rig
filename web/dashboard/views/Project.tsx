@@ -1,6 +1,6 @@
 import type { ListResult } from "../types";
 import { href, useApi, useRead } from "../hooks";
-import { Empty, Failure, Mono, Notice } from "../ui";
+import { Empty, Failure, Mono, Notice, Panel, Skeleton } from "../ui";
 import { Targets } from "./Targets";
 import { Deploy } from "./Deploy";
 import { Logs } from "./Logs";
@@ -70,6 +70,11 @@ export function Project({
       {tab === "targets" ? (
         <>
           <Failure error={status.error} />
+          {status.data || status.error ? null : (
+            <Panel title="Targets">
+              <Skeleton lines={4} />
+            </Panel>
+          )}
           <Targets project={name} status={status.data} reload={status.reload} />
         </>
       ) : tab === "deploy" ? (

@@ -126,13 +126,18 @@ reports launchctl's reason and leaves nothing installed.
 
 The daemon's loopback `/health` endpoint answers `HEAD` as well as `GET`, so
 a probe that only wants the status line gets 200 without a body.
-`rig --version` and `rigd --version` print the version, and a serving daemon
-reports its own version to `rigd status`, which warns when it differs from the
-`rigd` you ran. Upgrading is `rigd install`: when the serving daemon reports
-another version, or the installation record names another version or command,
-the install stops that daemon, starts the current one, and reports what it
-replaced; managed processes keep serving under their leases and the new daemon
-adopts them. A daemon of the same version and command is reported `unchanged`.
+`rig --version` and `rigd --version` print the build stamp: the release number
+plus the commit the executable was built from, such as `0.1.0+cb6077187ba5`
+(`bun build --define process.env.RIG_BUILD_COMMIT=...` embeds it; a run from
+source reports `0.1.0+dev`). A serving daemon reports its stamp to
+`rigd status`, which warns when it differs from the `rigd` you ran. Upgrading
+is `rigd install`: when the serving daemon reports another stamp, or the
+installation record names another stamp or command, the install stops that
+daemon, starts the current one, and reports what it replaced; managed processes
+keep serving under their leases and the new daemon adopts them. The comparison
+is equality only, so a rollback to an older commit is swapped in the same way,
+and a daemon from before stamps counts as different. A daemon of the same stamp
+and command is reported `unchanged`.
 When `rig` sends a command that the daemon does not accept, the error names
 both versions and says to run `rigd install`, because `rig` only sends commands
 its own grammar allows.

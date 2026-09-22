@@ -5,7 +5,7 @@ import {
 } from "../domain/project-status";
 import { z } from "zod";
 import { RigError, cancelled } from "../domain/errors";
-import { RIG_VERSION } from "../domain/version";
+import { RIG_BUILD } from "../domain/version";
 import {
   readResultSchemas,
   type DaemonAddress,
@@ -34,9 +34,9 @@ const versionSkew = (details: Record<string, unknown> | undefined) => {
     typeof details?.version === "string" ? details.version : undefined;
   return new RigError(
     "DAEMON_PROTOCOL",
-    `rig ${RIG_VERSION} sent a command that rigd ${rigd ?? "of an older version"} does not accept.`,
+    `rig ${RIG_BUILD} sent a command that rigd ${rigd ?? "of an older version"} does not accept.`,
     "Run 'rigd install' to upgrade rigd to the same version as rig.",
-    { rig: RIG_VERSION, ...(rigd ? { rigd } : {}) },
+    { rig: RIG_BUILD, ...(rigd ? { rigd } : {}) },
   );
 };
 const resultSchema = z

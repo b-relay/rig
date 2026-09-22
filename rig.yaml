@@ -36,11 +36,11 @@ targets:
 
 tools:
   rig:
-    build: bun install --frozen-lockfile && bun build --compile src/index.ts --outfile rig
+    build: bun install --frozen-lockfile && bun build --compile --define "process.env.RIG_BUILD_COMMIT=\"$(git rev-parse --short=12 HEAD 2>/dev/null || echo dev)\"" src/index.ts --outfile rig
     bin: rig
   rigd:
-    build: bun install --frozen-lockfile && bun build --compile src/rigd.ts --outfile rigd
+    build: bun install --frozen-lockfile && bun build --compile --define "process.env.RIG_BUILD_COMMIT=\"$(git rev-parse --short=12 HEAD 2>/dev/null || echo dev)\"" src/rigd.ts --outfile rigd
     bin: rigd
   git-remote-rig:
-    build: bun install --frozen-lockfile && bun build --compile src/git/remote-helper.ts --outfile git-remote-rig
+    build: bun install --frozen-lockfile && bun build --compile --define "process.env.RIG_BUILD_COMMIT=\"$(git rev-parse --short=12 HEAD 2>/dev/null || echo dev)\"" src/git/remote-helper.ts --outfile git-remote-rig
     bin: git-remote-rig

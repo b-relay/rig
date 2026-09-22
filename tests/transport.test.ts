@@ -391,7 +391,7 @@ test("status retains each observed state, source identity, and exit evidence acr
 });
 
 test("a command rigd does not accept is reported as version skew naming both versions, and health carries the daemon version", async () => {
-  const { RIG_VERSION } = await import("../src/domain/version");
+  const { RIG_BUILD } = await import("../src/domain/version");
   const server = startControlPlane({
     port: 0,
     token: "test-secret",
@@ -403,14 +403,14 @@ test("a command rigd does not accept is reported as version skew naming both ver
       port: server.port!,
       token: "test-secret",
     });
-    expect((await client.health()).version).toBe(RIG_VERSION);
+    expect((await client.health()).version).toBe(RIG_BUILD);
     await expect(
       client.command({ action: "from-the-future" } as never),
     ).rejects.toMatchObject({
       code: "DAEMON_PROTOCOL",
-      message: expect.stringContaining(`rig ${RIG_VERSION}`),
+      message: expect.stringContaining(`rig ${RIG_BUILD}`),
       hint: expect.stringContaining("rigd install"),
-      details: { rig: RIG_VERSION, rigd: RIG_VERSION },
+      details: { rig: RIG_BUILD, rigd: RIG_BUILD },
     });
   } finally {
     await server.stop(true);

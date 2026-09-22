@@ -254,7 +254,7 @@ export function TargetsTable({
                       <button
                         type="button"
                         onClick={header.column.getToggleSortingHandler()}
-                        className="inline-flex items-center gap-1 hover:text-ink"
+                        className="inline-flex items-center gap-1 uppercase hover:text-ink"
                       >
                         <table.FlexRender header={header} />
                         <SortMark direction={header.column.getIsSorted()} />

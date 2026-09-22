@@ -24,7 +24,11 @@ export interface RequestFacts {
   headers: { get(name: string): string | null };
 }
 export type Admission =
-  | { admitted: true }
+  | {
+      admitted: true;
+      /** Loopback or a trusted address, a valid session cookie, or a client about to present the key. */
+      by: "client" | "session" | "signingIn";
+    }
   | {
       admitted: false;
       status: 400 | 401 | 403 | 415;
@@ -96,9 +100,21 @@ const signature = (key: string, expires: number) =>
  * state: replacing the access key ends every session. */
 export const sessionValue = (key: string, expires: number): string =>
   `${expires}.${signature(key, expires)}`;
-/** Pure: the Set-Cookie header that signs a browser in from `now` (epoch milliseconds). */
-export const sessionCookie = (key: string, now: number): string =>
-  `${SESSION_COOKIE}=${sessionValue(key, Math.floor(now / 1000) + SESSION_SECONDS)}; Max-Age=${SESSION_SECONDS}; Path=/api; HttpOnly; Secure; SameSite=Strict`;
+/** Pure: the cookie that signs a browser in from `now` (epoch milliseconds), as a Set-Cookie
+ * header and as the attributes a framework cookie jar takes. Every page reads rigd, so it covers the whole site. */
+export function sessionCookie(key: string, now: number) {
+  const value = sessionValue(key, Math.floor(now / 1000) + SESSION_SECONDS);
+  return {
+    name: SESSION_COOKIE,
+    value,
+    maxAge: SESSION_SECONDS,
+    path: "/",
+    httpOnly: true,
+    secure: true,
+    sameSite: "strict" as const,
+    header: `${SESSION_COOKIE}=${value}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Strict`,
+  };
+}
 const sameText = (a: string, b: string): boolean => {
   const [left, right] = [Buffer.from(a), Buffer.from(b)];
   return left.length === right.length && timingSafeEqual(left, right);
@@ -141,8 +157,9 @@ const TUNNEL_HEADERS = [
   "tailscale-user-login",
   "ngrok-trace-id",
 ];
-/** Pure: decides one relay request. The server listens on loopback only, so a request without
- * X-Forwarded-For came from this machine; Caddy replaces that header with the address it saw. */
+/** Pure: decides one request. The server listens on loopback only, so a request without
+ * X-Forwarded-For came from this machine; Caddy replaces that header with the address it saw.
+ * Every page reads rigd and every Server Action drives it, so pages and actions are decided alike. */
 export function admit(
   request: RequestFacts,
   policy: AccessPolicy,
@@ -162,25 +179,25 @@ export function admit(
   const origin = request.headers.get("origin")?.toLowerCase();
   if (origin && !policy.origins.has(origin))
     return refused(403, "ORIGIN", "This browser origin is not allowed.");
+  // A link from another site opens the dashboard like a bookmark does; anything else from
+  // elsewhere (a fetch, a form, an embedded resource) is a forgery attempt.
   const site = request.headers.get("sec-fetch-site");
-  if (site && site !== "same-origin")
+  const navigation =
+    request.method === "GET" &&
+    request.headers.get("sec-fetch-mode") === "navigate";
+  if (site && site !== "same-origin" && site !== "none" && !navigation)
     return refused(
       403,
       "ORIGIN",
       "Only the dashboard's own pages may call it.",
     );
-  if (request.method === "POST") {
-    // A cross-site form cannot send JSON without a preflight this server never answers.
-    const type = request.headers.get("content-type")?.split(";")[0]?.trim();
-    if (type?.toLowerCase() !== "application/json")
-      return refused(415, "CONTENT_TYPE", "Requests must be application/json.");
-    if (!origin)
-      return refused(
-        403,
-        "ORIGIN",
-        "A browser origin is required to change anything.",
-      );
-  }
+  // A browser sends Origin with every POST, so a change without one did not come from a page.
+  if (request.method === "POST" && !origin)
+    return refused(
+      403,
+      "ORIGIN",
+      "A browser origin is required to change anything.",
+    );
   if (TUNNEL_HEADERS.some((name) => request.headers.get(name) !== null))
     return refused(
       403,
@@ -192,18 +209,16 @@ export function admit(
     ? forwarded.split(",").map((each) => each.trim())
     : [];
   if (clients.every((each) => trustedClient(each, policy.trustedClients)))
-    return { admitted: true };
+    return { admitted: true, by: "client" };
   if (!policy.accessKey)
     return refused(
       403,
       "CLIENT",
       "The dashboard is only available from this Mac or a trusted address.",
     );
-  if (
-    moment.signingIn ||
-    signedIn(request.headers.get("cookie"), policy.accessKey, moment.now)
-  )
-    return { admitted: true };
+  if (signedIn(request.headers.get("cookie"), policy.accessKey, moment.now))
+    return { admitted: true, by: "session" };
+  if (moment.signingIn) return { admitted: true, by: "signingIn" };
   return refused(401, "KEY_REQUIRED", "Sign in with this Host's access key.");
 }
 /** Pure: the policy for a site published as `publicHost` and listening on a loopback port. */

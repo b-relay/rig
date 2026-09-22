@@ -1,4 +1,4 @@
-import { ConfigError } from "./errors.js";
+import { ConfigError } from "./errors";
 
 /** A public env leaf a resolved string was built from, directly or through other leaves. */
 export interface PublicInput {

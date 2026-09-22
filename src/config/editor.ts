@@ -1,5 +1,5 @@
 import { isMap, isSeq, isScalar, isNode, visit, type Document } from "yaml";
-import { ConfigError } from "./errors.js";
+import { ConfigError } from "./errors";
 
 export type ConfigEdit =
   | { op?: "set"; path: readonly string[]; value: unknown }

@@ -1,8 +1,8 @@
 import type { z } from "zod";
-import type { projectConfigSchema, hostConfigSchema } from "./schema.js";
-import type { PublicInput } from "./references.js";
-import type { RecipeMarker } from "./recipe-markers.js";
-export type { RecipeMarker } from "./recipe-markers.js";
+import type { projectConfigSchema, hostConfigSchema } from "./schema";
+import type { PublicInput } from "./references";
+import type { RecipeMarker } from "./recipe-markers";
+export type { RecipeMarker } from "./recipe-markers";
 
 export type ProjectConfig = z.infer<typeof projectConfigSchema>;
 export type HostConfig = z.infer<typeof hostConfigSchema>;

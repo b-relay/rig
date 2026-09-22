@@ -13,7 +13,7 @@ import {
   removeAt,
   setAt,
   type Tree,
-} from "../web/dashboard/config-form";
+} from "../web/lib/config-form";
 
 const pantry = {
   name: "pantry",

@@ -18,17 +18,17 @@ import {
   visit,
 } from "yaml";
 import { acquireProcessLock, type LockHeld } from "../adapters/process-lock";
-import { ConfigError } from "./errors.js";
-import { PROJECT_SCHEMA_COMMENT } from "./json-schema.js";
-import { applyYamlEdits, type ConfigEdit } from "./editor.js";
-import { recipeMarkers, type RecipeMarker } from "./recipe-markers.js";
-export type { ConfigEdit } from "./editor.js";
+import { ConfigError } from "./errors";
+import { PROJECT_SCHEMA_COMMENT } from "./json-schema";
+import { applyYamlEdits, type ConfigEdit } from "./editor";
+import { recipeMarkers, type RecipeMarker } from "./recipe-markers";
+export type { ConfigEdit } from "./editor";
 import {
   DEFAULT_TARGET_NAMES,
   parseHostConfig,
   parseProjectConfig,
-} from "./schema.js";
-import type { ConfigDocument, HostConfig, ProjectConfig } from "./types.js";
+} from "./schema";
+import type { ConfigDocument, HostConfig, ProjectConfig } from "./types";
 const revisionOf = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 const missing = (error: unknown): boolean =>

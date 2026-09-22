@@ -1,5 +1,5 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { ConfigError } from "./errors.js";
+import { ConfigError } from "./errors";
 import {
   durationSeconds,
   parseProjectConfig,
@@ -10,8 +10,8 @@ import {
   localhostHealth,
   isHealthUrl,
   validHostname,
-} from "./schema.js";
-import { referenceResolver, type PublicInput } from "./references.js";
+} from "./schema";
+import { referenceResolver, type PublicInput } from "./references";
 import type {
   BuildUnit,
   EnvFileRef,
@@ -22,7 +22,7 @@ import type {
   ResolveHost,
   ResolveTargetPlanInput,
   TargetPlan,
-} from "./types.js";
+} from "./types";
 type Service = NonNullable<ProjectConfig["services"]>[string];
 
 /** Orders every Component once; dependency validity/cycles are checked by Project validation. */

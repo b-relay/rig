@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { ConfigError } from "./errors.js";
+import { ConfigError } from "./errors";
 import {
   DEFAULT_TARGET_NAMES,
   hostConfigSchema,
   projectConfigSchema,
-} from "./schema.js";
+} from "./schema";
 
 /** Where the committed schema files are served from; an editor fetches them by this address. */
 const SCHEMA_BASE =

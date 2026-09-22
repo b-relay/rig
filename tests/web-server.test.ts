@@ -9,7 +9,6 @@ import {
   parseTrustedClients,
   trustedClient,
 } from "../web/server/guard";
-import { createRelay } from "../web/server/relay";
 import { sandboxDaemon } from "../web/server/sandbox";
 import { downCommands, seedSandbox, seedSteps } from "../web/server/seed";
 
@@ -33,13 +32,14 @@ const post = (headers: Record<string, string>) =>
 test("the site's own page is admitted under its published name and on loopback", () => {
   expect(admit(post({ "x-forwarded-for": "127.0.0.1" }), policy)).toEqual({
     admitted: true,
+    by: "client",
   });
   expect(
     admit(
       post({ host: "127.0.0.1:4100", origin: "http://127.0.0.1:4100" }),
       policy,
     ),
-  ).toEqual({ admitted: true });
+  ).toEqual({ admitted: true, by: "client" });
   expect(
     admit(request("GET", { host: "localhost:4100" }), policy).admitted,
   ).toBe(true);
@@ -64,20 +64,29 @@ test("a foreign host name, origin, or fetch site is refused", () => {
   ).toMatchObject({ code: "ORIGIN" });
 });
 
-test("a change needs a JSON body and a browser origin", () => {
-  expect(admit(post({ "content-type": "text/plain" }), policy)).toMatchObject({
-    status: 415,
-    code: "CONTENT_TYPE",
-  });
+test("a change needs a browser origin; a link from elsewhere opens a page but calls nothing", () => {
   expect(
-    admit(post({ "content-type": "application/json; charset=utf-8" }), policy)
-      .admitted,
-  ).toBe(true);
+    admit(request("POST", { host: "rig.b-relay.com" }), policy),
+  ).toMatchObject({ code: "ORIGIN" });
+  const page = (headers: Record<string, string>) =>
+    request("GET", {
+      host: "rig.b-relay.com",
+      "sec-fetch-site": "cross-site",
+      ...headers,
+    });
+  expect(admit(page({ "sec-fetch-mode": "navigate" }), policy).admitted).toBe(
+    true,
+  );
+  expect(admit(page({ "sec-fetch-mode": "cors" }), policy)).toMatchObject({
+    code: "ORIGIN",
+  });
   expect(
     admit(
       request("POST", {
         host: "rig.b-relay.com",
-        "content-type": "application/json",
+        origin: "https://rig.b-relay.com",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
       }),
       policy,
     ),
@@ -106,70 +115,6 @@ test("only loopback and trusted client addresses pass, and every forwarded hop m
   expect(trustedClient("not-an-ip", parseTrustedClients("10.0.0.0/8"))).toBe(
     false,
   );
-});
-
-test("the relay forwards to the discovered rigd with the credential and answers rigd's own status and body", async () => {
-  const sent: { url: string; init: RequestInit }[] = [];
-  const relay = createRelay({
-    address: async () => ({ port: 5123, token: "host-secret" }),
-    send: async (url, init) => {
-      sent.push({ url, init });
-      return Response.json(
-        { error: { code: "TARGETS_RUNNING", message: "Running." } },
-        { status: 422 },
-      );
-    },
-  });
-  const answer = await relay("/api/command", '{"action":"forget"}');
-  expect(sent[0]!.url).toBe("http://127.0.0.1:5123/v1/command");
-  expect(sent[0]!.init.method).toBe("POST");
-  expect(sent[0]!.init.body).toBe('{"action":"forget"}');
-  expect((sent[0]!.init.headers as Record<string, string>).authorization).toBe(
-    "Bearer host-secret",
-  );
-  expect(answer.status).toBe(422);
-  const text = await answer.text();
-  expect(JSON.parse(text).error.code).toBe("TARGETS_RUNNING");
-  expect(text).not.toContain("host-secret");
-  await relay("/api/health", undefined);
-  expect(sent[1]!.url).toBe("http://127.0.0.1:5123/health");
-  expect(sent[1]!.init.method).toBe("GET");
-  expect(sent[1]!.init.body).toBeUndefined();
-  const abandoned = new AbortController();
-  await relay("/api/health", undefined, abandoned.signal);
-  expect(sent[2]!.init.signal).toBe(abandoned.signal);
-});
-
-test("a missing or unreachable rigd is a 503 with the reason rig would give", async () => {
-  const missing = createRelay({
-    address: async () => {
-      throw Object.assign(new Error("rigd is not installed or reachable."), {
-        code: "DAEMON_MISSING",
-        hint: "Run rigd install to start the daemon.",
-      });
-    },
-    send: async () => {
-      throw new Error("not reached");
-    },
-  });
-  const first = await missing("/api/health", undefined);
-  expect(first.status).toBe(503);
-  expect(await first.json()).toEqual({
-    error: {
-      code: "DAEMON_MISSING",
-      message: "rigd is not installed or reachable.",
-      hint: "Run rigd install to start the daemon.",
-    },
-  });
-  const refused = createRelay({
-    address: async () => ({ port: 1, token: "t" }),
-    send: async () => {
-      throw new TypeError("connection refused");
-    },
-  });
-  const second = await refused("/api/command", "{}");
-  expect(second.status).toBe(503);
-  expect((await second.json()).error.code).toBe("DAEMON_UNREACHABLE");
 });
 
 test("a malformed trusted-client entry stops the server instead of widening access", () => {
@@ -244,7 +189,7 @@ test("a sandboxed Preview relays, since it only reaches its own rigd", () => {
       }),
       sandboxed,
     ),
-  ).toEqual({ admitted: true });
+  ).toEqual({ admitted: true, by: "client" });
   // Sandboxing lifts only the Preview rule; strangers are still refused.
   expect(
     admit(
@@ -363,6 +308,7 @@ test("a client beyond the trusted addresses signs in with the access key", () =>
   // Presenting the key is allowed from anywhere, but still only from the site's own page.
   expect(admit(post(stranger), keyed, { now, signingIn: true })).toEqual({
     admitted: true,
+    by: "signingIn",
   });
   expect(
     admit(post({ ...stranger, origin: "https://evil.test" }), keyed, {
@@ -373,11 +319,12 @@ test("a client beyond the trusted addresses signs in with the access key", () =>
   const cookie = `other=1; rig_session=${sessionValue(keyed.accessKey!, now / 1000 + 60)}`;
   expect(admit(post({ ...stranger, cookie }), keyed, { now })).toEqual({
     admitted: true,
+    by: "session",
   });
   // Loopback needs no key, and a tunnel is refused even with a session.
   expect(
     admit(post({ "x-forwarded-for": "127.0.0.1" }), keyed, { now }),
-  ).toEqual({ admitted: true });
+  ).toEqual({ admitted: true, by: "client" });
   expect(
     admit(post({ ...stranger, cookie, "cf-ray": "1" }), keyed, { now }),
   ).toMatchObject({ code: "CLIENT" });
@@ -438,15 +385,25 @@ test("a session is refused once expired, forged, or signed with a replaced key",
 
 test("a sign-in cookie lasts 400 days from its issue and is renewable", () => {
   const now = 1_800_000_000_000;
-  const header = sessionCookie("key-a", now);
-  const value = header.split(";")[0]!;
+  const cookie = sessionCookie("key-a", now);
+  const { header } = cookie;
+  const value = `${cookie.name}=${cookie.value}`;
   const days = (count: number) => count * 24 * 60 * 60 * 1000;
   expect(signedIn(value, "key-a", now + days(399))).toBe(true);
   expect(signedIn(value, "key-a", now + days(401))).toBe(false);
   expect(signedIn(value, "key-b", now)).toBe(false);
   expect(header).toContain("Max-Age=34560000");
-  expect(header).toContain("HttpOnly; Secure; SameSite=Strict");
+  expect(header).toContain("Path=/; HttpOnly; Secure; SameSite=Strict");
+  expect(cookie).toMatchObject({
+    name: "rig_session",
+    maxAge: 34_560_000,
+    path: "/",
+    httpOnly: true,
+    secure: true,
+    sameSite: "strict",
+  });
   // A visit on day 399 issues a cookie that outlives the first.
-  const renewed = sessionCookie("key-a", now + days(399)).split(";")[0]!;
+  const later = sessionCookie("key-a", now + days(399));
+  const renewed = `${later.name}=${later.value}`;
   expect(signedIn(renewed, "key-a", now + days(700))).toBe(true);
 });

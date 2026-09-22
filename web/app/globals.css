@@ -1,0 +1,172 @@
+@import "tailwindcss";
+
+/* Paper, ink, and one blue: a quiet neutral ground so the only colour on the page is the
+   state of things. The shadcn tokens below are aliases of the same few colours, so every
+   control shares the palette. */
+:root {
+  color-scheme: light dark;
+  --steel: light-dark(#f4f4f1, #121312);
+  --sheet: light-dark(#ffffff, #1a1b1a);
+  --rule: light-dark(#e4e4df, #2b2c2a);
+  --ink: light-dark(#1c1c1a, #ebebe7);
+  --muted-ink: light-dark(#6b6b66, #9a9a93);
+  --link: light-dark(#2251c9, #86a8ff);
+  --hazard: light-dark(#fdf0dc, #33260f);
+  --on-hazard: light-dark(#8a4b06, #f0a848);
+  --deck: var(--sheet);
+  --on-deck: var(--ink);
+  --deck-muted: var(--muted-ink);
+  /* Terminal-like panes (logs, config) stay dark in both schemes. */
+  --pane: #15171b;
+  --on-pane: #e6e8eb;
+  --pane-muted: #8b929b;
+  --pane-accent: #86a8ff;
+  --pane-warn: #f0a848;
+  --good: light-dark(#1a7f4b, #4ccb7f);
+  --warn: light-dark(#b25e09, #f0a848);
+  --bad: light-dark(#c8302e, #ff7a76);
+  --busy: var(--link);
+  --good-fill: light-dark(#e6f4ec, #14301f);
+  --warn-fill: light-dark(#fdf0dc, #33260f);
+  --bad-fill: light-dark(#fbe6e5, #3b1c1c);
+
+  --radius: 0.25rem;
+  --background: var(--steel);
+  --foreground: var(--ink);
+  --card: var(--sheet);
+  --card-foreground: var(--ink);
+  --popover: var(--sheet);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--sheet);
+  --secondary: var(--steel);
+  --secondary-foreground: var(--ink);
+  --muted: var(--steel);
+  --muted-foreground: var(--muted-ink);
+  --accent: var(--steel);
+  --accent-foreground: var(--ink);
+  --destructive: var(--bad);
+  --border: var(--rule);
+  --input: var(--rule);
+  --ring: var(--link);
+}
+@theme inline {
+  --font-sans: var(--font-archivo), "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-martian), ui-monospace, Menlo, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-steel: var(--steel);
+  --color-sheet: var(--sheet);
+  --color-rule: var(--rule);
+  --color-ink: var(--ink);
+  --color-muted-ink: var(--muted-ink);
+  --color-link: var(--link);
+  --color-hazard: var(--hazard);
+  --color-on-hazard: var(--on-hazard);
+  --color-deck: var(--deck);
+  --color-on-deck: var(--on-deck);
+  --color-deck-muted: var(--deck-muted);
+  --color-pane: var(--pane);
+  --color-on-pane: var(--on-pane);
+  --color-pane-muted: var(--pane-muted);
+  --color-pane-accent: var(--pane-accent);
+  --color-pane-warn: var(--pane-warn);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-busy: var(--busy);
+  --color-good-fill: var(--good-fill);
+  --color-warn-fill: var(--warn-fill);
+  --color-bad-fill: var(--bad-fill);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-variation-settings: "wdth" 100;
+  }
+  a {
+    color: var(--link);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+  }
+  :focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: 2px;
+  }
+  code,
+  kbd,
+  pre {
+    @apply font-mono;
+    font-size: 0.82em;
+  }
+  h1,
+  h2,
+  h3 {
+    font-weight: 600;
+    font-variation-settings: "wdth" 112;
+    letter-spacing: -0.005em;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+@layer components {
+  .wordmark {
+    font-weight: 700;
+    font-variation-settings: "wdth" 125;
+    letter-spacing: 0.02em;
+  }
+  /* A wide-set title, like the stamping on a shackle. */
+  .title {
+    font-weight: 600;
+    font-variation-settings: "wdth" 112;
+  }
+  .ruled > * + * {
+    border-top: 1px solid var(--rule);
+  }
+  /* The one hazard mark: an amber tag for the row that serves this very page. */
+  .hazard-tag {
+    background: var(--hazard);
+    color: var(--on-hazard);
+    border-radius: 2px;
+    padding: 0 0.35em;
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+  .busy-dot {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+}

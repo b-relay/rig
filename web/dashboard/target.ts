@@ -11,3 +11,6 @@ export function targetSelector(
 /** The inverse for a `<select>`: one string per Target. */
 export const targetKey = (target: Pick<TargetReport, "kind" | "name">) =>
   `${target.kind}:${target.name}`;
+/** A route as rigd records it is a bare host name; a link needs the scheme Caddy serves it on. */
+export const routeUrl = (route: string): string =>
+  /^https?:\/\//.test(route) ? route : `https://${route}`;

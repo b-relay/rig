@@ -76,7 +76,7 @@ test("daemon administration uses observed state and never reveals private paths"
 });
 
 test("rigd --version prints the version without touching the daemon", async () => {
-  const { RIG_VERSION } = await import("../domain/version");
+  const { RIG_BUILD } = await import("../domain/version");
   let text = "";
   let calls = 0;
   const count = async () => {
@@ -101,7 +101,7 @@ test("rigd --version prints the version without touching the daemon", async () =
     },
   });
   expect(code).toBe(0);
-  expect(text.trim()).toBe(RIG_VERSION);
+  expect(text.trim()).toBe(RIG_BUILD);
   expect(calls).toBe(0);
 });
 

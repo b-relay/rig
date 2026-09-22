@@ -19,7 +19,7 @@ import {
   readDaemonToken,
 } from "./files";
 import { RigError } from "../domain/errors";
-import { RIG_VERSION } from "../domain/version";
+import { RIG_BUILD } from "../domain/version";
 import { processExists } from "./host";
 import { recordedProcess, type ProcessRecord } from "./process-identity";
 import { clearStartupFailure, readStartupFailure } from "./startup-failure";
@@ -147,9 +147,9 @@ export class DaemonAdmin {
     ) => {
       // A serving daemon of another version is the one thing `rigd install` can change here.
       const skew =
-        serving && serving.version !== RIG_VERSION
+        serving && serving.version !== RIG_BUILD
           ? [
-              `rigd ${serving.version ?? "of an older version"} is serving, but this rigd is ${RIG_VERSION}; run rigd install to upgrade the daemon.`,
+              `rigd ${serving.version ?? "of an older version"} is serving, but this rigd is ${RIG_BUILD}; run rigd install to upgrade the daemon.`,
             ]
           : [];
       const all = [
@@ -263,7 +263,7 @@ export class DaemonAdmin {
       JSON.stringify({
         mode: this.options.mode,
         command: this.options.command,
-        version: RIG_VERSION,
+        version: RIG_BUILD,
       }),
       { mode: 0o600 },
     );
@@ -344,8 +344,8 @@ export class DaemonAdmin {
         : undefined;
       const current =
         recorded !== undefined &&
-        recorded.version === RIG_VERSION &&
-        serving.version === RIG_VERSION &&
+        recorded.version === RIG_BUILD &&
+        serving.version === RIG_BUILD &&
         (recorded.command ?? []).join("\0") === this.options.command.join("\0");
       if (current) return { ...prior, outcome: "unchanged" };
       if (recorded === undefined) {

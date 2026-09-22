@@ -13,11 +13,8 @@ import type {
   PrunedCheckpoint,
   TargetEffectCheckpoint,
 } from "../runtime/lifecycle";
-import {
-  artifactRevision,
-  atomicFile,
-  createArtifactOwnership,
-} from "./artifact-ownership";
+import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
+import { fileDigest } from "./file-digest";
 import type { ArtifactIdentity } from "./artifact-ownership";
 const routeSchema = z
   .object({
@@ -284,9 +281,8 @@ export function createEffectTransactions(options: {
         );
       if (
         file.before !== null &&
-        (await artifactRevision(
-          join(directory(journal.targetId), file.backup),
-        )) !== file.before
+        (await fileDigest(join(directory(journal.targetId), file.backup))) !==
+          file.before
       )
         throw new RigError(
           "EFFECTS_CHECKPOINT",
@@ -299,7 +295,7 @@ export function createEffectTransactions(options: {
     for (const file of journal.files)
       if (
         !file.applying &&
-        ((await artifactRevision(file.path)) ?? null) !== file.expected
+        ((await fileDigest(file.path)) ?? null) !== file.expected
       )
         throw new RigError(
           "EFFECTS_CHANGED",
@@ -382,7 +378,7 @@ export function createEffectTransactions(options: {
           ),
         ];
         for (const path of paths) {
-          const before = (await artifactRevision(path)) ?? null,
+          const before = (await fileDigest(path)) ?? null,
             backup = `${journal.files.length}.backup`,
             mode = before === null ? 0o600 : (await lstat(path)).mode & 0o777;
           if (before !== null)
@@ -442,7 +438,7 @@ export function createEffectTransactions(options: {
         await change();
       } finally {
         for (const file of files) {
-          file.expected = (await artifactRevision(file.path)) ?? null;
+          file.expected = (await fileDigest(file.path)) ?? null;
           delete file.applying;
         }
         await save(journal);
@@ -474,7 +470,7 @@ export function createEffectTransactions(options: {
       for (const file of journal.files)
         if (
           !file.applying &&
-          ((await artifactRevision(file.path)) ?? null) !== file.expected
+          ((await fileDigest(file.path)) ?? null) !== file.expected
         )
           throw new RigError(
             "EFFECTS_CHANGED",

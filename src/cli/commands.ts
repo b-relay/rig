@@ -8,7 +8,7 @@ import {
 import { RigError } from "../domain/errors";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
-import { RIG_VERSION } from "../domain/version";
+import { RIG_BUILD } from "../domain/version";
 import type { UserOutput } from "./types";
 import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
 import { addRecipeCommands } from "./recipe-commands";
@@ -173,7 +173,7 @@ function subcommand(command: Command, name: string): Command | undefined {
 }
 export function terminalCommand(name: string, output: UserOutput): Command {
   return new Command(name)
-    .version(RIG_VERSION, "-V, --version", "Print the version.")
+    .version(RIG_BUILD, "-V, --version", "Print the version.")
     .exitOverride()
     .configureOutput({
       writeOut: (text) => output.write(text),

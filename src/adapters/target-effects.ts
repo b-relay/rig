@@ -10,7 +10,6 @@ import {
   rm,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { createReadStream } from "node:fs";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import type {
@@ -54,6 +53,7 @@ function failureReason(error: unknown): string {
 import type { ObservationEffects } from "../runtime/status";
 import { RigError, failureCauses } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
+import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
 import { appendTargetLog } from "../providers/target-log";
 export interface TargetAdapterOptions {
@@ -88,7 +88,9 @@ const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 export function createTargetEffects(
   options: TargetAdapterOptions,
 ): TargetEffects & { observations: ObservationEffects } {
-  const ownership = createArtifactOwnership(options.root);
+  // Status hashes every installed Tool inside one short budget; remembering digests keeps that under it.
+  const digestFile = rememberedDigests();
+  const ownership = createArtifactOwnership(options.root, digestFile);
   const transactions = createEffectTransactions({
     root: options.root,
     ownership,
@@ -550,7 +552,8 @@ export function createTargetEffects(
         (await digestFile(destination)) === receipt.installedRevision;
       const unchanged = async () =>
         published &&
-        (await installedSourceRevision(source)) === receipt!.sourceRevision;
+        (await installedSourceRevision(source, digestFile)) ===
+          receipt!.sourceRevision;
       if (await unchanged()) return { outcome: "unchanged" };
       await transactions.withArtifactChange(
         target.id,
@@ -566,7 +569,10 @@ export function createTargetEffects(
           });
           await writeInstallReceipt(receiptFile, {
             key,
-            sourceRevision: (await installedSourceRevision(source))!,
+            sourceRevision: (await installedSourceRevision(
+              source,
+              digestFile,
+            ))!,
             installedRevision: (await digestFile(destination))!,
           });
         },
@@ -652,6 +658,7 @@ export function createTargetEffects(
             receipt.sourceRevision !==
               (await installedSourceRevision(
                 resolve(target.plan.workspacePath, component.entrypoint),
+                digestFile,
               ))
           )
             return "unknown";
@@ -706,16 +713,6 @@ async function writeInstallReceipt(
 ): Promise<void> {
   await atomicFile(path, JSON.stringify(receipt));
 }
-async function digestFile(path: string): Promise<string | undefined> {
-  try {
-    const digest = createHash("sha256");
-    for await (const chunk of createReadStream(path)) digest.update(chunk);
-    return digest.digest("hex");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
 
 /** Keys a publication receipt on the public policy the Project declares: its public env and which env files it names, never their contents,
  * so a secret never reaches a receipt and a changed operator file does not republish a Tool. The baseline (PATH, HOME, ...) is
@@ -739,6 +736,7 @@ function installationPolicyKey(
 }
 async function installedSourceRevision(
   source: string,
+  digestFile: FileDigest,
 ): Promise<string | undefined> {
   return isSourceEntrypoint(source)
     ? (await exists(source))

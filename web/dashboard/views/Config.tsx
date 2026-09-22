@@ -107,14 +107,16 @@ export function Config({ project }: { project: string }) {
   const [reviewing, setReviewing] = useState(false);
   const [rebased, setRebased] = useState(false);
   const original = source.data?.config;
-  // A fresh read replaces the draft, so a reload after apply shows what rigd wrote; after a
-  // revision conflict the outstanding edits are replayed onto the newer file instead.
+  const revision = source.data?.revision;
+  // A read of another revision replaces the draft, so a reload after apply shows what rigd wrote;
+  // after a revision conflict the outstanding edits are replayed onto the newer file instead. The
+  // first real read after a page load repeats the remembered revision and leaves the draft alone.
   const pendingEdits = useRef<ConfigPatch[] | undefined>(undefined);
   useEffect(() => {
     if (isTree(original))
       setTree(applyPatch(original, pendingEdits.current ?? []));
     pendingEdits.current = undefined;
-  }, [original]);
+  }, [revision]);
   const patch = useMemo(
     () => (isTree(original) ? configPatch(original, tree) : []),
     [original, tree],

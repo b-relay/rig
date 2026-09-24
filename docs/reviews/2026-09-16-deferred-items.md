@@ -18,7 +18,7 @@ How to read the entries:
   item was handed to that issue; its state is given in parentheses.
 
 Open issues at the time of writing: #114 only (the config redesign; a design
-project, not a defect). The pre-#115 issues (#2 through #113) are the earlier
+project, not a defect; closed as completed on 2026-09-21). The pre-#115 issues (#2 through #113) are the earlier
 v2 rewrite, its review threads, and the PRD parent; their closing comments
 carry no product items that are still outstanding, and the parent (#2) records
 every child as handled.
@@ -80,7 +80,7 @@ every child as handled.
 | #154   | A same-Commit deploy without `--force` returns `unchanged` even when host config changes would alter the plan; doctor does not mention when the working copy's config differs from the deployed revision's.                                              | Comparing the resolved plan needs a prepared checkout.                                          | open                                |
 | #155   | `up` does not refuse or warn on an incomplete deployment; it completes it. `down --destroy` on a failed Preview deploy is an ordinary cleanup path.                                                                                                      | Alternative the issue offered.                                                                  | open (by design)                    |
 | #161   | Which worktree was pushed from is not recorded; `rig status`/`rig up` from a worktree whose checkout contains `rig.yaml` still select by config discovery and report `PROJECT_PATH_CONFLICT` (pass `--project`).                                         | Config discovery, not Git discovery.                                                            | open                                |
-| #162   | Resolution does not compose `subdomain` with a bare `domain`.                                                                                                                                                                                            | Left to the config redesign.                                                                    | see #114 (open)                     |
+| #162   | Resolution does not compose `subdomain` with a bare `domain`.                                                                                                                                                                                            | Left to the config redesign.                                                                    | see #114 (closed); still open       |
 | #163   | No way to remove a shared hook from one lane (empty string still runs `sh -c ''`).                                                                                                                                                                       | Needs an explicit null/disable form.                                                            | open                                |
 | #172   | The config resolver does not check the `envFile` existence up front for `local`; the failure comes from the first command that needs it.                                                                                                                 | Path may be anywhere for `local`.                                                               | open                                |
 | #175   | Repoint skipping the reservation check.                                                                                                                                                                                                                  | Handed to #152.                                                                                 | see #152 (closed, fixed in 4315e25) |
@@ -217,4 +217,4 @@ comment; the items that are still true of the code are listed here.
 - **Doctor blind spots:** lock file (#130), pending checkpoint (#151), reclaimable revisions (#153), over-cap Previews (#123), Caddy reachability and supervisors (#203), Caddy admin API reload state (#222), retired components (#201), working-copy vs deployed config (#154).
 - **Configurable timing:** daemon read deadline (#127, #204), launchd poll cadence (#144, #227), launchd stop budget (#218), per-hook budgets (#197), `initdb`/health budgets (#197), `monitorRuntimeFailures` (#234).
 - **Reads outside the mutation queue:** #186, #210, #213.
-- **Config redesign dependencies (#114):** subdomain/domain composition (#162), restart-mode semantics (#120), hook disable form (#163).
+- **Config redesign dependencies (#114, now closed; these items remain open):** subdomain/domain composition (#162), restart-mode semantics (#120), hook disable form (#163).

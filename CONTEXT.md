@@ -714,6 +714,35 @@ A Service's policy for revival after it exits, distinct from an explicit
 Restart or start request.
 _Avoid_: once-per-deploy job, absence of supervision
 
+### Down (Stable Target)
+
+A Stable Target meant to run that is not serving: one of its Services failed,
+used up its automatic restarts, never gets past starting, or fails its
+readiness check, or its route is unpublished.
+_Avoid_: outage for a single Service, crashed
+
+_Relationship_: A Stable Target that an operator stopped with `rig down` is
+stopped, not down. A deploy that is still moving the Target decides nothing.
+
+_Relationship_: `rigd` counts downtime for Stable Targets only. `rig doctor`
+and `rigd status` show how long each has been down.
+
+### Operator alert
+
+A message from `rigd` to a person about Stable Targets that are down: a down
+alert once they have been down for the grace period (5 minutes), a reminder
+every 6 hours while any stays down, and one closing message when each is no
+longer down.
+_Avoid_: notification (that is one channel), alarm, page
+
+_Relationship_: Stable Targets that go down together are one event and get one
+alert, and that event is one entry in the Activity log.
+
+_Relationship_: `OperatorAlerts` is the capability; each channel (a macOS
+notification today, push channels later) is a provider selected from the Host
+config. A failed delivery is recorded and never changes a lifecycle
+Operation's outcome.
+
 ### Logs
 
 Runtime output for a Target.

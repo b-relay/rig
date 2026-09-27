@@ -210,9 +210,14 @@ _Avoid_: lane when speaking about the user-facing CLI
 A named Project capability within a Target: a Service (managed) or a Tool
 (installed). A database is an ordinary Service.
 
-_Relationship_: Services are healthy, unhealthy, running, starting, stopped, or
-failed. Tools are installed or missing. Either may be `configured` (not yet
-recorded) or `unknown`.
+_Relationship_: Services are healthy, unhealthy, running, starting, stopping,
+stopped, or failed. Tools are installed or missing. Either may be `configured`
+(not yet recorded) or `unknown`.
+
+_Relationship_: A Service is `stopping` while an Operation waits for it to exit
+after its stop signal. Its **stop grace** (`stop_timeout`, default 10 s) is how
+long it may take before Rig ends it with SIGKILL; a `--kill` cuts the grace to
+the kill wait.
 
 _Relationship_: `healthy` means a configured health check passed. A managed
 component without a configured health check may be `running`, but should not be

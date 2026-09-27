@@ -405,8 +405,9 @@ async function superviseService(
     }
   }
   const journal = activationJournal(target, budget, deps);
+  let started: Awaited<ReturnType<Deps["lifecycle"]["recover"]>>;
   try {
-    await deps.lifecycle.recover(target, service, journal);
+    started = await deps.lifecycle.recover(target, service, journal);
   } catch (error) {
     const current = currentRun(target, service)!;
     const refusedBeforeStart = current.incarnation === run.incarnation;
@@ -438,6 +439,17 @@ async function superviseService(
       },
     );
     return await superviseService(target, component, deps, scope);
+  }
+  if (started.outcome === "unchanged") {
+    // It was found running, started by something else: nothing was spent, and nothing of the ended process stays scheduled.
+    const {
+      retryAt: _retryAt,
+      waitingFor: _waitingFor,
+      outcome: _outcome,
+      ...rest
+    } = currentRun(target, service)!;
+    await saveRun(target, service, rest, deps);
+    return undefined;
   }
   const attempts = spentAttempts(currentRun(target, service)!, budget).length;
   await deps.store.update((state) =>

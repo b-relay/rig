@@ -41,6 +41,22 @@ describe("launchd's record of a job, read from real launchctl print output", () 
       expect(parseLaunchdJobExit(await fixture(name))).toEqual(expected);
     });
 
+  test("a sysexits code launchd names after its number reads as that code", async () => {
+    // Real launchd prints `last exit code = 78: EX_CONFIG` and `64: EX_USAGE`, but a plain number for 1, 126 or 255.
+    for (const [line, exitCode] of [
+      ["78: EX_CONFIG", 78],
+      ["64: EX_USAGE", 64],
+    ] as const)
+      expect(
+        parseLaunchdJobExit(
+          (await fixture("exited-3.txt")).replace(
+            "\tlast exit code = 3\n",
+            `\tlast exit code = ${line}\n`,
+          ),
+        ),
+      ).toEqual({ exitCode });
+  });
+
   test("a nested line that looks like an end, such as an environment entry, is never read as one", async () => {
     const printed = (await fixture("never-exited.txt")).replace(
       "\tenvironment = {\n",
@@ -348,16 +364,32 @@ for (const [name, witness] of [
           code: expect.stringMatching(/UNKNOWN$/),
         });
         expect(alive(application)).toBe(true);
-        // Once it is gone, the wrapper's SIGKILL is what remains.
+        // A stop releases what it owns but neither signals the survivor nor forgets it: a start is still refused.
+        await supervisor.stop(req.key);
+        expect(alive(application)).toBe(true);
+        expect(await supervisor.observe(req.key)).toMatchObject({
+          state: "unknown",
+        });
+        await expect(
+          supervisor.ensureRunning({ ...req, incarnation: "start-3" }),
+        ).rejects.toMatchObject({
+          code: expect.stringMatching(/UNKNOWN$/),
+        });
+        // Once it is gone the Service reads as stopped. rigd still has its record of the wrapper's SIGKILL; launchd's
+        // record left with the job the stop booted out.
         process.kill(application, "SIGKILL");
         expect(
           await until(supervisor, req.key, (o) => o.state === "stopped"),
-        ).toEqual({
-          state: "stopped",
-          signal: "SIGKILL",
-          incarnation: "start-1",
-          recordedBy: witness,
-        });
+        ).toEqual(
+          witness === "rigd"
+            ? {
+                state: "stopped",
+                signal: "SIGKILL",
+                incarnation: "start-1",
+                recordedBy: "rigd",
+              }
+            : { state: "stopped" },
+        );
       } finally {
         if ("cleanup" in w) await w.cleanup();
       }

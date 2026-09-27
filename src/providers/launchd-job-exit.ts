@@ -5,9 +5,10 @@ export type LaunchdJobExit =
   { readonly exitCode: number } | { readonly signal: string };
 
 /** The last run's end in `launchctl print gui/<uid>/<label>` output, or nothing when the job never exited or the output
- * names no end. launchd prints `last exit code = <n>` after an exit, `last terminating signal = <description>: <n>`
- * after a signal, and `last exit code = (never exited)` while it has not ended; only top-level job lines count, so an
- * environment value that looks like one is never read as evidence. */
+ * names no end. launchd prints `last exit code = <n>` after an exit (`<n>: <name>` for a sysexits code such as
+ * `78: EX_CONFIG`), `last terminating signal = <description>: <n>` after a signal, and `last exit code = (never exited)`
+ * while it has not ended; only top-level job lines count, so an environment value that looks like one is never read as
+ * evidence. */
 export function parseLaunchdJobExit(
   printed: string,
 ): LaunchdJobExit | undefined {
@@ -16,7 +17,7 @@ export function parseLaunchdJobExit(
     const name = signalName(Number(signal[1]));
     return name === undefined ? undefined : { signal: name };
   }
-  const code = printed.match(/^\tlast exit code = (-?\d+)$/m);
+  const code = printed.match(/^\tlast exit code = (-?\d+)(?:: \S.*)?$/m);
   return code ? { exitCode: Number(code[1]) } : undefined;
 }
 

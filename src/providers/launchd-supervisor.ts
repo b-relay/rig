@@ -89,14 +89,19 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       );
     return result;
   };
-  /** Every file this supervisor writes for a job: plist, request, and the wrapper's status and observation evidence. */
+  /** Every file this supervisor writes for a job: plist, request, and the wrapper's status and observation evidence. The
+   * observation stays while the application it names outlives its wrapper (or cannot be shown not to), so that application
+   * keeps reading as `unknown` and no start is made beside it after the job is gone. */
   const removeJobFiles = async (key: string) => {
     const requestPath = join(options.root, `${label(key)}.json`);
+    const survivor =
+      options.captureCommand &&
+      (await survivingApplication({ requestPath, inspect }));
     for (const file of [
       join(options.root, `${label(key)}.plist`),
       requestPath,
       `${requestPath}.status.json`,
-      `${requestPath}.observation.json`,
+      ...(survivor ? [] : [`${requestPath}.observation.json`]),
     ])
       await rm(file, { force: true });
     await removeExitRecord(options.root, key);
@@ -191,6 +196,19 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           "Resolve launchd access before starting it.",
           { key: request.key },
         );
+      // The ended job leaves launchd before the new request names this start, so launchd's record of the earlier wrapper is
+      // never read as this start's end.
+      const existing = await run({
+        command: ["launchctl", "print", service(request.key)],
+        timeoutMs: 2000,
+      });
+      try {
+        if (existing.exitCode === 0)
+          await checked(["bootout", service(request.key)], request.key);
+      } catch (error) {
+        await removeJobFiles(request.key);
+        throw error;
+      }
       // A record left by an earlier start must not explain the end of this one.
       await removeExitRecord(options.root, request.key);
       await mkdir(options.root, { recursive: true });
@@ -207,13 +225,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       await writeFile(plist, launchdPlist({ ...request, command }, jobLabel), {
         mode: 0o600,
       });
-      const existing = await run({
-        command: ["launchctl", "print", service(request.key)],
-        timeoutMs: 2000,
-      });
       try {
-        if (existing.exitCode === 0)
-          await checked(["bootout", service(request.key)], request.key);
         await checked(["bootstrap", options.domain, plist], request.key);
       } catch (error) {
         await removeJobFiles(request.key);

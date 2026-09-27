@@ -187,3 +187,40 @@ for (const late of ["resolution", "rejection"] as const) {
     expect(state.targets[0]!.services!.web!.outcome).toBeUndefined();
   });
 }
+
+test("an automatic attempt that finds the Service already running spends nothing, claims no restart, and leaves nothing of the ended process scheduled", async () => {
+  const { state, store } = fixture();
+  (state.targets[0]!.plan.components[0] as { restart: string }).restart =
+    "always";
+  let id = 0;
+  const deps = {
+    store,
+    now: () => "2026-09-09T10:01:00Z",
+    id: () => `id${++id}`,
+    lifecycle: {
+      async recover() {
+        return { outcome: "unchanged" as const };
+      },
+    } as never,
+    observations: {
+      process: async () =>
+        ({ state: "stopped", incarnation: "i1", exitCode: 1 }) as const,
+      listening: async () => [],
+    } as never,
+    observationBudgetMs: 2000,
+    observationDeadline: timerObservationDeadline,
+    async diagnostic() {},
+  };
+  // The first pass records the exit and schedules the attempt; the pass at its due time makes it.
+  const due = await superviseTarget((await store.read()).targets[0]!, deps);
+  expect(due).toBe(Date.parse("2026-09-09T10:01:00Z") + 100);
+  await superviseTarget((await store.read()).targets[0]!, {
+    ...deps,
+    now: () => new Date(due!).toISOString(),
+  });
+  const web = state.targets[0]!.services!.web!;
+  expect(web.outcome).toBeUndefined();
+  expect(web.retryAt).toBeUndefined();
+  expect(web.attempts).toEqual([]);
+  expect(state.activity.map((entry) => entry.action)).toEqual(["crash"]);
+});

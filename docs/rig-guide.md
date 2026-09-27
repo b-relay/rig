@@ -1102,33 +1102,57 @@ bootstrap removes them too.
 `rigd` decides whether a Service that ended is started again; a supervisor
 only starts it once and records how it ended. `restart` selects the policy:
 
-| The Service                                                | `always`      | `on-failure`  | `no`          |
-| ---------------------------------------------------------- | ------------- | ------------- | ------------- |
-| exited with code 0                                         | started again | stays stopped | stays stopped |
-| exited non-zero, or was ended by a signal Rig did not send | started again | started again | stays stopped |
-| is gone and nothing recorded how it ended                  | stays stopped | stays stopped | stays stopped |
-| was stopped by `rig down` or `rig restart`                 | stays stopped | stays stopped | stays stopped |
+| The Service                                                | `always`                   | `on-failure`  | `no`          |
+| ---------------------------------------------------------- | -------------------------- | ------------- | ------------- |
+| exited with code 0                                         | started again              | stays stopped | stays stopped |
+| exited non-zero, or was ended by a signal Rig did not send | started again              | started again | stays stopped |
+| is gone and nothing recorded how it ended                  | started again, more slowly | stays stopped | stays stopped |
+| was stopped by `rig down` or `rig restart`                 | stays stopped              | stays stopped | stays stopped |
 
 Each start is named, and an exit only counts when its record names the start
-Rig last made. A Service that is gone without such a record (after a reboot,
-or when the record could not be written or read) is reported as `failed` with
-`exit: unknown` and is never started again automatically, under any policy:
-run `rig up`. `rig status` tells the cases apart in a stopped Service's
-`exit` field (`clean`, `failed`, `requested`, `unknown`) and its reason, and
-Activity records each exit and each automatic restart.
+Rig last made. Every Service runs under a small capture wrapper (`rigd
+capture`) that records how its process ended. When that record is missing,
+for example because one signal ended the wrapper together with its process,
+Rig reads what the supervisor saw of the wrapper instead: launchd's record of
+the job (`last exit code` or `last terminating signal` in `launchctl print`)
+under `supervisor: launchd`, or the wrapper's own exit as `rigd` saw it under
+`supervisor: rigd`. A wrapper that is asked to stop by a signal stops its
+process first and then ends by that same signal, so a signal found there is
+how the process ended. It counts as a known exit, and Activity names where it
+came from ("web was ended by SIGTERM (from launchd's record of its job)"). A
+wrapper's exit code 0 is not counted, because a wrapper from an older `rigd`
+also exits 0 after an outside SIGTERM. If the wrapper is gone but the process
+it ran is still running on its own, the Service is reported `unknown`. Rig
+neither signals that process nor starts another beside it; end it yourself,
+then run `rig up`.
 
-A Service gets five automatic attempts within any 60 seconds, the first
-100 ms after the exit and each further one after twice the previous delay. An
-attempt that fails to start, including one refused because a Service it
-depends on is down, spends an attempt. An attempt whose end nobody saw (the
-supervisor could not start it, or its process was gone without a record before
-it was ready) is an unknown exit like any other and ends the attempts. A Service that used them all stays
-stopped, and stays so across `rigd` restarts, until `rig up`, `rig restart`,
-or a new deployment starts it, which also resets the count. An `up` that finds
-a Service already running changes nothing about it. `rig down` cancels any
-scheduled attempt. Siblings are independent: one Service staying stopped never
-stops or restarts another, and a Service that survived a `rigd` restart is
-adopted, not started twice.
+A Service that is gone with no record anywhere (its launchd job was unloaded
+too, or nothing could be written or read) has `exit: unknown`. Under
+`on-failure` and `no` it is reported `failed` and is never started again
+automatically: run `rig up`. Under `always` it is started again, but only
+once the supervisor shows that nothing of the old start still runs and none of
+its ports accepts connections. While a port is still held, the attempt waits
+and spends nothing. These retries have their own slower budget: three
+attempts within any 10 minutes, 5 seconds, 1 minute and 5 minutes after the
+exit. Activity and status say it was an unknown exit that was restarted.
+`rig status` tells the cases apart in a stopped Service's `exit` field
+(`clean`, `failed`, `requested`, `unknown`) and its reason, and Activity
+records each exit and each automatic restart.
+
+A Service gets five automatic attempts after known exits within any 60
+seconds, the first 100 ms after the exit and each further one after twice the
+previous delay. An attempt that fails to start spends an attempt. An attempt
+refused because a Service it depends on is not running does not: the Service
+waits, and `rig status` shows what it is waiting for. It starts in the pass in
+which its dependency is running again. An attempt whose end nobody saw (the
+supervisor could not start it, or its process was gone without a record
+before it was ready) is an unknown exit like any other. A Service that used
+all the attempts of either budget stays stopped, and stays so across `rigd`
+restarts, until `rig up`, `rig restart`, or a new deployment starts it, which
+also resets both counts. An `up` that finds a Service already running changes
+nothing about it. `rig down` cancels any scheduled attempt. Siblings are
+independent: one Service staying stopped never stops or restarts another, and
+a Service that survived a `rigd` restart is adopted, not started twice.
 
 Nothing is started again while `rigd` itself is down; the first pass of the
 next daemon applies the same rules to what it finds. Every start, automatic

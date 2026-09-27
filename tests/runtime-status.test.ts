@@ -35,6 +35,9 @@ test("fresh status distinguishes failed health from running without health and r
       async artifact() {
         return "installed";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return true;
       },
@@ -68,6 +71,9 @@ test("one deadline bounds every concurrent probe and timeouts are unknown", asyn
       async artifact() {
         return "installed";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return true;
       },
@@ -87,7 +93,7 @@ test("one deadline bounds every concurrent probe and timeouts are unknown", asyn
       ),
   ).toBe(true);
 });
-test("a crashed desired-running process is failed with the exit evidence of its recorded start, an unrecorded one is failed as unknown, and an intentional stop remains stopped", async () => {
+test("a crashed desired-running process is failed with the exit evidence of its recorded start, an unrecorded one is unknown (starting again under always, failed otherwise), and an intentional stop remains stopped", async () => {
   const effects = {
     async process() {
       return { state: "stopped" as const, exitCode: 1, incarnation: "start-1" };
@@ -97,6 +103,9 @@ test("a crashed desired-running process is failed with the exit evidence of its 
     },
     async artifact() {
       return "installed" as const;
+    },
+    async listening() {
+      return [];
     },
     async persistent() {
       return true;
@@ -121,16 +130,28 @@ test("a crashed desired-running process is failed with the exit evidence of its 
     },
     services: { api: run, web: run },
   };
-  const [crashed, unrecorded, stopped] = await observeTargets(
-    [
-      recorded,
-      { ...target, desired: "running" },
-      { ...target, desired: "stopped" },
-    ],
-    effects,
-    2000,
-    timerObservationDeadline,
-  );
+  const [crashed, unrecorded, unrecordedOnFailure, stopped] =
+    await observeTargets(
+      [
+        recorded,
+        { ...target, desired: "running" },
+        {
+          ...target,
+          desired: "running",
+          plan: {
+            ...target.plan,
+            components: target.plan.components.map((component) => ({
+              ...component,
+              restart: "on-failure" as const,
+            })),
+          },
+        },
+        { ...target, desired: "stopped" },
+      ],
+      effects,
+      2000,
+      timerObservationDeadline,
+    );
   expect(crashed).toMatchObject({
     state: "failed",
     components: [
@@ -139,12 +160,25 @@ test("a crashed desired-running process is failed with the exit evidence of its 
     ],
   });
   expect(unrecorded).toMatchObject({
+    state: "starting",
+    components: [
+      { state: "starting", exit: "unknown" },
+      { state: "starting", exit: "unknown" },
+    ],
+  });
+  expect(unrecorded!.components[0]!.reason).toContain(
+    "started again once it is verified gone and its ports are free",
+  );
+  expect(unrecordedOnFailure).toMatchObject({
     state: "failed",
     components: [
       { state: "failed", exit: "unknown" },
       { state: "failed", exit: "unknown" },
     ],
   });
+  expect(unrecordedOnFailure!.components[0]!.reason).toContain(
+    "so it was not restarted",
+  );
   expect(unrecorded!.components[0]).not.toHaveProperty("exitCode");
   expect(stopped).toMatchObject({
     state: "stopped",
@@ -173,6 +207,9 @@ test("an installed Component that cannot be observed degrades a Target whose pro
     },
     async artifact() {
       return "unknown" as const;
+    },
+    async listening() {
+      return [];
     },
     async persistent() {
       return true;
@@ -235,6 +272,9 @@ test("timed out observations retain the configured port and route without claimi
       async artifact() {
         return "unknown";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return false;
       },
@@ -264,6 +304,9 @@ test("immediate observation rejection is unknown with a safe failure reason", as
       },
       async artifact() {
         return "installed";
+      },
+      async listening() {
+        return [];
       },
       async persistent() {
         return true;
@@ -307,6 +350,9 @@ test("controlled common expiry settles every Target and ignores late provider re
       async artifact() {
         return "installed";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return true;
       },
@@ -347,6 +393,9 @@ for (const outcome of ["completed", "rejected", "empty"] as const) {
         },
         async artifact() {
           return "installed";
+        },
+        async listening() {
+          return [];
         },
         async persistent() {
           return true;
@@ -390,6 +439,9 @@ test("expiry before the queued completion handler wins exactly once", async () =
       async artifact() {
         return "installed";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return true;
       },
@@ -425,6 +477,9 @@ test("completed observations keep their result while the shared budget expires p
       },
       async artifact() {
         return "installed";
+      },
+      async listening() {
+        return [];
       },
       async persistent() {
         return true;
@@ -462,6 +517,9 @@ test("a running component keeps the reason its provider attached, and the render
       },
       async artifact() {
         return "installed";
+      },
+      async listening() {
+        return [];
       },
       async persistent() {
         return true;
@@ -516,6 +574,9 @@ test("the Target aggregate counts every Component: missing storage beside a heal
         },
         async artifact() {
           return artifact;
+        },
+        async listening() {
+          return [];
         },
         async persistent() {
           return artifact === "installed";

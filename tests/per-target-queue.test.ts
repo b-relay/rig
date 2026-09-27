@@ -241,6 +241,9 @@ async function fixture(host: Record<string, unknown> = {}) {
       async persistent() {
         return true;
       },
+      async listening() {
+        return [];
+      },
     },
     files: {
       async destroyPreview() {},

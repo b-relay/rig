@@ -116,6 +116,48 @@ export async function readCaptureObservation(request: {
   }
 }
 
+/** What a supervisor reports about an application its capture wrapper last reported running, once that wrapper is gone:
+ * nothing when the application is gone too (or no running application was ever reported), and an `unknown` observation when
+ * the process at that pid still has the birth identity the wrapper recorded, or its identity could not be read. A reused pid
+ * never counts as the application. Freshness does not matter here: the wrapper's last word is exactly what is in question. */
+export async function survivingApplication(request: {
+  requestPath: string;
+  inspect: ProcessIdentityReader;
+}): Promise<ProcessObservation | undefined> {
+  let evidence: CaptureObservation;
+  try {
+    evidence = observationSchema.parse(
+      JSON.parse(
+        await readFile(`${request.requestPath}.observation.json`, "utf8"),
+      ),
+    );
+  } catch {
+    return undefined;
+  }
+  const { observation, applicationIdentity } = evidence;
+  if (
+    observation.state !== "running" ||
+    !observation.pid ||
+    !applicationIdentity
+  )
+    return undefined;
+  let identity: string | undefined;
+  try {
+    identity = await request.inspect(observation.pid);
+  } catch {
+    return {
+      state: "unknown",
+      reason: `The capture wrapper is gone and whether its application (pid ${observation.pid}) still runs could not be verified.`,
+    };
+  }
+  return identity === applicationIdentity
+    ? {
+        state: "unknown",
+        reason: `The application (pid ${observation.pid}) is still running without its capture wrapper, so Rig neither stops it nor starts another. End that process, then run rig up.`,
+      }
+    : undefined;
+}
+
 /** Wraps a publisher so unchanged evidence is rewritten only once per heartbeat, while any change is published at once. */
 export function throttledPublisher<Observation>(
   publish: (

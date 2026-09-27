@@ -11,8 +11,10 @@ export interface ManagedProcess {
   readonly incarnation: string;
 }
 /** A supervisor starts a process once and never starts it again on its own: whether an exit is retried is the runtime's decision.
- * A stopped observation with `exitCode` or `signal` is recorded evidence of how `incarnation` ended. Without either, how the
- * process ended is unknown: it was stopped on request, never started, or its evidence is gone. */
+ * `stopped` means no process of the start runs any more: under a capture wrapper, neither the wrapper nor the application it
+ * last reported; one that may still run is `unknown`. A stopped observation with `exitCode` or `signal` is recorded evidence of
+ * how `incarnation` ended. Without either, how the process ended is unknown: it was stopped on request, never started, or its
+ * evidence is gone. */
 export interface ProcessObservation {
   readonly state: "running" | "stopped" | "unknown";
   readonly pid?: number;
@@ -20,8 +22,14 @@ export interface ProcessObservation {
   readonly exitCode?: number;
   /** The signal that ended the process when it did not exit by itself. */
   readonly signal?: string;
+  /** Who recorded the exit when the application's own exit record is missing: `launchd` for its record of the job that ran
+   * the capture wrapper, `rigd` for its record of the wrapper it spawned. The wrapper stops its application before it ends and
+   * ends by the signal that stopped it, so its end describes the application's. Absent for the application's own record. */
+  readonly recordedBy?: ExitWitness;
   readonly reason?: string;
 }
+/** Who saw a capture wrapper end when its application's own exit record is missing. */
+export type ExitWitness = "launchd" | "rigd";
 /** One readiness probe. A failed probe carries what was observed: an HTTP status, a connection error, or a command's exit code and last output line. */
 export type HealthCheck =
   { readonly ready: true } | { readonly ready: false; readonly reason: string };

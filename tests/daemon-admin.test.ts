@@ -1120,6 +1120,11 @@ test("rigd install records the bun for source-file Tools, a different bun (or no
     await rm(marker);
     expect(await admin("/third/bin/bun").install()).toMatchObject({
       outcome: "installed",
+      warnings: [
+        expect.stringContaining(
+          "run rigd install again to restart it with /third/bin/bun",
+        ),
+      ],
     });
     expect(await recorded()).not.toHaveProperty("bun");
     expect(await admin("/third/bin/bun").install()).toMatchObject({

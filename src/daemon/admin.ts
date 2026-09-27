@@ -325,7 +325,9 @@ export class DaemonAdmin {
       }));
     return {
       ...result,
-      ...(evidence.warning ? { warnings: [evidence.warning] } : {}),
+      ...(evidence.warning
+        ? { warnings: [...(result.warnings ?? []), evidence.warning] }
+        : {}),
     };
   }
   private async performInstall(): Promise<DaemonStatus> {
@@ -355,7 +357,18 @@ export class DaemonAdmin {
         // read at startup is unknown, so none is recorded and, when this rigd has one, the
         // next install replaces the daemon with one that reads it.
         await this.writeInstallation(undefined);
-        return { ...prior, installed: true, outcome: "installed" };
+        const unknownBun = this.options.bun
+          ? [
+              `Adopted a running rigd whose bun for source-file Tools is unknown; run rigd install again to restart it with ${this.options.bun}.`,
+            ]
+          : [];
+        const warnings = [...(prior.warnings ?? []), ...unknownBun];
+        return {
+          ...prior,
+          installed: true,
+          outcome: "installed",
+          ...(warnings.length ? { warnings } : {}),
+        };
       }
       // Another version or command is serving: stop it and start this one. Managed
       // processes keep serving under their leases and the new daemon adopts them.

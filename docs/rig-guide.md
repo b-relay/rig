@@ -1019,13 +1019,21 @@ that resolves to that bun over a versioned Cellar path, so a package upgrade
 does not strand it. Rig never looks bun up when the Tool runs.
 
 When `rigd install` finds no bun it still installs, since built Tools and
-Services do not need one, and warns that source-file Tools will fail. Installing
-such a Tool without a recorded bun, or when the recorded one is gone, fails as
-`BUN_NOT_FOUND` and publishes nothing; an earlier shim stays as it was, and
-`rig doctor` reports a recorded bun that is gone as `tool-bun`. Install bun, or
-fix `PATH`, and run `rigd install` again. A different bun counts as a changed
-installation, so the daemon is replaced, and the next `rig up` or deploy
-republishes each shim with the new bun.
+Services do not need one, and warns that source-file Tools will fail. Publishing
+such a Tool without a recorded bun, or with a recorded one that is gone, fails
+as `BUN_NOT_FOUND` and publishes nothing; an earlier shim stays as it was. With
+no recorded bun, every `rig up`, `rig restart`, or deploy of a Target with a
+source-file Tool fails this way, even while its earlier shim still runs. A shim
+already published with a bun that has since been removed is not republished,
+so `rig status` still shows it `installed`; `rig doctor` reports the missing
+bun as `tool-bun`. Install bun, or fix `PATH`, and run `rigd install` again. A
+different bun counts as a changed installation, so the daemon is replaced, and
+the next `rig up` or deploy republishes each shim with the new bun. Until then,
+and once after upgrading from a Rig that did not record bun, `rig status` and
+`rig doctor` show those Tools as `unknown`; `rig up <target>` republishes them.
+When `rigd install` adopts a running daemon, it cannot know which bun that
+daemon read, so it records none and warns; run `rigd install` again to restart
+the daemon with the current bun.
 
 Durations are a positive whole number with a unit of `s`, `m`, or `h`, such as
 `30s`, `10m`, or `1h`, up to one day.
@@ -1283,7 +1291,8 @@ current file.
    file, its destination, the Tool's declared policy, or (for a source-file
    `bin`) the recorded bun changed, and is
    otherwise reported `unchanged`; a daemon restarted from another shell
-   republishes nothing. `deploy --no-up` publishes no Tool; the later `rig up`
+   republishes nothing (a `rigd install` that records a different bun
+   republishes each source-file Tool's shim). `deploy --no-up` publishes no Tool; the later `rig up`
    does, under its own checkpoint. Installed executables share one `bin/`
    directory across every Project and Target on the Host: `<tool>` for the
    Stable Target, and `<tool>-<target name>` for the Working copy (by default

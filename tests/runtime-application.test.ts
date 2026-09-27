@@ -3431,6 +3431,7 @@ test("the queue read names the mutation rigd is running and how many wait behind
     operationId: "slow-up",
     action: "up",
     project: "demo",
+    kind: "local",
   });
   release();
   await first;
@@ -3716,6 +3717,7 @@ test("a push shows the operator alert monitor the Target its Branch selects: a P
       operationId: `push-${branch}`,
       action: "git-push",
       target,
+      kind: target,
     });
     release();
     await push;

@@ -439,6 +439,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         }
       })();
       const kind = selected.kind;
+      // The alert monitor sees which Target the command selected, by role, so a configured name that differs from the
+      // recorded one (mid-rename) still reads as the Stable Target.
+      if (mutating?.operationId === operationId)
+        mutating = { ...mutating, kind };
       const name = selected.name ?? command.target ?? "the Working copy";
       aimed = name;
       target =

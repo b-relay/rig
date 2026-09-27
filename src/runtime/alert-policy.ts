@@ -53,6 +53,8 @@ export interface MutationInFlight {
   repoPath?: string;
   /** A Target name, or `preview` for a Preview. */
   target?: string;
+  /** The kind of Target the command selected, once rigd has selected it; it decides over `target`. */
+  kind?: TargetRecord["kind"];
 }
 
 /** Actions that work on one Target, which is the Working copy when the command names none. A `git-push` is not one: it
@@ -66,7 +68,8 @@ const TARGET_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** The ids of the recorded Stable Targets `mutation` may be changing now. It names its Project by name or directory; one it
- * names by a directory no Project is registered at, or not at all, may be any. A mutation of a Preview changes no Stable
+ * names by a directory no Project is registered at, or not at all, may be any. Once rigd has selected the kind of Target
+ * the mutation works on, that decides: the Stable Target, or none. Before that, a mutation of a Preview changes no Stable
  * Target, nor does a Target action that names no Target, which selects the Working copy; any other mutation without a
  * Target may change every Target of its Project. A deploy's own transition is always its own. */
 export function engagedTargets(
@@ -94,14 +97,19 @@ export function engagedTargets(
   for (const target of state.targets) {
     if (target.recovery?.operationId === mutation.operationId)
       engaged.add(target.id);
-    if (target.kind !== "live" || mutation.target === "preview") continue;
+    if (target.kind !== "live") continue;
+    if (projects && !projects.has(target.projectId)) continue;
+    if (mutation.kind !== undefined) {
+      if (mutation.kind === "live") engaged.add(target.id);
+      continue;
+    }
+    if (mutation.target === "preview") continue;
     if (
       mutation.target === undefined &&
       mutation.action !== undefined &&
       TARGET_ACTIONS.has(mutation.action)
     )
       continue;
-    if (projects && !projects.has(target.projectId)) continue;
     if (mutation.target === undefined || mutation.target === target.name)
       engaged.add(target.id);
   }

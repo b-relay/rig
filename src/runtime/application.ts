@@ -399,6 +399,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               ? targetNames(selection.document!.config).stable
               : PREVIEW_SELECTOR,
         };
+        // The alert monitor sees the Target the push selected from here on: a Preview push leaves the Stable Target alone.
+        if (mutating?.operationId === operationId)
+          mutating = { ...mutating, target: command.target! };
       }
       if (
         command.action === "deploy" &&

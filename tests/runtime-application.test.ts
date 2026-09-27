@@ -3685,6 +3685,43 @@ test("a push whose committed config is invalid is recorded under the Preview it 
   });
 });
 
+test("a push shows the operator alert monitor the Target its Branch selects: a Preview for a feature Branch, the Stable Target for the Production Branch", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const resolve = deps.sources.resolve.bind(deps.sources);
+  for (const [branch, target] of [
+    ["feature", "preview"],
+    ["main", "live"],
+  ] as const) {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    let resolving = false;
+    deps.sources.resolve = async (...args) => {
+      resolving = true;
+      await blocked;
+      return await resolve(...args);
+    };
+    const push = runtime
+      .command({
+        action: "git-push",
+        project: "demo",
+        repoPath: "/tmp/developer",
+        branch,
+        commit: "abc",
+        operationId: `push-${branch}`,
+      })
+      .catch(() => {});
+    while (!resolving) await new Promise((resolve) => setTimeout(resolve, 1));
+    expect(runtime.mutation()).toMatchObject({
+      operationId: `push-${branch}`,
+      action: "git-push",
+      target,
+    });
+    release();
+    await push;
+  }
+});
+
 test("a push from a directory registered as another Project names both Projects and says which remote to use, never suggesting repoint", async () => {
   const { runtime, deps, config } = fixture();
   const read = deps.documents.read.bind(deps.documents);

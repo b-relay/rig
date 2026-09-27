@@ -1191,11 +1191,12 @@ A plain `rigd` restart in the same boot and login session detects nothing and
 follows the rules above. So does the first start of a `rigd` that had recorded
 no session yet. A new boot is detected only when both boots could be read, and
 a new login only when both login sessions could be (there is none to read
-without a GUI login, over SSH only, say); what could not be read is not
-recorded. `rigd` records the session only once it has acted on the restart for
-every Target, so a daemon that stops or is asked to stop halfway finds the
-same restart again at its next start, and finishes it without recording it in
-Activity a second time.
+without a GUI login, over SSH only, say). A start that finds no restart but
+could not read part of the session keeps the earlier record, so a reboot it
+could not see yet is found at the next start. `rigd` records the session only
+once it has acted on the restart for every Target, so a daemon that stops or
+is asked to stop halfway finds the same restart again at its next start, and
+finishes it without recording it in Activity a second time.
 
 ### Recipes
 

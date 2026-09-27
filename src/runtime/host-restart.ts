@@ -4,6 +4,7 @@ import {
   hostRestartBetween,
   hostRestartText,
   identified,
+  mayReplace,
   sameSession,
   type HostRestart,
   type HostSession,
@@ -19,11 +20,13 @@ import {
 type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
 
 /** What the daemon's first pass found about the Host: the restart since the session rigd last recorded, if any, whether
- * an earlier daemon already recorded that restart in Activity, and the session read now. */
+ * an earlier daemon already recorded that restart in Activity, the session read now, and whether that session is to be
+ * recorded once the pass has acted on it. */
 export interface HostSessionFinding {
   restart?: HostRestart;
   announced: boolean;
   session: HostSession;
+  record: boolean;
 }
 
 /** Compares the session read now with the one `state` records. */
@@ -40,6 +43,7 @@ export function findHostRestart(
       pending?.kind === restart &&
       sameSession(pending, current),
     session: current,
+    record: restart ? identified(current) : mayReplace(state.host, current),
   };
 }
 
@@ -71,13 +75,11 @@ export async function recordHostRestart(
   });
 }
 
-/** Records `session` as the one rigd has acted on, so its next start compares against it. A session of which nothing
- * could be read is not recorded: the last one that was stays. */
+/** Records `session` as the one rigd has acted on, so its next start compares against it; it replaces any pending restart. */
 export async function saveHostSession(
   session: HostSession,
   deps: Deps,
 ): Promise<void> {
-  if (!identified(session)) return;
   await deps.store.update((state) => {
     state.host = { ...session, seenAt: deps.now() };
   });
@@ -87,7 +89,8 @@ export async function saveHostSession(
  * dependency order, whatever its restart policy, with full automatic-restart budgets. A Service still running is adopted.
  * Records one Activity entry for the Target. A start that fails leaves every Service not running recorded as not started
  * (never retried automatically) and the Target meant to run, which status reports as failed until `rig up`; the failure is
- * recorded, never raised. */
+ * recorded, never raised. Returns whether the Target is settled: false when a Service could not be recorded as not
+ * started, so the restart is acted on again. */
 export async function startAfterHostRestart(
   target: TargetRecord,
   restart: HostRestart,
@@ -102,7 +105,7 @@ export async function startAfterHostRestart(
     | "observationBudgetMs"
     | "observationDeadline"
   >,
-): Promise<void> {
+): Promise<boolean> {
   const journal = activationJournal(target, "explicit", deps, {
     afterHostRestart: restart,
   });
@@ -112,7 +115,7 @@ export async function startAfterHostRestart(
     outcome = (await deps.lifecycle.up(target, undefined, journal)).outcome;
   } catch (error) {
     await journal.failed(error).catch(() => {});
-    await recordFailedStart(target, error, deps);
+    const settled = await recordFailedStart(target, error, deps);
     const errorCode = diagnosticErrorCode(error);
     await deps
       .diagnostic({
@@ -135,7 +138,7 @@ export async function startAfterHostRestart(
         message: `${target.name} could not be started again after ${after} (${errorCode}). Run rig up ${target.name} once the cause is fixed.`,
       }),
     );
-    return;
+    return settled;
   }
   intendRunning(target);
   // As after an explicit up: the recorded plan is installed, routed and started under its own committed checkpoint.
@@ -159,4 +162,5 @@ export async function startAfterHostRestart(
           : `Found already running after ${after}.`,
     });
   });
+  return true;
 }

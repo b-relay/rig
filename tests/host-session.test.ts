@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   hostRestartBetween,
   identified,
+  mayReplace,
   sameSession,
 } from "../src/domain/host-session";
 import {
@@ -58,6 +59,17 @@ test("a session counts as identified by its boot or its login, and two sessions 
   expect(identified({ login: "100019" })).toBe(true);
   expect(sameSession(recorded, { boot: BOOT, login: "100002" })).toBe(true);
   expect(sameSession(recorded, { boot: BOOT })).toBe(false);
+});
+
+test("a read with no restart replaces the recorded session only when it read everything the recorded one names", () => {
+  expect(mayReplace(recorded, recorded)).toBe(true);
+  expect(mayReplace(undefined, { login: "100002" })).toBe(true);
+  expect(mayReplace(recorded, { login: "100002" })).toBe(false);
+  expect(mayReplace(recorded, { boot: BOOT })).toBe(false);
+  expect(mayReplace({ boot: BOOT }, { boot: BOOT, login: "100002" })).toBe(
+    true,
+  );
+  expect(mayReplace(undefined, {})).toBe(false);
 });
 
 test("the parsers read sysctl and launchctl output and nothing else", async () => {

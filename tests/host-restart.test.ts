@@ -537,3 +537,46 @@ test("after a reboot an outcome that already kept a Working copy Service stopped
     "It stopped when the Mac restarted",
   );
 });
+
+test("a boot that could not be read right after a reboot detects nothing yet and keeps the recorded boot, so the next start finds the reboot", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  // The audit session number repeats in the new boot, and the boot itself cannot be read this time.
+  f.restartHost({ login: "100002" });
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual([]);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
+
+  f.host.session = REBOOTED;
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("local")).toEqual([]);
+  expect(
+    (await f.activitySince(before)).filter((entry) =>
+      entry.startsWith("host-restart"),
+    ),
+  ).toEqual(["host-restart/stopped -"]);
+});
+
+test("a Service recorded as stopped by the restart but later seen running loses that record, so its own later exit is judged on its own", async () => {
+  const f = await fixture();
+  await f.startAll();
+  f.restartHost(REBOOTED);
+  f.reopen();
+  await f.reconcile();
+  const api = await f.key("local", "api");
+  const run = async () =>
+    (await f.store.read()).targets.find((t) => t.kind === "local")!.services!
+      .api!;
+  expect((await run()).outcome).toMatchObject({ hostRestart: "reboot" });
+  f.processes.set(api, { state: "running", pid: 4242 });
+  await f.supervise();
+  expect((await run()).outcome).toBeUndefined();
+  f.processes.delete(api);
+  await f.supervise();
+  expect((await run()).outcome).toMatchObject({ kind: "unknown" });
+  expect((await run()).outcome).not.toHaveProperty("hostRestart");
+});

@@ -475,6 +475,8 @@ async function superviseService(
     deps.observationDeadline,
   );
   if (observed?.kind === "rejected") throw observed.error;
+  if (observed?.kind === "completed" && observed.value.state === "running")
+    await clearHostRestartOutcome(target, service, deps);
   if (observed?.kind !== "completed" || observed.value.state !== "stopped")
     return undefined;
   const observation = observed.value;
@@ -587,6 +589,19 @@ async function superviseService(
     }),
   );
   return undefined;
+}
+
+/** Drops the outcome a Host restart left on a Service seen running after all (its observation had not answered when the
+ * restart was recorded), so its later exit is recorded and judged like any other. */
+async function clearHostRestartOutcome(
+  target: TargetRecord,
+  service: string,
+  deps: Deps,
+): Promise<void> {
+  const run = currentRun(target, service);
+  if (run?.outcome?.kind !== "unknown" || !run.outcome.hostRestart) return;
+  const { outcome: _outcome, ...rest } = run;
+  await saveRun(target, service, rest, deps);
 }
 
 /** The Service's ports that still accept connections, or nothing when the probe did not answer within the status budget. */

@@ -49,6 +49,20 @@ export function identified(session: HostSession): boolean {
   return session.boot !== undefined || session.login !== undefined;
 }
 
+/** Whether `current` may replace `recorded` when no restart was found between them: only when it read everything the
+ * recorded session identifies it by. A boot that could not be read right after a reboot, with an audit session number that
+ * repeated, finds nothing; recording that read would forget the boot, and the reboot with it. */
+export function mayReplace(
+  recorded: HostSession | undefined,
+  current: HostSession,
+): boolean {
+  return (
+    identified(current) &&
+    (recorded?.boot === undefined || current.boot !== undefined) &&
+    (recorded?.login === undefined || current.login !== undefined)
+  );
+}
+
 /** "the Mac restarted", "you logged out and in again": the restart as Activity and status name it. */
 export function hostRestartText(restart: HostRestart): string {
   return restart === "reboot"

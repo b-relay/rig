@@ -193,6 +193,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
   const inProgress = (operationId: string) => inFlight.has(operationId);
+  /** Working copies and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
+   * by Target id; each pass tries again. */
+  const unmarked = new Map<string, HostRestart>();
   const stopping = (targetId: string) =>
     [...operations.values()].some(
       (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
@@ -1147,7 +1150,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       });
     const host =
       action === "reconcile" ? locks.acquire(hostId, [HOST_SCOPE]) : undefined;
-    // Read while the pass waits for the Host, so reading it never holds up a command.
+    // Read while the pass waits for the Host, so a command waits for the read at most for what is left of it.
     const hostSession =
       action === "reconcile"
         ? deps.hostSession?.current().catch(() => undefined)
@@ -1243,7 +1246,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   ): Promise<void> {
     const recording = Promise.allSettled(jobs)
       .then(async () => {
-        if (finding.restart && (draining || !complete())) return;
+        // A drain that began before a Target was acted on left it unsettled; one that began later changes nothing.
+        if (!finding.record || (finding.restart && !complete())) return;
         await saveHostSession(finding.session, deps);
       })
       .catch(failed);
@@ -1312,15 +1316,24 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (target.desired === "running") {
         if (restart && target.kind === "live") {
           entry.view.phase = "starting";
-          await startAfterHostRestart(target, restart, deps);
-          settled?.add(targetId);
+          if (await startAfterHostRestart(target, restart, deps))
+            settled?.add(targetId);
           return undefined;
         }
-        if (
-          !restart ||
-          (await recordStoppedByHostRestart(target, restart, deps))
-        )
-          settled?.add(targetId);
+        // A Working copy or Preview whose stopped Services could not all be recorded as stopped by the restart is tried
+        // again by each pass of this daemon, and nothing of it is supervised until then.
+        const stoppedBy =
+          target.kind === "live"
+            ? undefined
+            : (restart ?? unmarked.get(targetId));
+        if (stoppedBy) {
+          if (!(await recordStoppedByHostRestart(target, stoppedBy, deps))) {
+            unmarked.set(targetId, stoppedBy);
+            return undefined;
+          }
+          unmarked.delete(targetId);
+        }
+        settled?.add(targetId);
         return await superviseTarget(target, deps, supervisionScope(target));
       }
       if (action === "reconcile") {

@@ -3413,19 +3413,38 @@ test("the queue read names the mutation rigd is running and how many wait behind
     operationId: "later-down",
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
+  const running = {
+    operationId: "slow-up",
+    action: "up",
+    project: "demo",
+    target: "local",
+    phase: "starting",
+    startedAt: expect.any(String),
+  };
   expect(await runtime.command({ action: "queue" })).toEqual({
-    running: {
-      operationId: "slow-up",
-      action: "up",
-      project: "demo",
-      startedAt: expect.any(String),
-    },
+    running,
     waiting: 1,
+    operations: [running],
   });
+  // The second command on the same Target names what it waits for.
+  expect(
+    await runtime.command({ action: "queue", operation: "later-down" }),
+  ).toMatchObject({
+    operation: { state: "waiting", waitingOn: [running], ahead: 0 },
+  });
+  expect(
+    await runtime.command({ action: "queue", operation: "slow-up" }),
+  ).toMatchObject({ operation: { state: "running", phase: "starting" } });
   release();
   await first;
   await second;
-  expect(await runtime.command({ action: "queue" })).toEqual({ waiting: 0 });
+  expect(await runtime.command({ action: "queue" })).toEqual({
+    waiting: 0,
+    operations: [],
+  });
+  expect(
+    await runtime.command({ action: "queue", operation: "slow-up" }),
+  ).toMatchObject({ operation: { state: "unknown" } });
 });
 
 test("usage mistakes that never reached an Operation leave activity untouched; a refused attempt is recorded", async () => {

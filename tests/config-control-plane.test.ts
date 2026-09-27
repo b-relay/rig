@@ -30,7 +30,7 @@ async function fixture(
       preview: previewProjectConfig,
       apply: editProjectConfig,
     },
-    exclusive: async (operation) => {
+    exclusive: async (_project, operation) => {
       locks++;
       return operation();
     },
@@ -174,7 +174,7 @@ test("registration resolution occurs inside the runtime mutation gate for apply"
       preview: previewProjectConfig,
       apply: editProjectConfig,
     },
-    exclusive: async (operation) => {
+    exclusive: async (_project, operation) => {
       inGate = true;
       try {
         return await operation();

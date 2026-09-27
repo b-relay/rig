@@ -60,9 +60,11 @@ export async function settleOperation(
     return refused(invalid("an operation id"));
   return attempt(
     (async (): Promise<Settlement> => {
-      const queue = (await read({ action: "queue" })) as QueueResult;
-      if (queue.running?.operationId === operationId)
-        return { state: "running" };
+      const queue = (await read({
+        action: "queue",
+        operation: operationId,
+      })) as QueueResult;
+      if (queue.operation?.state === "running") return { state: "running" };
       const activity = (await read({
         action: "activity",
         operation: operationId,
@@ -77,7 +79,9 @@ export async function settleOperation(
           occurredAt: record.occurredAt,
           ...(record.message ? { message: record.message } : {}),
         };
-      return queue.waiting > 0 ? { state: "waiting" } : { state: "unknown" };
+      return queue.operation?.state === "waiting"
+        ? { state: "waiting" }
+        : { state: "unknown" };
     })(),
   );
 }

@@ -88,19 +88,14 @@ export async function updateRegistration(
         "A valid new Project name is required.",
         "Use letters, digits, dashes, or underscores.",
       );
-    if (
-      (await deps.store.read()).projects.some(
-        (p) => p.name === command.newName && p.id !== project.id,
-      )
-    )
-      throw new RigError(
-        "PROJECT_CONFLICT",
-        "The new Project name is already registered.",
-        "Choose another name.",
-      );
+    const nameTaken = (projects: readonly ProjectRecord[]) =>
+      projects.some((p) => p.name === command.newName && p.id !== project.id);
+    if (nameTaken((await deps.store.read()).projects)) throw conflict("name");
     const document = await deps.documents.rename(project, command.newName);
     try {
       await deps.store.update((state) => {
+        // Checked again in the write itself: an init running beside this rename may have taken the name since.
+        if (nameTaken(state.projects)) throw conflict("name");
         const current = state.projects.find((p) => p.id === project.id)!;
         current.name = command.newName!;
         current.configPath = document.path;
@@ -152,16 +147,9 @@ export async function updateRegistration(
         "The new repository declares a different Project.",
         "Choose the directory containing this Project config.",
       );
-    if (
-      (await deps.store.read()).projects.some(
-        (p) => p.id !== project.id && p.repoPath === repoPath,
-      )
-    )
-      throw new RigError(
-        "PROJECT_CONFLICT",
-        "Another Project already owns the new directory.",
-        "Choose an unregistered directory.",
-      );
+    const pathTaken = (projects: readonly ProjectRecord[]) =>
+      projects.some((p) => p.id !== project.id && p.repoPath === repoPath);
+    if (pathTaken((await deps.store.read()).projects)) throw conflict("path");
     // The same planning as `up`: the moved config's ports are reserved against
     // every other Target, and recorded ports are kept where the config allows.
     const replanned = new Map<string, TargetRecord>();
@@ -180,6 +168,8 @@ export async function updateRegistration(
         ),
       );
     await deps.store.update((state) => {
+      // Checked again in the write itself: an init running beside this repoint may have taken the directory since.
+      if (pathTaken(state.projects)) throw conflict("path");
       const current = state.projects.find((p) => p.id === project.id)!;
       current.repoPath = repoPath;
       current.configPath = document.path;
@@ -192,4 +182,18 @@ export async function updateRegistration(
       project: { ...project, repoPath, configPath: document.path },
     };
   }
+}
+/** A rename or repoint whose new name or directory another registered Project holds. */
+function conflict(taken: "name" | "path"): RigError {
+  return taken === "name"
+    ? new RigError(
+        "PROJECT_CONFLICT",
+        "The new Project name is already registered.",
+        "Choose another name.",
+      )
+    : new RigError(
+        "PROJECT_CONFLICT",
+        "Another Project already owns the new directory.",
+        "Choose an unregistered directory.",
+      );
 }

@@ -58,7 +58,7 @@ They need permission to bind localhost and a local Caddy executable.
 | Module                             | Responsibility                                                                    |
 | ---------------------------------- | --------------------------------------------------------------------------------- |
 | `src/config`                       | Validated YAML documents, revision-checked edits, and Target plan resolution.     |
-| `src/runtime` and `src/domain`     | Serialized operations, recorded policy, deployment recovery, and observed status. |
+| `src/runtime` and `src/domain`     | Per-Target operation queue, recorded policy, deployment recovery, and status.     |
 | `src/daemon`                       | Authenticated localhost transport, administration, and adapter composition.       |
 | `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects.              |
 | `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.                |

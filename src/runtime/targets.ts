@@ -10,6 +10,7 @@ import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { portOwners, recordedPorts } from "./ports";
+import type { PortOwner } from "./host-reservations";
 import {
   PREVIEW_SELECTOR,
   patchedSettings,
@@ -179,7 +180,6 @@ export async function planTarget(
     ...(branch ? { branch } : {}),
     ...(commit ? { commit } : {}),
   };
-  const owners = portOwners(targets, id);
   const settings = patchedSettings(
     config,
     kind === "preview" ? "preview" : ROLE_OF[kind],
@@ -210,11 +210,19 @@ export async function planTarget(
       )
       .map((request) => [request.name, previous(request)!]),
   );
-  const selected = await deps.files.selectPorts({
-    requests: requests.filter((r) => !prior[r.name]),
-    occupied: owners,
-    policy: kind === "preview" ? "dynamic" : "configured",
-  });
+  // Chosen against the Targets recorded now and the ports Operations running beside this one have claimed.
+  const choose = async (reserved: ReadonlyMap<number, PortOwner>) =>
+    await deps.files.selectPorts({
+      requests: requests.filter((r) => !prior[r.name]),
+      occupied: new Map([
+        ...reserved,
+        ...portOwners((await deps.store.read()).targets, id),
+      ]),
+      policy: kind === "preview" ? "dynamic" : "configured",
+    });
+  const selected = deps.ports
+    ? await deps.ports.reserve({ target: name, project: project.name }, choose)
+    : await choose(new Map());
   const assignedPorts = { ...prior, ...selected };
   const plan = deps.documents.resolve({ ...planInput, assignedPorts });
   return {

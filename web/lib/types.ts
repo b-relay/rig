@@ -20,6 +20,10 @@ export type { RecipeFinding, RecipeChange } from "../../src/recipes/compare";
 export type { ConfigEditorRequest } from "../../src/daemon/config-editor";
 export type { DoctorReport, RecipeReport };
 
+import type {
+  OperationPosition,
+  OperationView,
+} from "../../src/domain/operation-progress";
 export type Action = RuntimeCommand["action"];
 export interface QueueResult {
   running?: {
@@ -30,6 +34,10 @@ export interface QueueResult {
     startedAt: string;
   };
   waiting: number;
+  /** Every Operation rigd is running now; several run at once when they work on different Targets. */
+  operations?: OperationView[];
+  /** Where the Operation the read named stands. */
+  operation?: OperationPosition;
 }
 /** What every lifecycle, deploy and registration command answers with. */
 export interface OperationResult {

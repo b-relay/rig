@@ -9,6 +9,7 @@ const TONES: Record<string, Tone> = {
   installed: "good",
   succeeded: "good",
   starting: "busy",
+  stopping: "busy",
   configured: "idle",
   stopped: "idle",
   unknown: "warn",

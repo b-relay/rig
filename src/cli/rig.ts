@@ -4,6 +4,7 @@ import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
 import { renderResult, renderStatus, object, renderLogs } from "./output";
+import { waitStatus } from "./wait-notice";
 import {
   isHelp,
   recordDiagnostic,
@@ -40,12 +41,9 @@ async function awaitMutation(
       settled = true;
     });
   try {
-    await Promise.race([
-      pending.catch(() => {}),
-      dependencies.wait(NOTICE_AFTER_MS, dependencies.signal),
-    ]);
-    if (!settled && !dependencies.signal?.aborted)
-      await reportQueuePosition(dependencies, operationId);
+    void reportWaiting(dependencies, operationId, pending, () => settled).catch(
+      () => {},
+    );
     return await Promise.race([pending, untilDetached(dependencies.detach)]);
   } catch (error) {
     if (dependencies.detach?.aborted)
@@ -71,25 +69,43 @@ function untilDetached(signal: AbortSignal | undefined): Promise<never> {
       });
   });
 }
-/** Names the operation rigd is running and how many wait ahead of this one. */
-async function reportQueuePosition(
-  dependencies: Pick<CliDependencies, "client" | "output">,
+/** How often a waiting command asks rigd again what it is waiting for. */
+const WAIT_POLL_MS = 2000;
+/** Once the command has gone NOTICE_AFTER_MS without an answer, asks rigd every WAIT_POLL_MS where it
+ * stands until it settles or is cancelled. Whenever rigd holds it behind another Operation on the same
+ * Target or Project, prints what it waits for on stderr: one plain line when a wait starts and one
+ * whenever what it waits for changes, never a cursor movement. Stops when rigd cannot say. */
+async function reportWaiting(
+  dependencies: Pick<CliDependencies, "client" | "output" | "wait" | "signal">,
   operationId: string,
+  pending: Promise<unknown>,
+  settled: () => boolean,
 ): Promise<void> {
-  const queue = object(
-    await dependencies.client.command({ action: "queue" }).catch(() => ({})),
-  );
-  const running = object(queue.running);
-  if (!running.operationId || running.operationId === operationId) return;
-  const ahead = Number(queue.waiting ?? 0) - 1;
-  const subject = [running.project, running.target, running.action]
-    .filter((part) => typeof part === "string")
-    .join(" ");
-  dependencies.output.error(
-    `Waiting: rigd is running ${subject} (operation ${String(running.operationId)}, started ${String(running.startedAt ?? "")})${
-      ahead > 0 ? `; ${ahead} more ahead of this command` : ""
-    }.\n`,
-  );
+  const pause = (ms: number) =>
+    Promise.race([
+      pending.then(
+        () => {},
+        () => {},
+      ),
+      dependencies.wait(ms, dependencies.signal),
+    ]);
+  let shown: string | undefined;
+  await pause(NOTICE_AFTER_MS);
+  while (!settled() && !dependencies.signal?.aborted) {
+    const status = waitStatus(
+      await dependencies.client
+        .command({ action: "queue", operation: operationId })
+        .catch(() => undefined),
+    );
+    if (status === undefined || settled()) return;
+    // A command running now shows nothing of its own yet; a later wait is announced again.
+    if (status.state === "running") shown = undefined;
+    else if (status.notice !== shown) {
+      dependencies.output.error(`${status.notice}\n`);
+      shown = status.notice;
+    }
+    await pause(WAIT_POLL_MS);
+  }
 }
 export async function runRigCli(
   args: readonly string[],

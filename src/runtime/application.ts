@@ -71,6 +71,7 @@ import {
   createOperationLocks,
   isWithin,
   projectScope,
+  projectTargetsScope,
   registrationScope,
   targetScope,
   type Lease,
@@ -226,13 +227,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     if (!entry) return { state: "unknown" };
     const position = locks.position(operationId);
     if (!position) return { state: "running", phase: entry.view.phase };
+    const view = (id: string) => {
+      const found = operations.get(id);
+      return found ? [{ ...found.view }] : [];
+    };
+    // Held behind nothing that runs, only behind earlier requests: the first of them is what it waits for.
+    const blocking = position.holders.length
+      ? position.holders
+      : position.queued.slice(0, 1);
     return {
       state: "waiting",
-      waitingOn: position.holders.flatMap((id) => {
-        const holder = operations.get(id);
-        return holder ? [{ ...holder.view }] : [];
-      }),
-      ahead: position.ahead,
+      waitingOn: blocking.flatMap(view),
+      ahead:
+        position.queued.length -
+        (position.holders.length ? 0 : blocking.length),
     };
   };
   /** One selection attempt's hold on its scopes; `release` ends it. The last attempt fails instead of selecting again. */
@@ -343,6 +351,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           "Wait for administration to complete before retrying.",
         );
       if (command.action === "prepare-uninstall") {
+        // Refused rather than queued: waiting for the whole Host would hold every later operation, automatic restarts
+        // included, behind whatever runs now, only to refuse once it ended with Targets still running.
+        if (locks.busy(HOST_SCOPE))
+          throw new RigError(
+            "TARGETS_RUNNING",
+            "Cannot uninstall rigd while operations are running.",
+            "Wait for them to finish (rig activity shows them), stop all Targets, then retry.",
+          );
         await admission.admit([HOST_SCOPE], {});
         const state = await deps.store.read();
         if (state.targets.some((t) => t.recovery || t.destructionPending))
@@ -991,6 +1007,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     function refuseActive(targets: readonly TargetRecord[]): void {
       try {
         assertRecordedStopped(targets);
+        // A stop records its Target stopped before it waits for the exit, so the record alone does not show it.
+        if (locks.busy(projectTargetsScope(project!.id)))
+          throw new RigError(
+            "PROJECT_ACTIVE",
+            "Project registration can only change while no Target of the Project has an operation running.",
+            "Wait for the running operations to finish (rig status shows a stopping Target), then retry.",
+          );
       } catch (error) {
         attempted = true;
         throw error;
@@ -1102,10 +1125,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   ): Promise<SupervisionPass> {
     if (draining) return {};
     // Requested before anything is awaited, so a reconcile called at startup is ahead of every command.
+    const hostId = `reconcile:${++passes}`;
+    if (action === "reconcile")
+      operations.set(hostId, {
+        view: {
+          operationId: hostId,
+          action,
+          phase: initialPhase(action),
+          startedAt: deps.now(),
+        },
+      });
     const host =
-      action === "reconcile"
-        ? locks.acquire(`reconcile:${++passes}`, [HOST_SCOPE])
-        : undefined;
+      action === "reconcile" ? locks.acquire(hostId, [HOST_SCOPE]) : undefined;
     const failed = (error: unknown, target?: string) =>
       deps
         .diagnostic({
@@ -1126,6 +1157,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         state = await deps.store.read();
       } catch (error) {
         lease?.release();
+        operations.delete(hostId);
         await failed(error);
         return {};
       }
@@ -1151,6 +1183,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       });
     } finally {
       lease?.release();
+      operations.delete(hostId);
     }
     const due = (await passResults(jobs)).filter(
       (value): value is number => value !== undefined,

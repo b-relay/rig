@@ -86,3 +86,41 @@ test("rigd being unreachable is a stamp of its own, so the page redraws once it 
   expect(down.stamp).toBe("down:DAEMON_DOWN|?|?");
   expect(down.busy).toBe(false);
 });
+
+test("a second Operation starting beside the first, or a Target starting to stop, changes the stamp; supervision does not", () => {
+  const view = (operationId: string, action: string, phase: string) => ({
+    operationId,
+    action,
+    phase: phase as "stopping",
+    startedAt: "2026-09-27T04:00:00Z",
+  });
+  const queue = (operations: ReturnType<typeof view>[]) =>
+    readings({
+      queue: {
+        ok: true,
+        value: { waiting: 0, running: operations[0], operations },
+      },
+    });
+  const one = pulseStamp(queue([view("a", "down", "stopping")]));
+  const two = pulseStamp(
+    queue([view("a", "down", "stopping"), view("b", "up", "starting")]),
+  );
+  const stopping = pulseStamp(queue([view("a", "restart", "stopping")]));
+  const starting = pulseStamp(queue([view("a", "restart", "starting")]));
+  expect(two.stamp).not.toBe(one.stamp);
+  expect(starting.stamp).not.toBe(stopping.stamp);
+  expect(two.busy).toBe(true);
+  const supervising = pulseStamp(
+    readings({
+      queue: {
+        ok: true,
+        value: {
+          waiting: 0,
+          operations: [view("supervise:t", "supervise", "supervising")],
+        },
+      },
+    }),
+  );
+  expect(supervising.stamp).toBe(pulseStamp(readings()).stamp);
+  expect(supervising.busy).toBe(false);
+});

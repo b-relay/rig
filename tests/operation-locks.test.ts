@@ -3,6 +3,7 @@ import {
   HOST_SCOPE,
   createOperationLocks,
   projectScope,
+  projectTargetsScope,
   registrationScope,
   scopesConflict,
   targetScope,
@@ -45,7 +46,7 @@ test("requests on different Targets are granted together; one on the same Target
   });
   await settled();
   expect(granted).toBe(false);
-  expect(locks.position("d")).toEqual({ holders: ["a"], ahead: 0 });
+  expect(locks.position("d")).toEqual({ holders: ["a"], queued: [] });
   expect(locks.holders()).toEqual(["a", "b", "c"]);
   a.release();
   a.release();
@@ -71,7 +72,12 @@ test("a waiting Project request is not overtaken by later Target requests of tha
   // Another Project is unaffected by the queue.
   const unrelated = await locks.acquire("other", [other]);
   expect(locks.tryAcquire("probe", [live])).toBeUndefined();
-  expect(locks.position("up-live")).toEqual({ holders: [], ahead: 1 });
+  expect(locks.position("up-live")).toEqual({
+    holders: [],
+    queued: ["rename"],
+  });
+  expect(locks.busy(projectTargetsScope("p1"))).toBe(true);
+  expect(locks.busy(projectTargetsScope("p3"))).toBe(false);
   stop.release();
   (await project).release();
   (await later).release();

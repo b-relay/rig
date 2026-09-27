@@ -16,6 +16,10 @@ const PHASE_WORDS: Record<string, string> = {
   supervising: "is being checked for automatic restarts",
   "preparing to uninstall": "is preparing to uninstall",
 };
+/** How a phase reads when rigd itself, not a Project or Target, is what the command waits for. */
+const HOST_WORDS: Record<string, string> = {
+  reconciling: "is checking every Target after it started",
+};
 
 /** Where a command's own Operation stands, from rigd's `queue` reply naming it: waiting, with the line
  * to print, or running. Undefined when rigd does not know it or the reply is not understood. */
@@ -42,6 +46,9 @@ export function waitNotice(reply: unknown): string | undefined {
     return `Waiting: ${position.ahead} operation${position.ahead === 1 ? "" : "s"} ahead of this command.`;
   const subject =
     [first.project, first.target].filter(Boolean).join(" ") || "rigd";
-  const doing = PHASE_WORDS[first.phase] ?? `is running ${first.action}`;
+  const doing =
+    (subject === "rigd" ? HOST_WORDS[first.phase] : undefined) ??
+    PHASE_WORDS[first.phase] ??
+    `is running ${first.action}`;
   return `Waiting: ${subject} ${doing} (operation ${first.operationId}, started ${first.startedAt})${behind}.`;
 }

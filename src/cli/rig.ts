@@ -81,14 +81,16 @@ async function reportWaiting(
   pending: Promise<unknown>,
   settled: () => boolean,
 ): Promise<void> {
-  const pause = (ms: number) =>
-    Promise.race([
-      pending.then(
-        () => {},
-        () => {},
-      ),
-      dependencies.wait(ms, dependencies.signal),
-    ]);
+  // A pause ends when the command settles, and its timer is released then, so nothing keeps rig alive after its answer.
+  const done = new AbortController();
+  void pending.then(
+    () => done.abort(),
+    () => done.abort(),
+  );
+  const signal = dependencies.signal
+    ? AbortSignal.any([dependencies.signal, done.signal])
+    : done.signal;
+  const pause = (ms: number) => dependencies.wait(ms, signal);
   let shown: string | undefined;
   await pause(NOTICE_AFTER_MS);
   while (!settled() && !dependencies.signal?.aborted) {

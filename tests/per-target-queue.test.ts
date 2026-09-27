@@ -32,7 +32,7 @@ function gate() {
 }
 /** Resolves once `condition` holds; each check yields to pending work first. */
 async function until(condition: () => boolean): Promise<void> {
-  for (let tries = 0; tries < 200; tries++) {
+  for (const deadline = Date.now() + 4000; Date.now() < deadline;) {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
@@ -43,7 +43,7 @@ async function waiting(
   runtime: { command(command: RuntimeCommand): Promise<unknown> },
   operation: string,
 ): Promise<void> {
-  for (let tries = 0; tries < 200; tries++) {
+  for (const deadline = Date.now() + 4000; Date.now() < deadline;) {
     const queue = (await runtime.command({ action: "queue", operation })) as {
       operation?: { state: string };
     };
@@ -675,4 +675,60 @@ test("a registration change refuses at once while a Target of its Project is mid
   ).rejects.toMatchObject({ code: "PROJECT_ACTIVE" });
   release();
   expect(await destroy).toMatchObject({ outcome: "stopped" });
+});
+
+test("a registration change or uninstall refuses at once while a plain down is waiting for its Service to exit", async () => {
+  const f = await fixture();
+  await f.register("alpha", "beta");
+  await f.runtime.command({ action: "up", project: "alpha" });
+  const release = f.holdStop("alpha");
+  // down records the Target stopped before it waits, so only the running operation shows it is busy.
+  const down = f.runtime.command({ action: "down", project: "alpha" });
+  await until(() => f.events.includes("stop alpha local"));
+  for (const command of [
+    { action: "forget", project: "alpha" },
+    { action: "repoint", project: "alpha", newPath: join(f.root, "alpha") },
+  ] as const)
+    await expect(f.runtime.command(command)).rejects.toMatchObject({
+      code: "PROJECT_ACTIVE",
+    });
+  await expect(
+    f.runtime.command({ action: "prepare-uninstall" }),
+  ).rejects.toMatchObject({ code: "TARGETS_RUNNING" });
+  // Nothing was left queued: beta and alpha's other Targets are free.
+  expect(await f.runtime.command({ action: "queue" })).toMatchObject({
+    waiting: 0,
+  });
+  expect(
+    await f.runtime.command({ action: "up", project: "beta" }),
+  ).toMatchObject({ outcome: "started" });
+  release();
+  await down;
+});
+
+test("a command that arrives while the daemon's first pass holds the Host says it waits for that pass", async () => {
+  const f = await fixture();
+  await f.register("alpha");
+  const pruning = gate();
+  f.deps.lifecycle.pruneCheckpoints = async () => {
+    await pruning.opened;
+    return [];
+  };
+  const reconcile = f.runtime.reconcile();
+  const up = f.runtime.command({
+    action: "up",
+    project: "alpha",
+    operationId: "alpha-up",
+  });
+  await waiting(f.runtime, "alpha-up");
+  const queue = await f.runtime.command({
+    action: "queue",
+    operation: "alpha-up",
+  });
+  expect(waitNotice(queue)).toStartWith(
+    "Waiting: rigd is checking every Target after it started (operation reconcile:",
+  );
+  pruning.open();
+  await reconcile;
+  expect(await up).toMatchObject({ outcome: "started" });
 });

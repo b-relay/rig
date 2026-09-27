@@ -32,6 +32,12 @@ export function configScope(projectId: string): LockScope {
   return ["project", projectId, "config"];
 }
 
+/** Every Target of one Project, as a query: whether any operation works on one of them. Nothing is
+ * admitted under it. */
+export function projectTargetsScope(projectId: string): LockScope {
+  return ["project", projectId, "target"];
+}
+
 /** A Project name that is being registered, so two registrations of one name cannot both succeed. */
 export function registrationScope(name: string): LockScope {
   return ["registration", name];
@@ -49,10 +55,11 @@ export interface Lease {
   ): Lease[];
 }
 
-/** Where a waiting request stands: the leases it conflicts with and how many earlier requests it waits behind. */
+/** Where a waiting request stands: the held leases it conflicts with and the earlier waiting requests it
+ * waits behind, by id, oldest first. */
 export interface WaitPosition {
   holders: string[];
-  ahead: number;
+  queued: string[];
 }
 
 /** First-come, first-served locks over hierarchical scopes. A request takes all its scopes at once
@@ -66,6 +73,8 @@ export interface OperationLocks {
   tryAcquire(id: string, scopes: readonly LockScope[]): Lease | undefined;
   /** Undefined unless the request `id` is waiting. */
   position(id: string): WaitPosition | undefined;
+  /** Whether any held lease or waiting request conflicts with `scope`. */
+  busy(scope: LockScope): boolean;
   /** The ids of every held lease, oldest first. */
   holders(): string[];
   /** How many requests are waiting. */
@@ -173,11 +182,16 @@ export function createOperationLocks(): OperationLocks {
         holders: [...held.values()]
           .filter((lease) => scopesConflict(lease.scopes, scopes))
           .map((lease) => lease.id),
-        ahead: queue
+        queued: queue
           .slice(0, index)
-          .filter((request) => scopesConflict(request.scopes, scopes)).length,
+          .filter((request) => scopesConflict(request.scopes, scopes))
+          .map((request) => request.id),
       };
     },
+    busy: (scope) =>
+      [...held.values(), ...queue].some((entry) =>
+        scopesConflict(entry.scopes, [scope]),
+      ),
     holders: () => [...held.values()].map((lease) => lease.id),
     waiting: () => queue.length,
     idle() {

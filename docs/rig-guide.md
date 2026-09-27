@@ -111,10 +111,13 @@ new connections, then lets the commands already running finish and answer
 their callers, and only then closes what is still open, such as a log follow.
 A command sent after the stop began, or one still waiting behind another
 operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
-A daemon that is stopped (or killed) while an operation is waiting for a
-Service to exit leaves that Service stopping on its own: the Target was
-recorded as meant to be stopped before its stop began, so the next daemon's
-startup pass stops it again and finishes the stop.
+A stop signal lets a stop that is already running finish, like any other
+running command. A daemon killed while an operation waits for a Service to exit
+leaves that Service stopping on its own. For `rig down` and `rig restart` the
+Target was recorded as meant to be stopped before its stop began, so the next
+daemon's startup pass stops it again; an interrupted Preview destroy or a
+`down` that was resolving an unfinished deploy is left for you to run again,
+and `rig status` says so.
 `rigd uninstall` is the exception: it refuses while any Target is running.
 When the daemon is not reachable at all, `rigd uninstall` still removes the
 launchd job and installation record and warns that Targets were left as they
@@ -806,10 +809,10 @@ side. Only two operations on the same Target wait for each other, in the order
 they arrived. Operations on the whole Project (`rename`, `repoint`, `forget`
 and `init` of a registered Project) wait for every operation of that Project;
 `rename`, `repoint` and `forget` refuse at once with `PROJECT_ACTIVE` while a
-Target is recorded as running or mid-transition instead of waiting only to
+Target is running, mid-transition or still stopping, instead of waiting only to
 refuse. A config edit from the website waits only for another edit, rename or
-repoint of the same Project, never for a Target. `rigd uninstall` waits for
-every operation on the Host. Resources the Targets share, such as ports chosen for `auto`, the
+repoint of the same Project, never for a Target. `rigd uninstall` refuses at
+once with `TARGETS_RUNNING` while any operation runs. Resources the Targets share, such as ports chosen for `auto`, the
 Preview limit, the route file and the state file, are taken only for the moment
 each choice or write needs, never while a process is being stopped or built. A
 deploy of a new Preview at the Preview limit also takes the Preview it is about

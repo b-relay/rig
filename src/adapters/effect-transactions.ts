@@ -131,9 +131,9 @@ export function createEffectTransactions(options: {
     if (taken)
       throw new RigError(
         "ARTIFACT_CONFLICT",
-        `Another Target is installing the executable ${taken} right now.`,
-        "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
-        { destination: taken },
+        `The executable ${taken} belongs to an unfinished change of another Target.`,
+        "If that Target's command is still running, retry once it ends; if it failed, run rig down for that Target to finish its change. To install both, give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
+        { destination: taken, owner: claims.get(taken) },
       );
     for (const path of destinations) claims.set(path, targetId);
   };

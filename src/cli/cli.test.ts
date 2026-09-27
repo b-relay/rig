@@ -918,7 +918,13 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
     newOperationId: () => "mine",
   };
   const run = runRigCli(["up", "live", "--project", "beta"], dependencies);
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  // Polls until rigd has nothing more to say, however slowly the machine runs.
+  for (
+    const deadline = Date.now() + 5000;
+    asked.length < 6 && Date.now() < deadline;
+  )
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  await new Promise((resolve) => setTimeout(resolve, 20));
   // Polling goes on while the command runs, and stops once rigd has nothing to say about it.
   expect(asked).toEqual(["up", "queue", "queue", "queue", "queue", "queue"]);
   // One plain appended line per change of what it waits for; no cursor movement.

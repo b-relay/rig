@@ -806,12 +806,13 @@ a slow build, readiness wait or stop in one Project never delays `rig up`,
 `rig deploy` or an automatic restart in another, and the Targets of one Project
 (its Working copy, Stable Target and each Preview) run their operations side by
 side. Only two operations on the same Target wait for each other, in the order
-they arrived. Operations on the whole Project (`rename`, `repoint`, `forget`
-and `init` of a registered Project) wait for every operation of that Project;
+they arrived. Operations on the whole Project (`rename`, `repoint` and
+`forget`) wait for every operation of that Project;
 `rename`, `repoint` and `forget` refuse at once with `PROJECT_ACTIVE` while a
 Target is running, mid-transition or still stopping, instead of waiting only to
-refuse. A config edit from the website waits only for another edit, rename or
-repoint of the same Project, never for a Target. `rigd uninstall` refuses at
+refuse. A config edit from the website, and `rig init` of a Project already
+registered, waits only for another edit, `init`, rename, repoint or forget of
+the same Project, never for a Target. `rigd uninstall` refuses at
 once with `TARGETS_RUNNING` while any operation runs. Resources the Targets share, such as ports chosen for `auto`, the
 Preview limit, the route file and the state file, are taken only for the moment
 each choice or write needs, never while a process is being stopped or built. A

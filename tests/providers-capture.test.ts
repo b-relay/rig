@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
 import { readExitRecord } from "../src/providers/exit-record";
+import { executionBaseline } from "../src/daemon/environment";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -47,6 +48,53 @@ test("the launchd capture entrypoint preserves the real app exit code and stream
     "bad",
   ]);
 });
+test("the captured application sees the operator's account name from the execution baseline, and none of the wrapper's own environment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-env-"));
+  roots.push(root);
+  const requestPath = join(root, "request.json");
+  const daemon = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HOME: root,
+    USER: "operator",
+    LOGNAME: "operator",
+    SHELL: "/bin/zsh",
+    GITHUB_TOKEN: "ghp_secret",
+    RIG_ROOT: root,
+  };
+  await writeFile(
+    requestPath,
+    JSON.stringify({
+      key: "env",
+      componentName: "web",
+      command: [
+        process.execPath,
+        "-e",
+        "const e = process.env; process.stdout.write(JSON.stringify({USER: e.USER, LOGNAME: e.LOGNAME, SHELL: e.SHELL, GITHUB_TOKEN: e.GITHUB_TOKEN, RIG_ROOT: e.RIG_ROOT, WRAPPER_ONLY: e.WRAPPER_ONLY}) + '\\n')",
+      ],
+      cwd: root,
+      env: executionBaseline(daemon),
+      logRoot: root,
+      incarnation: "start-1",
+    }),
+  );
+  const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[1]);`;
+  const result = await runCommand({
+    command: [process.execPath, "-e", script, requestPath],
+    env: { ...daemon, USER: "wrapper", WRAPPER_ONLY: "1" },
+    timeoutMs: 10000,
+  });
+  expect(result.exitCode).toBe(0);
+  const logs = (await readFile(join(root, "target.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const stdout = logs.filter((log) => log.stream === "stdout");
+  expect(stdout).toHaveLength(1);
+  expect(JSON.parse(stdout[0].line)).toEqual({
+    USER: "operator",
+    LOGNAME: "operator",
+  });
+}, 12000);
 test("capture runs a failing application once, exits with its code, and leaves its exit record and final observation", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-budget-"));
   roots.push(root);

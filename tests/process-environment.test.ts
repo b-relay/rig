@@ -66,19 +66,28 @@ test("only the final file value of a guarded leaf decides a conflict, and an equ
   );
 });
 
-test("the execution baseline carries the operator's PATH, HOME, locale and zone, and nothing else of the daemon's environment", () => {
+test("the execution baseline carries the operator's PATH, HOME, account name, locale and zone, and nothing else of the daemon's environment", () => {
   expect(
     executionBaseline({
       PATH: "/bin",
       HOME: "/home/op",
+      USER: "op",
+      LOGNAME: "op",
       LANG: "en_US.UTF-8",
       TZ: "UTC",
-      USER: "op",
       SHELL: "/bin/zsh",
       TMPDIR: "/tmp/daemon",
       RIG_ROOT: "/rig",
       RIG_DAEMON_CHILD: "1",
       GITHUB_TOKEN: "t",
+      TERM_SESSION_ID: "w0t1",
     }),
-  ).toEqual({ PATH: "/bin", HOME: "/home/op", LANG: "en_US.UTF-8", TZ: "UTC" });
+  ).toEqual({
+    PATH: "/bin",
+    HOME: "/home/op",
+    USER: "op",
+    LOGNAME: "op",
+    LANG: "en_US.UTF-8",
+    TZ: "UTC",
+  });
 });

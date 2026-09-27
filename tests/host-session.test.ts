@@ -5,7 +5,7 @@ import {
   hostRestartBetween,
   identified,
   mayReplace,
-  sameSession,
+  sameRestart,
 } from "../src/domain/host-session";
 import {
   createHostSessionProbe,
@@ -53,12 +53,23 @@ test("nothing recorded, or a side that could not be read, detects nothing it can
   expect(hostRestartBetween(recorded, { login: "100019" })).toBe("login");
 });
 
-test("a session counts as identified by its boot or its login, and two sessions are the same only when both match", () => {
+test("a session counts as identified by its boot or its login, and a restart found earlier is the same one when what identifies it matches", () => {
   expect(identified({})).toBe(false);
   expect(identified({ bootedAt: recorded.bootedAt })).toBe(false);
   expect(identified({ login: "100019" })).toBe(true);
-  expect(sameSession(recorded, { boot: BOOT, login: "100002" })).toBe(true);
-  expect(sameSession(recorded, { boot: BOOT })).toBe(false);
+  // A reboot is its boot, whatever of the login either daemon could read.
+  const reboot = { kind: "reboot" as const, boot: BOOT };
+  expect(sameRestart(reboot, { boot: BOOT, login: "100002" })).toBe(true);
+  expect(sameRestart({ ...reboot, login: "100002" }, { boot: BOOT })).toBe(
+    true,
+  );
+  expect(sameRestart(reboot, { login: "100002" })).toBe(false);
+  expect(sameRestart(reboot, { boot: "ANOTHER" })).toBe(false);
+  // A new login is its login session.
+  const login = { kind: "login" as const, login: "100019" };
+  expect(sameRestart(login, { boot: BOOT, login: "100019" })).toBe(true);
+  expect(sameRestart(login, { boot: BOOT, login: "100020" })).toBe(false);
+  expect(sameRestart({ kind: "login" }, { login: "100019" })).toBe(false);
 });
 
 test("a read with no restart replaces the recorded session only when it read everything the recorded one names", () => {

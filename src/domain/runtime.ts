@@ -148,7 +148,14 @@ export interface RuntimeState {
     seenAt: string;
     /** A Host restart rigd has recorded in Activity but not finished acting on, and the boot and login it found then;
      * a daemon that finds the same restart again acts on it without recording it twice. */
-    restart?: { kind: HostRestart; boot?: string; login?: string };
+    restart?: {
+      kind: HostRestart;
+      boot?: string;
+      login?: string;
+      /** The Stable Targets already started again (or whose start failed) for this restart; a daemon that finds the
+       * restart again does not start them a second time. */
+      settled?: string[];
+    };
   };
 }
 

@@ -506,6 +506,113 @@ test("a first pass that could not act on the restart for every Target leaves it 
   expect(host.restart).toBeUndefined();
 });
 
+/** Makes the state writes that record the Working copy's Services as stopped by the Host restart fail while `failing.on`,
+ * as a full disk would, so the first pass cannot settle that Target and the next daemon finds the restart again. */
+function failWorkingCopyMarking(store: FileStateStore) {
+  const failing = { on: true };
+  const update = store.update.bind(store);
+  store.update = (change) =>
+    update(async (state) => {
+      await change(state);
+      if (
+        failing.on &&
+        state.targets.some(
+          (t) =>
+            t.kind === "local" &&
+            Object.values(t.services ?? {}).some(
+              (run) =>
+                run.outcome?.kind === "unknown" &&
+                run.outcome.hostRestart !== undefined,
+            ),
+        )
+      )
+        throw new Error("disk full");
+    });
+  return failing;
+}
+
+test("a daemon that finds a restart an earlier one only partly acted on records it once, even when it reads more of the session, and does not start a Stable Target again", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  // Right after the reboot the GUI login cannot be read yet.
+  f.restartHost({ boot: "BOOT-2", bootedAt: REBOOTED.bootedAt });
+  const failing = failWorkingCopyMarking(f.store);
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
+
+  failing.on = false;
+  f.host.session = REBOOTED;
+  const startsBefore = f.starts.length;
+  f.reopen();
+  await f.reconcile();
+  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/started live",
+  ]);
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-2", login: "100002" });
+  expect(host.restart).toBeUndefined();
+  expect(await f.status("local")).toMatchObject({
+    api: { state: "stopped", exit: "unknown" },
+  });
+});
+
+test("a Stable Target whose start failed after a restart is not retried by the daemon that finishes acting on that restart", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const db = await f.key("live", "db");
+  f.refusal.start = (key) => key === db;
+  const failing = failWorkingCopyMarking(f.store);
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual([]);
+
+  failing.on = false;
+  f.refusal.start = undefined;
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual([]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/failed live",
+  ]);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
+});
+
+test("a restart whose Activity entry could not be written is not recorded as acted on, so the next start still records it", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const update = f.store.update.bind(f.store);
+  let refuse = true;
+  f.store.update = (change) =>
+    update(async (state) => {
+      await change(state);
+      if (refuse && state.activity.some((entry) => entry.action === "host-restart"))
+        throw new Error("disk full");
+    });
+  f.reopen();
+  await f.reconcile();
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
+
+  refuse = false;
+  f.reopen();
+  await f.reconcile();
+  expect(
+    (await f.activitySince(before)).filter((entry) =>
+      entry.startsWith("host-restart"),
+    ),
+  ).toEqual(["host-restart/stopped -"]);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
+});
+
 test("after a reboot an outcome that already kept a Working copy Service stopped is kept, and one that would have been retried is replaced", async () => {
   const f = await fixture();
   await f.startAll();

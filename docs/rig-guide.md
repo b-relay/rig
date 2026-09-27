@@ -1161,7 +1161,8 @@ or not, reads the env files fresh.
 
 #### After the Mac restarts or you log in again
 
-A restart of the Mac, or logging out and in again, ends every Service. Rig's
+A restart of the Mac ends every Service; logging out and in again ends those
+of the old login session. Rig's
 Service launchd jobs live under `$RIG_ROOT/launchd`, not
 `~/Library/LaunchAgents`, so launchd does not load them again at login, but
 `rigd` itself comes back. At each start, `rigd` compares the Host's boot
@@ -1197,7 +1198,9 @@ could not read part of the session keeps the earlier record, so a reboot it
 could not see yet is found at the next start. `rigd` records the session only
 once it has acted on the restart for every Target, so a daemon that stops or
 is asked to stop halfway finds the same restart again at its next start, and
-finishes it without recording it in Activity a second time.
+finishes it without recording it in Activity a second time and without
+starting (or retrying) a Stable Target it already started, or failed to start,
+for that restart.
 
 ### Recipes
 

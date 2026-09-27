@@ -5,7 +5,7 @@ import {
   hostRestartText,
   identified,
   mayReplace,
-  sameSession,
+  sameRestart,
   type HostRestart,
   type HostSession,
 } from "../domain/host-session";
@@ -25,6 +25,8 @@ type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
 export interface HostSessionFinding {
   restart?: HostRestart;
   announced: boolean;
+  /** The Stable Targets an earlier daemon already started again, or whose start failed, for this same restart. */
+  settled: ReadonlySet<string>;
   session: HostSession;
   record: boolean;
 }
@@ -36,12 +38,14 @@ export function findHostRestart(
 ): HostSessionFinding {
   const restart = hostRestartBetween(state.host, current);
   const pending = state.host?.restart;
+  const announced =
+    restart !== undefined &&
+    pending?.kind === restart &&
+    sameRestart(pending, current);
   return {
     ...(restart ? { restart } : {}),
-    announced:
-      restart !== undefined &&
-      pending?.kind === restart &&
-      sameSession(pending, current),
+    announced,
+    settled: new Set(announced ? (pending?.settled ?? []) : []),
     session: current,
     record: restart ? identified(current) : mayReplace(state.host, current),
   };
@@ -64,15 +68,23 @@ export async function recordHostRestart(
       action: "host-restart",
       outcome: "stopped",
       occurredAt: deps.now(),
-      message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stopped every Service. rigd starts the Stable Targets meant to run again; the Working copy and Previews stay stopped until rig up.`,
+      message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stops the Services Rig runs. rigd starts the Stable Targets meant to run again; the Working copy's and Previews' Services that stopped stay stopped until rig up.`,
     });
     if (state.host)
       state.host.restart = {
         kind: finding.restart,
         ...(boot === undefined ? {} : { boot }),
         ...(login === undefined ? {} : { login }),
+        settled: [],
       };
   });
+}
+
+/** Notes in the pending restart that `targetId`, a Stable Target, was started again or failed to start for it. */
+function markSettled(state: RuntimeState, targetId: string): void {
+  const pending = state.host?.restart;
+  if (pending && !pending.settled?.includes(targetId))
+    pending.settled = [...(pending.settled ?? []), targetId];
 }
 
 /** Records `session` as the one rigd has acted on, so its next start compares against it; it replaces any pending restart. */
@@ -126,7 +138,8 @@ export async function startAfterHostRestart(
         errorCode,
       })
       .catch(() => {});
-    await deps.store.update((state) =>
+    await deps.store.update((state) => {
+      if (settled) markSettled(state, target.id);
       recordActivity(state, {
         id: deps.id(),
         projectId: target.projectId,
@@ -136,8 +149,8 @@ export async function startAfterHostRestart(
         outcome: "failed",
         occurredAt: deps.now(),
         message: `${target.name} could not be started again after ${after} (${errorCode}). Run rig up ${target.name} once the cause is fixed.`,
-      }),
-    );
+      });
+    });
     return settled;
   }
   intendRunning(target);
@@ -148,6 +161,7 @@ export async function startAfterHostRestart(
   await deps.store.update((state) => {
     const index = state.targets.findIndex((t) => t.id === target.id);
     if (index !== -1) state.targets[index] = target;
+    markSettled(state, target.id);
     recordActivity(state, {
       id: deps.id(),
       projectId: target.projectId,

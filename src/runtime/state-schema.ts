@@ -356,6 +356,12 @@ export const runtimeStateSchema = z
               .describe(
                 "The login session rigd found when it detected the restart.",
               ),
+            settled: z
+              .array(text)
+              .optional()
+              .describe(
+                "The Stable Targets (by id) already started again, or whose start failed, for this restart; a daemon that finds the restart again does not start them a second time.",
+              ),
           })
           .optional()
           .describe(

@@ -1196,11 +1196,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await pruneCheckpoints(state, deps);
         const current = await hostSession;
         if (current) finding = findHostRestart(state, current);
-        if (finding?.restart && !finding.announced)
+        if (finding?.restart && !finding.announced) {
+          const found = finding;
           await recordHostRestart(
-            { ...finding, restart: finding.restart },
+            { ...found, restart: found.restart! },
             deps,
-          ).catch((error) => failed(error));
+          ).catch(async (error) => {
+            // Unrecorded, the restart must be found again: the session is not recorded, so the next start announces it.
+            finding = { ...found, record: false };
+            await failed(error);
+          });
+        }
       }
       const eligible = state.targets.filter(
         (target) =>
@@ -1223,7 +1229,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       jobs = eligible.flatMap((target, index) => {
         const held = leases[index];
         return held
-          ? [superviseJob(target.id, held, action, failed, restart, settled)]
+          ? [
+              superviseJob(
+                target.id,
+                held,
+                action,
+                failed,
+                restart,
+                settled,
+                finding?.settled,
+              ),
+            ]
           : [];
       });
     } finally {
@@ -1293,6 +1309,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     failed: (error: unknown, target?: string) => Promise<void>,
     restart?: HostRestart,
     settled?: Set<string>,
+    /** Stable Targets an earlier daemon already started again (or failed to) for this same restart. */
+    startedBefore?: ReadonlySet<string>,
   ): Promise<number | undefined> {
     const entry: Running = {
       view: {
@@ -1323,7 +1341,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
       if (target.desired === "running") {
-        if (restart && target.kind === "live") {
+        if (restart && target.kind === "live" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
           if (await startAfterHostRestart(target, restart, deps))
             settled?.add(targetId);

@@ -103,6 +103,7 @@ test("launchd reports the running application, then its recorded exit and the st
         health: async () => ({ ready: true }),
         artifact: async () => "installed",
         persistent: async () => true,
+        listening: async () => [],
       },
       2000,
       timerObservationDeadline,

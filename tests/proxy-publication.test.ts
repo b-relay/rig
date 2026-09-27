@@ -186,6 +186,9 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
     async artifact() {
       return "installed" as const;
     },
+    async listening() {
+      return [];
+    },
     async persistent() {
       return true;
     },

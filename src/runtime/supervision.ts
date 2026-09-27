@@ -13,11 +13,58 @@ import { boundedObservations } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
 import type { ActivationJournal } from "./lifecycle";
 
-/** Automatic attempts allowed within RESTART_WINDOW_MS of each other. */
+/** Automatic attempts after a known exit allowed within RESTART_WINDOW_MS of each other. */
 export const RESTART_LIMIT = 5;
 export const RESTART_WINDOW_MS = 60_000;
-/** Delay before the first automatic attempt; each further attempt in the window doubles it. */
+/** Delay before the first automatic attempt after a known exit; each further attempt in the window doubles it. */
 export const RESTART_BACKOFF_MS = 100;
+/** Automatic attempts after an unknown exit allowed within UNKNOWN_EXIT_RESTART_WINDOW_MS of each other. Nothing says why
+ * such a process ended, so this budget is separate from the one above and much slower. */
+export const UNKNOWN_EXIT_RESTART_LIMIT = 3;
+export const UNKNOWN_EXIT_RESTART_WINDOW_MS = 10 * 60_000;
+/** Delay before each automatic attempt after an unknown exit, by how many attempts the window already holds. */
+export const UNKNOWN_EXIT_RESTART_BACKOFF_MS = [
+  5_000, 60_000, 300_000,
+] as const;
+
+/** Which budget an automatic attempt draws on: the one for known exits, or the slower one for unknown exits. */
+export type RestartBudget = "known-exit" | "unknown-exit";
+
+/** What a supervision pass may do beyond each Service's own restart policy. With `retryUnknownExits` false no unknown exit
+ * of the Target is started again, whatever its policy: a rule that knows more about why every process vanished (a detected
+ * Host restart, say) narrows the pass per Target through this. */
+export interface SupervisionScope {
+  readonly retryUnknownExits: boolean;
+}
+export const DEFAULT_SUPERVISION_SCOPE: SupervisionScope = {
+  retryUnknownExits: true,
+};
+
+interface BudgetRule {
+  readonly limit: number;
+  readonly windowMs: number;
+  /** "60 s", "10 min": the window as Activity and status name it. */
+  readonly window: string;
+  /** The delay before the next attempt when `spent` attempts are already in the window. */
+  delayMs(spent: number): number;
+}
+const BUDGETS: Record<RestartBudget, BudgetRule> = {
+  "known-exit": {
+    limit: RESTART_LIMIT,
+    windowMs: RESTART_WINDOW_MS,
+    window: `${RESTART_WINDOW_MS / 1000} s`,
+    delayMs: (spent) => RESTART_BACKOFF_MS * 2 ** spent,
+  },
+  "unknown-exit": {
+    limit: UNKNOWN_EXIT_RESTART_LIMIT,
+    windowMs: UNKNOWN_EXIT_RESTART_WINDOW_MS,
+    window: `${UNKNOWN_EXIT_RESTART_WINDOW_MS / 60_000} min`,
+    delayMs: (spent) =>
+      UNKNOWN_EXIT_RESTART_BACKOFF_MS[
+        Math.min(spent, UNKNOWN_EXIT_RESTART_BACKOFF_MS.length - 1)
+      ]!,
+  },
+};
 
 type Deps = Pick<
   RuntimeDependencies,
@@ -59,6 +106,9 @@ export function observedOutcome(
       ? {}
       : { exitCode: observation.exitCode }),
     ...(observation.signal === undefined ? {} : { signal: observation.signal }),
+    ...(observation.recordedBy === undefined
+      ? {}
+      : { recordedBy: observation.recordedBy }),
     at,
   };
 }
@@ -72,15 +122,57 @@ export function cleanExit(outcome: ServiceOutcome): boolean {
   );
 }
 
-/** Whether `policy` starts the Service again after `outcome`. An unknown outcome and a failed explicit start never do. */
-export function retries(
+/** The budget an automatic start after `outcome` draws on under `policy`, or nothing when the Service stays stopped.
+ * A known exit follows the policy. An unknown exit is started again only under `always`, and only while `scope` allows it;
+ * a failed explicit start never is. */
+export function restartBudget(
   policy: RestartPolicy,
   outcome: ServiceOutcome,
-): boolean {
-  if (outcome.kind === "unknown" || outcome.kind === "start-failed")
-    return false;
-  if (policy === "no") return false;
-  return policy === "always" || !cleanExit(outcome);
+  scope: SupervisionScope = DEFAULT_SUPERVISION_SCOPE,
+): RestartBudget | undefined {
+  if (outcome.kind === "start-failed") return undefined;
+  if (outcome.kind === "unknown")
+    return policy === "always" && scope.retryUnknownExits
+      ? "unknown-exit"
+      : undefined;
+  if (policy === "no") return undefined;
+  return policy === "always" || !cleanExit(outcome) ? "known-exit" : undefined;
+}
+
+/** The automatic attempts `run` has spent from `budget`'s allowance since the last explicit start. */
+function spentAttempts(run: ServiceRun, budget: RestartBudget): number[] {
+  return budget === "known-exit" ? run.attempts : (run.unknownAttempts ?? []);
+}
+/** `run` with `budget`'s spent attempts replaced by `attempts`. */
+function withAttempts(
+  run: ServiceRun,
+  budget: RestartBudget,
+  attempts: number[],
+): ServiceRun {
+  return budget === "known-exit"
+    ? { ...run, attempts }
+    : { ...run, unknownAttempts: attempts };
+}
+
+/** When the next automatic attempt from `budget` is due for a Service that ended at `endedAt`, keeping only the attempts
+ * still inside the budget's window at `now`; `exhausted` when the window already holds the budget's limit. */
+export function scheduleAttempt(
+  run: ServiceRun,
+  budget: RestartBudget,
+  endedAt: number,
+  now: number,
+): { exhausted: true } | { run: ServiceRun } {
+  const rule = BUDGETS[budget];
+  const recent = spentAttempts(run, budget).filter(
+    (at) => now - at < rule.windowMs,
+  );
+  if (recent.length >= rule.limit) return { exhausted: true };
+  return {
+    run: {
+      ...withAttempts(run, budget, recent),
+      retryAt: endedAt + rule.delayMs(recent.length),
+    },
+  };
 }
 
 /** Saves one Service's record with an optional Activity entry, in one write that touches nothing else of the saved Target:
@@ -123,12 +215,12 @@ async function saveRun(
 }
 
 /** The journal a start runs under. Every `starting` is saved before it answers, so a process never carries an incarnation the
- * record does not name. An `explicit` start (an operator's up or restart, a deployment) begins a new activation with a full
- * budget of automatic attempts; an `automatic` one spends an attempt of the current activation.
+ * record does not name. An `explicit` start (an operator's up or restart, a deployment) begins a new activation with full
+ * budgets of automatic attempts; an automatic one spends an attempt of the named budget of the current activation.
  * `failed` marks the Services an explicit start began as not started after it was rolled back; nothing retries that. */
 export function activationJournal(
   target: TargetRecord,
-  mode: "explicit" | "automatic",
+  mode: "explicit" | RestartBudget,
   deps: Pick<Deps, "store" | "now" | "id">,
 ): ActivationJournal & { failed(error: unknown): Promise<void> } {
   const begun: string[] = [];
@@ -136,18 +228,18 @@ export function activationJournal(
     async starting(service) {
       const incarnation = deps.id();
       const current = currentRun(target, service);
+      const fresh: ServiceRun = {
+        deployment: target.plan.workspacePath,
+        intent: "running",
+        incarnation,
+        attempts: [],
+      };
       await saveRun(
         target,
         service,
-        {
-          deployment: target.plan.workspacePath,
-          intent: "running",
-          incarnation,
-          attempts:
-            mode === "automatic"
-              ? [...(current?.attempts ?? []), Date.parse(deps.now())]
-              : [],
-        },
+        mode === "explicit"
+          ? fresh
+          : automaticStart(fresh, current, mode, Date.parse(deps.now())),
         deps,
       );
       begun.push(service);
@@ -176,12 +268,32 @@ export function activationJournal(
     },
   };
 }
+/** The record of an automatic start at `now`: both budgets carry over from `current`, and `budget` spends one attempt. */
+function automaticStart(
+  fresh: ServiceRun,
+  current: ServiceRun | undefined,
+  budget: RestartBudget,
+  now: number,
+): ServiceRun {
+  const carried: ServiceRun = {
+    ...fresh,
+    attempts: current?.attempts ?? [],
+    ...(current?.unknownAttempts
+      ? { unknownAttempts: current.unknownAttempts }
+      : {}),
+    ...(budget === "unknown-exit" ? { restartedAfterUnknown: true } : {}),
+  };
+  return withAttempts(carried, budget, [
+    ...spentAttempts(carried, budget),
+    now,
+  ]);
+}
 
 /** Records that an operator stopped the Target: no exit of any of its Services is retried and no retry stays scheduled.
  * Updates `target` in place; the caller saves it before it stops anything. */
 export function intendStopped(target: TargetRecord): void {
   for (const [service, run] of Object.entries(target.services ?? {})) {
-    const { retryAt: _retryAt, ...rest } = run;
+    const { retryAt: _retryAt, waitingFor: _waitingFor, ...rest } = run;
     target.services![service] = { ...rest, intent: "stopped" };
   }
 }
@@ -195,18 +307,21 @@ export function intendRunning(target: TargetRecord): void {
 }
 
 /** One pass over a Target meant to run. A running Service is left alone, which is how a process that survived the daemon is
- * adopted. A stopped one has its outcome recorded once, then is started again only when its policy retries that known outcome,
- * its budget allows and its backoff has passed. Returns when the earliest scheduled attempt is due, in Unix milliseconds.
+ * adopted. A stopped one has its outcome recorded once, then is started again only when its policy (within `scope`) retries
+ * that outcome, the outcome's budget allows and its backoff has passed. A due attempt waits, spending nothing, while a
+ * Service it depends on is not running, and after an unknown exit while one of its ports still accepts connections.
+ * Returns when the earliest scheduled attempt is due, in Unix milliseconds.
  * A record that cannot be saved ends the Service's pass before anything is started. */
 export async function superviseTarget(
   target: TargetRecord,
   deps: Deps,
+  scope: SupervisionScope = DEFAULT_SUPERVISION_SCOPE,
 ): Promise<number | undefined> {
   let next: number | undefined;
   for (const component of target.plan.components) {
     if (component.kind !== "managed") continue;
     try {
-      const due = await superviseService(target, component, deps);
+      const due = await superviseService(target, component, deps, scope);
       if (due !== undefined) next = Math.min(next ?? due, due);
     } catch (error) {
       await deps
@@ -227,9 +342,11 @@ async function superviseService(
   target: TargetRecord,
   component: ManagedComponent,
   deps: Deps,
+  scope: SupervisionScope,
 ): Promise<number | undefined> {
   const service = component.name;
-  // An observation that does not answer within the status budget decides nothing; the pass moves on.
+  // An observation that does not answer within the status budget decides nothing; the pass moves on. A stopped one means
+  // nothing of the start runs any more, the application a capture wrapper last reported included.
   const [observed] = await boundedObservations(
     [(signal) => deps.observations.process(target, component, signal)],
     deps.observationBudgetMs,
@@ -241,6 +358,7 @@ async function superviseService(
   const observation = observed.value;
   let run = currentRun(target, service);
   if (run?.intent === "stopped" || run?.exhausted) return undefined;
+  const policy = component.restart ?? "always";
   if (!run?.outcome) {
     const outcome = observedOutcome(run, observation, deps.now());
     run = {
@@ -251,58 +369,77 @@ async function superviseService(
       }),
       outcome,
     };
-    await saveRun(target, service, run, deps, exitActivity(service, outcome));
+    await saveRun(
+      target,
+      service,
+      run,
+      deps,
+      exitActivity(service, outcome, restartBudget(policy, outcome, scope)),
+    );
   }
   const outcome = run.outcome!;
-  if (!retries(component.restart ?? "always", outcome)) return undefined;
+  const budget = restartBudget(policy, outcome, scope);
+  if (!budget) return undefined;
   const now = Date.parse(deps.now());
   if (run.retryAt === undefined) {
-    const recent = run.attempts.filter((at) => now - at < RESTART_WINDOW_MS);
-    if (recent.length >= RESTART_LIMIT) {
+    const scheduled = scheduleAttempt(run, budget, Date.parse(outcome.at), now);
+    if ("exhausted" in scheduled) {
       await saveRun(target, service, { ...run, exhausted: true }, deps, {
         action: "restart",
         outcome: "failed",
-        message: `${service} used its ${RESTART_LIMIT} automatic restarts within ${RESTART_WINDOW_MS / 1000} s and stays stopped. Run rig restart ${target.name} once the cause is fixed.`,
+        message: `${service} ${exhaustedText(budget)} and stays stopped. Run rig restart ${target.name} once the cause is fixed.`,
       });
       return undefined;
     }
-    run = {
-      ...run,
-      attempts: recent,
-      retryAt: Date.parse(outcome.at) + RESTART_BACKOFF_MS * 2 ** recent.length,
-    };
+    run = scheduled.run;
     await saveRun(target, service, run, deps);
   }
   if (now < run.retryAt!) return run.retryAt;
-  const journal = activationJournal(target, "automatic", deps);
+  if (budget === "unknown-exit") {
+    // Nothing says the process that ended is not still serving under another identity: its ports must be free first.
+    const busy = await listeningPorts(target, component, deps);
+    if (busy === undefined) return undefined;
+    if (busy.length) {
+      await holdBack(target, service, run, { ports: busy }, deps);
+      return undefined;
+    }
+  }
+  const journal = activationJournal(target, budget, deps);
   try {
     await deps.lifecycle.recover(target, service, journal);
   } catch (error) {
-    // Every failed attempt spends budget, one refused before anything was spawned too, so a Service that cannot start
-    // (a dependency that stays down, say) ends exhausted and visible instead of being asked again forever.
-    const code = diagnosticErrorCode(error);
-    const { retryAt: _retryAt, ...current } = currentRun(target, service)!;
+    const current = currentRun(target, service)!;
+    const refusedBeforeStart = current.incarnation === run.incarnation;
+    // A refusal for a dependency that is down spawned nothing: the Service waits for it without spending budget.
+    const dependency = refusedBeforeStart
+      ? missingDependency(error)
+      : undefined;
+    if (dependency !== undefined) {
+      await holdBack(target, service, current, { service: dependency }, deps);
+      return undefined;
+    }
+    // Every other failed attempt spends budget, one refused before anything was spawned too, so a Service that cannot
+    // start ends exhausted and visible instead of being asked again forever.
+    const { retryAt: _retryAt, waitingFor: _waitingFor, ...rest } = current;
     await saveRun(
       target,
       service,
       {
-        ...current,
-        attempts:
-          current.incarnation === run.incarnation
-            ? [...current.attempts, now]
-            : current.attempts,
+        ...(refusedBeforeStart
+          ? withAttempts(rest, budget, [...spentAttempts(rest, budget), now])
+          : rest),
         outcome: failedAttemptOutcome(error, deps.now()),
       },
       deps,
       {
         action: "restart",
         outcome: "failed",
-        message: `${service} could not be started again automatically (${code}).`,
+        message: `${service} could not be started again automatically (${diagnosticErrorCode(error)}).`,
       },
     );
-    return await superviseService(target, component, deps);
+    return await superviseService(target, component, deps, scope);
   }
-  const attempts = currentRun(target, service)!.attempts.length;
+  const attempts = spentAttempts(currentRun(target, service)!, budget).length;
   await deps.store.update((state) =>
     recordActivity(state, {
       id: deps.id(),
@@ -312,10 +449,49 @@ async function superviseService(
       occurredAt: deps.now(),
       action: "restart",
       outcome: "started",
-      message: `${service} was started again automatically (attempt ${attempts} of ${RESTART_LIMIT} within ${RESTART_WINDOW_MS / 1000} s).`,
+      message: startedText(service, budget, attempts),
     }),
   );
   return undefined;
+}
+
+/** The Service's ports that still accept connections, or nothing when the probe did not answer within the status budget. */
+async function listeningPorts(
+  target: TargetRecord,
+  component: ManagedComponent,
+  deps: Deps,
+): Promise<number[] | undefined> {
+  const [probed] = await boundedObservations(
+    [(signal) => deps.observations.listening(target, component, signal)],
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
+  if (probed?.kind === "rejected") throw probed.error;
+  return probed?.kind === "completed" ? probed.value : undefined;
+}
+
+/** The Service a SERVICE_DEPENDENCY refusal names, or nothing for any other failure. */
+function missingDependency(error: unknown): string | undefined {
+  if (!(error instanceof RigError) || error.code !== "SERVICE_DEPENDENCY")
+    return undefined;
+  const { dependency } = error.details;
+  return typeof dependency === "string" ? dependency : undefined;
+}
+
+/** Records why a due attempt waits, with Activity only when the reason changes, so a long wait is one entry. */
+async function holdBack(
+  target: TargetRecord,
+  service: string,
+  run: ServiceRun,
+  waitingFor: NonNullable<ServiceRun["waitingFor"]>,
+  deps: Deps,
+): Promise<void> {
+  if (JSON.stringify(run.waitingFor) === JSON.stringify(waitingFor)) return;
+  await saveRun(target, service, { ...run, waitingFor }, deps, {
+    action: "restart",
+    outcome: "unchanged",
+    message: `${service} is not started again yet: ${waitingText(waitingFor)}. Waiting spends none of its automatic restarts.`,
+  });
 }
 
 /** What a failed automatic attempt leaves on record. A start refused before it was journalled, or one Rig itself stopped, is a failure it witnessed. A process that
@@ -344,20 +520,32 @@ export function stoppedStanding(
   target: Pick<TargetRecord, "services" | "plan" | "desired">,
   component: ManagedComponent,
   observation: ProcessObservation,
+  scope: SupervisionScope = DEFAULT_SUPERVISION_SCOPE,
 ): Pick<ComponentReport, "state" | "exit" | "exitCode" | "signal" | "reason"> {
   const run = currentRun(target, component.name);
   if (target.desired !== "running" || run?.intent === "stopped")
     return { state: "stopped", ...(run ? { exit: "requested" } : {}) };
   const outcome = run?.outcome ?? observedOutcome(run, observation, "");
   const again = "Run rig up to start it again.";
-  if (outcome.kind === "unknown")
-    return {
-      state: "failed",
-      exit: "unknown",
-      reason: `The process is not running and nothing recorded how it ended, so it was not restarted. ${again}`,
-    };
   const policy = component.restart ?? "always";
-  const pending = retries(policy, outcome) && !run?.exhausted;
+  const budget = restartBudget(policy, outcome, scope);
+  const pending = budget !== undefined && !run?.exhausted;
+  const next = run?.waitingFor
+    ? waitingText(run.waitingFor)
+    : "an automatic restart is scheduled";
+  if (outcome.kind === "unknown") {
+    const ended =
+      "The process is not running and nothing recorded how it ended";
+    return {
+      state: pending ? "starting" : "failed",
+      exit: "unknown",
+      reason: pending
+        ? `${ended}; under restart: always it is started again once it is verified gone and its ports are free (${next}).`
+        : run?.exhausted
+          ? `${ended}, and it ${exhaustedText("unknown-exit")}, so it stays stopped. ${again}`
+          : `${ended}, so it was not restarted. ${again}`,
+    };
+  }
   const ended =
     outcome.kind === "exited"
       ? `The process ${describeExit(outcome)}`
@@ -372,21 +560,42 @@ export function stoppedStanding(
       ? { signal: outcome.signal }
       : {}),
     reason: pending
-      ? `${ended}; an automatic restart is scheduled.`
+      ? `${ended}; ${next}.`
       : run?.exhausted
-        ? `${ended} after ${RESTART_LIMIT} automatic restarts within ${RESTART_WINDOW_MS / 1000} s, so it stays stopped. ${again}`
+        ? `${ended} after ${RESTART_LIMIT} automatic restarts within ${BUDGETS["known-exit"].window}, so it stays stopped. ${again}`
         : outcome.kind === "start-failed"
           ? `${ended}. ${again}`
           : `${ended} and its restart policy is ${policy}, so it stays stopped. ${again}`,
   };
 }
 
-function exitActivity(service: string, outcome: ServiceOutcome): Activity {
+/** What status adds about a running Service: that it was started again automatically after an unknown exit, while the
+ * process running is the one that start made. */
+export function runningNote(
+  target: Pick<TargetRecord, "services" | "plan">,
+  component: ManagedComponent,
+  observation: ProcessObservation,
+): string | undefined {
+  const run = currentRun(target, component.name);
+  return run?.restartedAfterUnknown &&
+    observation.incarnation !== undefined &&
+    observation.incarnation === run.incarnation
+    ? "Started again automatically after its previous process ended with nothing recorded about how (unknown exit, restarted)."
+    : undefined;
+}
+
+function exitActivity(
+  service: string,
+  outcome: ServiceOutcome,
+  budget: RestartBudget | undefined,
+): Activity {
   if (outcome.kind !== "exited")
     return {
       action: "exit",
       outcome: "failed",
-      message: `${service} is not running and nothing recorded how it ended, so it was not started again.`,
+      message: budget
+        ? `${service} is not running and nothing recorded how it ended; under restart: always it is started again once it is verified gone and its ports are free.`
+        : `${service} is not running and nothing recorded how it ended, so it was not started again.`,
     };
   return {
     action: cleanExit(outcome) ? "exit" : "crash",
@@ -395,11 +604,51 @@ function exitActivity(service: string, outcome: ServiceOutcome): Activity {
   };
 }
 
-/** "exited with code 3", "was ended by SIGKILL". */
+/** "used its 5 automatic restarts within 60 s", "ended with nothing recorded after its 3 automatic restarts within 10 min". */
+function exhaustedText(budget: RestartBudget): string {
+  const rule = BUDGETS[budget];
+  return budget === "known-exit"
+    ? `used its ${rule.limit} automatic restarts within ${rule.window}`
+    : `ended with nothing recorded about how after its ${rule.limit} automatic restarts for unknown exits within ${rule.window}`;
+}
+
+function startedText(
+  service: string,
+  budget: RestartBudget,
+  attempt: number,
+): string {
+  const rule = BUDGETS[budget];
+  return budget === "known-exit"
+    ? `${service} was started again automatically (attempt ${attempt} of ${rule.limit} within ${rule.window}).`
+    : `${service} ended with nothing recorded about how and was started again automatically (unknown exit, restarted: attempt ${attempt} of ${rule.limit} within ${rule.window}).`;
+}
+
+function waitingText(
+  waitingFor: NonNullable<ServiceRun["waitingFor"]>,
+): string {
+  if ("service" in waitingFor)
+    return `waiting for ${waitingFor.service}, which it depends on, to be running`;
+  const [first, ...rest] = waitingFor.ports;
+  return rest.length
+    ? `waiting for ports ${waitingFor.ports.join(", ")}, which still accept connections, to be free`
+    : `waiting for port ${first}, which still accepts connections, to be free`;
+}
+
+/** Who recorded an end the application's own record does not describe. */
+const WITNESSES = {
+  launchd: "from launchd's record of its job",
+  rigd: "from rigd's record of its capture wrapper",
+} as const;
+
+/** "exited with code 3", "was ended by SIGKILL", "was ended by SIGTERM (from launchd's record of its job)". */
 export function describeExit(
   outcome: Extract<ServiceOutcome, { kind: "exited" }>,
 ): string {
-  return outcome.signal === undefined
-    ? `exited with code ${outcome.exitCode}`
-    : `was ended by ${outcome.signal}`;
+  const ended =
+    outcome.signal === undefined
+      ? `exited with code ${outcome.exitCode}`
+      : `was ended by ${outcome.signal}`;
+  return outcome.recordedBy === undefined
+    ? ended
+    : `${ended} (${WITNESSES[outcome.recordedBy]})`;
 }

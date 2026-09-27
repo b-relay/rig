@@ -51,7 +51,7 @@ const componentReportSchema = z
       .enum(["clean", "failed", "requested", "unknown"])
       .optional()
       .describe(
-        "How a stopped Service ended: a clean exit, a failure, a stop an operator requested, or unknown when nothing recorded it. An unknown exit is never restarted automatically.",
+        "How a stopped Service ended: a clean exit, a failure, a stop an operator requested, or unknown when nothing recorded it. An unknown exit is started again automatically only under restart: always, on a slower budget.",
       ),
     reason: z.string().optional().describe("Explanation of the observation."),
   })

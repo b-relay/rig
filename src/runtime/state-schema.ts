@@ -150,6 +150,12 @@ const services = z
             kind: z.literal("exited"),
             exitCode: z.number().int().optional(),
             signal: text.optional(),
+            recordedBy: z
+              .enum(["launchd", "rigd"])
+              .optional()
+              .describe(
+                "Who saw the end when the application's own exit record was missing: launchd's record of its capture wrapper's job, or rigd's record of the wrapper it spawned.",
+              ),
             at,
           }),
           z.object({
@@ -163,12 +169,41 @@ const services = z
         .describe(
           "How the latest process ended; unknown means it is gone and nothing recorded how.",
         ),
+      unknownAttempts: z
+        .array(z.number().finite())
+        .optional()
+        .describe(
+          "Unix milliseconds of the automatic attempts made after an unknown exit since the last explicit start; a separate, slower budget.",
+        ),
       retryAt: z
         .number()
         .finite()
         .optional()
         .describe(
           "Unix milliseconds before which the next automatic attempt must not start.",
+        ),
+      waitingFor: z
+        .union([
+          z.object({
+            service: text.describe(
+              "The Service it depends on that is not running.",
+            ),
+          }),
+          z.object({
+            ports: z
+              .array(z.number().int())
+              .describe("Its ports that still accept connections."),
+          }),
+        ])
+        .optional()
+        .describe(
+          "Why a due automatic attempt is held back without spending budget.",
+        ),
+      restartedAfterUnknown: z
+        .literal(true)
+        .optional()
+        .describe(
+          "The running process was started automatically after an unknown exit.",
         ),
       exhausted: z
         .literal(true)

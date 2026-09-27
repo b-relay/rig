@@ -26,12 +26,17 @@ export interface HostReservations {
   claimPreview(operationId: string, projectId: string, name: string): void;
   /** The Previews of `projectId` other Operations are creating. */
   claimedPreviews(projectId: string, exceptOperation: string): Set<string>;
+  /** How many Preview claims of `projectId` have ended since this daemon started. A claim ends when its Operation does,
+   * after the Operation recorded its Preview or failed; a change across a state read means the read may predate a
+   * Preview whose claim is no longer counted, so the read must be made again. */
+  endedPreviewClaims(projectId: string): number;
   release(operationId: string): void;
 }
 
 export function createHostReservations(): HostReservations {
   const ports = new Map<string, Map<number, PortOwner>>();
   const previews = new Map<string, { projectId: string; name: string }[]>();
+  const ended = new Map<string, number>();
   // Port choices run one at a time: each sees every port the ones before it took.
   let choosing: Promise<unknown> = Promise.resolve();
   const reservedPorts = () =>
@@ -70,8 +75,11 @@ export function createHostReservations(): HostReservations {
           .map((claim) => claim.name),
       );
     },
+    endedPreviewClaims: (projectId) => ended.get(projectId) ?? 0,
     release(operationId) {
       ports.delete(operationId);
+      for (const claim of previews.get(operationId) ?? [])
+        ended.set(claim.projectId, (ended.get(claim.projectId) ?? 0) + 1);
       previews.delete(operationId);
     },
   };

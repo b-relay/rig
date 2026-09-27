@@ -506,6 +506,64 @@ test("two new Previews deployed at once count against the Preview limit together
   ).toMatchObject([{ branch: "oldest", reason: "Preview limit" }]);
 });
 
+test("a new Preview deployed and finished while another deploy reads the state still counts against the Preview limit", async () => {
+  const f = await fixture({ deploy: { previews: { max: 2 } } });
+  await f.register("alpha");
+  await f.runtime.command({
+    action: "deploy",
+    project: "alpha",
+    target: "preview",
+    branch: "oldest",
+  });
+  f.advance(1000);
+  // feature-a's count reads the state as it is before feature-b is recorded, and gets the answer only after
+  // feature-b has been deployed and its claim has ended.
+  const store = f.deps.store;
+  const read = store.read.bind(store);
+  const preflight = f.deps.sources.preflight.bind(f.deps.sources);
+  let armed = false;
+  const paused = gate();
+  const resume = gate();
+  f.deps.sources.preflight = async (input) => {
+    const result = await preflight(input);
+    if (input.branch === "feature-a") armed = true;
+    return result;
+  };
+  store.read = async () => {
+    const state = await read();
+    if (!armed) return state;
+    armed = false;
+    paused.open();
+    await resume.opened;
+    return state;
+  };
+  const first = f.runtime.command({
+    action: "deploy",
+    project: "alpha",
+    target: "preview",
+    branch: "feature-a",
+  });
+  await paused.opened;
+  expect(
+    await f.runtime.command({
+      action: "deploy",
+      project: "alpha",
+      target: "preview",
+      branch: "feature-b",
+    }),
+  ).toMatchObject({ outcome: "deployed", retired: [] });
+  resume.open();
+  expect(await first).toMatchObject({
+    outcome: "deployed",
+    retired: [{ branch: "oldest", reason: "Preview limit" }],
+  });
+  const previews = (await f.targets()).filter((t) => t.kind === "preview");
+  expect(previews.map((t) => t.branch).sort()).toEqual([
+    "feature-a",
+    "feature-b",
+  ]);
+});
+
 test("a slow automatic restart hands its Target over to its lease; the pass returns and other Targets are still supervised", async () => {
   const f = await fixture();
   const budget = controlledDeadline();
@@ -629,6 +687,30 @@ test("a config edit never waits for a Target's stop, only for another edit of th
   expect(await second).toBe("second");
   release();
   await down;
+});
+
+test("init of a registered Project never waits for a Target's stop, nor holds the Project's other Targets behind it", async () => {
+  const f = await fixture();
+  await f.register("alpha");
+  await f.runtime.command({ action: "up", project: "alpha" });
+  const release = f.holdStop("alpha");
+  const down = f.runtime.command({ action: "down", project: "alpha" });
+  await until(() => f.events.includes("stop alpha local"));
+  const init = f.runtime.command({
+    action: "init",
+    repoPath: join(f.root, "alpha"),
+  });
+  const preview = f.runtime.command({
+    action: "deploy",
+    project: "alpha",
+    target: "preview",
+    branch: "feature-a",
+  });
+  expect(await init).toMatchObject({ outcome: "registered" });
+  expect(await preview).toMatchObject({ outcome: "deployed" });
+  expect(await settled(down)).toBe(false);
+  release();
+  expect(await down).toMatchObject({ outcome: "stopped" });
 });
 
 test("an up that waited behind a stop plans from rig.yaml as it is once admitted", async () => {

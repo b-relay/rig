@@ -1,4 +1,5 @@
 import { ConfigError } from "../config/errors";
+import { RigError } from "../domain/errors";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 export interface DoctorCheck {
   name: string;
@@ -10,6 +11,7 @@ export interface DoctorCheck {
 /** The observations offline doctor reports; the owner binds them to the host and the filesystem. */
 export interface OfflineHostReads {
   inspectHost(root: string): Promise<DoctorCheck[]>;
+  /** The Project discovery rigd runs for `cwd`: a linked worktree reads its main checkout's config. */
   discoverProject(
     cwd: string,
   ): Promise<{ repoPath: string; document: ConfigDocument<ProjectConfig> }>;
@@ -43,12 +45,12 @@ export async function inspectOfflineHost(
         name: "project-config",
         ok: false,
         message:
-          error instanceof ConfigError
+          error instanceof ConfigError || error instanceof RigError
             ? error.message
             : "Project discovery failed.",
         reason: "config-invalid",
         hint:
-          error instanceof ConfigError
+          error instanceof ConfigError || error instanceof RigError
             ? error.hint
             : "Inspect the Project directory.",
       });

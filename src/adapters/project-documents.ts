@@ -1,4 +1,5 @@
-import { basename, join, sep } from "node:path";
+import { lstat } from "node:fs/promises";
+import { basename, join, relative, sep } from "node:path";
 import { ConfigError } from "../config/errors";
 import {
   discoverProject,
@@ -24,6 +25,7 @@ import {
   inspectProjectLocation,
   ensureProjectGit,
   type ProjectDiscovery,
+  type ProjectLocation,
 } from "../git/project";
 export function createProjectDocuments(
   root: string,
@@ -38,9 +40,9 @@ export function createProjectDocuments(
   // The adapter is the effect owner: it binds the config documents on disk once, here.
   const reads: InitializationReads = {
     discovery,
-    discoverConfig: async (path) => {
+    discoverConfig: async (path, root) => {
       try {
-        return await discoverProject(path);
+        return await discoverProject(await searchStart(root, path), root);
       } catch (error) {
         if (error instanceof ConfigError && error.code === "missing_config")
           return undefined;
@@ -52,11 +54,7 @@ export function createProjectDocuments(
   return {
     async discover(path) {
       const location = await inspectProjectLocation(path, discovery);
-      const found = await nearestConfigWithin(
-        path,
-        location.repoPath,
-        reads.discoverConfig,
-      );
+      const found = await nearestConfigWithin(location, reads.discoverConfig);
       if (!found)
         throw new ConfigError(
           "No Project config found in this directory or its parents within the repository.",
@@ -130,9 +128,12 @@ export function createProjectDocuments(
 /** Everything initialization reads; the adapter binds the real documents, a test scripts them. */
 export interface InitializationReads {
   discovery: ProjectDiscovery;
-  /** The Project config the upward search from `path` finds, or undefined when there is none. */
+  /** The Project config the upward search finds, never above `root`, starting from `path` or, when the
+   * repository at `root` lacks it as a plain directory of its own, the deepest parent it has as one;
+   * undefined when there is none. */
   discoverConfig(
     path: string,
+    root: string,
   ): Promise<
     { repoPath: string; document: ConfigDocument<ProjectConfig> } | undefined
   >;
@@ -154,11 +155,7 @@ export async function inspectInitialization(
       "Explicitly use rig init --create-git.",
     );
   // The Project other commands discover is the nearest config at or above the path within the repository.
-  const nearest = await nearestConfigWithin(
-    path,
-    location.repoPath,
-    reads.discoverConfig,
-  );
+  const nearest = await nearestConfigWithin(location, reads.discoverConfig);
   const repoPath = nearest?.repoPath ?? location.repoPath;
   const existing = nearest?.document;
   const name =
@@ -185,19 +182,47 @@ export async function inspectInitialization(
   };
 }
 
-/** The config the upward search from `path` finds, provided it lies inside the repository root. */
+/** The config the upward search finds from the location's place in the main working tree, provided
+ * it lies inside the repository: a linked worktree selects the Project its main checkout registers. */
 async function nearestConfigWithin(
-  path: string,
-  root: string,
+  location: Pick<ProjectLocation, "repoPath" | "mainTreePath">,
   discoverConfig: InitializationReads["discoverConfig"],
 ): Promise<
   { repoPath: string; document: ConfigDocument<ProjectConfig> } | undefined
 > {
-  const found = await discoverConfig(path);
+  const root = location.repoPath;
+  const found = await discoverConfig(location.mainTreePath, root);
   return found &&
     (found.repoPath === root || found.repoPath.startsWith(root + sep))
     ? found
     : undefined;
+}
+/** The deepest directory on the way from `root` to `path` that the repository at `root` holds as a
+ * plain directory of its own. A linked worktree's Branch can hold a directory where the main tree has
+ * nothing, a file, a symlink, or a separate repository (a `.git` entry); the search starts above it. */
+async function searchStart(root: string, path: string): Promise<string> {
+  let directory = root;
+  for (const segment of relative(root, path).split(sep)) {
+    if (!segment || segment === "..") break;
+    const next = join(directory, segment);
+    if (
+      !(await entry(next))?.isDirectory() ||
+      (await entry(join(next, ".git")))
+    )
+      break;
+    directory = next;
+  }
+  return directory;
+}
+/** The entry itself, never a symlink's target; undefined when nothing is there. */
+async function entry(path: string) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    const code = (error as { code?: string })?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+    throw error;
+  }
 }
 
 function projectSlug(directory: string): string {

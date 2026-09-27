@@ -11,7 +11,13 @@ const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });
 const absent = { exitCode: 1, stdout: "", stderr: "" };
 /** A repository at /repo on branch work with no origin/HEAD, answered without a filesystem. */
 function repoDiscovery(): ProjectDiscovery {
-  const responses = [ok("false"), ok("worktree /repo\n"), absent, ok("work")];
+  const responses = [
+    ok("false"),
+    ok("worktree /repo\n"),
+    ok("\n"),
+    absent,
+    ok("work"),
+  ];
   return {
     canonicalize: async (path) => path,
     run: async () => responses.shift() ?? absent,

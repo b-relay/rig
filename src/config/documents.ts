@@ -181,9 +181,11 @@ export async function readProjectConfig(
   }
   return readDocument(path, parseProjectConfig);
 }
-/** Searches upward from a directory or file. Ambiguous or invalid nearer config never falls through. */
+/** Searches upward from a directory or file, never above `boundary` when one is given (a
+ * canonical directory at or above the start). Ambiguous or invalid nearer config never falls through. */
 export async function discoverProject(
   startPath: string,
+  boundary?: string,
 ): Promise<{ repoPath: string; document: ConfigDocument<ProjectConfig> }> {
   let directory = await realpath(startPath);
   if (!(await stat(directory)).isDirectory()) directory = dirname(directory);
@@ -195,7 +197,7 @@ export async function discoverProject(
         document: await readDocument(path, parseProjectConfig),
       };
     const parent = dirname(directory);
-    if (parent === directory)
+    if (parent === directory || directory === boundary)
       throw new ConfigError(
         "No Project config found in this directory or its parents.",
         "missing_config",

@@ -312,7 +312,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (command.action === "deployment-context") {
         let currentBranch: string | null;
         try {
-          currentBranch = await deps.sources.currentBranch(project.repoPath);
+          currentBranch = await deps.sources.currentBranch(selection.checkout);
         } catch (error) {
           if (!(error instanceof RigError) || error.code !== "GIT_DETACHED")
             throw error;
@@ -395,7 +395,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       )
         command = {
           ...command,
-          branch: await deps.sources.currentBranch(project.repoPath),
+          branch: await deps.sources.currentBranch(selection.checkout),
         };
       // One document snapshot serves the whole action: the names that select the Target and the plan made from it.
       const configured = await checkoutConfig(
@@ -470,7 +470,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           (kind === "live"
             ? (document.config.production_branch ??
               (await deps.documents.host()).deploy.production_branch)
-            : await deps.sources.currentBranch(project.repoPath));
+            : await deps.sources.currentBranch(selection.checkout));
         attempted = true;
         const preflight =
           command.action === "git-push"

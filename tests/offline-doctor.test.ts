@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { ConfigError } from "../src/config/errors";
+import { RigError } from "../src/domain/errors";
 import { parseProjectConfig } from "../src/config";
 import {
   inspectOfflineHost,
@@ -82,5 +83,24 @@ test("offline doctor reports the host checks and discovery it is given, without 
     name: "project-config",
     ok: true,
     message: "Project 'demo' configuration is valid.",
+  });
+});
+
+test("offline doctor reports a Git discovery failure with its own message and hint", async () => {
+  const failed = reads(async () => {
+    throw new RigError(
+      "GIT_DISCOVERY",
+      "Git Project discovery failed.",
+      "Check Git availability and repository permissions.",
+    );
+  });
+  expect(
+    (await inspectOfflineHost("/rig-root", "/work/demo", failed)).checks.at(-1),
+  ).toEqual({
+    name: "project-config",
+    ok: false,
+    message: "Git Project discovery failed.",
+    reason: "config-invalid",
+    hint: "Check Git availability and repository permissions.",
   });
 });

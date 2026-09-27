@@ -14,7 +14,10 @@ import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
 import { inspectOfflineHost } from "./daemon/offline-doctor";
 import { inspectHost } from "./adapters/host-inspection";
-import { discoverProject } from "./config";
+import { createProjectDocuments } from "./adapters/project-documents";
+import { runCommand } from "./providers/command-runner";
+import { inheritedEnvironment } from "./daemon/environment";
+import { homedir } from "node:os";
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
   // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked.
@@ -72,11 +75,19 @@ export function createCliClient(
       try {
         return await (await connectDaemon(root)).command(request, signal);
       } catch (error) {
-        if (request.action === "doctor" && isDaemonUnavailable(error))
+        if (request.action === "doctor" && isDaemonUnavailable(error)) {
+          // The discovery rigd runs, so a linked worktree is checked against its main checkout's config.
+          const documents = createProjectDocuments(
+            root,
+            runCommand,
+            inheritedEnvironment(process.env),
+            homedir(),
+          );
           return inspectOfflineHost(root, request.repoPath ?? cwd, {
             inspectHost,
-            discoverProject,
+            discoverProject: (path) => documents.discover(path),
           });
+        }
         throw error;
       }
     },

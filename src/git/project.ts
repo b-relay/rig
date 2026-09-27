@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "../providers/contracts";
 import { ensureRigRemote, rigRemoteUrl } from "./remotes";
@@ -10,6 +10,13 @@ export interface ProjectGit {
   productionBranch?: string;
   /** The checked-out branch, or init.defaultBranch for a repository not yet created; absent when detached. */
   currentBranch?: string;
+}
+export interface ProjectLocation extends ProjectGit {
+  /** The inspected directory's place in the main working tree: the directory itself in the
+   * main checkout, the same relative directory for a linked worktree. The main tree may lack it. */
+  mainTreePath: string;
+  /** The directory is not in a Git working repository; `repoPath` and `mainTreePath` are the directory itself. */
+  gitRequired: boolean;
 }
 export interface EnsureProjectGitInput {
   path: string;
@@ -105,7 +112,7 @@ function branchValue(value: string): string {
 export async function inspectProjectLocation(
   path: string,
   discovery: ProjectDiscovery,
-): Promise<ProjectGit & { gitRequired: boolean }> {
+): Promise<ProjectLocation> {
   const location = await canonicalPath(path, discovery);
   const bare = await readGit(
     location,
@@ -132,6 +139,7 @@ export async function inspectProjectLocation(
       throw discoveryFailure();
     return {
       repoPath: location,
+      mainTreePath: location,
       ...(initial.exitCode === 0
         ? { currentBranch: branchValue(initial.stdout) }
         : {}),
@@ -149,6 +157,20 @@ export async function inspectProjectLocation(
   if (worktrees.exitCode !== 0 || !root || !isAbsolute(root))
     throw discoveryFailure();
   const repoPath = await canonicalPath(root, discovery);
+  // Git reports the directory relative to the top of its own checkout, so a linked worktree maps onto the main tree.
+  const prefix = await readGit(
+    location,
+    ["rev-parse", "--show-prefix"],
+    discovery,
+  );
+  const relative = prefix.stdout.replace(/\n$/, "").replace(/\/$/, "");
+  if (
+    prefix.exitCode !== 0 ||
+    isAbsolute(relative) ||
+    relative.split("/").includes("..") ||
+    /[\n\0]/.test(relative)
+  )
+    throw discoveryFailure();
   const remoteHead = await readGit(
     repoPath,
     ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
@@ -172,6 +194,7 @@ export async function inspectProjectLocation(
     throw discoveryFailure();
   return {
     repoPath,
+    mainTreePath: relative ? join(repoPath, relative) : repoPath,
     ...(remoteHead.exitCode === 0
       ? { productionBranch: branchValue(remoteHead.stdout.trim().slice(7)) }
       : {}),
@@ -186,10 +209,8 @@ export async function inspectProjectGit(
   path: string,
   discovery: ProjectDiscovery,
 ): Promise<ProjectGit> {
-  const { gitRequired, ...project } = await inspectProjectLocation(
-    path,
-    discovery,
-  );
+  const { gitRequired, mainTreePath, ...project } =
+    await inspectProjectLocation(path, discovery);
   if (gitRequired)
     throw new RigError(
       "GIT_REQUIRED",
@@ -205,8 +226,9 @@ export async function ensureProjectGit(
   discovery: ProjectDiscovery,
 ): Promise<ProjectGitSetup> {
   rigRemoteUrl(input.project); // Validate identity before any authorized Git initialization.
-  let location = await inspectProjectLocation(input.path, discovery);
+  const location = await inspectProjectLocation(input.path, discovery);
   let createdGit = false;
+  let project: ProjectGit;
   if (location.gitRequired) {
     if (!input.createGit)
       throw new RigError(
@@ -222,12 +244,11 @@ export async function ensureProjectGit(
         "Check the Project directory permissions.",
       );
     createdGit = true;
-    location = {
-      ...(await inspectProjectGit(location.repoPath, discovery)),
-      gitRequired: false,
-    };
+    project = await inspectProjectGit(location.repoPath, discovery);
+  } else {
+    const { gitRequired, mainTreePath, ...found } = location;
+    project = found;
   }
-  const { gitRequired, ...project } = location;
   return {
     ...project,
     createdGit,

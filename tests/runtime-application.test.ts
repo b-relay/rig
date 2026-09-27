@@ -1550,6 +1550,46 @@ test("Preview deployment defaults to the current Branch before computing its ide
   expect(state.targets).toHaveLength(1);
 });
 
+test("a Preview deploy selected from a linked worktree takes that checkout's Branch; --project takes the registered checkout's", async () => {
+  const { runtime, state, deps } = fixture();
+  const discover = deps.documents.discover.bind(deps.documents);
+  // Discovery maps the worktree onto the main checkout it shares.
+  deps.documents.discover = async (path) =>
+    discover(path === "/tmp/worktree" ? "/tmp/developer" : path);
+  const asked: string[] = [];
+  deps.sources.currentBranch = async (repository) => {
+    asked.push(repository);
+    return repository === "/tmp/worktree" ? "feature/worktree" : "feature/main";
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  expect(
+    await runtime.command({
+      action: "deployment-context",
+      repoPath: "/tmp/worktree",
+      target: "preview",
+    }),
+  ).toMatchObject({
+    repoPath: "/tmp/developer",
+    currentBranch: "feature/worktree",
+  });
+  await runtime.command({
+    action: "deploy",
+    repoPath: "/tmp/worktree",
+    target: "preview",
+  });
+  await runtime.command({
+    action: "deploy",
+    repoPath: "/tmp/worktree",
+    project: "demo",
+    target: "preview",
+  });
+  expect(state.targets.map((target) => target.branch).sort()).toEqual([
+    "feature/main",
+    "feature/worktree",
+  ]);
+  expect(asked).toEqual(["/tmp/worktree", "/tmp/worktree", "/tmp/developer"]);
+});
+
 test("host Activity merges final daemon administration chronologically without adding it to Project history", async () => {
   const { runtime, state, deps } = fixture();
   deps.readAdminActivity = async () => [

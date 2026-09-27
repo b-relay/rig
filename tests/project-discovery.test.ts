@@ -78,10 +78,18 @@ test("missing and unreadable paths and failed or malformed Git are distinct safe
     [{ exitCode: 128, stdout: "", stderr: "private failure" }],
     [ok("false"), ok("worktree relative/root\n")],
     [ok("false"), ok("/repo\n")],
-    [ok("false"), ok("worktree /repo\n"), ok("origin/")],
+    [ok("false"), ok("worktree /repo\n"), ok("../outside/\n")],
+    [ok("false"), ok("worktree /repo\n"), ok("/absolute/\n")],
     [
       ok("false"),
       ok("worktree /repo\n"),
+      { exitCode: 128, stdout: "", stderr: "secret" },
+    ],
+    [ok("false"), ok("worktree /repo\n"), ok("\n"), ok("origin/")],
+    [
+      ok("false"),
+      ok("worktree /repo\n"),
+      ok("\n"),
       { exitCode: 128, stdout: "", stderr: "secret" },
     ],
   ]) {
@@ -99,6 +107,7 @@ test("read-only discovery reports origin/HEAD as Production and the checkout sep
       controlled([
         ok("false"),
         ok("worktree /repo\n"),
+        ok("\n"),
         absent,
         ok("feature/work"),
       ]),
@@ -110,6 +119,7 @@ test("read-only discovery reports origin/HEAD as Production and the checkout sep
       controlled([
         ok("false"),
         ok("worktree /repo\n"),
+        ok("\n"),
         ok("origin/trunk"),
         ok("feature/work"),
       ]),
@@ -122,7 +132,13 @@ test("read-only discovery reports origin/HEAD as Production and the checkout sep
   expect(
     await inspectProjectGit(
       "/repo",
-      controlled([ok("false"), ok("worktree /repo\n"), absent, absent]),
+      controlled([
+        ok("false"),
+        ok("worktree /repo\n"),
+        ok("\n"),
+        absent,
+        absent,
+      ]),
     ),
   ).toEqual({ repoPath: "/repo" });
   const notRepo = {
@@ -134,6 +150,7 @@ test("read-only discovery reports origin/HEAD as Production and the checkout sep
     await inspectProjectLocation("/repo", controlled([notRepo, ok("trunk")])),
   ).toEqual({
     repoPath: "/repo",
+    mainTreePath: "/repo",
     currentBranch: "trunk",
     gitRequired: true,
   });

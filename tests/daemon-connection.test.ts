@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectDaemon } from "../src/daemon/connection";
@@ -343,6 +343,66 @@ test("an empty or unreadable credential is reported by its path, never as a miss
     expect(received).toEqual([]);
   } finally {
     await server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("offline Doctor in a linked worktree checks the main checkout's config, the one rigd would read", async () => {
+  const { createCliClient } = await import("../src/index");
+  const { runCommand } = await import("../src/providers/command-runner");
+  const directory = await realpath(
+    await mkdtemp(join(tmpdir(), "rig-doctor-worktree-")),
+  );
+  const repo = join(directory, "repo"),
+    worktree = join(directory, "wt");
+  const git = async (args: string[]) =>
+    expect(
+      (
+        await runCommand({
+          command: [
+            "git",
+            "-c",
+            "user.name=Rig Test",
+            "-c",
+            "user.email=test@example.invalid",
+            ...args,
+          ],
+          cwd: repo,
+          env: {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+          },
+        })
+      ).exitCode,
+    ).toBe(0);
+  try {
+    await mkdir(repo);
+    await git(["init", "-b", "main"]);
+    await writeFile(
+      join(repo, "rig.yaml"),
+      "name: demo\ntools:\n  cli:\n    bin: bin/cli\n",
+    );
+    await git(["add", "."]);
+    await git(["commit", "-m", "fixture"]);
+    await git(["worktree", "add", "-b", "feature", worktree]);
+    // The main checkout's config is broken; the worktree still holds the older valid copy.
+    await writeFile(join(repo, "rig.yaml"), "name: [unclosed\n");
+    const report = await createCliClient(
+      join(directory, ".rig"),
+      worktree,
+    ).command({ action: "doctor" });
+    expect(report).toMatchObject({
+      ok: false,
+      checks: expect.arrayContaining([
+        expect.objectContaining({
+          name: "project-config",
+          ok: false,
+          reason: "config-invalid",
+        }),
+      ]),
+    });
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

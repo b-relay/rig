@@ -13,6 +13,9 @@ export async function selectProject(
 ): Promise<{
   project: ProjectRecord;
   document?: ConfigDocument<ProjectConfig>;
+  /** The checkout whose Branch "the current Branch" means: the directory the command ran in when
+   * it selected the Project (a linked worktree keeps its own), else the registered directory. */
+  checkout: string;
 }> {
   const state = await deps.store.read();
   if (command.project) {
@@ -23,7 +26,7 @@ export async function selectProject(
         `Project '${command.project}' is not registered.`,
         "Run rig init in the Project directory.",
       );
-    if (!readConfig) return { project };
+    if (!readConfig) return { project, checkout: project.repoPath };
     const document = await deps.documents
       .read(project.repoPath)
       .catch((error) => {
@@ -32,7 +35,7 @@ export async function selectProject(
       });
     if (!adoptsConfigName(command, project, document))
       assertIdentity(project, document);
-    return { project, document };
+    return { project, document, checkout: project.repoPath };
   }
   if (!command.repoPath)
     throw new RigError(
@@ -50,7 +53,11 @@ export async function selectProject(
     : state.projects.find((p) => p.repoPath === found.repoPath);
   if (byPath) {
     if (adoptsConfigName(command, byPath, found.document))
-      return { project: byPath, document: found.document };
+      return {
+        project: byPath,
+        document: found.document,
+        checkout: command.repoPath,
+      };
     throw identityDrift(byPath, found.document);
   }
   const project = byName;
@@ -69,7 +76,7 @@ export async function selectProject(
       { registeredPath: project.repoPath },
     );
   assertIdentity(project, found.document);
-  return { project, document: found.document };
+  return { project, document: found.document, checkout: command.repoPath };
 }
 /** A config read that found no directory at all, as opposed to a directory without a config. */
 export function registeredDirectoryMissing(error: unknown): boolean {

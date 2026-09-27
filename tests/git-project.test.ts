@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import {
   ensureProjectGit,
   inspectProjectGit,
+  inspectProjectLocation,
   createProjectDiscovery,
 } from "../src/git/project";
 import { runCommand } from "../src/providers/command-runner";
@@ -390,6 +391,18 @@ test("a linked worktree is discovered as its main working tree, reporting its ow
     expect(await inspectProjectGit(main, discovery)).toEqual({
       repoPath: main,
       currentBranch: "main",
+    });
+    // A directory in the worktree is placed at the same relative directory of the main tree.
+    await mkdir(join(linked, "packages", "web"), { recursive: true });
+    expect(
+      await inspectProjectLocation(join(linked, "packages", "web"), discovery),
+    ).toMatchObject({
+      repoPath: main,
+      mainTreePath: join(main, "packages", "web"),
+      currentBranch: "feature",
+    });
+    expect(await inspectProjectLocation(linked, discovery)).toMatchObject({
+      mainTreePath: main,
     });
   } finally {
     await rm(directory, { recursive: true, force: true });

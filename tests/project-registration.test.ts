@@ -7,6 +7,7 @@ import {
   readFile,
   writeFile,
   rm,
+  symlink,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -340,4 +341,125 @@ test("discovery stops at the nearest Git toplevel and reports whether the direct
   await expect(
     f.deps.documents.discover(join(f.root, "absent")),
   ).rejects.toMatchObject({ code: "GIT_PATH_MISSING" });
+});
+test("a linked worktree, beside or inside the repository, discovers the Project its main checkout registers", async () => {
+  const f = await fixture();
+  const git = async (args: string[], cwd = f.repo) =>
+    expect(
+      (
+        await run({
+          command: [
+            "git",
+            "-c",
+            "user.name=Rig Test",
+            "-c",
+            "user.email=test@example.invalid",
+            ...args,
+          ],
+          cwd,
+        })
+      ).exitCode,
+    ).toBe(0);
+  await git(["init", "-b", "main"]);
+  await writeFile(
+    join(f.repo, "rig.yaml"),
+    "name: demo\ntools:\n  cli:\n    bin: cli\n",
+  );
+  await writeFile(join(f.repo, ".gitignore"), ".worktrees/\n");
+  await git(["add", "."]);
+  await git(["commit", "-m", "fixture"]);
+  const beside = join(f.root, "wt"),
+    inside = join(f.repo, ".worktrees", "inside");
+  await git(["worktree", "add", "-b", "feature", beside]);
+  await git(["worktree", "add", "-b", "other", inside]);
+  // The branch's edit stays in the worktree: the Project is read from the main checkout.
+  await writeFile(
+    join(beside, "rig.yaml"),
+    "name: edited\ntools:\n  cli:\n    bin: cli\n",
+  );
+  const branchOnly = join(beside, "only", "on", "feature");
+  await mkdir(branchOnly, { recursive: true });
+  for (const path of [beside, inside, branchOnly])
+    expect(await f.deps.documents.discover(path)).toMatchObject({
+      repoPath: f.repo,
+      document: { path: join(f.repo, "rig.yaml"), config: { name: "demo" } },
+      gitRequired: false,
+    });
+  expect(
+    await prepareRegistration({ action: "init", repoPath: beside }, f.deps),
+  ).toMatchObject({ repoPath: f.repo, name: "demo" });
+});
+test("a worktree directory the main tree holds as a separate repository or a symlink still discovers the main checkout's Project", async () => {
+  const f = await fixture();
+  const git = async (args: string[], cwd = f.repo) =>
+    expect(
+      (
+        await run({
+          command: [
+            "git",
+            "-c",
+            "user.name=Rig Test",
+            "-c",
+            "user.email=test@example.invalid",
+            ...args,
+          ],
+          cwd,
+        })
+      ).exitCode,
+    ).toBe(0);
+  const config = (name: string) =>
+    `name: ${name}\ntools:\n  cli:\n    bin: cli\n`;
+  await git(["init", "-b", "main"]);
+  await writeFile(join(f.repo, "rig.yaml"), config("demo"));
+  await git(["add", "."]);
+  await git(["commit", "-m", "fixture"]);
+  const worktree = join(f.root, "wt");
+  await git(["worktree", "add", "-b", "feature", worktree]);
+  // The Branch tracks plain directories at both places.
+  for (const directory of [join("vendor", "inner"), "linked"]) {
+    await mkdir(join(worktree, directory), { recursive: true });
+    await writeFile(join(worktree, directory, "file"), "tracked\n");
+  }
+  await git(["add", "."], worktree);
+  await git(["commit", "-m", "feat: directories"], worktree);
+  // The main checkout holds a separate repository and a symlink out of the repository there.
+  const inner = join(f.repo, "vendor", "inner");
+  await mkdir(inner, { recursive: true });
+  await git(["init", "-b", "main"], inner);
+  await writeFile(join(inner, "rig.yaml"), config("inner"));
+  const outside = join(f.root, "outside");
+  await mkdir(outside);
+  await writeFile(join(outside, "rig.yaml"), config("outside"));
+  await symlink(outside, join(f.repo, "linked"));
+  for (const directory of [join("vendor", "inner"), "linked"])
+    expect(
+      await f.deps.documents.discover(join(worktree, directory)),
+    ).toMatchObject({
+      repoPath: f.repo,
+      document: { config: { name: "demo" } },
+    });
+});
+test("discovery never reads a config above the repository, so an invalid one there cannot block init", async () => {
+  const f = await fixture();
+  await writeFile(join(f.root, "rig.yaml"), "name: [unclosed\n");
+  const plain = join(f.root, "plain");
+  await mkdir(plain);
+  expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
+    0,
+  );
+  await expect(f.deps.documents.discover(f.repo)).rejects.toMatchObject({
+    code: "missing_config",
+  });
+  expect(
+    await prepareRegistration(
+      { action: "init", repoPath: f.repo, project: "demo" },
+      f.deps,
+    ),
+  ).toMatchObject({ repoPath: f.repo, name: "demo" });
+  expect(
+    await prepareRegistration(
+      { action: "init", repoPath: plain, project: "plain", createGit: true },
+      f.deps,
+    ),
+  ).toMatchObject({ repoPath: plain, name: "plain" });
 });

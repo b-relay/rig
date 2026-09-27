@@ -20,8 +20,9 @@ import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
 export interface ProjectDocuments {
-  /** The nearest config at or above `path` inside its Git working repository; a directory
-   * that is not a repository is searched alone and reported with `gitRequired`. */
+  /** The nearest config at or above `path` inside its Git working repository; a path in a linked
+   * worktree is searched from the same place in the main working tree, so it finds the Project its
+   * main checkout registers. A directory that is not a repository is searched alone and reported with `gitRequired`. */
   discover(path: string): Promise<{
     repoPath: string;
     document: ConfigDocument<ProjectConfig>;

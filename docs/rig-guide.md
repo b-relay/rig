@@ -432,7 +432,9 @@ rig deploy preview
 rig deploy preview feature/login
 ```
 
-`rig deploy preview` uses the current Branch. It fails from detached HEAD. A
+`rig deploy preview` uses the current Branch: the one checked out where the
+command runs, so a linked worktree deploys its own Branch. With `--project` it
+is the Branch of the registered checkout. It fails from detached HEAD. A
 Preview deploy from the Production branch itself is rejected; create a branch
 such as `preview/main` when you want a preview of production code.
 `--deployment <name>` names the Preview explicitly instead of deriving the
@@ -1391,12 +1393,20 @@ unsupported. YAML accepts one document with comments,
 rejecting duplicate keys, tags, anchors, aliases, and merge keys. Supported
 structured edits preserve comments/order or refuse before mutation.
 
-A Project is its Git repository: `rig init`, `rig status` from the shell, and
-`git push rig` inside a linked worktree (`git worktree add ../wt feature`)
-resolve to the main working tree, so the registered path stays the main
-checkout and the production branch is the main tree's branch. A push from a
-directory that is not the registered repository or one of its worktrees fails
-with `PROJECT_PATH_CONFLICT`, naming both paths.
+A Project is its Git repository: every command run inside a linked worktree
+(`git worktree add ../wt feature`, or one kept inside the repository such as
+`.worktrees/feature`), and `git push rig` from one, resolves to the main
+working tree, so the registered path stays the main checkout. The Production
+branch comes from the Project or Host config (at `rig init`, from
+`origin/HEAD`), never from the worktree's checked-out Branch. A directory in
+the worktree finds its Project config at the same place in the main checkout,
+searching upward from the deepest directory the main checkout holds there as
+a plain directory of its own (not a symlink or a separate repository), and the
+main checkout's `rig.yaml` is the one read: an uncommitted or branch-only edit
+to the worktree's copy does not change the Project. `rig deploy preview` without a
+Branch still deploys the worktree's own Branch. A push from a directory that is
+not the registered repository or one of its worktrees fails with
+`PROJECT_PATH_CONFLICT`, naming both paths.
 
 `rig rename <name>` and `rig repoint <path>` require stopped Targets (none
 running, meant to run, or mid-recovery) and validate registered identity/path

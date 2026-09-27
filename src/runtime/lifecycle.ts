@@ -217,6 +217,29 @@ async function observeManaged(
   return observations;
 }
 
+/** `lifecycle` with `stops` as the stop control of every call that names none, so code handed the result (a deploy, a
+ * Preview destroy, an automatic restart) waits and reports its stops as the Operation running it decided. */
+export function withStops(
+  lifecycle: TargetLifecycle,
+  stops: StopControl,
+): TargetLifecycle {
+  return {
+    pruneCheckpoints: (live) => lifecycle.pruneCheckpoints(live),
+    checkpoint: (target, previous) => lifecycle.checkpoint(target, previous),
+    restoreEffects: (target) => lifecycle.restoreEffects(target),
+    commitEffects: (target) => lifecycle.commitEffects(target),
+    retireSuperseded: (previous, candidate) =>
+      lifecycle.retireSuperseded(previous, candidate),
+    prepare: (target, request) => lifecycle.prepare(target, request),
+    up: (target, checkpoint, journal, control) =>
+      lifecycle.up(target, checkpoint, journal, control ?? stops),
+    recover: (target, service, journal, control) =>
+      lifecycle.recover(target, service, journal, control ?? stops),
+    down: (target, control) => lifecycle.down(target, control ?? stops),
+    retire: (target, publishRemoval, control) =>
+      lifecycle.retire(target, publishRemoval, control ?? stops),
+  };
+}
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
 export function createTargetLifecycle(
   effects: TargetEffects,

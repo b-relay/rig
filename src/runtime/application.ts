@@ -54,7 +54,15 @@ import {
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
-import { assertSourceBuildsKnown } from "./lifecycle";
+import { assertSourceBuildsKnown, withStops } from "./lifecycle";
+import {
+  activeStops,
+  killStops,
+  killedMessage,
+  recordStopKills,
+  stopObserver,
+  type StopTracking,
+} from "./stop-progress";
 import { prepareTarget } from "./preparation";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
@@ -83,7 +91,6 @@ import {
   initialPhase,
   type OperationPhase,
   type OperationPosition,
-  type OperationView,
   type QueueReport,
 } from "../domain/operation-progress";
 /**
@@ -100,10 +107,12 @@ async function retireForDestruction(
   try {
     await deps.lifecycle.retire(target);
   } catch (error) {
+    // A stop detached by rigd's shutdown is still under way: the pending destroy is kept for the retry that finishes it.
     const effectsChanged =
       error instanceof RigError &&
       (error.code === "RETIRE_COMMIT_PENDING" ||
-        error.code === "RETIRE_ROLLBACK");
+        error.code === "RETIRE_ROLLBACK" ||
+        error.code === "STOP_DETACHED");
     if (!effectsChanged) {
       delete target.destructionPending;
       target.updatedAt = deps.now();
@@ -163,11 +172,8 @@ const UNLOCKED: Admission = {
   phase() {},
   moved: () => new Reselect(),
 };
-/** An Operation this daemon is running or holding, and the Target it works on when that is known. */
-interface Running {
-  view: OperationView;
-  targetId?: string;
-}
+/** An Operation this daemon is running or holding, the Target it works on when that is known, and its stops. */
+type Running = StopTracking;
 /** rigd is the one authority over lifecycle state. Mutations of one Target run one at a time; other
  * Targets and Projects run side by side and share Host resources through short critical sections.
  * Read-only requests never wait. See docs/adr/0007-per-target-operation-queue.md. */
@@ -183,6 +189,15 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
   const inProgress = (operationId: string) => inFlight.has(operationId);
+  /** Aborted when rigd drains for shutdown: a stop waiting for a Service stops waiting, and the next daemon finishes it. */
+  const detaching = new AbortController();
+  /** `lifecycle` as the Operation `entry` uses it: its stops cut short by its kill, detached on shutdown, shown on it. */
+  const lifecycleOf = (entry: Running) =>
+    withStops(deps.lifecycle, {
+      kill: entry.kill.signal,
+      detach: detaching.signal,
+      observer: stopObserver(entry, deps.now),
+    });
   const stopping = (targetId: string) =>
     [...operations.values()].some(
       (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
@@ -203,7 +218,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       project,
       state.targets.filter((target) => target.projectId === project.id),
       selection,
-      { ...deps, inProgress, stopping },
+      {
+        ...deps,
+        inProgress,
+        stopping,
+        serviceStops: (targetId) => activeStops(operations.values(), targetId),
+      },
     );
   };
   /** The Operations running and waiting, and where `operationId` stands when one is named. */
@@ -226,7 +246,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const entry = operations.get(operationId);
     if (!entry) return { state: "unknown" };
     const position = locks.position(operationId);
-    if (!position) return { state: "running", phase: entry.view.phase };
+    if (!position)
+      return {
+        state: "running",
+        phase: entry.view.phase,
+        ...(entry.view.project ? { project: entry.view.project } : {}),
+        ...(entry.view.target ? { target: entry.view.target } : {}),
+        ...(entry.view.stops ? { stops: [...entry.view.stops] } : {}),
+      };
     const view = (id: string) => {
       const found = operations.get(id);
       return found ? [{ ...found.view }] : [];
@@ -297,7 +324,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         { operationId },
       );
     inFlight.add(operationId);
+    const kill = new AbortController();
+    if (command.kill) kill.abort();
     operations.set(operationId, {
+      kill,
       view: {
         operationId,
         action: command.action,
@@ -314,6 +344,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           return await run(command, operationId, held, {
             ...deps,
             ports: reservations.ports(operationId),
+            lifecycle: lifecycleOf(operations.get(operationId)!),
           });
         } catch (error) {
           if (!isReselect(error)) throw error;
@@ -656,6 +687,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           } catch {
             replacing = [];
           }
+        // A kill does not wait its turn to cut short a stop already running on the Target; its own stop follows.
+        if (command.kill && target)
+          killStops(operations.values(), target.id, deps.now());
         targets = await enter(
           [
             targetScope(project.id, { kind, name }),
@@ -872,6 +906,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await persistTarget(target, deps.store);
         admission.phase("stopping", target);
         outcome = (await stopRecordedTarget(target, deps.lifecycle)).outcome;
+        recordStopKills(target, operations.get(operationId)!.view);
       } else {
         if (command.action === "restart") {
           target.desired = "stopped";
@@ -967,7 +1002,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           action: command.action,
           outcome,
           occurredAt: deps.now(),
-          ...(errorCode ? { message: errorCode } : {}),
+          ...((message) => (message ? { message } : {}))(
+            errorCode ?? killedMessage(operations.get(operationId)!.view),
+          ),
         });
       });
       try {
@@ -990,7 +1027,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       extra: Record<string, unknown> = {},
     ): Promise<unknown> {
       await record(outcome);
+      const stops = operations.get(operationId)?.view.stops;
       return {
+        ...(stops?.length ? { stops } : {}),
         operationId,
         project: project?.name,
         target: target?.name,
@@ -1071,6 +1110,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     status,
     async drain() {
       draining = true;
+      // A stop in progress may wait an hour; shutdown leaves it to the Service and the next daemon.
+      detaching.abort();
       // Commands already running answer; any that was waiting is refused once admitted.
       while (executing.size) await Promise.allSettled([...executing]);
       await locks.idle();
@@ -1085,6 +1126,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       );
       const id = `config:${deps.id()}`;
       operations.set(id, {
+        kill: new AbortController(),
         view: {
           operationId: id,
           action: "config",
@@ -1128,6 +1170,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const hostId = `reconcile:${++passes}`;
     if (action === "reconcile")
       operations.set(hostId, {
+        kill: new AbortController(),
         view: {
           operationId: hostId,
           action,
@@ -1215,6 +1258,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     failed: (error: unknown, target?: string) => Promise<void>,
   ): Promise<number | undefined> {
     const entry: Running = {
+      kill: new AbortController(),
       view: {
         operationId: lease.id,
         action,
@@ -1235,11 +1279,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       entry.view.target = target.name;
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
+      const lifecycle = lifecycleOf(entry);
       if (target.desired === "running")
-        return await superviseTarget(target, deps);
+        return await superviseTarget(target, { ...deps, lifecycle });
       if (action === "reconcile") {
         entry.view.phase = "stopping";
-        await deps.lifecycle.down(target);
+        await lifecycle.down(target);
+        if (recordStopKills(target, entry.view))
+          await persistTarget(target, deps.store);
       }
       return undefined;
     } catch (error) {

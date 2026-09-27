@@ -218,6 +218,12 @@ const services = z
         .describe(
           "The automatic attempts are used up until an explicit start or a new Deployment.",
         ),
+      stopKilled: z
+        .enum(["timeout", "request"])
+        .optional()
+        .describe(
+          "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
+        ),
     }),
   )
   .optional()

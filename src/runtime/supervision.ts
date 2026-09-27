@@ -536,7 +536,20 @@ export function stoppedStanding(
 ): Pick<ComponentReport, "state" | "exit" | "exitCode" | "signal" | "reason"> {
   const run = currentRun(target, component.name);
   if (target.desired !== "running" || run?.intent === "stopped")
-    return { state: "stopped", ...(run ? { exit: "requested" } : {}) };
+    return {
+      state: "stopped",
+      ...(run ? { exit: "requested" } : {}),
+      // Still a requested stop, but one the operator should hear needed SIGKILL: the grace may be too short.
+      ...(run?.stopKilled
+        ? {
+            signal: "SIGKILL",
+            reason:
+              run.stopKilled === "timeout"
+                ? "Stopped after timeout (SIGKILL): it did not exit within its stop_timeout."
+                : "Killed by --kill (SIGKILL) before its stop_timeout ended.",
+          }
+        : {}),
+    };
   const outcome = run?.outcome ?? observedOutcome(run, observation, "");
   const again = "Run rig up to start it again.";
   const policy = component.restart ?? "always";

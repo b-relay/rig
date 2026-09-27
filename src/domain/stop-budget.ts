@@ -71,6 +71,11 @@ export function stopDetached(details: Record<string, unknown> = {}): RigError {
     details,
   );
 }
+/** Never throws, even for a thrown value whose prototype or fields cannot be read. */
 export function isStopDetached(error: unknown): boolean {
-  return error instanceof RigError && error.code === "STOP_DETACHED";
+  try {
+    return error instanceof RigError && error.code === "STOP_DETACHED";
+  } catch {
+    return false;
+  }
 }

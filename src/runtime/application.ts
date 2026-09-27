@@ -195,6 +195,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   /** `lifecycle` as the Operation `entry` uses it: its stops cut short by its kill, detached on shutdown, shown on it. */
   /** Targets a running `--kill` asked every stop to be cut short on, with how many such commands run. */
   const killRequests = new Map<string, number>();
+  const releaseKill = (targetId: string) => {
+    const left = (killRequests.get(targetId) ?? 1) - 1;
+    if (left > 0) killRequests.set(targetId, left);
+    else killRequests.delete(targetId);
+  };
   const lifecycleOf = (entry: Running) =>
     withStops(deps.lifecycle, {
       kill: (target) =>
@@ -369,11 +374,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
     } finally {
       const killing = operations.get(operationId)?.killing;
-      if (killing) {
-        const left = (killRequests.get(killing) ?? 1) - 1;
-        if (left > 0) killRequests.set(killing, left);
-        else killRequests.delete(killing);
-      }
+      if (killing) releaseKill(killing);
       inFlight.delete(operationId);
       operations.delete(operationId);
     }
@@ -710,7 +711,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         // A kill does not wait its turn to cut short a stop already running on the Target; its own stop follows.
         if (command.kill && target) {
           const entry = operations.get(operationId)!;
-          if (entry.killing === undefined) {
+          // A reselection that lands on another Target moves the request there.
+          if (entry.killing !== target.id) {
+            if (entry.killing !== undefined) releaseKill(entry.killing);
             entry.killing = target.id;
             killRequests.set(target.id, (killRequests.get(target.id) ?? 0) + 1);
           }

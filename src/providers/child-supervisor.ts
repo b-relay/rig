@@ -93,6 +93,8 @@ export function createChildSupervisor(
   options: ChildSupervisorOptions,
 ): Supervisor {
   const processes = new Map<string, OwnedProcess>();
+  /** Aborted by `detach`: the stops this supervisor makes on its own stop waiting, as the runtime's do on shutdown. */
+  const detaching = new AbortController();
   const operations = new Map<string, Promise<unknown>>();
   const timing = options.timing;
   const now = timing.now;
@@ -385,7 +387,10 @@ export function createChildSupervisor(
         { key: request.key },
       );
     if (processes.has(request.key))
-      await stop(request.key, { graceMs: graceOf(request) });
+      await stop(request.key, {
+        graceMs: graceOf(request),
+        detach: detaching.signal,
+      });
     if (!request.command.length)
       throw new RigError(
         "COMMAND_EMPTY",
@@ -505,7 +510,10 @@ export function createChildSupervisor(
           wait: (ms) => timing.wait(ms),
         });
     } catch (error) {
-      await stop(request.key, { graceMs: graceOf(request) });
+      await stop(request.key, {
+        graceMs: graceOf(request),
+        detach: detaching.signal,
+      });
       throw error;
     }
     return { outcome: "started", pid: child.pid };
@@ -524,6 +532,7 @@ export function createChildSupervisor(
       );
     },
     async detach() {
+      detaching.abort();
       await quiesce();
       for (const owned of processes.values()) {
         owned.child?.removeAllListeners("exit");

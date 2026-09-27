@@ -274,15 +274,54 @@ test("rig down on a terminal redraws one board in place with a countdown, and le
   const cli = scripted({ live: true });
   expect(await cli.run(["down", "local"])).toBe(0);
   const errors = cli.errors();
-  // The first frame, 2 s in; each later frame first moves up over the previous one and clears it.
+  // The first frame, once the slow stop has waited 2 s, lists web, which stopped at once, beside it; each later frame first
+  // moves up over the previous one and clears it.
   expect(errors).toStartWith(
-    "Stopping fletcher local\n  google-scheduler    stopping · killing in 24m 58s (04:31:07)\n  (Ctrl-C to leave it stopping in the background)\n",
+    "Stopping fletcher local\n  web                 stopped\n  google-scheduler    stopping · killing in 24m 58s (04:31:07)\n  (Ctrl-C to leave it stopping in the background)\n",
   );
   expect(errors).toContain(
-    "\x1b[3A\r\x1b[JStopping fletcher local\n  google-scheduler    stopping · killing in 24m 57s (04:31:07)\n",
+    "\x1b[4A\r\x1b[JStopping fletcher local\n  web                 stopped\n  google-scheduler    stopping · killing in 24m 57s (04:31:07)\n",
   );
   expect(errors).toEndWith(
-    "\x1b[3A\r\x1b[JStopping fletcher local\n  google-scheduler    stopped\n",
+    "\x1b[4A\r\x1b[JStopping fletcher local\n  web                 stopped\n  google-scheduler    stopped\n",
+  );
+});
+
+test("a terminal line wider than the terminal is cut, so a redraw moves up exactly the rows it drew", () => {
+  let text = "";
+  const display = liveDisplay({ error: (value) => (text += value) }, 40);
+  const status = {
+    state: "waiting" as const,
+    subject: "a",
+    notice:
+      "Waiting: fletcher local is deploying (operation 0b1f2c3d-aaaa-bbbb-cccc-000000000000, started 04:00:00)",
+  };
+  display.show(status, at(0));
+  display.show({ ...status, subject: "b", notice: "Waiting: short" }, at(1000));
+  expect(text).toBe(
+    "Waiting: fletcher local is deploying (…\n\x1b[1A\r\x1b[JWaiting: short\n",
+  );
+});
+
+test("a command that fails while a Service is still stopping leaves it shown as stopping in rigd, without a countdown", () => {
+  let live = "";
+  let plain = "";
+  const onTerminal = liveDisplay({ error: (value) => (live += value) });
+  const inPipe = plainDisplay({ error: (value) => (plain += value) });
+  const status = {
+    state: "running" as const,
+    project: "fletcher",
+    stops: stopsAt(60_000),
+  };
+  onTerminal.show(status, at(60_000));
+  inPipe.show(status, at(60_000));
+  onTerminal.abandon(at(61_000), false);
+  inPipe.abandon(at(61_000), false);
+  expect(live).toEndWith(
+    "\x1b[4A\r\x1b[JStopping fletcher local\n  web                 stopped\n  google-scheduler    still stopping in rigd (killing at 04:31:07)\n",
+  );
+  expect(plain).toBe(
+    "google-scheduler stopping, killing in 24m (04:31:07)\ngoogle-scheduler still stopping in rigd (killing at 04:31:07)\n",
   );
 });
 

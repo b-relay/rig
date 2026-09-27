@@ -32,6 +32,8 @@ export interface CliDependencies {
   now?: () => Date;
   /** stderr is a terminal: progress is redrawn in place there. Without one, it is plain appended lines. */
   liveOutput?: boolean;
+  /** The terminal's width, to which live progress lines are cut; 80 when absent. */
+  terminalColumns?: number;
 }
 export interface DaemonAdmin {
   install(operationId?: string): Promise<unknown>;

@@ -48,6 +48,9 @@ export async function main(args: readonly string[]): Promise<number> {
       wait: waitForLogPoll,
       now: () => new Date(),
       liveOutput: process.stderr.isTTY === true,
+      ...(process.stderr.columns
+        ? { terminalColumns: process.stderr.columns }
+        : {}),
       ...(process.stdin.isTTY && process.stderr.isTTY
         ? {
             interaction: createTerminalInteraction(

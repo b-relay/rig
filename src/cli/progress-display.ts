@@ -4,6 +4,7 @@ import type { WaitStatus } from "./wait-notice";
 import {
   PLAIN_LAST_CALL_MS,
   PLAIN_REPEAT_MS,
+  formatClock,
   plainStopLines,
   type PlainStopState,
   stopBoard,
@@ -14,25 +15,37 @@ import {
 export interface ProgressDisplay {
   /** Shows where the command stands at `now`. */
   show(status: WaitStatus, now: Date): void;
-  /** The command settled: shows how its stops ended, from its result when that has them. */
+  /** The command succeeded: shows how its stops ended, from its result when that has them. */
   finish(stops: readonly ServiceStop[] | undefined, now: Date): void;
+  /** The command failed, or the user detached, while Services it showed were still stopping: they are shown as left to
+   * rigd. A detached command says so itself, so without a terminal nothing more is printed then. */
+  abandon(now: Date, detached: boolean): void;
+  /** Writes `text` on stderr outside the progress, which carries on below it. */
+  note(text: string): void;
   /** The Services it has shown as still stopping, for the Ctrl-C message. */
   stopping(now: Date): ServiceStop[];
 }
 
-/** On a terminal: one region redrawn in place, holding either the line of what the command waits for or the stop board. */
+/** On a terminal: one region redrawn in place, holding either the line of what the command waits for or the stop board.
+ * Each line is cut to the terminal's `columns`, so a redraw always moves up exactly the rows it drew. */
 export function liveDisplay(
   output: Pick<UserOutput, "error">,
+  columns = 80,
 ): ProgressDisplay {
-  let drawn = 0;
+  let drawn: string[] = [];
   let project: string | undefined;
   let stops: readonly ServiceStop[] = [];
+  const fit = (line: string) =>
+    line.length < columns
+      ? line
+      : `${line.slice(0, Math.max(columns - 2, 1))}…`;
   const draw = (lines: readonly string[]) => {
-    // Up to the region's first line, then clear to the end of the screen before writing it again.
-    const erase = drawn ? `\x1b[${drawn}A\r\x1b[J` : "";
-    if (!erase && !lines.length) return;
-    output.error(`${erase}${lines.map((line) => `${line}\n`).join("")}`);
-    drawn = lines.length;
+    const next = lines.map(fit);
+    if (next.join("\n") === drawn.join("\n")) return;
+    // Up to the region's first row, then clear to the end of the screen before writing it again.
+    const erase = drawn.length ? `\x1b[${drawn.length}A\r\x1b[J` : "";
+    output.error(`${erase}${next.map((line) => `${line}\n`).join("")}`);
+    drawn = next;
   };
   return {
     show(status, now) {
@@ -46,6 +59,14 @@ export function liveDisplay(
       if (ended) stops = ended;
       const board = stopBoard(project, stops, now);
       if (board.length) draw(board);
+    },
+    abandon(now) {
+      const board = stopBoard(project, stops, now, true);
+      if (board.length) draw(board);
+    },
+    note(text) {
+      output.error(text);
+      drawn = [];
     },
     stopping: (now) => visibleStopping(stops, now),
   };
@@ -93,6 +114,16 @@ export function plainDisplay(
       if (ended) stops = ended;
       write(plainStopLines(printed, stops, now));
     },
+    abandon(now, detached) {
+      if (detached) return;
+      write(
+        visibleStopping(stops, now).map(
+          (stop) =>
+            `${stop.service} still stopping in rigd (killing at ${formatClock(new Date(stop.killAt), true)})`,
+        ),
+      );
+    },
+    note: (text) => output.error(text),
     stopping: (now) => visibleStopping(stops, now),
   };
 }

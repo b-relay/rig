@@ -81,9 +81,14 @@ export function stopBoard(
   project: string | undefined,
   stops: readonly ServiceStop[],
   now: Date,
+  /** The command ended while these were still stopping: they are shown as left to rigd, without a countdown or hint. */
+  abandoned = false,
 ): string[] {
-  const shown = stops.filter((stop) => stopVisible(stop, now));
-  if (!shown.length) return [];
+  // Nothing until a stop has waited a while; then every Service already stopped is listed beside it.
+  if (!stops.some((stop) => stopVisible(stop, now))) return [];
+  const shown = stops.filter(
+    (stop) => stop.state !== "stopping" || stopVisible(stop, now),
+  );
   const width = Math.max(...shown.map((stop) => stop.service.length)) + 4;
   const lines: string[] = [];
   let heading: string | undefined;
@@ -92,7 +97,9 @@ export function stopBoard(
     if (title !== heading) lines.push((heading = title));
     const state =
       stop.state === "stopping"
-        ? `stopping · ${killingText(stop.killAt, now, "seconds", true)}`
+        ? abandoned
+          ? `still stopping in rigd (killing at ${formatClock(new Date(stop.killAt), true)})`
+          : `stopping · ${killingText(stop.killAt, now, "seconds", true)}`
         : stop.state === "failed"
           ? "could not be verified stopped"
           : stop.killed === "timeout"
@@ -102,7 +109,7 @@ export function stopBoard(
               : "stopped";
     lines.push(`  ${stop.service.padEnd(width)}${state}`);
   }
-  if (shown.some((stop) => stop.state === "stopping"))
+  if (!abandoned && shown.some((stop) => stop.state === "stopping"))
     lines.push("  (Ctrl-C to leave it stopping in the background)");
   return lines;
 }

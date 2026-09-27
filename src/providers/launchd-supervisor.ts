@@ -372,7 +372,30 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         );
       }
       // launchd sends SIGTERM and returns at once; a job already booted out gets SIGTERM again, which its wrapper ignores.
-      await checked(["bootout", service(key)], key);
+      // A bootout that fails or hangs while the job is still there (one a previous daemon began booting out) is waited
+      // on like any other: the unload wait, its kill and its detach decide what happens next.
+      const bootout = await run({
+        command: ["launchctl", "bootout", service(key)],
+        timeoutMs: 10_000,
+      });
+      if (bootout.exitCode !== 0) {
+        const still = await run({
+          command: ["launchctl", "print", service(key)],
+          timeoutMs: 2000,
+        });
+        if (still.exitCode !== 0 && !unloaded(still))
+          throw new RigError(
+            "LAUNCHD_FAILED",
+            `launchd could not bootout job ${label(key)}.`,
+            "Check daemon diagnostics and the Target logs.",
+            {
+              action: "bootout",
+              label: label(key),
+              exitCode: bootout.exitCode,
+              stderr: bootout.stderr,
+            },
+          );
+      }
       const killed = await awaitUnload(key, request);
       await removeJobFiles(key);
       return { outcome: "stopped", ...(killed ? { killed } : {}) };

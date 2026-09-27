@@ -34,13 +34,20 @@ async function awaitMutation(
   request: RuntimeCommand,
   dependencies: Pick<
     CliDependencies,
-    "client" | "output" | "wait" | "signal" | "detach" | "now" | "liveOutput"
+    | "client"
+    | "output"
+    | "wait"
+    | "signal"
+    | "detach"
+    | "now"
+    | "liveOutput"
+    | "terminalColumns"
   >,
   operationId: string,
 ): Promise<unknown> {
   const now = dependencies.now ?? (() => new Date());
   const display = dependencies.liveOutput
-    ? liveDisplay(dependencies.output)
+    ? liveDisplay(dependencies.output, dependencies.terminalColumns)
     : plainDisplay(dependencies.output);
   // Leaving a stop to rigd: detaches like a second Ctrl-C, with the stop named.
   const leave = new AbortController();
@@ -54,7 +61,7 @@ async function awaitMutation(
       leave.abort(left);
       return;
     }
-    dependencies.output.error(
+    display.note(
       `rigd is still running ${request.action} (operation ${operationId}); it finishes in the background. Press Ctrl-C again to detach.\n`,
     );
   };
@@ -67,7 +74,7 @@ async function awaitMutation(
   });
   try {
     void reportProgress(
-      dependencies,
+      { ...dependencies, detach },
       display,
       now,
       operationId,
@@ -78,7 +85,13 @@ async function awaitMutation(
     display.finish(stopsOf(result), now());
     return result;
   } catch (error) {
+    const detached = Boolean(left) || dependencies.detach?.aborted === true;
+    // A second Ctrl-C while a stop is shown leaves it the way the first one would have.
+    const stopping = display.stopping(now());
+    display.abandon(now(), detached);
     if (left) throw left;
+    if (dependencies.detach?.aborted && stopping.length)
+      throw leftStopping(request, operationId, stopping);
     if (dependencies.detach?.aborted)
       throw new RigError(
         "DETACHED",
@@ -136,10 +149,11 @@ function untilDetached(signal: AbortSignal | undefined): Promise<never> {
   });
 }
 /** Once the command has gone NOTICE_AFTER_MS without an answer, asks rigd every PROGRESS_TICK_MS where it stands until it
- * settles or is cancelled, and shows it: what it waits for while rigd holds it behind another Operation on the same
- * Target or Project, and the Services it waits on to stop while it runs. Stops when rigd cannot say. */
+ * settles or is detached, and shows it: what it waits for while rigd holds it behind another Operation on the same
+ * Target or Project, and the Services it waits on to stop while it runs. A first Ctrl-C does not end it, since the
+ * command keeps waiting. Stops when rigd cannot say. */
 async function reportProgress(
-  dependencies: Pick<CliDependencies, "client" | "wait" | "signal">,
+  dependencies: Pick<CliDependencies, "client" | "wait" | "detach">,
   display: ProgressDisplay,
   now: () => Date,
   operationId: string,
@@ -152,12 +166,12 @@ async function reportProgress(
     () => done.abort(),
     () => done.abort(),
   );
-  const signal = dependencies.signal
-    ? AbortSignal.any([dependencies.signal, done.signal])
+  const signal = dependencies.detach
+    ? AbortSignal.any([dependencies.detach, done.signal])
     : done.signal;
   const pause = (ms: number) => dependencies.wait(ms, signal);
   await pause(NOTICE_AFTER_MS);
-  while (!settled() && !dependencies.signal?.aborted) {
+  while (!settled() && !signal.aborted) {
     const reply = await dependencies.client
       .command({ action: "queue", operation: operationId })
       .catch(() => undefined);

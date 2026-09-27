@@ -431,9 +431,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "init") {
         const identity = await prepareRegistration(command, deps);
-        // Initializing a registered Project again writes at most its rig.yaml, as a config edit does, so it takes the
-        // Project's config scope and never waits for (or holds the Project's other Targets behind) a Target's stop.
-        // A new Project takes only its name.
+        // Initializing a registered Project again writes at most its rig.yaml, as a config edit does, and adds the
+        // Project's `rig` Git remote when it is missing; neither is a Target's. So it takes the Project's config scope and
+        // never waits for (or holds the Project's other Targets behind) a Target's stop. A new Project takes only its name.
         const registered = (await deps.store.read()).projects.find(
           (p) => p.name === identity.name && p.repoPath === identity.repoPath,
         );

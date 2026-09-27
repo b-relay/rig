@@ -435,9 +435,11 @@ test("a no-restart prerequisite that exited successfully does not satisfy the de
   await f.exit("web", 1);
   await retry(f);
   expect(f.starts).toEqual(["db", "web", "worker"]);
-  expect((await f.target()).services!.web!.outcome).toMatchObject({
-    kind: "activation-failed",
-    errorCode: "SERVICE_DEPENDENCY",
+  // The refusal spawned nothing: web waits for db without spending its budget.
+  expect((await f.target()).services!.web).toMatchObject({
+    outcome: { kind: "exited", exitCode: 1 },
+    attempts: [],
+    waitingFor: { service: "db" },
   });
 });
 

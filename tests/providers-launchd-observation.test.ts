@@ -84,10 +84,12 @@ test("launchd reports the running application, then its recorded exit and the st
     desired: "running",
     plan: {
       components: [
-        { name: "web", kind: "managed", port: 4444 },
+        // Under `no` nothing will start them again, so a stopped process reads as failed rather than starting.
+        { name: "web", kind: "managed", port: 4444, restart: "no" },
         {
           name: "checked",
           kind: "managed",
+          restart: "no",
           port: 4445,
           health: "http://localhost:4445",
         },

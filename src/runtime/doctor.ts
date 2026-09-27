@@ -12,6 +12,8 @@ import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
 import { targetNames } from "../config/schema";
 import { recordedPorts } from "./ports";
+import { downtimeReport } from "./alert-messages";
+import type { Downtime } from "../domain/operator-alerts";
 import { transitionInProgress } from "./project-status";
 import {
   identityDriftHint,
@@ -69,7 +71,7 @@ export async function hostDoctor(
 }
 
 async function inspectRuntimeHost(
-  deps: Pick<RuntimeDependencies, "inspectHost" | "store" | "notices">,
+  deps: Pick<RuntimeDependencies, "inspectHost" | "store" | "notices" | "now">,
 ) {
   const checks = await deps.inspectHost();
   checks.unshift({ name: "rigd", ok: true, message: "Daemon is reachable." });
@@ -82,7 +84,8 @@ async function inspectRuntimeHost(
       hint: notice.hint,
     });
   try {
-    await deps.store.read();
+    const down = downtimeReport((await deps.store.read()).alerts, deps.now());
+    if (down.length) checks.push(downtimeCheck(down));
   } catch (error) {
     checks.push({
       name: "runtime-state",
@@ -436,4 +439,20 @@ function componentHint(targetName: string, component: ComponentReport): string {
   if (component.state === "missing")
     return "The installed artifact or storage is absent; run up or redeploy this Target.";
   return "Inspect Target logs and provider configuration.";
+}
+/** One check for every Stable Target Rig counts as down, however many there are, so a Host-wide event reads as one finding
+ * that says how long each has been down. */
+function downtimeCheck(down: readonly Downtime[]): DoctorCheck {
+  const each = (entry: Downtime) =>
+    `${entry.project} ${entry.target} for ${entry.down} (since ${entry.since})`;
+  return {
+    name: "stable-targets",
+    ok: false,
+    message:
+      down.length === 1
+        ? `Stable Target ${down[0]!.project} ${down[0]!.target} has been down for ${down[0]!.down} (since ${down[0]!.since}).`
+        : `${down.length} Stable Targets are down: ${down.map(each).join(", ")}.`,
+    reason: "stable-target-down",
+    hint: `Once the cause is fixed, run ${down.map((entry) => entry.recover).join(", ")}. rig activity shows the reasons Rig recorded.`,
+  };
 }

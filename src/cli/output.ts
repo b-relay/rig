@@ -13,7 +13,7 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "daemon-status")
     return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n${
       report.version ? `Version    ${word(report.version)}\n` : ""
-    }${
+    }${daemonDowntime(report)}${
       Array.isArray(report.warnings)
         ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
         : ""
@@ -128,6 +128,15 @@ function renderProjects(report: Record<string, unknown>): string {
         )
         .join("\n")}\n`
     : "No Projects registered.\n";
+}
+/** One line per Stable Target rigd counts as down: how long, since when, and the command that starts it again. */
+function daemonDowntime(report: Record<string, unknown>): string {
+  return rows(report.down)
+    .map(
+      (entry) =>
+        `Down       ${word(entry.project)} ${word(entry.target)} for ${word(entry.down)} (since ${word(entry.since)}); run ${word(entry.recover)}\n`,
+    )
+    .join("");
 }
 /** What to do about a daemon that is not serving, or nothing when it is. */
 function daemonAdvice(report: Record<string, unknown>): string {

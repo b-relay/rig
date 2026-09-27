@@ -25,6 +25,9 @@ import { recordedProcess, type ProcessRecord } from "./process-identity";
 import { clearStartupFailure, readStartupFailure } from "./startup-failure";
 import { inheritedEnvironment } from "./environment";
 import { z } from "zod";
+import type { Downtime } from "../domain/operator-alerts";
+import { downtimeReport } from "../runtime/alert-messages";
+import { FileStateStore } from "../runtime/state-store";
 import {
   createAdminActivityJournal,
   type AdminActivityJournal,
@@ -40,6 +43,8 @@ export interface DaemonAdminOptions {
   activity?: AdminActivityJournal;
   /** Runs launchctl with the given arguments; defaults to /bin/launchctl. */
   launchctl?: LaunchctlRunner;
+  /** The Stable Targets rigd last counted as down; read from the runtime state under the root when absent. */
+  downtime?: () => Promise<Downtime[]>;
 }
 export type LaunchctlRunner = (
   args: readonly string[],
@@ -73,6 +78,15 @@ export interface DaemonStatus {
   /** The daemon this install stopped and replaced, when it was of another version or command. */
   replaced?: { pid: number; version?: string };
   warnings?: string[];
+  /** Each Stable Target rigd counts as down and how long it has been down; absent when none is. */
+  down?: Downtime[];
+}
+/** How long each Stable Target recorded as down under `root` has been down now. */
+async function recordedDowntime(root: string): Promise<Downtime[]> {
+  return downtimeReport(
+    (await new FileStateStore(root).read()).alerts,
+    new Date().toISOString(),
+  );
 }
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const xml = (s: string) =>
@@ -96,8 +110,14 @@ export class DaemonAdmin {
         id: randomUUID,
       });
   }
+  /** Installation, process and reachability, and how long each Stable Target rigd counts as down has been down. Runtime
+   * state that cannot be read leaves the downtime out; rig doctor reports that state. */
   async status(): Promise<DaemonStatus> {
-    return (await this.inspect()).status;
+    const { status } = await this.inspect();
+    const down = await (
+      this.options.downtime ?? (() => recordedDowntime(this.options.root))
+    )().catch(() => []);
+    return down.length ? { ...status, down } : status;
   }
   /** Status plus what a caller acting on it needs: the ownership records and
    * the hint for records whose pid is alive but cannot be verified as rigd. */

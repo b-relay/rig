@@ -144,7 +144,12 @@ export interface RuntimeState {
   targets: TargetRecord[];
   activity: OperationRecord[];
   /** The boot and login session rigd last acted on; absent until a rigd that records it has started. */
-  host?: HostSession & { seenAt: string };
+  host?: HostSession & {
+    seenAt: string;
+    /** A Host restart rigd has recorded in Activity but not finished acting on, and the boot and login it found then;
+     * a daemon that finds the same restart again acts on it without recording it twice. */
+    restart?: { kind: HostRestart; boot?: string; login?: string };
+  };
 }
 
 export interface StateStore {

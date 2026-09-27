@@ -3,20 +3,26 @@ import { diagnosticErrorCode } from "../domain/errors";
 import {
   hostRestartBetween,
   hostRestartText,
-  sessionToRecord,
+  identified,
+  sameSession,
   type HostRestart,
   type HostSession,
 } from "../domain/host-session";
 import type { RuntimeState, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
-import { activationJournal, intendRunning } from "./supervision";
+import {
+  activationJournal,
+  intendRunning,
+  recordFailedStart,
+} from "./supervision";
 
 type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
 
-/** What the daemon's first pass found about the Host: the restart since the session rigd last recorded, if any, and the
- * session to record once it has acted on it. */
+/** What the daemon's first pass found about the Host: the restart since the session rigd last recorded, if any, whether
+ * an earlier daemon already recorded that restart in Activity, and the session read now. */
 export interface HostSessionFinding {
   restart?: HostRestart;
+  announced: boolean;
   session: HostSession;
 }
 
@@ -26,13 +32,18 @@ export function findHostRestart(
   current: HostSession,
 ): HostSessionFinding {
   const restart = hostRestartBetween(state.host, current);
+  const pending = state.host?.restart;
   return {
     ...(restart ? { restart } : {}),
-    session: sessionToRecord(state.host, current),
+    announced:
+      restart !== undefined &&
+      pending?.kind === restart &&
+      sameSession(pending, current),
+    session: current,
   };
 }
 
-/** Records the one Activity entry for a detected Host restart. */
+/** Records the one Activity entry for a detected Host restart, and, in the same write, that rigd is acting on it. */
 export async function recordHostRestart(
   finding: HostSessionFinding & { restart: HostRestart },
   deps: Deps,
@@ -42,22 +53,31 @@ export async function recordHostRestart(
       ? ` (booted ${finding.session.bootedAt})`
       : "";
   const what = hostRestartText(finding.restart);
-  await deps.store.update((state) =>
+  const { boot, login } = finding.session;
+  await deps.store.update((state) => {
     recordActivity(state, {
       id: deps.id(),
       action: "host-restart",
       outcome: "stopped",
       occurredAt: deps.now(),
       message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stopped every Service. rigd starts the Stable Targets meant to run again; the Working copy and Previews stay stopped until rig up.`,
-    }),
-  );
+    });
+    if (state.host)
+      state.host.restart = {
+        kind: finding.restart,
+        ...(boot === undefined ? {} : { boot }),
+        ...(login === undefined ? {} : { login }),
+      };
+  });
 }
 
-/** Records `session` as the one rigd has acted on, so its next start compares against it. */
+/** Records `session` as the one rigd has acted on, so its next start compares against it. A session of which nothing
+ * could be read is not recorded: the last one that was stays. */
 export async function saveHostSession(
   session: HostSession,
   deps: Deps,
 ): Promise<void> {
+  if (!identified(session)) return;
   await deps.store.update((state) => {
     state.host = { ...session, seenAt: deps.now() };
   });
@@ -65,14 +85,22 @@ export async function saveHostSession(
 
 /** Starts a Stable Target meant to run again after `restart`, the way an explicit `rig up` does: every stopped Service in
  * dependency order, whatever its restart policy, with full automatic-restart budgets. A Service still running is adopted.
- * Records one Activity entry for the Target. A start that fails leaves the Services it began recorded as not started, and
- * the Target meant to run, which status reports as failed until `rig up`; the failure is recorded, never raised. */
+ * Records one Activity entry for the Target. A start that fails leaves every Service not running recorded as not started
+ * (never retried automatically) and the Target meant to run, which status reports as failed until `rig up`; the failure is
+ * recorded, never raised. */
 export async function startAfterHostRestart(
   target: TargetRecord,
   restart: HostRestart,
   deps: Pick<
     RuntimeDependencies,
-    "store" | "now" | "id" | "lifecycle" | "diagnostic"
+    | "store"
+    | "now"
+    | "id"
+    | "lifecycle"
+    | "diagnostic"
+    | "observations"
+    | "observationBudgetMs"
+    | "observationDeadline"
   >,
 ): Promise<void> {
   const journal = activationJournal(target, "explicit", deps, {
@@ -84,6 +112,7 @@ export async function startAfterHostRestart(
     outcome = (await deps.lifecycle.up(target, undefined, journal)).outcome;
   } catch (error) {
     await journal.failed(error).catch(() => {});
+    await recordFailedStart(target, error, deps);
     const errorCode = diagnosticErrorCode(error);
     await deps
       .diagnostic({

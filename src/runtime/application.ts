@@ -1166,6 +1166,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const lease = await host;
     let jobs: Promise<number | undefined>[];
     let finding: HostSessionFinding | undefined;
+    /** The Targets of this pass, and those whose share of it is done (after a Host restart: acted on). */
+    let expected: string[] = [];
+    const settled = new Set<string>();
     try {
       // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
       let state;
@@ -1181,7 +1184,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await pruneCheckpoints(state, deps);
         const current = await hostSession;
         if (current) finding = findHostRestart(state, current);
-        if (finding?.restart)
+        if (finding?.restart && !finding.announced)
           await recordHostRestart(
             { ...finding, restart: finding.restart },
             deps,
@@ -1203,32 +1206,46 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             draining ? undefined : locks.tryAcquire(part.id, part.scopes),
           );
       const restart = finding?.restart;
+      // A drain may already have begun: a Target skipped for it is not settled, so the restart is found again.
+      expected = eligible.map((target) => target.id);
       jobs = eligible.flatMap((target, index) => {
         const held = leases[index];
         return held
-          ? [superviseJob(target.id, held, action, failed, restart)]
+          ? [superviseJob(target.id, held, action, failed, restart, settled)]
           : [];
       });
     } finally {
       lease?.release();
       operations.delete(hostId);
     }
-    const recorded = finding && recordSessionAfter(jobs, finding, failed);
+    const recorded =
+      finding &&
+      recordSessionAfter(
+        jobs,
+        finding,
+        () => expected.every((id) => settled.has(id)),
+        failed,
+      );
     const due = (await passResults(jobs)).filter(
       (value): value is number => value !== undefined,
     );
     if (!deps.supervisionPassBudget) await recorded;
     return due.length ? { nextRetryAt: Math.min(...due) } : {};
   }
-  /** Records the Host session as acted on once every Target's share of the first pass is over, so a daemon that stops
-   * before then finds the same restart again at its next start. A drain waits for it. Never rejects. */
+  /** Records the Host session as acted on once every Target's share of the first pass is over, and only when `complete`
+   * says each one was done and rigd is not draining: a daemon that stopped, drained or failed before it acted on a Host
+   * restart for every Target finds the same restart again at its next start. A drain waits for it. Never rejects. */
   function recordSessionAfter(
     jobs: readonly Promise<unknown>[],
     finding: HostSessionFinding,
+    complete: () => boolean,
     failed: (error: unknown) => Promise<void>,
   ): Promise<void> {
     const recording = Promise.allSettled(jobs)
-      .then(() => saveHostSession(finding.session, deps))
+      .then(async () => {
+        if (finding.restart && (draining || !complete())) return;
+        await saveHostSession(finding.session, deps);
+      })
       .catch(failed);
     executing.add(recording);
     void recording.finally(() => executing.delete(recording));
@@ -1253,7 +1270,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   /** One Target's share of a pass, under `lease`, which it releases. The record is read again under the lease, since a read
    * made before it may predate what the Operation that last held the Target recorded. After a Host `restart` the first pass
    * found, a Stable Target meant to run is started again as by `rig up`, and the Working copy's or a Preview's stopped
-   * Services are recorded as stopped by the restart, which keeps them stopped until `rig up`. Never rejects; failures are
+   * Services are recorded as stopped by the restart, which keeps them stopped until `rig up`. Adds `targetId` to `settled`
+   * once that is done, or once nothing about a restart is left to do for the Target. Never rejects; failures are
    * recorded. */
   async function superviseJob(
     targetId: string,
@@ -1261,6 +1279,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     action: "reconcile" | "supervise",
     failed: (error: unknown, target?: string) => Promise<void>,
     restart?: HostRestart,
+    settled?: Set<string>,
   ): Promise<number | undefined> {
     const entry: Running = {
       view: {
@@ -1277,6 +1296,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (draining) return undefined;
       const state = await deps.store.read();
       const target = state.targets.find((t) => t.id === targetId);
+      if (
+        !target ||
+        target.recovery ||
+        target.destructionPending ||
+        target.desired !== "running"
+      )
+        settled?.add(targetId);
       if (!target || target.recovery || target.destructionPending)
         return undefined;
       name = target.name;
@@ -1287,9 +1313,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         if (restart && target.kind === "live") {
           entry.view.phase = "starting";
           await startAfterHostRestart(target, restart, deps);
+          settled?.add(targetId);
           return undefined;
         }
-        if (restart) await recordStoppedByHostRestart(target, restart, deps);
+        if (
+          !restart ||
+          (await recordStoppedByHostRestart(target, restart, deps))
+        )
+          settled?.add(targetId);
         return await superviseTarget(target, deps, supervisionScope(target));
       }
       if (action === "reconcile") {

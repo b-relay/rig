@@ -35,23 +35,18 @@ export function hostRestartBetween(
   return undefined;
 }
 
-/** The session to record now: every field read now, and the recorded value of any field that could not be, so the next
- * start still compares against the last value known. */
-export function sessionToRecord(
-  recorded: HostSession | undefined,
-  current: HostSession,
-): HostSession {
-  return {
-    ...pick(recorded),
-    ...pick(current),
-  };
+/** Whether `a` and `b` name the same boot and login, each read or unread alike. */
+export function sameSession(
+  a: Pick<HostSession, "boot" | "login">,
+  b: Pick<HostSession, "boot" | "login">,
+): boolean {
+  return a.boot === b.boot && a.login === b.login;
 }
-function pick(session: HostSession | undefined): HostSession {
-  return {
-    ...(session?.boot === undefined ? {} : { boot: session.boot }),
-    ...(session?.bootedAt === undefined ? {} : { bootedAt: session.bootedAt }),
-    ...(session?.login === undefined ? {} : { login: session.login }),
-  };
+
+/** Whether anything identifying the session was read; a session with neither is never recorded, so the last one that was
+ * stays the one the next start compares against. */
+export function identified(session: HostSession): boolean {
+  return session.boot !== undefined || session.login !== undefined;
 }
 
 /** "the Mac restarted", "you logged out and in again": the restart as Activity and status name it. */

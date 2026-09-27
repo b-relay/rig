@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   hostRestartBetween,
-  sessionToRecord,
+  identified,
+  sameSession,
 } from "../src/domain/host-session";
 import {
   createHostSessionProbe,
@@ -51,13 +52,12 @@ test("nothing recorded, or a side that could not be read, detects nothing it can
   expect(hostRestartBetween(recorded, { login: "100019" })).toBe("login");
 });
 
-test("the session recorded keeps the last known value of a field that could not be read now", () => {
-  expect(sessionToRecord(recorded, { login: "100019" })).toEqual({
-    ...recorded,
-    login: "100019",
-  });
-  expect(sessionToRecord(undefined, {})).toEqual({});
-  expect(sessionToRecord(undefined, recorded)).toEqual(recorded);
+test("a session counts as identified by its boot or its login, and two sessions are the same only when both match", () => {
+  expect(identified({})).toBe(false);
+  expect(identified({ bootedAt: recorded.bootedAt })).toBe(false);
+  expect(identified({ login: "100019" })).toBe(true);
+  expect(sameSession(recorded, { boot: BOOT, login: "100002" })).toBe(true);
+  expect(sameSession(recorded, { boot: BOOT })).toBe(false);
 });
 
 test("the parsers read sysctl and launchctl output and nothing else", async () => {

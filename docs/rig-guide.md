@@ -1174,22 +1174,28 @@ ones it recorded last time:
   ("The Mac restarted …" or "You logged out and in again …") and one `up` entry
   per Stable Target. `rig status` says each Service was started again by
   `rigd` ("restarted after reboot" or "restarted after login"). A Stable Target
-  that fails to start is reported `failed`, stays meant to run, and waits for
+  that fails to start is reported `failed` (every Service the start left stopped
+  is, and none is retried automatically), stays meant to run, and waits for
   `rig up`.
 - **The Working copy and Previews** stay stopped, even under
   `restart: always`. `rig status` reports their Services `stopped`, with
   `exit: unknown` and a reason that says they stopped when the Mac restarted
   (or when you logged out). Run `rig up` to start them. Until that start, no
   unknown exit of that Target is retried automatically; after it, the usual
-  rules apply again. A Service that survived a logout is left running.
+  rules apply again. A Service that survived a logout is left running, and
+  one whose earlier exit had already left it stopped (a clean exit under
+  `on-failure`, say) keeps that status.
 - Targets meant to be stopped stay stopped.
 
 A plain `rigd` restart in the same boot and login session detects nothing and
 follows the rules above. So does the first start of a `rigd` that had recorded
-no session yet, and a start where neither the boot nor the login session could
-be read (for example, with no GUI login at all). `rigd` records the session
-only once it has acted on it, so a daemon that stops halfway finds the same
-restart again at its next start.
+no session yet. A new boot is detected only when both boots could be read, and
+a new login only when both login sessions could be (there is none to read
+without a GUI login, over SSH only, say); what could not be read is not
+recorded. `rigd` records the session only once it has acted on the restart for
+every Target, so a daemon that stops or is asked to stop halfway finds the
+same restart again at its next start, and finishes it without recording it in
+Activity a second time.
 
 ### Recipes
 

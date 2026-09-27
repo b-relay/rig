@@ -47,12 +47,11 @@ export const DEFAULT_SUPERVISION_SCOPE: SupervisionScope = {
 export function supervisionScope(
   target: Pick<TargetRecord, "services" | "plan">,
 ): SupervisionScope {
-  const stoppedByRestart = Object.keys(target.services ?? {}).some(
-    (service) => {
-      const outcome = currentRun(target, service)?.outcome;
-      return outcome?.kind === "unknown" && outcome.hostRestart !== undefined;
-    },
-  );
+  const stoppedByRestart = target.plan.components.some((component) => {
+    if (component.kind !== "managed") return false;
+    const outcome = currentRun(target, component.name)?.outcome;
+    return outcome?.kind === "unknown" && outcome.hostRestart !== undefined;
+  });
   return stoppedByRestart
     ? { retryUnknownExits: false }
     : DEFAULT_SUPERVISION_SCOPE;
@@ -325,22 +324,70 @@ export function intendStopped(target: TargetRecord): void {
 /** Records that an operator's up succeeded: a Service it found already running (one an earlier down could not stop, say)
  * is meant to run again too. Updates `target` in place; the caller saves it. */
 export function intendRunning(target: TargetRecord): void {
-  for (const [service, run] of Object.entries(target.services ?? {}))
+  for (const [service, run] of Object.entries(target.services ?? {})) {
     if (run.intent === "stopped")
       target.services![service] = { ...run, intent: "running" };
+    // A Service the up found running (it survived a Host restart after all) is no longer stopped by that restart.
+    const { outcome, ...rest } = target.services![service]!;
+    if (outcome?.kind === "unknown" && outcome.hostRestart)
+      target.services![service] = rest;
+  }
 }
 
 /** Records, right after rigd detected `restart`, that each Service of `target` (a Working copy or Preview meant to run) not
- * seen running was stopped by it: its outcome becomes the restart's, and no retry stays scheduled, so neither its policy
- * nor an unknown-exit retry starts it again before an explicit start (see `supervisionScope`). A Service seen running
- * survived and is left alone; one whose observation does not answer within the status budget is counted as stopped, since
- * a restart ends every process. A Service an operator stopped, or whose automatic attempts are used up, keeps its record.
- * Writes no Activity: the restart's own entry says why. A record that cannot be saved is left to the diagnostic log. */
+ * seen running was stopped by it, so neither its policy nor an unknown-exit retry starts it again before an explicit start
+ * (see `supervisionScope`). Only an outcome that would still be acted on is replaced: none yet, an unknown exit, or an
+ * exit whose retry is pending; an earlier clean exit, failure or failed start that already keeps the Service stopped
+ * stays as it was. No retry stays scheduled. A Service seen running survived and is left alone; one whose observation does
+ * not answer within the status budget is counted as stopped, since a restart ends every process. A Service an operator
+ * stopped, or whose automatic attempts are used up, keeps its record. Writes no Activity: the restart's own entry says why.
+ * Returns whether every Service was settled; a record that could not be saved goes to the diagnostic log. */
 export async function recordStoppedByHostRestart(
   target: TargetRecord,
   restart: HostRestart,
   deps: Deps,
-): Promise<void> {
+): Promise<boolean> {
+  return await settleStopped(target, deps, (component, run) => {
+    if (run?.intent === "stopped" || run?.exhausted) return undefined;
+    const outcome = run?.outcome;
+    if (
+      outcome &&
+      outcome.kind !== "unknown" &&
+      restartBudget(component.restart ?? "always", outcome) === undefined
+    )
+      return undefined;
+    return { kind: "unknown", hostRestart: restart, at: deps.now() };
+  });
+}
+
+/** Records, after an explicit start of `target` failed, that each Service not seen running was not started, unless the
+ * start's journal already said so or an operator stopped it: nothing retries it automatically before the next explicit
+ * start, and status reports it failed. Returns whether every Service was settled. */
+export async function recordFailedStart(
+  target: TargetRecord,
+  error: unknown,
+  deps: Deps,
+): Promise<boolean> {
+  const errorCode = diagnosticErrorCode(error);
+  return await settleStopped(target, deps, (_component, run) =>
+    run?.intent === "stopped" || run?.outcome?.kind === "start-failed"
+      ? undefined
+      : { kind: "start-failed", errorCode, at: deps.now() },
+  );
+}
+
+/** Gives each managed Service of `target` not seen running the outcome `decide` returns for it, clearing any scheduled
+ * retry; `decide` returning nothing leaves the record alone. A Service whose observation does not answer within the status
+ * budget counts as not running. Returns whether every Service was settled; each failure goes to the diagnostic log. */
+async function settleStopped(
+  target: TargetRecord,
+  deps: Deps,
+  decide: (
+    component: ManagedComponent,
+    run: ServiceRun | undefined,
+  ) => ServiceOutcome | undefined,
+): Promise<boolean> {
+  let settled = true;
   for (const component of target.plan.components) {
     if (component.kind !== "managed") continue;
     const service = component.name;
@@ -353,7 +400,8 @@ export async function recordStoppedByHostRestart(
       if (observed?.kind === "completed" && observed.value.state === "running")
         continue;
       const run = currentRun(target, service);
-      if (run?.intent === "stopped" || run?.exhausted) continue;
+      const outcome = decide(component, run);
+      if (!outcome) continue;
       const {
         retryAt: _retryAt,
         waitingFor: _waitingFor,
@@ -363,16 +411,9 @@ export async function recordStoppedByHostRestart(
         intent: "running",
         attempts: [],
       };
-      await saveRun(
-        target,
-        service,
-        {
-          ...rest,
-          outcome: { kind: "unknown", hostRestart: restart, at: deps.now() },
-        },
-        deps,
-      );
+      await saveRun(target, service, { ...rest, outcome }, deps);
     } catch (error) {
+      settled = false;
       await deps
         .diagnostic({
           operationId: deps.id(),
@@ -384,6 +425,7 @@ export async function recordStoppedByHostRestart(
         .catch(() => {});
     }
   }
+  return settled;
 }
 
 /** One pass over a Target meant to run. A running Service is left alone, which is how a process that survived the daemon is

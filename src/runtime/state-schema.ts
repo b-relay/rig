@@ -345,6 +345,22 @@ export const runtimeStateSchema = z
         seenAt: text.describe(
           "When rigd last recorded this session, once it had acted on any restart it found.",
         ),
+        restart: z
+          .object({
+            kind: hostRestart,
+            boot: text
+              .optional()
+              .describe("The boot rigd found when it detected the restart."),
+            login: text
+              .optional()
+              .describe(
+                "The login session rigd found when it detected the restart.",
+              ),
+          })
+          .optional()
+          .describe(
+            "A Host restart already recorded in Activity that rigd has not finished acting on; a daemon that finds it again does not record it twice.",
+          ),
       })
       .optional()
       .describe(

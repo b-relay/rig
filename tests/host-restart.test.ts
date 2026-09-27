@@ -99,7 +99,7 @@ async function fixture() {
   };
   const store = new FileStateStore(root);
   /** What the scripted Host reports as its boot and GUI login; a test changes it to restart the Host. */
-  const host: { session: HostSession } = {
+  const host: { session: HostSession; hold?: Promise<void> } = {
     session: {
       boot: "BOOT-1",
       bootedAt: "2026-09-26T07:00:00.000Z",
@@ -176,6 +176,7 @@ async function fixture() {
     },
     hostSession: {
       async current() {
+        await host.hold;
         return { ...host.session };
       },
     },
@@ -198,6 +199,7 @@ async function fixture() {
       runtime = createRuntime(deps);
     },
     reconcile: () => runtime.reconcile(),
+    drain: () => runtime.drain(),
     supervise: () => runtime.supervise(),
     command: (command: Parameters<typeof runtime.command>[0]) =>
       runtime.command(command),
@@ -458,7 +460,80 @@ test("a Stable Target that fails to come back after a reboot keeps a failed stat
   ]);
   const live = (await f.store.read()).targets.find((t) => t.kind === "live")!;
   expect(live.desired).toBe("running");
+  // Every Service the failed start left stopped is failed, not retried: not even api under always once db could start.
+  f.refusal.start = undefined;
+  for (const delay of [...UNKNOWN_EXIT_RESTART_BACKOFF_MS, 600_000]) {
+    f.clock.ms += delay;
+    await f.supervise();
+  }
+  expect(await f.running("live")).toEqual([]);
   const status = await f.status("live");
-  expect(status.db).toMatchObject({ state: "failed" });
-  expect(String(status.db!.reason)).toContain("The last start failed");
+  for (const service of ["api", "db", "worker"]) {
+    expect(status[service]).toMatchObject({ state: "failed" });
+    expect(String(status[service]!.reason)).toContain("The last start failed");
+  }
+  await f.command({ action: "up", project: "demo", target: "live" });
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+});
+
+test("a first pass that could not act on the restart for every Target leaves it to the next daemon, which acts on it without recording it twice", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  f.reopen();
+  // rigd is asked to stop while its first pass is still reading the Host session.
+  let release!: () => void;
+  f.host.hold = new Promise<void>((resolve) => (release = resolve));
+  const reconciling = f.reconcile();
+  const draining = f.drain();
+  release();
+  await reconciling;
+  await draining;
+  expect(await f.running("live")).toEqual([]);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
+
+  f.host.hold = undefined;
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/started live",
+  ]);
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-2" });
+  expect(host.restart).toBeUndefined();
+});
+
+test("after a reboot an outcome that already kept a Working copy Service stopped is kept, and one that would have been retried is replaced", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const incarnation = (key: string) => f.processes.get(key)!.incarnation;
+  // Before the reboot worker (on-failure) exited cleanly and stays stopped; api (always) crashed, and its retry is due.
+  const worker = await f.key("local", "worker");
+  const api = await f.key("local", "api");
+  f.processes.set(worker, {
+    state: "stopped",
+    exitCode: 0,
+    incarnation: incarnation(worker),
+  });
+  f.processes.set(api, {
+    state: "stopped",
+    exitCode: 1,
+    incarnation: incarnation(api),
+  });
+  await f.supervise();
+  f.restartHost(REBOOTED);
+  f.reopen();
+  await f.reconcile();
+  f.clock.ms += 1000;
+  await f.supervise();
+  expect(await f.running("local")).toEqual([]);
+  const local = await f.status("local");
+  expect(local.worker).toMatchObject({ state: "stopped", exit: "clean" });
+  expect(local.api).toMatchObject({ state: "stopped", exit: "unknown" });
+  expect(String(local.api!.reason)).toContain(
+    "It stopped when the Mac restarted",
+  );
 });

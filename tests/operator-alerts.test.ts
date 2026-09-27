@@ -1107,6 +1107,8 @@ test("a Target command that names no Target works on the Working copy and does n
     [{ operationId: "up-2", action: "up", repoPath: "/repos/pantry" }, true],
     [{ operationId: "restart-3", action: "restart", project: "pantry" }, true],
     [{ operationId: "forget-4", action: "forget", project: "pantry" }, false],
+    // A push names no Target: it selects the Stable Target by its Branch later, so it may be working on it.
+    [{ operationId: "push-6", action: "git-push", project: "pantry" }, false],
     [{ operationId: "old-5", project: "pantry" }, false],
   ] as const) {
     const rig = await fixture();

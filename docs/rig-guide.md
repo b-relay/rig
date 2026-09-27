@@ -1173,9 +1173,10 @@ The timing:
 
 An alert names the Project, the Target, the Services that keep it down with
 the reason Rig recorded, and the command that starts it again
-(`rig up live --project pantry`). A macOS notification shows only a short form
+(`rig up live --project pantry`). A macOS notification carries a short form
 of this: the command first for one Target, or the name of each Target for a
-group. The full text is in `rig activity`, where each alert that went out is
+group (a banner shows its first lines; expand the notification for the rest).
+The full text is in `rig activity`, where each alert that went out is
 one `outage` entry: `failed` when Targets went down, `unchanged` for a
 reminder, and `started` or `stopped` when they are no longer down. A Host-wide
 event is one entry, not one per Service.

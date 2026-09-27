@@ -9,9 +9,9 @@ const SCRIPT = [
   "display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)",
   "end run",
 ];
-/** Notification Center shows a few lines; longer text is cut with an ellipsis rather than left to the system. */
+/** The subtitle is one line; a longer one is cut with an ellipsis rather than left to the system. The body is passed whole:
+ * a banner shows its first lines and the expanded notification the rest, so a grouped alert names every Target. */
 const SUBTITLE_LIMIT = 120;
-const BODY_LIMIT = 240;
 const TIMEOUT_MS = 10_000;
 
 /** The macOS user notification channel: `osascript` posts a notification titled "Rig" with the alert's title as the
@@ -33,7 +33,7 @@ export function createMacosNotifications(deps: {
           "--",
           "Rig",
           shortened(alert.title, SUBTITLE_LIMIT),
-          shortened(alert.summary, BODY_LIMIT),
+          alert.summary,
         ],
         timeoutMs: TIMEOUT_MS,
       });

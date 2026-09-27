@@ -49,15 +49,21 @@ test("the notification texts reach osascript as arguments after the script, neve
   expect(request!.timeoutMs).toBe(10_000);
 });
 
-test("long texts are cut short for Notification Center", async () => {
+test("a long subtitle is cut short; the body is passed whole, so a grouped alert names every Target", async () => {
   const fake = runner();
+  const summary = Array.from(
+    { length: 12 },
+    (_, index) => `a-project-named-at-length-${index} live`,
+  ).join(", ");
   await createMacosNotifications({ run: fake.run }).send({
     ...alert,
-    summary: "x".repeat(500),
+    title: "t".repeat(500),
+    summary,
   });
-  const body = fake.requests[0]!.command.at(-1)!;
-  expect(body).toHaveLength(240);
-  expect(body.endsWith("…")).toBe(true);
+  const [subtitle, body] = fake.requests[0]!.command.slice(-2);
+  expect(subtitle).toHaveLength(120);
+  expect(subtitle!.endsWith("…")).toBe(true);
+  expect(body).toBe(summary);
 });
 
 test("a failed osascript rejects with ALERT_DELIVERY, its last error line and the permission hint", async () => {

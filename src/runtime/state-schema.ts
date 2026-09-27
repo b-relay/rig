@@ -298,6 +298,75 @@ const operation = z.object({
   occurredAt: text,
   message: z.string().optional(),
 });
+const instant = text.describe("An ISO 8601 time.");
+const downService = z.object({
+  name: text.describe("The Service's name."),
+  reason: z.string().describe("The reason status gives for the Service."),
+  brief: z
+    .string()
+    .describe("The same reason in a few words, for a short notification."),
+});
+const resolution = z.object({
+  at: instant.describe("When the down period ended."),
+  how: z
+    .enum(["running", "stopped", "removed"])
+    .describe(
+      "running: it serves again; stopped: an operator stopped it; removed: it is no longer recorded.",
+    ),
+});
+const alerts = z
+  .object({
+    targets: z
+      .array(
+        z.object({
+          targetId: text.describe("The Stable Target's record id."),
+          project: text.describe("The Project's name when last seen."),
+          target: text.describe("The Stable Target's name when last seen."),
+          since: instant.describe("When Rig first counted it as down."),
+          services: z
+            .array(downService)
+            .describe("The Services that keep it down."),
+          unpublishedRoute: text
+            .optional()
+            .describe(
+              "Its route, when the host Caddy does not load Rig's routes.",
+            ),
+          alertedAt: instant
+            .optional()
+            .describe(
+              "When the alert naming it was delivered; absent until then.",
+            ),
+          resolved: resolution
+            .optional()
+            .describe(
+              "The down period ended; kept until the recovery message is delivered.",
+            ),
+        }),
+      )
+      .describe(
+        "Stable Targets counted as down, and alerted ones whose recovery is not yet told.",
+      ),
+    notifiedAt: instant
+      .optional()
+      .describe(
+        "When the last down alert or reminder was delivered; reminders are timed from it.",
+      ),
+    retry: z
+      .object({
+        failures: z
+          .number()
+          .int()
+          .positive()
+          .describe("Deliveries that failed in a row."),
+        at: instant.describe("When the next delivery may be tried."),
+      })
+      .optional()
+      .describe("The wait after a failed delivery."),
+  })
+  .optional()
+  .describe(
+    "Operator alert state: what was alerted and when, so a daemon restart neither repeats nor forgets an alert.",
+  );
 /** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
  * older rigd refuses the file instead of silently dropping what it does not know. */
 export const STATE_VERSION = 4;
@@ -307,6 +376,7 @@ export const runtimeStateSchema = z
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),
+    alerts,
   })
   .superRefine((state, ctx) => {
     const ids = new Set<string>(),

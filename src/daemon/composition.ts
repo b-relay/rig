@@ -40,6 +40,7 @@ import { createCaddyRouter } from "../providers/caddy-router";
 import { runCommand } from "../providers/command-runner";
 import { createListenerInspection } from "../providers/listener-inspection";
 import { probeLocalPort } from "../providers/port-probe";
+import { createHostSessionProbe } from "../providers/host-session";
 import { createProjectDocuments } from "../adapters/project-documents";
 import { createDeploymentSources } from "../adapters/deployment-sources";
 import { createRuntimeFiles } from "../adapters/runtime-files";
@@ -69,9 +70,10 @@ export async function composeDaemon(
     timing: createProcessTiming(),
     processInspection,
   });
+  const uid = process.getuid?.() ?? 501;
   const launchd = createLaunchdSupervisor({
     root: join(root, "launchd"),
-    domain: `gui/${process.getuid?.() ?? 501}`,
+    domain: `gui/${uid}`,
     labelPrefix: `com.b-relay.rig.${createHash("sha256").update(root).digest("hex").slice(0, 12)}`,
     captureCommand,
     run: runCommand,
@@ -149,6 +151,8 @@ export async function composeDaemon(
       deadline: timerObservationDeadline,
     },
     files: createRuntimeFiles(),
+    // The boot and GUI login rigd's first pass compares with the last recorded, to start Stable Targets after a restart.
+    hostSession: createHostSessionProbe({ run: runCommand, uid }),
     now: () => new Date().toISOString(),
     id: randomUUID,
     diagnostic: recordingDiagnostic(diagnostic, notices),

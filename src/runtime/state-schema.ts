@@ -122,6 +122,11 @@ const preparation = z
   })
   .optional();
 const at = text.describe("When Rig recorded the outcome.");
+const hostRestart = z
+  .enum(["reboot", "login"])
+  .describe(
+    "A Host restart rigd detected at its start: the Mac restarted (reboot), or the user logged out and in again (login).",
+  );
 const services = z
   .record(
     text,
@@ -163,7 +168,15 @@ const services = z
             errorCode: text,
             at,
           }),
-          z.object({ kind: z.literal("unknown"), at }),
+          z.object({
+            kind: z.literal("unknown"),
+            hostRestart: hostRestart
+              .optional()
+              .describe(
+                "The process is gone because of this Host restart; a Working copy or Preview Service is not started again before rig up.",
+              ),
+            at,
+          }),
         ])
         .optional()
         .describe(
@@ -204,6 +217,11 @@ const services = z
         .optional()
         .describe(
           "The running process was started automatically after an unknown exit.",
+        ),
+      startedAfterHostRestart: hostRestart
+        .optional()
+        .describe(
+          "The running process was started by rigd after it detected this Host restart.",
         ),
       exhausted: z
         .literal(true)
@@ -307,6 +325,31 @@ export const runtimeStateSchema = z
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),
+    host: z
+      .object({
+        boot: text
+          .optional()
+          .describe(
+            "The kernel's identifier of the boot (kern.bootsessionuuid); a different one at the next start means the Mac restarted.",
+          ),
+        bootedAt: text
+          .optional()
+          .describe(
+            "When the Mac booted (kern.boottime), for people to read; never compared.",
+          ),
+        login: text
+          .optional()
+          .describe(
+            "The audit session of the user's GUI login (launchd gui domain); a different one in the same boot means the user logged in again.",
+          ),
+        seenAt: text.describe(
+          "When rigd last recorded this session, once it had acted on any restart it found.",
+        ),
+      })
+      .optional()
+      .describe(
+        "The boot and login session rigd last acted on, so its next start can tell whether the Host restarted in between.",
+      ),
   })
   .superRefine((state, ctx) => {
     const ids = new Set<string>(),

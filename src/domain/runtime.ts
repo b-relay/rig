@@ -1,4 +1,5 @@
 import type { TargetPlan } from "../config/types";
+import type { HostRestart, HostSession } from "./host-session";
 
 export interface ProjectRecord {
   id: string;
@@ -44,7 +45,9 @@ export type ServiceOutcome =
       errorCode: string;
       at: string;
     }
-  | { kind: "unknown"; at: string };
+  /** `hostRestart` says the process is gone because the Host restarted or the user logged out, as rigd detected at its
+   * next start; nothing starts such a Service of the Working copy or a Preview again before an explicit start. */
+  | { kind: "unknown"; hostRestart?: HostRestart; at: string };
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
 export interface ServiceRun {
   /** The workspace the Service was started from; a record of another Deployment describes nothing. */
@@ -66,6 +69,8 @@ export interface ServiceRun {
   waitingFor?: { service: string } | { ports: number[] };
   /** The process now running was started automatically after an unknown exit. */
   restartedAfterUnknown?: true;
+  /** The process now running was started by rigd after it detected this Host restart. */
+  startedAfterHostRestart?: HostRestart;
   /** The automatic attempts of the budget the latest outcome draws on are used up; only an explicit start or a new Deployment
    * starts the Service again. */
   exhausted?: true;
@@ -138,6 +143,8 @@ export interface RuntimeState {
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
+  /** The boot and login session rigd last acted on; absent until a rigd that records it has started. */
+  host?: HostSession & { seenAt: string };
 }
 
 export interface StateStore {

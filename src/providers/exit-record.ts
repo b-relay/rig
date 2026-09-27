@@ -61,6 +61,19 @@ export async function removeExitRecord(
 ): Promise<void> {
   await rm(exitPath(stateRoot, key), { force: true });
 }
+/** What a capture wrapper's own end says about its application's, when the application's record is missing. A signal or a
+ * non-zero code does: the wrapper ends by the signal that stopped it, or mirrors its application's failure. Code 0 does not,
+ * because a wrapper from before wrappers ended by their signal also exits 0 after an outside SIGTERM, and a wrapper whose
+ * application exited 0 by itself has already written that application's record. */
+export function wrapperExitEvidence(exit: {
+  exitCode?: number;
+  signal?: string;
+}): { exitCode: number } | { signal: string } | undefined {
+  if (exit.signal !== undefined) return { signal: exit.signal };
+  if (exit.exitCode !== undefined && exit.exitCode !== 0)
+    return { exitCode: exit.exitCode };
+  return undefined;
+}
 /** The exit evidence a stopped observation carries. */
 export function exitEvidence(
   record: ExitRecord | undefined,

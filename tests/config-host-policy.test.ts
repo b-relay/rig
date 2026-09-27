@@ -9,7 +9,18 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     },
     providers: { caddy: { extra_config: [], reload: { mode: "manual" } } },
     diagnostics: { retention_days: 14, level: "info" },
+    alerts: { channels: { macos: { enabled: true } } },
   });
+});
+
+test("the macOS alert channel can be turned off, and an unknown channel is refused", () => {
+  expect(
+    parseHostConfig({ alerts: { channels: { macos: { enabled: false } } } })
+      .alerts,
+  ).toEqual({ channels: { macos: { enabled: false } } });
+  expect(() =>
+    parseHostConfig({ alerts: { channels: { slack: { enabled: true } } } }),
+  ).toThrow("Invalid Host configuration.");
 });
 
 test("Host config refuses the settings Rig never read and the old key names", () => {

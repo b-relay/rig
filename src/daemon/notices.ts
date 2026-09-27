@@ -19,6 +19,12 @@ export const FAILURE_MONITOR: NoticeChannel = {
     "Component crashes are not recorded as Activity until a pass succeeds; the monitor retries every 5 s.",
   hint: "Inspect rigd status and the runtime state file under the Rig root.",
 };
+export const ALERT_MONITOR: NoticeChannel = {
+  name: "alerts",
+  consequence:
+    "Stable Target downtime is not counted and no operator alert goes out until an evaluation succeeds; rigd tries again every 30 s.",
+  hint: "Inspect the runtime state file under the Rig root, and rig activity.",
+};
 /** Bounded in-memory evidence: one entry per channel, a count, and the latest message. Never writes anywhere, so a failing sink cannot recurse. */
 export interface NoticeBoard {
   note(channel: NoticeChannel, message: string): void;
@@ -78,12 +84,17 @@ export function recordingDiagnostic(
   };
 }
 /** Runs one pass at a time on a fixed interval, and once more when a pass names an earlier time something is due
- * (`nextRetryAt`, Unix milliseconds). A failed pass is noted, a later success clears it. Returns the stop. */
+ * (`nextRetryAt`, Unix milliseconds). A failed pass is noted under `channel`, the failure monitor's by default, and a later
+ * success clears it. Returns the stop. */
 export function startFailureMonitor(options: {
   intervalMs: number;
   run(): Promise<{ nextRetryAt?: number } | void>;
   notices: Pick<NoticeBoard, "note" | "clear">;
+  channel?: NoticeChannel;
 }): () => void {
+  const channel = options.channel ?? FAILURE_MONITOR;
+  const subject =
+    channel === FAILURE_MONITOR ? "failure monitor" : `${channel.name} monitor`;
   let running = false,
     stopped = false;
   let due: ReturnType<typeof setTimeout> | undefined;
@@ -94,15 +105,15 @@ export function startFailureMonitor(options: {
       .run()
       .then(
         (result) => {
-          options.notices.clear(FAILURE_MONITOR);
+          options.notices.clear(channel);
           if (stopped || result?.nextRetryAt === undefined) return;
           clearTimeout(due);
           due = setTimeout(pass, Math.max(0, result.nextRetryAt - Date.now()));
         },
         (error) =>
           options.notices.note(
-            FAILURE_MONITOR,
-            `The failure monitor's last pass failed: ${describeFailure(error)}`,
+            channel,
+            `The ${subject}'s last pass failed: ${describeFailure(error)}`,
           ),
       )
       .finally(() => {

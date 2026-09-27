@@ -78,6 +78,7 @@ export async function composeDaemon(
     captureCommand,
     run: runCommand,
     inspect: processInspection.identity,
+    groupExists: processInspection.groupExists,
     timing: createLaunchdTiming(),
   });
   const supervisors = new Map<string, Supervisor>([

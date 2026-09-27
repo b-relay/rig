@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
 import { runCommand } from "../src/providers/command-runner";
 import type {
@@ -203,6 +203,10 @@ async function launchdWorld() {
       labelPrefix: "test.unknown-exit",
       captureCommand: [process.execPath, wrapper],
       run,
+      groupExists: createProcessInspection({
+        run: runCommand,
+        kill: platformKill,
+      }).groupExists,
       inspect: createProcessIdentityReader(runCommand),
       timing: createLaunchdTiming(),
     });
@@ -210,6 +214,8 @@ async function launchdWorld() {
     root,
     supervisor,
     wrapperPid: () => job!.pid,
+    requestPath: (key: string) =>
+      join(root, `test.unknown-exit.${digest(key).slice(0, 24)}.json`),
     applicationPid: (key: string) =>
       applicationPid(
         join(root, `test.unknown-exit.${digest(key).slice(0, 24)}.json`),
@@ -266,6 +272,7 @@ async function rigdWorld() {
     root,
     supervisor,
     wrapperPid: () => wrapperPid,
+    requestPath: (key: string) => join(root, "capture", `${digest(key)}.json`),
     applicationPid: (key: string) =>
       applicationPid(join(root, "capture", `${digest(key)}.json`)),
     /** Every supervisor lets go of its handles, as a daemon restart does. */
@@ -390,6 +397,132 @@ for (const [name, witness] of [
               }
             : { state: "stopped" },
         );
+      } finally {
+        if ("cleanup" in w) await w.cleanup();
+      }
+    }, 20_000);
+
+    test("a wrapper killed before it published any observation still leaves its application unknown, through the application's lease", async () => {
+      const w = await world();
+      const supervisor = w.supervisor();
+      try {
+        const req = request(w.root, "start-1");
+        await supervisor.ensureRunning(req);
+        const application = await w.applicationPid(req.key);
+        pids.push(application);
+        process.kill(w.wrapperPid(), "SIGKILL");
+        if ("wrapperGone" in w) await w.wrapperGone();
+        for (let i = 0; i < 100 && alive(w.wrapperPid()); i++)
+          await Bun.sleep(10);
+        // The state a wrapper killed between starting its application and its first observation leaves: the lease its own
+        // supervisor wrote when it spawned the application, and no observation.
+        await rm(`${w.requestPath(req.key)}.observation.json`, { force: true });
+        const orphaned = await until(
+          supervisor,
+          req.key,
+          (o) => o.state !== "running",
+        );
+        expect(orphaned.state).toBe("unknown");
+        expect(orphaned.reason).toContain(`pid ${application}`);
+        await expect(
+          supervisor.ensureRunning({ ...req, incarnation: "start-2" }),
+        ).rejects.toMatchObject({
+          code: expect.stringMatching(/UNKNOWN$/),
+        });
+        expect(alive(application)).toBe(true);
+        // Once it is gone, the wrapper's end is evidence again.
+        process.kill(application, "SIGKILL");
+        expect(
+          await until(supervisor, req.key, (o) => o.state === "stopped"),
+        ).toMatchObject({ state: "stopped", signal: "SIGKILL" });
+      } finally {
+        if ("cleanup" in w) await w.cleanup();
+      }
+    }, 20_000);
+
+    test("an application whose leader died but whose process group still runs is unknown, and no start is made beside it", async () => {
+      const w = await world();
+      const supervisor = w.supervisor();
+      let group = 0;
+      try {
+        // The leader shell keeps a member of its group running, as a server's worker processes do.
+        const req = {
+          ...request(w.root, "start-1"),
+          command: ["/bin/sh", "-c", "sleep 60 & wait"],
+        };
+        await supervisor.ensureRunning(req);
+        const application = await w.applicationPid(req.key);
+        group = application;
+        pids.push(application);
+        process.kill(w.wrapperPid(), "SIGKILL");
+        if ("wrapperGone" in w) await w.wrapperGone();
+        for (let i = 0; i < 100 && alive(w.wrapperPid()); i++)
+          await Bun.sleep(10);
+        process.kill(application, "SIGKILL");
+        for (let i = 0; i < 100 && alive(application); i++) await Bun.sleep(10);
+        expect(alive(application)).toBe(false);
+        const orphaned = await until(
+          supervisor,
+          req.key,
+          (o) => o.state !== "running",
+        );
+        expect(orphaned.state).toBe("unknown");
+        expect(orphaned.reason).toContain(`${application}`);
+        await expect(
+          supervisor.ensureRunning({ ...req, incarnation: "start-2" }),
+        ).rejects.toMatchObject({
+          code: expect.stringMatching(/UNKNOWN$/),
+        });
+        // Once the whole group is gone, the wrapper's end is evidence again.
+        process.kill(-group, "SIGKILL");
+        expect(
+          await until(supervisor, req.key, (o) => o.state === "stopped"),
+        ).toMatchObject({ state: "stopped", signal: "SIGKILL" });
+      } finally {
+        if (group)
+          try {
+            process.kill(-group, "SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        if ("cleanup" in w) await w.cleanup();
+      }
+    }, 20_000);
+
+    test("an application lease that cannot be read leaves the Service unknown rather than proving its application gone", async () => {
+      const w = await world();
+      const supervisor = w.supervisor();
+      try {
+        const req = request(w.root, "start-1");
+        await supervisor.ensureRunning(req);
+        const application = await w.applicationPid(req.key);
+        pids.push(application);
+        process.kill(w.wrapperPid(), "SIGKILL");
+        if ("wrapperGone" in w) await w.wrapperGone();
+        for (let i = 0; i < 100 && alive(w.wrapperPid()); i++)
+          await Bun.sleep(10);
+        await rm(`${w.requestPath(req.key)}.observation.json`, { force: true });
+        await writeFile(
+          join(
+            dirname(w.requestPath(req.key)),
+            "process-leases",
+            `${digest(req.key)}.json`,
+          ),
+          "{not json",
+        );
+        const uncertain = await until(
+          supervisor,
+          req.key,
+          (o) => o.state !== "running",
+        );
+        expect(uncertain.state).toBe("unknown");
+        expect(uncertain.reason).toContain("could not be verified");
+        await expect(
+          supervisor.ensureRunning({ ...req, incarnation: "start-2" }),
+        ).rejects.toMatchObject({
+          code: expect.stringMatching(/UNKNOWN$/),
+        });
+        expect(alive(application)).toBe(true);
       } finally {
         if ("cleanup" in w) await w.cleanup();
       }

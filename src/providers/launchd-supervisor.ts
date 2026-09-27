@@ -35,6 +35,9 @@ export interface LaunchdOptions {
   readonly run: CommandRunner;
   /** Fresh process birth identity checks for captured wrapper and application ownership; the daemon shares its identity reader. */
   readonly inspect: ProcessIdentityReader;
+  /** Whether a process group still has members; decides whether an application outlived its capture wrapper once the
+   * group's leader is gone. The daemon shares its process inspection's probe. */
+  readonly groupExists: (pid: number) => Promise<boolean>;
   /** Clock, pauses, and wait budgets; `createLaunchdTiming()` on the platform, scripted in tests. */
   readonly timing: LaunchdTiming;
   /** rigd's private capture command, used to timestamp and separate both application streams. */
@@ -68,7 +71,7 @@ const POLL_MS = 100;
 /** launchd keeps a job alive across rigd's exit but never respawns it (KeepAlive is false): whether a Service that ended
  * starts again is the runtime's decision. Explicit up preserves already running jobs. */
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
-  const { run, inspect } = options;
+  const { run, inspect, groupExists } = options;
   const { now, wait, applicationStartMs, unloadBudgetMs } = options.timing;
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
@@ -96,7 +99,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
     const requestPath = join(options.root, `${label(key)}.json`);
     const survivor =
       options.captureCommand &&
-      (await survivingApplication({ requestPath, inspect }));
+      (await survivingApplication({ requestPath, key, inspect, groupExists }));
     for (const file of [
       join(options.root, `${label(key)}.plist`),
       requestPath,
@@ -141,7 +144,12 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       // stopped, and a start is never made beside it.
       const requestPath = join(options.root, `${label(key)}.json`);
       if (options.captureCommand) {
-        const survivor = await survivingApplication({ requestPath, inspect });
+        const survivor = await survivingApplication({
+          requestPath,
+          key,
+          inspect,
+          groupExists,
+        });
         if (survivor) return survivor;
       }
       // The wrapper's record of its application's exit comes first; without it, launchd's record of how the wrapper ended.

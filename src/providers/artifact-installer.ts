@@ -109,8 +109,8 @@ export function createArtifactInstaller(options: {
   };
 }
 
-/** The bun a source entrypoint's shim execs. A shim to a bun that is absent or not executable would publish a Tool that
- * cannot run, so the install is refused as BUN_NOT_FOUND instead. */
+/** The bun a source entrypoint's shim execs. A shim to a bun that is absent, not a regular file, or not executable would
+ * publish a Tool that cannot run, so the install is refused as BUN_NOT_FOUND instead. */
 async function runnableBun(
   bun: string | undefined,
   entrypoint: string,
@@ -122,16 +122,20 @@ async function runnableBun(
       "Install bun so your shell's PATH finds it, then run rigd install again to record it; or build the Tool and point bin at the executable.",
       { entrypoint },
     );
-  try {
-    await access(bun, constants.X_OK);
-  } catch {
+  // A directory is searchable, so X_OK alone would pass it; only a regular executable file can run a Tool.
+  const runnable =
+    (await stat(bun).catch(() => undefined))?.isFile() === true &&
+    (await access(bun, constants.X_OK).then(
+      () => true,
+      () => false,
+    ));
+  if (!runnable)
     throw new RigError(
       "BUN_NOT_FOUND",
-      `The Tool entrypoint ${entrypoint} is a source file, but the bun rigd install recorded, ${bun}, is missing or not executable.`,
+      `The Tool entrypoint ${entrypoint} is a source file, but the bun rigd install recorded, ${bun}, is missing or not an executable file.`,
       "Run rigd install again from a shell whose PATH finds bun, so rigd records the current one.",
       { entrypoint, bun },
     );
-  }
   return bun;
 }
 

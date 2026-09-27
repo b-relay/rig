@@ -1023,7 +1023,10 @@ Services do not need one, and warns that source-file Tools will fail. Publishing
 such a Tool without a recorded bun, or with a recorded one that is gone, fails
 as `BUN_NOT_FOUND` and publishes nothing; an earlier shim stays as it was. With
 no recorded bun, every `rig up`, `rig restart`, or deploy of a Target with a
-source-file Tool fails this way, even while its earlier shim still runs. A shim
+source-file Tool fails this way when it reaches that Tool, even while its
+earlier shim still runs. A Stable Target or Preview whose Project installs its
+dependencies with bun fails before that, as `DEPENDENCIES_FAILED`, when bun is
+not on the `PATH` that `rigd install` recorded. A shim
 already published with a bun that has since been removed is not republished,
 so `rig status` still shows it `installed`; `rig doctor` reports the missing
 bun as `tool-bun`. Install bun, or fix `PATH`, and run `rigd install` again. A

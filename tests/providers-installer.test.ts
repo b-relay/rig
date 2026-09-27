@@ -129,6 +129,18 @@ test("a source entrypoint without a runnable bun fails as BUN_NOT_FOUND before b
     hint: expect.stringContaining("rigd install"),
     details: { entrypoint: join(root, "main.ts"), bun: gone },
   });
+  // A directory where the recorded bun was is searchable, so X_OK alone would pass; it still cannot run a Tool.
+  const directory = join(root, "directory-bun");
+  await mkdir(directory);
+  await expect(
+    createArtifactInstaller({ run, bunExecutable: directory }).install(
+      request,
+    ),
+  ).rejects.toMatchObject({
+    code: "BUN_NOT_FOUND",
+    message: expect.stringContaining(directory),
+    details: { entrypoint: join(root, "main.ts"), bun: directory },
+  });
   expect(commands).toEqual([]);
   await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
   // A built executable never needs bun.

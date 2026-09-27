@@ -797,6 +797,35 @@ test("a launchd job that never became reachable can be uninstalled and status na
   }
 });
 
+test("doctor reports a recorded bun that is now a directory as tool-bun, and passes a runnable one", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-bun-dir-"));
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true });
+    const record = (bun: string) =>
+      writeFile(
+        join(root, "daemon", "install.json"),
+        JSON.stringify({ mode: "process", command: [process.execPath], bun }),
+      );
+    // A directory is searchable, so an X_OK check alone would call it executable.
+    const directory = join(root, "bun-dir");
+    await mkdir(directory);
+    await record(directory);
+    expect(
+      (await inspectHost(root)).find((check) => check.name === "tool-bun"),
+    ).toMatchObject({
+      ok: false,
+      reason: "missing-executable",
+      message: expect.stringContaining(directory),
+    });
+    await record(process.execPath);
+    expect(
+      (await inspectHost(root)).find((check) => check.name === "tool-bun"),
+    ).toBeUndefined();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the daemon command prefers the PATH entry that resolves to the running executable", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-exec-"));
   try {

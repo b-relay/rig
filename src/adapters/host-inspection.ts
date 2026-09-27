@@ -1,4 +1,4 @@
-import { access, constants } from "node:fs/promises";
+import { access, constants, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { readHostConfig } from "../config";
 import { ConfigError } from "../config/errors";
@@ -112,14 +112,16 @@ async function inspectDaemonExecutable(root: string): Promise<DoctorCheck[]> {
     checks.push({
       name: "tool-bun",
       ok: false,
-      message: `The bun recorded for Tools whose bin is a source file, ${bun}, is missing or not executable.`,
+      message: `The bun recorded for Tools whose bin is a source file, ${bun}, is missing or not an executable file.`,
       reason: "missing-executable",
       hint: "Run rigd install again from a shell whose PATH finds bun.",
     });
   return checks;
 }
+/** A regular file the operator may execute; a directory is searchable, so X_OK alone would pass it. */
 async function isExecutable(path: string): Promise<boolean> {
   try {
+    if (!(await stat(path)).isFile()) return false;
     await access(path, constants.X_OK);
     return true;
   } catch {

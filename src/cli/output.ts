@@ -1,4 +1,5 @@
 import type { ProjectStatusReport } from "../domain/project-status";
+import { killingText } from "./stop-display";
 import { terminalText } from "./terminal-text";
 /** Human presenters consume the same domain report returned by structured commands. */
 export function renderResult(action: string, value: unknown): string {
@@ -138,7 +139,8 @@ function daemonAdvice(report: Record<string, unknown>): string {
     return "rigd is installed but not running. Run rigd install to start it.\n";
   return "rigd is running but not reachable. Run rig doctor, or rigd uninstall and then rigd install.\n";
 }
-export function renderStatus(report: ProjectStatusReport): string {
+/** `now` is the local clock a stopping Service's kill deadline is shown against. */
+export function renderStatus(report: ProjectStatusReport, now: Date): string {
   const lines = [word(report.project)];
   const failures: string[] = [];
   for (const target of report.targets) {
@@ -158,8 +160,12 @@ export function renderStatus(report: ProjectStatusReport): string {
       const route = component.route
         ? [word(component.route), unpublished].filter(Boolean).join("  ")
         : "";
+      const state =
+        component.state === "stopping" && typeof component.killAt === "string"
+          ? `stopping · ${killingText(component.killAt, now, "minutes", false)}`
+          : word(component.state);
       lines.push(
-        `  ${[word(component.name), word(component.state), port, route].filter(Boolean).join("  ")}`,
+        `  ${[word(component.name), state, port, route].filter(Boolean).join("  ")}`,
       );
       if (["failed", "unhealthy", "missing"].includes(component.state))
         failures.push(

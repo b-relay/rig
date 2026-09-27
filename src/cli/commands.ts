@@ -22,6 +22,7 @@ interface ScopeOptions {
   json?: boolean;
   deployment?: string;
   destroy?: boolean;
+  kill?: boolean;
 }
 
 /** The command grammar owns usage validation; runtime policy stays behind the client. */
@@ -234,6 +235,11 @@ function addLifecycleCommands(
         "--destroy",
         "Destroy a Preview including its owned data, logs, and source history",
       );
+    if (action !== "up")
+      child.option(
+        "--kill",
+        "Skip each Service's stop_timeout: SIGTERM, then SIGKILL after 1.5 s. Also cuts short a stop already running on this Target",
+      );
     child.action(
       async (
         target: string | undefined,
@@ -251,6 +257,7 @@ function addLifecycleCommands(
           {
             ...request,
             ...(options.destroy ? { action: "destroy" as const } : {}),
+            ...(options.kill ? { kill: true } : {}),
           },
           { json: options.json },
         );

@@ -1,14 +1,18 @@
 import { expect, test } from "bun:test";
 import { waitNotice, waitStatus } from "../src/cli/wait-notice";
+import { formatClock } from "../src/cli/stop-display";
 import { createHostReservations } from "../src/runtime/host-reservations";
 
+// Local times, so the expected text does not depend on the time zone the tests run in.
+const started = new Date(2026, 8, 27, 4, 0, 0);
+const now = new Date(2026, 8, 27, 4, 12, 30);
 const view = {
   operationId: "op-1",
   action: "down",
   project: "fletcher",
   target: "local",
   phase: "stopping",
-  startedAt: "2026-09-27T04:00:00.000Z",
+  startedAt: started.toISOString(),
 };
 const waitingOn = (
   holders: object[],
@@ -17,16 +21,17 @@ const waitingOn = (
   operation: { state: "waiting", waitingOn: holders, ahead },
 });
 
-test("the wait line names the Target, what is happening to it, and how many more are ahead", () => {
-  expect(waitNotice(waitingOn([view]))).toBe(
-    "Waiting: fletcher local is stopping (operation op-1, started 2026-09-27T04:00:00.000Z).",
+test("the wait line names the Target, what is happening to it, when it started in local time, and how many more are ahead", () => {
+  expect(waitNotice(waitingOn([view]), now)).toBe(
+    "Waiting: fletcher local is stopping (operation op-1, started 04:00:00)",
   );
   expect(
     waitNotice(
       waitingOn([{ ...view, target: undefined, phase: "renaming" }, view], 2),
+      now,
     ),
   ).toBe(
-    "Waiting: fletcher is being renamed (operation op-1, started 2026-09-27T04:00:00.000Z); 3 more ahead of this command.",
+    "Waiting: fletcher is being renamed (operation op-1, started 04:00:00); 3 more ahead of this command",
   );
   expect(
     waitNotice(
@@ -39,25 +44,83 @@ test("the wait line names the Target, what is happening to it, and how many more
           phase: "preparing to uninstall",
         },
       ]),
+      now,
     ),
   ).toStartWith("Waiting: rigd is preparing to uninstall (operation op-1");
   // A phase this rig does not know yet still reads as the action.
-  expect(waitNotice(waitingOn([{ ...view, phase: "draining" }]))).toStartWith(
-    "Waiting: fletcher local is running down (",
-  );
-  expect(waitNotice(waitingOn([], 1))).toBe(
-    "Waiting: 1 operation ahead of this command.",
+  expect(
+    waitNotice(waitingOn([{ ...view, phase: "draining" }]), now),
+  ).toStartWith("Waiting: fletcher local is running down (");
+  expect(waitNotice(waitingOn([], 1), now)).toBe(
+    "Waiting: 1 operation ahead of this command",
   );
 });
 
-test("only a waiting Operation has a line; a running one and an unreadable reply do not", () => {
+test("a wait on a stop names the Service being stopped and when it is killed, as time left and local time", () => {
+  const killAt = new Date(2026, 8, 27, 4, 31, 7);
+  const stopping = {
+    ...view,
+    stops: [
+      {
+        service: "web",
+        target: "local",
+        state: "stopped",
+        since: started.toISOString(),
+        killAt: started.toISOString(),
+        endedAt: started.toISOString(),
+      },
+      {
+        service: "google-scheduler",
+        target: "local",
+        state: "stopping",
+        since: started.toISOString(),
+        killAt: killAt.toISOString(),
+      },
+    ],
+  };
+  const status = waitStatus(waitingOn([stopping]), now);
+  expect(status).toEqual({
+    state: "waiting",
+    subject: "op-1|stopping|local|google-scheduler",
+    killAt: killAt.toISOString(),
+    notice:
+      "Waiting: fletcher local is stopping (google-scheduler, killing in 19m at 04:31)",
+  });
+  expect(formatClock(killAt, false)).toBe("04:31");
+  expect(waitNotice(waitingOn([stopping]), new Date(2026, 8, 27, 4, 40))).toBe(
+    "Waiting: fletcher local is stopping (google-scheduler, killing now)",
+  );
+});
+
+test("a running Operation reports the Services it is stopping; an unreadable reply reports nothing", () => {
   expect(
-    waitStatus({ operation: { state: "running", phase: "starting" } }),
-  ).toEqual({ state: "running" });
-  expect(waitStatus({ operation: { state: "unknown" } })).toBeUndefined();
-  expect(waitStatus({ running: view, waiting: 1 })).toBeUndefined();
-  expect(waitStatus("nonsense")).toBeUndefined();
-  expect(waitStatus(waitingOn([view]))).toMatchObject({ state: "waiting" });
+    waitStatus({ operation: { state: "running", phase: "starting" } }, now),
+  ).toEqual({ state: "running", stops: [] });
+  expect(
+    waitStatus(
+      {
+        operation: {
+          state: "running",
+          phase: "stopping",
+          project: "fletcher",
+          target: "local",
+          stops: view.phase ? [] : [],
+        },
+      },
+      now,
+    ),
+  ).toEqual({
+    state: "running",
+    project: "fletcher",
+    target: "local",
+    stops: [],
+  });
+  expect(waitStatus({ operation: { state: "unknown" } }, now)).toBeUndefined();
+  expect(waitStatus({ running: view, waiting: 1 }, now)).toBeUndefined();
+  expect(waitStatus("nonsense", now)).toBeUndefined();
+  expect(waitStatus(waitingOn([view]), now)).toMatchObject({
+    state: "waiting",
+  });
 });
 
 test("port claims are made one at a time, visible to the next claimant, and end with their Operation", async () => {

@@ -30,10 +30,19 @@ export function isHelp(error: unknown): boolean {
  * it is recorded as its own event and points at the record rigd will finish. */
 export async function reportDetached(
   operationId: string,
-  input: { diagnostics: DiagnosticLog; output: UserOutput; json?: boolean },
+  input: {
+    diagnostics: DiagnosticLog;
+    output: UserOutput;
+    json?: boolean;
+    /** The user left a stop running in the background: what is left stopping, and how to end it now, said on one line. */
+    left?: { message: string; hint: string };
+  },
 ): Promise<number> {
-  const message = `Detached from operation ${operationId}; rigd finishes it in the background.`;
-  const hint = `Run rig activity ${operationId} to see its outcome.`;
+  const message =
+    input.left?.message ??
+    `Detached from operation ${operationId}; rigd finishes it in the background.`;
+  const hint =
+    input.left?.hint ?? `Run rig activity ${operationId} to see its outcome.`;
   const evidence = await recordDiagnostic(input.diagnostics, {
     event: "command.detached",
     level: "info",
@@ -43,7 +52,7 @@ export async function reportDetached(
     input.output.write(
       `${JSON.stringify({ error: { code: "DETACHED", message, hint, operationId } })}\n`,
     );
-  else input.output.error(`${message}\n${hint}\n`);
+  else input.output.error(`${message}${input.left ? " " : "\n"}${hint}\n`);
   if (evidence.error) input.output.error(`${evidence.error}\n`);
   return 130;
 }

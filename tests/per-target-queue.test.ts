@@ -406,7 +406,7 @@ test("a second operation on a stopping Target waits for it, says what it waits f
     },
   });
   // What rig prints for it.
-  expect(waitNotice(queue)).toStartWith(
+  expect(waitNotice(queue, new Date())).toStartWith(
     "Waiting: alpha local is stopping (operation alpha-down, started ",
   );
   release();
@@ -728,7 +728,7 @@ test("a command that arrives while the daemon's first pass holds the Host says i
     action: "queue",
     operation: "alpha-up",
   });
-  expect(waitNotice(queue)).toStartWith(
+  expect(waitNotice(queue, new Date())).toStartWith(
     "Waiting: rigd is checking every Target after it started (operation reconcile:",
   );
   pruning.open();

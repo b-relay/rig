@@ -1,8 +1,10 @@
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
 import { z } from "zod";
 import type { ProcessObservation } from "./contracts";
 import type { ProcessIdentityReader } from "./process-identity";
+import { processLeasePath, processLeaseSchema } from "./process-lease";
 
 const observationSchema = z.object({
   wrapperPid: z
@@ -116,46 +118,71 @@ export async function readCaptureObservation(request: {
   }
 }
 
-/** What a supervisor reports about an application its capture wrapper last reported running, once that wrapper is gone:
- * nothing when the application is gone too (or no running application was ever reported), and an `unknown` observation when
- * the process at that pid still has the birth identity the wrapper recorded, or its identity could not be read. A reused pid
- * never counts as the application. Freshness does not matter here: the wrapper's last word is exactly what is in question. */
+/** What a supervisor reports about the application of a capture wrapper that is gone: nothing when that application is gone
+ * too (or none was ever recorded), and an `unknown` observation when a process still has the birth identity recorded for it,
+ * or its identity could not be read. The application is known from the wrapper's last observation and from the lease the
+ * wrapper's own supervisor writes, beside the request, as soon as it spawns the application: a wrapper killed before its first
+ * observation still leaves that lease. A reused pid never counts as the application. Freshness does not matter here: the
+ * wrapper's last word is exactly what is in question. */
 export async function survivingApplication(request: {
   requestPath: string;
+  key: string;
   inspect: ProcessIdentityReader;
 }): Promise<ProcessObservation | undefined> {
-  let evidence: CaptureObservation;
-  try {
-    evidence = observationSchema.parse(
-      JSON.parse(
-        await readFile(`${request.requestPath}.observation.json`, "utf8"),
-      ),
-    );
-  } catch {
-    return undefined;
-  }
-  const { observation, applicationIdentity } = evidence;
-  if (
-    observation.state !== "running" ||
-    !observation.pid ||
-    !applicationIdentity
-  )
-    return undefined;
-  let identity: string | undefined;
-  try {
-    identity = await request.inspect(observation.pid);
-  } catch {
-    return {
-      state: "unknown",
-      reason: `The capture wrapper is gone and whether its application (pid ${observation.pid}) still runs could not be verified.`,
-    };
-  }
-  return identity === applicationIdentity
-    ? {
+  const recorded = [
+    ...(await observedApplication(request.requestPath)),
+    ...(await leasedApplication(dirname(request.requestPath), request.key)),
+  ];
+  for (const { pid, identity: expected } of recorded) {
+    let identity: string | undefined;
+    try {
+      identity = await request.inspect(pid);
+    } catch {
+      return {
         state: "unknown",
-        reason: `The application (pid ${observation.pid}) is still running without its capture wrapper, so Rig neither stops it nor starts another. End that process, then run rig up.`,
-      }
-    : undefined;
+        reason: `The capture wrapper is gone and whether its application (pid ${pid}) still runs could not be verified.`,
+      };
+    }
+    if (identity === expected)
+      return {
+        state: "unknown",
+        reason: `The application (pid ${pid}) is still running without its capture wrapper, so Rig neither stops it nor starts another. End that process, then run rig up.`,
+      };
+  }
+  return undefined;
+}
+/** The running application the wrapper's last observation names, with its birth identity; none when it names none. */
+async function observedApplication(
+  requestPath: string,
+): Promise<{ pid: number; identity: string }[]> {
+  try {
+    const { observation, applicationIdentity } = observationSchema.parse(
+      JSON.parse(await readFile(`${requestPath}.observation.json`, "utf8")),
+    );
+    return observation.state === "running" &&
+      observation.pid &&
+      applicationIdentity
+      ? [{ pid: observation.pid, identity: applicationIdentity }]
+      : [];
+  } catch {
+    return [];
+  }
+}
+/** The application the wrapper's own supervisor, whose state lives in `stateRoot`, leased for `key`; none without a lease. */
+async function leasedApplication(
+  stateRoot: string,
+  key: string,
+): Promise<{ pid: number; identity: string }[]> {
+  try {
+    const lease = processLeaseSchema.parse(
+      JSON.parse(await readFile(processLeasePath(stateRoot, key), "utf8")),
+    );
+    return lease.key === key
+      ? [{ pid: lease.pid, identity: lease.identity }]
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Wraps a publisher so unchanged evidence is rewritten only once per heartbeat, while any change is published at once. */

@@ -96,7 +96,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
     const requestPath = join(options.root, `${label(key)}.json`);
     const survivor =
       options.captureCommand &&
-      (await survivingApplication({ requestPath, inspect }));
+      (await survivingApplication({ requestPath, key, inspect }));
     for (const file of [
       join(options.root, `${label(key)}.plist`),
       requestPath,
@@ -141,7 +141,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       // stopped, and a start is never made beside it.
       const requestPath = join(options.root, `${label(key)}.json`);
       if (options.captureCommand) {
-        const survivor = await survivingApplication({ requestPath, inspect });
+        const survivor = await survivingApplication({ requestPath, key, inspect });
         if (survivor) return survivor;
       }
       // The wrapper's record of its application's exit comes first; without it, launchd's record of how the wrapper ended.

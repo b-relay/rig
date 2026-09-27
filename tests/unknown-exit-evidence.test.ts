@@ -210,6 +210,8 @@ async function launchdWorld() {
     root,
     supervisor,
     wrapperPid: () => job!.pid,
+    requestPath: (key: string) =>
+      join(root, `test.unknown-exit.${digest(key).slice(0, 24)}.json`),
     applicationPid: (key: string) =>
       applicationPid(
         join(root, `test.unknown-exit.${digest(key).slice(0, 24)}.json`),
@@ -266,6 +268,7 @@ async function rigdWorld() {
     root,
     supervisor,
     wrapperPid: () => wrapperPid,
+    requestPath: (key: string) => join(root, "capture", `${digest(key)}.json`),
     applicationPid: (key: string) =>
       applicationPid(join(root, "capture", `${digest(key)}.json`)),
     /** Every supervisor lets go of its handles, as a daemon restart does. */
@@ -390,6 +393,44 @@ for (const [name, witness] of [
               }
             : { state: "stopped" },
         );
+      } finally {
+        if ("cleanup" in w) await w.cleanup();
+      }
+    }, 20_000);
+
+    test("a wrapper killed before it published any observation still leaves its application unknown, through the application's lease", async () => {
+      const w = await world();
+      const supervisor = w.supervisor();
+      try {
+        const req = request(w.root, "start-1");
+        await supervisor.ensureRunning(req);
+        const application = await w.applicationPid(req.key);
+        pids.push(application);
+        process.kill(w.wrapperPid(), "SIGKILL");
+        if ("wrapperGone" in w) await w.wrapperGone();
+        for (let i = 0; i < 100 && alive(w.wrapperPid()); i++)
+          await Bun.sleep(10);
+        // The state a wrapper killed between starting its application and its first observation leaves: the lease its own
+        // supervisor wrote when it spawned the application, and no observation.
+        await rm(`${w.requestPath(req.key)}.observation.json`, { force: true });
+        const orphaned = await until(
+          supervisor,
+          req.key,
+          (o) => o.state !== "running",
+        );
+        expect(orphaned.state).toBe("unknown");
+        expect(orphaned.reason).toContain(`pid ${application}`);
+        await expect(
+          supervisor.ensureRunning({ ...req, incarnation: "start-2" }),
+        ).rejects.toMatchObject({
+          code: expect.stringMatching(/UNKNOWN$/),
+        });
+        expect(alive(application)).toBe(true);
+        // Once it is gone, the wrapper's end is evidence again.
+        process.kill(application, "SIGKILL");
+        expect(
+          await until(supervisor, req.key, (o) => o.state === "stopped"),
+        ).toMatchObject({ state: "stopped", signal: "SIGKILL" });
       } finally {
         if ("cleanup" in w) await w.cleanup();
       }

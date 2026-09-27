@@ -1151,7 +1151,8 @@ A Target also counts as down when its route is unpublished (no host Caddyfile
 loads Rig's routes), or when a deploy left it mid-transition: its rollback
 could not finish, or `rigd` stopped during the deploy. Its alert then says to
 run `rig down` first, then `rig up`. An operation that is working on the
-Target now (a deploy, a restart, an up or a down), or an observation that did
+Target now (a deploy, a restart, an up or a down of that Target, or a change to
+its whole Project such as `rig forget`), or an observation that did
 not answer, changes nothing either way: a Target already counted as down gets
 no first alert while an operation may be fixing it.
 
@@ -1162,8 +1163,8 @@ The timing:
   stay quiet. The 5 minutes count from the earliest exit Rig recorded for the
   Target's down Services, or else from when `rigd` first saw it down.
 - **Targets that go down within one minute of each other** are one event and
-  get one alert naming all of them: "3 Stable Targets across 3 Projects went
-  down at 13:58:58 UTC".
+  get one alert naming all of them, once each has been down 5 minutes: "3
+  Stable Targets across 3 Projects went down at 13:58:58 UTC".
 - **Every 6 hours** while any alerted Stable Target stays down, a reminder
   names each one and how long it has been down.
 - **When it comes back**, one message says so, with how long it was down. A
@@ -1173,7 +1174,8 @@ The timing:
 An alert names the Project, the Target, the Services that keep it down with
 the reason Rig recorded, and the command that starts it again
 (`rig up live --project pantry`). A macOS notification shows only a short form
-of this. The full text is in `rig activity`, where each alert that went out is
+of this: the command first for one Target, or the name of each Target for a
+group. The full text is in `rig activity`, where each alert that went out is
 one `outage` entry: `failed` when Targets went down, `unchanged` for a
 reminder, and `started` or `stopped` when they are no longer down. A Host-wide
 event is one entry, not one per Service.

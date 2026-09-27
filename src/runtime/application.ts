@@ -150,6 +150,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     };
     mutating = {
       operationId,
+      action: command.action,
       ...(command.project ? { project: command.project } : {}),
       ...(command.repoPath ? { repoPath: command.repoPath } : {}),
       ...(command.target ? { target: command.target } : {}),

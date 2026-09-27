@@ -47,15 +47,28 @@ export type StableTargetCondition = {
 /** The mutation rigd is executing, as its command selected the Project (by name or directory) and the Target. */
 export interface MutationInFlight {
   operationId: string;
+  /** The command's action; absent when unknown, which counts as one that may change every Target of its Project. */
+  action?: string;
   project?: string;
   repoPath?: string;
   /** A Target name, or `preview` for a Preview. */
   target?: string;
 }
 
+/** Actions that work on one Target, which is the Working copy when the command names none. */
+const TARGET_ACTIONS: ReadonlySet<string> = new Set([
+  "up",
+  "down",
+  "restart",
+  "deploy",
+  "git-push",
+  "destroy",
+]);
+
 /** The ids of the recorded Stable Targets `mutation` may be changing now. It names its Project by name or directory; one it
  * names by a directory no Project is registered at, or not at all, may be any. A mutation of a Preview changes no Stable
- * Target; one without a Target may change every Target of its Project. A deploy's own transition is always its own. */
+ * Target, nor does a Target action that names no Target, which selects the Working copy; any other mutation without a
+ * Target may change every Target of its Project. A deploy's own transition is always its own. */
 export function engagedTargets(
   mutation: MutationInFlight | undefined,
   state: {
@@ -82,6 +95,12 @@ export function engagedTargets(
     if (target.recovery?.operationId === mutation.operationId)
       engaged.add(target.id);
     if (target.kind !== "live" || mutation.target === "preview") continue;
+    if (
+      mutation.target === undefined &&
+      mutation.action !== undefined &&
+      TARGET_ACTIONS.has(mutation.action)
+    )
+      continue;
     if (projects && !projects.has(target.projectId)) continue;
     if (mutation.target === undefined || mutation.target === target.name)
       engaged.add(target.id);
@@ -314,7 +333,7 @@ export interface PlannedAlert {
 }
 
 /** The alerts due at `now`, in delivery order: one recovery message for every alerted Target no longer down, one down alert
- * per group of Targets that went down together once the first of them has been down for the grace period, and a reminder
+ * per group of Targets that went down together once each of them has been down for the grace period, and a reminder
  * about every alerted Target still down once the reminder interval has passed since the last alert or reminder. A Target in
  * `unsettled`, whose condition this evaluation could not judge, gets no first down alert: an operation may be fixing it.
  * Nothing is due while a failed delivery waits for its retry. */
@@ -341,8 +360,11 @@ export function dueAlerts(
       record.alertedAt === undefined &&
       !unsettled.has(record.targetId),
   );
+  // A group is due once every Target in it has been down for the grace period: the last joined within the group window of
+  // the first, so the alert waits at most that much longer, and no Target is named before its own grace has passed.
   for (const group of wentDownTogether(unalerted))
-    if (at - Date.parse(group[0]!.since) >= ALERT_GRACE_MS) plan("down", group);
+    if (at - Date.parse(group.at(-1)!.since) >= ALERT_GRACE_MS)
+      plan("down", group);
   const alerted = state.targets.filter(
     (record) => !record.resolved && record.alertedAt !== undefined,
   );

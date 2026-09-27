@@ -302,9 +302,9 @@ test("a Stable Target down past the grace period produces one alert naming the P
   expect(alert!.targets[0]!.services[0]!.reason).toContain(
     "nothing recorded how it ended",
   );
-  // The short text a notification shows still names the Services, their reason and the command.
+  // The short text a notification shows leads with the command, then names the Services and their reason.
   expect(alert!.summary).toBe(
-    "convex: unknown exit, not restarted; web: unknown exit, not restarted. Run rig up live --project pantry.",
+    "Run rig up live --project pantry. convex: unknown exit, not restarted; web: unknown exit, not restarted.",
   );
   const activity = (await rig.state()).activity.filter(
     (entry) => entry.action === "outage",
@@ -381,7 +381,7 @@ test("Stable Targets across Projects that go down together produce one grouped a
     "pantry live",
   ]);
   expect(alert!.summary).toBe(
-    "share live (server, explorer), design live (convex, web), pantry live (convex, web). Run rig activity for the reasons and commands.",
+    "share live, design live, pantry live. Run rig activity for the reasons and commands.",
   );
   for (const command of [
     "rig up live --project pantry",
@@ -398,6 +398,33 @@ test("Stable Targets across Projects that go down together produce one grouped a
   expect(outages[0]!.message).toStartWith(
     "3 Stable Targets across 3 Projects went down at 13:58:58 UTC.",
   );
+});
+
+test("a grouped alert waits until the last Target of the group has been down for the grace period, and names none that came back before", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  const design = await rig.addTarget("design", "live", "live");
+  const share = await rig.addTarget("share", "live", "live");
+  await rig.crash(pantry, "web", T0);
+  await rig.crash(design, "web", T0 + 59_000);
+  await rig.crash(share, "web", T0 + 30_000);
+  rig.at(60_000);
+  await rig.evaluate();
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  // design has been down only 4 minutes 1 second.
+  expect(rig.channel.sent).toEqual([]);
+  // share comes back before its own grace has passed; it is never named.
+  await rig.restore(share, "web");
+  rig.at(ALERT_GRACE_MS + 30_000);
+  await rig.evaluate();
+  expect(rig.channel.sent).toEqual([]);
+  rig.at(ALERT_GRACE_MS + 59_000);
+  await rig.evaluate();
+  expect(rig.channel.sent).toHaveLength(1);
+  expect(
+    rig.channel.sent[0]!.targets.map((t) => `${t.project} ${t.target}`),
+  ).toEqual(["pantry live", "design live"]);
 });
 
 test("Stable Targets that go down apart are alerted apart", async () => {
@@ -443,7 +470,7 @@ test("a reminder follows every 6 hours while an alerted Stable Target stays down
   expect(rig.channel.sent[1]).toMatchObject({
     title: "pantry live is still down (6 h)",
     summary:
-      "Down since 13:58:58 UTC: web: unknown exit, not restarted. Run rig up live --project pantry.",
+      "Run rig up live --project pantry. Down since 13:58:58 UTC: web: unknown exit, not restarted.",
   });
 
   rig.at(ALERT_GRACE_MS + 2 * ALERT_REMINDER_MS);
@@ -680,7 +707,7 @@ test("a failing readiness check and an unpublished route each count as down", as
   rig.at(ALERT_GRACE_MS);
   await rig.evaluate();
   expect(rig.channel.sent[0]!.summary).toBe(
-    "web: failing its readiness check. Run rig up live --project pantry.",
+    "Run rig up live --project pantry. web: failing its readiness check.",
   );
 
   const unpublished = await fixture();
@@ -981,7 +1008,7 @@ test("a deploy still moving a Stable Target decides nothing; one whose rollback 
   const recover =
     "rig down live --project pantry, then rig up live --project pantry";
   expect(rig.channel.sent[0]!.summary).toBe(
-    `deployment: deploy rollback incomplete. Run ${recover}.`,
+    `Run ${recover}. deployment: deploy rollback incomplete.`,
   );
   expect(rig.channel.sent[0]!.targets[0]!.recover).toBe(recover);
   expect(rig.channel.sent[0]!.detail).not.toContain("before rig up");
@@ -1019,7 +1046,7 @@ test("a deploy that no operation is running any more, left by a daemon that stop
   expect(rig.channel.sent[0]).toMatchObject({
     kind: "down",
     summary:
-      "deployment: deploy interrupted, transition unresolved. Run rig down live --project pantry, then rig up live --project pantry.",
+      "Run rig down live --project pantry, then rig up live --project pantry. deployment: deploy interrupted, transition unresolved.",
   });
 });
 
@@ -1072,6 +1099,27 @@ test("an operation on another Project or on a Preview does not hold back a Stabl
     await rig.evaluate({ mutation: () => mutation });
   }
   expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
+});
+
+test("a Target command that names no Target works on the Working copy and does not hold back the Stable Target's alert; a Project-wide one does", async () => {
+  for (const [mutation, alerted] of [
+    [{ operationId: "up-1", action: "up", project: "pantry" }, true],
+    [{ operationId: "up-2", action: "up", repoPath: "/repos/pantry" }, true],
+    [{ operationId: "restart-3", action: "restart", project: "pantry" }, true],
+    [{ operationId: "forget-4", action: "forget", project: "pantry" }, false],
+    [{ operationId: "old-5", project: "pantry" }, false],
+  ] as const) {
+    const rig = await fixture();
+    const pantry = await rig.addTarget("pantry", "live", "live");
+    await rig.crash(pantry, "web");
+    await rig.evaluate();
+    // The Working copy's build outlasts the grace period.
+    rig.at(ALERT_GRACE_MS);
+    await rig.evaluate({ mutation: () => mutation });
+    expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(
+      alerted ? ["down"] : [],
+    );
+  }
 });
 
 test("a down period an operation is working on sends no first alert, even past the grace period", async () => {

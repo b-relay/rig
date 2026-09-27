@@ -3425,10 +3425,18 @@ test("the queue read names the mutation rigd is running and how many wait behind
     },
     waiting: 1,
   });
+  // The operator alert monitor sees the same mutation, with its action, so an up that names no Target reads as the
+  // Working copy's.
+  expect(runtime.mutation()).toEqual({
+    operationId: "slow-up",
+    action: "up",
+    project: "demo",
+  });
   release();
   await first;
   await second;
   expect(await runtime.command({ action: "queue" })).toEqual({ waiting: 0 });
+  expect(runtime.mutation()).toBeUndefined();
 });
 
 test("usage mistakes that never reached an Operation leave activity untouched; a refused attempt is recorded", async () => {

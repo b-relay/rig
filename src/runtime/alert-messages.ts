@@ -134,10 +134,12 @@ function downText(records: readonly DownRecord[], now: string): AlertText {
   const title = `${records.length === 1 ? named(first!) : scope(records)} went down at ${utcClock(since, now)}`;
   return {
     title,
+    // A notification shows only the start of the summary, so what matters most comes first: the recovery command of one
+    // Target, or the name of every Target in a group; the rest is in the detail Activity records.
     summary:
       records.length === 1
-        ? `${causes(first!, "brief")}. Run ${first!.recover}.`
-        : `${records.map((record) => `${named(record)} (${causeNames(record)})`).join(", ")}. ${SEE_ACTIVITY}`,
+        ? `Run ${first!.recover}. ${causes(first!, "brief")}.`
+        : `${records.map(named).join(", ")}. ${SEE_ACTIVITY}`,
     detail: `${title}. ${records.map((record) => `${named(record)}: ${causes(record, "reason")}. Run ${record.recover}.`).join(" ")}`,
   };
 }
@@ -154,7 +156,7 @@ function reminderText(records: readonly DownRecord[], now: string): AlertText {
     title,
     summary:
       records.length === 1
-        ? `Down since ${utcClock(first!.since, now)}: ${causes(first!, "brief")}. Run ${first!.recover}.`
+        ? `Run ${first!.recover}. Down since ${utcClock(first!.since, now)}: ${causes(first!, "brief")}.`
         : `${records.map((record) => `${named(record)} (down ${down(record)})`).join(", ")}. ${SEE_ACTIVITY}`,
     detail: `${title}. ${records.map((record) => `${named(record)}, down ${down(record)} since ${utcClock(record.since, now)}: ${causes(record, "reason")}. Run ${record.recover}.`).join(" ")}`,
   };
@@ -208,14 +210,6 @@ function causes(record: DownRecord, form: "brief" | "reason"): string {
         ]
       : []),
   ].join("; ");
-}
-
-/** "convex, web", or "route" when only the route keeps it down. */
-function causeNames(record: DownRecord): string {
-  return [
-    ...record.services.map((service) => service.name),
-    ...(record.unpublishedRoute ? ["route"] : []),
-  ].join(", ");
 }
 
 function counted(count: number, noun: string): string {

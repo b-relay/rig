@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { recordActivity } from "../domain/activity";
 import {
+  RigError,
   diagnosticCauses,
   diagnosticErrorCode,
   failureReason,
@@ -18,6 +19,7 @@ import {
   settleDelivery,
   stableTargetCondition,
   trackDowntime,
+  type RoutePublication,
   type StableTargetCondition,
 } from "./alert-policy";
 import { deliveryFailureActivity, sentActivity } from "./alert-messages";
@@ -27,6 +29,9 @@ import { observeTargets, type ObservationEffects } from "./status";
 
 /** How often rigd evaluates operator alerts. */
 export const ALERT_EVALUATION_INTERVAL_MS = 30_000;
+/** The observation budget of one evaluation. It runs in the background, so it may wait longer than status does; a readiness
+ * check gets half of it. */
+export const ALERT_OBSERVATION_BUDGET_MS = 10_000;
 
 export interface AlertMonitorDependencies {
   store: StateStore;
@@ -105,8 +110,9 @@ export async function evaluateOperatorAlerts(
   });
 }
 
-/** The condition of every recorded Stable Target. Only those meant to run and not moved by a deploy are observed; the route
- * is checked only when one of them has a domain. */
+/** The condition of every recorded Stable Target. Only those meant to run and not moved by a deploy are observed, within the
+ * observation budget; a readiness check that has not answered by half of it counts as failing, so a hung endpoint is down
+ * rather than never judged. The route is checked only when one of them has a domain. */
 async function observeStableTargets(
   state: RuntimeState,
   deps: AlertMonitorDependencies,
@@ -115,16 +121,19 @@ async function observeStableTargets(
   const observed = stable.filter(
     (target) => target.desired === "running" && !target.recovery,
   );
-  const [reports, routesPublished] = await Promise.all([
+  const [reports, routes] = await Promise.all([
     observeTargets(
       observed,
-      deps.observations,
+      answeringHealth(
+        deps.observations,
+        Math.floor(deps.observationBudgetMs / 2),
+      ),
       deps.observationBudgetMs,
       deps.observationDeadline,
     ),
     observed.some((target) => target.plan.domain)
-      ? routesArePublished(deps)
-      : true,
+      ? routePublication(deps)
+      : ("unknown" as const),
   ]);
   return stable.map((target) =>
     stableTargetCondition({
@@ -133,29 +142,71 @@ async function observeStableTargets(
         state.projects.find((project) => project.id === target.projectId)
           ?.name ?? target.plan.project,
       report: reports[observed.indexOf(target)],
-      routesPublished,
+      routes,
     }),
   );
 }
 
-/** False only when the host Caddy is known not to load Rig's routes; a failed inspection says nothing. */
-async function routesArePublished(
+/** `effects` whose readiness check answers within `answerMs`: one still waiting then is reported not ready. */
+function answeringHealth(
+  effects: ObservationEffects,
+  answerMs: number,
+): ObservationEffects {
+  return {
+    ...effects,
+    async health(target, component, signal) {
+      const late = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const unanswered = new Promise<{ ready: false; reason: string }>(
+        (resolve) => {
+          timer = setTimeout(() => {
+            late.abort();
+            resolve({
+              ready: false,
+              reason: `The readiness check did not answer within ${answerMs / 1000} s.`,
+            });
+          }, answerMs);
+        },
+      );
+      try {
+        return await Promise.race([
+          effects.health(
+            target,
+            component,
+            AbortSignal.any([signal, late.signal]),
+          ),
+          unanswered,
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+/** Whether the host Caddy loads Rig's routes; `unknown` when the inspection failed. */
+async function routePublication(
   deps: Pick<AlertMonitorDependencies, "inspectProxy">,
-): Promise<boolean> {
+): Promise<RoutePublication> {
   try {
-    return (await deps.inspectProxy()).state !== "unpublished";
+    return (await deps.inspectProxy()).state === "unpublished"
+      ? "unpublished"
+      : "published";
   } catch {
-    return true;
+    return "unknown";
   }
 }
 
-/** Sends `alert` on every channel at once. */
+/** How long one channel may take to deliver an alert before it counts as failed. */
+export const ALERT_DELIVERY_DEADLINE_MS = 30_000;
+
+/** Sends `alert` on every channel at once; a channel that throws, rejects or does not answer within the deadline failed. */
 async function deliver(
   alert: OperatorAlert,
   channels: readonly OperatorAlerts[],
 ): Promise<{ sent: string[]; failed: { channel: string; error: unknown }[] }> {
   const results = await Promise.allSettled(
-    channels.map((channel) => channel.send(alert)),
+    channels.map((channel) => withinDeadline(channel, alert)),
   );
   const sent: string[] = [];
   const failed: { channel: string; error: unknown }[] = [];
@@ -165,6 +216,33 @@ async function deliver(
     else failed.push({ channel, error: result.reason });
   });
   return { sent, failed };
+}
+
+async function withinDeadline(
+  channel: OperatorAlerts,
+  alert: OperatorAlert,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      (async () => channel.send(alert))(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new RigError(
+                "ALERT_DELIVERY",
+                `The ${channel.channel} did not answer within ${ALERT_DELIVERY_DEADLINE_MS / 1000} s.`,
+                "Rig tries again later; check the channel's setup if this repeats.",
+              ),
+            ),
+          ALERT_DELIVERY_DEADLINE_MS,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** The Project an alert's Activity is filed under when every Target it names belongs to one, and the Target when it names

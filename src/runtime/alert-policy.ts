@@ -46,8 +46,14 @@ const DOWN_STATES = new Set<ComponentReport["state"]>([
   "unhealthy",
 ]);
 
-/** Judges one Stable Target from its record and the status observation of it. `routesPublished` is false only when the host
- * Caddy is known not to load Rig's routes. */
+/** Whether the host Caddy loads Rig's routes, as far as the last inspection could tell. */
+export type RoutePublication = "published" | "unpublished" | "unknown";
+
+/** Judges one Stable Target from its record and the status observation of it. A Service keeps it down when it failed, never
+ * gets past starting, fails its readiness check, or stays stopped because its automatic restarts are used up; one that
+ * finished with a clean exit its policy does not restart does not. An unpublished route keeps a routed Target down. A deploy
+ * that is still moving the Target, or an observation that did not answer, is inconclusive; a deploy whose rollback could not
+ * be completed keeps it down. */
 export function stableTargetCondition(input: {
   target: Pick<
     TargetRecord,
@@ -55,7 +61,7 @@ export function stableTargetCondition(input: {
   >;
   project: string;
   report: TargetReport | undefined;
-  routesPublished: boolean;
+  routes: RoutePublication;
 }): StableTargetCondition {
   const { target, report } = input;
   const identity = {
@@ -63,22 +69,40 @@ export function stableTargetCondition(input: {
     project: input.project,
     target: target.name,
   };
+  if (target.recovery?.stage === "blocked")
+    return {
+      ...identity,
+      state: "down",
+      services: [
+        {
+          name: "deployment",
+          reason: `The last deploy failed and its rollback could not be completed. Run rig down ${target.name} --project ${input.project} before rig up.`,
+          brief: "deploy rollback incomplete, run rig down first",
+        },
+      ],
+    };
   if (target.desired !== "running") return { ...identity, state: "stopped" };
   if (target.recovery || !report) return { ...identity, state: "inconclusive" };
   const managed = report.components.filter(
     (component) => component.kind === "managed",
   );
-  const down = managed.filter((component) => DOWN_STATES.has(component.state));
+  const down = managed.filter(
+    (component) =>
+      DOWN_STATES.has(component.state) ||
+      (component.state === "stopped" &&
+        currentRun(target, component.name)?.exhausted === true),
+  );
+  const routed = target.plan.domain !== undefined;
   const unpublishedRoute =
-    !input.routesPublished && target.plan.domain
-      ? target.plan.domain
-      : undefined;
+    routed && input.routes === "unpublished" ? target.plan.domain : undefined;
   if (!down.length && !unpublishedRoute)
     return {
       ...identity,
-      state: managed.some((component) => component.state === "unknown")
-        ? "inconclusive"
-        : "up",
+      state:
+        managed.some((component) => component.state === "unknown") ||
+        (routed && input.routes === "unknown")
+          ? "inconclusive"
+          : "up",
     };
   const runs = down.map((component) => currentRun(target, component.name));
   const ends = runs.flatMap((run) => (run?.outcome ? [run.outcome.at] : []));
@@ -145,7 +169,9 @@ export function trackDowntime(
         ...described(condition),
         since: periodStart(condition.since, now),
       });
-  return { ...previous, targets };
+  // With nothing left to tell, a past delivery failure says nothing about the next outage's first alert.
+  const { retry, ...rest } = previous;
+  return { ...rest, ...(retry && targets.length ? { retry } : {}), targets };
 }
 
 function followRecord(
@@ -236,16 +262,12 @@ export function dueAlerts(state: AlertState, now: string): PlannedAlert[] {
   const unalerted = state.targets.filter(
     (record) => !record.resolved && record.alertedAt === undefined,
   );
-  let alerting = false;
   for (const group of wentDownTogether(unalerted))
-    if (at - Date.parse(group[0]!.since) >= ALERT_GRACE_MS) {
-      plan("down", group);
-      alerting = true;
-    }
+    if (at - Date.parse(group[0]!.since) >= ALERT_GRACE_MS) plan("down", group);
   const alerted = state.targets.filter(
     (record) => !record.resolved && record.alertedAt !== undefined,
   );
-  if (!alerting && alerted.length) {
+  if (alerted.length) {
     const last =
       state.notifiedAt ??
       earliestTime(alerted.map((record) => record.alertedAt!));
@@ -274,8 +296,9 @@ function wentDownTogether(records: readonly DownRecord[]): DownRecord[][] {
 }
 
 /** The alert state after `planned` was delivered at `now`, or after every channel failed to deliver it. A delivered down
- * alert marks its Targets alerted, a delivered recovery forgets them, and a delivered down alert or reminder restarts the
- * reminder interval. A failure schedules the next attempt of every due alert. */
+ * alert marks its Targets alerted and a delivered recovery forgets them. The reminder interval restarts only with a message
+ * about every alerted Target still down: a reminder, or a down alert while no other alerted Target is down, so a stream of
+ * new outages never silences the reminder about an old one. A failure schedules the next attempt of every due alert. */
 export function settleDelivery(
   state: AlertState,
   planned: PlannedAlert,
@@ -302,14 +325,21 @@ export function settleDelivery(
           (record) => !(named.has(record.targetId) && record.resolved),
         ),
       };
-    case "down":
+    case "down": {
+      const othersDown = settled.targets.some(
+        (record) =>
+          !named.has(record.targetId) &&
+          !record.resolved &&
+          record.alertedAt !== undefined,
+      );
       return {
         ...settled,
-        notifiedAt: now,
+        notifiedAt: othersDown && settled.notifiedAt ? settled.notifiedAt : now,
         targets: settled.targets.map((record) =>
           named.has(record.targetId) ? { ...record, alertedAt: now } : record,
         ),
       };
+    }
     case "reminder":
       return { ...settled, notifiedAt: now };
   }

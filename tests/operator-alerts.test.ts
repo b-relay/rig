@@ -21,6 +21,10 @@ import {
 } from "../src/runtime/alert-monitor";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { FileStateStore } from "../src/runtime/state-store";
+import { hostDoctor } from "../src/runtime/doctor";
+import type { RuntimeDependencies } from "../src/runtime/contracts";
+import { DaemonAdmin } from "../src/daemon/admin";
+import { renderResult } from "../src/cli/output";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -91,6 +95,7 @@ async function fixture() {
   const clock = { ms: T0 };
   const processes = new Map<string, ProcessObservation>();
   const unhealthy = new Set<string>();
+  const hung = new Set<string>();
   const diagnostics: Parameters<AlertMonitorDependencies["diagnostic"]>[0][] =
     [];
   const channel = fakeChannel();
@@ -189,7 +194,10 @@ async function fixture() {
         );
       },
       async health(target, component) {
-        return unhealthy.has(`${target.id}:${component.name}`)
+        const key = `${target.id}:${component.name}`;
+        // A hung endpoint: accepts the probe and never answers, whatever the signal says.
+        if (hung.has(key)) return await new Promise<never>(() => {});
+        return unhealthy.has(key)
           ? { ready: false, reason: "HTTP 503" }
           : { ready: true };
       },
@@ -227,7 +235,14 @@ async function fixture() {
     diagnostics,
     processes,
     unhealthy,
+    hung,
     addTarget,
+    /** Changes the saved record of `target` as another writer (an operator's command, a supervision pass) would. */
+    async change(target: TargetRecord, edit: (saved: TargetRecord) => void) {
+      await new FileStateStore(root).update((state) =>
+        edit(state.targets.find((t) => t.id === target.id)!),
+      );
+    },
     crash,
     restore,
     /** One alert evaluation at `clock.ms`, as rigd's alert monitor runs it. */
@@ -702,5 +717,336 @@ test("with no alert channel enabled, downtime is still counted and the event sti
   expect(outages).toHaveLength(1);
   expect(outages[0]!.message).toEndWith(
     "No alert channel is enabled in the Host config, so nothing was sent.",
+  );
+});
+
+test("used-up automatic restarts keep a Stable Target down even after clean exits; a clean exit its policy keeps stopped does not", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live", {
+    web: { restart: "always" },
+    migrate: { restart: "on-failure" },
+  });
+  const exited = (service: string) => ({
+    state: "stopped" as const,
+    incarnation: `${service}-1`,
+    exitCode: 0,
+  });
+  rig.processes.set(`${pantry.id}:web`, exited("web"));
+  rig.processes.set(`${pantry.id}:migrate`, exited("migrate"));
+  await rig.change(pantry, (saved) => {
+    const at = new Date(T0).toISOString();
+    saved.services!.web = {
+      ...saved.services!.web!,
+      outcome: { kind: "exited", exitCode: 0, at },
+      exhausted: true,
+    };
+    saved.services!.migrate = {
+      ...saved.services!.migrate!,
+      outcome: { kind: "exited", exitCode: 0, at },
+    };
+  });
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  expect(rig.channel.sent[0]!.targets[0]!.services).toEqual([
+    {
+      name: "web",
+      brief: "automatic restarts used up",
+      reason: expect.stringContaining("after 5 automatic restarts"),
+    },
+  ]);
+});
+
+test("a readiness check that never answers counts as failing, not as an observation that decides nothing", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live", {
+    web: { health: "http://127.0.0.1:3000/health" },
+  });
+  rig.hung.add(`${pantry.id}:web`);
+  await rig.evaluate({ observationBudgetMs: 200 });
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate({ observationBudgetMs: 200 });
+  expect(rig.channel.sent[0]!.targets[0]!.services[0]).toMatchObject({
+    name: "web",
+    brief: "failing its readiness check",
+  });
+});
+
+test("new outages never silence the reminder about an older one", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  const design = await rig.addTarget("design", "live", "live");
+  await rig.crash(pantry, "web");
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  // design goes down, is alerted and comes back, over and over; pantry stays down throughout.
+  for (let hour = 1; hour < 6; hour++) {
+    rig.at(hour * 60 * MINUTE);
+    await rig.crash(design, "web");
+    await rig.evaluate();
+    rig.at(hour * 60 * MINUTE + ALERT_GRACE_MS);
+    await rig.evaluate();
+    await rig.restore(design, "web");
+    rig.at(hour * 60 * MINUTE + ALERT_GRACE_MS + MINUTE);
+    await rig.evaluate();
+  }
+  rig.at(ALERT_GRACE_MS + ALERT_REMINDER_MS);
+  await rig.evaluate();
+  expect(rig.channel.sent.at(-1)).toMatchObject({
+    kind: "reminder",
+    title: "pantry live is still down (6 h)",
+  });
+});
+
+test("a route check that fails decides nothing: no false recovery, no second alert", async () => {
+  const rig = await fixture();
+  await rig.addTarget(
+    "pantry",
+    "live",
+    "live",
+    { web: {} },
+    "pantry.example.com",
+  );
+  const publication = { state: "unpublished" as "unpublished" | "imported" };
+  const failing = { inspection: false };
+  const inspectProxy = async () => {
+    if (failing.inspection) throw new Error("Caddyfile unreadable");
+    return { proxyFile: "/rig/Caddyfile", routes: 1, state: publication.state };
+  };
+  await rig.evaluate({ inspectProxy });
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate({ inspectProxy });
+  failing.inspection = true;
+  rig.at(ALERT_GRACE_MS + MINUTE);
+  await rig.evaluate({ inspectProxy });
+  failing.inspection = false;
+  rig.at(ALERT_GRACE_MS + 2 * MINUTE);
+  await rig.evaluate({ inspectProxy });
+  expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
+  publication.state = "imported";
+  rig.at(ALERT_GRACE_MS + 3 * MINUTE);
+  await rig.evaluate({ inspectProxy });
+  expect(rig.channel.sent.map((alert) => alert.kind)).toEqual([
+    "down",
+    "recovered",
+  ]);
+});
+
+test("failed deliveries back off, doubling, and a later outage starts with a clean slate", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  rig.channel.failing = true;
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  expect((await rig.state()).alerts?.retry).toEqual({
+    failures: 1,
+    at: new Date(T0 + ALERT_GRACE_MS + ALERT_RETRY_MS).toISOString(),
+  });
+  rig.at(ALERT_GRACE_MS + ALERT_RETRY_MS);
+  await rig.evaluate();
+  expect((await rig.state()).alerts?.retry).toEqual({
+    failures: 2,
+    at: new Date(T0 + ALERT_GRACE_MS + 3 * ALERT_RETRY_MS).toISOString(),
+  });
+  // It recovers before any alert got through: nothing is left to tell, and nothing of the failures is kept.
+  await rig.restore(pantry, "web");
+  rig.at(ALERT_GRACE_MS + 2 * ALERT_RETRY_MS);
+  await rig.evaluate();
+  expect((await rig.state()).alerts).toEqual({ targets: [] });
+  expect((await rig.state()).activity.map((entry) => entry.action)).toEqual([
+    "alert",
+    "alert",
+  ]);
+});
+
+test("a channel that throws synchronously is a failed delivery like any other", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  rig.at(ALERT_GRACE_MS);
+  await expect(
+    rig.evaluate({
+      channels: [
+        {
+          channel: "broken channel",
+          send() {
+            throw new TypeError("not a function");
+          },
+        },
+      ],
+    }),
+  ).resolves.toBeUndefined();
+  expect((await rig.state()).activity).toEqual([
+    expect.objectContaining({ action: "alert", outcome: "failed" }),
+  ]);
+});
+
+test("when one channel delivers and another fails, the alert counts as sent and the failure is still recorded", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  const broken = fakeChannel();
+  broken.failing = true;
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate({ channels: [rig.channel, broken] });
+  const state = await rig.state();
+  expect(rig.channel.sent).toHaveLength(1);
+  expect(state.alerts?.retry).toBeUndefined();
+  expect(state.activity.map((entry) => entry.action)).toEqual([
+    "outage",
+    "alert",
+  ]);
+  expect(state.activity[1]!.message).toEndWith("Another channel delivered it.");
+});
+
+test("going down again before the recovery was told sends neither a recovery nor a second down alert", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  rig.channel.failing = true;
+  await rig.restore(pantry, "web");
+  rig.at(ALERT_GRACE_MS + MINUTE);
+  await rig.evaluate();
+  await rig.crash(pantry, "web");
+  rig.channel.failing = false;
+  rig.at(ALERT_GRACE_MS + MINUTE + ALERT_RETRY_MS);
+  await rig.evaluate();
+  rig.at(3 * ALERT_GRACE_MS + ALERT_RETRY_MS);
+  await rig.evaluate();
+  expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
+  expect((await rig.state()).alerts?.targets).toEqual([
+    expect.objectContaining({
+      since: new Date(T0 + ALERT_GRACE_MS + MINUTE).toISOString(),
+      alertedAt: new Date(T0 + ALERT_GRACE_MS).toISOString(),
+    }),
+  ]);
+});
+
+test("a down Stable Target that is no longer recorded is told as such", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  await new FileStateStore(rig.root).update((state) => {
+    state.targets = [];
+    state.projects = [];
+  });
+  rig.at(ALERT_GRACE_MS + MINUTE);
+  await rig.evaluate();
+  expect(rig.channel.sent.at(-1)).toMatchObject({
+    kind: "recovered",
+    title: "pantry live is no longer recorded",
+  });
+});
+
+test("a deploy still moving a Stable Target decides nothing; one whose rollback could not finish keeps it down", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  await rig.change(pantry, (saved) => {
+    saved.recovery = {
+      plan: saved.plan,
+      desired: "running",
+      stage: "pending",
+      operationId: "deploy-1",
+    };
+  });
+  for (const offset of [0, ALERT_GRACE_MS, 2 * ALERT_GRACE_MS]) {
+    rig.at(offset);
+    await rig.evaluate();
+  }
+  expect(rig.channel.sent).toEqual([]);
+
+  await rig.change(pantry, (saved) => {
+    saved.recovery!.stage = "blocked";
+    saved.desired = "stopped";
+  });
+  rig.at(3 * ALERT_GRACE_MS);
+  await rig.evaluate();
+  rig.at(4 * ALERT_GRACE_MS);
+  await rig.evaluate();
+  expect(rig.channel.sent[0]!.summary).toBe(
+    "deployment: deploy rollback incomplete, run rig down first. Run rig up live --project pantry.",
+  );
+  expect(rig.channel.sent[0]!.detail).toContain(
+    "Run rig down live --project pantry before rig up.",
+  );
+});
+
+test("doctor shows how long each down Stable Target has been down, as one Host-wide finding", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  const design = await rig.addTarget("design", "live", "live");
+  await rig.crash(pantry, "web");
+  await rig.crash(design, "web", T0 + 1_000);
+  rig.at(10_000);
+  await rig.evaluate();
+  rig.at(42 * 60 * MINUTE);
+  await rig.evaluate();
+  const report = await hostDoctor({
+    store: new FileStateStore(rig.root),
+    async inspectHost() {
+      return [];
+    },
+    now: () => new Date(T0 + 42 * 60 * MINUTE + 30_000).toISOString(),
+  } as unknown as RuntimeDependencies);
+  expect(report.ok).toBe(false);
+  expect(
+    report.checks.filter((check) => check.name === "stable-targets"),
+  ).toEqual([
+    {
+      name: "stable-targets",
+      ok: false,
+      message:
+        "2 Stable Targets are down: pantry live for 42 h (since 2026-09-25T13:58:58.000Z), design live for 42 h (since 2026-09-25T13:58:59.000Z).",
+      reason: "stable-target-down",
+      hint: "Once the cause is fixed, run rig up live --project pantry, rig up live --project design. rig activity shows the reasons Rig recorded.",
+    },
+  ]);
+});
+
+test("rigd status shows how long each down Stable Target has been down", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  await rig.evaluate();
+  const status = await new DaemonAdmin({
+    root: rig.root,
+    command: [],
+    mode: "process",
+    userHome: rig.root,
+  }).status();
+  expect(status).toMatchObject({
+    reachable: false,
+    down: [
+      {
+        project: "pantry",
+        target: "live",
+        since: "2026-09-25T13:58:58.000Z",
+        recover: "rig up live --project pantry",
+      },
+    ],
+  });
+  expect(
+    renderResult("daemon-status", {
+      installed: true,
+      running: true,
+      reachable: true,
+      down: [
+        {
+          project: "pantry",
+          target: "live",
+          since: "2026-09-25T13:58:58.000Z",
+          down: "42 h",
+          alerted: true,
+          recover: "rig up live --project pantry",
+        },
+      ],
+    }),
+  ).toBe(
+    "Installed  yes\nRunning    yes\nReachable  yes\nDown       pantry live for 42 h (since 2026-09-25T13:58:58.000Z); run rig up live --project pantry\n",
   );
 });

@@ -298,7 +298,10 @@ const operation = z.object({
   occurredAt: text,
   message: z.string().optional(),
 });
-const instant = text.describe("An ISO 8601 time.");
+const instant = z
+  .string()
+  .datetime({ offset: true })
+  .describe("An ISO 8601 time.");
 const downService = z.object({
   name: text.describe("The Service's name."),
   reason: z.string().describe("The reason status gives for the Service."),
@@ -368,7 +371,8 @@ const alerts = z
     "Operator alert state: what was alerted and when, so a daemon restart neither repeats nor forgets an alert.",
   );
 /** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
- * older rigd refuses the file instead of silently dropping what it does not know. */
+ * older rigd refuses the file instead of silently dropping what it does not know. A new optional top-level key, such
+ * as `alerts`, needs no bump: an older rigd validates without it and writes it back unchanged. */
 export const STATE_VERSION = 4;
 export const runtimeStateSchema = z
   .object({

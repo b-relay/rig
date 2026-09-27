@@ -135,6 +135,12 @@
             "minLength": 1,
             "default": "30s"
           },
+          "stop_timeout": {
+            "type": "string",
+            "minLength": 1,
+            "description": "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it.",
+            "default": "10s"
+          },
           "depends_on": {
             "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
             "type": "array",
@@ -379,6 +385,11 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "stop_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it."
+                  },
                   "depends_on": {
                     "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
                     "type": "array",
@@ -602,6 +613,11 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "stop_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it."
+                  },
                   "depends_on": {
                     "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
                     "type": "array",
@@ -816,6 +832,11 @@
                     "description": "Startup readiness budget such as 30s (the default).",
                     "type": "string",
                     "minLength": 1
+                  },
+                  "stop_timeout": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it."
                   },
                   "depends_on": {
                     "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",

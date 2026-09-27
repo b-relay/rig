@@ -722,7 +722,9 @@ readiness check, or its route is unpublished.
 _Avoid_: outage for a single Service, crashed
 
 _Relationship_: A Stable Target that an operator stopped with `rig down` is
-stopped, not down. A deploy that is still moving the Target decides nothing.
+stopped, not down. An operation that is working on the Target decides
+nothing; a deploy that left it mid-transition, with no operation working on it
+any more, keeps it down.
 
 _Relationship_: `rigd` counts downtime for Stable Targets only. `rig doctor`
 and `rigd status` show how long each has been down.

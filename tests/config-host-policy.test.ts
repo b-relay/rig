@@ -9,7 +9,7 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     },
     providers: { caddy: { extra_config: [], reload: { mode: "manual" } } },
     diagnostics: { retention_days: 14, level: "info" },
-    alerts: { channels: { macos: { enabled: true } } },
+    alerts: { channels: { macos: {} } },
   });
 });
 

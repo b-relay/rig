@@ -334,6 +334,9 @@ const alerts = z
             .describe(
               "Its route, when the host Caddy does not load Rig's routes.",
             ),
+          recover: text.describe(
+            "The command that starts it again, as alerts, doctor and rigd status show it.",
+          ),
           alertedAt: instant
             .optional()
             .describe(
@@ -372,7 +375,9 @@ const alerts = z
   );
 /** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
  * older rigd refuses the file instead of silently dropping what it does not know. A new optional top-level key, such
- * as `alerts`, needs no bump: an older rigd validates without it and writes it back unchanged. */
+ * as `alerts`, needs no bump: an older rigd validates without it and writes it back unchanged. After such a downgrade and a
+ * re-upgrade, `alerts` is as the newer rigd last left it; its next evaluation reconciles it with the Targets as they are then,
+ * so an outage that ended meanwhile is told as recovered and one that began meanwhile starts its grace period then. */
 export const STATE_VERSION = 4;
 export const runtimeStateSchema = z
   .object({

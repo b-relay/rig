@@ -16,9 +16,11 @@ import type {
 import {
   NO_ALERTS,
   dueAlerts,
+  engagedTargets,
   settleDelivery,
   stableTargetCondition,
   trackDowntime,
+  type MutationInFlight,
   type RoutePublication,
   type StableTargetCondition,
 } from "./alert-policy";
@@ -44,6 +46,8 @@ export interface AlertMonitorDependencies {
   now(): string;
   id(): string;
   diagnostic: RuntimeDependencies["diagnostic"];
+  /** The mutation rigd is executing now, if any; a Stable Target it may be changing is not judged. None when absent. */
+  mutation?(): MutationInFlight | undefined;
 }
 
 type Activity = Pick<OperationRecord, "action" | "outcome" | "message">;
@@ -56,16 +60,19 @@ type Activity = Pick<OperationRecord, "action" | "outcome" | "message">;
 export async function evaluateOperatorAlerts(
   deps: AlertMonitorDependencies,
 ): Promise<void> {
+  const began = deps.mutation?.();
   const state = await deps.store.read();
   const now = deps.now();
   const before = state.alerts ?? NO_ALERTS;
-  let alerts = trackDowntime(
-    before,
-    await observeStableTargets(state, deps),
-    now,
+  const conditions = await observeStableTargets(state, deps, began);
+  let alerts = trackDowntime(before, conditions, now);
+  const unsettled = new Set(
+    conditions
+      .filter((condition) => condition.state === "inconclusive")
+      .map((condition) => condition.targetId),
   );
   const activity: { alert: OperatorAlert; entry: Activity }[] = [];
-  for (const planned of dueAlerts(alerts, now)) {
+  for (const planned of dueAlerts(alerts, now, unsettled)) {
     const { sent, failed } = await deliver(planned.alert, deps.channels);
     const delivered = !deps.channels.length || sent.length > 0;
     alerts = settleDelivery(alerts, planned, delivered, now);
@@ -110,16 +117,23 @@ export async function evaluateOperatorAlerts(
   });
 }
 
-/** The condition of every recorded Stable Target. Only those meant to run and not moved by a deploy are observed, within the
+/** The condition of every recorded Stable Target. A Target the mutation in flight when the evaluation began (`began`) or when
+ * its observation ended may be changing is inconclusive: its record and processes may be caught between two steps, as a
+ * restart's stop is before its start. Of the rest, only those meant to run and not left mid-deploy are observed, within the
  * observation budget; a readiness check that has not answered by half of it counts as failing, so a hung endpoint is down
  * rather than never judged. The route is checked only when one of them has a domain. */
 async function observeStableTargets(
   state: RuntimeState,
   deps: AlertMonitorDependencies,
+  began: MutationInFlight | undefined,
 ): Promise<StableTargetCondition[]> {
   const stable = state.targets.filter((target) => target.kind === "live");
+  const engagedAtStart = engagedTargets(began, state);
   const observed = stable.filter(
-    (target) => target.desired === "running" && !target.recovery,
+    (target) =>
+      target.desired === "running" &&
+      !target.recovery &&
+      !engagedAtStart.has(target.id),
   );
   const [reports, routes] = await Promise.all([
     observeTargets(
@@ -135,6 +149,7 @@ async function observeStableTargets(
       ? routePublication(deps)
       : ("unknown" as const),
   ]);
+  const engagedAtEnd = engagedTargets(deps.mutation?.(), state);
   return stable.map((target) =>
     stableTargetCondition({
       target,
@@ -143,6 +158,7 @@ async function observeStableTargets(
           ?.name ?? target.plan.project,
       report: reports[observed.indexOf(target)],
       routes,
+      engaged: engagedAtStart.has(target.id) || engagedAtEnd.has(target.id),
     }),
   );
 }

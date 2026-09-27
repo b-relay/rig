@@ -453,6 +453,6 @@ function downtimeCheck(down: readonly Downtime[]): DoctorCheck {
         ? `Stable Target ${down[0]!.project} ${down[0]!.target} has been down for ${down[0]!.down} (since ${down[0]!.since}).`
         : `${down.length} Stable Targets are down: ${down.map(each).join(", ")}.`,
     reason: "stable-target-down",
-    hint: `Once the cause is fixed, run ${down.map((entry) => entry.recover).join(", ")}. rig activity shows the reasons Rig recorded.`,
+    hint: `Once the cause is fixed, run ${down.map((entry) => entry.recover).join("; ")}. rig activity shows the reasons Rig recorded.`,
   };
 }

@@ -740,9 +740,9 @@ export const hostConfigSchema = z.strictObject({
             .strictObject({
               enabled: z
                 .boolean()
-                .default(true)
+                .optional()
                 .describe(
-                  "Post a macOS notification when a Stable Target has been down 5 minutes, every 6 hours while it stays down, and when it recovers. macOS asks once to allow notifications from Script Editor.",
+                  "Post a macOS notification when a Stable Target has been down 5 minutes, every 6 hours while it stays down, and when it recovers. macOS asks once to allow notifications from Script Editor. When unset, it is on for a rigd installed as a LaunchAgent and off for a process-mode rigd (RIG_ROOT set, as tests and agent runs use).",
                 ),
             })
             .prefault({})

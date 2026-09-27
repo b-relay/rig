@@ -23,7 +23,11 @@ import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { FileStateStore } from "../src/runtime/state-store";
 import { hostDoctor } from "../src/runtime/doctor";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
-import { DaemonAdmin } from "../src/daemon/admin";
+import {
+  DaemonAdmin,
+  recordedDowntime,
+  withDowntime,
+} from "../src/daemon/admin";
 import { renderResult } from "../src/cli/output";
 
 const roots: string[] = [];
@@ -503,7 +507,7 @@ test("an operator's rig down ends a down period with a message saying so", async
   await rig.evaluate();
   expect(rig.channel.sent.at(-1)).toMatchObject({
     kind: "recovered",
-    title: "pantry live was stopped with rig down",
+    title: "pantry live was stopped",
   });
   expect((await rig.state()).activity.at(-1)).toMatchObject({
     action: "outage",
@@ -954,9 +958,14 @@ test("a deploy still moving a Stable Target decides nothing; one whose rollback 
       operationId: "deploy-1",
     };
   });
+  const deploying = () => ({
+    operationId: "deploy-1",
+    project: "pantry",
+    target: "live",
+  });
   for (const offset of [0, ALERT_GRACE_MS, 2 * ALERT_GRACE_MS]) {
     rig.at(offset);
-    await rig.evaluate();
+    await rig.evaluate({ mutation: deploying });
   }
   expect(rig.channel.sent).toEqual([]);
 
@@ -968,12 +977,135 @@ test("a deploy still moving a Stable Target decides nothing; one whose rollback 
   await rig.evaluate();
   rig.at(4 * ALERT_GRACE_MS);
   await rig.evaluate();
+  // One command, and the same one everywhere: the reason, the summary and the recovery all say down first, then up.
+  const recover =
+    "rig down live --project pantry, then rig up live --project pantry";
   expect(rig.channel.sent[0]!.summary).toBe(
-    "deployment: deploy rollback incomplete, run rig down first. Run rig up live --project pantry.",
+    `deployment: deploy rollback incomplete. Run ${recover}.`,
   );
-  expect(rig.channel.sent[0]!.detail).toContain(
-    "Run rig down live --project pantry before rig up.",
+  expect(rig.channel.sent[0]!.targets[0]!.recover).toBe(recover);
+  expect(rig.channel.sent[0]!.detail).not.toContain("before rig up");
+  const report = await hostDoctor({
+    store: new FileStateStore(rig.root),
+    async inspectHost() {
+      return [];
+    },
+    now: () => new Date(T0 + 4 * ALERT_GRACE_MS).toISOString(),
+  } as unknown as RuntimeDependencies);
+  expect(
+    report.checks.find((check) => check.name === "stable-targets")?.hint,
+  ).toBe(
+    `Once the cause is fixed, run ${recover}. rig activity shows the reasons Rig recorded.`,
   );
+});
+
+test("a deploy that no operation is running any more, left by a daemon that stopped mid-deploy, keeps its Stable Target down", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  await rig.change(pantry, (saved) => {
+    saved.recovery = {
+      plan: saved.plan,
+      desired: "running",
+      stage: "pending",
+      operationId: "deploy-1",
+    };
+  });
+  rig.restartDaemon();
+  await rig.evaluate();
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  expect(rig.channel.sent).toHaveLength(1);
+  expect(rig.channel.sent[0]).toMatchObject({
+    kind: "down",
+    summary:
+      "deployment: deploy interrupted, transition unresolved. Run rig down live --project pantry, then rig up live --project pantry.",
+  });
+});
+
+test("an operation working on a Stable Target decides nothing: a restart is neither a stop nor a recovery until it ends", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate();
+  expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
+
+  // rig restart records the Target as stopped before it starts it again.
+  await rig.change(pantry, (saved) => {
+    saved.desired = "stopped";
+  });
+  const restarting = () => ({
+    operationId: "restart-1",
+    project: "pantry",
+    target: "live",
+  });
+  rig.at(ALERT_GRACE_MS + MINUTE);
+  await rig.evaluate({ mutation: restarting });
+  // Selected by the Project's directory rather than its name, the same restart holds the Target just the same.
+  await rig.evaluate({
+    mutation: () => ({ operationId: "restart-1", repoPath: "/repos/pantry" }),
+  });
+  expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
+
+  await rig.change(pantry, (saved) => {
+    saved.desired = "running";
+  });
+  await rig.restore(pantry, "web");
+  rig.at(ALERT_GRACE_MS + 2 * MINUTE);
+  await rig.evaluate();
+  expect(rig.channel.sent.at(-1)).toMatchObject({
+    kind: "recovered",
+    title: "pantry live is back up",
+  });
+});
+
+test("an operation on another Project or on a Preview does not hold back a Stable Target's alert", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  for (const mutation of [
+    { operationId: "deploy-2", project: "design", target: "live" },
+    { operationId: "deploy-3", project: "pantry", target: "preview" },
+  ]) {
+    rig.at(ALERT_GRACE_MS);
+    await rig.evaluate({ mutation: () => mutation });
+  }
+  expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
+});
+
+test("a down period an operation is working on sends no first alert, even past the grace period", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  await rig.evaluate();
+  // The operator deploys the fix a minute in; the build outlasts the grace period.
+  await rig.change(pantry, (saved) => {
+    saved.recovery = {
+      plan: saved.plan,
+      desired: "running",
+      stage: "pending",
+      operationId: "deploy-1",
+    };
+  });
+  const deploying = () => ({
+    operationId: "deploy-1",
+    project: "pantry",
+    target: "live",
+  });
+  for (const offset of [MINUTE, ALERT_GRACE_MS, ALERT_GRACE_MS + MINUTE]) {
+    rig.at(offset);
+    await rig.evaluate({ mutation: deploying });
+  }
+  expect(rig.channel.sent).toEqual([]);
+  await rig.change(pantry, (saved) => {
+    delete saved.recovery;
+  });
+  await rig.restore(pantry, "web");
+  rig.at(ALERT_GRACE_MS + 2 * MINUTE);
+  await rig.evaluate();
+  expect(rig.channel.sent).toEqual([]);
+  expect((await rig.state()).alerts).toEqual({ targets: [] });
 });
 
 test("doctor shows how long each down Stable Target has been down, as one Host-wide finding", async () => {
@@ -1003,33 +1135,55 @@ test("doctor shows how long each down Stable Target has been down, as one Host-w
       message:
         "2 Stable Targets are down: pantry live for 42 h (since 2026-09-25T13:58:58.000Z), design live for 42 h (since 2026-09-25T13:58:59.000Z).",
       reason: "stable-target-down",
-      hint: "Once the cause is fixed, run rig up live --project pantry, rig up live --project design. rig activity shows the reasons Rig recorded.",
+      hint: "Once the cause is fixed, run rig up live --project pantry; rig up live --project design. rig activity shows the reasons Rig recorded.",
     },
   ]);
 });
 
-test("rigd status shows how long each down Stable Target has been down", async () => {
+test("rigd status shows how long each down Stable Target has been down, only while rigd is reachable", async () => {
   const rig = await fixture();
   const pantry = await rig.addTarget("pantry", "live", "live");
   await rig.crash(pantry, "web");
   await rig.evaluate();
+  // Not reachable: what the state file last recorded would read as downtime still growing, so none is shown.
   const status = await new DaemonAdmin({
     root: rig.root,
     command: [],
     mode: "process",
     userHome: rig.root,
   }).status();
-  expect(status).toMatchObject({
-    reachable: false,
+  expect(status.reachable).toBe(false);
+  expect(status.down).toBeUndefined();
+  const reachable = {
+    installed: true,
+    running: true,
+    reachable: true,
+  } as const;
+  const recorded = () =>
+    recordedDowntime(rig.root, () =>
+      new Date(T0 + 42 * 60 * MINUTE).toISOString(),
+    );
+  expect(await withDowntime(reachable, recorded)).toEqual({
+    ...reachable,
     down: [
       {
         project: "pantry",
         target: "live",
         since: "2026-09-25T13:58:58.000Z",
+        down: "42 h",
+        alerted: false,
         recover: "rig up live --project pantry",
       },
     ],
   });
+  expect(
+    await withDowntime({ ...reachable, reachable: false }, recorded),
+  ).toEqual({ ...reachable, reachable: false });
+  expect(
+    await withDowntime(reachable, async () => {
+      throw new Error("unreadable");
+    }),
+  ).toEqual(reachable);
   expect(
     renderResult("daemon-status", {
       installed: true,

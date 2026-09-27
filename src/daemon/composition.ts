@@ -10,7 +10,7 @@ import {
   ALERT_OBSERVATION_BUDGET_MS,
   evaluateOperatorAlerts,
 } from "../runtime/alert-monitor";
-import { createMacosNotifications } from "../providers/macos-notification";
+import { alertChannels } from "./alert-channels";
 import type { DaemonHostOptions } from "./host";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
@@ -57,6 +57,8 @@ import type { Supervisor } from "../providers/contracts";
 export async function composeDaemon(
   root: string,
   captureCommand: readonly string[],
+  /** How rigd was installed: `process` under RIG_ROOT for tests and agent runs, `launchd` as the user's LaunchAgent. */
+  mode: "process" | "launchd" = "launchd",
 ): Promise<Omit<DaemonHostOptions, "root" | "port">> {
   const host = await readHostConfig(root);
   const diagnostic = createFileDiagnosticLog({
@@ -167,12 +169,10 @@ export async function composeDaemon(
     },
     exclusive: runtime.exclusive,
   });
-  const alertChannels = host.alerts.channels.macos.enabled
-    ? [createMacosNotifications({ run: runCommand })]
-    : [];
+  const channels = alertChannels(host.alerts, mode, runCommand);
   let stopped = false;
-  let stopMonitor: (() => void) | undefined;
-  let stopAlerts: (() => void) | undefined;
+  let stopMonitor: (() => Promise<void>) | undefined;
+  let stopAlerts: (() => Promise<void>) | undefined;
   return {
     handle: runtime.command,
     editor,
@@ -197,17 +197,19 @@ export async function composeDaemon(
             observationBudgetMs: ALERT_OBSERVATION_BUDGET_MS,
             observationDeadline: timerObservationDeadline,
             inspectProxy: () => inspectHostProxy(root, host, environment),
-            channels: alertChannels,
+            channels,
             now: () => new Date().toISOString(),
             id: randomUUID,
             diagnostic: recordingDiagnostic(diagnostic, notices),
+            mutation: runtime.mutation,
           }),
       });
     },
     async shutdown() {
       stopped = true;
       stopMonitor?.();
-      stopAlerts?.();
+      // An alert evaluation in flight finishes and saves what it delivered, so the next rigd does not deliver it again.
+      await stopAlerts?.();
       await runtime.drain();
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();

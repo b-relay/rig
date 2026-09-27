@@ -901,8 +901,10 @@ capability:
 - `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
   reload mode (see Setup)
 - `diagnostics.retention_days` (default 14) and `diagnostics.level`
-- `alerts.channels.macos.enabled` (default `true`): whether operator alerts
-  are posted as macOS notifications (see "Operator alerts")
+- `alerts.channels.macos.enabled`: whether operator alerts are posted as
+  macOS notifications (see "Operator alerts"). When unset, it is on for a
+  `rigd` installed as a LaunchAgent and off for a process-mode `rigd`
+  (`RIG_ROOT` set, as tests and agent runs use)
 
 Editors can check and complete both files from JSON Schemas generated from
 the same validation Rig runs: [`schemas/rig.schema.json`](../schemas/rig.schema.json)
@@ -1146,9 +1148,12 @@ Services:
 - fails its readiness check, or does not answer it within 5 seconds.
 
 A Target also counts as down when its route is unpublished (no host Caddyfile
-loads Rig's routes), or when its last deploy failed and the rollback could not
-finish. A deploy that is still running, or an observation that did not answer,
-changes nothing either way.
+loads Rig's routes), or when a deploy left it mid-transition: its rollback
+could not finish, or `rigd` stopped during the deploy. Its alert then says to
+run `rig down` first, then `rig up`. An operation that is working on the
+Target now (a deploy, a restart, an up or a down), or an observation that did
+not answer, changes nothing either way: a Target already counted as down gets
+no first alert while an operation may be fixing it.
 
 The timing:
 
@@ -1175,8 +1180,8 @@ event is one entry, not one per Service.
 
 `rig doctor` has a `stable-targets` check that lists every Stable Target Rig
 counts as down and for how long ("pantry live for 42 h (since
-2026-09-25T13:58:58.000Z)"), with the commands that recover them. `rigd status`
-prints a `Down` line for each.
+2026-09-25T13:58:58.000Z)"), with the commands that recover them. While `rigd`
+is reachable, `rigd status` prints a `Down` line for each.
 
 **Delivery.** The only channel today is a macOS user notification, posted
 with `osascript` from `rigd`'s LaunchAgent in your login session. macOS files
@@ -1184,7 +1189,9 @@ these notifications under Script Editor. The first time, allow notifications
 for Script Editor in System Settings > Notifications, or macOS may keep them
 out of sight. Set `alerts.channels.macos.enabled: false` in the Host config to
 turn the channel off. Rig then still counts downtime and records each alert in
-Activity and doctor, but sends nothing.
+Activity and doctor, but sends nothing. A process-mode `rigd` (`RIG_ROOT` set)
+leaves the channel off unless its Host config sets `enabled: true`, so tests
+and agent runs never post to your screen.
 
 A delivery that fails is recorded in Activity (`alert failed`, with the
 reason) and in the diagnostic log. It never changes the outcome of a

@@ -8,11 +8,15 @@ import type {
 } from "../domain/operator-alerts";
 import type { OperationRecord } from "../domain/runtime";
 
-/** The command that starts a Stable Target again. */
+/** The command that starts a Stable Target again; `first` names what must run before it. */
 export function recoverCommand(
   record: Pick<DownRecord, "project" | "target">,
+  first?: "down",
 ): string {
-  return `rig up ${record.target} --project ${record.project}`;
+  const up = `rig up ${record.target} --project ${record.project}`;
+  return first
+    ? `rig ${first} ${record.target} --project ${record.project}, then ${up}`
+    : up;
 }
 
 /** A duration as doctor and alerts say it: "under 1 min", "12 min", "42 h", "5 d". */
@@ -104,7 +108,7 @@ export function downtimeReport(
       since: record.since,
       down: downFor(Date.parse(now) - Date.parse(record.since)),
       alerted: record.alertedAt !== undefined,
-      recover: recoverCommand(record),
+      recover: record.recover,
     }));
 }
 
@@ -117,7 +121,7 @@ function alertedTarget(record: DownRecord): AlertedTarget {
     ...(record.unpublishedRoute
       ? { unpublishedRoute: record.unpublishedRoute }
       : {}),
-    recover: recoverCommand(record),
+    recover: record.recover,
     ...(record.resolved ? { resolved: record.resolved } : {}),
   };
 }
@@ -132,9 +136,9 @@ function downText(records: readonly DownRecord[], now: string): AlertText {
     title,
     summary:
       records.length === 1
-        ? `${causes(first!, "brief")}. Run ${recoverCommand(first!)}.`
+        ? `${causes(first!, "brief")}. Run ${first!.recover}.`
         : `${records.map((record) => `${named(record)} (${causeNames(record)})`).join(", ")}. ${SEE_ACTIVITY}`,
-    detail: `${title}. ${records.map((record) => `${named(record)}: ${causes(record, "reason")}. Run ${recoverCommand(record)}.`).join(" ")}`,
+    detail: `${title}. ${records.map((record) => `${named(record)}: ${causes(record, "reason")}. Run ${record.recover}.`).join(" ")}`,
   };
 }
 
@@ -150,15 +154,15 @@ function reminderText(records: readonly DownRecord[], now: string): AlertText {
     title,
     summary:
       records.length === 1
-        ? `Down since ${utcClock(first!.since, now)}: ${causes(first!, "brief")}. Run ${recoverCommand(first!)}.`
+        ? `Down since ${utcClock(first!.since, now)}: ${causes(first!, "brief")}. Run ${first!.recover}.`
         : `${records.map((record) => `${named(record)} (down ${down(record)})`).join(", ")}. ${SEE_ACTIVITY}`,
-    detail: `${title}. ${records.map((record) => `${named(record)}, down ${down(record)} since ${utcClock(record.since, now)}: ${causes(record, "reason")}. Run ${recoverCommand(record)}.`).join(" ")}`,
+    detail: `${title}. ${records.map((record) => `${named(record)}, down ${down(record)} since ${utcClock(record.since, now)}: ${causes(record, "reason")}. Run ${record.recover}.`).join(" ")}`,
   };
 }
 
 const ENDED: Record<DowntimeResolution, string> = {
   running: "is back up",
-  stopped: "was stopped with rig down",
+  stopped: "was stopped",
   removed: "is no longer recorded",
 };
 

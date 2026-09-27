@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import type { OperatorAlert } from "../src/domain/operator-alerts";
 import type { CommandRequest } from "../src/providers/contracts";
 import { createMacosNotifications } from "../src/providers/macos-notification";
+import { alertChannels } from "../src/daemon/alert-channels";
+import { parseHostConfig } from "../src/config";
 
 const alert: OperatorAlert = {
   kind: "down",
@@ -72,4 +74,18 @@ test("a failed osascript rejects with ALERT_DELIVERY, its last error line and th
       "osascript could not post the macOS notification (exit 1: execution error: Not authorized. (-1743)).",
     hint: expect.stringContaining("System Settings > Notifications"),
   });
+});
+
+test("the macOS channel is on by default only for a rigd installed as a LaunchAgent; a process-mode rigd, as tests and agent runs use, posts nothing unless its Host config turns it on", () => {
+  const { run } = runner();
+  const channels = (alerts: unknown, mode: "process" | "launchd") =>
+    alertChannels(parseHostConfig({ alerts }).alerts, mode, run).map(
+      (channel) => channel.channel,
+    );
+  expect(channels({}, "launchd")).toEqual(["macOS notification"]);
+  expect(channels({}, "process")).toEqual([]);
+  const on = { channels: { macos: { enabled: true } } };
+  const off = { channels: { macos: { enabled: false } } };
+  expect(channels(on, "process")).toEqual(["macOS notification"]);
+  expect(channels(off, "launchd")).toEqual([]);
 });

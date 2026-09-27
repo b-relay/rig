@@ -5,8 +5,12 @@ import type {
   DownService,
   OperatorAlert,
 } from "../domain/operator-alerts";
-import type { ServiceRun, TargetRecord } from "../domain/runtime";
-import { composeAlert } from "./alert-messages";
+import type {
+  ProjectRecord,
+  ServiceRun,
+  TargetRecord,
+} from "../domain/runtime";
+import { composeAlert, recoverCommand } from "./alert-messages";
 import { currentRun } from "./supervision";
 
 /** How long a Stable Target stays down before the operator is alerted: normal restarts, deploy swaps and the retries after
@@ -22,8 +26,9 @@ export const ALERT_RETRY_MS = 5 * 60_000;
 export const NO_ALERTS: AlertState = { targets: [] };
 
 /** What one evaluation found of a Stable Target: serving (`up`), stopped by an operator, down with the Services and route
- * that keep it down, or `inconclusive` when nothing can be said now (a deploy is moving it, or its observation did not
- * answer), which leaves what Rig counted before unchanged. `since` is the earliest recorded end among the down Services. */
+ * that keep it down and the command that recovers it, or `inconclusive` when nothing can be said now (an operation is
+ * working on it, or its observation did not answer), which leaves what Rig counted before unchanged. `since` is the
+ * earliest recorded end among the down Services. */
 export type StableTargetCondition = {
   targetId: string;
   project: string;
@@ -35,8 +40,54 @@ export type StableTargetCondition = {
       since?: string;
       services: DownService[];
       unpublishedRoute?: string;
+      recover: string;
     }
 );
+
+/** The mutation rigd is executing, as its command selected the Project (by name or directory) and the Target. */
+export interface MutationInFlight {
+  operationId: string;
+  project?: string;
+  repoPath?: string;
+  /** A Target name, or `preview` for a Preview. */
+  target?: string;
+}
+
+/** The ids of the recorded Stable Targets `mutation` may be changing now. It names its Project by name or directory; one it
+ * names by a directory no Project is registered at, or not at all, may be any. A mutation of a Preview changes no Stable
+ * Target; one without a Target may change every Target of its Project. A deploy's own transition is always its own. */
+export function engagedTargets(
+  mutation: MutationInFlight | undefined,
+  state: {
+    projects: readonly Pick<ProjectRecord, "id" | "name" | "repoPath">[];
+    targets: readonly Pick<
+      TargetRecord,
+      "id" | "projectId" | "name" | "kind" | "recovery"
+    >[];
+  },
+): Set<string> {
+  const engaged = new Set<string>();
+  if (!mutation) return engaged;
+  const named = mutation.project
+    ? state.projects.filter((project) => project.name === mutation.project)
+    : mutation.repoPath
+      ? state.projects.filter(
+          (project) => project.repoPath === mutation.repoPath,
+        )
+      : [];
+  const projects = named.length
+    ? new Set(named.map((project) => project.id))
+    : undefined;
+  for (const target of state.targets) {
+    if (target.recovery?.operationId === mutation.operationId)
+      engaged.add(target.id);
+    if (target.kind !== "live" || mutation.target === "preview") continue;
+    if (projects && !projects.has(target.projectId)) continue;
+    if (mutation.target === undefined || mutation.target === target.name)
+      engaged.add(target.id);
+  }
+  return engaged;
+}
 
 /** Component states that keep a Stable Target from serving. `starting` counts: a Service that never gets past it, waiting on
  * a dependency that does not return, is down once the grace period has passed. */
@@ -51,9 +102,10 @@ export type RoutePublication = "published" | "unpublished" | "unknown";
 
 /** Judges one Stable Target from its record and the status observation of it. A Service keeps it down when it failed, never
  * gets past starting, fails its readiness check, or stays stopped because its automatic restarts are used up; one that
- * finished with a clean exit its policy does not restart does not. An unpublished route keeps a routed Target down. A deploy
- * that is still moving the Target, or an observation that did not answer, is inconclusive; a deploy whose rollback could not
- * be completed keeps it down. */
+ * finished with a clean exit its policy does not restart does not. An unpublished route keeps a routed Target down. A Target
+ * an operation is working on (`engaged`), or whose observation did not answer, is inconclusive. A deploy transition no
+ * operation is working on any more, because its rollback could not be completed or rigd stopped during it, keeps a Target
+ * meant to run down until an operator runs rig down: supervision leaves its Services alone until then. */
 export function stableTargetCondition(input: {
   target: Pick<
     TargetRecord,
@@ -62,6 +114,7 @@ export function stableTargetCondition(input: {
   project: string;
   report: TargetReport | undefined;
   routes: RoutePublication;
+  engaged: boolean;
 }): StableTargetCondition {
   const { target, report } = input;
   const identity = {
@@ -69,20 +122,36 @@ export function stableTargetCondition(input: {
     project: input.project,
     target: target.name,
   };
-  if (target.recovery?.stage === "blocked")
+  if (input.engaged) return { ...identity, state: "inconclusive" };
+  const { recovery } = target;
+  if (
+    recovery &&
+    (recovery.stage === "blocked" ||
+      target.desired === "running" ||
+      recovery.desired === "running")
+  )
     return {
       ...identity,
       state: "down",
       services: [
-        {
-          name: "deployment",
-          reason: `The last deploy failed and its rollback could not be completed. Run rig down ${target.name} --project ${input.project} before rig up.`,
-          brief: "deploy rollback incomplete, run rig down first",
-        },
+        recovery.stage === "blocked"
+          ? {
+              name: "deployment",
+              reason:
+                "The last deploy failed and its rollback could not be completed.",
+              brief: "deploy rollback incomplete",
+            }
+          : {
+              name: "deployment",
+              reason:
+                "A deploy stopped before it finished and left its transition unresolved; Rig does not supervise the Target's Services until it is resolved.",
+              brief: "deploy interrupted, transition unresolved",
+            },
       ],
+      recover: recoverCommand(identity, "down"),
     };
   if (target.desired !== "running") return { ...identity, state: "stopped" };
-  if (target.recovery || !report) return { ...identity, state: "inconclusive" };
+  if (!report) return { ...identity, state: "inconclusive" };
   const managed = report.components.filter(
     (component) => component.kind === "managed",
   );
@@ -116,6 +185,7 @@ export function stableTargetCondition(input: {
       reason: component.reason ?? briefReason(component, runs[index]),
     })),
     ...(unpublishedRoute ? { unpublishedRoute } : {}),
+    recover: recoverCommand(identity),
   };
 }
 
@@ -219,6 +289,7 @@ function described(
     ...(condition.unpublishedRoute
       ? { unpublishedRoute: condition.unpublishedRoute }
       : {}),
+    recover: condition.recover,
   };
 }
 
@@ -244,9 +315,14 @@ export interface PlannedAlert {
 
 /** The alerts due at `now`, in delivery order: one recovery message for every alerted Target no longer down, one down alert
  * per group of Targets that went down together once the first of them has been down for the grace period, and a reminder
- * about every alerted Target still down once the reminder interval has passed since the last alert or reminder. Nothing is
- * due while a failed delivery waits for its retry. */
-export function dueAlerts(state: AlertState, now: string): PlannedAlert[] {
+ * about every alerted Target still down once the reminder interval has passed since the last alert or reminder. A Target in
+ * `unsettled`, whose condition this evaluation could not judge, gets no first down alert: an operation may be fixing it.
+ * Nothing is due while a failed delivery waits for its retry. */
+export function dueAlerts(
+  state: AlertState,
+  now: string,
+  unsettled: ReadonlySet<string> = new Set(),
+): PlannedAlert[] {
   const at = Date.parse(now);
   if (state.retry && at < Date.parse(state.retry.at)) return [];
   const planned: PlannedAlert[] = [];
@@ -260,7 +336,10 @@ export function dueAlerts(state: AlertState, now: string): PlannedAlert[] {
   );
   if (recovered.length) plan("recovered", recovered);
   const unalerted = state.targets.filter(
-    (record) => !record.resolved && record.alertedAt === undefined,
+    (record) =>
+      !record.resolved &&
+      record.alertedAt === undefined &&
+      !unsettled.has(record.targetId),
   );
   for (const group of wentDownTogether(unalerted))
     if (at - Date.parse(group[0]!.since) >= ALERT_GRACE_MS) plan("down", group);

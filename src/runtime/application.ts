@@ -9,6 +9,7 @@ import { doctor, hostDoctor } from "./doctor";
 import { forgetProject, updateRegistration } from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
+import type { MutationInFlight } from "./alert-policy";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import {
   readActions,
@@ -99,6 +100,8 @@ export interface RigRuntime extends ProjectStatusReader {
   supervise(): Promise<SupervisionPass>;
   exclusive<T>(operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
+  /** The mutation executing now, as its command selected the Project and Target; absent while none is. */
+  mutation(): MutationInFlight | undefined;
 }
 const reads = readActions;
 /** What one serialized mutation looks like from outside while it runs. */
@@ -116,6 +119,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   // The mutation executing now and how many are queued behind it: the answer to
   // "what is holding the host" for a caller whose command has not returned.
   let running: RunningOperation | undefined;
+  let mutating: MutationInFlight | undefined;
   let waiting = 0;
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
@@ -144,11 +148,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       ...(command.target ? { target: command.target } : {}),
       startedAt: deps.now(),
     };
+    mutating = {
+      operationId,
+      ...(command.project ? { project: command.project } : {}),
+      ...(command.repoPath ? { repoPath: command.repoPath } : {}),
+      ...(command.target ? { target: command.target } : {}),
+    };
     try {
       return await run(command, operationId);
     } finally {
       inFlight.delete(operationId);
       running = undefined;
+      mutating = undefined;
     }
   };
   const run = async (
@@ -759,6 +770,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   };
   return {
     status,
+    mutation: () => mutating,
     async drain() {
       draining = true;
       await queue.catch(() => {});

@@ -59,6 +59,9 @@ export interface DownRecord {
   since: string;
   services: DownService[];
   unpublishedRoute?: string;
+  /** The command that starts it again: `rig up live --project pantry`, or a `rig down` first when a deploy left it
+   * mid-transition. */
+  recover: string;
   /** When the alert naming it was delivered; absent while it is within the grace period or its alert is undelivered. */
   alertedAt?: string;
   /** The down period ended; the record stays until the recovery message is delivered. */

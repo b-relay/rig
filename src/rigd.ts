@@ -35,7 +35,11 @@ export async function main(args: readonly string[]): Promise<number> {
     const command = await daemonCommand();
     let runtime;
     try {
-      runtime = await composeDaemon(root, [...command, "capture"]);
+      runtime = await composeDaemon(
+        root,
+        [...command, "capture"],
+        process.env.RIG_DAEMON_MODE === "process" ? "process" : "launchd",
+      );
     } catch (error) {
       // runDaemonHost records its own failures; composition failures need the same record.
       await writeStartupFailure(root, error);

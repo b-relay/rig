@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, realpath } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  realpath,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 /** Names come from the root's own record, so renamed Targets and generated Previews are found as well as local and live. */
@@ -28,6 +35,12 @@ export async function rigFixture() {
     root = join(base, ".rig"),
     repo = join(base, "project");
   await mkdir(repo);
+  // A real rigd runs under this root: it must never post a macOS notification to the person running the tests.
+  await mkdir(root, { mode: 0o700 });
+  await writeFile(
+    join(root, "config.yaml"),
+    "alerts:\n  channels:\n    macos:\n      enabled: false\n",
+  );
   const environment = { ...process.env, RIG_ROOT: root };
   const run = async (args: string[], cwd = repo) => {
     const child = Bun.spawn(args, {

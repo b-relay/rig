@@ -133,3 +133,35 @@ test("a pass that names an earlier due time is followed by one at that time, not
     stop();
   }
 });
+test("stop resolves only once the pass in flight has settled, and no pass starts after it", async () => {
+  const board = createNoticeBoard(clock());
+  let release: (() => void) | undefined;
+  let calls = 0,
+    settled = false;
+  const stop = startFailureMonitor({
+    intervalMs: 5,
+    notices: board,
+    async run() {
+      calls++;
+      await new Promise<void>((resolve) => (release = resolve));
+      settled = true;
+    },
+  });
+  await Bun.sleep(20);
+  expect(calls).toBe(1);
+  let stopped = false;
+  const stopping = stop().then(() => (stopped = true));
+  await Bun.sleep(20);
+  expect(stopped).toBe(false);
+  release!();
+  await stopping;
+  expect(settled).toBe(true);
+  await Bun.sleep(20);
+  expect(calls).toBe(1);
+  // With nothing in flight, stop resolves at once.
+  await startFailureMonitor({
+    intervalMs: 1000,
+    notices: board,
+    run: async () => {},
+  })();
+});

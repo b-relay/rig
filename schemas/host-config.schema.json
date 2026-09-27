@@ -142,8 +142,7 @@
               "type": "object",
               "properties": {
                 "enabled": {
-                  "default": true,
-                  "description": "Post a macOS notification when a Stable Target has been down 5 minutes, every 6 hours while it stays down, and when it recovers. macOS asks once to allow notifications from Script Editor.",
+                  "description": "Post a macOS notification when a Stable Target has been down 5 minutes, every 6 hours while it stays down, and when it recovers. macOS asks once to allow notifications from Script Editor. When unset, it is on for a rigd installed as a LaunchAgent and off for a process-mode rigd (RIG_ROOT set, as tests and agent runs use).",
                   "type": "boolean"
                 }
               },

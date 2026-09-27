@@ -85,23 +85,24 @@ export function recordingDiagnostic(
 }
 /** Runs one pass at a time on a fixed interval, and once more when a pass names an earlier time something is due
  * (`nextRetryAt`, Unix milliseconds). A failed pass is noted under `channel`, the failure monitor's by default, and a later
- * success clears it. Returns the stop. */
+ * success clears it. Returns the stop, which starts no further pass and resolves once the pass in flight, if any, settled. */
 export function startFailureMonitor(options: {
   intervalMs: number;
   run(): Promise<{ nextRetryAt?: number } | void>;
   notices: Pick<NoticeBoard, "note" | "clear">;
   channel?: NoticeChannel;
-}): () => void {
+}): () => Promise<void> {
   const channel = options.channel ?? FAILURE_MONITOR;
   const subject =
     channel === FAILURE_MONITOR ? "failure monitor" : `${channel.name} monitor`;
   let running = false,
     stopped = false;
   let due: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> = Promise.resolve();
   const pass = () => {
     if (running || stopped) return;
     running = true;
-    void options
+    inFlight = options
       .run()
       .then(
         (result) => {
@@ -125,6 +126,7 @@ export function startFailureMonitor(options: {
     stopped = true;
     clearInterval(timer);
     clearTimeout(due);
+    return inFlight;
   };
 }
 /** Metadata only: a code and message, never entry contents. */

@@ -335,7 +335,9 @@ for (const [name, witness] of [
           state: "running",
           incarnation: "start-2",
         });
-        expect(await supervisor.stop(key)).toEqual({ outcome: "stopped" });
+        expect(await supervisor.stop(key, { graceMs: 1500 })).toEqual({
+          outcome: "stopped",
+        });
         expect(await supervisor.observe(key)).toEqual({ state: "stopped" });
       } finally {
         if ("cleanup" in w) await w.cleanup();
@@ -365,7 +367,7 @@ for (const [name, witness] of [
         });
         expect(alive(application)).toBe(true);
         // A stop releases what it owns but neither signals the survivor nor forgets it: a start is still refused.
-        await supervisor.stop(req.key);
+        await supervisor.stop(req.key, { graceMs: 1500 });
         expect(alive(application)).toBe(true);
         expect(await supervisor.observe(req.key)).toMatchObject({
           state: "unknown",

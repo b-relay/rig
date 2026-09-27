@@ -7,8 +7,10 @@ import type { TargetRecord } from "../domain/runtime";
 import type {
   HealthCheck,
   ProcessObservation,
+  StopResult,
   Supervisor,
 } from "../providers/contracts";
+import { isStopDetached, serviceGraceMs } from "../domain/stop-budget";
 import type { ListenerEvidence } from "../providers/listener-inspection";
 import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
 import { declaredPorts, plannedRoutes } from "./ports";
@@ -88,6 +90,26 @@ export interface ActivationJournal {
   starting(service: string): Promise<string>;
   activated(service: string, incarnation: string): Promise<void>;
 }
+/** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
+export interface StopControl {
+  /** Aborted before or during a stop, it cuts every remaining grace to the kill wait: `rig down --kill`. */
+  readonly kill?: AbortSignal;
+  /** Aborted when rigd shuts down: the stop waiting now fails STOP_DETACHED, no further Service is signalled, and the
+   * Services keep stopping on their own for the next daemon to finish. */
+  readonly detach?: AbortSignal;
+  /** Hears each Service's stop begin and end, so status and the waiting command can show it. */
+  readonly observer?: StopObserver;
+}
+export interface StopObserver {
+  /** `service` of `target` is being asked to stop and has `graceMs` to exit before SIGKILL. */
+  stopping(target: TargetRecord, service: string, graceMs: number): void;
+  /** Its stop ended as the supervisor said, or failed. */
+  stopped(
+    target: TargetRecord,
+    service: string,
+    ended: StopResult | { readonly outcome: "failed" },
+  ): void;
+}
 export interface PreparationRequest {
   /** `all` runs every unit. `stopped` is a Working copy up: the units of Services that are not running and of every Tool,
    * after the shared unit when any Service is to start or any Tool exists; nothing when every Service runs and there is no Tool. */
@@ -121,6 +143,8 @@ export interface TargetLifecycle {
     target: TargetRecord,
     checkpoint?: TargetEffectCheckpoint,
     journal?: ActivationJournal,
+    /** How the stop of Services a failed start started waits. */
+    stops?: StopControl,
   ): Promise<{ outcome: "started" | "unchanged" }>;
   /** Starts one stopped Service of a running Target again under the same rules as `up`: fresh environment, readiness, then the
    * route. Never builds, installs or starts another Service. SERVICE_DEPENDENCY when a Service it depends on is not running;
@@ -131,8 +155,14 @@ export interface TargetLifecycle {
     target: TargetRecord,
     service: string,
     journal: ActivationJournal,
+    stops?: StopControl,
   ): Promise<{ outcome: "started" | "unchanged" }>;
-  down(target: TargetRecord): Promise<{ outcome: "stopped" | "unchanged" }>;
+  /** Stops every Service in reverse dependency order, each within its stop_timeout. Every Service is attempted, and
+   * STOP_INCOMPLETE names the failures, except when the stop is detached: STOP_DETACHED ends it at once. */
+  down(
+    target: TargetRecord,
+    stops?: StopControl,
+  ): Promise<{ outcome: "stopped" | "unchanged" }>;
   /** Stop, unroute, and uninstall a Target under one checkpoint.
    * Fails with RETIRE_COMMIT_PENDING (retirement done, finalization unfinished)
    * or RETIRE_ROLLBACK (rollback itself failed) when effects are left changed;
@@ -140,6 +170,7 @@ export interface TargetLifecycle {
   retire(
     target: TargetRecord,
     publishRemoval?: () => Promise<void>,
+    stops?: StopControl,
   ): Promise<void>;
 }
 export interface ReadinessTiming {
@@ -205,11 +236,11 @@ export function createTargetLifecycle(
     async retireSuperseded(previous, candidate) {
       await effects.retireSuperseded(previous, candidate);
     },
-    async retire(target, publishRemoval) {
+    async retire(target, publishRemoval, stops) {
       const checkpoint = await effects.checkpoint(target);
       let finalizationPending = false;
       try {
-        await lifecycle.down(target);
+        await lifecycle.down(target, stops);
         await effects.removeRoute(target);
         await effects.retireArtifacts(target);
         await publishRemoval?.();
@@ -228,6 +259,8 @@ export function createTargetLifecycle(
             {},
             failureCauses(error),
           );
+        // A detached stop is left as a crash leaves it: the Services keep stopping and the checkpoint stays for the retry.
+        if (isStopDetached(error)) throw error;
         try {
           await checkpoint.rollback();
           if (target.desired === "running") await lifecycle.up(target);
@@ -272,7 +305,7 @@ export function createTargetLifecycle(
       }
       return { built: units.map((unit) => unit.id) };
     },
-    async up(target, providedCheckpoint, journal) {
+    async up(target, providedCheckpoint, journal, stops) {
       assertPrepared(target);
       if (providedCheckpoint && providedCheckpoint.targetId !== target.id)
         throw new RigError(
@@ -329,8 +362,10 @@ export function createTargetLifecycle(
         const rollbackErrors: unknown[] = [];
         for (const key of started.reverse())
           try {
-            await supervisor.stop(key);
+            await stopService(target, componentOf(target, key), stops);
           } catch (failure) {
+            // rigd is shutting down: the Services left are stopping, and the next daemon finishes the stop.
+            if (isStopDetached(failure)) throw failure;
             rollbackErrors.push(failure);
           }
         if (!providedCheckpoint && !rollbackErrors.length)
@@ -349,7 +384,7 @@ export function createTargetLifecycle(
         throw error;
       }
     },
-    async recover(target, service, journal) {
+    async recover(target, service, journal, stops) {
       assertPrepared(target);
       const component = target.plan.components.find(
         (candidate): candidate is ManagedComponent =>
@@ -420,8 +455,9 @@ export function createTargetLifecycle(
         const key = `${target.id}:${service}`;
         const seen = await supervisor.observe(key).catch(() => undefined);
         try {
-          await supervisor.stop(key);
+          await stopService(target, component, stops);
         } catch (failure) {
+          if (isStopDetached(failure)) throw failure;
           throw new RigError(
             "START_ROLLBACK_FAILED",
             "The Service could not be started again and its new process could not be verified stopped.",
@@ -457,18 +493,16 @@ export function createTargetLifecycle(
         );
       }
     },
-    async down(target) {
-      const supervisor = effects.supervisor(target);
+    async down(target, stops) {
       let changed = false;
       const processFailures: unknown[] = [];
       for (const component of [...target.plan.components].reverse()) {
         if (component.kind !== "managed") continue;
         try {
-          const result = await supervisor.stop(
-            `${target.id}:${component.name}`,
-          );
+          const result = await stopService(target, component, stops);
           changed = result.outcome === "stopped" || changed;
         } catch (error) {
+          if (isStopDetached(error)) throw error;
           processFailures.push(error);
         }
       }
@@ -482,6 +516,29 @@ export function createTargetLifecycle(
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
+  /** Stops one Service within its stop_timeout under `stops`, telling its observer as the stop begins and ends. */
+  async function stopService(
+    target: TargetRecord,
+    component: ManagedComponent,
+    stops: StopControl = {},
+  ): Promise<StopResult> {
+    const graceMs = serviceGraceMs(component.stopTimeout);
+    stops.observer?.stopping(target, component.name, graceMs);
+    try {
+      const result = await effects
+        .supervisor(target)
+        .stop(`${target.id}:${component.name}`, {
+          graceMs,
+          ...(stops.kill ? { kill: stops.kill } : {}),
+          ...(stops.detach ? { detach: stops.detach } : {}),
+        });
+      stops.observer?.stopped(target, component.name, result);
+      return result;
+    } catch (error) {
+      stops.observer?.stopped(target, component.name, { outcome: "failed" });
+      throw error;
+    }
+  }
   /** One Service start: approval, spawn with a fresh environment, readiness, report. `started` gains the process key
    * as soon as a process was spawned, so the caller can stop it when a later step fails. */
   async function startService(
@@ -505,6 +562,7 @@ export function createTargetLifecycle(
       env,
       logRoot: target.logRoot,
       incarnation,
+      stopGraceMs: serviceGraceMs(component.stopTimeout),
     });
     if (result.outcome === "started") started.push(key);
     const process = { observe: () => supervisor.observe(key) };
@@ -801,6 +859,13 @@ export function loopbackAddress(address: string): boolean {
   );
 }
 /** Whether another Component in the plan lists `name` in dependsOn. */
+/** The Service a process key of `target` names. */
+function componentOf(target: TargetRecord, key: string): ManagedComponent {
+  return target.plan.components.find(
+    (candidate): candidate is ManagedComponent =>
+      candidate.kind === "managed" && key === `${target.id}:${candidate.name}`,
+  )!;
+}
 function hasDependents(target: TargetRecord, name: string): boolean {
   return target.plan.components.some(
     (component) =>

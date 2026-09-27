@@ -319,7 +319,9 @@ for (const [name, createWorld] of [
       const w = await world();
       const supervisor = w.supervisor();
       await supervisor.ensureRunning(w.request("start-1", 0));
-      expect(await supervisor.stop(key)).toEqual({ outcome: "stopped" });
+      expect(await supervisor.stop(key, { graceMs: 1500 })).toEqual({
+        outcome: "stopped",
+      });
       expect(await supervisor.observe(key)).toEqual({ state: "stopped" });
       expect(await w.supervisor().observe(key)).toEqual({ state: "stopped" });
       expect(await readExitRecord(w.root, key)).toBeUndefined();
@@ -347,7 +349,9 @@ for (const [name, createWorld] of [
         incarnation: "start-1",
       });
       expect(await w.starts()).toBe(1);
-      expect(await second.stop(key)).toEqual({ outcome: "stopped" });
+      expect(await second.stop(key, { graceMs: 1500 })).toEqual({
+        outcome: "stopped",
+      });
       expect(await second.observe(key)).toEqual({ state: "stopped" });
     });
 

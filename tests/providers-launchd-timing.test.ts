@@ -26,7 +26,8 @@ function scriptedTiming(): LaunchdTiming & { pauses: number[] } {
       clock += ms;
     },
     applicationStartMs: 300,
-    unloadBudgetMs: 500,
+    // A 300 ms grace sizes ExitTimeOut at its 1 s floor, and the unload wait at that plus the kill wait and headroom.
+    stopTimings: { killWaitMs: 100, headroomMs: 100 },
   };
 }
 
@@ -87,10 +88,42 @@ test("launchd start and unload waits run on the injected clock and budgets: a la
   expect(timing.pauses).toEqual([100, 100]);
 
   timing.pauses.length = 0;
-  await expect(supervisor.stop(request.key)).rejects.toMatchObject({
+  await expect(
+    supervisor.stop(request.key, { graceMs: 300 }),
+  ).rejects.toMatchObject({
     code: "LAUNCHD_STOP",
-    message: expect.stringContaining("did not unload within 0.5 s."),
+    message: expect.stringContaining("did not unload within 1.2 s."),
   });
-  expect(timing.pauses).toEqual([100, 100, 100, 100, 100]);
+  expect(timing.pauses).toEqual(Array(12).fill(100));
   expect(performance.now() - started).toBeLessThan(500);
+});
+
+test("a detached unload wait ends at the next poll, however long the grace, and never kills the job", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-launchd-timing-"));
+  roots.push(root);
+  const detach = new AbortController();
+  const commands: string[] = [];
+  let prints = 0;
+  const run: CommandRunner = async ({ command }) => {
+    commands.push(command[1]!);
+    if (command[1] === "print" && ++prints === 3) detach.abort();
+    return { exitCode: 0, stdout: "state = running\n", stderr: "" };
+  };
+  const timing = scriptedTiming();
+  const supervisor = createLaunchdSupervisor({
+    root,
+    domain: "gui/99999",
+    labelPrefix: "test.timing",
+    run,
+    inspect: async () => undefined,
+    timing,
+  });
+  await expect(
+    supervisor.stop("target-1:web", {
+      graceMs: 3_600_000,
+      detach: detach.signal,
+    }),
+  ).rejects.toMatchObject({ code: "STOP_DETACHED" });
+  expect(commands).toEqual(["print", "bootout", "print", "print"]);
+  expect(timing.pauses).toEqual([100, 100]);
 });

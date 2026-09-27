@@ -42,7 +42,6 @@ async function fixture(options: {
   const commands: CommandRequest[] = [];
   const supervisor = createChildSupervisor({
     stateRoot,
-    stopTimeoutMs: 0,
     timing: createProcessTiming(),
     processInspection: createProcessInspection({
       kill: options.kill,
@@ -75,7 +74,9 @@ test("stop accepts permission-denied signals and probes only when fallback confi
       return { exitCode: 1, stdout: "", stderr: "" };
     },
   });
-  expect(await supervisor.stop("owned")).toEqual({ outcome: "stopped" });
+  expect(await supervisor.stop("owned", { graceMs: 0 })).toEqual({
+    outcome: "stopped",
+  });
   expect(signals).toContain("SIGTERM");
   expect(signals).not.toContain("SIGKILL");
   expect(fallbacks).toBeGreaterThan(0);
@@ -104,7 +105,7 @@ test("stop rejects malformed permission fallback and preserves the lease", async
       stderr: "",
     }),
   });
-  await expect(supervisor.stop("owned")).rejects.toMatchObject({
+  await expect(supervisor.stop("owned", { graceMs: 0 })).rejects.toMatchObject({
     code: "PROCESS_INSPECT",
   });
   expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(pid);
@@ -123,7 +124,7 @@ test("failed escalation never reports a still-present owned group as stopped", a
       stderr: "",
     }),
   });
-  await expect(supervisor.stop("owned")).rejects.toMatchObject({
+  await expect(supervisor.stop("owned", { graceMs: 0 })).rejects.toMatchObject({
     code: "STOP_TIMEOUT",
   });
   expect(signals.filter((signal) => signal !== 0)).toEqual([
@@ -166,7 +167,9 @@ for (const [name, fallback] of [
       },
       fallback,
     });
-    await expect(supervisor.stop("owned")).rejects.toMatchObject({
+    await expect(
+      supervisor.stop("owned", { graceMs: 0 }),
+    ).rejects.toMatchObject({
       code: "PROCESS_INSPECT",
     });
     expect((await supervisor.observe("owned")).state).toBe("running");
@@ -181,7 +184,7 @@ test("permission-denied delivery to a confirmed present group is a signal failur
     },
     fallback: async () => ({ exitCode: 0, stdout: "424242\n", stderr: "" }),
   });
-  await expect(supervisor.stop("owned")).rejects.toMatchObject({
+  await expect(supervisor.stop("owned", { graceMs: 0 })).rejects.toMatchObject({
     code: "PROCESS_SIGNAL",
   });
   expect((await supervisor.observe("owned")).state).toBe("running");
@@ -207,13 +210,18 @@ test("a successful probe followed by permission fallback presence escalates unti
     },
     identity: () => (gone ? undefined : birth),
   });
-  expect(await supervisor.stop("owned")).toEqual({ outcome: "stopped" });
+  expect(await supervisor.stop("owned", { graceMs: 0 })).toEqual({
+    outcome: "stopped",
+    killed: "timeout",
+  });
   expect(signals.filter((signal) => signal !== 0)).toEqual([
     "SIGTERM",
     "SIGKILL",
   ]);
   expect(fallbackCalls).toBeGreaterThan(0);
-  expect(await supervisor.stop("owned")).toEqual({ outcome: "unchanged" });
+  expect(await supervisor.stop("owned", { graceMs: 0 })).toEqual({
+    outcome: "unchanged",
+  });
   expect(signals.filter((signal) => signal !== 0)).toEqual([
     "SIGTERM",
     "SIGKILL",
@@ -230,7 +238,9 @@ test("ESRCH confirms absence without a fallback command", async () => {
       throw new Error("fallback must not run");
     },
   });
-  expect(await supervisor.stop("owned")).toEqual({ outcome: "stopped" });
+  expect(await supervisor.stop("owned", { graceMs: 0 })).toEqual({
+    outcome: "stopped",
+  });
 });
 
 for (const changeAt of [1, 3]) {
@@ -247,7 +257,7 @@ for (const changeAt of [1, 3]) {
         throw new Error("fallback must not run");
       },
     });
-    await supervisor.stop("owned");
+    await supervisor.stop("owned", { graceMs: 0 });
     expect(signals).toBe(0);
     expect(identities).toBe(changeAt);
   });
@@ -260,7 +270,6 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
   const commands: CommandRequest[] = [];
   const supervisor = createChildSupervisor({
     stateRoot: join(root, ".rig"),
-    stopTimeoutMs: 0,
     timing: createProcessTiming(),
     processInspection: createProcessInspection({
       kill: (target, signal) => {
@@ -303,7 +312,7 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
       incarnation: "start-1",
     });
   } finally {
-    await supervisor.stop("live");
+    await supervisor.stop("live", { graceMs: 0 });
     await supervisor.shutdown();
   }
 });

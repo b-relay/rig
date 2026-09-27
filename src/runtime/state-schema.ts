@@ -29,7 +29,12 @@ const component = z.discriminatedUnion("kind", [
     sitePort: z.number().int().min(1).max(65535).optional(),
     health: text.optional(),
     readyTimeout: z.number().positive(),
-    stopTimeout: z.number().int().min(1).max(MAX_STOP_TIMEOUT_SECONDS).optional(),
+    stopTimeout: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_STOP_TIMEOUT_SECONDS)
+      .optional(),
     restart: z.enum(["always", "on-failure", "no"]).optional(),
   }),
   z.object({

@@ -68,7 +68,7 @@ test("a repeated up preserves the process and down confirms its exit with captur
     logs.map((log) => [log.component, log.stream, log.line]),
   ).toContainEqual(["web", "stderr", "warning"]);
   expect((await supervisor.observe(request.key)).state).toBe("running");
-  await supervisor.stop(request.key);
+  await supervisor.stop(request.key, { graceMs: 1500 });
   expect((await supervisor.observe(request.key)).state).toBe("stopped");
   expect(() => process.kill(started.pid!, 0)).toThrow();
 });
@@ -105,7 +105,7 @@ test("down kills shell descendants and an aborted observation does not stop the 
     "unknown",
   );
   expect((await supervisor.observe("tree")).state).toBe("running");
-  await supervisor.stop("tree");
+  await supervisor.stop("tree", { graceMs: 1500 });
   for (let i = 0; i < 30; i++) {
     try {
       process.kill(descendant, 0);
@@ -197,7 +197,7 @@ test("a replacement daemon adopts an identity-matched lease and stops the origin
       incarnation: "start-1",
     }),
   ).toEqual({ outcome: "unchanged", pid: started.pid });
-  await replacement.stop("recover");
+  await replacement.stop("recover", { graceMs: 1500 });
   expect(() => process.kill(started.pid!, 0)).toThrow();
 });
 test("a stale lease cannot stop a process whose identity no longer matches", async () => {
@@ -229,7 +229,9 @@ test("a stale lease cannot stop a process whose identity no longer matches", asy
       identity: "0".repeat(64),
     }),
   );
-  expect(await supervisor.stop("stale")).toEqual({ outcome: "unchanged" });
+  expect(await supervisor.stop("stale", { graceMs: 1500 })).toEqual({
+    outcome: "unchanged",
+  });
   expect((await supervisor.observe("real")).state).toBe("running");
 });
 test("a process that exits is not started again: one attempt is logged and observe reports its exit code and incarnation", async () => {
@@ -315,7 +317,7 @@ test("capture-backed processes keep writing logs after their starting daemon die
     (await readFile(join(root, "target.jsonl"), "utf8")).trim().split("\n")
       .length,
   ).toBeGreaterThan(before);
-  await replacement.stop("durable");
+  await replacement.stop("durable", { graceMs: 1500 });
   expect((await replacement.observe("durable")).state).toBe("stopped");
 }, 10000);
 test("process title changes do not invalidate its birth identity after daemon replacement", async () => {
@@ -449,7 +451,9 @@ for (const captured of [false, true]) {
     const digest = createHash("sha256").update("drain").digest("hex");
     const lease = join(root, "process-leases", `${digest}.json`);
     expect(JSON.parse(await readFile(lease, "utf8")).pid).toBe(started.pid);
-    expect(await supervisor.stop("drain")).toEqual({ outcome: "stopped" });
+    expect(await supervisor.stop("drain", { graceMs: 1500 })).toEqual({
+      outcome: "stopped",
+    });
     const entries = (await readFile(log, "utf8"))
       .trim()
       .split("\n")
@@ -468,7 +472,9 @@ for (const captured of [false, true]) {
         readFile(join(root, "capture", `${digest}.json`)),
       ).rejects.toMatchObject({ code: "ENOENT" });
     expect(() => process.kill(started.pid!, 0)).toThrow();
-    expect(await supervisor.stop("drain")).toEqual({ outcome: "unchanged" });
+    expect(await supervisor.stop("drain", { graceMs: 1500 })).toEqual({
+      outcome: "unchanged",
+    });
     await Bun.sleep(150);
     expect((await supervisor.observe("drain")).state).toBe("stopped");
   });
@@ -504,7 +510,9 @@ test("stop after an owned child already exited is unchanged, keeps its exit on r
     exitCode: 7,
     incarnation: "start-1",
   });
-  expect(await supervisor.stop("exited")).toEqual({ outcome: "unchanged" });
+  expect(await supervisor.stop("exited", { graceMs: 1500 })).toEqual({
+    outcome: "unchanged",
+  });
   await Bun.sleep(150);
   expect(await supervisor.observe("exited")).toEqual({
     state: "stopped",
@@ -543,7 +551,9 @@ test("a detached daemon leaves its processes running and the next daemon adopts 
     outcome: "unchanged",
     pid: started.pid,
   });
-  expect(await second.stop(request.key)).toEqual({ outcome: "stopped" });
+  expect(await second.stop(request.key, { graceMs: 1500 })).toEqual({
+    outcome: "stopped",
+  });
   expect(() => process.kill(started.pid!, 0)).toThrow();
   expect((await second.observe(request.key)).state).toBe("stopped");
 });
@@ -573,7 +583,7 @@ test("after a daemon restart, a dead group leader with live members is stopped a
   const second = createChildSupervisor({ ...platform(), stateRoot: root });
   supervisors.push(second);
   expect((await second.observe(request.key)).state).toBe("stopped");
-  await second.stop(request.key);
+  await second.stop(request.key, { graceMs: 1500 });
   expect(await inspection.groupExists(leader)).toBe(false);
   const again = (await second.ensureRunning(request)).pid!;
   await second.detach();
@@ -652,7 +662,7 @@ test("a deleted log directory is recreated on the next line; output that cannot 
     incarnation: "start-1",
   });
   expect((await stat(join(logRoot, "target.jsonl"))).isFile()).toBe(true);
-  await supervisor.stop(request.key);
+  await supervisor.stop(request.key, { graceMs: 1500 });
 });
 test("a newline-free output run is recorded as bounded records that reassemble losslessly", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-process-longline-"));
@@ -691,5 +701,5 @@ test("a newline-free output run is recorded as bounded records that reassemble l
       .join(""),
   ).toBe("\0".repeat(200000));
   expect(records.at(-1)!.line).toBe("done");
-  await supervisor.stop(request.key);
+  await supervisor.stop(request.key, { graceMs: 1500 });
 });

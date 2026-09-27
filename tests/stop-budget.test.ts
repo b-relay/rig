@@ -18,9 +18,7 @@ test("every wait of a stop follows from the Service's grace, so no outer layer e
     // The unload wait outlasts ExitTimeOut by launchd's own kill wait and headroom.
     unloadMs: 127_500,
   });
-  expect(budget.wrapperMs).toBeGreaterThan(
-    budget.graceMs + budget.killWaitMs,
-  );
+  expect(budget.wrapperMs).toBeGreaterThan(budget.graceMs + budget.killWaitMs);
   expect(budget.exitTimeOutSeconds * 1000).toBeGreaterThanOrEqual(
     budget.wrapperMs,
   );

@@ -1,3 +1,5 @@
+import { RigError } from "./errors";
+
 /** How long a Service may take to stop, and every wait on the stop path derived from it. A Service's `stop_timeout` is the one
  * source: the capture wrapper's grace for its application, rigd's wait for the wrapper, launchd's ExitTimeOut and the
  * launchd unload wait all follow from it, so no outer layer kills the wrapper before the application's grace can finish. */
@@ -58,4 +60,17 @@ export function stopBudget(
  * existed has none and gets the default. */
 export function serviceGraceMs(stopTimeoutSeconds: number | undefined): number {
   return (stopTimeoutSeconds ?? DEFAULT_STOP_TIMEOUT_SECONDS) * 1000;
+}
+/** A stop that stopped waiting because rigd is shutting down: the process was asked to stop and finishes on its own, and
+ * the next daemon finds the stop and completes it. */
+export function stopDetached(details: Record<string, unknown> = {}): RigError {
+  return new RigError(
+    "STOP_DETACHED",
+    "rigd stopped while it waited for a Service to exit; the Service keeps stopping on its own.",
+    "The next rigd finishes the stop when it starts. Run rig status to see the Target, or rig down --kill to end the wait.",
+    details,
+  );
+}
+export function isStopDetached(error: unknown): boolean {
+  return error instanceof RigError && error.code === "STOP_DETACHED";
 }

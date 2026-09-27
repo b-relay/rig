@@ -238,6 +238,9 @@ async function fixture(host: Record<string, unknown> = {}) {
       async artifact() {
         return "missing";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return true;
       },

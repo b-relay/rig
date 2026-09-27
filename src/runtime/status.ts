@@ -10,7 +10,7 @@ import type {
   PersistentComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import { stoppedStanding } from "./supervision";
+import { runningNote, stoppedStanding } from "./supervision";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
 export interface ObservationEffects {
   process(
@@ -33,6 +33,13 @@ export interface ObservationEffects {
     component: PersistentComponent,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** The Service's recorded ports, its separate Convex site port included, that accept a connection right now, in
+   * ascending order. Says nothing of who listens; an aborted probe counts as not listening. */
+  listening(
+    target: TargetRecord,
+    component: ManagedComponent,
+    signal: AbortSignal,
+  ): Promise<number[]>;
 }
 /** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget.
  * The caller chooses the budget and the deadline scheduler, so a test can expire an observation deterministically. */
@@ -92,6 +99,14 @@ export async function observeTargets(
               port: component.port,
               ...(observed.reason ? { reason: observed.reason } : {}),
             };
+          // A running component can still have something to say, such as output it cannot record or an unknown exit it was
+          // started again after.
+          const said = [
+            observed.reason,
+            runningNote(target, component, observed),
+          ]
+            .filter(Boolean)
+            .join(" ");
           return {
             ...base,
             port: component.port,
@@ -101,8 +116,7 @@ export async function observeTargets(
                 ? "healthy"
                 : "unhealthy"
               : "running",
-            // A running component can still have something to say, such as output it cannot record.
-            ...(observed.reason ? { reason: observed.reason } : {}),
+            ...(said ? { reason: said } : {}),
           };
         },
     ),

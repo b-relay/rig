@@ -357,10 +357,11 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     captureCommand: ["/fake/rigd", "capture"],
     run,
     timing: createLaunchdTiming(),
+    // The application ends with its job; one that outlived it would keep its evidence file.
     inspect: async (pid) =>
       pid === wrapper.pid
         ? wrapper.identity
-        : pid === application.pid
+        : pid === application.pid && loaded
           ? application.identity
           : undefined,
   });

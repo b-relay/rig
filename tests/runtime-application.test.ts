@@ -158,6 +158,9 @@ function fixture() {
       async artifact() {
         return "missing";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return true;
       },

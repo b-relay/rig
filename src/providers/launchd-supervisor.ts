@@ -1,11 +1,15 @@
-import { readCaptureObservation } from "./capture-observation";
+import {
+  readCaptureObservation,
+  survivingApplication,
+} from "./capture-observation";
+import { parseLaunchdJobExit } from "./launchd-job-exit";
 import type { ProcessIdentityReader } from "./process-identity";
 import {
   clearCaptureStatus,
   DEFAULT_CAPTURE_START_MS,
   waitForCaptureStart,
 } from "./capture-status";
-import { writeCaptureRequest } from "./capture-request";
+import { readCaptureRequest, writeCaptureRequest } from "./capture-request";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,7 +21,12 @@ import type {
   Supervisor,
 } from "./contracts";
 import { DEFAULT_SHUTDOWN_BUDGET_MS } from "./child-supervisor";
-import { exitEvidence, readExitRecord, removeExitRecord } from "./exit-record";
+import {
+  exitEvidence,
+  readExitRecord,
+  removeExitRecord,
+  wrapperExitEvidence,
+} from "./exit-record";
 export interface LaunchdOptions {
   readonly root: string;
   readonly domain: string;
@@ -80,14 +89,19 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       );
     return result;
   };
-  /** Every file this supervisor writes for a job: plist, request, and the wrapper's status and observation evidence. */
+  /** Every file this supervisor writes for a job: plist, request, and the wrapper's status and observation evidence. The
+   * observation stays while the application it names outlives its wrapper (or cannot be shown not to), so that application
+   * keeps reading as `unknown` and no start is made beside it after the job is gone. */
   const removeJobFiles = async (key: string) => {
     const requestPath = join(options.root, `${label(key)}.json`);
+    const survivor =
+      options.captureCommand &&
+      (await survivingApplication({ requestPath, inspect }));
     for (const file of [
       join(options.root, `${label(key)}.plist`),
       requestPath,
       `${requestPath}.status.json`,
-      `${requestPath}.observation.json`,
+      ...(survivor ? [] : [`${requestPath}.observation.json`]),
     ])
       await rm(file, { force: true });
     await removeExitRecord(options.root, key);
@@ -123,11 +137,21 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
               signal,
             })
           : { state: "running", pid: Number(pid[1]) };
-      // Loaded without a pid, or no longer loaded. launchd's own last exit code names no start and, under capture, is
-      // the wrapper's; only the wrapper's record of its application's exit is evidence.
+      // Loaded without a pid, or no longer loaded: the wrapper is gone. An application it reported that still runs is not
+      // stopped, and a start is never made beside it.
+      const requestPath = join(options.root, `${label(key)}.json`);
+      if (options.captureCommand) {
+        const survivor = await survivingApplication({ requestPath, inspect });
+        if (survivor) return survivor;
+      }
+      // The wrapper's record of its application's exit comes first; without it, launchd's record of how the wrapper ended.
+      const recorded = exitEvidence(await readExitRecord(options.root, key));
       return {
         state: "stopped",
-        ...exitEvidence(await readExitRecord(options.root, key)),
+        ...(recorded ??
+          (result.exitCode === 0 && options.captureCommand
+            ? await jobEvidence(requestPath, result.stdout)
+            : {})),
       };
     } catch {
       return {
@@ -172,6 +196,19 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           "Resolve launchd access before starting it.",
           { key: request.key },
         );
+      // The ended job leaves launchd before the new request names this start, so launchd's record of the earlier wrapper is
+      // never read as this start's end.
+      const existing = await run({
+        command: ["launchctl", "print", service(request.key)],
+        timeoutMs: 2000,
+      });
+      try {
+        if (existing.exitCode === 0)
+          await checked(["bootout", service(request.key)], request.key);
+      } catch (error) {
+        await removeJobFiles(request.key);
+        throw error;
+      }
       // A record left by an earlier start must not explain the end of this one.
       await removeExitRecord(options.root, request.key);
       await mkdir(options.root, { recursive: true });
@@ -188,13 +225,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       await writeFile(plist, launchdPlist({ ...request, command }, jobLabel), {
         mode: 0o600,
       });
-      const existing = await run({
-        command: ["launchctl", "print", service(request.key)],
-        timeoutMs: 2000,
-      });
       try {
-        if (existing.exitCode === 0)
-          await checked(["bootout", service(request.key)], request.key);
         await checked(["bootstrap", options.domain, plist], request.key);
       } catch (error) {
         await removeJobFiles(request.key);
@@ -259,6 +290,30 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       /* launchd keeps the jobs; nothing is held in memory. */
     },
   };
+}
+/** launchd's record of how the capture wrapper of the job's current plist ended, named by the start its request carries.
+ * Each start boots out the job and bootstraps it again, so the record describes the latest start's wrapper; nothing is
+ * evidence when the job never ended, ended with code 0 (see `wrapperExitEvidence`), or the request cannot be read. */
+async function jobEvidence(
+  requestPath: string,
+  printed: string,
+): Promise<
+  | Pick<
+      ProcessObservation,
+      "incarnation" | "exitCode" | "signal" | "recordedBy"
+    >
+  | undefined
+> {
+  const ended = parseLaunchdJobExit(printed);
+  const exit = ended && wrapperExitEvidence(ended);
+  if (!exit) return undefined;
+  const incarnation = await readCaptureRequest(requestPath).then(
+    (request) => request.incarnation,
+    () => undefined,
+  );
+  return incarnation === undefined
+    ? undefined
+    : { incarnation, ...exit, recordedBy: "launchd" };
 }
 function xml(text: string): string {
   return text

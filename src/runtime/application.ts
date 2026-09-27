@@ -132,8 +132,9 @@ export interface RigRuntime extends ProjectStatusReader {
   reconcile(): Promise<SupervisionPass>;
   /** A later pass: applies restart policy to the Targets meant to run. Never raises; failures go to the diagnostic log. */
   supervise(): Promise<SupervisionPass>;
-  /** Runs `operation` while no other mutation of the named Project runs; a name no Project is
-   * registered under is serialized with that name's registration instead. */
+  /** Runs `operation`, a config edit, while no other config edit, `init`, `rename`, `repoint` or `forget` of the named
+   * Project runs. It does not wait for the Project's Target operations, which run beside it and plan from rig.yaml as it
+   * is once they are admitted. A name no Project is registered under is serialized with that name's registration instead. */
   exclusive<T>(project: string, operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
 }
@@ -482,14 +483,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "init") {
         const identity = await prepareRegistration(command, deps);
-        // Initializing a registered Project again touches that Project; a new one only its name.
+        // Initializing a registered Project again writes at most its rig.yaml, as a config edit does, and adds the
+        // Project's `rig` Git remote when it is missing; neither is a Target's. So it takes the Project's config scope and
+        // never waits for (or holds the Project's other Targets behind) a Target's stop. A new Project takes only its name.
         const registered = (await deps.store.read()).projects.find(
           (p) => p.name === identity.name && p.repoPath === identity.repoPath,
         );
         await admission.admit(
           [
             registered
-              ? projectScope(registered.id)
+              ? configScope(registered.id)
               : registrationScope(identity.name),
           ],
           { project: identity.name },
@@ -1112,12 +1115,18 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
      * take before it was admitted sends it back to select again. */
     async function claimPreviewSlot(name: string): Promise<TargetRecord[]> {
       const policy = (await deps.documents.host()).deploy.previews;
-      const recorded = (await deps.store.read()).targets.filter(
-        (t) => t.projectId === project!.id,
-      );
-      // Claims are read after the state: a deploy that recorded its Preview after this read and ended in the moment since
-      // is missed, which can leave the Project one over its limit until the next Preview deploy. Reading them before
-      // instead would count a deploy that failed meanwhile, and destroy a Preview for no reason.
+      // Claims are read after the state, so a deploy that failed meanwhile is not counted and no Preview is destroyed for
+      // it. A claim that ended during the read may belong to a deploy that recorded its Preview after the read began, so
+      // the state is read again until no claim ended across the read: every deploy is then counted by its record or its
+      // claim.
+      let recorded: TargetRecord[];
+      for (;;) {
+        const ended = reservations.endedPreviewClaims(project!.id);
+        recorded = (await deps.store.read()).targets.filter(
+          (t) => t.projectId === project!.id,
+        );
+        if (reservations.endedPreviewClaims(project!.id) === ended) break;
+      }
       const replacements = previewsToReplace(
         recorded,
         reservations.claimedPreviews(project!.id, operationId),

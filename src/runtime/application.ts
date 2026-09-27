@@ -57,6 +57,7 @@ import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
 import { assertSourceBuildsKnown, withStops } from "./lifecycle";
 import {
   activeStops,
+  killSignal,
   killStops,
   killedMessage,
   recordStopKills,
@@ -192,9 +193,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   /** Aborted when rigd drains for shutdown: a stop waiting for a Service stops waiting, and the next daemon finishes it. */
   const detaching = new AbortController();
   /** `lifecycle` as the Operation `entry` uses it: its stops cut short by its kill, detached on shutdown, shown on it. */
+  /** Targets a running `--kill` asked every stop to be cut short on, with how many such commands run. */
+  const killRequests = new Map<string, number>();
   const lifecycleOf = (entry: Running) =>
     withStops(deps.lifecycle, {
-      kill: entry.kill.signal,
+      kill: (target) =>
+        killSignal(entry, target.id, (id) => killRequests.has(id)),
       detach: detaching.signal,
       observer: stopObserver(entry, deps.now),
     });
@@ -324,10 +328,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         { operationId },
       );
     inFlight.add(operationId);
-    const kill = new AbortController();
-    if (command.kill) kill.abort();
+    if (
+      command.kill &&
+      !["down", "restart", "destroy"].includes(command.action)
+    ) {
+      inFlight.delete(operationId);
+      throw new RigError(
+        "USAGE",
+        "--kill applies to rig down and rig restart only.",
+        "Run rig down <target> --kill or rig restart <target> --kill.",
+      );
+    }
     operations.set(operationId, {
-      kill,
+      kills: new Map(),
+      ...(command.kill ? { killAll: true } : {}),
       view: {
         operationId,
         action: command.action,
@@ -354,6 +368,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         }
       }
     } finally {
+      const killing = operations.get(operationId)?.killing;
+      if (killing) {
+        const left = (killRequests.get(killing) ?? 1) - 1;
+        if (left > 0) killRequests.set(killing, left);
+        else killRequests.delete(killing);
+      }
       inFlight.delete(operationId);
       operations.delete(operationId);
     }
@@ -688,8 +708,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             replacing = [];
           }
         // A kill does not wait its turn to cut short a stop already running on the Target; its own stop follows.
-        if (command.kill && target)
-          killStops(operations.values(), target.id, deps.now());
+        if (command.kill && target) {
+          const entry = operations.get(operationId)!;
+          if (entry.killing === undefined) {
+            entry.killing = target.id;
+            killRequests.set(target.id, (killRequests.get(target.id) ?? 0) + 1);
+          }
+          killStops(operations.values(), target, deps.now());
+        }
         targets = await enter(
           [
             targetScope(project.id, { kind, name }),
@@ -1126,7 +1152,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       );
       const id = `config:${deps.id()}`;
       operations.set(id, {
-        kill: new AbortController(),
+        kills: new Map(),
         view: {
           operationId: id,
           action: "config",
@@ -1170,7 +1196,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const hostId = `reconcile:${++passes}`;
     if (action === "reconcile")
       operations.set(hostId, {
-        kill: new AbortController(),
+        kills: new Map(),
         view: {
           operationId: hostId,
           action,
@@ -1258,7 +1284,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     failed: (error: unknown, target?: string) => Promise<void>,
   ): Promise<number | undefined> {
     const entry: Running = {
-      kill: new AbortController(),
+      kills: new Map(),
       view: {
         operationId: lease.id,
         action,

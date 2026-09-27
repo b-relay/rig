@@ -67,7 +67,7 @@ export function stopDetached(details: Record<string, unknown> = {}): RigError {
   return new RigError(
     "STOP_DETACHED",
     "rigd stopped while it waited for a Service to exit; the Service keeps stopping on its own.",
-    "The next rigd finishes the stop when it starts. Run rig status to see the Target, or rig down --kill to end the wait.",
+    "Run rig status once rigd is back to see where the Target stands, then run the command again, or rig down <target> --kill, to finish it. A Target recorded as stopped is stopped again by the next rigd.",
     details,
   );
 }

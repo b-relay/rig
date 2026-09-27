@@ -92,8 +92,9 @@ export interface ActivationJournal {
 }
 /** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
 export interface StopControl {
-  /** Aborted before or during a stop, it cuts every remaining grace to the kill wait: `rig down --kill`. */
-  readonly kill?: AbortSignal;
+  /** The kill for stops of `target`: aborted before or during a stop, it cuts the remaining grace to the kill wait
+   * (`rig down --kill`). Asked as each stop begins. */
+  readonly kill?: (target: TargetRecord) => AbortSignal | undefined;
   /** Aborted when rigd shuts down: the stop waiting now fails STOP_DETACHED, no further Service is signalled, and the
    * Services keep stopping on their own for the next daemon to finish. */
   readonly detach?: AbortSignal;
@@ -546,13 +547,14 @@ export function createTargetLifecycle(
     stops: StopControl = {},
   ): Promise<StopResult> {
     const graceMs = serviceGraceMs(component.stopTimeout);
+    const kill = stops.kill?.(target);
     stops.observer?.stopping(target, component.name, graceMs);
     try {
       const result = await effects
         .supervisor(target)
         .stop(`${target.id}:${component.name}`, {
           graceMs,
-          ...(stops.kill ? { kill: stops.kill } : {}),
+          ...(kill ? { kill } : {}),
           ...(stops.detach ? { detach: stops.detach } : {}),
         });
       stops.observer?.stopped(target, component.name, result);

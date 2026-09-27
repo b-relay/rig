@@ -30,8 +30,8 @@ import {
   CAPTURE_KILL_SIGNAL,
   readCaptureStop,
   removeCaptureStop,
-  understandsKill,
 } from "./capture-stop";
+import { readCaptureRequest } from "./capture-request";
 import {
   PLATFORM_STOP_TIMINGS,
   serviceGraceMs,
@@ -270,8 +270,13 @@ export function createChildSupervisor(
     request: StopRequest,
   ): Promise<StopKill | undefined> {
     if (request.detach?.aborted) throw stopDetached({ key });
+    // A wrapper holds the grace its start was given, which may be longer than the one asked for now (a plan changed in
+    // between): it is never cut off before that grace can finish.
+    const captured = options.captureCommand
+      ? await readCaptureRequest(capturePath(key)).catch(() => undefined)
+      : undefined;
     const budget = stopBudget(
-      request.graceMs,
+      Math.max(request.graceMs, captured?.stopGraceMs ?? 0),
       options.stopTimings ?? PLATFORM_STOP_TIMINGS,
     );
     const started = now().getTime();
@@ -291,10 +296,16 @@ export function createChildSupervisor(
       now().getTime() < deadline()
     ) {
       if (request.detach?.aborted) throw stopDetached({ key });
-      if (request.kill?.aborted && killAskedAt === undefined) {
+      // A wrapper written by an older rigd cannot be told to kill; it is left to its own short grace instead.
+      if (
+        request.kill?.aborted &&
+        killAskedAt === undefined &&
+        (!options.captureCommand || captured?.stopGraceMs !== undefined)
+      ) {
         killAskedAt = now().getTime();
-        if (options.captureCommand && (await understandsKill(capturePath(key))))
-          await inspection.signalGroup(pid, CAPTURE_KILL_SIGNAL);
+        // The wrapper alone: its group also holds the inspection helpers it runs.
+        if (options.captureCommand)
+          await inspection.signalProcess(pid, CAPTURE_KILL_SIGNAL);
       }
       await timing.wait(STOP_POLL_MS);
     }

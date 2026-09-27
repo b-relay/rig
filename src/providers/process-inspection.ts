@@ -21,6 +21,8 @@ export interface ProcessInspection {
   readonly identity: ProcessIdentityReader;
   groupExists(pid: number): Promise<boolean>;
   signalGroup(pid: number, signal: NodeJS.Signals): Promise<void>;
+  /** Signals the one process `pid`, not its group; a process already gone is not an error. */
+  signalProcess(pid: number, signal: NodeJS.Signals): Promise<void>;
 }
 export type ProcessKill = (pid: number, signal: NodeJS.Signals | 0) => void;
 export interface ProcessInspectionOptions {
@@ -91,9 +93,26 @@ export function createProcessInspection(
       );
     }
   }
+  async function signalProcess(
+    pid: number,
+    signal: NodeJS.Signals,
+  ): Promise<void> {
+    try {
+      kill(pid, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw new RigError(
+        "PROCESS_SIGNAL",
+        "The managed process could not be signalled.",
+        "Check process ownership and retry.",
+        { pid, signal },
+      );
+    }
+  }
   return {
     identity: createProcessIdentityReader(run),
     groupExists,
     signalGroup,
+    signalProcess,
   };
 }

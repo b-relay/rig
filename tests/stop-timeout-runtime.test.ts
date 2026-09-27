@@ -46,6 +46,8 @@ function world() {
   const held: HeldStop[] = [];
   const stops: { key: string; graceMs: number; kill: boolean }[] = [];
   let holding = false;
+  /** Preparation waits on this, as a long build does. */
+  let preparing: Promise<void> | undefined;
   /** The next start of this Service fails, as a broken release does. */
   const failing = new Set<string>();
   const effects: TargetEffects = {
@@ -105,7 +107,9 @@ function world() {
       async shutdown() {},
       async detach() {},
     }),
-    async prepare() {},
+    async prepare() {
+      await preparing;
+    },
     async environment() {
       return {};
     },
@@ -266,6 +270,15 @@ function world() {
     stopOf,
     hold: (on = true) => {
       holding = on;
+    },
+    /** Holds every preparation until the returned release is called. */
+    holdPreparation: () => {
+      let release!: () => void;
+      preparing = new Promise((resolve) => (release = resolve));
+      return () => {
+        preparing = undefined;
+        release();
+      };
     },
     advance: (ms: number) => {
       clock += ms;
@@ -563,4 +576,36 @@ test("the next daemon's first pass stops a Target meant to be stopped within its
   worker.exit();
   (await w.stopOf("web")).exit();
   await pass;
+});
+
+test("rig down --kill sent while a deploy is still building cuts the grace of the stop that deploy makes later", async () => {
+  const w = await registered();
+  await w.command({ action: "deploy", target: "live", branch: "main" });
+  const release = w.holdPreparation();
+  const deploy = w.command({
+    action: "deploy",
+    target: "live",
+    branch: "main",
+    commit: "c2",
+    operationId: "deploy-2",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const kill = w.command({ action: "down", target: "live", kill: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  release();
+  await deploy;
+  await kill;
+  // The deploy's stop of the previous release, then the kill's own stop of the new one: all without the grace.
+  expect(w.stops.map((stop) => stop.kill)).toEqual([true, true, true, true]);
+  // Once the kill is over, stops wait out their grace again.
+  await w.command({ action: "up", target: "live" });
+  await w.command({ action: "down", target: "live" });
+  expect(w.stops.slice(4).map((stop) => stop.kill)).toEqual([false, false]);
+});
+
+test("a kill is refused on commands other than down and restart", async () => {
+  const w = await registered();
+  await expect(
+    w.command({ action: "up", target: "local", kill: true }),
+  ).rejects.toMatchObject({ code: "USAGE" });
 });

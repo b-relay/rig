@@ -8,14 +8,30 @@ import { PLATFORM_STOP_TIMINGS } from "../domain/stop-budget";
 import type { StopObserver } from "./lifecycle";
 
 /** What rigd keeps about one running Operation's stops: the view commands and status read, the Target it works on, the
- * kill that cuts its graces short, and the phase a stop interrupted. */
+ * kills that cut its graces short, and the phase a stop interrupted. */
 export interface StopTracking {
   view: OperationView;
   targetId?: string;
-  /** Aborted by the Operation's own `--kill`, or by a later `--kill` on the Target it is stopping. */
-  kill: AbortController;
+  /** The Operation is a `--kill` itself: every stop it makes skips the grace. */
+  killAll?: boolean;
+  /** One kill per Target the Operation stops Services of, by Target id; aborted by a `--kill` on that Target. */
+  kills: Map<string, AbortController>;
+  /** The Target a `--kill` Operation asked every stop to be cut short on, while it runs. */
+  killing?: string;
   /** The phase to return to once the stops that interrupted it have ended. */
   resumePhase?: OperationPhase;
+}
+/** The kill `entry`'s stops of Target `targetId` wait on: already aborted when the Operation is a `--kill`, or while a
+ * `--kill` for that Target is running (`killRequested`). */
+export function killSignal(
+  entry: StopTracking,
+  targetId: string,
+  killRequested: (targetId: string) => boolean,
+): AbortSignal {
+  let kill = entry.kills.get(targetId);
+  if (!kill) entry.kills.set(targetId, (kill = new AbortController()));
+  if (entry.killAll || killRequested(targetId)) kill.abort();
+  return kill.signal;
 }
 
 /** Shows each stop of `entry` on its view as the lifecycle reports it. The Operation's phase is `stopping` while any of
@@ -29,7 +45,9 @@ export function stopObserver(
   return {
     stopping(target, service, graceMs) {
       const since = now();
-      const wait = entry.kill.signal.aborted ? killWaitMs : graceMs;
+      const wait = entry.kills.get(target.id)?.signal.aborted
+        ? killWaitMs
+        : graceMs;
       entry.targetId = target.id;
       if (entry.view.phase !== "stopping") {
         entry.resumePhase = entry.view.phase;
@@ -76,21 +94,25 @@ export function stopObserver(
   };
 }
 
-/** A `--kill` for the Target `targetId`: every Operation stopping it has its remaining graces cut to the kill wait, and its
- * stopping Services show the earlier SIGKILL. Operations on the Target doing something else are left alone. */
+/** A `--kill` for `target`: every stop of its Services already running has its remaining grace cut to the kill wait, and
+ * shows the earlier SIGKILL. Stops of other Targets the same Operations make are left alone. */
 export function killStops(
   entries: Iterable<StopTracking>,
-  targetId: string,
+  target: { id: string; name: string },
   now: string,
   killWaitMs = PLATFORM_STOP_TIMINGS.killWaitMs,
 ): void {
   const due = Date.parse(now) + killWaitMs;
   for (const entry of entries) {
-    if (entry.targetId !== targetId || entry.view.phase !== "stopping")
-      continue;
-    entry.kill.abort();
+    const kill = entry.kills.get(target.id);
+    if (!kill) continue;
+    kill.abort();
     for (const stop of entry.view.stops ?? [])
-      if (stop.state === "stopping" && Date.parse(stop.killAt) > due)
+      if (
+        stop.target === target.name &&
+        stop.state === "stopping" &&
+        Date.parse(stop.killAt) > due
+      )
         stop.killAt = new Date(due).toISOString();
   }
 }

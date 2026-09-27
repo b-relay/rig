@@ -26,7 +26,6 @@ import {
   CAPTURE_KILL_SIGNAL,
   readCaptureStop,
   removeCaptureStop,
-  understandsKill,
 } from "./capture-stop";
 import {
   PLATFORM_STOP_TIMINGS,
@@ -206,20 +205,34 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
     request: StopRequest,
   ): Promise<StopKill | undefined> => {
     const requestPath = join(options.root, `${label(key)}.json`);
-    const budget = stopBudget(request.graceMs, stopTimings);
+    // The job's ExitTimeOut and its wrapper's grace were set from the grace its start was given, which may be longer than
+    // the one asked for now: the wait covers it.
+    const startedGrace = options.captureCommand
+      ? (await readCaptureRequest(requestPath).catch(() => undefined))
+          ?.stopGraceMs
+      : undefined;
+    const budget = stopBudget(
+      Math.max(request.graceMs, startedGrace ?? 0),
+      stopTimings,
+    );
     const started = now();
     let deadline = started + budget.unloadMs;
     let killAskedAt: number | undefined;
     let killSent = false;
     do {
       if (request.detach?.aborted) throw stopDetached({ key });
-      if (request.kill?.aborted && killAskedAt === undefined) {
+      // A wrapper written by an older rigd cannot be told to kill; it is left to its own short grace instead.
+      if (
+        request.kill?.aborted &&
+        killAskedAt === undefined &&
+        (!options.captureCommand || startedGrace !== undefined)
+      ) {
         killAskedAt = now();
         deadline = Math.min(
           deadline,
           killAskedAt + budget.killedWrapperMs + budget.killWaitMs,
         );
-        if (options.captureCommand && (await understandsKill(requestPath))) {
+        if (options.captureCommand) {
           await run({
             command: ["launchctl", "kill", CAPTURE_KILL_SIGNAL, service(key)],
             timeoutMs: 2000,
@@ -248,7 +261,10 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           ? await readCaptureStop(requestPath)
           : killSent
             ? "request"
-            : undefined;
+            : // Without a wrapper, a job still there at its ExitTimeOut was SIGKILLed by launchd.
+              now() - started >= budget.exitTimeOutSeconds * 1000
+              ? "timeout"
+              : undefined;
       await wait(POLL_MS);
     } while (now() < deadline);
     throw new RigError(

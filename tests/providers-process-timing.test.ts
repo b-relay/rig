@@ -96,7 +96,8 @@ async function recovered(options: {
     ...(options.capture ? { captureCommand: ["capture"] } : {}),
     processInspection: createProcessInspection({
       kill: (target, signal) => {
-        expect(target).toBe(-pid);
+        // Only the kill request goes to the wrapper alone; every other signal goes to its group.
+        expect(target).toBe(signal === "SIGUSR2" ? pid : -pid);
         if (signal !== 0) signals.push(signal);
         if (!options.present()) throw errno("ESRCH");
       },
@@ -298,4 +299,19 @@ test("a detached stop stops waiting at once: STOP_DETACHED, no SIGKILL, and the 
   expect(signals).toEqual(["SIGTERM"]);
   expect(clock.elapsed()).toBeLessThan(5100);
   expect((await supervisor.observe("owned")).state).toBe("running");
+});
+
+test("a wrapper started with a longer grace than the stop now asks for is still given that grace", async () => {
+  const clock = virtualTiming();
+  const signals: Array<NodeJS.Signals | 0> = [];
+  // Its request was written with a 60 s grace; the plan now says 1 s.
+  const { supervisor } = await recovered({
+    timing: clock.timing,
+    killWaitMs: 1500,
+    capture: { understandsKill: true },
+    signals,
+    present: () => !signals.includes("SIGKILL"),
+  });
+  await supervisor.stop("owned", { graceMs: 1000 });
+  expect(clock.elapsed()).toBeGreaterThanOrEqual(63_500);
 });

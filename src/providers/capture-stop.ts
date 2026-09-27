@@ -54,10 +54,3 @@ export async function readCaptureStop(
 export async function removeCaptureStop(requestPath: string): Promise<void> {
   await rm(stopRecordPath(requestPath), { force: true });
 }
-/** Whether the wrapper running the request at `requestPath` understands CAPTURE_KILL_SIGNAL: only a request that carries
- * its grace was written for such a wrapper. An older wrapper would be ended by the signal and leave its application
- * unsignalled, so it is never sent one. */
-export async function understandsKill(requestPath: string): Promise<boolean> {
-  const request = await readCaptureRequest(requestPath).catch(() => undefined);
-  return request?.stopGraceMs !== undefined;
-}

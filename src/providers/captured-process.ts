@@ -158,11 +158,16 @@ async function runUntilStopped(
       });
     return ended(1);
   } finally {
+    // A kill that arrives after the stop must not end the wrapper by its own signal: it ends by the one that stopped it.
+    if (!process.listeners(CAPTURE_KILL_SIGNAL).includes(ignoreLateKill))
+      process.on(CAPTURE_KILL_SIGNAL, ignoreLateKill);
     for (const [signal, handler] of handlers)
       process.removeListener(signal, handler);
     await supervisor.shutdown();
   }
 }
+/** Stays installed once the wrapper's stop is over, until it exits. */
+function ignoreLateKill(): void {}
 /** Publishes fresh application evidence until the application stops or a stop was requested; returns the exit code. */
 async function observeUntilStopped(input: {
   supervisor: Pick<Supervisor, "observe">;

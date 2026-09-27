@@ -114,6 +114,7 @@ export function createChildSupervisor(
         requestPath: capturePath(key),
         key,
         inspect,
+        groupExists: inspection.groupExists,
       });
       if (survivor) return survivor;
     }

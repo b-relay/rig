@@ -4,7 +4,6 @@ import {
   access,
   constants,
   mkdir,
-  readFile,
   writeFile,
   rm,
   open,
@@ -24,6 +23,11 @@ import { processExists } from "./host";
 import { recordedProcess, type ProcessRecord } from "./process-identity";
 import { clearStartupFailure, readStartupFailure } from "./startup-failure";
 import { inheritedEnvironment } from "./environment";
+import {
+  installationPath,
+  readInstallationRecord,
+  type InstallationRecord,
+} from "./installation";
 import { z } from "zod";
 import {
   createAdminActivityJournal,
@@ -33,6 +37,8 @@ import {
 export interface DaemonAdminOptions {
   root: string;
   command: readonly string[];
+  /** The bun recorded for Tools whose `bin` is a source file (see resolveToolBun); absent when none was found. */
+  bun?: string;
   mode: "process" | "launchd";
   userHome: string;
   uid?: number;
@@ -44,11 +50,6 @@ export interface DaemonAdminOptions {
 export type LaunchctlRunner = (
   args: readonly string[],
 ) => Promise<{ code: number; stderr: string }>;
-const installationSchema = z.object({
-  mode: z.enum(["process", "launchd"]),
-  command: z.array(z.string()).optional(),
-  version: z.string().optional(),
-});
 async function runLaunchctl(
   args: readonly string[],
 ): Promise<{ code: number; stderr: string }> {
@@ -87,7 +88,7 @@ export class DaemonAdmin {
   private readonly marker: string;
   private readonly activity: AdminActivityJournal;
   constructor(private readonly options: DaemonAdminOptions) {
-    this.marker = join(options.root, "daemon", "install.json");
+    this.marker = installationPath(options.root);
     this.activity =
       options.activity ??
       createAdminActivityJournal({
@@ -258,37 +259,25 @@ export class DaemonAdmin {
       recursive: true,
       mode: 0o700,
     });
-    await writeFile(
-      this.marker,
-      JSON.stringify({
-        mode: this.options.mode,
-        command: this.options.command,
-        version: RIG_BUILD,
-      }),
-      { mode: 0o600 },
-    );
+    const record: InstallationRecord = {
+      mode: this.options.mode,
+      command: [...this.options.command],
+      version: RIG_BUILD,
+      ...(this.options.bun ? { bun: this.options.bun } : {}),
+    };
+    await writeFile(this.marker, JSON.stringify(record), { mode: 0o600 });
   }
-  private async readInstallation(): Promise<
-    z.infer<typeof installationSchema>
-  > {
-    let saved: unknown;
-    try {
-      saved = JSON.parse(await readFile(this.marker, "utf8"));
-    } catch {
+  /** Called only once the record is known to exist, so an absent one is as unreadable as a torn one. */
+  private async readInstallation(): Promise<InstallationRecord> {
+    const installation = await readInstallationRecord(this.options.root);
+    if (!installation)
       throw new RigError(
         "DAEMON_INSTALL_STATE",
         "The installation record is unreadable.",
         "Inspect the daemon installation before retrying.",
+        { path: this.marker },
       );
-    }
-    const installation = installationSchema.safeParse(saved);
-    if (!installation.success)
-      throw new RigError(
-        "DAEMON_INSTALL_STATE",
-        "The installation record is invalid.",
-        "Inspect the daemon installation before retrying.",
-      );
-    return installation.data;
+    return installation;
   }
   async install(operationId?: string): Promise<DaemonStatus> {
     return this.recordAdministration("daemon-install", operationId, () =>
@@ -342,11 +331,14 @@ export class DaemonAdmin {
       const recorded = prior.installed
         ? await this.readInstallation()
         : undefined;
+      // The daemon reads the recorded bun at startup, so a different one needs a restart to take effect.
       const current =
         recorded !== undefined &&
         recorded.version === RIG_BUILD &&
         serving.version === RIG_BUILD &&
-        (recorded.command ?? []).join("\0") === this.options.command.join("\0");
+        (recorded.command ?? []).join("\0") ===
+          this.options.command.join("\0") &&
+        recorded.bun === this.options.bun;
       if (current) return { ...prior, outcome: "unchanged" };
       if (recorded === undefined) {
         // A daemon serving without its record (deleted by hand, or started manually)

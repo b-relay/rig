@@ -23,12 +23,30 @@ async function recordedTargets(root: string) {
     return [];
   }
 }
-export async function rigFixture() {
+/** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
+ * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. */
+export async function rigFixture(
+  options: {
+    readonly commands?: {
+      readonly rig: readonly string[];
+      readonly rigd: readonly string[];
+    };
+    readonly PATH?: string;
+  } = {},
+) {
   const base = await mkdtemp(join(tmpdir(), "rig-battle-")),
     root = join(base, ".rig"),
     repo = join(base, "project");
   await mkdir(repo);
-  const environment = { ...process.env, RIG_ROOT: root };
+  const environment = {
+    ...process.env,
+    ...(options.PATH === undefined ? {} : { PATH: options.PATH }),
+    RIG_ROOT: root,
+  };
+  const commands = options.commands ?? {
+    rig: [process.execPath, join(import.meta.dir, "../../src/index.ts")],
+    rigd: [process.execPath, join(import.meta.dir, "../../src/rigd.ts")],
+  };
   const run = async (args: string[], cwd = repo) => {
     const child = Bun.spawn(args, {
       cwd,
@@ -44,15 +62,8 @@ export async function rigFixture() {
     return { code, stdout, stderr };
   };
   const rig = (args: string[], cwd = repo) =>
-    run(
-      [process.execPath, join(import.meta.dir, "../../src/index.ts"), ...args],
-      cwd,
-    );
-  const rigd = (args: string[]) =>
-    run(
-      [process.execPath, join(import.meta.dir, "../../src/rigd.ts"), ...args],
-      base,
-    );
+    run([...commands.rig, ...args], cwd);
+  const rigd = (args: string[]) => run([...commands.rigd, ...args], base);
   const git = async (args: string[]) => {
     const result = await run(["git", ...args]);
     if (result.code) throw new Error(`git ${args[0]} failed: ${result.stderr}`);

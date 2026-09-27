@@ -67,6 +67,7 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "BUILD_FAILED",
   "BUILD_TIMEOUT",
   "BUILD_UNKNOWN",
+  "BUN_NOT_FOUND",
   "PREPARATION_INCOMPLETE",
   "DEPENDENCIES_FAILED",
   "DEPENDENCIES_TIMEOUT",

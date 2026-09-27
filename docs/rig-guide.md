@@ -136,12 +136,13 @@ distinguishable from each other). Deploys build from a clean checkout of the
 Commit, so their stamps are never `-dirty`. A serving daemon reports its stamp to
 `rigd status`, which warns when it differs from the `rigd` you ran. Upgrading
 is `rigd install`: when the serving daemon reports another stamp, or the
-installation record names another stamp or command, the install stops that
+installation record names another stamp, command, or bun for source-file
+Tools (see "Config"), the install stops that
 daemon, starts the current one, and reports what it replaced; managed processes
 keep serving under their leases and the new daemon adopts them. The comparison
 is equality only, so a rollback to an older commit is swapped in the same way,
-and a daemon from before stamps counts as different. A daemon of the same stamp
-and command is reported `unchanged`.
+and a daemon from before stamps counts as different. A daemon of the same stamp,
+command, and bun is reported `unchanged`.
 When `rig` sends a command that the daemon does not accept, the error names
 both versions and says to run `rigd install`, because `rig` only sends commands
 its own grammar allows.
@@ -1005,6 +1006,21 @@ A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
+
+A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
+`.cjs`) is not copied. Rig publishes a two-line shim,
+`exec <bun> <workspace>/<bin> "$@"`, which runs the file in place, so its
+relative imports resolve, and passes its arguments through. `<bun>` is the bun
+that `rigd install` recorded in `<RIG_ROOT>/daemon/install.json`. A `rigd` run
+from source records the bun running it. The compiled `rigd` (the output of
+`bun run build`) is not bun, so it records the first `bun` on the `PATH` of
+the shell that ran `rigd install`. Either way Rig prefers the `PATH` entry
+that resolves to that bun over a versioned Cellar path, so a package upgrade
+does not strand it. Rig never looks bun up when the Tool runs. When no bun was recorded, or the recorded
+one is gone, installing such a Tool fails as `BUN_NOT_FOUND` and nothing is
+published. Install bun, or fix `PATH`, and run `rigd install` again: a
+different bun counts as a changed installation, so the daemon is replaced and
+uses the new one.
 
 Durations are a positive whole number with a unit of `s`, `m`, or `h`, such as
 `30s`, `10m`, or `1h`, up to one day.

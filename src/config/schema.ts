@@ -224,7 +224,7 @@ const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   bin: text.describe(
-    `Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. ${referencesIn("project")}`,
+    `Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is published as a shim that runs it with the bun rigd install recorded. ${referencesIn("project")}`,
   ),
 };
 const tool = z.strictObject(toolFields);

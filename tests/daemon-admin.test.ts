@@ -1073,6 +1073,45 @@ test("rigd install replaces a reachable daemon recorded by another build of the 
     await rm(root, { recursive: true, force: true });
   }
 }, 20000);
+test("rigd install records the bun for source-file Tools, and a different bun (or none) replaces the daemon so it runs with the new one", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-bun-"));
+  const script = await daemonScript(root);
+  const marker = join(root, "daemon", "install.json");
+  const admin = (bun?: string) =>
+    new DaemonAdmin({
+      root,
+      command: [process.execPath, script],
+      mode: "process",
+      userHome: root,
+      ...(bun ? { bun } : {}),
+    });
+  const recorded = async () =>
+    JSON.parse(await readFile(marker, "utf8")) as { bun?: string };
+  try {
+    expect(await admin("/first/bin/bun").install()).toMatchObject({
+      outcome: "installed",
+    });
+    expect((await recorded()).bun).toBe("/first/bin/bun");
+    expect(await admin("/first/bin/bun").install()).toMatchObject({
+      outcome: "unchanged",
+    });
+    expect(await admin("/second/bin/bun").install()).toMatchObject({
+      outcome: "installed",
+      replaced: { pid: expect.any(Number) },
+    });
+    expect((await recorded()).bun).toBe("/second/bin/bun");
+    expect(await admin().install()).toMatchObject({
+      outcome: "installed",
+      replaced: { pid: expect.any(Number) },
+    });
+    expect(await recorded()).not.toHaveProperty("bun");
+  } finally {
+    await admin()
+      .uninstall()
+      .catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);
 test("status names a serving daemon of another build and tells the user to upgrade it", async () => {
   const { RIG_BUILD, RIG_VERSION } = await import("../src/domain/version");
   const { processStartTime } = await import("../src/daemon/process-identity");

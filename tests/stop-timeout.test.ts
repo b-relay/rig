@@ -156,6 +156,10 @@ async function launchdWorld(): Promise<World> {
       captureCommand: [process.execPath, wrapper],
       run,
       inspect: createProcessIdentityReader(runCommand),
+      groupExists: createProcessInspection({
+        run: runCommand,
+        kill: platformKill,
+      }).groupExists,
       timing: createLaunchdTiming(),
     }),
     plist: () => readFile(plistPath!, "utf8"),

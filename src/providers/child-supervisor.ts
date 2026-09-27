@@ -15,7 +15,6 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { z } from "zod";
 import { RigError, failureReason } from "../domain/errors";
 import type {
   ManagedProcess,
@@ -47,31 +46,16 @@ import {
   writeExitRecord,
 } from "./exit-record";
 import { survivingApplication } from "./capture-observation";
+import {
+  processLeasePath,
+  processLeaseRoot,
+  processLeaseSchema,
+} from "./process-lease";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
-const leaseSchema = z.object({
-  key: z.string().describe("Stable component ownership key."),
-  pid: z
-    .number()
-    .int()
-    .min(2)
-    .describe(
-      "Owned process group leader; the group id equals this PID, so the group can outlive the leader.",
-    ),
-  identity: z
-    .string()
-    .length(64)
-    .describe("Digest of immutable process birth time and PID."),
-  incarnation: z
-    .string()
-    .optional()
-    .describe(
-      "The start that produced this process; absent on a lease written before starts were named.",
-    ),
-});
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
 function recordLine(logRoot: string, entry: TargetLogEntry): Promise<void> {
   return appendTargetLog(logRoot, JSON.stringify(entry) + "\n");
@@ -114,7 +98,7 @@ export function createChildSupervisor(
   const now = timing.now;
   const inspection = options.processInspection;
   const inspect = inspection.identity;
-  const leaseRoot = join(options.stateRoot, "process-leases");
+  const leaseRoot = processLeaseRoot(options.stateRoot);
   const captureRoot = join(options.stateRoot, "capture");
   /** Where the holder of the application's child handle records exits. */
   const exitRoot = options.captureCommand ? captureRoot : options.stateRoot;
@@ -137,7 +121,9 @@ export function createChildSupervisor(
     if (survivors === "check") {
       const survivor = await survivingApplication({
         requestPath: capturePath(key),
+        key,
         inspect,
+        groupExists: inspection.groupExists,
       });
       if (survivor) return survivor;
     }
@@ -160,8 +146,7 @@ export function createChildSupervisor(
     await removeExitRecord(exitRoot, key);
     if (options.captureCommand) await removeExitRecord(wrapperExitRoot, key);
   };
-  const leasePath = (key: string) =>
-    join(leaseRoot, `${createHash("sha256").update(key).digest("hex")}.json`);
+  const leasePath = (key: string) => processLeasePath(options.stateRoot, key);
   function serialized<T>(key: string, action: () => Promise<T>): Promise<T> {
     const pending = (operations.get(key) ?? Promise.resolve())
       .catch(() => {})
@@ -184,7 +169,7 @@ export function createChildSupervisor(
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
-    const parsed = leaseSchema.safeParse(JSON.parse(raw));
+    const parsed = processLeaseSchema.safeParse(JSON.parse(raw));
     if (!parsed.success || parsed.data.key !== key)
       throw new RigError(
         "PROCESS_LEASE",

@@ -69,6 +69,7 @@ test("launchd start and unload waits run on the injected clock and budgets: a la
     domain: "gui/99999",
     labelPrefix: "test.timing",
     run,
+    groupExists: async () => false,
     inspect: async () => undefined,
     timing,
   });
@@ -116,6 +117,7 @@ test("a detached unload wait ends at the next poll, however long the grace, and 
     labelPrefix: "test.timing",
     run,
     inspect: async () => undefined,
+    groupExists: async () => false,
     timing,
   });
   await expect(

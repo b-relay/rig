@@ -30,6 +30,7 @@ test("launchd reports the running application, then its recorded exit and the st
     labelPrefix: "test.observation",
     captureCommand: [process.execPath, wrapper],
     timing: createLaunchdTiming(),
+    groupExists: async () => false,
     inspect: async (pid) => {
       if (replayExitingWrapperSnapshot && pid === child?.pid)
         await child.exited;
@@ -187,6 +188,7 @@ test("capture observations reject missing, stale, corrupt, or mismatched evidenc
     labelPrefix: "test.observation",
     captureCommand: ["capture"],
     timing: { ...createLaunchdTiming(), now: () => 10_000 },
+    groupExists: async () => false,
     inspect: async (pid) =>
       pid === 101
         ? wrapperIdentity

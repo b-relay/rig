@@ -202,6 +202,7 @@ async function launchdWorld(): Promise<World> {
         captureCommand: ["/fake/rigd", "capture"],
         run,
         timing: createLaunchdTiming(),
+        groupExists: async () => false,
         inspect: async (pid) =>
           pid === wrapper.pid
             ? wrapper.identity

@@ -1158,6 +1158,39 @@ Nothing is started again while `rigd` itself is down; the first pass of the
 next daemon applies the same rules to what it finds. Every start, automatic
 or not, reads the env files fresh.
 
+#### After the Mac restarts or you log in again
+
+A restart of the Mac, or logging out and in again, ends every Service. Rig's
+Service launchd jobs live under `$RIG_ROOT/launchd`, not
+`~/Library/LaunchAgents`, so launchd does not load them again at login, but
+`rigd` itself comes back. At each start, `rigd` compares the Host's boot
+(`kern.bootsessionuuid`, new at every boot) and your GUI login session (the
+audit session of launchd's `gui/<uid>` domain, new at every login) with the
+ones it recorded last time:
+
+- **Stable Targets meant to run** are started again the way `rig up` starts
+  them: every Service in dependency order, whatever its `restart` policy, with
+  fresh automatic-restart budgets. Activity records one `host-restart` entry
+  ("The Mac restarted …" or "You logged out and in again …") and one `up` entry
+  per Stable Target. `rig status` says each Service was started again by
+  `rigd` ("restarted after reboot" or "restarted after login"). A Stable Target
+  that fails to start is reported `failed`, stays meant to run, and waits for
+  `rig up`.
+- **The Working copy and Previews** stay stopped, even under
+  `restart: always`. `rig status` reports their Services `stopped`, with
+  `exit: unknown` and a reason that says they stopped when the Mac restarted
+  (or when you logged out). Run `rig up` to start them. Until that start, no
+  unknown exit of that Target is retried automatically; after it, the usual
+  rules apply again. A Service that survived a logout is left running.
+- Targets meant to be stopped stay stopped.
+
+A plain `rigd` restart in the same boot and login session detects nothing and
+follows the rules above. So does the first start of a `rigd` that had recorded
+no session yet, and a start where neither the boot nor the login session could
+be read (for example, with no GUI login at all). `rigd` records the session
+only once it has acted on it, so a daemon that stops halfway finds the same
+restart again at its next start.
+
 ### Recipes
 
 A recipe prints an ordinary Service for a common local dependency. There is no

@@ -9,6 +9,7 @@ async function assertTargetsStopped(
   targets: TargetRecord[],
   deps: RuntimeDependencies,
 ): Promise<void> {
+  assertRecordedStopped(targets);
   const reports = await observeTargets(
     targets,
     deps.observations,
@@ -16,20 +17,35 @@ async function assertTargetsStopped(
     deps.observationDeadline,
   );
   if (
-    targets.some(
-      (t) => t.desired === "running" || t.recovery || t.destructionPending,
-    ) ||
     reports.some((t) =>
       t.components.some(
         (c) => c.kind === "managed" && !["stopped", "failed"].includes(c.state),
       ),
     )
   )
-    throw new RigError(
-      "PROJECT_ACTIVE",
-      "Project registration can only change while every Target is stopped.",
-      "Stop all Targets and retry.",
-    );
+    throw projectActive();
+}
+/** Rejects PROJECT_ACTIVE when a Target is recorded as meant to run or mid-transition. Reads the records only, so a
+ * registration change can refuse at once instead of waiting for the Project's operations to finish. */
+export function assertRecordedStopped(
+  targets: readonly Pick<
+    TargetRecord,
+    "desired" | "recovery" | "destructionPending"
+  >[],
+): void {
+  if (
+    targets.some(
+      (t) => t.desired === "running" || t.recovery || t.destructionPending,
+    )
+  )
+    throw projectActive();
+}
+function projectActive(): RigError {
+  return new RigError(
+    "PROJECT_ACTIVE",
+    "Project registration can only change while every Target is stopped.",
+    "Stop all Targets and retry.",
+  );
 }
 /** Removes the registration and its stopped local/live records; Previews own data and must be destroyed first.
  * Returns a warning for every live workspace and data root left on disk. */

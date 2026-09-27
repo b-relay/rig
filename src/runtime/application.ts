@@ -6,7 +6,11 @@ import type {
 } from "../domain/project-status";
 import { stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
-import { forgetProject, updateRegistration } from "./registration";
+import {
+  assertRecordedStopped,
+  forgetProject,
+  updateRegistration,
+} from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
@@ -63,6 +67,7 @@ import {
 } from "./deploy";
 import {
   HOST_SCOPE,
+  configScope,
   createOperationLocks,
   isWithin,
   projectScope,
@@ -239,6 +244,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const entry = operations.get(operationId)!;
     return {
       async admit(scopes, subject) {
+        // One admission per selection: a second would hold two leases, and nothing could release the first.
+        if (lease)
+          throw new Error(`Operation ${operationId} was admitted twice.`);
         if (subject.project) entry.view.project = subject.project;
         if (subject.target) entry.view.target = subject.target;
         lease = await locks.acquire(operationId, scopes);
@@ -272,6 +280,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const operationId = command.operationId ?? deps.id();
     if (reads.has(command.action))
       return run(command, operationId, UNLOCKED, deps);
+    // Operations now run side by side, so an id must name one of them at a time.
+    if (operations.has(operationId))
+      throw new RigError(
+        "OPERATION_DUPLICATE",
+        `Operation ${operationId} is already running.`,
+        "Send each command with its own operation id; rig does this for you.",
+        { operationId },
+      );
     inFlight.add(operationId);
     operations.set(operationId, {
       view: {
@@ -426,6 +442,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "forget") {
         project = (await selectProject(command, deps, false)).project;
+        refuseActive(
+          (await deps.store.read()).targets.filter(
+            (t) => t.projectId === project!.id,
+          ),
+        );
         const targets = await enter([projectScope(project.id)]);
         attempted = true;
         const warnings = await forgetProject(project, targets, deps);
@@ -518,6 +539,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (command.action === "doctor")
         return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
+        if (command.action === "repoint" || command.newName !== project.name)
+          refuseActive(targets);
         targets = await enter([
           projectScope(project.id),
           // A rename also takes its new name, so a registration of that name cannot race it.
@@ -625,6 +648,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           { target: name },
         );
         target = find(targets);
+        // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
+        if (
+          command.action !== "down" &&
+          command.action !== "destroy" &&
+          (await checkoutConfig(undefined, project, deps)).document
+            ?.revision !== configured.document?.revision
+        )
+          throw admission.moved();
       }
       if (target && target.kind !== kind)
         throw new RigError(
@@ -954,6 +985,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         ...extra,
       };
     }
+    /** Refuses a Project-wide change at once while a Target is recorded as running or mid-transition, instead of queueing
+     * it behind that Target's operations (and every later operation of the Project behind it) only to refuse it then.
+     * The refusal is an attempted Operation, recorded as one; the same check is made again once admitted. */
+    function refuseActive(targets: readonly TargetRecord[]): void {
+      try {
+        assertRecordedStopped(targets);
+      } catch (error) {
+        attempted = true;
+        throw error;
+      }
+    }
     /** Takes `scopes` within the selected Project and returns its Targets as recorded once they are
      * held. A Project renamed, repointed or forgotten while this command waited is selected again. */
     async function enter(
@@ -982,6 +1024,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       const recorded = (await deps.store.read()).targets.filter(
         (t) => t.projectId === project!.id,
       );
+      // Claims are read after the state: a deploy that recorded its Preview after this read and ended in the moment since
+      // is missed, which can leave the Project one over its limit until the next Preview deploy. Reading them before
+      // instead would count a deploy that failed meanwhile, and destroy a Preview for no reason.
       const replacements = previewsToReplace(
         recorded,
         reservations.claimedPreviews(project!.id, operationId),
@@ -1026,7 +1071,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         },
       });
       const lease = await locks.acquire(id, [
-        project ? projectScope(project.id) : registrationScope(projectName),
+        project ? configScope(project.id) : registrationScope(projectName),
       ]);
       try {
         if (draining) throw drainingError();

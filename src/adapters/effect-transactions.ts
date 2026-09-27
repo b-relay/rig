@@ -115,6 +115,28 @@ export function createEffectTransactions(options: {
     join(options.root, CHECKPOINTS, hash(targetId));
   const preparation = createEffectPreparation(options.root, directory);
   const active = new Map<string, Journal>();
+  /** Which Target's open checkpoint covers each installed path. The bin directory is shared by every Project and their
+   * Targets run side by side, so a path one transaction may still write or roll back is not handed to another. */
+  const claims = new Map<string, string>();
+  const releaseClaims = (targetId: string) => {
+    for (const [path, owner] of claims)
+      if (owner === targetId) claims.delete(path);
+  };
+  /** Claims `destinations` for `targetId` in one step, or claims none and rejects ARTIFACT_CONFLICT naming the path. */
+  const claim = (targetId: string, destinations: readonly string[]) => {
+    const taken = destinations.find((path) => {
+      const owner = claims.get(path);
+      return owner !== undefined && owner !== targetId;
+    });
+    if (taken)
+      throw new RigError(
+        "ARTIFACT_CONFLICT",
+        `Another Target is installing the executable ${taken} right now.`,
+        "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
+        { destination: taken },
+      );
+    for (const path of destinations) claims.set(path, targetId);
+  };
   const save = (journal: Journal) =>
     atomicFile(
       join(directory(journal.targetId), "journal.json"),
@@ -253,6 +275,8 @@ export function createEffectTransactions(options: {
     targetId: string,
     options: { allowMissingDirectory: boolean },
   ): Promise<void> => {
+    // Committed or rolled back: nothing of this transaction can write its paths any more.
+    releaseClaims(targetId);
     await rm(directory(targetId), {
       recursive: true,
       force: options.allowMissingDirectory,
@@ -356,10 +380,18 @@ export function createEffectTransactions(options: {
             { destination: artifact.destination },
           );
         destinations.set(artifact.destination, artifact.componentName);
-        await options.ownership.inspect(artifact);
       }
-      const route = await options.router.checkpoint(targetId);
-      await preparation.begin(targetId);
+      claim(targetId, [...destinations.keys()]);
+      let route: RouteCheckpoint;
+      try {
+        for (const artifact of artifacts)
+          await options.ownership.inspect(artifact);
+        route = await options.router.checkpoint(targetId);
+        await preparation.begin(targetId);
+      } catch (error) {
+        releaseClaims(targetId);
+        throw error;
+      }
       const journal: Journal = {
         version: JOURNAL_VERSION,
         targetId,
@@ -388,6 +420,7 @@ export function createEffectTransactions(options: {
         await save(journal);
         active.set(targetId, journal);
       } catch (error) {
+        releaseClaims(targetId);
         await preparation.recover(targetId);
         throw error;
       }

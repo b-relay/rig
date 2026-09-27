@@ -404,3 +404,30 @@ test("pruning removes checkpoints and claims of Targets absent from state, keeps
   await f.transactions().restore("target");
   expect(await f.transactions().pruneCheckpoints(new Set())).toHaveLength(2);
 });
+
+test("an installed path is claimed by one Target's checkpoint until it commits or rolls back", async () => {
+  const f = await fixture();
+  const transactions = f.transactions();
+  const destination = join(f.root, "bin", "cli-local");
+  const artifact = (targetId: string) => ({
+    targetId,
+    componentName: "cli",
+    destination,
+    receiptPath: join(f.root, "installed", `${targetId}.json`),
+  });
+  const first = await transactions.checkpoint("alpha", [artifact("alpha")]);
+  // Another Project's Target running beside it cannot start a transaction over the same path.
+  await expect(
+    transactions.checkpoint("beta", [artifact("beta")]),
+  ).rejects.toMatchObject({
+    code: "ARTIFACT_CONFLICT",
+    details: { destination },
+  });
+  await first.rollback();
+  const second = await transactions.checkpoint("beta", [artifact("beta")]);
+  await expect(
+    transactions.checkpoint("alpha", [artifact("alpha")]),
+  ).rejects.toMatchObject({ code: "ARTIFACT_CONFLICT" });
+  await second.commit();
+  await (await transactions.checkpoint("alpha", [artifact("alpha")])).commit();
+});

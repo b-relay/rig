@@ -77,10 +77,17 @@ async function fixture(host: Record<string, unknown> = {}) {
   /** Source checkouts that stay in progress until released, by Branch. */
   const heldCheckouts = new Map<string, Promise<void>>();
   const events: string[] = [];
+  /** Each Project's rig.yaml revision; an edit bumps it and changes the Service command. */
+  const revisions = new Map<string, number>();
   const config = (name: string) =>
     parseProjectConfig({
       name,
-      services: { web: { run: "serve", ports: { http: "auto" } } },
+      services: {
+        web: {
+          run: `serve r${revisions.get(name) ?? 1}`,
+          ports: { http: "auto" },
+        },
+      },
       proxy: { "/": "${services.web.ports.http}" },
       targets: { working: { domain: `${name}.test` } },
     });
@@ -140,7 +147,7 @@ async function fixture(host: Record<string, unknown> = {}) {
       async read(path) {
         return {
           path: `${path}/rig.yaml`,
-          revision: "r1",
+          revision: `r${revisions.get(projectAt(path)) ?? 1}`,
           config: config(projectAt(path)),
         };
       },
@@ -165,6 +172,7 @@ async function fixture(host: Record<string, unknown> = {}) {
         return { commit: input.branch, warnings: [] };
       },
       async prepare(request) {
+        events.push(`checking out ${request.ref}`);
         await heldCheckouts.get(request.ref);
         events.push(`checkout ${request.ref}`);
         return {
@@ -280,6 +288,10 @@ async function fixture(host: Record<string, unknown> = {}) {
     events,
     register,
     holdStop: (project: string) => hold(heldStops, project),
+    /** Edits `project`'s rig.yaml. */
+    edit(project: string) {
+      revisions.set(project, (revisions.get(project) ?? 1) + 1);
+    },
     holdRecovery: (project: string) => hold(heldRecoveries, project),
     holdCheckout: (branch: string) => hold(heldCheckouts, branch),
     /** The Service of `project`'s Working copy exits with code 1, as a crash does. */
@@ -475,8 +487,7 @@ test("two new Previews deployed at once count against the Preview limit together
     target: "preview",
     branch: "feature-a",
   });
-  await until(() => f.events.length > 0);
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  await until(() => f.events.includes("checking out feature-a"));
   const second = f.runtime.command({
     action: "deploy",
     project: "alpha",
@@ -593,19 +604,75 @@ test("a drain waits for the running stop and refuses the command queued behind i
   await expect(up).rejects.toMatchObject({ code: "DAEMON_DRAINING" });
 });
 
-test("a config edit waits only for its own Project", async () => {
+test("a config edit never waits for a Target's stop, only for another edit of the same Project", async () => {
   const f = await fixture();
   await f.register("alpha", "beta");
   await f.runtime.command({ action: "up", project: "alpha" });
   const release = f.holdStop("alpha");
   const down = f.runtime.command({ action: "down", project: "alpha" });
   await until(() => f.events.includes("stop alpha local"));
-  expect(await f.runtime.exclusive("beta", async () => "edited")).toBe(
+  expect(await f.runtime.exclusive("alpha", async () => "edited")).toBe(
     "edited",
   );
-  const edit = f.runtime.exclusive("alpha", async () => "edited");
-  expect(await settled(edit)).toBe(false);
+  const writing = gate();
+  let editing = false;
+  const first = f.runtime.exclusive("alpha", async () => {
+    editing = true;
+    await writing.opened;
+  });
+  await until(() => editing);
+  const second = f.runtime.exclusive("alpha", async () => "second");
+  expect(await f.runtime.exclusive("beta", async () => "beta")).toBe("beta");
+  expect(await settled(second)).toBe(false);
+  writing.open();
+  await first;
+  expect(await second).toBe("second");
   release();
   await down;
-  expect(await edit).toBe("edited");
+});
+
+test("an up that waited behind a stop plans from rig.yaml as it is once admitted", async () => {
+  const f = await fixture();
+  await f.register("alpha");
+  await f.runtime.command({ action: "up", project: "alpha" });
+  const release = f.holdStop("alpha");
+  const down = f.runtime.command({ action: "down", project: "alpha" });
+  await until(() => f.events.includes("stop alpha local"));
+  const up = f.runtime.command({
+    action: "up",
+    project: "alpha",
+    operationId: "alpha-up",
+  });
+  await waiting(f.runtime, "alpha-up");
+  f.edit("alpha");
+  release();
+  await down;
+  expect(await up).toMatchObject({ outcome: "started" });
+  const [target] = await f.targets();
+  expect(target!.configRevision).toBe("r2");
+  expect(target!.plan.components[0]).toMatchObject({ command: "serve r2" });
+});
+
+test("a registration change refuses at once while a Target of its Project is mid-transition, rather than queueing", async () => {
+  const f = await fixture();
+  await f.register("alpha");
+  await f.runtime.command({
+    action: "deploy",
+    project: "alpha",
+    target: "preview",
+    branch: "feature-a",
+  });
+  const release = f.holdStop("alpha");
+  const destroy = f.runtime.command({
+    action: "destroy",
+    project: "alpha",
+    target: "preview",
+    branch: "feature-a",
+  });
+  await until(() => f.events.some((e) => e.startsWith("stop alpha feature-a")));
+  await expect(
+    f.runtime.command({ action: "forget", project: "alpha" }),
+  ).rejects.toMatchObject({ code: "PROJECT_ACTIVE" });
+  release();
+  expect(await destroy).toMatchObject({ outcome: "stopped" });
 });

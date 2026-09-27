@@ -26,6 +26,12 @@ export function targetScope(
     : ["project", projectId, "target", target.kind];
 }
 
+/** A Project's rig.yaml as an edit writes it. Within the Project, so a rename or repoint waits for an edit, but beside
+ * every Target, so an edit never waits for a Target's stop or build. */
+export function configScope(projectId: string): LockScope {
+  return ["project", projectId, "config"];
+}
+
 /** A Project name that is being registered, so two registrations of one name cannot both succeed. */
 export function registrationScope(name: string): LockScope {
   return ["registration", name];

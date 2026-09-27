@@ -55,16 +55,16 @@ They need permission to bind localhost and a local Caddy executable.
 
 ## Module Map
 
-| Module                             | Responsibility                                                                    |
-| ---------------------------------- | --------------------------------------------------------------------------------- |
-| `src/config`                       | Validated YAML documents, revision-checked edits, and Target plan resolution.     |
-| `src/runtime` and `src/domain`     | Per-Target operation queue, recorded policy, deployment recovery, and status.     |
-| `src/daemon`                       | Authenticated localhost transport, administration, and adapter composition.       |
-| `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects.              |
-| `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.                |
-| `src/git`                          | Branch preflight, repository registration, and Git remote protocol.               |
-| `src/recipes`                      | Bundled recipe catalog, rendering, and comparison against a Project's config.     |
-| `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.       |
+| Module                             | Responsibility                                                                |
+| ---------------------------------- | ----------------------------------------------------------------------------- |
+| `src/config`                       | Validated YAML documents, revision-checked edits, and Target plan resolution. |
+| `src/runtime` and `src/domain`     | Per-Target operation queue, recorded policy, deployment recovery, and status. |
+| `src/daemon`                       | Authenticated localhost transport, administration, and adapter composition.   |
+| `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects.          |
+| `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.            |
+| `src/git`                          | Branch preflight, repository registration, and Git remote protocol.           |
+| `src/recipes`                      | Bundled recipe catalog, rendering, and comparison against a Project's config. |
+| `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.   |
 
 ## Documentation
 

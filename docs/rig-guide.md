@@ -1016,11 +1016,16 @@ from source records the bun running it. The compiled `rigd` (the output of
 `bun run build`) is not bun, so it records the first `bun` on the `PATH` of
 the shell that ran `rigd install`. Either way Rig prefers the `PATH` entry
 that resolves to that bun over a versioned Cellar path, so a package upgrade
-does not strand it. Rig never looks bun up when the Tool runs. When no bun was recorded, or the recorded
-one is gone, installing such a Tool fails as `BUN_NOT_FOUND` and nothing is
-published. Install bun, or fix `PATH`, and run `rigd install` again: a
-different bun counts as a changed installation, so the daemon is replaced and
-uses the new one.
+does not strand it. Rig never looks bun up when the Tool runs.
+
+When `rigd install` finds no bun it still installs, since built Tools and
+Services do not need one, and warns that source-file Tools will fail. Installing
+such a Tool without a recorded bun, or when the recorded one is gone, fails as
+`BUN_NOT_FOUND` and publishes nothing; an earlier shim stays as it was, and
+`rig doctor` reports a recorded bun that is gone as `tool-bun`. Install bun, or
+fix `PATH`, and run `rigd install` again. A different bun counts as a changed
+installation, so the daemon is replaced, and the next `rig up` or deploy
+republishes each shim with the new bun.
 
 Durations are a positive whole number with a unit of `s`, `m`, or `h`, such as
 `30s`, `10m`, or `1h`, up to one day.
@@ -1275,7 +1280,8 @@ current file.
 `rig up`, `rig restart`, and an activating deploy then work in this order:
 
 1. Tools are installed. The executable is republished only when the built
-   file, its destination, or the Tool's declared policy changed, and is
+   file, its destination, the Tool's declared policy, or (for a source-file
+   `bin`) the recorded bun changed, and is
    otherwise reported `unchanged`; a daemon restarted from another shell
    republishes nothing. `deploy --no-up` publishes no Tool; the later `rig up`
    does, under its own checkpoint. Installed executables share one `bin/`

@@ -1,10 +1,10 @@
-import { access, constants, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, constants } from "node:fs/promises";
 import { dirname } from "node:path";
 import { readHostConfig } from "../config";
 import { ConfigError } from "../config/errors";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { inspectHostProxy, proxyCheck } from "./proxy-publication";
+import { readInstallationRecord } from "../daemon/installation";
 /** Observe local prerequisites without running repairs, writing probes, or contacting remotes. */
 export async function inspectHost(root: string): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
@@ -88,32 +88,41 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
   }
   return checks;
 }
-/** An installed daemon whose recorded program is gone (for example after a package upgrade) can never start; naming it beats "unreachable". */
+/** An installed daemon whose recorded program is gone (for example after a package upgrade) can never start; naming it beats
+ * "unreachable". Likewise a recorded bun that is gone makes every Tool whose bin is a source file fail to install. */
 async function inspectDaemonExecutable(root: string): Promise<DoctorCheck[]> {
-  let executable: string | undefined;
+  let installation;
   try {
-    const installation = JSON.parse(
-      await readFile(join(root, "daemon", "install.json"), "utf8"),
-    ) as { command?: unknown };
-    executable = Array.isArray(installation.command)
-      ? String(installation.command[0] ?? "")
-      : undefined;
+    installation = await readInstallationRecord(root);
   } catch {
     return [];
   }
-  if (!executable) return [];
+  const checks: DoctorCheck[] = [];
+  const executable = installation?.command?.[0];
+  if (executable && !(await isExecutable(executable)))
+    checks.push({
+      name: "daemon-executable",
+      ok: false,
+      message: `The installed daemon program ${executable} is missing or not executable.`,
+      reason: "missing-executable",
+      hint: "Run rigd install again to record the current executable.",
+    });
+  const bun = installation?.bun;
+  if (bun && !(await isExecutable(bun)))
+    checks.push({
+      name: "tool-bun",
+      ok: false,
+      message: `The bun recorded for Tools whose bin is a source file, ${bun}, is missing or not executable.`,
+      reason: "missing-executable",
+      hint: "Run rigd install again from a shell whose PATH finds bun.",
+    });
+  return checks;
+}
+async function isExecutable(path: string): Promise<boolean> {
   try {
-    await access(executable, constants.X_OK);
-    return [];
+    await access(path, constants.X_OK);
+    return true;
   } catch {
-    return [
-      {
-        name: "daemon-executable",
-        ok: false,
-        message: `The installed daemon program ${executable} is missing or not executable.`,
-        reason: "missing-executable",
-        hint: "Run rigd install again to record the current executable.",
-      },
-    ];
+    return false;
   }
 }

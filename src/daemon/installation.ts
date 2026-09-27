@@ -43,7 +43,7 @@ export async function readInstallationRecord(
     throw new RigError(
       "DAEMON_INSTALL_STATE",
       "The installation record is unreadable.",
-      "Inspect the daemon installation before retrying.",
+      `Inspect ${installationPath(root)}; with no rigd running, rigd install rewrites it.`,
       { path: installationPath(root) },
     );
   }
@@ -52,7 +52,7 @@ export async function readInstallationRecord(
     throw new RigError(
       "DAEMON_INSTALL_STATE",
       "The installation record is invalid.",
-      "Inspect the daemon installation before retrying.",
+      `Inspect ${installationPath(root)}; with no rigd running, rigd install rewrites it.`,
       { path: installationPath(root) },
     );
   return installation.data;

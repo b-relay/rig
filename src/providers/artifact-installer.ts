@@ -23,11 +23,16 @@ export interface InstallRequest {
 export interface ArtifactInstaller {
   install(request: InstallRequest): Promise<{ path: string }>;
   observe(path: string): Promise<"installed" | "missing" | "unknown">;
+  /** Names what `install` would publish for a source entrypoint (a shim), whose text depends on the installer rather than
+   * on the file, so a publication receipt can tell when republishing would change it. Undefined for an entrypoint that is
+   * copied as is, whose own content identifies it. */
+  shimRevision(entrypoint: string): string | undefined;
 }
 /** Builds before replacing an installed artifact and publishes by atomic rename.
  * Builds run through `run`. A source entrypoint (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`) is published as a shim that
  * execs `bunExecutable`, the bun `rigd install` recorded, never a PATH lookup and never rigd's own executable (a compiled
- * rigd is not bun). Without a runnable `bunExecutable` such an install fails as BUN_NOT_FOUND before building or publishing. */
+ * rigd is not bun). Without a runnable `bunExecutable` such an install fails as BUN_NOT_FOUND before building or publishing,
+ * and the last good artifact stays. `shimRevision` changes with `bunExecutable`, so a new recorded bun republishes shims. */
 export function createArtifactInstaller(options: {
   readonly run: CommandRunner;
   readonly bunExecutable: string | undefined;
@@ -82,6 +87,11 @@ export function createArtifactInstaller(options: {
       }
       return { path: request.destination };
     },
+    shimRevision(entrypoint) {
+      return isSourceEntrypoint(entrypoint)
+        ? `source-shim:${bunExecutable ?? ""}`
+        : undefined;
+    },
     async observe(path) {
       try {
         const value = await stat(path);
@@ -108,7 +118,7 @@ async function runnableBun(
   if (bun === undefined)
     throw new RigError(
       "BUN_NOT_FOUND",
-      `The Tool entrypoint ${entrypoint} is a source file, but rigd has no bun to run it with: rigd install recorded none because it found no bun on PATH.`,
+      `The Tool entrypoint ${entrypoint} is a source file, but rigd has no recorded bun to run it with (rigd install found none on PATH, or rigd started without an installation record).`,
       "Install bun so your shell's PATH finds it, then run rigd install again to record it; or build the Tool and point bin at the executable.",
       { entrypoint },
     );

@@ -4,6 +4,7 @@ import {
   access,
   constants,
   mkdir,
+  rename,
   writeFile,
   rm,
   open,
@@ -254,7 +255,9 @@ export class DaemonAdmin {
         { pid },
       );
   }
-  private async writeInstallation(): Promise<void> {
+  /** `bun` is what the daemon about to start will read; a daemon already running read its own at startup. The record is
+   * written whole, through a sibling temp file and rename, because a starting daemon reads it. */
+  private async writeInstallation(bun: string | undefined): Promise<void> {
     await mkdir(join(this.options.root, "daemon"), {
       recursive: true,
       mode: 0o700,
@@ -263,9 +266,15 @@ export class DaemonAdmin {
       mode: this.options.mode,
       command: [...this.options.command],
       version: RIG_BUILD,
-      ...(this.options.bun ? { bun: this.options.bun } : {}),
+      ...(bun ? { bun } : {}),
     };
-    await writeFile(this.marker, JSON.stringify(record), { mode: 0o600 });
+    const temporary = `${this.marker}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+      await rename(temporary, this.marker);
+    } finally {
+      await rm(temporary, { force: true });
+    }
   }
   /** Called only once the record is known to exist, so an absent one is as unreadable as a torn one. */
   private async readInstallation(): Promise<InstallationRecord> {
@@ -280,8 +289,8 @@ export class DaemonAdmin {
     return installation;
   }
   async install(operationId?: string): Promise<DaemonStatus> {
-    return this.recordAdministration("daemon-install", operationId, () =>
-      this.performInstall(),
+    return this.recordAdministration("daemon-install", operationId, async () =>
+      withToolBunWarning(await this.performInstall(), this.options.bun),
     );
   }
   async uninstall(operationId?: string): Promise<DaemonStatus> {
@@ -342,8 +351,10 @@ export class DaemonAdmin {
       if (current) return { ...prior, outcome: "unchanged" };
       if (recorded === undefined) {
         // A daemon serving without its record (deleted by hand, or started manually)
-        // is adopted: recording it is what makes uninstall able to stop it.
-        await this.writeInstallation();
+        // is adopted: recording it is what makes uninstall able to stop it. Which bun it
+        // read at startup is unknown, so none is recorded and, when this rigd has one, the
+        // next install replaces the daemon with one that reads it.
+        await this.writeInstallation(undefined);
         return { ...prior, installed: true, outcome: "installed" };
       }
       // Another version or command is serving: stop it and start this one. Managed
@@ -371,7 +382,7 @@ export class DaemonAdmin {
     // No daemon is running here, so a fresh token strands nothing and retires
     // any credential a dead daemon's stale port may have exposed.
     await this.issueToken();
-    await this.writeInstallation();
+    await this.writeInstallation(this.options.bun);
     await clearStartupFailure(root);
     try {
       if (this.options.mode === "process") await this.spawnDetached();
@@ -628,6 +639,20 @@ export class DaemonAdmin {
       this.plistPath(),
     ]);
   }
+}
+/** An install that found no bun still succeeds, since built Tools and Services do not need it, but it says what will fail. */
+function withToolBunWarning(
+  result: DaemonStatus,
+  bun: string | undefined,
+): DaemonStatus {
+  if (bun !== undefined) return result;
+  return {
+    ...result,
+    warnings: [
+      ...(result.warnings ?? []),
+      "rigd install found no bun on PATH, so Tools whose bin is a source file (.ts, .js, ...) fail as BUN_NOT_FOUND; run rigd install again from a shell whose PATH finds bun.",
+    ],
+  };
 }
 function launchctlFailure(result: { code: number; stderr: string }): RigError {
   const reason = result.stderr.trim().split("\n").filter(Boolean).at(-1);

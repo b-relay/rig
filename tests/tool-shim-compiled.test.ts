@@ -59,14 +59,16 @@ async function project(f: Fixture) {
     "name: compiledtools\ntools:\n  hello-ts:\n    bin: tool.ts\n",
   );
   await f.commit();
-  expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+  const install = await f.rigd(["install"]);
+  expect(install).toMatchObject({ code: 0 });
   expect(await f.rig(["init"])).toMatchObject({ code: 0 });
+  return install.stdout + install.stderr;
 }
 
 test("with the compiled rigd, a Tool whose bin is a .ts file runs with the bun on the installing shell's PATH, keeps relative imports, and passes its arguments through", async () => {
   const f = await compiled(`${bunDirectory}:/usr/bin:/bin`);
   try {
-    await project(f);
+    expect(await project(f)).not.toContain("BUN_NOT_FOUND");
     expect(await f.rig(["up", "local"])).toMatchObject({ code: 0 });
     expect(await f.rig(["deploy", "live"])).toMatchObject({ code: 0 });
     for (const name of ["hello-ts-local", "hello-ts"]) {
@@ -92,7 +94,8 @@ test("with the compiled rigd, a Tool whose bin is a .ts file runs with the bun o
 test("with the compiled rigd and no bun on the installing shell's PATH, installing a .ts Tool fails as BUN_NOT_FOUND and publishes nothing", async () => {
   const f = await compiled("/usr/bin:/bin");
   try {
-    await project(f);
+    // The install itself succeeds, since built Tools and Services need no bun, but says what will fail.
+    expect(await project(f)).toContain("Warning: rigd install found no bun");
     const up = await f.rig(["up", "local", "--json"]);
     expect(up.code).toBe(1);
     expect(up.stdout + up.stderr).toContain("BUN_NOT_FOUND");

@@ -741,9 +741,10 @@ test("a launchd job that never became reachable can be uninstalled and status na
     await mkdir(join(root, "daemon"), { recursive: true });
     await mkdir(join(root, "Library", "LaunchAgents"), { recursive: true });
     const command = [join(root, "Cellar", "bun"), join(root, "rigd.ts")];
+    const bun = join(root, "removed", "bun");
     await writeFile(
       join(root, "daemon", "install.json"),
-      JSON.stringify({ mode: "launchd", command }),
+      JSON.stringify({ mode: "launchd", command, bun }),
     );
     await writeFile(plist, "<plist/>");
     const launchd = fakeLaunchd(root, "");
@@ -771,6 +772,15 @@ test("a launchd job that never became reachable can be uninstalled and status na
     );
     expect(doctor).toMatchObject({ ok: false, reason: "missing-executable" });
     expect(doctor?.message).toContain(command[0]!);
+    // The recorded bun for source-file Tools is gone too.
+    expect(
+      (await inspectHost(root)).find((check) => check.name === "tool-bun"),
+    ).toMatchObject({
+      ok: false,
+      reason: "missing-executable",
+      message: expect.stringContaining(bun),
+      hint: expect.stringContaining("rigd install"),
+    });
 
     expect(await admin.uninstall()).toMatchObject({
       outcome: "uninstalled",
@@ -1073,7 +1083,7 @@ test("rigd install replaces a reachable daemon recorded by another build of the 
     await rm(root, { recursive: true, force: true });
   }
 }, 20000);
-test("rigd install records the bun for source-file Tools, and a different bun (or none) replaces the daemon so it runs with the new one", async () => {
+test("rigd install records the bun for source-file Tools, a different bun (or none) replaces the daemon so it runs with the new one, and finding none is a warning", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-bun-"));
   const script = await daemonScript(root);
   const marker = join(root, "daemon", "install.json");
@@ -1088,9 +1098,9 @@ test("rigd install records the bun for source-file Tools, and a different bun (o
   const recorded = async () =>
     JSON.parse(await readFile(marker, "utf8")) as { bun?: string };
   try {
-    expect(await admin("/first/bin/bun").install()).toMatchObject({
-      outcome: "installed",
-    });
+    const first = await admin("/first/bin/bun").install();
+    expect(first).toMatchObject({ outcome: "installed" });
+    expect(first.warnings).toBeUndefined();
     expect((await recorded()).bun).toBe("/first/bin/bun");
     expect(await admin("/first/bin/bun").install()).toMatchObject({
       outcome: "unchanged",
@@ -1103,8 +1113,20 @@ test("rigd install records the bun for source-file Tools, and a different bun (o
     expect(await admin().install()).toMatchObject({
       outcome: "installed",
       replaced: { pid: expect.any(Number) },
+      warnings: [expect.stringContaining("BUN_NOT_FOUND")],
     });
     expect(await recorded()).not.toHaveProperty("bun");
+    // An adopted daemon's bun is unknown, so none is recorded and the next install with a bun replaces it.
+    await rm(marker);
+    expect(await admin("/third/bin/bun").install()).toMatchObject({
+      outcome: "installed",
+    });
+    expect(await recorded()).not.toHaveProperty("bun");
+    expect(await admin("/third/bin/bun").install()).toMatchObject({
+      outcome: "installed",
+      replaced: { pid: expect.any(Number) },
+    });
+    expect((await recorded()).bun).toBe("/third/bin/bun");
   } finally {
     await admin()
       .uninstall()

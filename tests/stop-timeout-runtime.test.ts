@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { loopbackListeners } from "./support/activation-doubles";
 import { controlledDeadline } from "./controlled-observation-deadline";
 import { createRuntime } from "../src/runtime/application";
@@ -12,10 +14,12 @@ import type {
   StopResult,
 } from "../src/providers/contracts";
 import { stopDetached } from "../src/domain/stop-budget";
+import { runtimeStateSchema } from "../src/runtime/state-schema";
 import {
   parseHostConfig,
   parseProjectConfig,
   resolveTargetPlan,
+  type ProjectConfig,
 } from "../src/config";
 
 /** One stop the supervisor was asked for, held until the test lets the Service exit (or kill it). */
@@ -28,8 +32,17 @@ interface HeldStop {
 }
 
 /** rigd's runtime over the real lifecycle, with a scripted supervisor: a stop waits until the test ends it, so each path is
- * seen waiting on the Service's stop_timeout without any real time passing. web has stop_timeout 2m, worker 25m. */
-function world() {
+ * seen waiting on the Service's stop_timeout without any real time passing. Every rig.yaml it reads is `config`; by
+ * default web has stop_timeout 2m, worker 25m. */
+function world(
+  config: ProjectConfig = parseProjectConfig({
+    name: "fletcher",
+    services: {
+      web: { run: "serve", ports: { http: 4567 }, stop_timeout: "2m" },
+      worker: { run: "work", depends_on: ["web"], stop_timeout: "25m" },
+    },
+  }),
+) {
   let clock = Date.parse("2026-09-27T04:00:00.000Z");
   const state: RuntimeState = {
     version: 4,
@@ -37,13 +50,6 @@ function world() {
     targets: [],
     activity: [],
   };
-  const config = parseProjectConfig({
-    name: "fletcher",
-    services: {
-      web: { run: "serve", ports: { http: 4567 }, stop_timeout: "2m" },
-      worker: { run: "work", depends_on: ["web"], stop_timeout: "25m" },
-    },
-  });
   const running = new Set<string>();
   const held: HeldStop[] = [];
   const stops: { key: string; graceMs: number; kill: boolean }[] = [];
@@ -701,4 +707,226 @@ test("a kill is refused on commands other than down and restart", async () => {
   await expect(
     w.command({ action: "up", target: "local", kill: true }),
   ).rejects.toMatchObject({ code: "USAGE" });
+});
+
+/** The design Project's rig.yaml on the Host where #298 was first deployed, with its domain replaced. It sets no stop_timeout. */
+function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
+  return parseProjectConfig({
+    name: "design",
+    description: "Component Studio",
+    production_branch: "main",
+    services: {
+      convex: {
+        run: "exec bun scripts/convex-backend.ts",
+        ports: { cloud: "auto", site: "auto" },
+        env: {
+          CONVEX_CLOUD_PORT: "${services.convex.ports.cloud}",
+          CONVEX_SITE_PORT: "${services.convex.ports.site}",
+        },
+        ready: "http://127.0.0.1:${services.convex.ports.cloud}/instance_name",
+        ready_timeout: "1m",
+      },
+      web: {
+        build:
+          "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell",
+        run: "exec bunx next dev --hostname 127.0.0.1 --port ${services.web.ports.http}",
+        ports: { http: "auto" },
+        env: {
+          CONVEX_URL: "http://127.0.0.1:${services.convex.ports.cloud}",
+          APP_ORIGIN: "http://127.0.0.1:${services.web.ports.http}",
+          NEXT_TELEMETRY_DISABLED: "1",
+        },
+        ready: "http://127.0.0.1:${services.web.ports.http}/api/health",
+        ready_timeout: "2m",
+        depends_on: ["convex"],
+        ...web,
+      },
+    },
+    proxy: { "/": "${services.web.ports.http}" },
+    targets: {
+      working: {
+        name: "local",
+        domain: "dev.design.example.test",
+        services: { web: { env: { STUDIO_ENV: "development" } } },
+      },
+      stable: {
+        name: "live",
+        domain: "design.example.test",
+        services: {
+          convex: { env: { CONVEX_STATE_DIR: "${rig.data}" } },
+          web: {
+            build:
+              "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell && bunx next build",
+            run: "exec bunx next start --hostname 127.0.0.1 --port ${services.web.ports.http}",
+            env: { COMPONENT_STUDIO_DIR: "${rig.data}" },
+          },
+        },
+      },
+      preview: {
+        domain: "${rig.target}.design.example.test",
+        services: {
+          convex: { env: { CONVEX_STATE_DIR: "${rig.data}" } },
+          web: {
+            build:
+              "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell && bunx next build",
+            run: "exec bunx next start --hostname 127.0.0.1 --port ${services.web.ports.http}",
+            env: { COMPONENT_STUDIO_DIR: "${rig.data}" },
+          },
+        },
+      },
+    },
+  });
+}
+/** A Working copy, Stable Target and Preview of that Project exactly as the rigd before #298 (issue #278, stop_timeout)
+ * recorded them, with paths and domain replaced: no Service's plan has a stopTimeout. */
+async function recordedBeforeStopTimeout(): Promise<RuntimeState> {
+  return runtimeStateSchema.parse(
+    JSON.parse(
+      await readFile(
+        join(import.meta.dir, "fixtures/pre-278-state.json"),
+        "utf8",
+      ),
+    ),
+  ) as RuntimeState;
+}
+/** A world whose state holds the Targets recorded before #298, reading `config` as every rig.yaml. */
+async function upgraded(config: ProjectConfig) {
+  const w = world(config);
+  const recorded = await recordedBeforeStopTimeout();
+  Object.assign(w.state, structuredClone(recorded));
+  return { ...w, recorded };
+}
+async function configChecks(w: ReturnType<typeof world>) {
+  const report = (await w.runtime.command({
+    action: "doctor",
+    project: "design",
+  })) as {
+    checks: {
+      name: string;
+      ok: boolean;
+      message: string;
+      reason?: string;
+      hint?: string;
+    }[];
+  };
+  return report.checks.filter((check) => check.name.endsWith("/config"));
+}
+
+test("after an upgrade, Targets recorded before stop_timeout existed show no config drift, and doctor, status and a same-Commit deploy leave their plans as recorded", async () => {
+  const w = await upgraded(designConfig());
+  expect(
+    w.recorded.targets.flatMap((target) =>
+      target.plan.components.filter(
+        (component) =>
+          component.kind === "managed" && "stopTimeout" in component,
+      ),
+    ),
+  ).toEqual([]);
+  expect(await configChecks(w)).toEqual([
+    {
+      name: "local/config",
+      ok: true,
+      message: "Recorded Target policy matches current configuration.",
+    },
+    {
+      name: "migrate-next-rig-agent-sdk-28897383/config",
+      ok: true,
+      message:
+        "Recorded Target policy matches the deployed revision's configuration.",
+    },
+    {
+      name: "live/config",
+      ok: true,
+      message:
+        "Recorded Target policy matches the deployed revision's configuration.",
+    },
+  ]);
+  const status = await w.runtime.status({ project: "design" });
+  expect(status.targets.map((target) => target.name).sort()).toEqual([
+    "live",
+    "local",
+    "migrate-next-rig-agent-sdk-28897383",
+  ]);
+  // A same-Commit deploy is still a no-op.
+  expect(
+    await w.runtime.command({
+      action: "deploy",
+      project: "design",
+      target: "live",
+      branch: "main",
+      commit: "ad56f0fe0d19674716e9d40fb0529fd19c0f2e45",
+    }),
+  ).toMatchObject({ outcome: "unchanged" });
+  // Reading the recorded plans never rewrote them.
+  expect(w.state.targets.map((target) => target.plan)).toStrictEqual(
+    w.recorded.targets.map((target) => target.plan),
+  );
+  // A rig.yaml that sets the default explicitly plans the same Targets.
+  const explicit = await upgraded(designConfig({ stop_timeout: "10s" }));
+  expect((await configChecks(explicit)).map((check) => check.ok)).toEqual([
+    true,
+    true,
+    true,
+  ]);
+});
+
+test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan recorded before stop_timeout existed", async () => {
+  const w = await upgraded(designConfig({ stop_timeout: "30s" }));
+  expect(await configChecks(w)).toEqual([
+    {
+      name: "local/config",
+      ok: false,
+      message: "Current configuration differs from the recorded Target policy.",
+      reason: "config-drift",
+      hint: "Run rig restart local (or rig down local, then rig up) to apply the current configuration.",
+    },
+    {
+      name: "migrate-next-rig-agent-sdk-28897383/config",
+      ok: false,
+      message:
+        "The deployed revision's configuration differs from the recorded Target policy.",
+      reason: "config-drift",
+      hint: "Run rig deploy preview studio-feedback --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
+    },
+    {
+      name: "live/config",
+      ok: false,
+      message:
+        "The deployed revision's configuration differs from the recorded Target policy.",
+      reason: "config-drift",
+      hint: "Run rig deploy live --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
+    },
+  ]);
+});
+
+test("a Service whose plan was recorded before stop_timeout existed is stopped with the 10 s default grace", async () => {
+  const w = await upgraded(designConfig());
+  const local = w.state.targets.find((target) => target.kind === "local")!;
+  for (const service of ["convex", "web"])
+    w.running.add(`${local.id}:${service}`);
+  w.hold();
+  const down = w.runtime.command({
+    action: "down",
+    project: "design",
+    target: "local",
+    operationId: "down-old-plan",
+  });
+  // Reverse dependency order: web first.
+  const web = await w.stopOf("web");
+  expect(web.request.graceMs).toBe(10_000);
+  expect((await w.queue("down-old-plan")).operation).toMatchObject({
+    stops: [
+      {
+        service: "web",
+        state: "stopping",
+        since: "2026-09-27T04:00:00.000Z",
+        killAt: "2026-09-27T04:00:10.000Z",
+      },
+    ],
+  });
+  web.exit();
+  const convex = await w.stopOf("convex");
+  expect(convex.request.graceMs).toBe(10_000);
+  convex.exit();
+  expect(await down).toMatchObject({ outcome: "stopped" });
 });

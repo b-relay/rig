@@ -150,6 +150,12 @@ const services = z
             kind: z.literal("exited"),
             exitCode: z.number().int().optional(),
             signal: text.optional(),
+            recordedBy: z
+              .enum(["launchd", "rigd"])
+              .optional()
+              .describe(
+                "Who saw the end when the application's own exit record was missing: launchd's record of its capture wrapper's job, or rigd's record of the wrapper it spawned.",
+              ),
             at,
           }),
           z.object({
@@ -163,12 +169,41 @@ const services = z
         .describe(
           "How the latest process ended; unknown means it is gone and nothing recorded how.",
         ),
+      unknownAttempts: z
+        .array(z.number().finite())
+        .optional()
+        .describe(
+          "Unix milliseconds of the automatic attempts made after an unknown exit since the last explicit start; a separate, slower budget.",
+        ),
       retryAt: z
         .number()
         .finite()
         .optional()
         .describe(
           "Unix milliseconds before which the next automatic attempt must not start.",
+        ),
+      waitingFor: z
+        .union([
+          z.object({
+            service: text.describe(
+              "The Service it depends on that is not running.",
+            ),
+          }),
+          z.object({
+            ports: z
+              .array(z.number().int())
+              .describe("Its ports that still accept connections."),
+          }),
+        ])
+        .optional()
+        .describe(
+          "Why a due automatic attempt is held back without spending budget.",
+        ),
+      restartedAfterUnknown: z
+        .literal(true)
+        .optional()
+        .describe(
+          "The running process was started automatically after an unknown exit.",
         ),
       exhausted: z
         .literal(true)
@@ -263,8 +298,86 @@ const operation = z.object({
   occurredAt: text,
   message: z.string().optional(),
 });
+const instant = z
+  .string()
+  .datetime({ offset: true })
+  .describe("An ISO 8601 time.");
+const downService = z.object({
+  name: text.describe("The Service's name."),
+  reason: z.string().describe("The reason status gives for the Service."),
+  brief: z
+    .string()
+    .describe("The same reason in a few words, for a short notification."),
+});
+const resolution = z.object({
+  at: instant.describe("When the down period ended."),
+  how: z
+    .enum(["running", "stopped", "removed"])
+    .describe(
+      "running: it serves again; stopped: an operator stopped it; removed: it is no longer recorded.",
+    ),
+});
+const alerts = z
+  .object({
+    targets: z
+      .array(
+        z.object({
+          targetId: text.describe("The Stable Target's record id."),
+          project: text.describe("The Project's name when last seen."),
+          target: text.describe("The Stable Target's name when last seen."),
+          since: instant.describe("When Rig first counted it as down."),
+          services: z
+            .array(downService)
+            .describe("The Services that keep it down."),
+          unpublishedRoute: text
+            .optional()
+            .describe(
+              "Its route, when the host Caddy does not load Rig's routes.",
+            ),
+          recover: text.describe(
+            "The command that starts it again, as alerts, doctor and rigd status show it.",
+          ),
+          alertedAt: instant
+            .optional()
+            .describe(
+              "When the alert naming it was delivered; absent until then.",
+            ),
+          resolved: resolution
+            .optional()
+            .describe(
+              "The down period ended; kept until the recovery message is delivered.",
+            ),
+        }),
+      )
+      .describe(
+        "Stable Targets counted as down, and alerted ones whose recovery is not yet told.",
+      ),
+    notifiedAt: instant
+      .optional()
+      .describe(
+        "When the last down alert or reminder was delivered; reminders are timed from it.",
+      ),
+    retry: z
+      .object({
+        failures: z
+          .number()
+          .int()
+          .positive()
+          .describe("Deliveries that failed in a row."),
+        at: instant.describe("When the next delivery may be tried."),
+      })
+      .optional()
+      .describe("The wait after a failed delivery."),
+  })
+  .optional()
+  .describe(
+    "Operator alert state: what was alerted and when, so a daemon restart neither repeats nor forgets an alert.",
+  );
 /** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
- * older rigd refuses the file instead of silently dropping what it does not know. */
+ * older rigd refuses the file instead of silently dropping what it does not know. A new optional top-level key, such
+ * as `alerts`, needs no bump: an older rigd validates without it and writes it back unchanged. After such a downgrade and a
+ * re-upgrade, `alerts` is as the newer rigd last left it; its next evaluation reconciles it with the Targets as they are then,
+ * so an outage that ended meanwhile is told as recovered and one that began meanwhile starts its grace period then. */
 export const STATE_VERSION = 4;
 export const runtimeStateSchema = z
   .object({
@@ -272,6 +385,7 @@ export const runtimeStateSchema = z
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),
+    alerts,
   })
   .superRefine((state, ctx) => {
     const ids = new Set<string>(),

@@ -224,7 +224,7 @@ const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   bin: text.describe(
-    `Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. ${referencesIn("project")}`,
+    `Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is published as a shim that runs it with the bun rigd install recorded. ${referencesIn("project")}`,
   ),
 };
 const tool = z.strictObject(toolFields);
@@ -732,6 +732,31 @@ export const hostConfigSchema = z.strictObject({
     })
     .prefault({})
     .describe("Rig Diagnostic log policy."),
+  alerts: z
+    .strictObject({
+      channels: z
+        .strictObject({
+          macos: z
+            .strictObject({
+              enabled: z
+                .boolean()
+                .optional()
+                .describe(
+                  "Post a macOS notification when a Stable Target has been down 5 minutes, every 6 hours while it stays down, and when it recovers. macOS asks once to allow notifications from Script Editor. When unset, it is on for a rigd installed as a LaunchAgent and off for a process-mode rigd (RIG_ROOT set, as tests and agent runs use).",
+                ),
+            })
+            .prefault({})
+            .describe("The macOS user notification on this Mac."),
+        })
+        .prefault({})
+        .describe(
+          "Where operator alerts go. With every channel disabled, Rig still counts downtime and records each alert in Activity.",
+        ),
+    })
+    .prefault({})
+    .describe(
+      "Operator alerts about Stable Targets that stay down. The Working copy and Previews never alert.",
+    ),
 });
 export function parseHostConfig(value: unknown) {
   const result = hostConfigSchema.safeParse(value);

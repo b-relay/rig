@@ -1,4 +1,5 @@
 import type { TargetPlan } from "../config/types";
+import type { AlertState } from "./operator-alerts";
 
 export interface ProjectRecord {
   id: string;
@@ -28,7 +29,15 @@ export interface Preparation {
 /** How the latest process of a Service ended, as far as Rig knows. `unknown` is a finding, not a gap: the process is gone and
  * nothing recorded how, so nothing may treat it as a clean exit, a failure or a requested stop. */
 export type ServiceOutcome =
-  | { kind: "exited"; exitCode?: number; signal?: string; at: string }
+  | {
+      kind: "exited";
+      exitCode?: number;
+      signal?: string;
+      /** Who saw the end when the application's own exit record was missing: launchd's record of the job that ran its
+       * capture wrapper, or rigd's record of the wrapper it spawned. Absent when the application's own record said. */
+      recordedBy?: "launchd" | "rigd";
+      at: string;
+    }
   /** A start could not be verified and its process was stopped: `activation-failed` for an automatic attempt, which counts
    * as a failure to retry, `start-failed` for an operator's own start, which is theirs to repeat. */
   | {
@@ -47,10 +56,19 @@ export interface ServiceRun {
   incarnation?: string;
   /** Unix milliseconds of the automatic attempts since the last explicit start. */
   attempts: number[];
+  /** Unix milliseconds of the automatic attempts made after an unknown exit since the last explicit start: a separate,
+   * slower budget than `attempts`. */
+  unknownAttempts?: number[];
   outcome?: ServiceOutcome;
   /** Unix milliseconds before which the next automatic attempt must not start. */
   retryAt?: number;
-  /** Five automatic attempts ran within a minute; only an explicit start or a new Deployment starts the Service again. */
+  /** A due automatic attempt was held back without spending budget: a Service it depends on is not running, or, after an
+   * unknown exit, one of its ports still accepts connections. */
+  waitingFor?: { service: string } | { ports: number[] };
+  /** The process now running was started automatically after an unknown exit. */
+  restartedAfterUnknown?: true;
+  /** The automatic attempts of the budget the latest outcome draws on are used up; only an explicit start or a new Deployment
+   * starts the Service again. */
   exhausted?: true;
 }
 
@@ -121,6 +139,8 @@ export interface RuntimeState {
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
+  /** Stable Targets Rig counts as down and what the operator was alerted about; absent until the first alert evaluation. */
+  alerts?: AlertState;
 }
 
 export interface StateStore {

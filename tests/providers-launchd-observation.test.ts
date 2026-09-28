@@ -30,6 +30,7 @@ test("launchd reports the running application, then its recorded exit and the st
     labelPrefix: "test.observation",
     captureCommand: [process.execPath, wrapper],
     timing: createLaunchdTiming(),
+    groupExists: async () => false,
     inspect: async (pid) => {
       if (replayExitingWrapperSnapshot && pid === child?.pid)
         await child.exited;
@@ -84,10 +85,12 @@ test("launchd reports the running application, then its recorded exit and the st
     desired: "running",
     plan: {
       components: [
-        { name: "web", kind: "managed", port: 4444 },
+        // Under `no` nothing will start them again, so a stopped process reads as failed rather than starting.
+        { name: "web", kind: "managed", port: 4444, restart: "no" },
         {
           name: "checked",
           kind: "managed",
+          restart: "no",
           port: 4445,
           health: "http://localhost:4445",
         },
@@ -103,6 +106,7 @@ test("launchd reports the running application, then its recorded exit and the st
         health: async () => ({ ready: true }),
         artifact: async () => "installed",
         persistent: async () => true,
+        listening: async () => [],
       },
       2000,
       timerObservationDeadline,
@@ -184,6 +188,7 @@ test("capture observations reject missing, stale, corrupt, or mismatched evidenc
     labelPrefix: "test.observation",
     captureCommand: ["capture"],
     timing: { ...createLaunchdTiming(), now: () => 10_000 },
+    groupExists: async () => false,
     inspect: async (pid) =>
       pid === 101
         ? wrapperIdentity

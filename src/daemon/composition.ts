@@ -1,9 +1,16 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
 import {
+  ALERT_MONITOR,
   createNoticeBoard,
   recordingDiagnostic,
   startFailureMonitor,
 } from "./notices";
+import {
+  ALERT_EVALUATION_INTERVAL_MS,
+  ALERT_OBSERVATION_BUDGET_MS,
+  evaluateOperatorAlerts,
+} from "../runtime/alert-monitor";
+import { alertChannels } from "./alert-channels";
 import type { DaemonHostOptions } from "./host";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
@@ -46,10 +53,14 @@ import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import type { Supervisor } from "../providers/contracts";
-/** Composition root selects adapters. Runtime and command code see capability Interfaces only. */
+/** Composition root selects adapters. Runtime and command code see capability Interfaces only.
+ * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none. */
 export async function composeDaemon(
   root: string,
   captureCommand: readonly string[],
+  toolBun: string | undefined,
+  /** How rigd was installed: `process` under RIG_ROOT for tests and agent runs, `launchd` as the user's LaunchAgent. */
+  mode: "process" | "launchd" = "launchd",
 ): Promise<Omit<DaemonHostOptions, "root" | "port">> {
   const host = await readHostConfig(root);
   const diagnostic = createFileDiagnosticLog({
@@ -76,6 +87,7 @@ export async function composeDaemon(
     captureCommand,
     run: runCommand,
     inspect: processInspection.identity,
+    groupExists: processInspection.groupExists,
     timing: createLaunchdTiming(),
   });
   const supervisors = new Map<string, Supervisor>([
@@ -93,7 +105,7 @@ export async function composeDaemon(
     listeners: createListenerInspection(runCommand),
     installer: createArtifactInstaller({
       run: runCommand,
-      bunExecutable: process.execPath,
+      bunExecutable: toolBun,
     }),
     router: createCaddyRouter({
       caddyfile:
@@ -166,8 +178,10 @@ export async function composeDaemon(
     },
     exclusive: runtime.exclusive,
   });
+  const channels = alertChannels(host.alerts, mode, runCommand);
   let stopped = false;
-  let stopMonitor: (() => void) | undefined;
+  let stopMonitor: (() => Promise<void>) | undefined;
+  let stopAlerts: (() => Promise<void>) | undefined;
   return {
     handle: runtime.command,
     editor,
@@ -180,10 +194,31 @@ export async function composeDaemon(
         notices,
         run: () => runtime.supervise(),
       });
+      // Operator alerts read what the passes record and observe as status does, beside the mutation queue, never in it.
+      stopAlerts = startFailureMonitor({
+        intervalMs: ALERT_EVALUATION_INTERVAL_MS,
+        notices,
+        channel: ALERT_MONITOR,
+        run: () =>
+          evaluateOperatorAlerts({
+            store,
+            observations: effects.observations,
+            observationBudgetMs: ALERT_OBSERVATION_BUDGET_MS,
+            observationDeadline: timerObservationDeadline,
+            inspectProxy: () => inspectHostProxy(root, host, environment),
+            channels,
+            now: () => new Date().toISOString(),
+            id: randomUUID,
+            diagnostic: recordingDiagnostic(diagnostic, notices),
+            mutations: runtime.mutations,
+          }),
+      });
     },
     async shutdown() {
       stopped = true;
       stopMonitor?.();
+      // An alert evaluation in flight finishes and saves what it delivered, so the next rigd does not deliver it again.
+      await stopAlerts?.();
       await runtime.drain();
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();

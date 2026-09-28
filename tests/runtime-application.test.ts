@@ -158,6 +158,9 @@ function fixture() {
       async artifact() {
         return "missing";
       },
+      async listening() {
+        return [];
+      },
       async persistent() {
         return true;
       },
@@ -3435,6 +3438,17 @@ test("the queue read names the mutation rigd is running and how many wait behind
   expect(
     await runtime.command({ action: "queue", operation: "slow-up" }),
   ).toMatchObject({ operation: { state: "running", phase: "starting" } });
+  // The operator alert monitor sees both mutations, the waiting one too, each with its action and the Target kind it
+  // selected, so an up or down that names no Target reads as the Working copy's.
+  expect(runtime.mutations()).toEqual([
+    { operationId: "slow-up", action: "up", project: "demo", kind: "local" },
+    {
+      operationId: "later-down",
+      action: "down",
+      project: "demo",
+      kind: "local",
+    },
+  ]);
   release();
   await first;
   await second;
@@ -3445,6 +3459,7 @@ test("the queue read names the mutation rigd is running and how many wait behind
   expect(
     await runtime.command({ action: "queue", operation: "slow-up" }),
   ).toMatchObject({ operation: { state: "unknown" } });
+  expect(runtime.mutations()).toEqual([]);
 });
 
 test("usage mistakes that never reached an Operation leave activity untouched; a refused attempt is recorded", async () => {
@@ -3691,6 +3706,46 @@ test("a push whose committed config is invalid is recorded under the Preview it 
     outcome: "failed",
     message: "INVALID_YAML",
   });
+});
+
+test("a push shows the operator alert monitor the Target its Branch selects: a Preview for a feature Branch, the Stable Target for the Production Branch", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const resolve = deps.sources.resolve.bind(deps.sources);
+  for (const [branch, target] of [
+    ["feature", "preview"],
+    ["main", "live"],
+  ] as const) {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    let resolving = false;
+    deps.sources.resolve = async (...args) => {
+      resolving = true;
+      await blocked;
+      return await resolve(...args);
+    };
+    const push = runtime
+      .command({
+        action: "git-push",
+        project: "demo",
+        repoPath: "/tmp/developer",
+        branch,
+        commit: "abc",
+        operationId: `push-${branch}`,
+      })
+      .catch(() => {});
+    while (!resolving) await new Promise((resolve) => setTimeout(resolve, 1));
+    expect(runtime.mutations()).toMatchObject([
+      {
+        operationId: `push-${branch}`,
+        action: "git-push",
+        target,
+        kind: target,
+      },
+    ]);
+    release();
+    await push;
+  }
 });
 
 test("a push from a directory registered as another Project names both Projects and says which remote to use, never suggesting repoint", async () => {

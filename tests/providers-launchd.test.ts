@@ -9,6 +9,10 @@ import {
 import type { CommandRunner } from "../src/providers/contracts";
 import { runCommand } from "../src/providers/command-runner";
 import { createProcessIdentityReader } from "../src/providers/process-identity";
+import {
+  createProcessInspection,
+  platformKill,
+} from "../src/providers/process-inspection";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -37,6 +41,7 @@ test("launchd up does not restart a running job, never asks launchd to respawn i
     domain: "gui/99999",
     labelPrefix: "test.rig",
     run,
+    groupExists: async () => false,
     inspect: async () => undefined,
     timing: createLaunchdTiming(),
   });
@@ -85,6 +90,10 @@ test("real launchd capture stops its managed child and retains stdout and stderr
     captureCommand: [process.execPath, wrapper],
     // This test bootstraps a real launchd job, so it runs the real launchctl and reads real process identities.
     run: runCommand,
+    groupExists: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }).groupExists,
     inspect: createProcessIdentityReader(runCommand),
     timing: createLaunchdTiming(),
   });
@@ -158,6 +167,10 @@ test("real launchd capture records its application's exit against the start it b
     captureCommand: [process.execPath, wrapper],
     // This test bootstraps a real launchd job, so it runs the real launchctl and reads real process identities.
     run: runCommand,
+    groupExists: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }).groupExists,
     inspect: createProcessIdentityReader(runCommand),
     timing: createLaunchdTiming(),
   });
@@ -259,6 +272,7 @@ test("ensureRunning replaces a loaded job whose application has ended instead of
     captureCommand: ["/bin/true"],
     run,
     timing: { ...createLaunchdTiming(), now: () => clock },
+    groupExists: async () => false,
     inspect: async (pid) =>
       pid === wrapper.pid
         ? wrapper.identity
@@ -357,10 +371,12 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     captureCommand: ["/fake/rigd", "capture"],
     run,
     timing: createLaunchdTiming(),
+    // The application ends with its job; one that outlived it would keep its evidence file.
+    groupExists: async () => false,
     inspect: async (pid) =>
       pid === wrapper.pid
         ? wrapper.identity
-        : pid === application.pid
+        : pid === application.pid && loaded
           ? application.identity
           : undefined,
   });

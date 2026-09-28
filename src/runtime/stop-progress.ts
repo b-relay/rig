@@ -20,6 +20,9 @@ export interface StopTracking {
   killing?: string;
   /** The phase to return to once the stops that interrupted it have ended. */
   resumePhase?: OperationPhase;
+  /** Each stop of the Operation that needed SIGKILL, kept for its Activity line after a later stop of the same Service
+   * (a deploy's rollback, say) replaces it on the view. */
+  killedStops?: Pick<ServiceStopView, "service" | "target" | "killed">[];
 }
 /** The kill `entry`'s stops of Target `targetId` wait on: already aborted when the Operation is a `--kill`, or while a
  * `--kill` for that Target is running (`killRequested`). */
@@ -70,6 +73,12 @@ export function stopObserver(
       const index = stops.findIndex(
         (stop) => stop.service === service && stop.target === target.name,
       );
+      if ("killed" in ended && ended.killed)
+        (entry.killedStops ??= []).push({
+          service,
+          target: target.name,
+          killed: ended.killed,
+        });
       if (index >= 0) {
         // A Service that was not running had nothing to wait for and is not shown.
         if (ended.outcome === "unchanged") stops.splice(index, 1);
@@ -139,9 +148,11 @@ export function stopKillText(
 }
 
 /** Activity's line for the Services an Operation had to SIGKILL; undefined when none. */
-export function killedMessage(view: OperationView): string | undefined {
-  const killed = (view.stops ?? []).filter((stop) => stop.killed);
-  return killed.length ? killed.map(stopKillText).join("; ") : undefined;
+export function killedMessage(
+  entry: Pick<StopTracking, "killedStops">,
+): string | undefined {
+  const lines = [...new Set((entry.killedStops ?? []).map(stopKillText))];
+  return lines.length ? lines.join("; ") : undefined;
 }
 
 /** Records on `target` which Services its operator's stop had to SIGKILL, so status can say so until the next start.

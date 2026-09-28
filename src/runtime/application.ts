@@ -1083,7 +1083,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           outcome,
           occurredAt: deps.now(),
           ...((message) => (message ? { message } : {}))(
-            [errorCode, killedMessage(operations.get(operationId)!.view)]
+            [errorCode, killedMessage(operations.get(operationId)!)]
               .filter((part) => part !== undefined)
               .join(": "),
           ),

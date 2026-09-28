@@ -451,7 +451,7 @@ export const runtimeStateSchema = z
               .array(text)
               .optional()
               .describe(
-                "The Stable Targets (by id) already started again, or whose start failed, for this restart; a daemon that finds the restart again does not start them a second time.",
+                "The Targets (by id) already settled for this restart: Stable Targets started again, or whose start failed, and Working copies and Previews whose stopped Services were recorded as stopped by it. A daemon that finds the restart again does not act on them a second time.",
               ),
             unannounced: z
               .literal(true)

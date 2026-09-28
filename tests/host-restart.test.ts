@@ -672,6 +672,38 @@ test("a first pass that could not act on the restart for every Target leaves it 
   expect(host.restart).toBeUndefined();
 });
 
+test("a daemon that finishes a restart an earlier one left pending does not mark again a Working copy the operator started since: its unknown exit is retried", async () => {
+  const f = await fixture();
+  await f.startAll();
+  f.restartHost(REBOOTED);
+  // The Stable Target's start stays in progress, so the first pass never settles the restart.
+  const db = await f.key("live", "db");
+  f.delay.start = (key) =>
+    key === db ? new Promise<void>(() => {}) : undefined;
+  f.reopen();
+  void f.reconcile();
+  const localApi = await f.key("local", "api");
+  for (let i = 0; i < 200; i++) {
+    const local = (await f.store.read()).targets.find(
+      (t) => t.kind === "local",
+    )!;
+    const outcome = local.services?.api?.outcome;
+    if (outcome?.kind === "unknown" && outcome.hostRestart) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  // The operator starts the Working copy again; its api then vanishes with nothing recorded, and rigd is replaced.
+  await f.command({ action: "up", project: "demo" });
+  expect(await f.running("local")).toEqual(["api", "db", "worker"]);
+  f.processes.delete(localApi);
+  f.delay.start = undefined;
+  f.reopen();
+  await f.reconcile();
+
+  f.clock.ms += UNKNOWN_EXIT_RESTART_BACKOFF_MS[0]!;
+  await f.supervise();
+  expect(await f.running("local")).toEqual(["api", "db", "worker"]);
+});
+
 /** Makes the state writes that record the Working copy's Services as stopped by the Host restart fail while `failing.on`,
  * as a full disk would, so the first pass cannot settle that Target and the next daemon finds the restart again. */
 function failWorkingCopyMarking(store: FileStateStore) {

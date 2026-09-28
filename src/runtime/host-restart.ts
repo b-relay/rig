@@ -25,7 +25,8 @@ type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
 export interface HostSessionFinding {
   restart?: HostRestart;
   announced: boolean;
-  /** The Stable Targets an earlier daemon already started again, or whose start failed, for this same restart. */
+  /** The Targets an earlier daemon already settled for this same restart: Stable Targets started again (or whose start
+   * failed), and Working copies and Previews whose stopped Services it recorded as stopped by the restart. */
   settled: ReadonlySet<string>;
   /** How the pending restart is identified in state: as an earlier daemon found it, or as found now. */
   mark?: RestartMark;
@@ -178,7 +179,8 @@ function sameMark(
   );
 }
 
-/** Notes in the pending restart that `targetId`, a Stable Target, was started again or failed to start for it. When the
+/** Notes in the pending restart that `targetId` is settled for it: a Stable Target started again or failed to start, or
+ * a Working copy or Preview whose stopped Services were recorded as stopped by it. When the
  * restart's own entry could not be written, the note starts the pending restart, marked unannounced, so a daemon that
  * finds it again neither starts the Target again nor forgets to announce it. */
 function markSettled(
@@ -193,6 +195,17 @@ function markSettled(
   if (!pending.settled?.includes(targetId))
     pending.settled = [...(pending.settled ?? []), targetId];
   state.host.restart = pending;
+}
+
+/** Notes in the pending restart that `targetId`, a Working copy or Preview, has had its stopped Services recorded as
+ * stopped by it, so a daemon that finishes the restart later does not record them again: by then an explicit start may
+ * have ended the restart's hold on them. */
+export async function noteMarkedForHostRestart(
+  targetId: string,
+  mark: RestartMark,
+  deps: Deps,
+): Promise<void> {
+  await deps.store.update((state) => markSettled(state, targetId, mark));
 }
 
 /** Records `session` as the one rigd has acted on, so its next start compares against it; it replaces any pending restart. */

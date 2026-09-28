@@ -49,6 +49,7 @@ import {
 } from "./supervision";
 import {
   findHostRestart,
+  noteMarkedForHostRestart,
   recordHostRestart,
   restartMark,
   saveHostSession,
@@ -1462,7 +1463,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     failed: (error: unknown, target?: string) => Promise<void>,
     restart?: HostRestart,
     settled?: Set<string>,
-    /** Stable Targets an earlier daemon already started again (or failed to) for this same restart. */
+    /** Targets an earlier daemon already settled for this same restart: Stable Targets started again (or failed to), and
+     * Working copies and Previews whose stopped Services it recorded as stopped by the restart. */
     startedBefore?: ReadonlySet<string>,
     /** The restart a Stable Target's start is noted in. */
     mark?: RestartMark,
@@ -1513,9 +1515,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           return undefined;
         }
         // A Working copy or Preview whose stopped Services could not all be recorded as stopped by the restart is tried
-        // again by each pass of this daemon, and nothing of it is supervised until then.
+        // again by each pass of this daemon, and nothing of it is supervised until then. One an earlier daemon already
+        // recorded is not recorded again: an explicit start since then has ended the restart's hold on it.
         const stoppedBy =
-          target.kind === "live"
+          target.kind === "live" || startedBefore?.has(targetId)
             ? undefined
             : (restart ?? unmarked.get(targetId));
         if (stoppedBy) {
@@ -1524,6 +1527,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             return undefined;
           }
           unmarked.delete(targetId);
+          if (mark)
+            await noteMarkedForHostRestart(targetId, mark, deps).catch(
+              (error: unknown) => failed(error, target.name),
+            );
         }
         settled?.add(targetId);
         return await superviseTarget(

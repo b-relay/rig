@@ -1,15 +1,19 @@
 import type { z } from "zod";
-import type { projectConfigSchema, hostConfigSchema } from "./schema";
+import type { hostConfigSchema, ProjectConfig } from "./schema";
+import type { ConfigFormat } from "./formats";
 import type { PublicInput } from "./references";
 import type { RecipeMarker } from "./recipe-markers";
 export type { RecipeMarker } from "./recipe-markers";
 
-export type ProjectConfig = z.infer<typeof projectConfigSchema>;
+export type { ProjectConfig } from "./schema";
+export type { ConfigFormat } from "./formats";
 export type HostConfig = z.infer<typeof hostConfigSchema>;
 export interface ConfigDocument<T> {
   path: string;
   revision: string;
   config: T;
+  /** The format a Project document is written in; `config` always has the latest format's shape. Absent for Host config. */
+  format?: ConfigFormat;
   /** Recipe provenance comments found in a Project document's source, from the same bytes as `config`. Reports compare them;
    * planning and running never read them. Absent when the source carries none. */
   recipeMarkers?: RecipeMarker[];

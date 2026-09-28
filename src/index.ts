@@ -18,6 +18,7 @@ import { createProjectDocuments } from "./adapters/project-documents";
 import { runCommand } from "./providers/command-runner";
 import { inheritedEnvironment } from "./daemon/environment";
 import { homedir } from "node:os";
+import { findDeclaredFormat } from "./config/documents";
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
   // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked.
@@ -61,6 +62,7 @@ export async function main(args: readonly string[]): Promise<number> {
           }
         : {}),
       client: createCliClient(root, cwd),
+      configFormat: findDeclaredFormat,
     });
   } finally {
     process.removeListener("SIGINT", interrupts.interrupt);

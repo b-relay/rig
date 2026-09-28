@@ -15,6 +15,7 @@ import { runCommand } from "../providers/command-runner";
 import type { CommandRunner } from "../providers/contracts";
 import { inspectProjectGit, createProjectDiscovery } from "./project";
 import { previewName } from "../runtime/targets";
+import { terminalText } from "../cli/terminal-text";
 
 export interface RemoteHelperDependencies {
   repoPath: string;
@@ -81,6 +82,12 @@ const completed = z.object({
     .optional()
     .describe("Recorded name of the deployed Target."),
   route: z.string().optional().describe("Hostname the Target is routed at."),
+  deprecation: z
+    .string()
+    .optional()
+    .describe(
+      "One line naming a rig.yaml read for the push that is in a deprecated format.",
+    ),
   retired: z
     .array(
       z.object({
@@ -251,6 +258,11 @@ export async function runRemoteHelper(
                   `${project} ${push.branch} ${result.outcome}${result.target ? ` to ${result.target}` : ""}${result.route ? ` at ${result.route}` : ""} (operation ${operationId})\n`,
                 );
               }
+              // A warning, not progress: --quiet does not hide it.
+              if (result.deprecation)
+                dependencies.output.error(
+                  `Deprecated: ${terminalText(result.deprecation)}\n`,
+                );
             }
             dependencies.output.write(`ok ${push.destination}\n`);
           } catch (error) {

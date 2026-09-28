@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, writeFile, rename, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { rigFixture } from "./support/rig-fixture";
+import { beyondDeprecation, rigFixture } from "./support/rig-fixture";
 
 interface TargetReport {
   name: string;
@@ -25,7 +25,7 @@ test("a complete Project runs a web Service with SQLite under ${rig.data} and an
     stdout: string;
     stderr: string;
   }) => {
-    expect(result.stderr).toBe("");
+    expect(beyondDeprecation(result.stderr)).toBe("");
     expect(result.code).toBe(0);
     return result.stdout;
   };

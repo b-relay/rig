@@ -26,6 +26,9 @@ rig
 │    --project <name>
 ├─ config                           show the validated rig.yaml and its path
 │    --project <name>
+│    └─ upgrade                     rewrite rig.yaml in the latest format, keeping comments and layout
+│         --project <name>
+│         --dry-run                 print the diff without writing
 ├─ activity [operation]             the latest 100 actions, or one Operation by id
 │
 ├─ deploy [target] [branch]         target: the Stable Target's name, or "preview"
@@ -62,6 +65,7 @@ rig
 │    ├─ list                        bundled recipes and their versions
 │    ├─ generate <recipe>           name or name@version; prints a Service block
 │    │    --name <service>
+│    │    --format <format>         rig/v1 or rig/v2 (default: the nearby rig.yaml's, else rig/v2)
 │    └─ diff [service]              compare generated Services to their recipes
 │         --project <name>
 │
@@ -125,5 +129,11 @@ Git runs this helper for `git push rig <branch>`. People never run it.
   `<RIG_ROOT>/bin`). A source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
   `.cjs`) is published instead as a shim that runs it in place with the bun
   `rigd install` recorded, so its relative imports resolve.
+- `rig init` writes `rig.yaml` in the latest format, `rig/v2`. Every command
+  run in a Project whose `rig.yaml` is the older `rig/v1` (a file without
+  `format`) prints one `Deprecated:` line on stderr naming
+  `rig config upgrade`, as does a deploy of a Commit whose `rig.yaml` is
+  `rig/v1`. `rig config upgrade` changes only the file in the working tree;
+  commit it yourself.
 - `RIG_ROOT` is the only environment switch: an absolute path, `~/.rig` by
   default. There are no `--state-root` or `--config` overrides.

@@ -232,6 +232,9 @@ function world(
       async host() {
         return parseHostConfig({});
       },
+      async upgrade(): Promise<never> {
+        throw new Error("rig config upgrade is not part of these tests");
+      },
     },
     sources: {
       async preflight() {

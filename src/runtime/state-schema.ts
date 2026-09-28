@@ -294,6 +294,11 @@ const target = z.object({
     .describe(
       "Revision of the rig.yaml a Working copy plan was made from, for reporting drift.",
     ),
+  configDigest: text
+    .optional()
+    .describe(
+      "Digest of what that rig.yaml said, whatever its format, comments or layout; drift is reported when it changes.",
+    ),
   recovery: z
     .object({
       plan: targetPlanSchema,

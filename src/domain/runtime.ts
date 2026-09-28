@@ -106,6 +106,8 @@ export interface TargetRecord {
   uncertainBuild?: { branch?: string; commit?: string; unit: string };
   /** Revision of the rig.yaml a Working copy plan was made from. */
   configRevision?: string;
+  /** Digest of what that rig.yaml said, whatever its format, comments or layout; absent on a Target an older rigd planned. */
+  configDigest?: string;
   recovery?: {
     plan: TargetPlan;
     /** Build outcomes of the plan restored by rollback. */

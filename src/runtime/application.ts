@@ -66,6 +66,8 @@ import {
   registeredDirectoryMissing,
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
+import { configDigest } from "../config/config-digest";
+import { watchConfigFormats, withDeprecation } from "./config-format-notice";
 import { assertLogServices } from "./log-services";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
 import { assertSourceBuildsKnown, withStops } from "./lifecycle";
@@ -275,17 +277,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const command = { ...selection, action: "status" as const };
     const { project } = await selectProject(command, deps, false);
     const state = await deps.store.read();
-    return projectStatus(
+    const formats = watchConfigFormats(deps.documents);
+    const report = await projectStatus(
       project,
       state.targets.filter((target) => target.projectId === project.id),
       selection,
       {
         ...deps,
+        documents: formats.documents,
         inProgress,
         stopping,
         serviceStops: (targetId) => activeStops(operations.values(), targetId),
       },
     );
+    return withDeprecation(report, formats.deprecation());
   };
   /** The Operations running and waiting, and where `operationId` stands when one is named. */
   const queueReport = (operationId?: string): QueueReport => {
@@ -372,10 +377,22 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       },
     };
   };
+  /** Runs one command and adds the deprecation line when a rig.yaml it read is in an older format; the upgrade itself
+   * reports formats on its own. */
   const execute = async (command: RuntimeCommand): Promise<unknown> => {
+    const formats = watchConfigFormats(deps.documents);
+    const reply = await operate(command, formats.documents);
+    return command.action === "config-upgrade"
+      ? reply
+      : withDeprecation(reply, formats.deprecation());
+  };
+  const operate = async (
+    command: RuntimeCommand,
+    documents: RuntimeDependencies["documents"],
+  ): Promise<unknown> => {
     const operationId = command.operationId ?? deps.id();
     if (reads.has(command.action))
-      return run(command, operationId, UNLOCKED, deps);
+      return run(command, operationId, UNLOCKED, { ...deps, documents });
     // Operations now run side by side, so an id must name one of them at a time.
     if (operations.has(operationId))
       throw new RigError(
@@ -426,6 +443,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         try {
           return await run(command, operationId, held, {
             ...deps,
+            documents,
             ports: reservations.ports(operationId),
             lifecycle: lifecycleOf(entry),
           });
@@ -615,6 +633,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         deps,
         [
           "config",
+          "config-upgrade",
           "recipe-diff",
           "deploy",
           "deployment-context",
@@ -658,6 +677,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "config")
         return { project: project.name, ...selection.document };
+      // A config edit: it waits for other edits of the Project's rig.yaml, never for its Targets, and is not Activity.
+      if (command.action === "config-upgrade") {
+        if (!command.dryRun)
+          await admission.admit([configScope(project.id)], {
+            project: project.name,
+          });
+        return {
+          project: project.name,
+          ...(await deps.documents.upgrade(project.repoPath, {
+            dryRun: command.dryRun === true,
+          })),
+        };
+      }
       if (command.action === "recipe-diff")
         return recipeReport(
           project.name,
@@ -1046,11 +1078,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             command.action === "restart" ? "all" : "stopped",
             deps,
           );
+        // What the file says is compared, so a comment or an upgrade of its format is no drift. A Target planned by a rigd
+        // that recorded no digest is compared by the file's text.
+        const current = configured.document;
         const drift =
           target.kind === "local" &&
           target.configRevision !== undefined &&
-          configured.document !== undefined &&
-          configured.document.revision !== target.configRevision;
+          current !== undefined &&
+          (target.configDigest !== undefined
+            ? configDigest(current.config) !== target.configDigest
+            : current.revision !== target.configRevision);
         if (drift)
           warnings.push(
             `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${target.name} to apply the current rig.yaml.`,

@@ -26,9 +26,8 @@ const SINCE_SLACK_MS = 60_000;
 /** The newest entries of one family that `filter` keeps, at most `limit`, oldest first; and where each file it opened
  * ends, for a follow to resume from. The family's files are walked back from the newest line, generation by generation,
  * and the walk stops once `limit` entries are kept or it passes `since`, so older generations are never opened. The
- * current file is always opened for its position; a family `filter` cannot match (a wrapper log of another Service, or
- * any launchd file under a time bound, since its lines have no time) is not read. Fails LOG_UNREADABLE for a file that
- * cannot be read. */
+ * current file is always opened for its position. A family `filter` cannot match (see `familyMayMatch`) is not opened
+ * at all: it has no entries and no position. Fails LOG_UNREADABLE for a file that cannot be read. */
 export async function readFamilyTail(
   root: string,
   family: { readonly family: string; readonly members: readonly LogSource[] },
@@ -38,10 +37,8 @@ export async function readFamilyTail(
   entries: TargetLogEntry[];
   positions: Record<string, LogPosition>;
 }> {
-  const evidence = familyEvidence(family.family);
-  const searching =
-    !evidence ||
-    matchesLogFilter({ timestamp: "unknown", ...evidence }, filter);
+  if (!familyMayMatch(family.family, filter))
+    return { entries: [], positions: {} };
   const stopBefore =
     filter.since === undefined
       ? {}
@@ -70,7 +67,7 @@ export async function readFamilyTail(
   const unreadableCounts =
     unreadableKept && filter.since === undefined && filter.until === undefined;
   let bytesPastFullPage = 0;
-  let done = !searching;
+  let done = false;
   for (const member of [...family.members].reverse()) {
     if (done && member.generation > 0) break;
     const log = await openLog(join(root, member.name));
@@ -115,4 +112,14 @@ export async function readFamilyTail(
   }
   settle(undefined);
   return { entries: kept.slice(0, limit).reverse(), positions };
+}
+
+/** Whether any line of `family` can pass `filter`. A family of records (`target.jsonl`, `events.jsonl`) always may; a
+ * family of plain lines launchd wrote belongs to one component and stream, and has no times, so a filter on another
+ * component or stream, or any time bound, excludes all of it. */
+export function familyMayMatch(family: string, filter: LogFilter): boolean {
+  const evidence = familyEvidence(family);
+  return (
+    !evidence || matchesLogFilter({ timestamp: "unknown", ...evidence }, filter)
+  );
 }

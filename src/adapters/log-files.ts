@@ -60,19 +60,23 @@ function unreadableFile(path: string, code: string | undefined) {
 }
 
 /** Byte offset just past the last newline before `size`: where the file's complete lines end. 0 when it has none; an
- * unterminated final line is still being written and waits for a later read. */
+ * unterminated final line is still being written and waits for a later read. Only the last window (and its newline) is
+ * searched: an unterminated run longer than the window (output that never ends a line, such as a progress bar drawn with
+ * carriage returns) is taken as ending at `size`, and read as one over-long record, so a read never scans a whole
+ * file for a newline. */
 export async function completeEnd(
   file: FileHandle,
   size: number,
 ): Promise<number> {
-  for (let end = size; end > 0;) {
-    const start = Math.max(0, end - TAIL_CHUNK_BYTES);
+  const floor = Math.max(0, size - LOG_WINDOW_BYTES - 1);
+  for (let end = size; end > floor;) {
+    const start = Math.max(floor, end - TAIL_CHUNK_BYTES);
     const chunk = await readAt(file, start, end - start);
     const newline = chunk.lastIndexOf(10);
     if (newline !== -1) return start + newline + 1;
     end = start;
   }
-  return 0;
+  return floor > 0 ? size : 0;
 }
 
 /** The complete lines of `file` that end at or before `end` (0 or an offset just past a newline), newest first, read

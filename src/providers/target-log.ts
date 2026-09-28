@@ -1,5 +1,15 @@
-import { appendFile, mkdir, open, rename, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  appendFile,
+  link,
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import {
   DEFAULT_LOG_RETENTION,
   type LogRetention,
@@ -72,19 +82,50 @@ async function acquireLock(lock: string): Promise<boolean> {
     }
     const held = await stat(lock).catch(() => undefined);
     if (held && Date.now() - held.mtimeMs < STALE_ROTATION_MS) return false;
-    await rm(lock, { force: true });
+    if (held && !(await reclaimStaleLock(lock, held.ino))) return false;
   }
   return false;
 }
-/** Removes `<file>.<from>`, `<file>.<from + 1>`, … up to the first number that is not there. */
+/** Removes the stale lock `observed` (its inode), and only that one. Another writer may have reclaimed it and taken a
+ * fresh lock at the same path since it was observed; the lock is therefore moved aside first, which is atomic, and put
+ * back when what was moved is not the stale one. True when the stale lock is gone and the path is free to take. */
+export async function reclaimStaleLock(
+  lock: string,
+  observed: number,
+): Promise<boolean> {
+  const aside = `${lock}.${randomUUID()}.stale`;
+  try {
+    await rename(lock, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+  try {
+    if ((await stat(aside)).ino === observed) return true;
+    // A fresh lock of another writer: restore it, unless yet another lock has been taken meanwhile.
+    await link(aside, lock).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    return false;
+  } finally {
+    await rm(aside, { force: true });
+  }
+}
+/** Removes every `<file>.<n>` with n at least `from`, whatever gaps an interrupted rotation left between them. */
 async function dropGenerationsFrom(file: string, from: number): Promise<void> {
-  for (let generation = from; ; generation++) {
-    try {
-      await rm(`${file}.${generation}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
+  const prefix = `${basename(file)}.`;
+  let names: string[];
+  try {
+    names = await readdir(dirname(file));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const generation = name.slice(prefix.length);
+    if (/^[1-9]\d*$/.test(generation) && Number(generation) >= from)
+      await rm(join(dirname(file), name), { force: true });
   }
 }
 async function renamePresent(from: string, to: string): Promise<void> {

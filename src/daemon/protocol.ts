@@ -5,11 +5,9 @@ import { z } from "zod";
 /** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
 export const projectName = z.string().min(1).max(128);
 export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
-/** A component name `rig logs --service` may send: the shape every Service and Tool name has. */
-export const logComponentName = z
-  .string()
-  .max(128)
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
+/** A component name `rig logs --service` may send: the shape every Service and Tool name has. Like config, it sets no
+ * length limit of its own; the control plane's request size bounds it. */
+export const logComponentName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
 /** rig resolves paths against the caller's directory before sending; rigd never resolves against its own. */
 export const absolutePath = z.string().min(1).refine(isAbsolute, {
   message: "must be an absolute path",

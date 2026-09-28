@@ -14,7 +14,14 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
-import { appendTargetLog, rotateLogFile } from "../src/providers/target-log";
+import {
+  appendTargetLog,
+  reclaimStaleLock,
+  rotateLogFile,
+} from "../src/providers/target-log";
+import { completeEnd, LOG_WINDOW_BYTES } from "../src/adapters/log-files";
+import { logComponentName } from "../src/daemon/protocol";
+import { open } from "node:fs/promises";
 import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { LogFilter } from "../src/domain/log-filter";
@@ -769,4 +776,104 @@ test("a recent read over a file of unreadable records stops a window past the pa
   } finally {
     await chmod(`${path}.1`, 0o600);
   }
+});
+
+test("reclaiming a stale rotation lock removes only the lock observed stale, never a fresh one another writer took since", async () => {
+  const target = await fixture(),
+    lock = join(target.logRoot, "target.jsonl.rotating");
+  await writeFile(lock, "");
+  const fresh = (await stat(lock)).ino;
+  // Observed stale earlier, but the lock there now is another writer's fresh one.
+  expect(await reclaimStaleLock(lock, fresh + 1)).toBe(false);
+  expect((await stat(lock)).ino).toBe(fresh);
+  expect(await reclaimStaleLock(lock, fresh)).toBe(true);
+  expect(await exists(lock)).toBe(false);
+  // Already gone: the path is free.
+  expect(await reclaimStaleLock(lock, fresh)).toBe(true);
+  expect(
+    (await import("node:fs/promises").then((fs) => fs.readdir(target.logRoot)))
+      .length,
+  ).toBe(0);
+});
+
+test("a rotation drops every generation past retention, even after a gap an interrupted rotation left", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, "0123456789\n");
+  await writeFile(`${path}.1`, "one\n");
+  await writeFile(`${path}.3`, "three\n");
+  await writeFile(`${path}.12`, "twelve\n");
+  await rotateLogFile(path, { maxBytes: 8, generations: 1 });
+  expect(await readFile(`${path}.1`, "utf8")).toBe("0123456789\n");
+  for (const gone of [".2", ".3", ".12"])
+    expect(await exists(`${path}${gone}`)).toBe(false);
+});
+
+test("finding where complete lines end reads at most a window back, so an endless unterminated line is not scanned whole", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "web.stdout.log");
+  await writeFile(path, `first\n${"x".repeat(100)}`);
+  let handle = await open(path, "r");
+  expect(await completeEnd(handle, (await handle.stat()).size)).toBe(6);
+  await handle.close();
+  await writeFile(path, `first\n${"\r".repeat(3 * LOG_WINDOW_BYTES)}`);
+  handle = await open(path, "r");
+  const size = (await handle.stat()).size;
+  let read = 0;
+  const counting = new Proxy(handle, {
+    get(target, key, receiver) {
+      if (key === "read")
+        return async (...args: Parameters<typeof handle.read>) => {
+          const result = await target.read(...args);
+          read += result.bytesRead;
+          return result;
+        };
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  expect(await completeEnd(counting, size)).toBe(size);
+  expect(read).toBeLessThanOrEqual(LOG_WINDOW_BYTES + 1);
+  await handle.close();
+});
+
+test("a family --service or a time bound excludes is not opened, so an unreadable one does not fail the read or the follow", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles();
+  await writeFile(
+    join(target.logRoot, "target.jsonl"),
+    record("scheduler", "tick", "2026-09-09T12:00:00Z"),
+  );
+  const web = join(target.logRoot, "web.stderr.log");
+  await writeFile(web, "web noise\n");
+  await chmod(web, 0o000);
+  try {
+    for (const filter of [
+      { services: ["scheduler"] },
+      { since: "2026-09-09T11:00:00Z" },
+    ] satisfies LogFilter[]) {
+      const first = await files.logs(target, undefined, 10, filter);
+      expect(first.entries.map((each) => each.line)).toEqual(["tick"]);
+      await appendFile(
+        join(target.logRoot, "target.jsonl"),
+        record("scheduler", "tock", "2026-09-09T12:01:00Z"),
+      );
+      const next = await files.logs(target, first.cursor, 10, filter);
+      expect(next.entries.map((each) => each.line)).toEqual(["tock"]);
+      await writeFile(
+        join(target.logRoot, "target.jsonl"),
+        record("scheduler", "tick", "2026-09-09T12:00:00Z"),
+      );
+    }
+    await expect(files.logs(target, undefined, 10)).rejects.toMatchObject({
+      code: "LOG_UNREADABLE",
+    });
+  } finally {
+    await chmod(web, 0o600);
+  }
+});
+
+test("--service accepts any Service name config accepts, however long", () => {
+  expect(logComponentName.safeParse("a".repeat(300)).success).toBe(true);
+  expect(logComponentName.safeParse("-bad").success).toBe(false);
 });

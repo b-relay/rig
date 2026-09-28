@@ -752,7 +752,8 @@ logs:
 - `generations` is how many of those older, rotated files are kept. With `1`,
   only `target.jsonl.1` is kept, and the next rotation replaces it. With `3`,
   Rig keeps `.1` (newest) to `.3` (oldest) and deletes the file that would
-  become `.4`. With `0`, a full file is deleted and nothing older is kept.
+  become `.4`. With `0`, a full file is deleted and nothing older is kept; a
+  line another writer appends at the moment of deletion goes with it.
 
 So a Target keeps at most about `max_bytes × (generations + 1)` of log: 128 MiB
 with the defaults. The limit is shared by every Service of the Target, so a

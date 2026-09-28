@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { TargetRecord } from "../domain/runtime";
@@ -20,7 +20,7 @@ import {
   logSource,
   type LogSource,
 } from "./log-sources";
-import { readFamilyTail, type LogPosition } from "./log-tail";
+import { familyMayMatch, readFamilyTail, type LogPosition } from "./log-tail";
 
 const positionSchema = z
   .object({ identity: z.string(), offset: z.number().int().nonnegative() })
@@ -129,18 +129,20 @@ async function readRecent(
 }
 async function readFollowing(
   root: string,
-  sources: readonly LogSource[] | undefined,
-  previous: Record<string, LogPosition>,
+  listed: readonly LogSource[] | undefined,
+  following: Record<string, LogPosition>,
   lines: number,
   filter: LogFilter,
 ): Promise<Read> {
-  // Each file is opened once: the identity it is rebound by is the identity of the bytes read.
-  const opened = new Map<string, OpenLog>();
+  // A family the filter excludes is neither opened nor followed, as the first read left it out.
+  const included = (name: string) =>
+    familyMayMatch(logSource(name)!.family, filter);
+  const previous = Object.fromEntries(
+    Object.entries(following).filter(([name]) => included(name)),
+  );
+  const snapshot = await openSnapshot(root, listed, included);
+  const { sources, opened } = snapshot;
   try {
-    for (const source of sources ?? []) {
-      const log = await openLog(join(root, source.name));
-      if (log) opened.set(source.name, log);
-    }
     const positions = rebind(opened, previous, sources !== undefined);
     const names = new Set([...opened.keys(), ...Object.keys(positions)]);
     const windows: SourceWindow[] = [];
@@ -162,6 +164,52 @@ async function readFollowing(
   } finally {
     for (const log of opened.values()) await log.handle.close();
   }
+}
+/** Opens every included Target log once, the current file of a family before its older generations, and checks that no
+ * rotation happened while they were opened: each name must still be the file opened under it, and no two names the same
+ * file. Otherwise a rotation between two opens could show one file under two names, and the follow would read it twice
+ * or lose its place. After three unsettled tries the last snapshot is used; rotations are seconds apart at the least. */
+async function openSnapshot(
+  root: string,
+  listed: readonly LogSource[] | undefined,
+  included: (name: string) => boolean,
+): Promise<{
+  sources: readonly LogSource[] | undefined;
+  opened: Map<string, OpenLog>;
+}> {
+  let sources = listed;
+  for (let attempt = 1; ; attempt++) {
+    const opened = new Map<string, OpenLog>();
+    try {
+      for (const source of [...(sources ?? [])]
+        .filter((each) => included(each.name))
+        .sort((a, b) => a.generation - b.generation)) {
+        const log = await openLog(join(root, source.name));
+        if (log) opened.set(source.name, log);
+      }
+      if (attempt === 3 || (await settled(root, opened)))
+        return { sources, opened };
+    } catch (error) {
+      for (const log of opened.values()) await log.handle.close();
+      throw error;
+    }
+    for (const log of opened.values()) await log.handle.close();
+    sources = await listSources(root);
+  }
+}
+/** Whether each opened name is still the file opened under it, and no file was opened under two names. */
+async function settled(
+  root: string,
+  opened: ReadonlyMap<string, OpenLog>,
+): Promise<boolean> {
+  const identities = new Set<string>();
+  for (const [name, log] of opened) {
+    if (identities.has(log.identity)) return false;
+    identities.add(log.identity);
+    const now = await stat(join(root, name)).catch(() => undefined);
+    if (!now || `${now.dev}:${now.ino}` !== log.identity) return false;
+  }
+  return true;
 }
 /** Takes entries from the windows in time order, at most `lines` that `filter` keeps, advancing each window's position
  * past every row taken, kept or not. */

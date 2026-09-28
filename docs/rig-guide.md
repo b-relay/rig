@@ -1452,9 +1452,12 @@ Every build and process runs under `/bin/sh -c` in the Target workspace. Rig
 composes its environment fresh for each invocation, each layer replacing names
 of the one before:
 
-1. the baseline: `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, and `TZ` from
-   the shell that ran `rigd install`, plus a `TMPDIR` Rig owns for the Target
-   (`<RIG_ROOT>/tmp/<target id>`, mode 700)
+1. the baseline: `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`,
+   `LC_CTYPE`, and `TZ` from the shell that ran `rigd install`, plus a
+   `TMPDIR` Rig owns for the Target (`<RIG_ROOT>/tmp/<target id>`, mode 700).
+   `USER` and `LOGNAME` name the operator's account as that shell had it, so
+   tools that find the operator's login by account name (the macOS Keychain,
+   for example) work as they do in a terminal
 2. the top-level `env`
 3. the Service's own `env`
 4. the top-level `env_file` entries, in the order listed
@@ -1467,7 +1470,7 @@ of the one before:
 A Service never reads another Service's `env` or files. A Tool build and
 dependency installation get the Project layers only (1, 2, 4, 5). Nothing else
 of the daemon's or the installing shell's environment reaches a Project's
-processes: no `USER`, `SHELL`, tokens, or Rig's own variables. Declare what a
+processes: no `SHELL`, tokens, or Rig's own variables. Declare what a
 process needs in `env` or an env file. Git discovery (`rig init`,
 and `git push rig`) is Rig's own tooling; it runs with the login basics of
 that shell and ignores `GIT_DIR` and `GIT_WORK_TREE`, so it always describes

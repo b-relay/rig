@@ -127,6 +127,11 @@ function recipeFileLines(
       `  ${path}: not in the Project. rig recipe generate ${recipe} writes ${bundled}'s copy.`,
     ];
   const omitted = Number(file.omitted) || 0;
+  if (!Array.isArray(file.diff))
+    return [
+      `  ${path} differs from ${bundled}'s copy; it is too long to show the lines.`,
+      `  Nothing was changed. To take ${bundled}'s copy, move ${path} aside and run rig recipe generate ${recipe}.`,
+    ];
   return [
     `  ${path} differs from ${bundled}'s copy (- the Project's, + ${bundled}'s):`,
     ...(Array.isArray(file.diff) ? file.diff : []).map(

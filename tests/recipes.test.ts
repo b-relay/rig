@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -737,4 +738,32 @@ test("the line diff shows each change with its context, in unified hunks", () =>
   ).toEqual(["@@ -4,3 +4,3 @@", " 4", "-5", "+five", " 6"]);
   expect(lineDiff("a\nc", "a\nb\nc", 0)).toEqual(["@@ -1,0 +2,1 @@", "+b"]);
   expect(lineDiff("a\nb", "a", 0)).toEqual(["@@ -2,1 +1,0 @@", "-b"]);
+});
+
+test("a recipe file is never written through a linked directory that leads out of the Project, and a copy too long to compare still says it differs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-recipes-links-"));
+  roots.push(root);
+  const project = join(root, "project");
+  const elsewhere = join(root, "elsewhere");
+  await mkdir(project);
+  await mkdir(elsewhere);
+  await symlink(elsewhere, join(project, "scripts"));
+  await expect(
+    createProjectFiles().create(project, "scripts/rig-convex.ts", "x"),
+  ).rejects.toMatchObject({ code: "RECIPE_FILE_PATH" });
+  await expect(readFile(join(elsewhere, "rig-convex.ts"))).rejects.toThrow();
+
+  const long = Array.from({ length: 5000 }, (_, n) => `line ${n}`).join("\n");
+  expect(lineDiff(long, `${long}\nmore`)).toBeUndefined();
+  const f = await fixture(
+    APP + (await rig(["recipe", "generate", "convex"], undefined)).out,
+    BUNDLED_RECIPES,
+  );
+  await mkdir(join(f.repo, "scripts"));
+  await writeFile(join(f.repo, "scripts", "rig-convex.ts"), long);
+  expect((await f.rig("recipe", "diff", "convex")).out).toContain(
+    "  scripts/rig-convex.ts differs from convex@2's copy; it is too long to show the lines.",
+  );
+  // Doctor only needs to know the file is there.
+  expect((await f.rig("doctor")).out).not.toContain("Notices");
 });

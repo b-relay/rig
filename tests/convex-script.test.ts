@@ -7,6 +7,8 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { once } from "node:events";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RECIPE_FILE_TEXT } from "../src/recipes/generated-files";
@@ -148,19 +150,34 @@ test("when convex dev ends by itself the script stops the backend and exits with
   );
 });
 
-test("a port something already answers on is refused before the backend starts or .env.local is touched", async () => {
-  const p = await project();
-  const other = Bun.serve({
-    hostname: "127.0.0.1",
-    port: p.cloud,
-    fetch: () => new Response("someone-else"),
-  });
-  cleanups.push(async () => other.stop(true));
-  const child = p.start();
-  expect(await child.exited).toBe(1);
-  expect(await new Response(child.stderr).text()).toContain(
-    "(CONVEX_PORT_TAKEN)",
-  );
-  expect(await p.fake.runs()).toEqual([]);
-  await expect(readFile(join(p.workspace, ".env.local"))).rejects.toThrow();
+test("a port something already listens on (a backend, a server answering 404, or not HTTP at all) is refused before the backend starts or .env.local is touched", async () => {
+  for (const occupant of ["backend", "404", "tcp"] as const) {
+    const p = await project();
+    const port = occupant === "tcp" ? p.site : p.cloud;
+    if (occupant === "tcp") {
+      const server = createServer((socket) => socket.end()).listen(
+        port,
+        "127.0.0.1",
+      );
+      await once(server, "listening");
+      cleanups.push(async () => server.close());
+    } else {
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port,
+        fetch: () =>
+          occupant === "404"
+            ? new Response("not here", { status: 404 })
+            : new Response("someone-else"),
+      });
+      cleanups.push(async () => server.stop(true));
+    }
+    const child = p.start();
+    expect(await child.exited).toBe(1);
+    const stderr = await new Response(child.stderr).text();
+    expect(stderr).toContain(`listens on 127.0.0.1:${port}`);
+    expect(stderr).toContain("(CONVEX_PORT_TAKEN)");
+    expect(await p.fake.runs()).toEqual([]);
+    await expect(readFile(join(p.workspace, ".env.local"))).rejects.toThrow();
+  }
 });

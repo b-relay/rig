@@ -1,11 +1,19 @@
+/** At most this many line pairs (about 16 MiB of table) are compared. */
+export const MAX_DIFF_CELLS = 4_000_000;
 /** Pure: a line diff of `from` against `to` in unified form without file headers: `@@ -a,b +c,d @@` hunks of lines
  * prefixed `-` (only in `from`), `+` (only in `to`) or ` ` (context), with `context` unchanged lines around each change.
- * Empty when the texts are equal. Uses the longest common subsequence of lines, which suits files of a few thousand
- * lines at most. */
-export function lineDiff(from: string, to: string, context = 3): string[] {
+ * Empty when the texts are equal; undefined when they are too long to compare (more than MAX_DIFF_CELLS pairs of lines).
+ * Uses the longest common subsequence of lines. */
+export function lineDiff(
+  from: string,
+  to: string,
+  context = 3,
+): string[] | undefined {
   if (from === to) return [];
   const a = from.split("\n"),
     b = to.split("\n");
+  // The table holds a number per pair of lines: past this many, there is no diff, only the fact of a difference.
+  if (a.length * b.length > MAX_DIFF_CELLS) return undefined;
   // lengths[i][j]: the longest common subsequence of a[i..] and b[j..].
   const lengths = Array.from(
     { length: a.length + 1 },

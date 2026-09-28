@@ -134,6 +134,7 @@ export async function doctor(
                 dirname(repository.document.path),
                 path,
               ),
+            { diff: false },
           ),
         )
       : [];

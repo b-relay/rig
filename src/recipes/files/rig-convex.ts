@@ -24,8 +24,9 @@
 // - The backend binary comes from Convex's own cache (~/.cache/convex/binaries), which `convex dev` shares. Like
 //   `convex dev`, it runs the release Convex recommends and moves an existing deployment to it; a release missing from
 //   the cache is downloaded (network and `unzip` needed). Offline, it stays on what is cached.
-// - .env.local is pointed at the backend, so other `bunx convex` commands in this directory reach it. Lines choosing
-//   another deployment (CONVEX_DEPLOYMENT, CONVEX_DEPLOY_KEY, CONVEX_DEPLOYMENT_TOKEN) are commented out, and
+// - .env.local is pointed at the backend, so other `bunx convex` commands in this directory reach it, unless a deploy
+//   key in .env or your shell sends them to Convex Cloud, which the Convex CLI prefers. Lines choosing another
+//   deployment (CONVEX_DEPLOYMENT, CONVEX_DEPLOY_KEY, CONVEX_DEPLOYMENT_TOKEN) are commented out in .env.local, and
 //   `convex dev` runs with them set empty. Keep .env.local out of Git: it holds the admin key.
 // - Both processes are supervised together. SIGTERM (a stop) is passed to both and the script exits once they have;
 //   when one ends by itself, the other is stopped and the script exits with a failure.
@@ -47,6 +48,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { connect } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
@@ -423,6 +425,8 @@ export interface Dependencies {
   }): Promise<CommandResult>;
   /** The text a loopback GET answers with a 2xx status; undefined otherwise. */
   probe(url: string, signal: AbortSignal): Promise<string | undefined>;
+  /** Whether something accepts a TCP connection on 127.0.0.1 at `port`. */
+  listening(port: number, signal: AbortSignal): Promise<boolean>;
   /** Resolves after `ms`, or as soon as `signal` aborts. */
   wait(ms: number, signal: AbortSignal): Promise<void>;
   now(): number;
@@ -489,15 +493,17 @@ async function runUntilEnd(
         stop,
       );
   const url = backendUrl(request.cloudPort);
-  // Only what answers after the backend starts can be taken for it, so nothing may answer before.
-  const before = await deps.probe(`${url}/instance_name`, stop);
-  if (before !== undefined)
-    throw new HelperError(
-      "CONVEX_PORT_TAKEN",
-      `A Convex backend (${evidence(before) || "unnamed"}) already answers at ${url}, before this Service started its own.`,
-      "Stop the other backend (an earlier one of this deployment may still run), or give this Service other ports.",
-      { url },
-    );
+  // Only what answers after the backend starts can be taken for it, so nothing may listen on its ports before.
+  for (const port of [request.cloudPort, request.sitePort])
+    if (await deps.listening(port, stop)) {
+      const name = await deps.probe(`${backendUrl(port)}/instance_name`, stop);
+      throw new HelperError(
+        "CONVEX_PORT_TAKEN",
+        `${name === undefined ? "Something" : `A Convex backend (${evidence(name) || "unnamed"})`} already listens on 127.0.0.1:${port}, before this Service started its backend.`,
+        "Stop what listens there (an earlier backend of this deployment may still run), or give this Service other ports.",
+        { port },
+      );
+    }
   const envFile = join(request.workspace, ".env.local");
   await deps.files.writePrivate(
     envFile,
@@ -1234,6 +1240,23 @@ export async function probeText(
     return undefined;
   }
 }
+/** Whether something accepts a TCP connection on 127.0.0.1 at `port` within 2 s. */
+export function listening(port: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect({ host: "127.0.0.1", port });
+    const done = (answer: boolean) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", aborted);
+      socket.destroy();
+      resolve(answer);
+    };
+    const aborted = () => done(false);
+    const timer = setTimeout(() => done(false), 2_000);
+    signal.addEventListener("abort", aborted, { once: true });
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+  });
+}
 function wait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve();
@@ -1289,6 +1312,7 @@ export async function main(): Promise<number> {
         files: deploymentStore(),
         run: runCommand,
         probe: probeText,
+        listening,
         wait,
         now: Date.now,
         newInstanceSecret: () => randomBytes(32).toString("hex"),

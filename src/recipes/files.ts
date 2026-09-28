@@ -13,7 +13,8 @@ export interface RecipeFileFinding {
   readonly state: "missing" | "same" | "differs";
   /** Whether the version the Service was generated from writes this file too, so the Service runs it. */
   readonly used: boolean;
-  /** For `differs`: the Project's copy against Rig's, as unified-diff lines (`-` the Project's, `+` Rig's). */
+  /** For `differs`: the Project's copy against Rig's, as unified-diff lines (`-` the Project's, `+` Rig's); absent when
+   * no diff was asked for or the files are too long to compare. */
   readonly diff?: readonly string[];
   /** Diff lines left out past MAX_DIFF_LINES. */
   readonly omitted?: number;
@@ -25,6 +26,8 @@ export async function withRecipeFiles(
   findings: readonly RecipeFinding[],
   catalog: readonly Recipe[],
   read: (path: string) => Promise<string | undefined>,
+  /** Whether a changed file gets its line diff; doctor only needs to know which files are missing. */
+  options: { diff: boolean } = { diff: true },
 ): Promise<RecipeFinding[]> {
   return await Promise.all(
     findings.map(async (finding) => {
@@ -54,15 +57,19 @@ export async function withRecipeFiles(
               state: "same",
               used,
             };
-          const diff = lineDiff(copy, file.content);
+          const diff = options.diff ? lineDiff(copy, file.content) : undefined;
           return {
             path: file.path,
             bundled: bundled.version,
             state: "differs",
             used,
-            diff: diff.slice(0, MAX_DIFF_LINES),
-            ...(diff.length > MAX_DIFF_LINES
-              ? { omitted: diff.length - MAX_DIFF_LINES }
+            ...(diff
+              ? {
+                  diff: diff.slice(0, MAX_DIFF_LINES),
+                  ...(diff.length > MAX_DIFF_LINES
+                    ? { omitted: diff.length - MAX_DIFF_LINES }
+                    : {}),
+                }
               : {}),
           };
         }),

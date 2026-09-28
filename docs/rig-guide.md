@@ -1461,9 +1461,9 @@ matches the bundled version, customized or not, is not mentioned. A recipe file
 the Service runs that is not in the Project is a notice too, since the Service
 cannot start without it. The offline doctor (when `rigd` is unreachable) does
 not compute notices. `rig init` of a
-Project whose `rig.yaml` already exists prints the same notices, and when the
-older version has a known problem, doctor, init and `rig recipe diff` say what
-it is.
+Project whose `rig.yaml` already exists prints the same version notices (not
+the one about a missing recipe file), and when the older version has a known
+problem, doctor, init and `rig recipe diff` say what it is.
 
 #### Convex
 

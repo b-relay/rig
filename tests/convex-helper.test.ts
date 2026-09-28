@@ -145,6 +145,13 @@ async function harness(
         }
       );
     },
+    async listening(port) {
+      return (
+        options.occupied !== undefined &&
+        port === 47001 &&
+        children.length === 0
+      );
+    },
     async probe(url) {
       const backend = children[0];
       if (url !== `http://127.0.0.1:47001/instance_name`) return undefined;
@@ -736,7 +743,10 @@ test("a backend already answering on the port before this one starts is refused,
   );
   await expect(h.start()).rejects.toMatchObject({
     code: "CONVEX_PORT_TAKEN",
-    hint: expect.stringContaining("an earlier one of this deployment"),
+    message: expect.stringContaining(
+      "A Convex backend (convex-self-hosted) already listens on 127.0.0.1:47001",
+    ),
+    hint: expect.stringContaining("an earlier backend of this deployment"),
   });
   expect(h.children).toEqual([]);
   // .env.local is only pointed at a backend this Service is about to start.

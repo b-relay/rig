@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ProjectFiles } from "../cli/types";
 import { RigError, errorMessage } from "../domain/errors";
@@ -53,6 +53,7 @@ export function createProjectFiles(): ProjectFiles {
     read: readProjectFile,
     async create(directory, path, text) {
       const absolute = projectFilePath(directory, path);
+      await refuseLinkedParent(directory, absolute, path);
       try {
         await mkdir(dirname(absolute), { recursive: true });
         await writeFile(absolute, text, { flag: "wx", mode: 0o644 });
@@ -66,6 +67,29 @@ export function createProjectFiles(): ProjectFiles {
       }
     },
   };
+}
+/** Refuses a file whose nearest existing directory, symbolic links followed, is outside the Project directory: a
+ * `scripts` linked elsewhere would put the file where the Project's commits never carry it. */
+async function refuseLinkedParent(
+  directory: string,
+  absolute: string,
+  path: string,
+): Promise<void> {
+  let parent = dirname(absolute);
+  while (!(await present(parent)) && dirname(parent) !== parent)
+    parent = dirname(parent);
+  const [real, project] = await Promise.all([
+    realpath(parent),
+    realpath(directory),
+  ]);
+  const inside = relative(project, real);
+  if (inside.startsWith("..") || isAbsolute(inside))
+    throw new RigError(
+      "RECIPE_FILE_PATH",
+      `The recipe file ${path} would be written outside the Project directory ${directory}: ${parent} leads to ${real}.`,
+      `Replace the link at ${parent} with a directory of the Project, or write the file there by hand.`,
+      { path },
+    );
 }
 async function present(path: string): Promise<boolean> {
   return access(path).then(

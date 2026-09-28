@@ -64,3 +64,18 @@ test("a request that is not a capture request is rejected by path", async () => 
     details: { path: requestPath },
   });
 });
+
+test("a capture request names the Rig root whose logs settings its wrapper rotates by; one an older rigd wrote has none", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-request-"));
+  roots.push(root);
+  const requestPath = join(root, "job.json");
+  await writeCaptureRequest(requestPath, request("kept"), "/isolated/.rig");
+  expect(await readCaptureRequest(requestPath)).toEqual({
+    ...request("kept"),
+    configRoot: "/isolated/.rig",
+  });
+  await writeCaptureRequest(requestPath, request("older"));
+  expect(await readCaptureRequest(requestPath)).not.toHaveProperty(
+    "configRoot",
+  );
+});

@@ -5,6 +5,9 @@ import { z } from "zod";
 /** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
 export const projectName = z.string().min(1).max(128);
 export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
+/** A component name `rig logs --service` may send: the shape every Service and Tool name has. Like config, it sets no
+ * length limit of its own; the control plane's request size bounds it. */
+export const logComponentName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
 /** rig resolves paths against the caller's directory before sending; rigd never resolves against its own. */
 export const absolutePath = z.string().min(1).refine(isAbsolute, {
   message: "must be an absolute path",
@@ -75,6 +78,17 @@ export const commandSchema = z
      * cut short too. */
     kill: z.boolean().optional(),
     lines: z.number().int().min(1).max(10000).optional(),
+    /** Narrows a logs read; absent reads every entry. `lines` counts the entries it keeps. */
+    logFilter: z
+      .strictObject({
+        /** Component names; rigd refuses a name the Target does not have. */
+        services: z.array(logComponentName).min(1).max(64).optional(),
+        stream: z.enum(["stdout", "stderr"]).optional(),
+        /** Inclusive ISO instants; rig resolves durations such as 1h against its own clock before sending. */
+        since: z.iso.datetime({ offset: true }).optional(),
+        until: z.iso.datetime({ offset: true }).optional(),
+      })
+      .optional(),
     /** An Operation id (or unambiguous prefix) that activity narrows to; the id a failed command prints. */
     operation: z.string().min(1).optional(),
     after: z.string().optional(),
@@ -127,6 +141,8 @@ export const logsResultSchema = z
     ),
     /** Opaque; rig sends it back unchanged as `after` to read the next page. */
     cursor: z.string(),
+    /** The read was narrowed by a filter, so no entries means none matched rather than none recorded. */
+    filtered: z.boolean().optional(),
   })
   .passthrough();
 export const activityResultSchema = z

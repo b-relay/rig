@@ -45,8 +45,12 @@ rig
 │
 ├─ logs [target] [branch]
 │    --project <name>   --deployment <name>
-│    --follow                       stream until interrupted
-│    --lines <count>                default 50, at most 10000
+│    --follow                       stream until interrupted, after the matching history
+│    --lines <count>                default 50, at most 10000, counted after filtering
+│    --service <name>               only this Service's or Tool's lines; repeatable
+│    --stream stdout|stderr         only this stream
+│    --since <time>  --until <time> 1h, 15m, 2d … back from now, or an ISO time with a zone;
+│                                   --until cannot be combined with --follow
 │
 ├─ rename <name>                    new identity; the Project must be stopped
 │    --project <name>               current identity
@@ -105,6 +109,14 @@ Git runs this helper for `git push rig <branch>`. People never run it.
 - `--project` is needed only outside the Project's repository.
 - `--json` exists on `status`, `deploy`, `up`, `down`, and `restart` only.
 - `--destroy` is its own confirmation; there is no prompt and no `--yes`.
+- `logs --service` takes a Service or Tool name from `rig.yaml`, or `setup`
+  for dependency installation; an unknown name fails as `USAGE` and lists the
+  Target's names. `--since` and `--until` are inclusive, and leave out lines
+  with no recorded time (the files launchd writes for a job). A time is a
+  duration back from now (`90s`, `15m`, `1h`, `2d`, `1w`, or combined as
+  `1h30m`) or an ISO time with a zone (`2026-09-28T03:00:00Z`,
+  `2026-09-28T05:00:00+02:00`). How much history exists to filter depends on
+  the Host `logs` settings (see the guide's Logs section).
 - `init` writes one Service (`--service` with `--run`) or one Tool (`--tool`
   with `--bin`). A Tool's `bin` is the executable's path inside the
   repository; Rig copies it into `<RIG_ROOT>/bin` as `<tool>` for the Stable

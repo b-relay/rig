@@ -690,11 +690,44 @@ Logs:
 rig logs live
 rig logs preview feature/login
 rig logs preview feature/login --follow
+rig logs local --service scheduler --since 1h
+rig logs live --stream stderr --follow
+rig logs live --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
 ```
 
 `rig logs` prints recent stdout and stderr together by default and exits.
-`--follow` streams. Logs may be read for stopped Targets when logs exist. Every
-follow page is validated the same way as the first; a malformed page ends the
+`--follow` streams. Logs may be read for stopped Targets when logs exist.
+
+Filters narrow what is printed; without them the output is the whole Target
+interleaved, as before:
+
+- `--service <name>` keeps one component's lines. Repeat it for more than one.
+  A name is a Service or Tool from `rig.yaml` (a Tool's build and install
+  output is logged under its name), or `setup` for dependency installation
+  and the shared build. An unknown name fails as `USAGE` and lists the names
+  the Target has.
+- `--stream stdout` or `--stream stderr` keeps one stream; health-check
+  evidence is left out.
+- `--since <time>` and `--until <time>` keep lines recorded in that window,
+  both ends included. A time is a duration back from now (`90s`, `15m`, `1h`,
+  `2d`, `1w`, or combined as `1h30m`) or an ISO time with a zone
+  (`2026-09-28T03:00:00Z`, `2026-09-28T05:00:00+02:00`); a time without a zone
+  is refused rather than guessed. Lines with no recorded time (the files
+  launchd writes for a job, see below) are left out once either is set.
+- `--lines` counts the lines the filters keep, so
+  `--service scheduler --lines 20` is the scheduler's last 20 lines however
+  much another Service wrote since.
+- `--follow` prints the matching history first, then keeps printing new lines
+  that pass `--service` and `--stream`. `--until` cannot be combined with
+  `--follow`.
+
+A filtered read walks back through every retained file from the newest line
+and stops once it has `--lines` matches or has passed `--since`, so it never
+loads whole files; `--since` reaches back as far as the retained files go.
+When nothing matches, `rig logs` says `No matching log lines.` instead of
+`No logs yet.`
+
+Every follow page is validated the same way as the first; a malformed page ends the
 follow with `DAEMON_PROTOCOL` and no further poll, which is distinct from
 cancellation.
 `--lines` sizes the first page only; a follow then fetches up to 1000 new
@@ -718,21 +751,60 @@ local time. Build and install
 output is recorded line by line as the command produces it, each line at
 the time it was seen, so a long build is visible in `rig logs --follow` while
 it runs rather than as one burst afterwards.
-A Target's `target.jsonl` is rotated once it reaches 64 MiB: the full file
-becomes `target.jsonl.1`, replacing the previous one, so a chatty Component
-holds at most about 128 MiB of log on disk. `rig logs` reads both generations
-and a `--follow` continues across the rotation without repeating or losing
-lines. The files launchd writes for a job (`<component>.stdout.log` and
+
+Log files are bounded by size, not by age. Two Host settings in
+`<RIG_ROOT>/config.yaml` control it:
+
+```yaml
+logs:
+  max_bytes: 67108864 # 64 MiB, the default
+  generations: 1 # the default
+```
+
+- `max_bytes` is how big a log file may grow. Once `target.jsonl` reaches it,
+  Rig renames the full file to `target.jsonl.1` and starts a new, empty
+  `target.jsonl`. This is called rotation.
+- `generations` is how many of those older, rotated files are kept. With `1`,
+  only `target.jsonl.1` is kept, and the next rotation replaces it. With `3`,
+  Rig keeps `.1` (newest) to `.3` (oldest) and deletes the file that would
+  become `.4`. With `0`, a full file is deleted and nothing older is kept; a
+  line another writer appends at the moment of deletion goes with it.
+
+So a Target keeps at most about `max_bytes × (generations + 1)` of log: 128 MiB
+with the defaults. The limit is shared by every Service of the Target, so a
+chatty web Service can push a quiet worker's lines out; raise either setting to
+keep more history for `--since`. `max_bytes` is at least 1 MiB; `generations`
+is 0 to 20. `rig logs` reads every retained generation, oldest first, and a
+`--follow` continues across a rotation without repeating lines. A follow
+loses lines only when they are deleted before it reads them: with
+`generations: 0`, or when it falls more than `generations` rotations behind.
+A change needs no restart: rigd and every Service's capture wrapper read
+`config.yaml` again within a few seconds, so every writer of a file rotates it
+the same way. (A Service started by a Rig release before these settings
+existed uses the defaults until it restarts.) While `config.yaml` is invalid,
+the last valid settings stay in force, so log output is never lost to a config
+mistake.
+
+The files launchd writes for a job (`<component>.stdout.log` and
 `<component>.stderr.log`, which hold a capture wrapper's own crash output or
 an uncaptured app's output) are shown under their Component with an unknown
-time. A log file that cannot be opened, or that is not a regular file, fails
+time. They rotate under the same two settings, each file on its own (for
+example `web.stderr.log.1`), when Rig starts the job: launchd holds them open
+while the job runs, so they are never rotated under a running job.
+
+A log file that cannot be opened, or that is not a regular file, fails
 as `LOG_UNREADABLE` naming the file and the reason; `LOG_CURSOR` is reserved
-for a follow whose cursor no longer matches the files.
+for a follow whose cursor no longer matches the files. A file `--service`,
+`--stream` or a time bound leaves out entirely (another Service's launchd
+file) is not opened at all. A read that sees files rotate under it reads again;
+`LOG_BUSY` means they kept rotating, and reading again is all it asks.
 A record that cannot be parsed (for example one cut short by a crash and glued
 onto the next), or a run longer than the reader's 4 MiB window, is shown in
 place as an unknown-stream line "Rig skipped an unreadable log record (N
 bytes)." and reading or following continues past it; Rig never edits the
-retained file. Rig's own writers record a newline-free run in pieces of at most
+retained file. A recent read reports a newest run it only walked partway as
+"(more than N bytes)": a launchd file whose output never ends a line is read
+a window back, not whole. Rig's own writers record a newline-free run in pieces of at most
 64 Ki characters, so their records never exceed that window.
 A Target log directory removed while a component runs is recreated by the
 next line of output. While output cannot be recorded at all (the path is not a
@@ -1005,6 +1077,9 @@ capability:
 - `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
   reload mode (see Setup)
 - `diagnostics.retention_days` (default 14) and `diagnostics.level`
+- `logs.max_bytes` (default 64 MiB) and `logs.generations` (default 1): the
+  size at which a Target log file is rotated and how many rotated files are
+  kept (see Logs)
 - `alerts.channels.macos.enabled`: whether operator alerts are posted as
   macOS notifications (see "Operator alerts"). When unset, it is on for a
   `rigd` installed as a LaunchAgent and off for a process-mode `rigd`

@@ -3539,6 +3539,68 @@ test("activity retains the most recent 1000 Operations, dropping the oldest firs
   );
 });
 
+test("a logs filter reaches the reader and marks the reply filtered; an unknown Service fails USAGE listing the Target's own", async () => {
+  const { runtime, deps } = fixture();
+  const reads: unknown[][] = [];
+  deps.files.logs = async (...args: unknown[]) => {
+    reads.push(args);
+    return { entries: [], cursor: "0" };
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  const logFilter = {
+    services: ["web", "setup"],
+    stream: "stderr" as const,
+    since: "2026-09-28T11:00:00.000Z",
+  };
+  expect(
+    await runtime.command({
+      action: "logs",
+      project: "demo",
+      target: "local",
+      lines: 20,
+      logFilter,
+    }),
+  ).toEqual({
+    project: "demo",
+    target: "local",
+    entries: [],
+    cursor: "0",
+    filtered: true,
+  });
+  expect(reads[0]!.slice(1)).toEqual([undefined, 20, logFilter]);
+  expect(
+    await runtime.command({ action: "logs", project: "demo", target: "local" }),
+  ).toEqual({ project: "demo", target: "local", entries: [], cursor: "0" });
+  expect(reads[1]!.slice(1)).toEqual([undefined, 100, undefined]);
+  await expect(
+    runtime.command({
+      action: "logs",
+      project: "demo",
+      target: "local",
+      logFilter: { services: ["web", "scheduler"] },
+    }),
+  ).rejects.toMatchObject({
+    code: "USAGE",
+    message: "Target 'local' has no Service or Tool named 'scheduler'.",
+    hint: "Pass --service with one of: web, setup.",
+  });
+  expect(reads).toHaveLength(2);
+  // A follow page is not refused when the Service it filters by has gone from the plan since the follow began.
+  await runtime.command({
+    action: "logs",
+    project: "demo",
+    target: "local",
+    after: "cursor",
+    logFilter: { services: ["scheduler"] },
+  });
+  expect(reads[2]!.slice(1)).toEqual([
+    "cursor",
+    100,
+    { services: ["scheduler"] },
+  ]);
+});
+
 test("runtime list, logs and activity replies satisfy the client contract end to end", async () => {
   const { runtime } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

@@ -10,6 +10,11 @@ import {
   waitForCaptureStart,
 } from "./capture-status";
 import { readCaptureRequest, writeCaptureRequest } from "./capture-request";
+import { rotateLogFile } from "./target-log";
+import {
+  DEFAULT_LOG_RETENTION,
+  type LogRetention,
+} from "../domain/log-retention";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -57,6 +62,11 @@ export interface LaunchdOptions {
   readonly timing: LaunchdTiming;
   /** rigd's private capture command, used to timestamp and separate both application streams. */
   readonly captureCommand?: readonly string[];
+  /** Reads how the files launchd writes for a job are rotated, before each start; the default when absent. */
+  readonly logRetention?: () => Promise<LogRetention>;
+  /** The Rig root whose config.yaml logs settings the capture wrappers of these jobs rotate the Target log by; absent,
+   * they use the defaults. */
+  readonly configRoot?: string;
   /** Aborted by the owner as rigd begins to shut down, before it drains: the stop of a start whose wrapper never reported
    * stops waiting then, as `detach` makes it, and launchd finishes unloading the job on its own. */
   readonly shutdown?: AbortSignal;
@@ -392,12 +402,15 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       await removeExitRecord(options.root, request.key);
       await mkdir(options.root, { recursive: true });
       await mkdir(request.logRoot, { recursive: true });
+      const retention =
+        (await options.logRetention?.()) ?? DEFAULT_LOG_RETENTION;
+      await rotateJobLogs(request, retention);
       const jobLabel = label(request.key);
       const requestPath = join(options.root, `${jobLabel}.json`);
       let command = request.command;
       if (options.captureCommand) {
         await clearCaptureStatus(requestPath);
-        await writeCaptureRequest(requestPath, request);
+        await writeCaptureRequest(requestPath, request, options.configRoot);
         command = [...options.captureCommand, requestPath];
       }
       const plist = join(options.root, `${jobLabel}.plist`);
@@ -471,6 +484,19 @@ async function jobEvidence(
   return incarnation === undefined
     ? undefined
     : { incarnation, ...exit, recordedBy: "launchd" };
+}
+/** launchd opens a job's stdout and stderr files when it starts the job and appends to them for as long as it runs, so
+ * they rotate here, before each start, never under a running job. Housekeeping only: a file that cannot be rotated is
+ * left to grow rather than stopping the start. */
+async function rotateJobLogs(
+  request: ManagedProcess,
+  retention: LogRetention,
+): Promise<void> {
+  for (const stream of ["stdout", "stderr"])
+    await rotateLogFile(
+      join(request.logRoot, `${request.componentName}.${stream}.log`),
+      retention,
+    ).catch(() => {});
 }
 function xml(text: string): string {
   return text

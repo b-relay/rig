@@ -71,12 +71,17 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 ## Commands
 
 - `bun install`
-- `bun test`
+- `bun test` (full suite; `bun run test:parallel` runs the same files across
+  workers)
+- `bun run test:fast` (all but the end-to-end and compiled-binary files)
 - `bun run typecheck`
 - `bun run build`
+- `bun run format:check`
 
-Run focused tests during TDD, then broader validation before committing when the
-change touches shared behavior.
+During development and review rounds, run `bun run typecheck` plus the test
+files covering the changed code (`bun test <path or name fragment>`) or
+`bun run test:fast`. Before merging to main or deploying to live, run the full
+suite, `bun run build`, and `bun run format:check`.
 
 ## Git Workflow
 

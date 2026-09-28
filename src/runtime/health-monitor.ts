@@ -97,6 +97,19 @@ export function healthPolicy(
 }
 
 type Due = Extract<HealthAction, { kind: "restart" | "give-up" }>;
+/** What the policy calls for, except that a process nothing identifies (adopted from a rigd older than incarnations) is
+ * never restarted for its checks, since a restart could stop another process started meanwhile: it is checked and
+ * reported as with report, and still given up on after retry_for. */
+function actionFor(
+  state: HealthState,
+  policy: HealthPolicy,
+  now: number,
+): HealthAction {
+  const action = healthAction(state, policy, now);
+  return action.kind === "restart" && state.incarnation === undefined
+    ? { kind: "none" }
+    : action;
+}
 const isDue = (action: HealthAction): action is Due =>
   action.kind === "restart" || action.kind === "give-up";
 
@@ -199,7 +212,7 @@ export function createHealthMonitor(
             continue;
           }
           states.set(key, state);
-          const action = healthAction(state, policy, deps.now());
+          const action = actionFor(state, policy, deps.now());
           const due = nextCheckAt(state, policy);
           if (!isDue(action) && due !== undefined && deps.now() < due) continue;
           inFlight.add(key);
@@ -396,9 +409,11 @@ export function createHealthMonitor(
         action: "health",
         outcome: "failed",
         message: `${component.name} failed ${checked.state.failures} health checks in a row (${checked.state.output ?? "no output"}). ${
-          policy.onFailure === "restart"
-            ? "Rig restarts it."
-            : "health.on_failure is report, so Rig only reports it."
+          policy.onFailure !== "restart"
+            ? "health.on_failure is report, so Rig only reports it."
+            : checked.state.incarnation === undefined
+              ? `Rig cannot restart it for its checks, since a rigd too old to record which process it is started it; run rig restart ${target.name} once.`
+              : "Rig restarts it."
         }`,
       });
     if (checked.event === "recovered") {
@@ -409,7 +424,7 @@ export function createHealthMonitor(
       });
       await forgetStretch(target, component.name, identity);
     }
-    const action = healthAction(checked.state, policy, at);
+    const action = actionFor(checked.state, policy, at);
     return isDue(action) ? action : undefined;
   }
 
@@ -434,9 +449,6 @@ export function createHealthMonitor(
       });
       return;
     }
-    // A process nothing identifies (adopted from a rigd older than incarnations) is never restarted for its checks: a
-    // restart could stop another process started meanwhile. It is reported, and rig restart gives it an identity.
-    if (state.incarnation === undefined) return;
     const result = await deps.restart({
       targetId: target.id,
       service: component.name,

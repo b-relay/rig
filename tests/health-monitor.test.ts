@@ -736,3 +736,20 @@ test("a process nothing identifies is reported but never restarted, and a give-u
     gaveUp: true,
   });
 });
+
+test("a process nothing identifies keeps being checked, so it can recover, and Activity does not promise a restart", async () => {
+  const f = fixture({ interval: 5, failures: 1, onFailure: "restart" });
+  delete f.state.targets[0]!.services!.web!.incarnation;
+  f.anonymous = true;
+  f.answer = () => false;
+  await f.runUntil(20 * SECOND);
+  expect(f.activity()).toEqual([
+    "web failed 1 health checks in a row (HTTP 503). Rig cannot restart it for its checks, since a rigd too old to record which process it is started it; run rig restart live once.",
+  ]);
+  f.answer = () => true;
+  await f.runUntil(30 * SECOND);
+  expect(f.restarts).toEqual([]);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "healthy",
+  });
+});

@@ -78,7 +78,16 @@ describe("launchd's record of a job, read from real launchctl print output", () 
 
 /** An application that takes a moment to stop after SIGTERM, as a server draining its connections does: the wrapper finds it
  * still running when it stops it, so the application's own exit record is removed as a requested stop. */
-const SLOW_TO_STOP = `trap 'sleep 0.3; exit 0' TERM; while :; do sleep 0.05; done`;
+const SLOW_TO_STOP = `trap 'sleep 0.3; exit 0' TERM; : > trapping; while :; do sleep 0.05; done`;
+
+/** Waits until the SLOW_TO_STOP application running in `root` has set its trap: a SIGTERM before then ends it at once. */
+async function trapping(root: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (await Bun.file(join(root, "trapping")).exists()) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("the application never set its SIGTERM trap");
+}
 
 /** The application pid a capture wrapper last published for its request at `requestPath`. */
 async function applicationPid(requestPath: string): Promise<number> {
@@ -364,6 +373,7 @@ for (const [name, witness] of [
         await supervisor.ensureRunning(request(w.root, "start-1"));
         const application = await w.applicationPid(key);
         pids.push(application);
+        await trapping(w.root);
         // One SIGTERM reaches both process groups at once, as when every process of the user is ended. (The scripted
         // launchd runs its wrapper inside this test's own group, which only the wrapper itself may be signalled in.)
         process.kill(

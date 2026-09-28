@@ -57,7 +57,7 @@ import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
 import { findsExecutable, gatedCommand, releaseGate } from "./start-gate";
-import { ownStopsDetach, stopFailedStart } from "./start-cleanup";
+import { failStart, ownStopsDetach } from "./start-cleanup";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
@@ -102,7 +102,7 @@ export function createChildSupervisor(
   const processes = new Map<string, OwnedProcess>();
   /** Aborted by `detach`: the stops this supervisor makes on its own stop waiting, as the runtime's do on shutdown. */
   const detaching = new AbortController();
-  /** What the stops this supervisor makes on its own detach on: `detach`, or the owner's shutdown, whichever comes first. */
+  /** What the clean-up of a failed start detaches on: `detach`, or the owner's shutdown, whichever comes first. */
   const ownStops = ownStopsDetach(detaching.signal, options.shutdown);
   const operations = new Map<string, Promise<unknown>>();
   const timing = options.timing;
@@ -269,13 +269,16 @@ export function createChildSupervisor(
    * process, and for a capture wrapper the wrapper's whole budget, since the wrapper holds its application's grace itself:
    * it is never killed before that grace and the application's kill wait can finish. A kill cuts the wait short: a plain
    * process is killed after the kill wait, a wrapper that understands it is told to kill its application now. Returns
-   * how the group ended; fails STOP_DETACHED as soon as `detach` aborts, leaving the group owned and stopping. */
+   * how the group ended; fails STOP_DETACHED as soon as `detach` aborts, leaving the group owned and stopping. A `detach`
+   * aborted before the SIGTERM skips it, unless `signalWhenDetached` (a failed start's clean-up) asks for it anyway. */
   async function signalUntilGone(
     key: string,
     pid: number,
     request: StopRequest,
+    signalWhenDetached: boolean,
   ): Promise<StopKill | undefined> {
-    if (request.detach?.aborted) throw stopDetached({ key });
+    if (request.detach?.aborted && !signalWhenDetached)
+      throw stopDetached({ key });
     // A wrapper holds the grace its start was given, which may be longer than the one asked for now (a plan changed in
     // between): it is never cut off before that grace can finish.
     const captured = options.captureCommand
@@ -338,7 +341,13 @@ export function createChildSupervisor(
       );
     return killed;
   }
-  async function stop(key: string, request: StopRequest): Promise<StopResult> {
+  /** Stops the process owned for `key` (see `signalUntilGone`); `signalWhenDetached` is a failed start's clean-up, which
+   * signals the process even when `request.detach` is already aborted. */
+  async function stop(
+    key: string,
+    request: StopRequest,
+    signalWhenDetached = false,
+  ): Promise<StopResult> {
     const owned = await recover(key);
     if (!owned) return { outcome: "unchanged" };
     // An application that outlived its wrapper is not this stop's to end: the stop releases only what it owns.
@@ -367,7 +376,7 @@ export function createChildSupervisor(
           (currentIdentity === undefined &&
             (await inspection.groupExists(owned.pid))));
     let killed = verified
-      ? await signalUntilGone(key, owned.pid, request)
+      ? await signalUntilGone(key, owned.pid, request, signalWhenDetached)
       : undefined;
     await Promise.all(owned.drains);
     await owned.writes;
@@ -409,7 +418,7 @@ export function createChildSupervisor(
     if (processes.has(request.key))
       await stop(request.key, {
         graceMs: graceOf(request),
-        detach: ownStops,
+        detach: detaching.signal,
       });
     if (!request.command.length)
       throw new RigError(
@@ -556,13 +565,13 @@ export function createChildSupervisor(
           wait: (ms) => timing.wait(ms),
         });
     } catch (error) {
-      await stopFailedStart(
-        (stopRequest) => stop(request.key, stopRequest),
-        graceOf(request),
+      await failStart({
+        stop: (stopRequest) => stop(request.key, stopRequest, true),
+        graceMs: graceOf(request),
         control,
-        ownStops,
-      );
-      throw error;
+        detach: ownStops,
+        startFailure: error,
+      });
     }
     return { outcome: "started", pid: child.pid };
   }

@@ -19,7 +19,10 @@ import {
   createProcessInspection,
   platformKill,
 } from "../src/providers/process-inspection";
-import type { ProcessTiming } from "../src/providers/process-timing";
+import {
+  createProcessTiming,
+  type ProcessTiming,
+} from "../src/providers/process-timing";
 
 /** A start whose capture wrapper never reports that its application started, under each supervisor: the start is cleaned
  * up within the Service's grace, shown as a stop, cut short by a kill, and left to finish on its own once rigd shuts down. */
@@ -176,6 +179,25 @@ describe("launchd supervisor", () => {
     ).rejects.toMatchObject({ code: "LAUNCHD_STOP" });
     expect(w.commands).toContain("kill SIGUSR2");
   });
+
+  test("a shutdown that began before the clean-up still boots the job out, then stops waiting, and names the start's failure", async () => {
+    const w = await neverReports({ unloadAfter: Infinity });
+    w.shutdown.abort();
+    const failure = await w.supervisor
+      .ensureRunning(request(w.root, 3_600_000))
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      code: "STOP_DETACHED",
+      details: {
+        startFailure: expect.stringContaining("PROCESS_START_TIMEOUT"),
+      },
+    });
+    expect(w.commands.slice(w.commands.lastIndexOf("bootstrap"))).toEqual([
+      "bootstrap",
+      "print",
+      "bootout",
+    ]);
+  });
 });
 
 describe("rigd supervisor", () => {
@@ -303,5 +325,54 @@ describe("rigd supervisor", () => {
       "stopped",
       { outcome: "stopped", killed: "request" } satisfies StopResult,
     ]);
+  });
+
+  test("a shutdown that began before the clean-up still asks the wrapper to stop, then stops waiting, and names the start's failure", async () => {
+    const w = await neverReports();
+    w.shutdown.abort();
+    const failure = await w.supervisor
+      .ensureRunning(request(w.root, 3_600_000))
+      .catch((error: unknown) => error);
+    groups.push(w.signals[0]![0]);
+    expect(failure).toMatchObject({
+      code: "STOP_DETACHED",
+      details: {
+        startFailure: expect.stringContaining("PROCESS_START_TIMEOUT"),
+      },
+    });
+    expect(w.signals.map(([, signal]) => signal)).toEqual(["SIGTERM"]);
+  });
+
+  test("once shutdown began, a Service whose earlier process ended still starts: only a failed start's clean-up detaches on it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-failed-start-rigd-"));
+    roots.push(root);
+    const shutdown = new AbortController();
+    const supervisor = createChildSupervisor({
+      stateRoot: root,
+      timing: createProcessTiming(),
+      processInspection: createProcessInspection({
+        run: runCommand,
+        kill: platformKill,
+      }),
+      shutdown: shutdown.signal,
+    });
+    const exits = {
+      ...request(root, 1000),
+      command: ["/bin/sh", "-c", "exit 3"],
+    };
+    await supervisor.ensureRunning(exits);
+    for (let i = 0; i < 200; i++) {
+      if ((await supervisor.observe(exits.key)).state === "stopped") break;
+      await Bun.sleep(10);
+    }
+    shutdown.abort();
+    const again = await supervisor.ensureRunning({
+      ...exits,
+      incarnation: "start-2",
+      command: ["/bin/sh", "-c", "exec sleep 30"],
+    });
+    groups.push(again.pid!);
+    expect(again.outcome).toBe("started");
+    await supervisor.shutdown();
   });
 });

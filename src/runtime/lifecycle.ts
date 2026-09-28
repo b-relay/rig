@@ -93,7 +93,7 @@ export interface ActivationJournal {
 /** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
 export interface StopControl {
   /** The kill for stops of `target`: aborted before or during a stop, it cuts the remaining grace to the kill wait
-   * (`rig down --kill`). Asked as each stop begins. */
+   * (`rig down --kill`). Asked as each stop begins, and as each start begins for the stop of a start that fails. */
   readonly kill?: (target: TargetRecord) => AbortSignal | undefined;
   /** Aborted when rigd shuts down: the stop waiting now fails STOP_DETACHED, no further Service is signalled, and the
    * Services keep stopping on their own for the next daemon to finish. */

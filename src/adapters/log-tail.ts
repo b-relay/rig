@@ -55,11 +55,14 @@ export async function readFamilyTail(
   };
   /** Sizes of unreadable records met since the last readable one; they take the time of the readable record before them.
    * Only as many are held as could still make the page: older ones are counted, never kept. */
-  let unreadable: number[] = [];
+  let unreadable: { size: number; atLeast: boolean }[] = [];
   const settle = (timestamp: string | undefined) => {
-    for (const size of unreadable) keep(unreadableEntry(size, timestamp));
+    for (const { size, atLeast } of unreadable)
+      keep(unreadableEntry(size, timestamp, atLeast));
     unreadable = [];
   };
+  // Lines launchd wrote have no time, so an unreadable one among them has none to take either: it is kept at once.
+  const timeless = familyEvidence(family.family) !== undefined;
   // An unreadable record names no component or stream, so a --service or --stream read never keeps one.
   const unreadableKept = !filter.services && !filter.stream;
   // Without a time bound every unreadable record is kept, so a full page of them ends the walk once the time they take
@@ -84,9 +87,17 @@ export async function readFamilyTail(
         if (parsed === undefined) continue;
         if (parsed === "unreadable") {
           if (!unreadableKept) continue;
-          if (unreadable.length < limit - kept.length)
-            unreadable.push(line.size);
-          else if (
+          if (unreadable.length < limit - kept.length) {
+            unreadable.push({
+              size: line.size,
+              atLeast: line.atLeast === true,
+            });
+            if (timeless) settle(undefined);
+            if (kept.length >= limit) {
+              done = true;
+              break;
+            }
+          } else if (
             unreadableCounts &&
             (bytesPastFullPage += line.size + 1) > LOG_WINDOW_BYTES
           ) {

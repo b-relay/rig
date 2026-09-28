@@ -71,13 +71,11 @@ export async function readTargetLogs(
   const identity = createHash("sha256")
     .update(JSON.stringify([target.id, target.logRoot]))
     .digest("hex");
-  const sources = await listSources(target.logRoot);
   const read =
     after === undefined
-      ? await readRecent(target.logRoot, sources ?? [], lines, filter)
+      ? await readRecent(target.logRoot, lines, filter)
       : await readFollowing(
           target.logRoot,
-          sources,
           decodeCursor(after, identity),
           lines,
           filter,
@@ -106,6 +104,25 @@ async function listSources(root: string): Promise<LogSource[] | undefined> {
  * chronological position. */
 async function readRecent(
   root: string,
+  lines: number,
+  filter: LogFilter,
+): Promise<Read> {
+  // A rotation during the read could hide the lines it moved; the read is made again until none happened during it.
+  for (let attempt = 1; ; attempt++) {
+    const sources = (await listSources(root)) ?? [];
+    const read = await readRecentOnce(root, sources, lines, filter);
+    const identities = Object.fromEntries(
+      Object.entries(read.positions).map(([name, at]) => [name, at.identity]),
+    );
+    const names = sources
+      .filter((source) => familyMayMatch(source.family, filter))
+      .map((source) => source.name);
+    if (await snapshotHolds(root, names, identities, filter)) return read;
+    if (attempt === SNAPSHOT_ATTEMPTS) throw logsBusy();
+  }
+}
+async function readRecentOnce(
+  root: string,
   sources: readonly LogSource[],
   lines: number,
   filter: LogFilter,
@@ -129,7 +146,6 @@ async function readRecent(
 }
 async function readFollowing(
   root: string,
-  listed: readonly LogSource[] | undefined,
   following: Record<string, LogPosition>,
   lines: number,
   filter: LogFilter,
@@ -140,7 +156,7 @@ async function readFollowing(
   const previous = Object.fromEntries(
     Object.entries(following).filter(([name]) => included(name)),
   );
-  const snapshot = await openSnapshot(root, listed, included);
+  const snapshot = await openSnapshot(root, included, filter);
   const { sources, opened } = snapshot;
   try {
     const positions = rebind(opened, previous, sources !== undefined);
@@ -165,49 +181,75 @@ async function readFollowing(
     for (const log of opened.values()) await log.handle.close();
   }
 }
+/** How many times a read is made before rotations that keep moving files under it end it with LOG_BUSY. */
+const SNAPSHOT_ATTEMPTS = 5;
+const logsBusy = () =>
+  new RigError(
+    "LOG_BUSY",
+    "The Target logs rotated repeatedly while they were being read.",
+    "Read the logs again.",
+  );
 /** Opens every included Target log once, the current file of a family before its older generations, and checks that no
- * rotation happened while they were opened: each name must still be the file opened under it, and no two names the same
- * file. Otherwise a rotation between two opens could show one file under two names, and the follow would read it twice
- * or lose its place. After three unsettled tries the last snapshot is used; rotations are seconds apart at the least. */
+ * rotation happened meanwhile (see `snapshotHolds`). Otherwise a rotation between the listing and the opens could show
+ * one file under two names, or hide a generation the rotation just made, and the follow would read lines twice or lose
+ * them. An unsettled snapshot is taken again, up to SNAPSHOT_ATTEMPTS times, then fails LOG_BUSY. */
 async function openSnapshot(
   root: string,
-  listed: readonly LogSource[] | undefined,
   included: (name: string) => boolean,
+  filter: LogFilter,
 ): Promise<{
   sources: readonly LogSource[] | undefined;
   opened: Map<string, OpenLog>;
 }> {
-  let sources = listed;
   for (let attempt = 1; ; attempt++) {
+    const sources = await listSources(root);
+    const names = (sources ?? [])
+      .filter((each) => included(each.name))
+      .sort((a, b) => a.generation - b.generation)
+      .map((each) => each.name);
     const opened = new Map<string, OpenLog>();
+    let holds = false;
     try {
-      for (const source of [...(sources ?? [])]
-        .filter((each) => included(each.name))
-        .sort((a, b) => a.generation - b.generation)) {
-        const log = await openLog(join(root, source.name));
-        if (log) opened.set(source.name, log);
+      for (const name of names) {
+        const log = await openLog(join(root, name));
+        if (log) opened.set(name, log);
       }
-      if (attempt === 3 || (await settled(root, opened)))
-        return { sources, opened };
+      holds = await snapshotHolds(
+        root,
+        names,
+        Object.fromEntries(
+          [...opened].map(([name, log]) => [name, log.identity]),
+        ),
+        filter,
+      );
     } catch (error) {
       for (const log of opened.values()) await log.handle.close();
       throw error;
     }
+    if (holds) return { sources, opened };
     for (const log of opened.values()) await log.handle.close();
-    sources = await listSources(root);
+    if (attempt === SNAPSHOT_ATTEMPTS) throw logsBusy();
   }
 }
-/** Whether each opened name is still the file opened under it, and no file was opened under two names. */
-async function settled(
+/** Whether the directory still lists exactly `names` (of the families `filter` includes), each name with an identity
+ * is still that file, and no file stood under two names: nothing rotated since the names were listed. */
+export async function snapshotHolds(
   root: string,
-  opened: ReadonlyMap<string, OpenLog>,
+  names: readonly string[],
+  identities: Readonly<Record<string, string>>,
+  filter: LogFilter,
 ): Promise<boolean> {
-  const identities = new Set<string>();
-  for (const [name, log] of opened) {
-    if (identities.has(log.identity)) return false;
-    identities.add(log.identity);
-    const now = await stat(join(root, name)).catch(() => undefined);
-    if (!now || `${now.dev}:${now.ino}` !== log.identity) return false;
+  const now = ((await listSources(root)) ?? [])
+    .filter((source) => familyMayMatch(source.family, filter))
+    .map((source) => source.name)
+    .sort();
+  if (now.join("\n") !== [...names].sort().join("\n")) return false;
+  const seen = new Set<string>();
+  for (const [name, identity] of Object.entries(identities)) {
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    const current = await stat(join(root, name)).catch(() => undefined);
+    if (!current || `${current.dev}:${current.ino}` !== identity) return false;
   }
   return true;
 }

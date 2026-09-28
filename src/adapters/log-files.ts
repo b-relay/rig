@@ -14,10 +14,12 @@ export interface OpenLog {
   readonly size: number;
 }
 /** A complete line of a file, newest first when walking back. `text` is absent for a run longer than the window, which
- * was skipped unread; `size` is the line's length in bytes without its newline. */
+ * was skipped unread; `size` is the line's length in bytes without its newline, or with `atLeast`, the part of it walked
+ * so far: a run longer than the window is yielded as soon as it is known to be one, before its start is found. */
 export interface BackwardLine {
   readonly text?: string;
   readonly size: number;
+  readonly atLeast?: true;
 }
 
 /** Opens a Target log for reading; undefined when it does not exist. Fails LOG_UNREADABLE naming the file when it
@@ -79,9 +81,10 @@ export async function completeEnd(
   return floor > 0 ? size : 0;
 }
 
-/** The complete lines of `file` that end at or before `end` (0 or an offset just past a newline), newest first, read
- * back from `end` a chunk at a time so only the lines the caller consumes are read. A line longer than the window is
- * yielded without text and never held whole. */
+/** The complete lines of `file` that end at or before `end` (0, an offset just past a newline, or the end of an
+ * over-long unterminated run; see `completeEnd`), newest first, read back from `end` a chunk at a time so only the lines
+ * the caller consumes are read. A line longer than the window is yielded without text, as soon as it has grown past the
+ * window, and never held whole; a caller that stops there never reads the rest of it. */
 export async function* linesBackward(
   file: FileHandle,
   end: number,
@@ -101,7 +104,7 @@ export async function* linesBackward(
         skipped += bytes.length;
         continue;
       }
-      yield { size: skipped + bytes.length - newline - 2 };
+      // Already yielded; its start is found, and the walk goes on with older lines.
       skipped = 0;
       bytes = bytes.subarray(0, newline + 1);
     } else if (pending.length) bytes = Buffer.concat([bytes, pending]);
@@ -118,10 +121,11 @@ export async function* linesBackward(
     if (pending.length > LOG_WINDOW_BYTES + 1 && position > 0) {
       skipped = pending.length;
       pending = Buffer.alloc(0);
+      yield { size: skipped - 1, atLeast: true };
     }
   }
-  if (skipped) yield { size: skipped - 1 };
-  else if (pending.length) yield line(pending.subarray(0, pending.length - 1));
+  if (!skipped && pending.length)
+    yield line(pending.subarray(0, pending.length - 1));
 }
 
 /** Byte offset just past the next newline at or after `from`, or `size` when none follows. */

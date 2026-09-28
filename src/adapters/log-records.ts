@@ -49,15 +49,16 @@ export function parseLogRecord(
 }
 
 /** A complete record that cannot be read, reported in place at the time of the readable record before it (`unknown`
- * when there is none) so nothing after it is hidden. `size` is its length in bytes. */
+ * when there is none) so nothing after it is hidden. `size` is its length in bytes, or with `atLeast`, a lower bound. */
 export function unreadableEntry(
   size: number,
   timestamp: string | undefined,
+  atLeast = false,
 ): TargetLogEntry {
   return {
     timestamp: timestamp ?? "unknown",
     component: "unknown",
     stream: "unknown",
-    line: `Rig skipped an unreadable log record (${size} bytes).`,
+    line: `Rig skipped an unreadable log record (${atLeast ? "more than " : ""}${size} bytes).`,
   };
 }

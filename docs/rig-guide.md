@@ -779,12 +779,17 @@ while the job runs, so they are never rotated under a running job.
 
 A log file that cannot be opened, or that is not a regular file, fails
 as `LOG_UNREADABLE` naming the file and the reason; `LOG_CURSOR` is reserved
-for a follow whose cursor no longer matches the files.
+for a follow whose cursor no longer matches the files. A file `--service`,
+`--stream` or a time bound leaves out entirely (another Service's launchd
+file) is not opened at all. A read that sees files rotate under it reads again;
+`LOG_BUSY` means they kept rotating, and reading again is all it asks.
 A record that cannot be parsed (for example one cut short by a crash and glued
 onto the next), or a run longer than the reader's 4 MiB window, is shown in
 place as an unknown-stream line "Rig skipped an unreadable log record (N
 bytes)." and reading or following continues past it; Rig never edits the
-retained file. Rig's own writers record a newline-free run in pieces of at most
+retained file. A recent read reports a newest run it only walked partway as
+"(more than N bytes)": a launchd file whose output never ends a line is read
+a window back, not whole. Rig's own writers record a newline-free run in pieces of at most
 64 Ki characters, so their records never exceed that window.
 A Target log directory removed while a component runs is recreated by the
 next line of output. While output cannot be recorded at all (the path is not a

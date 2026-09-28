@@ -3,6 +3,7 @@ import {
   appendFile,
   chmod,
   mkdir,
+  readdir,
   mkdtemp,
   readFile,
   rename,
@@ -15,11 +16,16 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
 import {
+  acquireRotationLock,
   appendTargetLog,
-  reclaimStaleLock,
   rotateLogFile,
 } from "../src/providers/target-log";
-import { completeEnd, LOG_WINDOW_BYTES } from "../src/adapters/log-files";
+import {
+  completeEnd,
+  linesBackward,
+  LOG_WINDOW_BYTES,
+} from "../src/adapters/log-files";
+import { snapshotHolds } from "../src/adapters/target-log-reader";
 import { logComponentName } from "../src/daemon/protocol";
 import { open } from "node:fs/promises";
 import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
@@ -401,21 +407,26 @@ test("zero generations starts a fresh file at the limit and keeps no older one",
   expect(await readFile(path, "utf8")).toBe(`{"n":3}\n`);
   expect(await exists(`${path}.1`)).toBe(false);
 });
-test("a rotation already under way elsewhere is not repeated, and a lock left by a crashed writer is reclaimed", async () => {
+test("a rotation already under way elsewhere is not repeated, and a lock left by a crashed writer is passed over", async () => {
   const target = await fixture(),
     path = join(target.logRoot, "target.jsonl");
   const retention = { maxBytes: 8, generations: 1 };
   await writeFile(path, "0123456789\n");
-  await writeFile(`${path}.rotating`, "");
+  const metadata = await stat(path);
+  const lock = `${path}.rotating-${metadata.dev}-${metadata.ino}-0`;
+  await writeFile(lock, "");
   await rotateLogFile(path, retention);
   expect(await readFile(path, "utf8")).toBe("0123456789\n");
   expect(await exists(`${path}.1`)).toBe(false);
   const old = new Date(Date.now() - 120_000);
-  await utimes(`${path}.rotating`, old, old);
+  await utimes(lock, old, old);
   await rotateLogFile(path, retention);
   expect(await exists(path)).toBe(false);
   expect(await readFile(`${path}.1`, "utf8")).toBe("0123456789\n");
-  expect(await exists(`${path}.rotating`)).toBe(false);
+  // Every lock of the rotated file is gone.
+  expect(
+    (await readdir(target.logRoot)).filter((name) => name.includes("rotating")),
+  ).toEqual([]);
   // A missing file or directory is nothing to rotate.
   await rotateLogFile(join(target.logRoot, "gone", "target.jsonl"), retention);
 });
@@ -778,22 +789,38 @@ test("a recent read over a file of unreadable records stops a window past the pa
   }
 });
 
-test("reclaiming a stale rotation lock removes only the lock observed stale, never a fresh one another writer took since", async () => {
+test("a lock left stale is never taken from anyone: writers that find it race to create the next one, and only one wins", async () => {
   const target = await fixture(),
-    lock = join(target.logRoot, "target.jsonl.rotating");
-  await writeFile(lock, "");
-  const fresh = (await stat(lock)).ino;
-  // Observed stale earlier, but the lock there now is another writer's fresh one.
-  expect(await reclaimStaleLock(lock, fresh + 1)).toBe(false);
-  expect((await stat(lock)).ino).toBe(fresh);
-  expect(await reclaimStaleLock(lock, fresh)).toBe(true);
-  expect(await exists(lock)).toBe(false);
-  // Already gone: the path is free.
-  expect(await reclaimStaleLock(lock, fresh)).toBe(true);
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, "0123456789\n");
+  const stale = `${path}.rotating-1-2-0`;
+  await writeFile(stale, "");
+  const old = new Date(Date.now() - 120_000);
+  await utimes(stale, old, old);
+  const won = await Promise.all(
+    Array.from({ length: 8 }, () => acquireRotationLock(path, "1-2")),
+  );
+  expect(won.filter(Boolean)).toEqual([`${path}.rotating-1-2-1`]);
+  // The stale lock was passed over, not removed, and the winner's lock is fresh: nobody else gets one now.
+  expect(await exists(stale)).toBe(true);
+  expect(await acquireRotationLock(path, "1-2")).toBeUndefined();
+  // Another file's locks are its own.
+  expect(await acquireRotationLock(path, "1-3")).toBe(`${path}.rotating-1-3-0`);
+  // Rotating the current file clears its own locks and stale locks of earlier files, but not a fresh lock of another.
+  const metadata = await stat(path);
+  await writeFile(`${path}.rotating-${metadata.dev}-${metadata.ino}-0`, "");
+  const oldStale = new Date(Date.now() - 120_000);
+  await utimes(
+    `${path}.rotating-${metadata.dev}-${metadata.ino}-0`,
+    oldStale,
+    oldStale,
+  );
+  await rotateLogFile(path, { maxBytes: 8, generations: 1 });
   expect(
-    (await import("node:fs/promises").then((fs) => fs.readdir(target.logRoot)))
-      .length,
-  ).toBe(0);
+    (await readdir(target.logRoot))
+      .filter((name) => name.includes("rotating"))
+      .sort(),
+  ).toEqual(["target.jsonl.rotating-1-2-1", "target.jsonl.rotating-1-3-0"]);
 });
 
 test("a rotation drops every generation past retention, even after a gap an interrupted rotation left", async () => {
@@ -876,4 +903,90 @@ test("a family --service or a time bound excludes is not opened, so an unreadabl
 test("--service accepts any Service name config accepts, however long", () => {
   expect(logComponentName.safeParse("a".repeat(300)).success).toBe(true);
   expect(logComponentName.safeParse("-bad").success).toBe(false);
+});
+
+test("a snapshot of the log files holds only while nothing rotated: no new or vanished name, each name the same file, no file under two names", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("one"));
+  const identity = async (file: string) => {
+    const metadata = await stat(file);
+    return `${metadata.dev}:${metadata.ino}`;
+  };
+  const before = await identity(path);
+  expect(
+    await snapshotHolds(
+      target.logRoot,
+      ["target.jsonl"],
+      { "target.jsonl": before },
+      {},
+    ),
+  ).toBe(true);
+  // A rotation after the listing: the listed name is now another file, and a generation appeared.
+  await rename(path, `${path}.1`);
+  await writeFile(path, entry("two"));
+  expect(
+    await snapshotHolds(
+      target.logRoot,
+      ["target.jsonl"],
+      { "target.jsonl": before },
+      {},
+    ),
+  ).toBe(false);
+  expect(
+    await snapshotHolds(
+      target.logRoot,
+      ["target.jsonl", "target.jsonl.1"],
+      { "target.jsonl": before, "target.jsonl.1": before },
+      {},
+    ),
+  ).toBe(false);
+  expect(
+    await snapshotHolds(
+      target.logRoot,
+      ["target.jsonl", "target.jsonl.1"],
+      { "target.jsonl": await identity(path), "target.jsonl.1": before },
+      {},
+    ),
+  ).toBe(true);
+});
+
+test("a launchd file whose last line never ends is read only a window back for the newest line, not scanned whole", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "web.stdout.log");
+  await writeFile(path, `ready\n${"#".repeat(8 * LOG_WINDOW_BYTES)}`);
+  const recent = await files.logs(target, undefined, 1);
+  expect(recent.entries).toEqual([
+    {
+      timestamp: "unknown",
+      component: "unknown",
+      stream: "unknown",
+      line: expect.stringMatching(
+        /^Rig skipped an unreadable log record \(more than \d+ bytes\)\.$/,
+      ),
+    },
+  ]);
+  // Reading back to the newest line stops a chunk past the window.
+  const handle = await open(path, "r");
+  let read = 0;
+  const counting = new Proxy(handle, {
+    get(target, key, receiver) {
+      if (key === "read")
+        return async (...args: Parameters<typeof handle.read>) => {
+          const result = await target.read(...args);
+          read += result.bytesRead;
+          return result;
+        };
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const size = (await handle.stat()).size;
+  const lines = linesBackward(counting, await completeEnd(counting, size));
+  expect((await lines.next()).value).toMatchObject({ atLeast: true });
+  await lines.return(undefined);
+  // Far less than the 32 MiB file: the window completeEnd searches, and the window the run is known past.
+  expect(read).toBeLessThanOrEqual(2 * (LOG_WINDOW_BYTES + 1024 * 1024));
+  await handle.close();
 });

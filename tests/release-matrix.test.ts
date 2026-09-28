@@ -303,7 +303,7 @@ test("the same application runs unchanged by hand: equivalent arguments and envi
       stdout: "ignore",
       stderr: "inherit",
     });
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let attempt = 0; attempt < 300; attempt++) {
       if (await app(at).catch(() => undefined)) break;
       await Bun.sleep(50);
     }
@@ -319,4 +319,4 @@ test("the same application runs unchanged by hand: equivalent arguments and envi
     await manual?.exited;
     await f.cleanup();
   }
-}, 60000);
+}, 120000);

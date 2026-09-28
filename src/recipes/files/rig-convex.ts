@@ -8,7 +8,7 @@
 // against it the way Convex's self-hosted setup does (CONVEX_SELF_HOSTED_URL and CONVEX_SELF_HOSTED_ADMIN_KEY).
 //
 // Settings (the recipe's `env` sets the first three):
-//   CONVEX_CLOUD_PORT       loopback port of the backend's API (clients, and the recipe's `ready`)
+//   CONVEX_CLOUD_PORT       loopback port of the backend's API (clients, and the recipe's `health.check`)
 //   CONVEX_SITE_PORT        loopback port of the backend's HTTP actions
 //   CONVEX_STATE_DIR        absolute directory that keeps the deployment: the Service's persistent data
 //   CONVEX_INSTANCE_NAME    name of a new deployment (default convex-self-hosted); an existing one keeps its own
@@ -438,7 +438,7 @@ export interface Dependencies {
 // ---------------------------------------------------------------------------------------------------------------------
 // The run
 
-/** How long the backend may take to answer after it starts; Rig's `ready_timeout` bounds the whole start as well. */
+/** How long the backend may take to answer after it starts; Rig's `health.start_timeout` bounds the whole start as well. */
 export const BACKEND_START_MS = 120_000;
 const BACKEND_POLL_MS = 250;
 /** A stop of the Service's process group reaches the children and this process at once; a child's exit can be seen
@@ -907,7 +907,7 @@ export const RELEASE_SOURCES = {
 };
 const EXECUTABLE = "convex-local-backend";
 const LOOKUP_MS = 5_000;
-/** How long one backend download may take: well inside the recipe's 3 minute ready_timeout. */
+/** How long one backend download may take: well inside the recipe's 3 minute health.start_timeout. */
 const DOWNLOAD_MS = 120_000;
 
 /** Convex's releases through the cache `convex dev` uses: <home>/.cache/convex/binaries/<release>/convex-local-backend.

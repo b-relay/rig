@@ -1782,8 +1782,9 @@ services:
       CONVEX_CLOUD_PORT: ${services.convex.ports.cloud}
       CONVEX_SITE_PORT: ${services.convex.ports.site}
       CONVEX_STATE_DIR: ${rig.data}/backend
-    ready: http://127.0.0.1:${services.convex.ports.cloud}/instance_name
-    ready_timeout: 3m
+    health:
+      check: http://127.0.0.1:${services.convex.ports.cloud}/instance_name
+      start_timeout: 3m
 ```
 
 `convex dev --local` cannot run under Rig: it always starts its backend on
@@ -1835,7 +1836,7 @@ gives the Service. Its header lists its settings. It:
 Its errors go to stderr, which the Target log records, as a message, a code
 such as `CONVEX_BACKEND_DOWNLOAD`, and a hint. The Target log also shows the
 script's progress, the backend's warnings and `convex dev`'s function logs. The
-first start may download the backend, hence the 3 minute `ready_timeout`. Other
+first start may download the backend, hence the 3 minute `health.start_timeout`. Other
 Services reach the backend at `http://127.0.0.1:${services.convex.ports.cloud}`.
 The Service is ready when the backend answers, which is before `convex dev` has
 pushed the functions: a Service that depends on it may start a moment before

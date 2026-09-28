@@ -19,6 +19,7 @@ import { RigError, failureReason } from "../domain/errors";
 import type {
   ManagedProcess,
   ProcessObservation,
+  StartControl,
   StopKill,
   StopRequest,
   StopResult,
@@ -50,11 +51,14 @@ import {
   processLeasePath,
   processLeaseRoot,
   processLeaseSchema,
+  type ProcessLease,
 } from "./process-lease";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
 import type { LogRetention } from "../domain/log-retention";
+import { findsExecutable, gatedCommand, releaseGate } from "./start-gate";
+import { failStart, ownStopsDetach } from "./start-cleanup";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
@@ -95,6 +99,9 @@ export interface ChildSupervisorOptions {
   /** The Rig root whose config.yaml logs settings the capture wrappers this supervisor starts rotate by; absent, they use
    * the defaults. */
   readonly configRoot?: string;
+  /** Aborted by the owner as rigd begins to shut down, before it drains: a stop this supervisor makes on its own (what a
+   * failed start spawned) stops waiting then, as `detach` makes it, and the process finishes stopping on its own. */
+  readonly shutdown?: AbortSignal;
 }
 /** Daemon-owned groups have identity-checked leases; stop never trusts an unverified recovered PID.
  * A process is started once and never respawned here. Whoever holds the application's child handle records its exit:
@@ -105,6 +112,8 @@ export function createChildSupervisor(
   const processes = new Map<string, OwnedProcess>();
   /** Aborted by `detach`: the stops this supervisor makes on its own stop waiting, as the runtime's do on shutdown. */
   const detaching = new AbortController();
+  /** What the clean-up of a failed start detaches on: `detach`, or the owner's shutdown, whichever comes first. */
+  const ownStops = ownStopsDetach(detaching.signal, options.shutdown);
   const operations = new Map<string, Promise<unknown>>();
   const timing = options.timing;
   const now = timing.now;
@@ -159,6 +168,16 @@ export function createChildSupervisor(
     if (options.captureCommand) await removeExitRecord(wrapperExitRoot, key);
   };
   const leasePath = (key: string) => processLeasePath(options.stateRoot, key);
+  /** Replaces the lease for `lease.key` whole, so a reader sees the previous lease or this one, never a partial one. */
+  const writeLease = async (lease: ProcessLease) => {
+    const temporary = `${leasePath(lease.key)}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify(lease), { mode: 0o600 });
+      await rename(temporary, leasePath(lease.key));
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  };
   function serialized<T>(key: string, action: () => Promise<T>): Promise<T> {
     const pending = (operations.get(key) ?? Promise.resolve())
       .catch(() => {})
@@ -260,13 +279,16 @@ export function createChildSupervisor(
    * process, and for a capture wrapper the wrapper's whole budget, since the wrapper holds its application's grace itself:
    * it is never killed before that grace and the application's kill wait can finish. A kill cuts the wait short: a plain
    * process is killed after the kill wait, a wrapper that understands it is told to kill its application now. Returns
-   * how the group ended; fails STOP_DETACHED as soon as `detach` aborts, leaving the group owned and stopping. */
+   * how the group ended; fails STOP_DETACHED as soon as `detach` aborts, leaving the group owned and stopping. A `detach`
+   * aborted before the SIGTERM skips it, unless `signalWhenDetached` (a failed start's clean-up) asks for it anyway. */
   async function signalUntilGone(
     key: string,
     pid: number,
     request: StopRequest,
+    signalWhenDetached: boolean,
   ): Promise<StopKill | undefined> {
-    if (request.detach?.aborted) throw stopDetached({ key });
+    if (request.detach?.aborted && !signalWhenDetached)
+      throw stopDetached({ key });
     // A wrapper holds the grace its start was given, which may be longer than the one asked for now (a plan changed in
     // between): it is never cut off before that grace can finish.
     const captured = options.captureCommand
@@ -329,7 +351,13 @@ export function createChildSupervisor(
       );
     return killed;
   }
-  async function stop(key: string, request: StopRequest): Promise<StopResult> {
+  /** Stops the process owned for `key` (see `signalUntilGone`); `signalWhenDetached` is a failed start's clean-up, which
+   * signals the process even when `request.detach` is already aborted. */
+  async function stop(
+    key: string,
+    request: StopRequest,
+    signalWhenDetached = false,
+  ): Promise<StopResult> {
     const owned = await recover(key);
     if (!owned) return { outcome: "unchanged" };
     // An application that outlived its wrapper is not this stop's to end: the stop releases only what it owns.
@@ -358,7 +386,7 @@ export function createChildSupervisor(
           (currentIdentity === undefined &&
             (await inspection.groupExists(owned.pid))));
     let killed = verified
-      ? await signalUntilGone(key, owned.pid, request)
+      ? await signalUntilGone(key, owned.pid, request, signalWhenDetached)
       : undefined;
     await Promise.all(owned.drains);
     await owned.writes;
@@ -385,6 +413,7 @@ export function createChildSupervisor(
   }
   async function ensureRunning(
     request: ManagedProcess,
+    control: StartControl,
   ): Promise<{ outcome: "started" | "unchanged"; pid?: number }> {
     const observed = await observe(request.key);
     if (observed.state === "running")
@@ -408,6 +437,25 @@ export function createChildSupervisor(
         "Configure a command.",
         { key: request.key },
       );
+    const command = options.captureCommand
+      ? [...options.captureCommand, capturePath(request.key)]
+      : request.command;
+    // The gate fails only once released, where a spawn failed at once: a program that is not there fails the start now.
+    if (
+      !findsExecutable(command[0]!, {
+        cwd: request.cwd,
+        PATH: request.env.PATH,
+      })
+    )
+      throw new RigError(
+        "PROCESS_START",
+        "The managed component could not start.",
+        "Check its executable and working directory.",
+        {
+          key: request.key,
+          cause: `${command[0]} is not an executable file or a program on the PATH.`,
+        },
+      );
     // A record left by an earlier start must not explain the end of this one.
     await removeExitRecords(request.key);
     await mkdir(request.logRoot, { recursive: true });
@@ -415,7 +463,6 @@ export function createChildSupervisor(
     await appendFile(join(request.logRoot, "target.jsonl"), "", {
       mode: 0o600,
     });
-    let command = request.command;
     if (options.captureCommand) {
       await mkdir(captureRoot, { recursive: true });
       await clearCaptureStatus(capturePath(request.key));
@@ -430,15 +477,19 @@ export function createChildSupervisor(
       } finally {
         await rm(temporary, { force: true });
       }
-      command = [...options.captureCommand, capturePath(request.key)];
     }
+    // The process is spawned behind a gate and released only once its lease is on disk: a supervisor that dies in between
+    // leaves no process running that nothing names.
+    const gated = gatedCommand(command);
     let child: ChildProcess;
     try {
-      child = spawn(command[0]!, [...command.slice(1)], {
+      child = spawn(gated[0]!, [...gated.slice(1)], {
         cwd: request.cwd,
         env: request.env,
         detached: true,
-        stdio: options.captureCommand ? "ignore" : ["ignore", "pipe", "pipe"],
+        stdio: options.captureCommand
+          ? ["pipe", "ignore", "ignore"]
+          : ["pipe", "pipe", "pipe"],
       });
     } catch {
       throw new RigError(
@@ -500,24 +551,28 @@ export function createChildSupervisor(
     processes.set(request.key, owned);
     try {
       owned.identity = await inspect(owned.pid);
-      if (owned.identity) {
-        const temporary = `${leasePath(request.key)}.${randomUUID()}.tmp`;
-        try {
-          await writeFile(
-            temporary,
-            JSON.stringify({
-              key: request.key,
-              pid: owned.pid,
-              identity: owned.identity,
-              incarnation: request.incarnation,
-            }),
-            { mode: 0o600 },
-          );
-          await rename(temporary, leasePath(request.key));
-        } finally {
-          await rm(temporary, { force: true });
-        }
-      }
+      // Only a gated process that was killed has no identity yet; it is never released without a lease.
+      if (!owned.identity)
+        throw new RigError(
+          "PROCESS_START",
+          "The managed component ended before its start could be recorded.",
+          "Check the Target logs, then start it again.",
+          { key: request.key },
+        );
+      await writeLease({
+        key: request.key,
+        pid: owned.pid,
+        identity: owned.identity,
+        incarnation: request.incarnation,
+      });
+      await releaseGate(child.stdin!).catch((error: Error) => {
+        throw new RigError(
+          "PROCESS_START",
+          "The managed component ended before it was released to start.",
+          "Check the Target logs, then start it again.",
+          { key: request.key, cause: error.message },
+        );
+      });
       if (options.captureCommand)
         await waitForCaptureStart(capturePath(request.key), {
           timeoutMs: DEFAULT_CAPTURE_START_MS,
@@ -525,17 +580,19 @@ export function createChildSupervisor(
           wait: (ms) => timing.wait(ms),
         });
     } catch (error) {
-      await stop(request.key, {
+      await failStart({
+        stop: (stopRequest) => stop(request.key, stopRequest, true),
         graceMs: graceOf(request),
-        detach: detaching.signal,
+        control,
+        detach: ownStops,
+        startFailure: error,
       });
-      throw error;
     }
     return { outcome: "started", pid: child.pid };
   }
   return {
-    ensureRunning: (request) =>
-      serialized(request.key, () => ensureRunning(request)),
+    ensureRunning: (request, control = {}) =>
+      serialized(request.key, () => ensureRunning(request, control)),
     observe,
     stop: (key, request) => serialized(key, () => stop(key, request)),
     async shutdown() {

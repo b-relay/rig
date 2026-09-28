@@ -23,6 +23,21 @@ const ownerSchema = z
   })
   .strict();
 export type ArtifactOwner = z.infer<typeof ownerSchema>;
+/** The owner as a message names it: its Project, Target and Component when recorded, else its Component alone. */
+export function describeOwner(owner: ArtifactOwner): string {
+  return owner.project && owner.target
+    ? `Project '${owner.project}' Target '${owner.target}' Component '${owner.componentName}'`
+    : `Another Target's Component '${owner.componentName}'`;
+}
+/** The owner as error details carry it: every recorded identity field, never the revision. */
+export function ownerDetails(owner: ArtifactOwner) {
+  return {
+    targetId: owner.targetId,
+    componentName: owner.componentName,
+    ...(owner.project ? { project: owner.project } : {}),
+    ...(owner.target ? { target: owner.target } : {}),
+  };
+}
 export interface ArtifactIdentity {
   targetId: string;
   componentName: string;
@@ -67,21 +82,9 @@ export function createArtifactOwnership(
     if (saved && saved.targetId !== identity.targetId)
       throw new RigError(
         "ARTIFACT_CONFLICT",
-        `${
-          saved.project && saved.target
-            ? `Project '${saved.project}' Target '${saved.target}' Component '${saved.componentName}'`
-            : `Another Target's Component '${saved.componentName}'`
-        } owns the installed executable ${identity.destination}.`,
+        `${describeOwner(saved)} owns the installed executable ${identity.destination}.`,
         "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
-        {
-          destination: identity.destination,
-          owner: {
-            targetId: saved.targetId,
-            componentName: saved.componentName,
-            ...(saved.project ? { project: saved.project } : {}),
-            ...(saved.target ? { target: saved.target } : {}),
-          },
-        },
+        { destination: identity.destination, owner: ownerDetails(saved) },
       );
     if (!saved && current !== undefined)
       throw new RigError(

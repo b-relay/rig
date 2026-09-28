@@ -4025,6 +4025,34 @@ test("forget refuses running Targets and retained Previews, list marks a missing
   });
 });
 
+test("forget against the file store removes the Project and records the forget in Activity", async () => {
+  const { deps } = fixture();
+  const root = await mkdtemp(join(tmpdir(), "rig-forget-"));
+  try {
+    deps.root = root;
+    deps.store = new FileStateStore(root);
+    const runtime = createRuntime(deps);
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    expect(
+      await runtime.command({ action: "forget", project: "demo" }),
+    ).toMatchObject({
+      action: "forget",
+      outcome: "forgotten",
+      project: "demo",
+    });
+    const saved = await new FileStateStore(root).read();
+    expect(saved.projects).toEqual([]);
+    expect(saved.targets).toEqual([]);
+    expect(saved.activity.at(-1)).toMatchObject({
+      action: "forget",
+      outcome: "forgotten",
+      project: "demo",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("configured Target names select the Working copy and Stable Target, and a push selects the Stable Target by role", async () => {
   const { runtime, state, deps, config } = fixture();
   config.targets = { working: { name: "dev" }, stable: { name: "production" } };

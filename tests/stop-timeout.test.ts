@@ -36,9 +36,20 @@ afterEach(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-/** An application that needs `seconds` to exit after SIGTERM. */
+/** An application that needs `seconds` to exit after SIGTERM. Once its trap is set it creates `trapping` in its working
+ * directory: a stop sent before then would end it at once. */
 const exitsAfter = (seconds: number) =>
-  `trap 'sleep ${seconds}; exit 0' TERM; while :; do sleep 0.05; done`;
+  `trap 'sleep ${seconds}; exit 0' TERM; : > trapping; while :; do sleep 0.05; done`;
+
+/** Starts `request` and returns once its application traps SIGTERM. */
+async function startTrapping(w: World, request: ManagedProcess) {
+  const started = await w.supervisor.ensureRunning(request);
+  for (let i = 0; i < 200; i++) {
+    if (await Bun.file(join(request.cwd, "trapping")).exists()) return started;
+    await Bun.sleep(10);
+  }
+  throw new Error("the application never set its SIGTERM trap");
+}
 
 async function wrapperScript(root: string): Promise<string> {
   const path = join(root, "capture.ts");
@@ -173,7 +184,8 @@ for (const [name, world] of [
   describe(`${name} supervisor with the capture wrapper`, () => {
     test("an application that exits within its stop_timeout is not killed, and its stop reads as requested", async () => {
       const w = await world();
-      const started = await w.supervisor.ensureRunning(
+      const started = await startTrapping(
+        w,
         request(w.root, exitsAfter(1.2), 2000),
       );
       expect(started.outcome).toBe("started");
@@ -193,7 +205,7 @@ for (const [name, world] of [
 
     test("an application still running when its stop_timeout ends is SIGKILLed then, and the stop says the grace ran out", async () => {
       const w = await world();
-      await w.supervisor.ensureRunning(request(w.root, exitsAfter(30), 1000));
+      await startTrapping(w, request(w.root, exitsAfter(30), 1000));
       const at = performance.now();
       expect(
         await w.supervisor.stop("target-1:worker", { graceMs: 1000 }),
@@ -205,7 +217,7 @@ for (const [name, world] of [
 
     test("a kill cuts a long grace to the kill wait", async () => {
       const w = await world();
-      await w.supervisor.ensureRunning(request(w.root, exitsAfter(30), 60_000));
+      await startTrapping(w, request(w.root, exitsAfter(30), 60_000));
       const kill = new AbortController();
       setTimeout(() => kill.abort(), 300);
       const at = performance.now();

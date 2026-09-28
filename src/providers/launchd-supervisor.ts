@@ -25,8 +25,10 @@ import type {
   ProcessObservation,
   StopKill,
   StopRequest,
+  StopResult,
   Supervisor,
 } from "./contracts";
+import { failStart, ownStopsDetach } from "./start-cleanup";
 import {
   CAPTURE_KILL_SIGNAL,
   readCaptureStop,
@@ -65,6 +67,9 @@ export interface LaunchdOptions {
   /** The Rig root whose config.yaml logs settings the capture wrappers of these jobs rotate the Target log by; absent,
    * they use the defaults. */
   readonly configRoot?: string;
+  /** Aborted by the owner as rigd begins to shut down, before it drains: the stop of a start whose wrapper never reported
+   * stops waiting then, as `detach` makes it, and launchd finishes unloading the job on its own. */
+  readonly shutdown?: AbortSignal;
 }
 /** The clock this supervisor polls by and how long each wait may run on it; the platform implementation is the effect owner, a test supplies a scripted one. */
 export interface LaunchdTiming {
@@ -94,6 +99,10 @@ const POLL_MS = 100;
  * starts again is the runtime's decision. Explicit up preserves already running jobs. */
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const { run, inspect, groupExists } = options;
+  /** Aborted by `detach`: the stops this supervisor makes on its own stop waiting, as the runtime's do on shutdown. */
+  const detaching = new AbortController();
+  /** What the clean-up of a failed start detaches on: `detach`, or the owner's shutdown, whichever comes first. */
+  const ownStops = ownStopsDetach(detaching.signal, options.shutdown);
   const { now, wait, applicationStartMs, stopTimings } = options.timing;
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
@@ -301,9 +310,71 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       { key, label: label(key) },
     );
   };
+  /** Boots the job out and waits until it has left launchd (see `awaitUnload`), then removes its files; a job that is not
+   * loaded only has its files removed. A `detach` aborted before the bootout skips it, unless `signalWhenDetached` (a failed
+   * start's clean-up) asks for it anyway, which also boots out a job launchd could not show. */
+  async function stopJob(
+    key: string,
+    request: StopRequest,
+    signalWhenDetached = false,
+  ): Promise<StopResult> {
+    if (request.detach?.aborted && !signalWhenDetached)
+      throw stopDetached({ key });
+    const existing = await run({
+      command: ["launchctl", "print", service(key)],
+      timeoutMs: 2000,
+    });
+    if (existing.exitCode !== 0) {
+      if (unloaded(existing)) {
+        await removeJobFiles(key);
+        return { outcome: "unchanged" };
+      }
+      // A failed start's clean-up boots out the job it just loaded all the same, and waits for it to leave.
+      if (!signalWhenDetached)
+        throw new RigError(
+          "LAUNCHD_UNKNOWN",
+          "The existing job could not be inspected.",
+          "Resolve launchd access before stopping it.",
+          { key },
+        );
+    }
+    // launchd sends SIGTERM and returns at once; a job already booted out gets SIGTERM again, which its wrapper ignores.
+    // A bootout that fails or hangs while the job is still there (one a previous daemon began booting out) is waited
+    // on like any other: the unload wait, its kill and its detach decide what happens next. A kill or a detach asked
+    // while bootout has not returned goes on at once rather than after launchctl's own timeout.
+    const bootout = await untilAborted(
+      run({
+        command: ["launchctl", "bootout", service(key)],
+        timeoutMs: 10_000,
+      }),
+      [request.kill, request.detach],
+    );
+    if (request.detach?.aborted) throw stopDetached({ key });
+    if (bootout && bootout.exitCode !== 0) {
+      const still = await run({
+        command: ["launchctl", "print", service(key)],
+        timeoutMs: 2000,
+      });
+      if (still.exitCode !== 0 && !unloaded(still))
+        throw new RigError(
+          "LAUNCHD_FAILED",
+          `launchd could not bootout job ${label(key)}.`,
+          "Check daemon diagnostics and the Target logs.",
+          {
+            action: "bootout",
+            label: label(key),
+            exitCode: bootout.exitCode,
+            stderr: bootout.stderr,
+          },
+        );
+    }
+    const killed = await awaitUnload(key, request);
+    await removeJobFiles(key);
+    return { outcome: "stopped", ...(killed ? { killed } : {}) };
+  }
   return {
     observe,
-    async ensureRunning(request) {
+    async ensureRunning(request, control = {}) {
       const before = await observe(request.key);
       if (before.state === "running")
         return { outcome: "unchanged", pid: before.pid };
@@ -368,70 +439,25 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
             wait,
           });
         } catch (error) {
-          await checked(["bootout", service(request.key)], request.key);
-          await removeJobFiles(request.key);
-          throw error;
+          // The job may take its whole grace to leave: a retry must not find it still loaded.
+          await failStart({
+            stop: (stopRequest) => stopJob(request.key, stopRequest, true),
+            graceMs: request.stopGraceMs ?? serviceGraceMs(undefined),
+            control,
+            detach: ownStops,
+            startFailure: error,
+          });
         }
       }
       return { outcome: "started", pid: await waitForApplication(request.key) };
     },
-    async stop(key, request) {
-      if (request.detach?.aborted) throw stopDetached({ key });
-      const existing = await run({
-        command: ["launchctl", "print", service(key)],
-        timeoutMs: 2000,
-      });
-      if (existing.exitCode !== 0) {
-        if (unloaded(existing)) {
-          await removeJobFiles(key);
-          return { outcome: "unchanged" };
-        }
-        throw new RigError(
-          "LAUNCHD_UNKNOWN",
-          "The existing job could not be inspected.",
-          "Resolve launchd access before stopping it.",
-          { key },
-        );
-      }
-      // launchd sends SIGTERM and returns at once; a job already booted out gets SIGTERM again, which its wrapper ignores.
-      // A bootout that fails or hangs while the job is still there (one a previous daemon began booting out) is waited
-      // on like any other: the unload wait, its kill and its detach decide what happens next. A kill or a detach asked
-      // while bootout has not returned goes on at once rather than after launchctl's own timeout.
-      const bootout = await untilAborted(
-        run({
-          command: ["launchctl", "bootout", service(key)],
-          timeoutMs: 10_000,
-        }),
-        [request.kill, request.detach],
-      );
-      if (request.detach?.aborted) throw stopDetached({ key });
-      if (bootout && bootout.exitCode !== 0) {
-        const still = await run({
-          command: ["launchctl", "print", service(key)],
-          timeoutMs: 2000,
-        });
-        if (still.exitCode !== 0 && !unloaded(still))
-          throw new RigError(
-            "LAUNCHD_FAILED",
-            `launchd could not bootout job ${label(key)}.`,
-            "Check daemon diagnostics and the Target logs.",
-            {
-              action: "bootout",
-              label: label(key),
-              exitCode: bootout.exitCode,
-              stderr: bootout.stderr,
-            },
-          );
-      }
-      const killed = await awaitUnload(key, request);
-      await removeJobFiles(key);
-      return { outcome: "stopped", ...(killed ? { killed } : {}) };
-    },
+    stop: (key, request) => stopJob(key, request),
     async shutdown() {
       /* Persistent jobs remain owned by launchd when the daemon exits. */
     },
     async detach() {
-      /* launchd keeps the jobs; nothing is held in memory. */
+      // launchd keeps the jobs; nothing is held in memory, and a stop this supervisor is making stops waiting.
+      detaching.abort();
     },
   };
 }

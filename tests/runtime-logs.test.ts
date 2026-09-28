@@ -596,6 +596,30 @@ test("a late record at the top of the current file does not hide a match in the 
   });
   expect(result.entries.map((entry) => entry.line)).toEqual(["rotated match"]);
 });
+test("a since follow reads a line a writer appends to the generation rotated just before the read began", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(`${path}.1`, record("web", "old", "2026-09-28T10:00:00Z"));
+  await utimes(
+    `${path}.1`,
+    new Date("2026-09-28T10:00:00Z"),
+    new Date("2026-09-28T10:00:00Z"),
+  );
+  await writeFile(path, record("web", "recent", "2026-09-28T11:30:00Z"));
+  const filter: LogFilter = { since: "2026-09-28T11:00:00Z" };
+  const first = await files.logs(target, undefined, 50, filter);
+  expect(first.entries.map((entry) => entry.line)).toEqual(["recent"]);
+  // A writer opened the full file just before it was rotated to .1, and appends through that handle now.
+  await appendFile(
+    `${path}.1`,
+    record("web", "late through old handle", "2026-09-28T11:31:00Z"),
+  );
+  const next = await files.logs(target, first.cursor, 50, filter);
+  expect(next.entries.map((entry) => entry.line)).toEqual([
+    "late through old handle",
+  ]);
+});
 test("a filtered follow returns only matching new entries and still advances past the rest", async () => {
   const target = await fixture(),
     files = createRuntimeFiles(),

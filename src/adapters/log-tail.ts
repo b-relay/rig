@@ -79,16 +79,26 @@ export async function readFamilyTail(
    * inside the window is decided by when it was last written instead (see `writtenBefore`). */
   let bytesPastSince = 0;
   let done = false;
+  /** Whether a rotated generation has been reached yet: the first is the one rotated last. */
+  let rotatedReached = false;
   for (const member of [...family.members].reverse()) {
     if (done && member.generation > 0) break;
+    const newestRotated = member.generation > 0 && !rotatedReached;
+    if (member.generation > 0) rotatedReached = true;
     // A rotated generation last written before the bound holds only lines timed before it, as does every older one: none
-    // is opened, so an unreadable one never fails the read.
+    // is read, so an unreadable one never fails the read. The one rotated last may still take a line from a writer that
+    // opened it just before the rotation: a follow is given its end, so it reads what that writer appends.
     if (
       member.generation > 0 &&
       stopBefore.since !== undefined &&
       (await writtenBefore(join(root, member.name), stopBefore.since))
-    )
+    ) {
+      if (newestRotated) {
+        const position = await positionAtEnd(join(root, member.name));
+        if (position) positions[member.name] = position;
+      }
       break;
+    }
     const log = await openLog(join(root, member.name));
     if (!log) continue;
     try {
@@ -149,6 +159,24 @@ export async function readFamilyTail(
   return { entries: kept.slice(0, limit).reverse(), positions };
 }
 
+/** Where a follow resumes in the file at `path` without reading it: its end. Undefined when it is gone or cannot be read,
+ * which leaves the read as it was without it. */
+async function positionAtEnd(path: string): Promise<LogPosition | undefined> {
+  const log = await openLog(path).catch(() => undefined);
+  if (!log) return undefined;
+  try {
+    const { end, midRecord } = await completeEnd(log.handle, log.size);
+    return {
+      identity: log.identity,
+      offset: end,
+      ...(midRecord ? { midRecord } : {}),
+    };
+  } catch {
+    return undefined;
+  } finally {
+    await log.handle.close();
+  }
+}
 /** Whether the file at `path` was last written before `time`: every line in it was timed before it too, since a line is
  * timed before it is written. A file that is gone, or cannot be looked at, is not known to be. */
 async function writtenBefore(path: string, time: string): Promise<boolean> {

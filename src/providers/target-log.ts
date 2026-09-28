@@ -158,11 +158,16 @@ export async function dropCurrentFile(
   }
   try {
     await link(aside, file);
-    await rm(aside, { force: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    await rename(aside, `${file}.1`);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      await rename(aside, `${file}.1`);
+      return;
+    }
+    // Not left under a name reads ignore: it goes back where it was (nothing is there, or link would have said so).
+    await rename(aside, file).catch(() => {});
+    throw error;
   }
+  await rm(aside, { force: true });
 }
 async function exists(path: string): Promise<boolean> {
   try {

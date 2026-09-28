@@ -1182,3 +1182,20 @@ test("a follow passes an endless launchd line a window per read, however far it 
   // Each read passed at most a window of the run.
   expect(reads).toBeGreaterThanOrEqual(3);
 });
+
+test("a family that appears and rotates after a follow began is read whole, its rotated generation included", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles();
+  await writeFile(join(target.logRoot, "target.jsonl"), entry("start"));
+  const first = await files.logs(target, undefined, 10);
+  // A launchd job starts after the follow began, writes, and its file is rotated when the job starts again.
+  const job = join(target.logRoot, "worker.stderr.log");
+  await writeFile(job, "first run\n");
+  await rotateLogFile(job, { maxBytes: 1, generations: 1 });
+  await writeFile(job, "second run\n");
+  const next = await files.logs(target, first.cursor, 10);
+  expect(next.entries.map((each) => each.line)).toEqual([
+    "first run",
+    "second run",
+  ]);
+});

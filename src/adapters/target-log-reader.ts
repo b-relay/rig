@@ -162,14 +162,12 @@ async function readFollowing(
   const previous = Object.fromEntries(
     Object.entries(following).filter(([name]) => included(name)),
   );
-  const snapshot = await openSnapshot(root, included, filter, {
-    identities: new Set(
-      Object.values(previous).map((position) => position.identity),
-    ),
-    families: new Set(
-      Object.keys(previous).map((name) => logSource(name)!.family),
-    ),
-  });
+  const snapshot = await openSnapshot(
+    root,
+    included,
+    filter,
+    new Set(Object.values(previous).map((position) => position.identity)),
+  );
   const { sources, opened, unseen } = snapshot;
   try {
     const positions = rebind(opened, previous, sources !== undefined);
@@ -214,8 +212,8 @@ const logsBusy = () =>
     "Read the logs again.",
   );
 /** Opens the included Target logs a follow needs, once each: every current file, and each older generation that holds a
- * file the cursor is following (found by identity, from the directory's metadata, so the rest are never opened and a
- * Target with many retained generations does not run out of file descriptors). It checks that no rotation happened
+ * file the cursor is following or was made since the cursor (found by identity, from the directory's metadata, so the
+ * rest are never opened and a Target with many retained generations does not run out of file descriptors). It checks that no rotation happened
  * meanwhile (see `snapshotHolds`); otherwise a rotation between the listing and the opens could show one file under two
  * names, or hide the generation a followed file moved to, and the follow would read lines twice or lose them. An
  * unsettled snapshot is taken again, up to SNAPSHOT_ATTEMPTS times, then fails LOG_BUSY. */
@@ -223,17 +221,13 @@ async function openSnapshot(
   root: string,
   included: (name: string) => boolean,
   filter: LogFilter,
-  following: {
-    /** Identities of the files the cursor follows. */
-    readonly identities: ReadonlySet<string>;
-    /** Families the cursor has a position in. */
-    readonly families: ReadonlySet<string>;
-  },
+  /** Identities of the files the cursor follows. */
+  following: ReadonlySet<string>,
 ): Promise<{
   sources: readonly LogSource[] | undefined;
   opened: Map<string, OpenLog>;
-  /** Older generations made since the cursor's read (newer than any file it follows in their family), read from their
-   * start: two rotations between reads leave one the follow never saw. */
+  /** Older generations made since the cursor's read (newer than any file it follows in their family, or in a family
+   * that did not exist then), read from their start: two rotations between reads leave one the follow never saw. */
   unseen: Set<string>;
 }> {
   for (let attempt = 1; ; attempt++) {
@@ -252,7 +246,7 @@ async function openSnapshot(
     const newestFollowed = new Map<string, number>();
     for (const source of listed) {
       const identity = identities[source.name];
-      if (identity && following.identities.has(identity))
+      if (identity && following.has(identity))
         newestFollowed.set(
           source.family,
           Math.min(
@@ -267,12 +261,12 @@ async function openSnapshot(
     try {
       for (const source of listed) {
         const identity = identities[source.name];
-        const followed =
-          identity !== undefined && following.identities.has(identity);
+        const followed = identity !== undefined && following.has(identity);
+        // Newer than the newest file the cursor follows in its family; in a family it follows no file of (one that did
+        // not exist when the cursor was made, or whose followed files were all evicted), every generation is.
         const madeSince =
           source.generation > 0 &&
           !followed &&
-          following.families.has(source.family) &&
           source.generation < (newestFollowed.get(source.family) ?? Infinity);
         if (source.generation > 0 && !followed && !madeSince) continue;
         if (madeSince) unseen.add(source.name);

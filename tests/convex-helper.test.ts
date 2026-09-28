@@ -58,6 +58,8 @@ async function harness(
     keygen?: { exitCode: number; stdout: string; stderr: string };
     /** How the backend ends as soon as it is started. */
     backendEnds?: ChildExit;
+    /** A stop arrives while keygen runs, which then fails as a cancelled command does. */
+    stopDuringKeygen?: boolean;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-convex-helper-"));
@@ -120,6 +122,10 @@ async function harness(
     files: createDeploymentFiles(),
     async run(request) {
       events.push(`run ${request.command.slice(1).join(" ")}`);
+      if (options.stopDuringKeygen) {
+        stop.abort();
+        throw new RigError("COMMAND_CANCELLED", "Cancelled.", "Retry.");
+      }
       return (
         options.keygen ?? {
           exitCode: 0,
@@ -137,7 +143,9 @@ async function harness(
       return (options.answer ?? ((own) => own))(name);
     },
     async wait() {
+      // Time passes at once, but a timer already due (a signal the test schedules) runs first.
       clock += 250;
+      await new Promise((resolve) => setTimeout(resolve, 0));
     },
     now: () => clock,
     newInstanceSecret: () => "f".repeat(64),
@@ -444,11 +452,27 @@ test("another deployment on the port, a backend that never answers, a bad config
   expect(keygen.children).toEqual([]);
 });
 
-test("a stop before the backend is chosen starts nothing and ends cleanly", async () => {
-  const h = await harness({ recommended: NEW });
-  h.stop.abort();
-  expect(await h.start()).toBe(0);
-  expect(h.children).toEqual([]);
+test("a stop ends the helper cleanly wherever it arrives: before anything starts, during keygen, or just after the group's SIGTERM ended a child", async () => {
+  const early = await harness({ recommended: NEW });
+  early.stop.abort();
+  expect(await early.start()).toBe(0);
+  expect(early.children).toEqual([]);
+
+  const keygen = await harness({ recommended: NEW, stopDuringKeygen: true });
+  expect(await keygen.start()).toBe(0);
+  expect(keygen.children).toEqual([]);
+  expect(keygen.output().err).toBe("");
+
+  // The supervisor signals the whole group: convex dev may be seen ending before this process's own SIGTERM.
+  const group = await harness({ recommended: NEW });
+  expect(
+    await group.start({}, ({ dev }) => {
+      dev.end({ signal: "SIGTERM" });
+      setTimeout(() => group.stop.abort(), 0);
+    }),
+  ).toBe(0);
+  expect(group.children[0]!.stopped).toBe(true);
+  expect(group.output().err).toBe("");
 });
 
 test("release choice follows convex dev: newer or same-day recommended releases are taken, older ones are not, and offline the newest cached one starts a deployment", () => {

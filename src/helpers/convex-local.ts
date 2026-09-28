@@ -22,6 +22,8 @@ import {
 /** How long the backend may take to answer after it starts; Rig's `ready_timeout` bounds the whole start as well. */
 export const BACKEND_START_MS = 120_000;
 const BACKEND_POLL_MS = 250;
+/** A stop of the Service's process group reaches the children and this process at once; a child's exit can be seen first. */
+const STOP_SETTLE_MS = 100;
 /** The command `convex dev` runs as: the Project's own Convex CLI, through bunx, as the version 1 recipe ran it. */
 const CONVEX_DEV = ["bunx", "convex", "dev"] as const;
 
@@ -49,10 +51,23 @@ export interface ConvexRunRequest {
 /** Runs a Convex deployment until it ends or `stop` aborts: opens (or adopts, or creates) the deployment in `stateDir`,
  * starts its backend on 127.0.0.1, points `.env.local` at it, then runs `convex dev` against it. Both children are
  * supervised together: when one ends by itself the other is stopped, and a stop is passed to both and waited out.
- * Returns 0 after a requested stop, otherwise the exit code of the child that ended first (1 when it ended cleanly or by
- * a signal, since the Service did not ask it to). Throws a RigError, having stopped any child it started, when the
- * deployment cannot be opened, the backend cannot be obtained, or it does not come up. */
+ * Returns 0 after a requested stop, whatever it interrupted; otherwise the exit code of the child that ended first (1
+ * when it ended cleanly or by a signal, since the Service did not ask it to). Throws a RigError, having stopped any child
+ * it started, when the deployment cannot be opened, the backend cannot be obtained, or it does not come up. */
 export async function runConvexDeployment(
+  request: ConvexRunRequest,
+  deps: ConvexHelperDependencies,
+  stop: AbortSignal,
+): Promise<number> {
+  try {
+    return await runUntilEnd(request, deps, stop);
+  } catch (error) {
+    // A download, keygen or wait that a stop cut short is the stop, not a failure.
+    if (stop.aborted) return 0;
+    throw error;
+  }
+}
+async function runUntilEnd(
   request: ConvexRunRequest,
   deps: ConvexHelperDependencies,
   stop: AbortSignal,
@@ -101,7 +116,10 @@ export async function runConvexDeployment(
       stop,
     );
     if (started === "stopped") return 0;
-    if (started !== "up") return failed("The Convex backend", started, deps);
+    if (started !== "up")
+      return (await stopFollows(deps, stop))
+        ? 0
+        : failed("The Convex backend", started, deps);
     await recordRelease(request.stateDir, deployment, backend.release, deps);
     deps.output.write(
       `Convex backend ${deployment.deploymentName} (${backend.release}) is up at ${url}\n`,
@@ -122,7 +140,9 @@ export async function runConvexDeployment(
       ],
       stop,
     );
-    return first ? failed(first.label, first.exit, deps) : 0;
+    return first && !(await stopFollows(deps, stop))
+      ? failed(first.label, first.exit, deps)
+      : 0;
   } finally {
     for (const child of children) child.stop();
     await Promise.all(children.map((child) => child.exited));
@@ -183,6 +203,7 @@ async function createDeployment(
       request.instanceName,
       instanceSecret,
       deps,
+      stop,
     ),
     instanceSecret,
   };
@@ -203,6 +224,7 @@ async function adminKey(
   name: string,
   secret: string,
   deps: Pick<ConvexHelperDependencies, "run">,
+  stop: AbortSignal,
 ): Promise<string> {
   const result = await deps.run({
     command: [
@@ -215,6 +237,7 @@ async function adminKey(
       secret,
     ],
     timeoutMs: 30_000,
+    signal: stop,
   });
   const key = result.stdout.trim();
   if (result.exitCode === 0 && key) return key;
@@ -334,6 +357,14 @@ async function firstEnd(
   }
 }
 
+/** Whether a stop arrives within the settle window after a child ended, which makes that end part of the stop. */
+async function stopFollows(
+  deps: Pick<ConvexHelperDependencies, "wait">,
+  stop: AbortSignal,
+): Promise<boolean> {
+  if (!stop.aborted) await deps.wait(STOP_SETTLE_MS, stop);
+  return stop.aborted;
+}
 /** Says how a child ended by itself and returns the helper's exit code for it: never 0, since nothing asked it to end. */
 function failed(
   label: string,

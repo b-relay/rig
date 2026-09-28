@@ -46,10 +46,7 @@ export function findHostRestart(
   const baseline = pending
     ? across(recorded, pending.kind, known(pending))
     : recorded;
-  const since = hostRestartBetween(
-    pending ? baseline : state.host,
-    current,
-  );
+  const since = hostRestartBetween(pending ? baseline : state.host, current);
   if (pending && since === undefined) {
     const session = across(baseline, undefined, current);
     return {

@@ -166,7 +166,12 @@ test("rigd killed between spawning a capture wrapper and leasing it leaves nothi
   expect(ended).toBe(true);
   // The wrapper never ran: it wrote no status and started no application.
   await Bun.sleep(200);
-  expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
+  const applications = (await readFile(starts, "utf8").catch(() => ""))
+    .split("\n")
+    .filter(Boolean);
+  // Should one have started after all, it runs in its own group: cleanup ends that too.
+  for (const application of applications) await track(Number(application));
+  expect(applications).toEqual([]);
   const capture = join(
     root,
     "capture",

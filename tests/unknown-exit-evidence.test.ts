@@ -167,14 +167,28 @@ function alive(pid: number): boolean {
 }
 
 const roots: string[] = [];
-const pids: number[] = [];
+const identityOf = createProcessIdentityReader(runCommand);
+/** Processes a test started that may still run. Each is recorded with its birth identity as it is pushed, and cleanup
+ * signals it only while that identity still matches: a pid seen gone may belong to another process by then. */
+const tracked: Promise<{ pid: number; identity: string } | undefined>[] = [];
+const pids = {
+  push(pid: number): void {
+    tracked.push(
+      identityOf(pid).then(
+        (identity) => (identity ? { pid, identity } : undefined),
+        () => undefined,
+      ),
+    );
+  },
+};
 afterEach(async () => {
-  for (const pid of pids.splice(0))
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
+  for (const entry of await Promise.all(tracked.splice(0)))
+    if (entry && (await identityOf(entry.pid)) === entry.identity)
+      try {
+        process.kill(entry.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -346,8 +360,7 @@ for (const [name, witness] of [
         const spawned = Number(await readFile(`${armed}.pid`, "utf8"));
         // What the wrapper spawned was never released to become the application, and ended with its wrapper.
         for (let i = 0; i < 100 && alive(spawned); i++) await Bun.sleep(10);
-        // Cleanup signals it only while it is known to run: a pid seen gone may belong to another process by then.
-        if (alive(spawned)) pids.push(spawned);
+        pids.push(spawned);
         expect(alive(spawned)).toBe(false);
         expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
         // So the retry is the one and only application.

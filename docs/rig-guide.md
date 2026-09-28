@@ -1502,9 +1502,10 @@ Service helper bundled in `rigd` (`${rig.rigd}` runs the installed `rigd`, see
   `CONVEX_DEPLOY_KEY` or `CONVEX_DEPLOYMENT_TOKEN`, which would send the Convex
   CLI to another deployment, is commented out, not deleted, and `convex dev`
   runs with those three set empty, so a value in `.env` cannot win either. Keep
-  `.env.local` out of Git: it holds the admin key. Other
-  `bunx convex` commands (`run`, `data`, `export`) in the workspace then reach
-  the backend while it runs;
+  `.env.local` out of Git: it holds the admin key. Other `bunx convex`
+  commands (`run`, `data`, `export`) in the workspace then reach the backend
+  while it runs, unless a deploy key in `.env` or your shell sends them to
+  Convex Cloud first, which the Convex CLI prefers;
 - runs `bunx convex dev` (arguments after `--` go to it) and supervises both.
   When either ends by itself, the other is stopped (and killed if it has not
   ended 10 s later) and the Service ends with a failure. A stop (SIGTERM,

@@ -289,3 +289,17 @@ test("a launcher that cannot be written is a tagged error naming the directory",
     hint: expect.stringContaining(join(root, "daemon")),
   });
 });
+
+test("files: a write the filesystem refuses is a tagged error naming the path", async () => {
+  const root = await temporary();
+  await writeFile(join(root, "blocker"), "a file where a directory belongs");
+  await expect(
+    createDeploymentFiles().writePrivate(
+      join(root, "blocker", "config.json"),
+      "{}",
+    ),
+  ).rejects.toMatchObject({
+    code: "CONVEX_FILES",
+    message: expect.stringContaining(join(root, "blocker", "config.json")),
+  });
+});

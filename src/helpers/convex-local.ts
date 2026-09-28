@@ -99,7 +99,7 @@ async function runUntilEnd(
     ? opened
     : await newCredentials(
         opened,
-        backend.binary,
+        await keygenBinary(backend, offer, deps, stop),
         request.stateDir,
         deps,
         stop,
@@ -113,6 +113,15 @@ async function runUntilEnd(
       adminKey: deployment.adminKey,
     }),
   );
+  // Only what answers after the backend starts can be taken for it, so nothing may answer before.
+  const before = await deps.probe(`${url}/instance_name`, stop);
+  if (before !== undefined)
+    throw new RigError(
+      "CONVEX_PORT_TAKEN",
+      `A Convex backend (${boundedEvidence(before) ?? "unnamed"}) already answers at ${url}, before this Service started its own.`,
+      "Stop the other backend (an earlier one of this deployment may still run), or give this Service other ports.",
+      { url },
+    );
   const children: RunningChild[] = [];
   try {
     const server = deps.children.start({
@@ -268,6 +277,20 @@ async function newDeploymentBackend(
       binary: await deps.releases.binary(cached, stop),
     };
   }
+}
+/** The binary to make new credentials with. Like `convex dev`, it is the newest one to hand: under a pin, a newer release
+ * already in the cache (an older one may not have `keygen admin-key`), else the binary the deployment runs on. */
+async function keygenBinary(
+  backend: { release: string; binary: string },
+  offer: { pinned?: string },
+  deps: Pick<ConvexHelperDependencies, "releases">,
+  stop: AbortSignal,
+): Promise<string> {
+  if (!offer.pinned) return backend.binary;
+  const newest = newDeploymentRelease({ cached: await deps.releases.cached() });
+  return newest && releasedBefore(backend.release, newest)
+    ? await deps.releases.binary(newest, stop)
+    : backend.binary;
 }
 /** New credentials for a deployment an older Convex CLI made without its own, saved before the backend runs on them. */
 async function newCredentials(

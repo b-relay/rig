@@ -11,12 +11,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { RigError, errorMessage } from "../domain/errors";
 import type { DeploymentFiles } from "../helpers/convex-contracts";
 
 /** The local filesystem as a deployment's files. A private file is written beside itself and renamed into place, so a
- * reader never sees half of it. */
+ * reader never sees half of it. Every failure is CONVEX_FILES, naming the path and what was being done to it. */
 export function createDeploymentFiles(): DeploymentFiles {
-  return {
+  const files: DeploymentFiles = {
     async read(path) {
       try {
         return await readFile(path, "utf8");
@@ -68,4 +69,30 @@ export function createDeploymentFiles(): DeploymentFiles {
       await mkdir(path, { recursive: true, mode: 0o700 });
     },
   };
+  return {
+    read: (path) => tagged("read", path, () => files.read(path)),
+    writePrivate: (path, text) =>
+      tagged("write", path, () => files.writePrivate(path, text)),
+    vacant: (path) => tagged("list", path, () => files.vacant(path)),
+    copyDirectory: (from, to) =>
+      tagged(`copy ${from} to`, to, () => files.copyDirectory(from, to)),
+    ensureDirectory: (path) =>
+      tagged("create", path, () => files.ensureDirectory(path)),
+  };
+}
+async function tagged<T>(
+  action: string,
+  path: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throw new RigError(
+      "CONVEX_FILES",
+      `rigd convex could not ${action} ${path} (${errorMessage(error)}).`,
+      "Check that the path is a directory or file your account owns and can write, on a volume with space, then start the Service again.",
+      { path },
+    );
+  }
 }

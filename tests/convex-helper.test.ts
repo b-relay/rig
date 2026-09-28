@@ -64,6 +64,8 @@ async function harness(
     broken?: string[];
     /** The backend ignores SIGTERM; only a kill ends it. */
     backendIgnoresStop?: boolean;
+    /** What already answers at /instance_name before any backend was started. */
+    occupied?: string;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-convex-helper-"));
@@ -147,8 +149,8 @@ async function harness(
     },
     async probe(url) {
       const backend = children[0];
-      if (!backend || url !== `http://127.0.0.1:47001/instance_name`)
-        return undefined;
+      if (url !== `http://127.0.0.1:47001/instance_name`) return undefined;
+      if (!backend) return options.occupied;
       const name =
         backend.command[backend.command.indexOf("--instance-name") + 1]!;
       return (options.answer ?? ((own) => own))(name);
@@ -746,4 +748,31 @@ test("a new deployment whose recommended release cannot be downloaded starts on 
   await expect(pinned.start({ pinnedRelease: NEW })).rejects.toMatchObject({
     code: "CONVEX_BACKEND_DOWNLOAD",
   });
+});
+
+test("a backend already answering on the port before this one starts is refused, even one of the same deployment", async () => {
+  const h = await harness({ recommended: NEW, occupied: "convex-self-hosted" });
+  await expect(h.start()).rejects.toMatchObject({
+    code: "CONVEX_PORT_TAKEN",
+    hint: expect.stringContaining("an earlier one of this deployment"),
+  });
+  expect(h.children).toEqual([]);
+});
+
+test("under a pin, new credentials are made with a newer cached binary, as convex dev makes them with the latest", async () => {
+  const h = await harness({ cached: [OLD, NEW] });
+  await mkdir(h.stateDir, { recursive: true });
+  await writeFile(
+    join(h.stateDir, "config.json"),
+    JSON.stringify({ deploymentName: "anonymous-app", backendVersion: OLD }),
+  );
+  expect(await h.start({ pinnedRelease: OLD })).toBe(0);
+  expect(h.events).toEqual([
+    `binary ${OLD}`,
+    `binary ${NEW}`,
+    expect.stringMatching(
+      /^run keygen admin-key --instance-name anonymous-app /,
+    ),
+  ]);
+  expect(h.children[0]!.command[0]).toBe(`/cache/${OLD}/convex-local-backend`);
 });

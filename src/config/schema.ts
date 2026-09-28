@@ -2,6 +2,17 @@ import { z } from "zod";
 import { ConfigError } from "./errors";
 import { referenceResolver } from "./references";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
+import {
+  CONFIG_FORMATS,
+  LATEST_FORMAT,
+  UNDECLARED_FORMAT,
+  FORMAT_STEPS,
+  isConfigFormat,
+  serviceBlockPaths,
+  stepsFrom,
+  upgradeConfigValue,
+  type ConfigFormat,
+} from "./formats";
 const text = z.string().min(1);
 const name = text
   .regex(
@@ -46,7 +57,7 @@ type ReferenceScope = "project" | "service";
 /** The one owner of the reference list an editor shows on hover; the long form is "References" in docs/rig-guide.md.
  * ${rig.data} is one Service's directory, so only a Service's own fields offer it. */
 const referencesIn = (scope: ReferenceScope) =>
-  `References: \${env.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.ready_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
+  `References: \${env.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -200,7 +211,10 @@ const restart = z
   .describe(
     "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
   );
-const serviceFields = {
+/** A Service's fields, with start readiness spelled the way one format spells it. */
+const serviceFieldsWith = <Readiness extends z.core.$ZodLooseShape>(
+  readiness: Readiness,
+) => ({
   run: command.describe(
     `Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
   ),
@@ -211,14 +225,7 @@ const serviceFields = {
     .optional(),
   build_timeout: buildTimeout.optional(),
   ports: ports.optional(),
-  ready: health
-    .describe(
-      `Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. ${referencesIn("service")}`,
-    )
-    .optional(),
-  ready_timeout: duration
-    .optional()
-    .describe("Startup readiness budget such as 30s (the default)."),
+  ...readiness,
   stop_timeout: stopTimeout.optional(),
   depends_on: z
     .array(entryName)
@@ -229,8 +236,34 @@ const serviceFields = {
   restart: restart.optional(),
   env: env("service").optional(),
   env_file: envFile("service").optional(),
+});
+const START_TIMEOUT_RULE =
+  "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).";
+const CHECK_RULE = `Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. ${referencesIn("service")}`;
+/** rig/v1 spells start readiness as two Service fields. */
+const v1Readiness = {
+  ready: health
+    .describe(
+      `Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. ${referencesIn("service")} In format rig/v2 this is health.check.`,
+    )
+    .optional(),
+  ready_timeout: duration
+    .optional()
+    .describe(
+      "Startup readiness budget such as 30s (the default). In format rig/v2 this is health.start_timeout.",
+    ),
 };
-const service = z.strictObject(serviceFields);
+/** The health block of a Service or of a role's Service patch; every field is optional so a patch can change one. */
+const healthBlock = z
+  .strictObject({
+    check: health.describe(CHECK_RULE).optional(),
+    start_timeout: duration.optional().describe(START_TIMEOUT_RULE),
+  })
+  .describe(
+    "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection.",
+  );
+/** rig/v2 groups start readiness in the health block. */
+const v2Readiness = { health: healthBlock.optional() };
 const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
@@ -260,8 +293,10 @@ const proxy = z
   .describe(
     "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required.",
   );
-/** Settings every role may patch. Maps merge per key; lists and scalars replace. */
-const patchFields = {
+/** Settings every role may patch, with Service patches in one format's spelling. Maps merge per key; lists and scalars replace. */
+const patchFieldsWith = <Service extends z.core.$ZodLooseShape>(
+  serviceShape: Service,
+) => ({
   domain: domain
     .optional()
     .describe(
@@ -274,7 +309,7 @@ const patchFields = {
   env_file: envFile("project").optional(),
   proxy: proxy.optional(),
   services: z
-    .record(entryName, z.strictObject(serviceFields).partial())
+    .record(entryName, z.strictObject(serviceShape).partial())
     .optional()
     .describe(
       "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -285,7 +320,7 @@ const patchFields = {
     .describe(
       "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
     ),
-};
+});
 export const PREVIEW_SELECTOR = "preview";
 /** Generated Preview names end in a dash and eight hex digits of the Branch hash. */
 const GENERATED_PREVIEW_NAME = /-[0-9a-f]{8}$/;
@@ -307,36 +342,37 @@ const targetName = text
     (value) => !GENERATED_PREVIEW_NAME.test(value),
     "cannot end like a generated Preview name (a dash and eight hex digits)",
   );
-const targets = z.strictObject({
-  working: z
-    .strictObject({
-      name: targetName
-        .optional()
-        .describe(
-          "Name that selects and displays the Working copy Target (default local). Renaming keeps its identity and stored data.",
-        ),
-      ...patchFields,
-    })
-    .optional()
-    .describe("Working copy Target name and settings patch."),
-  stable: z
-    .strictObject({
-      name: targetName
-        .optional()
-        .describe(
-          "Name that selects and displays the Stable Target (default live). Renaming keeps its identity and stored data.",
-        ),
-      ...patchFields,
-    })
-    .optional()
-    .describe("Stable Target name and settings patch."),
-  preview: z
-    .strictObject(patchFields)
-    .optional()
-    .describe(
-      "Settings patch for every generated Preview; Preview names come from their Branch.",
-    ),
-});
+const targetsWith = <Patch extends z.core.$ZodLooseShape>(patchFields: Patch) =>
+  z.strictObject({
+    working: z
+      .strictObject({
+        name: targetName
+          .optional()
+          .describe(
+            "Name that selects and displays the Working copy Target (default local). Renaming keeps its identity and stored data.",
+          ),
+        ...patchFields,
+      })
+      .optional()
+      .describe("Working copy Target name and settings patch."),
+    stable: z
+      .strictObject({
+        name: targetName
+          .optional()
+          .describe(
+            "Name that selects and displays the Stable Target (default live). Renaming keeps its identity and stored data.",
+          ),
+        ...patchFields,
+      })
+      .optional()
+      .describe("Stable Target name and settings patch."),
+    preview: z
+      .strictObject(patchFields)
+      .optional()
+      .describe(
+        "Settings patch for every generated Preview; Preview names come from their Branch.",
+      ),
+  });
 export const TARGET_ROLES = ["working", "stable", "preview"] as const;
 export type TargetRole = (typeof TARGET_ROLES)[number];
 export const DEFAULT_TARGET_NAMES = {
@@ -356,129 +392,195 @@ function mergeSettings(base: Fields, patch: Fields): Record<string, unknown> {
         : value;
   return merged;
 }
-export const projectConfigSchema = z
-  .strictObject({
-    name,
-    description: z.string().optional().describe("Project description."),
-    production_branch: text
-      .optional()
-      .describe(
-        "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.production_branch, then main.",
-      ),
-    domain: domain
-      .optional()
-      .describe(
-        `Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
-      ),
-    supervisor: supervisor.optional(),
-    build: build
-      .optional()
-      .describe(
-        `Shared shell build command, run once in the workspace before any Service or Tool build. ${PROJECT_BUILD_REFERENCES}`,
-      ),
-    build_timeout: buildTimeout
-      .optional()
-      .describe(
-        "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
-      ),
-    env: env("project").optional(),
-    env_file: envFile("project").optional(),
-    services: z
-      .record(entryName, service)
-      .optional()
-      .describe("Long-running Services keyed by name."),
-    tools: z
-      .record(entryName, tool)
-      .optional()
-      .describe("Installed command-line Tools keyed by name."),
-    proxy: proxy.optional(),
-    targets: targets
-      .optional()
-      .describe(
-        "Role-keyed Target names and settings patches: working, stable and the preview template.",
-      ),
-  })
-  .superRefine((config, ctx) => {
-    const services = Object.keys(config.services ?? {}),
-      tools = Object.keys(config.tools ?? {});
-    if (!services.length && !tools.length)
-      ctx.addIssue({
-        code: "custom",
-        path: ["services"],
-        message: "A Project needs at least one Service or Tool.",
-      });
-    for (const name of services)
-      if (tools.includes(name))
+/** One Service as the cross-field rules read it, in any format. */
+type GraphService = Fields & {
+  run?: string;
+  build?: string;
+  depends_on?: readonly string[];
+  ports?: Readonly<Record<string, number | "auto">>;
+  env?: Readonly<Record<string, string>>;
+  env_file?: string | readonly string[];
+};
+/** One settings graph as the cross-field rules read it: every format has this shape apart from where a Service's check sits. */
+type GraphSettings = {
+  build?: string;
+  env?: Readonly<Record<string, string>>;
+  env_file?: string | readonly string[];
+  services?: Readonly<Record<string, GraphService>>;
+  tools?: Readonly<Record<string, { bin?: string; build?: string }>>;
+  proxy?: Readonly<Record<string, string>>;
+};
+type GraphConfig = GraphSettings & {
+  targets?: Partial<Record<TargetRole, GraphSettings & { name?: string }>>;
+};
+/** The Project schema of one format. `checkAt` is where a Service's check sits in that format. */
+function projectSchemaFor<
+  Format extends z.ZodType,
+  Service extends z.core.$ZodLooseShape,
+>(format: Format, serviceShape: Service, checkAt: readonly string[]) {
+  return z
+    .strictObject({
+      format,
+      name,
+      description: z.string().optional().describe("Project description."),
+      production_branch: text
+        .optional()
+        .describe(
+          "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.production_branch, then main.",
+        ),
+      domain: domain
+        .optional()
+        .describe(
+          `Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
+        ),
+      supervisor: supervisor.optional(),
+      build: build
+        .optional()
+        .describe(
+          `Shared shell build command, run once in the workspace before any Service or Tool build. ${PROJECT_BUILD_REFERENCES}`,
+        ),
+      build_timeout: buildTimeout
+        .optional()
+        .describe(
+          "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
+        ),
+      env: env("project").optional(),
+      env_file: envFile("project").optional(),
+      services: z
+        .record(entryName, z.strictObject(serviceShape))
+        .optional()
+        .describe("Long-running Services keyed by name."),
+      tools: z
+        .record(entryName, tool)
+        .optional()
+        .describe("Installed command-line Tools keyed by name."),
+      proxy: proxy.optional(),
+      targets: targetsWith(patchFieldsWith(serviceShape))
+        .optional()
+        .describe(
+          "Role-keyed Target names and settings patches: working, stable and the preview template.",
+        ),
+    })
+    .superRefine((parsed, ctx) => {
+      const config = parsed as GraphConfig;
+      const services = Object.keys(config.services ?? {}),
+        tools = Object.keys(config.tools ?? {});
+      if (!services.length && !tools.length)
         ctx.addIssue({
           code: "custom",
-          path: ["tools", name],
-          message: "A Tool cannot share its name with a Service.",
+          path: ["services"],
+          message: "A Project needs at least one Service or Tool.",
         });
-    const names = targetNames(config);
-    if (names.working === names.stable)
-      ctx.addIssue({
-        code: "custom",
-        path: [
-          "targets",
-          config.targets?.stable?.name ? "stable" : "working",
-          "name",
-        ],
-        message: `The Working copy and Stable Target cannot both be named '${names.working}'.`,
-      });
-    const reported = new Set<string>();
-    const report = (path: PropertyKey[], message: string) => {
-      if (reported.has(message)) return;
-      reported.add(message);
-      ctx.addIssue({ code: "custom", path, message });
-    };
-    // The unpatched graph is checked first so a base mistake is reported at its own path, once.
-    validateGraph(config, [], report);
-    for (const role of TARGET_ROLES) {
-      const patch = config.targets?.[role];
-      if (!patch) continue;
-      const at = ["targets", role];
-      for (const kind of ["services", "tools"] as const)
-        for (const key of Object.keys(patch[kind] ?? {}))
-          if (!Object.hasOwn(config[kind] ?? {}, key))
-            report(
-              [...at, kind, key],
-              `A Target patch cannot add the ${kind === "services" ? "Service" : "Tool"} '${key}'; declare it at the top level.`,
-            );
-      if (role === "preview")
-        for (const [key, entry] of Object.entries(patch.services ?? {}))
-          for (const [port, value] of Object.entries(entry.ports ?? {}))
-            if (value !== "auto")
+      for (const name of services)
+        if (tools.includes(name))
+          ctx.addIssue({
+            code: "custom",
+            path: ["tools", name],
+            message: "A Tool cannot share its name with a Service.",
+          });
+      const names = targetNames(config);
+      if (names.working === names.stable)
+        ctx.addIssue({
+          code: "custom",
+          path: [
+            "targets",
+            config.targets?.stable?.name ? "stable" : "working",
+            "name",
+          ],
+          message: `The Working copy and Stable Target cannot both be named '${names.working}'.`,
+        });
+      const reported = new Set<string>();
+      const report = (path: PropertyKey[], message: string) => {
+        if (reported.has(message)) return;
+        reported.add(message);
+        ctx.addIssue({ code: "custom", path, message });
+      };
+      // The unpatched graph is checked first so a base mistake is reported at its own path, once.
+      validateGraph(config, [], report, checkAt);
+      for (const role of TARGET_ROLES) {
+        const patch = config.targets?.[role];
+        if (!patch) continue;
+        const at = ["targets", role];
+        for (const kind of ["services", "tools"] as const)
+          for (const key of Object.keys(patch[kind] ?? {}))
+            if (!Object.hasOwn(config[kind] ?? {}, key))
               report(
-                [...at, "services", key, "ports", port],
-                "Previews always use chosen ports; only the Working copy and Stable Target can pin one.",
+                [...at, kind, key],
+                `A Target patch cannot add the ${kind === "services" ? "Service" : "Tool"} '${key}'; declare it at the top level.`,
               );
-      validateGraph(patchedSettings(config, role), at, report);
-    }
-  });
-type ParsedProject = z.infer<typeof projectConfigSchema>;
+        if (role === "preview")
+          for (const [key, entry] of Object.entries(patch.services ?? {}))
+            for (const [port, value] of Object.entries(entry.ports ?? {}))
+              if (value !== "auto")
+                report(
+                  [...at, "services", key, "ports", port],
+                  "Previews always use chosen ports; only the Working copy and Stable Target can pin one.",
+                );
+        validateGraph(
+          patchSettings(config, role) as GraphSettings,
+          at,
+          report,
+          checkAt,
+        );
+      }
+    });
+}
+const FORMAT_RULE = `The rig.yaml format this file is written in. ${LATEST_FORMAT} is the current format. A file without format is ${UNDECLARED_FORMAT}, which Rig still reads and warns about; rig config upgrade rewrites a file to the current format.`;
+/** Format rig/v1: every rig.yaml written before formats existed. It declares no format, or format: rig/v1. */
+const v1ProjectSchema = projectSchemaFor(
+  z
+    .literal(UNDECLARED_FORMAT)
+    .optional()
+    .describe(
+      `${UNDECLARED_FORMAT}, the format of a file without this field. It is deprecated: rig config upgrade rewrites the file to ${LATEST_FORMAT}.`,
+    ),
+  serviceFieldsWith(v1Readiness),
+  ["ready"],
+);
+/** The latest format, which is also the shape of every parsed Project config (without `format`). */
+export const projectConfigSchema = projectSchemaFor(
+  z.literal(LATEST_FORMAT).describe(FORMAT_RULE),
+  serviceFieldsWith(v2Readiness),
+  ["health", "check"],
+);
+/** The Project schema of each format a rig.yaml may declare. */
+export const projectConfigSchemas: Readonly<Record<ConfigFormat, z.ZodType>> = {
+  "rig/v1": v1ProjectSchema,
+  "rig/v2": projectConfigSchema,
+};
+type ParsedProject = Omit<z.infer<typeof projectConfigSchema>, "format">;
 /** Project settings with one role's patch applied; Target name metadata never merges into them. */
 export type ProjectSettings = Omit<ParsedProject, "targets">;
 export function patchedSettings(
   config: ParsedProject,
   role: TargetRole,
 ): ProjectSettings {
-  const { targets, ...base } = config;
-  const patch: Record<string, unknown> = { ...targets?.[role] };
+  return patchSettings(config, role) as ProjectSettings;
+}
+/** The format-independent patch rule: the base settings, without Target and format metadata, merged with one role's patch. */
+function patchSettings(config: Fields, role: TargetRole): Fields {
+  const { targets, format: _format, ...base } = config;
+  const patch: Record<string, unknown> = {
+    ...(isRecord(targets) && isRecord(targets[role]) ? targets[role] : {}),
+  };
   delete patch.name;
   // A patch naming an unknown entry is reported by validation; merging would otherwise invent a partial entry.
   for (const kind of ["services", "tools"] as const)
     if (isRecord(patch[kind]))
       patch[kind] = Object.fromEntries(
         Object.entries(patch[kind]).filter(([key]) =>
-          Object.hasOwn(base[kind] ?? {}, key),
+          Object.hasOwn(isRecord(base[kind]) ? base[kind] : {}, key),
         ),
       );
-  return mergeSettings(base, patch) as ProjectSettings;
+  return mergeSettings(base, patch);
 }
 /** The names that select and display the Working copy and Stable Target. */
-export function targetNames(
-  config: Pick<ParsedProject, "targets">,
-): Record<"working" | "stable", string> {
+export function targetNames(config: {
+  targets?: {
+    working?: { name?: string } | undefined;
+    stable?: { name?: string } | undefined;
+  };
+}): Record<"working" | "stable", string> {
   return {
     working: config.targets?.working?.name ?? DEFAULT_TARGET_NAMES.working,
     stable: config.targets?.stable?.name ?? DEFAULT_TARGET_NAMES.stable,
@@ -494,9 +596,10 @@ export function proxyUpstream(
 }
 /** Structural rules of one settings graph: dependency references and cycles, pinned ports, and proxy references. */
 function validateGraph(
-  settings: ProjectSettings,
+  settings: GraphSettings,
   at: readonly PropertyKey[],
   report: (path: PropertyKey[], message: string) => void,
+  checkAt: readonly string[],
 ): void {
   const services = settings.services ?? {};
   const visiting = new Set<string>(),
@@ -532,7 +635,7 @@ function validateGraph(
         );
       else pinned.set(value, `${key}.${port}`);
     }
-  validateReferences(settings, at, report);
+  validateReferences(settings, at, report, checkAt);
   if (!settings.proxy) return;
   if (!Object.hasOwn(settings.proxy, "/"))
     report([...at, "proxy"], "A proxy needs a '/' entry.");
@@ -563,9 +666,10 @@ function validateGraph(
 /** Resolves every reference-bearing string against placeholder generated values, so a missing path, a collection,
  * a cycle, a reference into targets or rig.data outside a Service is reported when the document is read, not at the first deploy. */
 function validateReferences(
-  settings: ProjectSettings,
+  settings: GraphSettings,
   at: readonly PropertyKey[],
   report: (path: PropertyKey[], message: string) => void,
+  checkAt: readonly string[],
 ): void {
   const references = referenceResolver(settings, {
     target: "target",
@@ -586,8 +690,16 @@ function validateReferences(
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];
-    for (const field of ["run", "build", "ready"] as const)
+    for (const field of ["run", "build"] as const)
       fields.push([[...own, field], service[field]]);
+    const check = checkAt.reduce<unknown>(
+      (node, key) => (isRecord(node) ? node[key] : undefined),
+      service,
+    );
+    fields.push([
+      [...own, ...checkAt],
+      typeof check === "string" ? check : undefined,
+    ]);
     for (const [key, value] of Object.entries(service.env ?? {}))
       fields.push([[...own, "env", key], value]);
     for (const value of [service.env_file ?? []].flat())
@@ -614,11 +726,15 @@ const PATCH_IDENTITY_KEYS: Readonly<Record<string, string>> = {
   role: "A Target's role is its fixed key (working, stable or preview) and cannot change.",
 };
 /** Refusals that need their own guidance, checked before the schema so they are not reported as generic unknown keys. */
-function refuseUnsupportedShapes(value: unknown): void {
+function refuseUnsupportedShapes(value: unknown, format: ConfigFormat): void {
   if (!isRecord(value)) return;
-  if (!isRecord(value.targets)) return;
-  const issues: { path: string[]; message: string }[] = [];
-  for (const [role, patch] of Object.entries(value.targets)) {
+  const issues: { path: string[]; message: string }[] = misplacedReadiness(
+    value,
+    format,
+  );
+  for (const [role, patch] of Object.entries(
+    isRecord(value.targets) ? value.targets : {},
+  )) {
     if (!isRecord(patch)) continue;
     for (const [key, message] of Object.entries(PATCH_IDENTITY_KEYS))
       if (Object.hasOwn(patch, key))
@@ -641,12 +757,96 @@ function refuseUnsupportedShapes(value: unknown): void {
   }
   if (issues.length) throw issuesError("Project", issues);
 }
-export function parseProjectConfig(value: unknown) {
-  refuseUnsupportedShapes(value);
-  const result = projectConfigSchema.safeParse(value);
+/** Service settings spelled the way another format spells them: an older name in a newer file, or a newer block in an older one. */
+function misplacedReadiness(
+  value: unknown,
+  format: ConfigFormat,
+): { path: string[]; message: string }[] {
+  const ahead = stepsFrom(format);
+  const issues: { path: string[]; message: string }[] = [];
+  for (const [path, service] of serviceBlockPaths(value))
+    for (const step of FORMAT_STEPS)
+      for (const move of step.moves) {
+        const [old] = move.from,
+          [block] = move.to;
+        if (!ahead.includes(step) && Object.hasOwn(service, old))
+          issues.push({
+            path: [...path, old],
+            message: `${step.to} moved ${old} to ${move.to.join(".")}`,
+          });
+        else if (
+          ahead.includes(step) &&
+          Object.hasOwn(service, block) &&
+          !issues.some(
+            (issue) => issue.path.join(".") === [...path, block].join("."),
+          )
+        )
+          issues.push({
+            path: [...path, block],
+            message: `${block} needs format: ${step.to}; run rig config upgrade, which sets it and moves ${step.moves.map((each) => each.from[0]).join(" and ")} into ${block}`,
+          });
+      }
+  return issues;
+}
+/** The format a raw Project value declares; a value without `format` is rig/v1. An unknown format is refused. */
+export function declaredFormat(value: unknown): ConfigFormat {
+  if (!isRecord(value) || !Object.hasOwn(value, "format"))
+    return UNDECLARED_FORMAT;
+  if (isConfigFormat(value.format)) return value.format;
+  throw issuesError("Project", [
+    {
+      path: ["format"],
+      message: `must be one of ${CONFIG_FORMATS.map((each) => JSON.stringify(each)).join(", ")}; a newer format needs a newer Rig`,
+    },
+  ]);
+}
+/** Validates one Project document and returns it as the latest format spells it, with the format it was written in. Every
+ * format is checked by its own schema, so a mistake is named at the path the author wrote; an older format is then moved to
+ * the latest shape, which is checked again. The parsed config never carries `format`. */
+export function parseProjectDocument(value: unknown): {
+  format: ConfigFormat;
+  config: ProjectConfig;
+} {
+  const format = declaredFormat(value);
+  refuseUnsupportedShapes(value, format);
+  const written = parseWith(projectConfigSchemas[format], value);
+  const latest =
+    format === LATEST_FORMAT
+      ? written
+      : parseWith(projectConfigSchema, {
+          format: LATEST_FORMAT,
+          ...upgradeConfigValue(written as Fields, format),
+        });
+  const { format: _format, ...config } = latest as z.infer<
+    typeof projectConfigSchema
+  >;
+  return { format, config };
+}
+export function parseProjectConfig(value: unknown): ProjectConfig {
+  return parseProjectDocument(value).config;
+}
+/** The parsed Project config a value means, for a caller handed either a parsed config or raw config: a value that is already
+ * in the latest shape without `format` is checked as it is, and anything else is read the way a rig.yaml document is. */
+export function projectModel(value: unknown): ProjectConfig {
+  if (isRecord(value) && !Object.hasOwn(value, "format")) {
+    const latest = projectConfigSchema.safeParse({
+      format: LATEST_FORMAT,
+      ...value,
+    });
+    if (latest.success) {
+      const { format: _format, ...config } = latest.data;
+      return config;
+    }
+  }
+  return parseProjectConfig(value);
+}
+function parseWith(schema: z.ZodType, value: unknown): unknown {
+  const result = schema.safeParse(value);
   if (!result.success) throw validationError("Project", result.error.issues);
   return result.data;
 }
+/** The parsed Project config: always the latest format's shape, without `format`. */
+export type ProjectConfig = ParsedProject;
 export const hostConfigSchema = z.strictObject({
   deploy: z
     .strictObject({

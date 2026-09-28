@@ -7,6 +7,7 @@ import type {
   StateStore,
 } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
+import { configDigest } from "../config/config-digest";
 import { RigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { portOwners, recordedPorts } from "./ports";
@@ -239,7 +240,10 @@ export async function planTarget(
     logRoot: existing?.logRoot ?? join(base, "logs"),
     ...(kind !== "local"
       ? { sourceRoot: join(base, "revisions") }
-      : { configRevision: document.revision }),
+      : {
+          configRevision: document.revision,
+          configDigest: configDigest(document.config),
+        }),
   };
 }
 export async function persistTarget(

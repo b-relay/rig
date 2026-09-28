@@ -32,6 +32,14 @@ async function recordedTargets(root: string) {
 }
 /** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
  * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. */
+/** A command's stderr without the one line every command run in a rig/v1 Project prints. These end-to-end Projects are
+ * rig/v1 files, as every rig.yaml written before formats was, so a successful command prints that line and nothing else. */
+export function beyondDeprecation(stderr: string): string {
+  return stderr.replace(
+    /^Deprecated: \S+ is written in rig\.yaml format rig\/v1, which is deprecated\. Run rig config upgrade to rewrite it as rig\/v2, then commit it\.\n/,
+    "",
+  );
+}
 export async function rigFixture(
   options: {
     readonly commands?: {

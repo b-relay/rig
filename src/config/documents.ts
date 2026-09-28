@@ -26,9 +26,20 @@ export type { ConfigEdit } from "./editor";
 import {
   DEFAULT_TARGET_NAMES,
   parseHostConfig,
+  declaredFormat,
   parseProjectConfig,
+  parseProjectDocument,
 } from "./schema";
+import { LATEST_FORMAT, type ConfigFormat } from "./formats";
+import { upgradeYamlText } from "./upgrade";
+import { unifiedDiff } from "./text-diff";
+import { isDeepStrictEqual } from "node:util";
 import type { ConfigDocument, HostConfig, ProjectConfig } from "./types";
+/** Validates a decoded document; a Project document also names the format it is written in. */
+type Validate<T> = (value: unknown) => { config: T; format?: ConfigFormat };
+const hostDocument: Validate<HostConfig> = (value) => ({
+  config: parseHostConfig(value),
+});
 const revisionOf = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 const missing = (error: unknown): boolean =>
@@ -99,7 +110,7 @@ function yamlDocument(raw: string, path: string) {
 function decodeDocument<T>(
   raw: string,
   path: string,
-  validate: (value: unknown) => T,
+  validate: Validate<T>,
 ): ConfigDocument<T> {
   let value: unknown;
   let markers: RecipeMarker[];
@@ -115,25 +126,27 @@ function decodeDocument<T>(
       { path },
     );
   }
+  const { config, format } = validate(value);
   return {
     path,
     revision: revisionOf(raw),
-    config: validate(value),
+    config,
+    ...(format ? { format } : {}),
     // Only a Project document has Services; a Host document never carries the field.
     ...(markers.length ? { recipeMarkers: markers } : {}),
   };
 }
 async function readDocument<T>(
   path: string,
-  validate: (value: unknown) => T,
+  validate: Validate<T>,
 ): Promise<ConfigDocument<T>> {
-  const { raw, ...document } = await readDocumentSource(path, validate);
+  const { raw: _raw, ...document } = await readDocumentSource(path, validate);
   return document;
 }
 /** One filesystem read owns source bytes, decoding, and safe path-aware failures. */
 async function readDocumentSource<T>(
   path: string,
-  validate: (value: unknown) => T,
+  validate: Validate<T>,
 ): Promise<ConfigDocument<T> & { raw: string }> {
   try {
     const raw = await readFile(path, "utf8");
@@ -179,7 +192,7 @@ export async function readProjectConfig(
       "Run rig init from the Project repository.",
     );
   }
-  return readDocument(path, parseProjectConfig);
+  return readDocument(path, parseProjectDocument);
 }
 /** Searches upward from a directory or file, never above `boundary` when one is given (a
  * canonical directory at or above the start). Ambiguous or invalid nearer config never falls through. */
@@ -194,7 +207,7 @@ export async function discoverProject(
     if (path)
       return {
         repoPath: directory,
-        document: await readDocument(path, parseProjectConfig),
+        document: await readDocument(path, parseProjectDocument),
       };
     const parent = dirname(directory);
     if (parent === directory || directory === boundary)
@@ -207,14 +220,38 @@ export async function discoverProject(
     directory = parent;
   }
 }
+/** The format of the nearest rig.yaml at or above `startPath`, read without validating the rest; undefined when there is
+ * none or it cannot be read as YAML. */
+export async function findDeclaredFormat(
+  startPath: string,
+): Promise<ConfigFormat | undefined> {
+  let directory = resolve(startPath);
+  for (;;) {
+    const path = await locateConfig(directory, "rig").catch(() => undefined);
+    if (path) {
+      try {
+        return declaredFormat(
+          yamlDocument(await readFile(path, "utf8"), path).toJS({
+            maxAliasCount: 0,
+          }),
+        );
+      } catch {
+        return undefined;
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
 /** Reads Host configuration from config.yaml, returning defaults only when no Host document exists. */
 export async function readHostConfig(stateRoot: string): Promise<HostConfig> {
   const path = await locateConfig(resolve(stateRoot), "config");
   return path
-    ? (await readDocument(path, parseHostConfig)).config
+    ? (await readDocument(path, hostDocument)).config
     : parseHostConfig({});
 }
-/** Creates a new YAML document exclusively; an existing document remains untouched. */
+/** Creates a new YAML document exclusively in the latest format; an existing document remains untouched. */
 export async function initializeProjectConfig(
   repoPath: string,
   config: ProjectConfig,
@@ -227,10 +264,12 @@ export async function initializeProjectConfig(
       "Use rig config to inspect the existing Project.",
     );
   const path = join(repoPath, "rig.yaml");
-  await writeFile(path, PROJECT_SCHEMA_COMMENT + stringify(config), {
-    flag: "wx",
-  });
-  return readDocument(path, parseProjectConfig);
+  await writeFile(
+    path,
+    PROJECT_SCHEMA_COMMENT + stringify({ format: LATEST_FORMAT, ...config }),
+    { flag: "wx" },
+  );
+  return readDocument(path, parseProjectDocument);
 }
 export interface ConfigEditInput {
   repoPath: string;
@@ -239,6 +278,11 @@ export interface ConfigEditInput {
 }
 export interface ProjectConfigSource extends ConfigDocument<ProjectConfig> {
   raw: string;
+}
+/** Pure: the settings of a document Rig has already read, as written in its own format's spelling, where `config` has the
+ * latest format's shape. An editor that changes the file by path works on these. */
+export function writtenSettings(raw: string): unknown {
+  return yamlDocument(raw, "rig.yaml").toJS({ maxAliasCount: 0 });
 }
 export interface ProjectConfigPreview extends ProjectConfigSource {
   baseRevision: string;
@@ -253,7 +297,7 @@ export async function readProjectConfigSource(
     throw new ConfigError("No rig.yaml found.", "missing_config", {
       repoPath,
     });
-  return readDocumentSource(path, parseProjectConfig);
+  return readDocumentSource(path, parseProjectDocument);
 }
 function prepareEdit(
   raw: string,
@@ -271,7 +315,7 @@ function prepareEdit(
   applyYamlEdits(ast, input.edits);
   const output = ast.toString();
   return {
-    ...decodeDocument(output, path, parseProjectConfig),
+    ...decodeDocument(output, path, parseProjectDocument),
     raw: output,
     baseRevision: input.expectedRevision,
   };
@@ -291,6 +335,16 @@ export async function previewProjectConfig(
 export async function editProjectConfig(
   input: ConfigEditInput,
 ): Promise<ProjectConfigPreview & { backupPath: string }> {
+  return rewriteProjectConfig(input, (raw, path) =>
+    prepareEdit(raw, path, input),
+  );
+}
+/** The locked, revision-checked, backed-up atomic replacement every Rig writer of rig.yaml uses; `prepare` turns the text
+ * read under the lock into the text to write. */
+async function rewriteProjectConfig(
+  input: Pick<ConfigEditInput, "repoPath" | "expectedRevision">,
+  prepare: (raw: string, path: string) => ProjectConfigPreview,
+): Promise<ProjectConfigPreview & { backupPath: string }> {
   const document = await readProjectConfig(input.repoPath),
     file = await realpath(document.path),
     lockPath = `${file}.lock`;
@@ -300,7 +354,7 @@ export async function editProjectConfig(
   let temporary: string | undefined;
   try {
     const raw = await readFile(file, "utf8");
-    const prepared = prepareEdit(raw, document.path, input);
+    const prepared = prepare(raw, document.path);
     const output = prepared.raw;
     // One backup per file, replaced on every edit: the text before the latest change, never a growing set.
     const backupPath = `${file}.bak`;
@@ -330,6 +384,84 @@ export async function editProjectConfig(
     await unlink(lockPath);
   }
 }
+/** What `rig config upgrade` did, or with `dryRun` would do, to one rig.yaml. */
+export interface ConfigUpgrade {
+  path: string;
+  /** The format the file was written in. */
+  from: ConfigFormat;
+  /** The format it is written in now, or would be. */
+  to: ConfigFormat;
+  /** Each change in words; empty when the file already has the latest format. */
+  changes: string[];
+  /** A unified diff of the file; empty when nothing changes. */
+  diff: string;
+  /** Whether the file was rewritten; never with `dryRun`. */
+  written: boolean;
+  /** The text before the upgrade, when it was written. */
+  backupPath?: string;
+}
+/** Rewrites one Project's rig.yaml into the latest format in place, keeping comments and layout, or with `dryRun` only
+ * reports what would change. The result is checked before anything is written: it must parse in the latest format to the
+ * same config the file had, so no plan changes. The write is the config editor's: locked, revision-checked, with a
+ * rig.yaml.bak backup. Only the file is touched: nothing is committed, planned or restarted. */
+export async function upgradeProjectConfig(input: {
+  repoPath: string;
+  dryRun: boolean;
+}): Promise<ConfigUpgrade> {
+  const current = await readProjectConfigSource(input.repoPath);
+  const from = current.format ?? LATEST_FORMAT;
+  const prepared = prepareUpgrade(current);
+  const report = {
+    path: current.path,
+    from,
+    to: LATEST_FORMAT,
+    changes: prepared.changes,
+    diff: unifiedDiff(current.raw, prepared.raw, "rig.yaml"),
+  };
+  if (input.dryRun || !prepared.changes.length)
+    return { ...report, written: false };
+  const written = await rewriteProjectConfig(
+    { repoPath: input.repoPath, expectedRevision: current.revision },
+    (raw, path) => {
+      if (revisionOf(raw) !== current.revision)
+        throw new ConfigError(
+          "Config changed since it was read.",
+          "revision_conflict",
+          { path },
+          "Run rig config upgrade again.",
+        );
+      return { ...prepared.document, baseRevision: current.revision };
+    },
+  );
+  return { ...report, written: true, backupPath: written.backupPath };
+}
+/** Pure: the upgraded text of one read document and its changes, refused unless it reads back as the same config. */
+function prepareUpgrade(current: ProjectConfigSource): {
+  raw: string;
+  changes: string[];
+  document: ProjectConfigSource;
+} {
+  const { raw, changes } = upgradeYamlText(
+    current.raw,
+    current.format ?? LATEST_FORMAT,
+  );
+  if (!changes.length) return { raw, changes, document: current };
+  const document = {
+    ...decodeDocument(raw, current.path, parseProjectDocument),
+    raw,
+  };
+  if (
+    document.format !== LATEST_FORMAT ||
+    !isDeepStrictEqual(document.config, current.config)
+  )
+    throw new ConfigError(
+      "The upgraded rig.yaml would not mean what the current one does, so it was not written.",
+      "upgrade_mismatch",
+      { path: current.path },
+      "Report this as a Rig bug with the rig.yaml attached; meanwhile move ready and ready_timeout under health by hand and set format: rig/v2.",
+    );
+  return { raw, changes, document };
+}
 /** A lock held by a live edit, or too fresh to reclaim, is refused with the file an operator can inspect or remove. */
 function configLocked(path: string, held: LockHeld): ConfigError {
   const cause =
@@ -352,7 +484,8 @@ export interface InitializeProjectInput {
   service?: { name: string; run: string; port?: number; ready?: string };
   tool?: { name: string; bin: string; build?: string };
 }
-/** Pure initial Project policy: one optional Service, routed at '/' when a domain is given, and one optional Tool. */
+/** Pure initial Project policy in the latest format: one optional Service, routed at '/' when a domain is given, and one
+ * optional Tool. A Service's `ready` becomes its health.check. */
 export function scaffoldProjectConfig(
   input: InitializeProjectInput,
 ): ProjectConfig {
@@ -365,6 +498,7 @@ export function scaffoldProjectConfig(
       "Pass --service <name> --run <command>, or --tool <name> --bin <path>; or write rig.yaml first and run rig init again.",
     );
   return parseProjectConfig({
+    format: LATEST_FORMAT,
     name: input.name,
     production_branch: input.productionBranch ?? "main",
     ...(input.domain ? { domain: input.domain } : {}),
@@ -374,7 +508,7 @@ export function scaffoldProjectConfig(
             [service.name]: {
               run: service.run,
               ports: { http: service.port ?? "auto" },
-              ...(service.ready ? { ready: service.ready } : {}),
+              ...(service.ready ? { health: { check: service.ready } } : {}),
             },
           },
         }

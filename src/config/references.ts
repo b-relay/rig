@@ -32,6 +32,17 @@ export interface ReferenceResolver {
 }
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
+/** Pure: `text` with the key of each `${...}` reference that `rename` maps replaced, spacing inside the braces kept;
+ * `$${` escapes and references `rename` leaves undefined are unchanged. */
+export function rewriteReferences(
+  text: string,
+  rename: (key: string) => string | undefined,
+): string {
+  return text.replace(REFERENCE, (match: string, key: string | undefined) => {
+    const renamed = key === undefined ? undefined : rename(key.trim());
+    return renamed === undefined ? match : match.replace(key!.trim(), renamed);
+  });
+}
 const HINT =
   "A reference names an exact config path such as ${services.web.ports.http} or ${env.NAME}, or a Rig value such as ${rig.target}. Write $${VAR} for a literal shell ${VAR}; $VAR is left to the shell.";
 const PROJECT_BUILD = /^(?:build|tools\.[^.]+\.build)$/;

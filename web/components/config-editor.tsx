@@ -19,6 +19,7 @@ import type {
   ConfigReport,
 } from "@/lib/types";
 import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
+import { LATEST_FORMAT } from "@/lib/types";
 import { transportFailure } from "@/lib/reconcile";
 import { runConfigEdit } from "@/server/actions";
 import {
@@ -82,6 +83,8 @@ import { Textarea } from "@/components/ui/textarea";
 interface Draft {
   tree: Tree;
   fields: readonly ConfigField[];
+  /** The format the file is written in; fields are edited in its spelling. */
+  format: string;
   set(path: string[], value: unknown): void;
   remove(path: string[]): void;
 }
@@ -154,10 +157,11 @@ export function ConfigEditor({
     () => ({
       tree,
       fields: source.fields,
+      format: source.format ?? LATEST_FORMAT,
       set: (path, value) => setTree((current) => setAt(current, path, value)),
       remove: (path) => setTree((current) => removeAt(current, path)),
     }),
-    [tree, source.fields],
+    [tree, source.fields, source.format],
   );
   const send = async (action: "preview" | "apply") => {
     setChange({ busy: true });
@@ -238,6 +242,13 @@ export function ConfigEditor({
           <Notice tone="warn">
             rig.yaml changed since you started editing. It was read again and
             your edits re-applied on top; review them before applying.
+          </Notice>
+        ) : null}
+        {source.format && source.format !== LATEST_FORMAT ? (
+          <Notice tone="warn">
+            This rig.yaml is written in format {source.format}, which is
+            deprecated. Run rig config upgrade in the Project to rewrite it as{" "}
+            {LATEST_FORMAT}, then commit the result.
           </Notice>
         ) : null}
         {reviewing ? null : <Failure failure={change.failure} />}
@@ -721,6 +732,15 @@ function EnvironmentSection({ path }: { path: string[] }) {
     </div>
   );
 }
+/** Where start readiness sits in a Service of each format: rig/v1 names two fields, later formats the health block. */
+function readinessPaths(format: string) {
+  return format === "rig/v1"
+    ? { check: ["ready"], startTimeout: ["ready_timeout"] }
+    : {
+        check: ["health", "check"],
+        startTimeout: ["health", "start_timeout"],
+      };
+}
 function ServiceFields({
   path,
   required,
@@ -728,6 +748,7 @@ function ServiceFields({
   path: string[];
   required: boolean;
 }) {
+  const readiness = readinessPaths(useDraft().format);
   return (
     <div className="grid gap-4">
       <Text
@@ -744,10 +765,10 @@ function ServiceFields({
           placeholder="10m"
           mono
         />
-        <Text path={[...path, "ready"]} label="Readiness check" mono />
+        <Text path={[...path, ...readiness.check]} label="Health check" mono />
         <Text
-          path={[...path, "ready_timeout"]}
-          label="Readiness timeout"
+          path={[...path, ...readiness.startTimeout]}
+          label="Start timeout"
           placeholder="30s"
           mono
         />

@@ -12,6 +12,7 @@ import { RIG_BUILD } from "../domain/version";
 import type { UserOutput } from "./types";
 import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
 import { addRecipeCommands } from "./recipe-commands";
+import type { ConfigFormat } from "../config/formats";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
@@ -31,6 +32,7 @@ export function createRigCommand(
   output: UserOutput,
   execute: ExecuteCommand,
   recipes: readonly Recipe[] = BUNDLED_RECIPES,
+  configFormat?: (cwd: string) => Promise<ConfigFormat | undefined>,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -80,6 +82,7 @@ export function createRigCommand(
         ),
       );
   }
+  addConfigUpgradeCommand(command, cwd, execute);
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
@@ -90,6 +93,7 @@ export function createRigCommand(
     recipes,
     execute,
     projectScope,
+    ...(configFormat ? { configFormat } : {}),
   });
   addHelpCommand(command, "rig");
   command
@@ -211,6 +215,29 @@ function previewScope(options: Pick<ScopeOptions, "deployment">): {
   return { deployment: options.deployment };
 }
 
+/** `rig config upgrade`: rewrites the Project's rig.yaml into the latest format in place, through rigd. */
+function addConfigUpgradeCommand(
+  command: Command,
+  cwd: string,
+  execute: ExecuteCommand,
+): void {
+  const config = command.commands.find((child) => child.name() === "config")!;
+  config
+    .command("upgrade")
+    .description(
+      "Rewrite rig.yaml in the latest format, keeping comments and layout, and print what changed. Only the file changes; commit it yourself.",
+    )
+    .option("--project <name>", "Registered Project identity")
+    .option("--dry-run", "Print the diff without writing rig.yaml")
+    .action(async (options: ScopeOptions & { dryRun?: boolean }) =>
+      execute({
+        action: "config-upgrade",
+        repoPath: cwd,
+        ...projectScope(options),
+        ...(options.dryRun ? { dryRun: true } : {}),
+      }),
+    );
+}
 function addLifecycleCommands(
   command: Command,
   cwd: string,

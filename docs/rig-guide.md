@@ -286,7 +286,8 @@ rig init --tool report --bin .rig-build/report \
 
 `--service <name> --run <command>` declares one Service; `--port <n>` pins its
 `http` port (otherwise the port is `auto`) and `--ready <check>` sets its
-readiness check. `--tool <name> --bin <path>` declares one Tool, with
+`health.check`. `rig init` writes `rig.yaml` in the latest format (see "Config
+formats"). `--tool <name> --bin <path>` declares one Tool, with
 `--tool-build <command>` as its build. Both may be given together, under
 different names. `--run`, `--port`, or `--ready` without `--service`, and
 `--bin` or `--tool-build` without `--tool`, are usage errors. With neither a
@@ -592,7 +593,7 @@ If `rig up preview feature/login` names a Preview that has not been deployed,
 Rig should fail and tell the user to deploy it first.
 
 `up` reports `started` only for processes Rig has confirmed alive. A Service
-with a `ready` URL is polled until it answers or `ready_timeout` (default
+with a `health.check` URL is polled until it answers or `health.start_timeout` (default
 `30s`) expires, and
 between polls Rig asks its supervisor whether the process still exists: a
 process that exits fails the start at once as `PROCESS_EXITED`, naming the exit
@@ -601,14 +602,14 @@ Rig's own process is running, so a foreign listener on the port cannot certify
 a dead Service. An HTTP probe is ready on any answer below 400, a redirect
 included, since a process that redirects is serving; a status of 400 or more,
 a refused connection, or a shell check that exits non-zero is not ready. When
-`ready_timeout` expires, `HEALTH_FAILED` names the last observation, for
+`health.start_timeout` expires, `HEALTH_FAILED` names the last observation, for
 example `web did not become ready (last check: HTTP 503).` or `(last check:
 exit code 3: probing)`, and the Target log records each change in that
 observation as a `health` line, so a probe that never answers, a 5xx, or a
 check command's last output line is visible in `rig logs` rather than
-discarded. A Service without a `ready` check is ready once every port it
+discarded. A Service without a `health.check` check is ready once every port it
 declares accepts a connection on `127.0.0.1` or `::1`, within the same
-`ready_timeout`. A Service with neither a check nor a port must survive a short
+`health.start_timeout`. A Service with neither a check nor a port must survive a short
 start grace period (half a second) before it counts as started; a command that
 exits earlier, such as a missing binary or a port already in use, fails `up`
 and rolls the start back. `HEALTH_FAILED` details carry `outcome`:
@@ -798,7 +799,7 @@ newer version's fields survive a temporary downgrade. Services that take
 longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
-it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
+it takes; `rigd` owns every budget (`build_timeout`, `health.start_timeout`, each
 at most one day, and the fixed dependency-install budget). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report
 `rigd did not answer the doctor read within 5 s; it may be busy`, which is
@@ -897,7 +898,7 @@ for a transition that no live operation owns, such as one interrupted by a
 daemon crash.
 
 Status shares one two-second budget across concurrent observations. Services
-without a `ready` check are running, not healthy; uncertain observations
+without a `health.check` check are running, not healthy; uncertain observations
 are unknown. Configured-only Components are configured, Tool-only Targets
 can be ready, and partial runtime capability is degraded. Every Component
 counts toward the Target state: a missing database or executable beside a
@@ -1019,6 +1020,7 @@ they match.
 A small `rig.yaml` with two Services, a Tool, and a route:
 
 ```yaml
+format: rig/v2
 name: pantry
 production_branch: main
 domain: pantry.test
@@ -1034,14 +1036,16 @@ services:
       HOST: 127.0.0.1
       PORT: ${services.api.ports.http}
       DATA_DIR: ${rig.data}
-    ready: http://127.0.0.1:${services.api.ports.http}/health
+    health:
+      check: http://127.0.0.1:${services.api.ports.http}/health
   web:
     run: bun run src/web.ts --port ${services.web.ports.http}
     ports: { http: 3000 }
     env:
       API_URL: http://127.0.0.1:${services.api.ports.http}
-    ready: http://127.0.0.1:${services.web.ports.http}/
-    ready_timeout: 1m
+    health:
+      check: http://127.0.0.1:${services.web.ports.http}/
+      start_timeout: 1m
     depends_on: [api]
 
 tools:
@@ -1063,7 +1067,8 @@ targets:
     domain: ${rig.target}.preview.pantry.test
 ```
 
-Top-level fields: `name` (required Project identity), `description`,
+Top-level fields: `format` (see "Config formats"), `name` (required Project
+identity), `description`,
 `production_branch`, `domain`, `supervisor`, `build`, `build_timeout`, `env`,
 `env_file`, `services`, `tools`, `proxy`, and `targets`. A Project needs at
 least one Service or Tool, and a Tool cannot share a Service's name. Service
@@ -1077,8 +1082,13 @@ A Service is a long-running process Rig starts and supervises. Its fields:
 - `ports`: named local TCP ports. `auto` lets Rig choose a free port and keep
   it for the Target; a number from 1 to 65535 pins it. Previews always use
   chosen ports, so a pin applies to the Working copy and Stable Target only.
-- `ready`: a localhost HTTP URL or a shell command that reports readiness, and
-  `ready_timeout` (default `30s`).
+- `health`: how Rig checks the Service. `health.check` is a localhost HTTP URL
+  or a shell command; it must pass before the Service counts as started and
+  before a Service that depends on it starts. `health.start_timeout` (default
+  `30s`) bounds that wait, and without a check it bounds the wait for the
+  Service's ports. A role patch may set either field
+  (`targets.stable.services.api.health.start_timeout`). In a `rig/v1` file they
+  are the Service fields `ready` and `ready_timeout`.
 - `stop_timeout`: how long the Service may take to exit after its stop signal
   (SIGTERM) before Rig ends it with SIGKILL, from `1s` to `1h` (default `10s`).
   It is the time after the signal, not a total. Every stop honours it: `rig
@@ -1169,6 +1179,65 @@ no `proxy` gets no route. A Tool-only Project needs neither.
 
 The Production branch is `production_branch`, else the Host config's
 `deploy.production_branch`, else `main`.
+
+### Config formats
+
+A `rig.yaml` declares the format it is written in with a top-level
+`format`. `rig/v2` is the current format, and the one `rig init`,
+`rig config upgrade` and `rig recipe generate` write. A file without `format`
+is `rig/v1`, the format of every `rig.yaml` written before formats existed.
+Rig reads both, with the same meaning: whatever format a file is in, Rig plans
+the same Targets from it, so a file's format is never config drift.
+
+`rig/v2` changes one thing. A Service's `ready` and `ready_timeout` become
+`health.check` and `health.start_timeout`, in every Service and in every role's
+Service patch, and a `${...}` reference to one of them uses the new path:
+
+```yaml
+# rig/v1                              # rig/v2
+                                      format: rig/v2
+services:                             services:
+  web:                                  web:
+    run: bun run start                    run: bun run start
+    ready: http://127.0.0.1:3000/         health:
+    ready_timeout: 1m                       check: http://127.0.0.1:3000/
+                                            start_timeout: 1m
+```
+
+A `rig/v2` file that uses `ready` or `ready_timeout` is refused with the field
+path and where it moved (`Fix services.web.ready: rig/v2 moved ready to
+health.check.`). A `rig/v1` file that uses `health` is refused with a pointer
+to `rig config upgrade`. A `format` Rig does not know is refused: it needs a
+newer Rig.
+
+Every `rig` command run in a Project whose `rig.yaml` is `rig/v1` prints one
+line on stderr after its result:
+
+```text
+Deprecated: /path/to/rig.yaml is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.
+```
+
+A deploy (or `git push rig`) of a Commit whose committed `rig.yaml` is
+`rig/v1` works as before and prints the same line, naming that Commit's copy
+of the file. The dashboard's config editor shows the same notice, and edits a
+`rig/v1` file in its own spelling.
+
+`rig config upgrade` rewrites the Project's `rig.yaml` into `rig/v2` in place
+and prints each change. It moves the settings above and follows the references
+to them, and leaves every other byte alone: comments (a comment above
+`ready` moves with it), order, quoting, blank lines, flow style and long lines.
+Before writing, it checks that the new file parses to exactly the config the
+old one did; when it would not, nothing is written. The previous text is kept
+in `rig.yaml.bak`, as with every Rig config edit. `rig config upgrade
+--dry-run` prints a unified diff and writes nothing. It changes only the file
+in the working tree: nothing is committed, planned or restarted, so commit it
+yourself. Running Targets are not affected, and the upgrade is not reported as
+drift by `rig up` or `rig doctor`.
+
+Editors: `schemas/rig.schema.json` describes the current format. A `rig/v1`
+file checked against it shows `ready` as unknown and `format` as missing;
+upgrade the file, or point its `yaml-language-server` comment at
+`schemas/rig-v1.schema.json`, the frozen `rig/v1` schema, until you do.
 
 ### Target names and settings patches
 
@@ -1402,7 +1471,7 @@ together with a place to keep their secrets.
 ### Recipes
 
 A recipe prints an ordinary Service for a common local dependency. There is no
-plugin behind it: the block uses the same `run`, `ports`, `env` and `ready` you
+plugin behind it: the block uses the same `run`, `ports`, `env` and `health.check` you
 would write by hand, and once pasted it is yours to edit.
 
 ```sh
@@ -1500,7 +1569,7 @@ the Target log asking for `chmod 600`.
 
 When a file supplies a name that `env` or a lower file also supplies, the
 Target log notes the name and the sources, never the values. One case is
-refused rather than noted. If a `run`, `build`, or shell `ready` command
+refused rather than noted. If a `run`, `build`, or shell `health.check` command
 reaches a public env value through a reference, directly or through another
 `env` value, that value is already part of the command text. A file that gives
 the same name a different final value would make the command text and the
@@ -1576,7 +1645,7 @@ current file.
    `rig down preview --destroy` too): both name the file, and moving or
    deleting it is the way through.
 2. Each Service in dependency order: the process start, then readiness.
-   Readiness means the `ready` check passed; without `ready`, that every
+   Readiness means the `health.check` check passed; without `health.check`, that every
    declared port accepts a connection; without ports either, that the process
    survived the start grace period. Then its listeners are inspected. A
    Service that was already running is skipped, except that one another
@@ -1594,12 +1663,12 @@ Rig has no hooks and no plugins. Run a database as an ordinary Service whose `ru
 starts it, and put preparation steps in a `build` or in the script `run`
 invokes. A `run` command whose executable the shell cannot find fails as
 `PROCESS_EXITED` with exit code 127 and a hint that names the missing tool
-problem instead of waiting out `ready_timeout`.
+problem instead of waiting out `health.start_timeout`.
 
 ### Localhost binding
 
-Every process Rig starts must listen on localhost only. `run`, `ready`, and
-`build` commands are checked when the config is parsed, and `run` and `ready`
+Every process Rig starts must listen on localhost only. `run`, `health.check`, and
+`build` commands are checked when the config is parsed, and `run` and `health.check`
 again after references are resolved: an explicit bind flag such as `--host`,
 `--bind`, `--listen`, or `--addr` must name a literal `127.0.0.1` or
 `localhost` (not a reference), and a wildcard
@@ -1610,15 +1679,15 @@ keys (`HOST`, `HOSTNAME`, `BIND`, `BIND_ADDR`, `BIND_ADDRESS`, `BIND_HOST`,
 may not hold a wildcard address; other env values are not inspected, because
 `HOST` often names a public hostname rather than a bind address. A process
 that reads its bind address from somewhere Rig cannot see is your
-responsibility. A `ready` value that starts with `http://` or `https://` in
+responsibility. A `health.check` value that starts with `http://` or `https://` in
 any letter case is an HTTP probe: the whole string must parse as a URL with
 no username or password and a hostname of `127.0.0.1` or `localhost`. Query
-strings may mention other hosts. Any other `ready` value is a shell command
+strings may mention other hosts. Any other `health.check` value is a shell command
 and follows the command rule.
 
 ### References
 
-`run`, `ready`, `build`, `bin`, `env` values, and `env_file` paths
+`run`, `health.check`, `build`, `bin`, `env` values, and `env_file` paths
 may use `${...}` references. A reference is the exact path of one value in the
 selected Target's own settings (the base config with that role's patch
 applied), or one of the `rig.*` values Rig generates:
@@ -1626,7 +1695,7 @@ applied), or one of the `rig.*` values Rig generates:
 - `${env.<NAME>}` and `${services.<service>.env.<NAME>}`: a public `env`
   value. Values may reference each other; Rig resolves them recursively.
 - any other scalar setting by its path, such as
-  `${services.api.ready_timeout}`.
+  `${services.api.health.start_timeout}`.
 - `${services.<service>.ports.<port>}`: the concrete number of a declared
   port in this Target. `proxy` values must be exactly one such reference.
 - `${rig.target}`: the Target's actual name, configured or generated. It is
@@ -1661,7 +1730,7 @@ patch replace it. Env file contents are never referenceable. Write `$${VAR}`
 for a literal `${VAR}` the shell should expand; `$VAR` is always left to the
 shell.
 
-Because `run`, a shell `ready`, and `build` run under `/bin/sh -c`, Rig
+Because `run`, a shell `health.check`, and `build` run under `/bin/sh -c`, Rig
 substitutes every value as literal data, never as shell code. A bare
 reference is single-quoted when its value is empty or contains a space or
 other shell-special character, so a repository or `RIG_ROOT` under a path
@@ -1669,7 +1738,7 @@ like `~/Projects/My App` still resolves to one argument. Inside the author's
 own double or single quotes the value is escaped for that quote (a `$(...)`
 inside them starts a command of its own and is quoted as such), so a `$`, a
 backquote, or a quote character in the value stays part of the argument. A
-`ready` value that resolves to an HTTP URL is handed to the HTTP probe
+`health.check` value that resolves to an HTTP URL is handed to the HTTP probe
 unquoted. Values substituted into `env`, `domain`, `env_file`, and `bin` are
 never quoted.
 

@@ -1,14 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json",
-  "title": "Rig Project config (rig.yaml)",
-  "description": "Committed Project intent: identity, Services, Tools, routes and Target patches, in format rig/v2. A rig.yaml without format is rig/v1, described by rig-v1.schema.json; rig config upgrade rewrites it to rig/v2.",
+  "$id": "https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig-v1.schema.json",
+  "title": "Rig Project config (rig.yaml), format rig/v1",
+  "description": "The deprecated rig/v1 format: a rig.yaml without format. Rig still reads it and warns; rig config upgrade rewrites the file to rig/v2, described by rig.schema.json.",
+  "deprecated": true,
   "type": "object",
   "properties": {
     "format": {
+      "description": "rig/v1, the format of a file without this field. It is deprecated: rig config upgrade rewrites the file to rig/v2.",
       "type": "string",
-      "const": "rig/v2",
-      "description": "The rig.yaml format this file is written in. rig/v2 is the current format. A file without format is rig/v1, which Rig still reads and warns about; rig config upgrade rewrites a file to the current format."
+      "const": "rig/v1"
     },
     "name": {
       "type": "string",
@@ -129,23 +130,16 @@
             },
             "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
           },
-          "health": {
-            "type": "object",
-            "properties": {
-              "check": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-              },
-              "start_timeout": {
-                "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                "type": "string",
-                "minLength": 1,
-                "default": "30s"
-              }
-            },
-            "additionalProperties": false,
-            "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection."
+          "ready": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}. In format rig/v2 this is health.check."
+          },
+          "ready_timeout": {
+            "description": "Startup readiness budget such as 30s (the default). In format rig/v2 this is health.start_timeout.",
+            "type": "string",
+            "minLength": 1,
+            "default": "30s"
           },
           "stop_timeout": {
             "type": "string",
@@ -387,22 +381,15 @@
                     },
                     "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                   },
-                  "health": {
-                    "type": "object",
-                    "properties": {
-                      "check": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "start_timeout": {
-                        "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection."
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}. In format rig/v2 this is health.check."
+                  },
+                  "ready_timeout": {
+                    "description": "Startup readiness budget such as 30s (the default). In format rig/v2 this is health.start_timeout.",
+                    "type": "string",
+                    "minLength": 1
                   },
                   "stop_timeout": {
                     "type": "string",
@@ -622,22 +609,15 @@
                     },
                     "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                   },
-                  "health": {
-                    "type": "object",
-                    "properties": {
-                      "check": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "start_timeout": {
-                        "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection."
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}. In format rig/v2 this is health.check."
+                  },
+                  "ready_timeout": {
+                    "description": "Startup readiness budget such as 30s (the default). In format rig/v2 this is health.start_timeout.",
+                    "type": "string",
+                    "minLength": 1
                   },
                   "stop_timeout": {
                     "type": "string",
@@ -849,22 +829,15 @@
                     },
                     "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                   },
-                  "health": {
-                    "type": "object",
-                    "properties": {
-                      "check": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "start_timeout": {
-                        "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection."
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}. In format rig/v2 this is health.check."
+                  },
+                  "ready_timeout": {
+                    "description": "Startup readiness budget such as 30s (the default). In format rig/v2 this is health.start_timeout.",
+                    "type": "string",
+                    "minLength": 1
                   },
                   "stop_timeout": {
                     "type": "string",
@@ -962,7 +935,6 @@
     }
   },
   "required": [
-    "format",
     "name"
   ],
   "additionalProperties": false

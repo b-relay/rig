@@ -9,6 +9,7 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "config")
     return `${word(report.project)}\n${word(report.path)}\n\n${JSON.stringify(report.config, null, 2)}\n`;
   if (action === "recipe-diff") return renderRecipeDiff(report);
+  if (action === "config-upgrade") return renderConfigUpgrade(report);
   if (action === "logs") return renderLogs(report, true);
   if (action === "activity") return renderActivity(report);
   if (action === "daemon-status")
@@ -53,6 +54,28 @@ export function renderResult(action: string, value: unknown): string {
     )
     .join("");
   return `${retired}${subject} ${outcome}${upgrade}${revision}${path}\n${warnings}`;
+}
+/** What rig config upgrade did or, on a dry run, would do: the changes in words, and on a dry run the diff. */
+function renderConfigUpgrade(report: Record<string, unknown>): string {
+  const path = word(report.path);
+  const lines = (value: unknown) =>
+    (Array.isArray(value) ? value : []).map(word).filter(Boolean);
+  const changes = lines(report.changes);
+  if (!changes.length)
+    return `${path} is already written in rig.yaml format ${word(report.to)}; nothing to change.\n`;
+  const listed = changes.map((change) => `  ${change}\n`).join("");
+  if (report.written !== true)
+    return `${lines(typeof report.diff === "string" ? report.diff.split("\n") : []).join("\n")}\n\nDry run: ${path} was not changed. It would move from ${word(report.from)} to ${word(report.to)}:\n${listed}Run rig config upgrade to write it.\n`;
+  return `${path} upgraded from ${word(report.from)} to ${word(report.to)}:\n${listed}${
+    report.backupPath
+      ? `The previous text is in ${word(report.backupPath)}. `
+      : ""
+  }Commit rig.yaml: deployed Targets read the committed file.\n`;
+}
+/** The deprecation line a reply carries, as one terminal-safe line, or nothing. */
+export function renderDeprecation(value: unknown): string {
+  const line = word(object(value).deprecation);
+  return line ? `Deprecated: ${line}\n` : "";
 }
 /** Both comparisons of each marked Service, in words that claim nothing about a running Service. */
 function renderRecipeDiff(report: Record<string, unknown>): string {

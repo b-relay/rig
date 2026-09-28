@@ -9,6 +9,7 @@ import type {
   TargetPlan,
 } from "../config/types";
 import type { RuntimeCommand } from "../daemon/protocol";
+import type { ConfigUpgrade } from "../config/documents";
 import type {
   OperationRecord,
   ProjectRecord,
@@ -59,6 +60,12 @@ export interface ProjectDocuments {
   ): Promise<ConfigDocument<ProjectConfig>>;
   resolve(input: ResolveTargetPlanInput): TargetPlan;
   host(): Promise<HostConfig>;
+  /** Rewrites the Project's rig.yaml into the latest format in place, keeping comments and layout, or with `dryRun` only
+   * reports what would change. Never changes what the file means. */
+  upgrade(
+    repoPath: string,
+    options: { dryRun: boolean },
+  ): Promise<ConfigUpgrade>;
 }
 export interface DeploymentSources {
   prepare(request: {

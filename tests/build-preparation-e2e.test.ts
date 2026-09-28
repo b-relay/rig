@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { rigFixture } from "./support/rig-fixture";
+import { beyondDeprecation, rigFixture } from "./support/rig-fixture";
 
 /** How many times each counted command ran: one line per run, in run order across units. */
 async function runs(counts: string): Promise<string[]> {
@@ -15,7 +15,7 @@ test("deploy --no-up builds every unit once and starts nothing; up and restart r
   const counts = join(f.base, "counts");
   const json = async (args: string[]) => {
     const result = await f.rig([...args, "--json"]);
-    expect(result.stderr).toBe("");
+    expect(beyondDeprecation(result.stderr)).toBe("");
     expect(result.code).toBe(0);
     return JSON.parse(result.stdout);
   };
@@ -107,7 +107,7 @@ test("a pushed Production Branch deploys the renamed Stable Target with the plai
     secrets = join(f.base, "secrets.env");
   const ok = async (args: string[]) => {
     const result = await f.rig([...args, "--json"]);
-    expect(result.stderr).toBe("");
+    expect(beyondDeprecation(result.stderr)).toBe("");
     expect(result.code).toBe(0);
     return JSON.parse(result.stdout);
   };

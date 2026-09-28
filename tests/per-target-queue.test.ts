@@ -166,6 +166,9 @@ async function fixture(host: Record<string, unknown> = {}) {
       async host() {
         return parseHostConfig(host);
       },
+      async upgrade(): Promise<never> {
+        throw new Error("rig config upgrade is not part of these tests");
+      },
     },
     sources: {
       // The Commit is named after its Branch, so a test can hold one Branch's checkout.

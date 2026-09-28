@@ -140,6 +140,8 @@ async function rig(
     root: "/isolated/.rig",
     cwd,
     ...(recipes ? { recipes } : {}),
+    // Generated blocks are pasted into APP, which is a rig/v1 file, so generate writes rig/v1.
+    configFormat: async () => "rig/v1" as const,
     client: {
       async status() {
         throw new Error("status is not part of these tests");

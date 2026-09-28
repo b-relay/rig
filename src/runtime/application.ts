@@ -937,20 +937,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target.updatedAt = deps.now();
         await persistTarget(target, deps.store);
         admission.phase("stopping", target);
-        try {
-          outcome = (await stopRecordedTarget(target, deps.lifecycle)).outcome;
-        } catch (error) {
-          // A stop that failed part-way still says which Services it had to SIGKILL.
-          const stopped = target;
-          await deps.store
-            .update((state) => {
-              const saved = state.targets.find((t) => t.id === stopped.id);
-              if (saved)
-                recordStopKills(saved, operations.get(operationId)!.view);
-            })
-            .catch(() => {});
-          throw error;
-        }
+        outcome = (await stopKeepingKills(target)).outcome;
         recordStopKills(target, operations.get(operationId)!.view);
       } else {
         if (command.action === "restart") {
@@ -959,7 +946,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           target.updatedAt = deps.now();
           await persistTarget(target, deps.store);
           admission.phase("stopping", target);
-          await stopRecordedTarget(target, deps.lifecycle);
+          await stopKeepingKills(target);
           admission.phase("starting", target);
           if (target.kind === "local")
             target = await replanWorkingCopy(
@@ -1086,6 +1073,21 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         commit: target?.commit,
         ...extra,
       };
+    }
+    /** Stops `stopped` as `rig down` and `rig restart` do. A stop that fails part-way still saves which Services it had to
+     * SIGKILL, so status says so while they stay stopped; a stop that succeeds leaves that to its caller. */
+    async function stopKeepingKills(stopped: TargetRecord) {
+      try {
+        return await stopRecordedTarget(stopped, deps.lifecycle);
+      } catch (error) {
+        await deps.store
+          .update((state) => {
+            const saved = state.targets.find((t) => t.id === stopped.id);
+            if (saved) recordStopKills(saved, operations.get(operationId)!.view);
+          })
+          .catch(() => {});
+        throw error;
+      }
     }
     /** Refuses a Project-wide change at once while a Target is recorded as running or mid-transition, instead of queueing
      * it behind that Target's operations (and every later operation of the Project behind it) only to refuse it then.

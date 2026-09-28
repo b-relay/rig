@@ -390,36 +390,38 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
   ).toBeUndefined();
 });
 
-test("a rig down that fails part-way still records the SIGKILL of a Service it stopped before, in status and Activity", async () => {
-  const w = await registered();
-  await w.command({ action: "up", target: "local" });
-  w.hold();
-  const down = w.command({
-    action: "down",
-    target: "local",
-    operationId: "down-2",
-  });
-  const worker = await w.stopOf("worker");
-  w.advance(25 * 60_000);
-  worker.exit("timeout");
-  const web = await w.stopOf("web");
-  web.fail(new Error("the supervisor lost the process"));
-  await expect(down).rejects.toMatchObject({ code: "STOP_INCOMPLETE" });
-  expect(w.state.activity.at(-1)).toMatchObject({
-    action: "down",
-    outcome: "failed",
-    message: "STOP_INCOMPLETE: worker stopped after timeout (SIGKILL)",
-  });
-  const after = await w.runtime.status({
-    project: "fletcher",
-    target: "local",
-  });
-  expect(
-    after.targets[0]!.components.find((c) => c.name === "worker"),
-  ).toMatchObject({
-    reason:
-      "Stopped after timeout (SIGKILL): it did not exit within its stop_timeout.",
-  });
+test("a rig down or rig restart that fails part-way still records the SIGKILL of a Service it stopped before, in status and Activity", async () => {
+  for (const action of ["down", "restart"] as const) {
+    const w = await registered();
+    await w.command({ action: "up", target: "local" });
+    w.hold();
+    const stopping = w.command({
+      action,
+      target: "local",
+      operationId: `${action}-2`,
+    });
+    const worker = await w.stopOf("worker");
+    w.advance(25 * 60_000);
+    worker.exit("timeout");
+    const web = await w.stopOf("web");
+    web.fail(new Error("the supervisor lost the process"));
+    await expect(stopping).rejects.toMatchObject({ code: "STOP_INCOMPLETE" });
+    expect(w.state.activity.at(-1)).toMatchObject({
+      action,
+      outcome: "failed",
+      message: "STOP_INCOMPLETE: worker stopped after timeout (SIGKILL)",
+    });
+    const after = await w.runtime.status({
+      project: "fletcher",
+      target: "local",
+    });
+    expect(
+      after.targets[0]!.components.find((c) => c.name === "worker"),
+    ).toMatchObject({
+      reason:
+        "Stopped after timeout (SIGKILL): it did not exit within its stop_timeout.",
+    });
+  }
 });
 
 test("rig restart waits for the stop_timeout before it starts the Services again", async () => {

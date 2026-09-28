@@ -1079,8 +1079,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
      * a down, or a restart that fails before it starts them again. The next start clears it. */
     async function stopKeepingKills(stopped: TargetRecord) {
       const view = operations.get(operationId)!.view;
+      // Marked on the Operation's own record as well, since what it saves later (a replan, the final record) starts from it.
       const keep = () =>
-        killedMessage(view) === undefined
+        !recordStopKills(stopped, view)
           ? Promise.resolve()
           : deps.store
               .update((state) => {

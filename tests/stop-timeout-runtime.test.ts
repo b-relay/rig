@@ -149,8 +149,11 @@ function world() {
       async read() {
         return structuredClone(state);
       },
+      // As the file store does: a change works on a copy and what it saved keeps no reference to the caller's objects.
       async update(change) {
-        await change(state);
+        const next = structuredClone(state);
+        await change(next);
+        Object.assign(state, structuredClone(next));
       },
     },
     documents: {

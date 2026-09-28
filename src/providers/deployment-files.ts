@@ -59,6 +59,8 @@ export function createDeploymentFiles(): DeploymentFiles {
           force: false,
           preserveTimestamps: true,
         });
+        // The copy keeps the source's modes; the deployment directory itself is private to its owner.
+        await chmod(join(staging, "tree"), 0o700);
         // rename replaces an empty directory and refuses one with entries.
         await rename(join(staging, "tree"), to);
       } finally {

@@ -84,7 +84,7 @@ export function addConvexCommand(
     )
     .addHelpText(
       "after",
-      "\nThe backend binary comes from Convex's cache (~/.cache/convex/binaries), which convex dev shares; a missing\nrelease is downloaded from GitHub, which needs the network and unzip. .env.local in the working directory is\npointed at the backend (CONVEX_SELF_HOSTED_URL and CONVEX_SELF_HOSTED_ADMIN_KEY), so other bunx convex commands\nreach it. A deployment convex dev --local left in .convex/local/default is copied into --state-dir the first time.\n",
+      "\nThe backend binary comes from Convex's cache (~/.cache/convex/binaries), which convex dev shares; a missing\nrelease is downloaded from GitHub, which needs the network and unzip. .env.local in the working directory is\npointed at the backend (CONVEX_SELF_HOSTED_URL and CONVEX_SELF_HOSTED_ADMIN_KEY), so other bunx convex commands\nreach it, unless a deploy key in .env or the shell sends them to Convex Cloud, which the Convex CLI prefers.\nA deployment convex dev --local left in .convex/local/default is copied into --state-dir the first time.\n",
     )
     .action(async (operands: string[], raw: Record<string, unknown>) => {
       setExitCode(await run(checkedOptions(raw, operands)));

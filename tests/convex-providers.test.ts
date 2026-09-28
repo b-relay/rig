@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -302,4 +303,25 @@ test("files: a write the filesystem refuses is a tagged error naming the path", 
     code: "CONVEX_FILES",
     message: expect.stringContaining(join(root, "blocker", "config.json")),
   });
+});
+
+test("releases: a cache that exists but cannot be read is a tagged error, not an empty cache", async () => {
+  const root = await temporary();
+  const cache = join(root, "home", ".cache", "convex", "binaries");
+  await mkdir(cache, { recursive: true });
+  await chmod(cache, 0o000);
+  try {
+    await expect(
+      createConvexReleases({
+        home: join(root, "home"),
+        platform: process.platform,
+        arch: process.arch,
+        run: runCommand,
+        PATH: process.env.PATH,
+        fetch,
+      }).cached(),
+    ).rejects.toMatchObject({ code: "CONVEX_CACHE" });
+  } finally {
+    await chmod(cache, 0o755);
+  }
 });

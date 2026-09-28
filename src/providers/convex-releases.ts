@@ -65,8 +65,14 @@ export function createConvexReleases(input: {
       let names: string[];
       try {
         names = await readdir(cache);
-      } catch {
-        return [];
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw new RigError(
+          "CONVEX_CACHE",
+          `Convex's binary cache ${cache} cannot be read (${errorMessage(error)}).`,
+          `Fix the permissions of ${cache} (it should be yours and readable), then start the Service again.`,
+          { path: cache },
+        );
       }
       const found = await Promise.all(
         names.map(async (name) =>

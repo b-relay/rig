@@ -105,14 +105,6 @@ async function runUntilEnd(
         stop,
       );
   const url = backendUrl(request.cloudPort);
-  const envFile = join(request.workspace, ".env.local");
-  await deps.files.writePrivate(
-    envFile,
-    selfHostedEnvFile(await deps.files.read(envFile), {
-      url,
-      adminKey: deployment.adminKey,
-    }),
-  );
   // Only what answers after the backend starts can be taken for it, so nothing may answer before.
   const before = await deps.probe(`${url}/instance_name`, stop);
   if (before !== undefined)
@@ -122,6 +114,14 @@ async function runUntilEnd(
       "Stop the other backend (an earlier one of this deployment may still run), or give this Service other ports.",
       { url },
     );
+  const envFile = join(request.workspace, ".env.local");
+  await deps.files.writePrivate(
+    envFile,
+    selfHostedEnvFile(await deps.files.read(envFile), {
+      url,
+      adminKey: deployment.adminKey,
+    }),
+  );
   const children: RunningChild[] = [];
   try {
     const server = deps.children.start({
@@ -197,6 +197,11 @@ async function openDeployment(
       deploymentFiles(local).config,
     );
     await deps.files.copyDirectory(local, request.stateDir);
+    // The copy keeps the source's modes; its secrets are made private to the owner again.
+    await deps.files.writePrivate(
+      deploymentFiles(request.stateDir).config,
+      left,
+    );
     deps.output.write(
       `Copied the Convex deployment ${deployment.deploymentName} from ${local} to ${request.stateDir}; the original is left in place.\n`,
     );

@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -353,7 +354,8 @@ test("a deployment convex dev --local left in the workspace is copied into the s
     adminKey: "anonymous-app|key",
     instanceSecret: "abc",
   });
-  await writeFile(join(local, "config.json"), config);
+  await writeFile(join(local, "config.json"), config, { mode: 0o644 });
+  await chmod(local, 0o755);
   await writeFile(join(local, "convex_local_backend.sqlite3"), "rows");
   await writeFile(join(local, "convex_local_storage", "blob"), "file");
 
@@ -365,6 +367,12 @@ test("a deployment convex dev --local left in the workspace is copied into the s
     await readFile(join(h.stateDir, "convex_local_storage", "blob"), "utf8"),
   ).toBe("file");
   expect(await readFile(join(local, "config.json"), "utf8")).toBe(config);
+  // The copy's secrets are private, whatever the source's modes were.
+  expect((await stat(h.stateDir)).mode & 0o777).toBe(0o700);
+  expect((await stat(join(h.stateDir, "config.json"))).mode & 0o777).toBe(
+    0o600,
+  );
+  expect(await readFile(join(h.stateDir, "config.json"), "utf8")).toBe(config);
   expect(h.children[0]!.command).toContain("anonymous-app");
   expect(h.events).not.toContain(expect.stringMatching(/^run /));
   expect(h.output().out).toContain(
@@ -752,11 +760,19 @@ test("a new deployment whose recommended release cannot be downloaded starts on 
 
 test("a backend already answering on the port before this one starts is refused, even one of the same deployment", async () => {
   const h = await harness({ recommended: NEW, occupied: "convex-self-hosted" });
+  await writeFile(
+    join(h.workspace, ".env.local"),
+    "CONVEX_DEPLOYMENT=dev:app\n",
+  );
   await expect(h.start()).rejects.toMatchObject({
     code: "CONVEX_PORT_TAKEN",
     hint: expect.stringContaining("an earlier one of this deployment"),
   });
   expect(h.children).toEqual([]);
+  // .env.local is only pointed at a backend this Service is about to start.
+  expect(await readFile(join(h.workspace, ".env.local"), "utf8")).toBe(
+    "CONVEX_DEPLOYMENT=dev:app\n",
+  );
 });
 
 test("under a pin, new credentials are made with a newer cached binary, as convex dev makes them with the latest", async () => {

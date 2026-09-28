@@ -83,6 +83,28 @@ test("a restart found earlier and not finished is the same one while nothing cha
   );
   expect(later).toMatchObject({ restart: "login", announced: false });
   expect(later.settled.size).toBe(0);
+  // Nothing readable now: the pending restart is still the one to act on, and it is recorded as it was found.
+  const pendingBoth = host({
+    kind: "reboot",
+    boot: "NEW-BOOT",
+    login: "100019",
+    settled: ["t1"],
+  });
+  expect(findHostRestart(pendingBoth, {})).toMatchObject({
+    restart: "reboot",
+    announced: true,
+    record: true,
+    session: { boot: "NEW-BOOT", login: "100019" },
+  });
+  // A read that missed the login keeps the one read when the restart was found, so a later logout can be told.
+  expect(
+    findHostRestart(pendingBoth, { boot: "NEW-BOOT", bootedAt: "2026-09-27T07:59:00.000Z" })
+      .session,
+  ).toEqual({
+    boot: "NEW-BOOT",
+    bootedAt: "2026-09-27T07:59:00.000Z",
+    login: "100019",
+  });
 });
 
 test("a read with no restart replaces the recorded session only when it read everything the recorded one names", () => {

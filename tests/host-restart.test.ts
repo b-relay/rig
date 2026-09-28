@@ -642,6 +642,63 @@ test("a logout and login after a reboot the first pass did not finish is a resta
   expect(host.restart).toBeUndefined();
 });
 
+test("a daemon that can read nothing of the session still finishes a restart an earlier one found: the Working copy stays stopped under restart: always", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const failing = failWorkingCopyMarking(f.store);
+  f.reopen();
+  await f.reconcile();
+  failing.on = false;
+
+  f.host.session = {};
+  f.reopen();
+  await f.reconcile();
+  for (const delay of [...UNKNOWN_EXIT_RESTART_BACKOFF_MS, 600_000]) {
+    f.clock.ms += delay;
+    await f.supervise();
+  }
+  expect(await f.running("local")).toEqual([]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/started live",
+  ]);
+  // Recorded as it was found, so the next restart can be told.
+  expect((await f.store.read()).host).toMatchObject({
+    boot: "BOOT-2",
+    login: "100002",
+  });
+});
+
+test("a pending restart finished by a daemon that could not read the login keeps the login read when it was found, so a later logout is still a restart", async () => {
+  const f = await fixture();
+  await f.startAll();
+  f.restartHost(REBOOTED);
+  const failing = failWorkingCopyMarking(f.store);
+  f.reopen();
+  await f.reconcile();
+  failing.on = false;
+
+  f.host.session = { boot: "BOOT-2" };
+  f.reopen();
+  await f.reconcile();
+  expect((await f.store.read()).host).toMatchObject({
+    boot: "BOOT-2",
+    login: "100002",
+  });
+
+  const before = await f.activityCount();
+  f.restartHost({ ...REBOOTED, login: "100019" });
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/started live",
+  ]);
+});
+
 test("after a reboot an outcome that already kept a Working copy Service stopped is kept, and one that would have been retried is replaced", async () => {
   const f = await fixture();
   await f.startAll();

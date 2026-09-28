@@ -1197,10 +1197,12 @@ without a GUI login, over SSH only, say). A start that finds no restart but
 could not read part of the session keeps the earlier record, so a reboot it
 could not see yet is found at the next start. `rigd` records the session only
 once it has acted on the restart for every Target, so a daemon that stops or
-is asked to stop halfway finds the same restart again at its next start, and
-finishes it without recording it in Activity a second time and without
-starting (or retrying) a Stable Target it already started, or failed to start,
-for that restart.
+is asked to stop halfway keeps it pending: the next start finishes it (even if
+it can read nothing of the session) without recording it in Activity a second
+time and without starting (or retrying) a Stable Target it already started, or
+failed to start, for that restart. Only a session that changed since the
+pending restart was found, such as a logout and login after it, is a new
+restart.
 
 ### Recipes
 

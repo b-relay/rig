@@ -96,6 +96,20 @@ test("a restart found earlier and not finished is the same one while nothing cha
     record: true,
     session: { boot: "NEW-BOOT", login: "100019" },
   });
+  // A new login read without the boot keeps the boot known before, so a later reboot that reuses the audit session is told.
+  expect(
+    findHostRestart(pendingBoth, { login: "100020" }),
+  ).toMatchObject({
+    restart: "login",
+    announced: false,
+    session: { boot: "NEW-BOOT", login: "100020" },
+  });
+  expect(
+    findHostRestart(
+      { host: { ...recorded, seenAt: "2026-09-27T08:00:00.000Z" } },
+      { login: "100020" },
+    ).session,
+  ).toEqual({ boot: BOOT, login: "100020" });
   // A read that missed the login keeps the one read when the restart was found, so a later logout can be told.
   expect(
     findHostRestart(pendingBoth, { boot: "NEW-BOOT", bootedAt: "2026-09-27T07:59:00.000Z" })

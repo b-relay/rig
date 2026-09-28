@@ -33,34 +33,31 @@ export interface HostSessionFinding {
 /** Compares the session read now with the one `state` records. A restart an earlier daemon found and recorded in Activity,
  * but did not finish acting on, stays the restart to act on unless the session read now shows a change since it was found:
  * it keeps its kind, its settled Targets and is not announced again, whatever more or less of the session each read could
- * see (nothing at all included), and the session recorded once it is done fills what the read now missed from what was
- * read when it was found, so the next restart can still be told. A change since it was found is a new restart of its own. */
+ * see (nothing at all included). A change since it was found is a new restart of its own. The session recorded once a
+ * restart is acted on fills what the read now missed from the last one known (the pending restart's, else the recorded
+ * one), so a field that could not be read this once never erases what the next restart is told by. */
 export function findHostRestart(
   state: Pick<RuntimeState, "host">,
   current: HostSession,
 ): HostSessionFinding {
   const pending = state.host?.restart;
+  const known = (session: Pick<HostSession, "boot" | "login"> | undefined) => ({
+    ...(session?.boot === undefined ? {} : { boot: session.boot }),
+    ...(session?.login === undefined ? {} : { login: session.login }),
+  });
+  const filled: HostSession = {
+    ...known(state.host),
+    ...known(pending),
+    ...definedFields(current),
+  };
   if (pending) {
     const since = hostRestartBetween(pending, current);
-    if (since)
-      return {
-        restart: since,
-        announced: false,
-        settled: new Set(),
-        session: current,
-        record: identified(current),
-      };
-    const session: HostSession = {
-      ...(pending.boot === undefined ? {} : { boot: pending.boot }),
-      ...(pending.login === undefined ? {} : { login: pending.login }),
-      ...definedFields(current),
-    };
     return {
-      restart: pending.kind,
-      announced: true,
-      settled: new Set(pending.settled ?? []),
-      session,
-      record: identified(session),
+      restart: since ?? pending.kind,
+      announced: since === undefined,
+      settled: new Set(since === undefined ? (pending.settled ?? []) : []),
+      session: filled,
+      record: identified(filled),
     };
   }
   const restart = hostRestartBetween(state.host, current);
@@ -68,8 +65,8 @@ export function findHostRestart(
     ...(restart ? { restart } : {}),
     announced: false,
     settled: new Set(),
-    session: current,
-    record: restart ? identified(current) : mayReplace(state.host, current),
+    session: restart ? filled : current,
+    record: restart ? identified(filled) : mayReplace(state.host, current),
   };
 }
 

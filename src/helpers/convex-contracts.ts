@@ -55,7 +55,7 @@ export interface DeploymentFiles {
   /** Whether the path is missing or an empty directory. */
   vacant(path: string): Promise<boolean>;
   /** Copies a directory tree to `to` as a whole: it is copied beside `to` and renamed into place, so `to` never holds
-   * part of it. `to` must be vacant. */
+   * part of it. Symbolic links are copied as what they name. `to` must be vacant. */
   copyDirectory(from: string, to: string): Promise<void>;
   /** Creates the directory (mode 700) and its parents when missing. */
   ensureDirectory(path: string): Promise<void>;

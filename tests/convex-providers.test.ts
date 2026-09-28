@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   chmod,
+  lstat,
+  symlink,
   mkdir,
   mkdtemp,
   readdir,
@@ -208,8 +210,21 @@ test("files: private files are written whole with mode 600, a missing file reads
 
   await mkdir(join(root, "from", "nested"), { recursive: true });
   await writeFile(join(root, "from", "nested", "blob"), "data");
+  // A database linked from elsewhere (a checkout a deploy will replace) is copied as the file itself.
+  await writeFile(join(root, "elsewhere.sqlite3"), "rows");
+  await symlink(
+    join(root, "elsewhere.sqlite3"),
+    join(root, "from", "convex_local_backend.sqlite3"),
+  );
   await files.copyDirectory(join(root, "from"), join(root, "to"));
   expect(await files.read(join(root, "to", "nested", "blob"))).toBe("data");
+  await rm(join(root, "elsewhere.sqlite3"));
+  expect(
+    (await lstat(join(root, "to", "convex_local_backend.sqlite3"))).isFile(),
+  ).toBe(true);
+  expect(
+    await files.read(join(root, "to", "convex_local_backend.sqlite3")),
+  ).toBe("rows");
   await writeFile(join(root, "from", "nested", "blob"), "changed");
   await expect(
     files.copyDirectory(join(root, "from"), join(root, "to")),

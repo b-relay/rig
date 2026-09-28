@@ -55,6 +55,8 @@ export function createDeploymentFiles(): DeploymentFiles {
       try {
         await cp(from, join(staging, "tree"), {
           recursive: true,
+          // A linked file is copied as the file it names, so the copy does not depend on where the link pointed.
+          dereference: true,
           errorOnExist: true,
           force: false,
           preserveTimestamps: true,

@@ -7,6 +7,7 @@ import {
   type ConfigFormat,
 } from "../config/formats";
 import { latest, type Recipe, type RecipeVersion } from "./catalog";
+import type { RecipeFileFinding } from "./files";
 /** One field that differs, by its path inside the Service (`env.PGDATA`); a side that lacks the field has no value. */
 export interface RecipeChange {
   readonly path: string;
@@ -39,6 +40,11 @@ export type RecipeFinding =
       readonly customized: readonly RecipeChange[];
       /** The version it was generated from against the bundled one; empty when they are the same version. */
       readonly update: readonly RecipeChange[];
+      /** The catalog's notice on the version it was generated from, when that version has one. */
+      readonly notice?: string;
+      /** The files the bundled version writes into the Project, compared with the Project's copies; see
+       * `withRecipeFiles`. Absent when not compared, or when the recipe writes none. */
+      readonly files?: readonly RecipeFileFinding[];
     };
 /** Pure: compares every marked Service of one document with the catalog. Both sides pass through the config parser, so a
  * difference in spelling that the parser does not keep is not a difference, nor is the format a recipe or the document is
@@ -92,6 +98,7 @@ export function compareRecipes(
       update: spelled(
         changes(generated, fields(parsed(service, latest(recipe)))),
       ),
+      ...(origin.notice === undefined ? {} : { notice: origin.notice }),
     };
   });
 }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { runRigCli } from "../src/cli/rig";
+import { createProjectFiles } from "../src/adapters/project-files";
 import type { CliDependencies } from "../src/cli/types";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import { BUNDLED_RECIPES } from "../src/recipes/catalog";
@@ -397,6 +398,7 @@ async function cli(
   cwd: string,
   command: (request: RuntimeCommand) => Promise<unknown>,
   configFormat?: CliDependencies["configFormat"],
+  projectFiles?: CliDependencies["projectFiles"],
 ) {
   let out = "";
   let err = "";
@@ -404,6 +406,7 @@ async function cli(
     root: "/isolated/.rig",
     cwd,
     ...(configFormat ? { configFormat } : {}),
+    ...(projectFiles ? { projectFiles } : {}),
     client: {
       async status() {
         throw new Error("status is not part of these tests");
@@ -533,9 +536,10 @@ test("rig recipe generate writes the block in the format of the rig.yaml it is r
     "format: rig/v2\nname: app\nservices:\n  web: { run: serve }\n",
   );
   const v1 = await project("name: app\nservices:\n  web: { run: serve }\n");
+  // postgres writes no files, so generate runs anywhere.
   const generate = (cwd: string, ...args: string[]) =>
     cli(
-      ["recipe", "generate", "convex", ...args],
+      ["recipe", "generate", "postgres", ...args],
       cwd,
       () => Promise.reject(new Error("generate needs no rigd")),
       findDeclaredFormat,
@@ -547,14 +551,12 @@ test("rig recipe generate writes the block in the format of the rig.yaml it is r
   expect((await generate(v1)).err).toBe(
     `Deprecated: ${join(v1, "rig.yaml")} is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.\n`,
   );
-  expect(latest).toContain(
-    "    health:\n      check: http://127.0.0.1:${services.convex.ports.cloud}/instance_name\n      start_timeout: 60s\n",
-  );
-  expect(latest).not.toContain("ready");
+  const check =
+    "pg_isready -h ${services.db.env.PGHOST} -p ${services.db.ports.pg}";
+  expect(latest).toContain(`    health:\n      check: ${check}\n`);
+  expect(latest).not.toContain("ready:");
   const older = (await generate(v1)).out;
-  expect(older).toContain(
-    "    ready: http://127.0.0.1:${services.convex.ports.cloud}/instance_name\n    ready_timeout: 60s\n",
-  );
+  expect(older).toContain(`    ready: ${check}\n`);
   expect(older).not.toContain("health");
   // Each block pastes into its own Project and parses there.
   for (const [root, block] of [
@@ -564,8 +566,8 @@ test("rig recipe generate writes the block in the format of the rig.yaml it is r
     expect(
       parseProjectConfig(
         parse(`${await readFile(join(root, "rig.yaml"), "utf8")}${block}`),
-      ).services!.convex!.health!.start_timeout,
-    ).toBe("60s");
+      ).services!.db!.health!.check,
+    ).toBe(check);
   expect((await generate("/", "--format", "rig/v1")).out).toBe(older);
   expect((await generate(tmpdir())).out).toBe(latest);
   const refused = await generate(v2, "--format", "rig/v9");
@@ -573,11 +575,48 @@ test("rig recipe generate writes the block in the format of the rig.yaml it is r
   expect(refused.err).toContain("'rig/v9' is not a rig.yaml format.");
 });
 
+test("convex@2, which also writes its script into the Project, is written in the Project's format: health.check and health.start_timeout in rig/v2, ready and ready_timeout in rig/v1", async () => {
+  const v2 = await project(
+    "format: rig/v2\nname: app\nservices:\n  web: { run: serve }\n",
+  );
+  const v1 = await project("name: app\nservices:\n  web: { run: serve }\n");
+  const generate = (cwd: string) =>
+    cli(
+      ["recipe", "generate", "convex"],
+      cwd,
+      () => Promise.reject(new Error("generate needs no rigd")),
+      findDeclaredFormat,
+      createProjectFiles(),
+    );
+  const url = "http://127.0.0.1:${services.convex.ports.cloud}/instance_name";
+  const latest = await generate(v2);
+  expect(latest.code).toBe(0);
+  expect(latest.out).toContain("# rig-recipe: convex@2 name=convex");
+  expect(latest.out).toContain(
+    `    health:\n      check: ${url}\n      start_timeout: 3m\n`,
+  );
+  expect(latest.out).not.toContain("ready");
+  expect(latest.err).toContain(`Wrote scripts/rig-convex.ts in ${v2}`);
+  const older = await generate(v1);
+  expect(older.code).toBe(0);
+  expect(older.out).toContain(`    ready: ${url}\n    ready_timeout: 3m\n`);
+  expect(older.out).not.toContain("health");
+  for (const [root, block] of [
+    [v2, latest.out],
+    [v1, older.out],
+  ] as const)
+    expect(
+      parseProjectConfig(
+        parse(`${await readFile(join(root, "rig.yaml"), "utf8")}${block}`),
+      ).services!.convex!.health,
+    ).toEqual({ check: url, start_timeout: "3m" });
+});
+
 test("rig recipe diff names a changed field the way the Project's format spells it", async () => {
   const block = (format: "rig/v1" | "rig/v2") =>
     renderRecipe(
       BUNDLED_RECIPES.find((each) => each.name === "convex")!,
-      BUNDLED_RECIPES.find((each) => each.name === "convex")!.versions[0]!,
+      BUNDLED_RECIPES.find((each) => each.name === "convex")!.versions.at(-1)!,
       "convex",
       format,
     );
@@ -585,12 +624,12 @@ test("rig recipe diff names a changed field the way the Project's format spells 
     ["rig/v1", "ready_timeout"],
     ["rig/v2", "health.start_timeout"],
   ] as const) {
-    const yaml = `${format === "rig/v2" ? "format: rig/v2\n" : ""}name: app\nservices:\n${block(format).replace("60s", "90s")}`;
+    const yaml = `${format === "rig/v2" ? "format: rig/v2\n" : ""}name: app\nservices:\n${block(format).replace("3m", "90s")}`;
     const document = await readProjectConfig(await project(yaml));
     const [finding] = compareRecipes(document, BUNDLED_RECIPES);
     expect(finding).toMatchObject({
       status: "compared",
-      customized: [{ path, from: "60s", to: "90s" }],
+      customized: [{ path, from: "3m", to: "90s" }],
       update: [],
     });
   }
@@ -686,7 +725,7 @@ test("the upgrade keeps block scalars with references and a quoted format, accep
 test("rig recipe generate --format still prints the deprecation line beside a rig/v1 file", async () => {
   const v1 = await project("name: app\nservices:\n  web: { run: serve }\n");
   const generated = await cli(
-    ["recipe", "generate", "convex", "--format", "rig/v2"],
+    ["recipe", "generate", "postgres", "--format", "rig/v2"],
     v1,
     () => Promise.reject(new Error("generate needs no rigd")),
     findDeclaredFormat,

@@ -62,6 +62,10 @@ export interface ProjectDocuments {
   ): Promise<ConfigDocument<ProjectConfig>>;
   resolve(input: ResolveTargetPlanInput): TargetPlan;
   host(): Promise<HostConfig>;
+  /** The text of the Project's file at `path` (relative, `/`-separated) under the Project directory `directory`;
+   * undefined when there is no such file. Fails RECIPE_FILE_PATH for a path that leaves the directory, and
+   * PROJECT_FILE_UNREADABLE for one that cannot be read. */
+  readProjectFile(directory: string, path: string): Promise<string | undefined>;
   /** Rewrites the Project's rig.yaml into the latest format in place, keeping comments and layout, or with `dryRun` only
    * reports what would change. Never changes what the file means. */
   upgrade(

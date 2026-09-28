@@ -118,12 +118,16 @@ export interface ProjectIdentity {
   /** The config init would keep, when one already exists. */
   configPath?: string;
 }
-/** Writes the Project files and records the registration for an identity prepareRegistration accepted. */
+/** Writes the Project files and records the registration for an identity prepareRegistration accepted. Returns the
+ * registration and the config document it was made from, so the caller can report on that document without reading it again. */
 export async function registerProject(
   command: RuntimeCommand,
   identity: ProjectIdentity,
   deps: Pick<RuntimeDependencies, "documents" | "store" | "id" | "now">,
-): Promise<ProjectRecord> {
+): Promise<{
+  project: ProjectRecord;
+  document: ConfigDocument<ProjectConfig>;
+}> {
   const document = await deps.documents.initialize(command.repoPath!, command);
   const name = document.config.name;
   const repoPath = dirname(document.path);
@@ -162,7 +166,7 @@ export async function registerProject(
       failureCauses(error),
     );
   }
-  return result!;
+  return { project: result!, document };
 }
 function assertRegistrationAvailable(
   projects: readonly ProjectRecord[],

@@ -15,6 +15,7 @@ import type { CliDependencies } from "./cli/types";
 import { inspectOfflineHost } from "./daemon/offline-doctor";
 import { inspectHost } from "./adapters/host-inspection";
 import { createProjectDocuments } from "./adapters/project-documents";
+import { createProjectFiles } from "./adapters/project-files";
 import { runCommand } from "./providers/command-runner";
 import { inheritedEnvironment } from "./daemon/environment";
 import { homedir } from "node:os";
@@ -62,6 +63,7 @@ export async function main(args: readonly string[]): Promise<number> {
           }
         : {}),
       client: createCliClient(root, cwd),
+      projectFiles: createProjectFiles(),
       configFormat: findDeclaredFormat,
     });
   } finally {

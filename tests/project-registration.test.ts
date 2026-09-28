@@ -20,7 +20,9 @@ import type { RuntimeCommand } from "../src/daemon/protocol";
 const registerProject = async (
   command: RuntimeCommand,
   deps: Pick<RuntimeDependencies, "documents" | "store" | "id" | "now">,
-) => register(command, await prepareRegistration(command, deps), deps);
+) =>
+  (await register(command, await prepareRegistration(command, deps), deps))
+    .project;
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { CommandRunner } from "../src/providers/contracts";

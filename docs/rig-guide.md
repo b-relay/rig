@@ -1700,7 +1700,10 @@ together with a place to keep their secrets.
 
 A recipe prints an ordinary Service for a common local dependency. There is no
 plugin behind it: the block uses the same `run`, `ports`, `env` and `health.check` you
-would write by hand, and once pasted it is yours to edit.
+would write by hand, and once pasted it is yours to edit. Some recipes also
+come with a recipe file the Service runs, such as the Convex recipe's
+`scripts/rig-convex.ts`; `generate` writes it into the Project, and it is
+yours too.
 
 ```sh
 rig recipe list
@@ -1710,11 +1713,24 @@ rig recipe diff                              # every Service with a recipe comme
 rig recipe diff orders-db --project pantry
 ```
 
-`list` and `generate` need neither `rigd` nor a Project, and write nothing.
-`generate` prints to stdout; paste the block under `services:` (it is indented
-for that). `--name` renames the Service and every reference the block makes to
-itself. The recipe's programs (`initdb`, `postgres`, `pg_isready`; `bunx` for
-Convex) must be on the supervisor's `PATH`; Rig does not install them.
+`list` and `generate` need no `rigd`. `list` writes nothing. `generate` prints
+the Service block to stdout; paste it under `services:` (it is indented for
+that). When the recipe has files, `generate` also writes each one into the
+Project directory (the nearest directory at or above the current one holding
+`rig.yaml`, or the current directory), at a fixed path relative to it, and says
+so on stderr; commit it with the Project so it deploys with every checkout. A
+file that is already there with the same content is left alone. One that
+differs is never overwritten: `generate` still prints the block, leaves the
+file, and fails `RECIPE_FILE_CHANGED`, pointing at `rig recipe diff`. To take
+Rig's copy, move yours aside and generate again. A recipe file is a plain file
+of the Project: a path through a symbolic link (a linked `scripts` directory)
+is refused as `RECIPE_FILE_PATH`, since other checkouts would not carry it. `--name` renames the Service
+and every reference the block makes to itself; a recipe file's path stays the
+same. The recipe's programs (`initdb`, `postgres`, `pg_isready`; `bun` and
+`bunx` for Convex) must be on the supervisor's `PATH`; Rig does not install
+them.
+Generating an older version that the catalog marks as not to be used (such as
+`convex@1`) prints the block and a warning on stderr.
 
 The first line of the block records where it came from:
 
@@ -1729,19 +1745,118 @@ Keep that comment directly above the Service key. It is only a comment: Rig
 never plans or runs from it, and deleting it just means `rig recipe diff` has
 nothing to compare the Service with. `rig recipe diff` reads the config and
 reports, field by field, what a newer bundled version changed (`Changed in`)
-and what you changed since generating (`Your changes to`). It never edits
-`rig.yaml`; to adopt a newer version, generate it and merge by hand.
+and what you changed since generating (`Your changes to`). For a recipe with
+files, it also compares the Project's copy of each file with the bundled
+version's: the same, not in the Project, or a line diff (`-` the Project's
+lines, `+` Rig's), so you see when a newer Rig carries a newer copy. It never
+edits `rig.yaml` or the files; to adopt a newer version, generate it and merge
+by hand.
 
 `rig doctor` adds a `Notices` section when a Service was generated from an
 older version than the one bundled, or when a recipe comment names a recipe or
 version this Rig does not bundle or is not in the form Rig writes. Notices are
 information: they do not fail doctor or change its exit code. A Service that
-matches the bundled version, customized or not, is not mentioned. The offline
-doctor (when `rigd` is unreachable) does not compute notices.
+matches the bundled version, customized or not, is not mentioned. A recipe file
+the Service runs that is not in the Project is a notice too, since the Service
+cannot start without it. The offline doctor (when `rigd` is unreachable) does
+not compute notices. `rig init` of a
+Project whose `rig.yaml` already exists prints the same version notices (not
+the one about a missing recipe file), and when the older version has a known
+problem, doctor, init and `rig recipe diff` say what it is.
 
-The Convex recipe keeps its backend state where the Convex CLI puts it (under
-the user's home directory, per Convex project), not in `${rig.data}`: the CLI
-offers no option for it. Targets of one Project may therefore share that state.
+#### Convex
+
+`convex@2` runs a local Convex backend on two loopback ports and keeps
+`convex dev` pushing the Project's `convex/` functions to it. `generate` prints
+the Service and writes `scripts/rig-convex.ts` into the Project:
+
+```yaml
+services:
+  # rig-recipe: convex@2 name=convex
+  convex:
+    run: exec bun --no-env-file scripts/rig-convex.ts
+    ports:
+      cloud: auto
+      site: auto
+    env:
+      CONVEX_CLOUD_PORT: ${services.convex.ports.cloud}
+      CONVEX_SITE_PORT: ${services.convex.ports.site}
+      CONVEX_STATE_DIR: ${rig.data}/backend
+    health:
+      check: http://127.0.0.1:${services.convex.ports.cloud}/instance_name
+      start_timeout: 3m
+```
+
+`convex dev --local` cannot run under Rig: it always starts its backend on
+`0.0.0.0`, which the loopback check refuses (`LISTENER_NONLOCAL`), so
+`convex@1`, which ran it, never starts. `convex@2` runs the Project's own
+`scripts/rig-convex.ts` instead. The script uses only Bun's and Node's built-in
+modules, so it runs from any checkout of the Project, a deployed one included;
+`bun` runs it without loading `.env` files, so it sees only the environment Rig
+gives the Service. Its header lists its settings. It:
+
+- keeps the deployment in `CONVEX_STATE_DIR`, the Service's persistent data, in
+  the layout `convex dev --local` uses (`config.json` with the instance name,
+  backend release, admin key and instance secret; the SQLite database; file
+  storage). A deployed Target's fresh checkout keeps its data, and each Target
+  has a deployment of its own. The first start makes a new, empty deployment,
+  or copies one that `convex dev --local` left in the workspace's
+  `.convex/local/default` (the copy is made beside the state directory and
+  moved in whole, following symbolic links and made private to you; the
+  original stays in place). A deployment an older Convex CLI made without an
+  instance secret of its own gets a new secret and admin key, as `convex dev`
+  does. A state directory that holds files but no `config.json` is refused
+  (`CONVEX_STATE_INCOMPLETE`) rather than replaced;
+- runs the backend release Convex recommends (asked of `version.convex.dev`),
+  moving an existing deployment to it as `convex dev` does, and takes the
+  binary from Convex's own cache, `~/.cache/convex/binaries`, which
+  `convex dev` shares. A release missing from the cache is downloaded from
+  GitHub, which needs the network and `unzip`. Offline, or when a newer
+  release cannot be downloaded (a download gives up after 2 minutes), an
+  existing deployment stays on its own cached release and a new one starts on
+  the newest cached release. `CONVEX_BACKEND_VERSION` pins a release;
+- refuses to start (`CONVEX_PORT_TAKEN`) when something already answers on its
+  port, then starts the backend with `--interface 127.0.0.1`, without `TZ` (the
+  backend refuses to start with it set), and writes `CONVEX_SELF_HOSTED_URL`
+  and `CONVEX_SELF_HOSTED_ADMIN_KEY` for it into the workspace's `.env.local`,
+  keeping the file's other lines. A line setting `CONVEX_DEPLOYMENT`,
+  `CONVEX_DEPLOY_KEY` or `CONVEX_DEPLOYMENT_TOKEN`, which would send the Convex
+  CLI to another deployment, is commented out, not deleted, and `convex dev`
+  runs with those three set empty, so a value in `.env` cannot win either. Keep
+  `.env.local` out of Git: it holds the admin key. Other `bunx convex` commands
+  (`run`, `data`, `export`) in the workspace then reach the backend while it
+  runs, unless a deploy key in `.env` or your shell sends them to Convex Cloud
+  first, which the Convex CLI prefers;
+- runs `bunx convex dev` (arguments after the script name go to it) and
+  supervises both. When either ends by itself, the other is stopped (and
+  killed if it has not ended 10 s later) and the Service ends with a failure.
+  A stop (SIGTERM, within the Service's `stop_timeout`) is passed to both, and
+  the script exits once they have.
+
+Its errors go to stderr, which the Target log records, as a message, a code
+such as `CONVEX_BACKEND_DOWNLOAD`, and a hint. The Target log also shows the
+script's progress, the backend's warnings and `convex dev`'s function logs. The
+first start may download the backend, hence the 3 minute `health.start_timeout`. Other
+Services reach the backend at `http://127.0.0.1:${services.convex.ports.cloud}`.
+The Service is ready when the backend answers, which is before `convex dev` has
+pushed the functions: a Service that depends on it may start a moment before
+the functions exist, as it could with `convex@1`.
+
+To move a Service from `convex@1`, run `rig recipe generate convex --name
+<service>` in the Project, replace the block, and commit `scripts/rig-convex.ts`.
+A deployment in `.convex/local/default` is copied on the first start.
+
+A Project that ran the backend with a hand-written script (design's
+`scripts/convex-backend.ts`, pantry's `scripts/start-convex.sh`) can replace
+that script with the generated `scripts/rig-convex.ts` the same way; the
+generated one does what they did, and the recipe's `env` passes it the ports
+and state directory. A script that kept the deployment in the
+`.convex/local/default` layout elsewhere (design's deployed Targets keep it
+under `${rig.data}/local/default`) can keep it there by setting
+`CONVEX_STATE_DIR` to that directory. A deployment in another layout (pantry
+keeps `runtime/convex/<env>/backend.sqlite3` and the admin key in an env file)
+cannot be adopted: move its data with `bunx convex export` and
+`bunx convex import`.
 
 ### Environment, builds, and startup
 

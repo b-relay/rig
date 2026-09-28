@@ -229,6 +229,9 @@ function world(
           operatorHome: "/home/operator",
           envRoot: "/rig/env",
         }),
+      async readProjectFile() {
+        return undefined;
+      },
       async host() {
         return parseHostConfig({});
       },

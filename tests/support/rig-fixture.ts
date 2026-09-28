@@ -30,8 +30,6 @@ async function recordedTargets(root: string) {
     return [];
   }
 }
-/** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
- * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. */
 /** A command's stderr without the one line every command run in a rig/v1 Project prints. These end-to-end Projects are
  * rig/v1 files, as every rig.yaml written before formats was, so a successful command prints that line and nothing else. */
 export function beyondDeprecation(stderr: string): string {
@@ -40,6 +38,9 @@ export function beyondDeprecation(stderr: string): string {
     "",
   );
 }
+/** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
+ * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. `HOME` does the same for the home
+ * directory, which is where the Services the daemon runs find the operator's caches. */
 export async function rigFixture(
   options: {
     readonly commands?: {
@@ -47,6 +48,7 @@ export async function rigFixture(
       readonly rigd: readonly string[];
     };
     readonly PATH?: string;
+    readonly HOME?: string;
   } = {},
 ) {
   const base = await mkdtemp(join(tmpdir(), "rig-battle-")),
@@ -62,6 +64,7 @@ export async function rigFixture(
   const environment = {
     ...process.env,
     ...(options.PATH === undefined ? {} : { PATH: options.PATH }),
+    ...(options.HOME === undefined ? {} : { HOME: options.HOME }),
     RIG_ROOT: root,
   };
   const commands = options.commands ?? {

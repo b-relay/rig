@@ -280,6 +280,19 @@ running a Target never read the recipe comment or the recipe catalog; only
 _Relationship_: Rig never regenerates or rewrites a generated Service. A newer
 recipe version is an informational notice, never a failing check.
 
+_Relationship_: A recipe version may carry a notice saying why a Service
+generated from it should move on (`convex@1` cannot pass the loopback check).
+`rig recipe generate`, `rig recipe diff`, `rig doctor` and `rig init` repeat
+it; it stays information.
+
+_Relationship_: A recipe version may also carry recipe files, such as the
+`scripts/rig-convex.ts` helper the Convex recipe's Service runs. `rig recipe
+generate` writes them into the Project directory, where the Project owns and
+commits them like the Service block, so they deploy with its checkout. Rig
+never overwrites one that differs; `rig recipe diff` compares the Project's
+copy with the bundled version's. `rigd` knows nothing of what a recipe file
+does.
+
 ### Target role
 
 The role of a Target: Working copy, Stable, or Preview. Project config keys

@@ -20,6 +20,7 @@ import type {
 import type { CommandRunner } from "../providers/contracts";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
+import { readProjectFile } from "./project-files";
 import { renameRigRemote } from "../git/remotes";
 import {
   createProjectDiscovery,
@@ -66,6 +67,7 @@ export function createProjectDocuments(
       return { ...found, gitRequired: location.gitRequired };
     },
     read: readProjectConfig,
+    readProjectFile,
     resolve: (input) => resolveTargetPlan(input, host),
     upgrade: (repoPath, options) =>
       upgradeProjectConfig({ repoPath, ...options }),

@@ -10,6 +10,7 @@ import type {
   ServiceRun,
   TargetRecord,
 } from "../domain/runtime";
+import { recoveredByDownFirst } from "../domain/errors";
 import { composeAlert, recoverCommand } from "./alert-messages";
 import { currentRun } from "./supervision";
 
@@ -222,7 +223,17 @@ export function stableTargetCondition(input: {
       reason: component.reason ?? briefReason(component, runs[index]),
     })),
     ...(unpublishedRoute ? { unpublishedRoute } : {}),
-    recover: recoverCommand(identity),
+    recover: recoverCommand(
+      identity,
+      runs.some(
+        (run) =>
+          run?.outcome &&
+          "errorCode" in run.outcome &&
+          recoveredByDownFirst(run.outcome.errorCode),
+      )
+        ? "down"
+        : undefined,
+    ),
   };
 }
 

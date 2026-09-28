@@ -199,6 +199,7 @@ async function fixture() {
     host,
     processes,
     refusal,
+    lifecycle: deps.lifecycle,
     delay,
     store,
     /** What the running daemon shows its operator alert monitor as in flight. */
@@ -546,6 +547,39 @@ test("a Stable Target that fails to come back after a reboot keeps a failed stat
     expect(status[service]).toMatchObject({ state: "failed" });
     expect(String(status[service]!.reason)).toContain("The last start failed");
   }
+  await f.command({ action: "up", project: "demo", target: "live" });
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+});
+
+test("a Stable Target whose start after a reboot finds an unfinished effect transaction names rig down, then rig up, as its recovery", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  // A crash mid-start left the Stable Target's effect transaction unfinished.
+  const live = (await f.store.read()).targets.find((t) => t.kind === "live")!;
+  await f.lifecycle.checkpoint(live);
+  f.reopen();
+  await f.reconcile();
+
+  expect(await f.running("live")).toEqual([]);
+  const entries = (await f.store.read()).activity.slice(before);
+  const failed = entries.find((entry) => entry.action === "up")!;
+  expect(failed).toMatchObject({ outcome: "failed", target: "live" });
+  expect(failed.message).toContain("EFFECTS_RECOVERY");
+  expect(failed.message).toContain("Run rig down live, then rig up live");
+  const status = await f.status("live");
+  for (const service of ["api", "db", "worker"])
+    expect(String(status[service]!.reason)).toContain(
+      "Run rig down, then rig up to start it again.",
+    );
+  f.clock.ms += ALERT_GRACE_MS + 60_000;
+  const [alert] = await f.evaluateAlerts();
+  expect(JSON.stringify(alert)).toContain(
+    "rig down live --project demo, then rig up live --project demo",
+  );
+
+  await f.command({ action: "down", project: "demo", target: "live" });
   await f.command({ action: "up", project: "demo", target: "live" });
   expect(await f.running("live")).toEqual(["api", "db", "worker"]);
 });

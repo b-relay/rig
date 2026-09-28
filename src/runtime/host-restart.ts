@@ -1,5 +1,5 @@
 import { recordActivity } from "../domain/activity";
-import { diagnosticErrorCode } from "../domain/errors";
+import { diagnosticErrorCode, recoveredByDownFirst } from "../domain/errors";
 import {
   hostRestartBetween,
   hostRestartText,
@@ -256,7 +256,11 @@ export async function startAfterHostRestart(
         action: "up",
         outcome: "failed",
         occurredAt: deps.now(),
-        message: `${target.name} could not be started again after ${after} (${errorCode}). Run rig up ${target.name} once the cause is fixed.`,
+        message: `${target.name} could not be started again after ${after} (${errorCode}). ${
+          recoveredByDownFirst(errorCode)
+            ? `Run rig down ${target.name}, then rig up ${target.name}.`
+            : `Run rig up ${target.name} once the cause is fixed.`
+        }`,
       });
     });
     return settled;

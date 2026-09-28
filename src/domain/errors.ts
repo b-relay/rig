@@ -294,6 +294,18 @@ export function diagnosticErrorCode(error: unknown): string {
   return "UNEXPECTED";
 }
 
+/** Codes of a failed start that `rig up` alone cannot get past: the start found an unfinished effect transaction, or its
+ * rollback could not be verified. `rig down` restores or verifies the Target first; `rig up` then starts it. */
+const RECOVERED_BY_DOWN_FIRST: ReadonlySet<string> = new Set([
+  "EFFECTS_RECOVERY",
+  "START_ROLLBACK_FAILED",
+]);
+
+/** Whether a start that failed with `errorCode` needs `rig down` before `rig up` can start the Target again. */
+export function recoveredByDownFirst(errorCode: string): boolean {
+  return RECOVERED_BY_DOWN_FIRST.has(errorCode);
+}
+
 function isDiagnosticCode(value: unknown): value is string {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(value);
 }

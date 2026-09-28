@@ -344,9 +344,10 @@ for (const [name, witness] of [
           code: "PROCESS_START_TIMEOUT",
         });
         const spawned = Number(await readFile(`${armed}.pid`, "utf8"));
-        pids.push(spawned);
         // What the wrapper spawned was never released to become the application, and ended with its wrapper.
         for (let i = 0; i < 100 && alive(spawned); i++) await Bun.sleep(10);
+        // Cleanup signals it only while it is known to run: a pid seen gone may belong to another process by then.
+        if (alive(spawned)) pids.push(spawned);
         expect(alive(spawned)).toBe(false);
         expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
         // So the retry is the one and only application.

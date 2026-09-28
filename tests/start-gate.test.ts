@@ -10,16 +10,25 @@ import {
   platformKill,
 } from "../src/providers/process-inspection";
 import { createProcessTiming } from "../src/providers/process-timing";
+import { createProcessIdentityReader } from "../src/providers/process-identity";
 
 const roots: string[] = [];
-const groups: number[] = [];
+/** Process groups a test started that may still run, with their leader's birth identity: cleanup never signals a reused id. */
+const groups: { pid: number; identity: string }[] = [];
+const identityOf = createProcessIdentityReader(runCommand);
+/** Records `pid`'s group for cleanup, while its leader still runs. */
+async function track(pid: number): Promise<void> {
+  const identity = await identityOf(pid);
+  if (identity) groups.push({ pid, identity });
+}
 afterEach(async () => {
   for (const group of groups.splice(0))
-    try {
-      process.kill(-group, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
+    if ((await identityOf(group.pid)) === group.identity)
+      try {
+        process.kill(-group.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -38,8 +47,13 @@ async function gone(pid: number): Promise<boolean> {
 const src = (path: string) => JSON.stringify(resolve("src/providers", path));
 
 /** A supervisor process that is killed by SIGKILL at its first identity read of another process: the moment it has spawned
- * a process and not yet leased it. It writes the pid it was asked about first, so the test can follow that process. */
-async function killedInSpawnWindow(root: string, command: readonly string[]) {
+ * a process and not yet leased it. It writes the pid it was asked about first, so the test can follow that process. With
+ * `captureCommand` it is rigd starting a capture wrapper, killed before it leased that wrapper. */
+async function killedInSpawnWindow(
+  root: string,
+  command: readonly string[],
+  captureCommand?: readonly string[],
+) {
   const spawned = join(root, "spawned.pid");
   const script = join(root, "supervisor.ts");
   await writeFile(
@@ -52,6 +66,7 @@ import {writeFileSync} from "node:fs";
 const platform = createProcessInspection({ run: runCommand, kill: platformKill });
 const supervisor = createChildSupervisor({
   stateRoot: ${JSON.stringify(root)},
+  ${captureCommand ? `captureCommand: ${JSON.stringify(captureCommand)},` : ""}
   timing: createProcessTiming(),
   processInspection: { ...platform, identity: async (pid) => {
     if (pid !== process.pid) {
@@ -92,10 +107,11 @@ test("a supervisor killed between spawning a process and leasing it leaves nothi
     "-c",
     `echo $$ >> ${starts}; exec sleep 30`,
   ]);
-  groups.push(spawned);
   expect(signal).toBe("SIGKILL");
   // The process the supervisor spawned waited to be released, and ended once its supervisor was gone.
-  expect(await gone(spawned)).toBe(true);
+  const ended = await gone(spawned);
+  if (!ended) await track(spawned);
+  expect(ended).toBe(true);
   expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
   // Nothing names it, and nothing needs to: a later supervisor starts the one and only copy.
   const later = createChildSupervisor({
@@ -117,7 +133,7 @@ test("a supervisor killed between spawning a process and leasing it leaves nothi
       logRoot: join(root, "logs"),
       incarnation: "start-2",
     });
-    groups.push(started.pid!);
+    await track(started.pid!);
     for (let i = 0; i < 100; i++) {
       if ((await readFile(starts, "utf8").catch(() => "")).trim()) break;
       await Bun.sleep(10);
@@ -128,6 +144,37 @@ test("a supervisor killed between spawning a process and leasing it leaves nothi
   } finally {
     await later.shutdown();
   }
+});
+
+test("rigd killed between spawning a capture wrapper and leasing it leaves nothing running: the wrapper never ran, nor its application", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-start-gate-"));
+  roots.push(root);
+  const starts = join(root, "starts");
+  const wrapper = join(root, "capture.ts");
+  await writeFile(
+    wrapper,
+    `import {runCapturedProcess} from ${src("captured-process.ts")}; process.exitCode = await runCapturedProcess(process.argv[2]!);`,
+  );
+  const { signal, spawned } = await killedInSpawnWindow(
+    root,
+    ["/bin/sh", "-c", `echo $$ >> ${starts}; exec sleep 30`],
+    [process.execPath, wrapper],
+  );
+  expect(signal).toBe("SIGKILL");
+  const ended = await gone(spawned);
+  if (!ended) await track(spawned);
+  expect(ended).toBe(true);
+  // The wrapper never ran: it wrote no status and started no application.
+  await Bun.sleep(200);
+  expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
+  const capture = join(
+    root,
+    "capture",
+    `${createHash("sha256").update("window").digest("hex")}.json`,
+  );
+  await expect(readFile(`${capture}.status.json`)).rejects.toMatchObject({
+    code: "ENOENT",
+  });
 });
 
 test("a started process keeps the pid and birth identity its lease recorded before it was released, and its own argv", async () => {
@@ -152,7 +199,7 @@ test("a started process keeps the pid and birth identity its lease recorded befo
       logRoot: root,
       incarnation: "start-1",
     });
-    groups.push(started.pid!);
+    await track(started.pid!);
     const lease = JSON.parse(
       await readFile(
         join(
@@ -259,8 +306,9 @@ test("a spawned process whose identity cannot be read is never released: the sta
     await expect(
       world.supervisor.ensureRunning(gatedRequest(root)),
     ).rejects.toMatchObject({ code: "PROCESS_START" });
-    groups.push(world.spawned);
-    expect(await gone(world.spawned)).toBe(true);
+    const ended = await gone(world.spawned);
+    if (!ended) await track(world.spawned);
+    expect(ended).toBe(true);
     expect(await readFile(join(root, "starts"), "utf8").catch(() => "")).toBe(
       "",
     );
@@ -295,7 +343,6 @@ test("a spawned process killed before its release never runs its command, and re
     await world.supervisor.ensureRunning(gatedRequest(root)).catch((error) => {
       expect(error).toMatchObject({ code: "PROCESS_START" });
     });
-    groups.push(world.spawned);
     expect(await readFile(join(root, "starts"), "utf8").catch(() => "")).toBe(
       "",
     );

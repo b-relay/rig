@@ -9,6 +9,7 @@ import { doctor, hostDoctor } from "./doctor";
 import { forgetProject, updateRegistration } from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
+import type { MutationInFlight } from "./alert-policy";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import {
   readActions,
@@ -99,6 +100,8 @@ export interface RigRuntime extends ProjectStatusReader {
   supervise(): Promise<SupervisionPass>;
   exclusive<T>(operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
+  /** The mutation executing now, as its command selected the Project and Target; absent while none is. */
+  mutation(): MutationInFlight | undefined;
 }
 const reads = readActions;
 /** What one serialized mutation looks like from outside while it runs. */
@@ -116,6 +119,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   // The mutation executing now and how many are queued behind it: the answer to
   // "what is holding the host" for a caller whose command has not returned.
   let running: RunningOperation | undefined;
+  let mutating: MutationInFlight | undefined;
   let waiting = 0;
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
@@ -144,11 +148,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       ...(command.target ? { target: command.target } : {}),
       startedAt: deps.now(),
     };
+    mutating = {
+      operationId,
+      action: command.action,
+      ...(command.project ? { project: command.project } : {}),
+      ...(command.repoPath ? { repoPath: command.repoPath } : {}),
+      ...(command.target ? { target: command.target } : {}),
+    };
     try {
       return await run(command, operationId);
     } finally {
       inFlight.delete(operationId);
       running = undefined;
+      mutating = undefined;
     }
   };
   const run = async (
@@ -387,6 +399,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               ? targetNames(selection.document!.config).stable
               : PREVIEW_SELECTOR,
         };
+        // The alert monitor sees the Target the push selected from here on: a Preview push leaves the Stable Target alone.
+        if (mutating?.operationId === operationId)
+          mutating = { ...mutating, target: command.target! };
       }
       if (
         command.action === "deploy" &&
@@ -424,6 +439,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         }
       })();
       const kind = selected.kind;
+      // The alert monitor sees which Target the command selected, by role, so a configured name that differs from the
+      // recorded one (mid-rename) still reads as the Stable Target.
+      if (mutating?.operationId === operationId)
+        mutating = { ...mutating, kind };
       const name = selected.name ?? command.target ?? "the Working copy";
       aimed = name;
       target =
@@ -759,6 +778,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   };
   return {
     status,
+    mutation: () => mutating,
     async drain() {
       draining = true;
       await queue.catch(() => {});

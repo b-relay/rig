@@ -1,4 +1,5 @@
 import type { TargetPlan } from "../config/types";
+import type { AlertState } from "./operator-alerts";
 
 export interface ProjectRecord {
   id: string;
@@ -138,6 +139,8 @@ export interface RuntimeState {
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
+  /** Stable Targets Rig counts as down and what the operator was alerted about; absent until the first alert evaluation. */
+  alerts?: AlertState;
 }
 
 export interface StateStore {

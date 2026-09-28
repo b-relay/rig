@@ -30,6 +30,9 @@ import {
   type InstallationRecord,
 } from "./installation";
 import { z } from "zod";
+import type { Downtime } from "../domain/operator-alerts";
+import { downtimeReport } from "../runtime/alert-messages";
+import { FileStateStore } from "../runtime/state-store";
 import {
   createAdminActivityJournal,
   type AdminActivityJournal,
@@ -47,6 +50,10 @@ export interface DaemonAdminOptions {
   activity?: AdminActivityJournal;
   /** Runs launchctl with the given arguments; defaults to /bin/launchctl. */
   launchctl?: LaunchctlRunner;
+  /** The Stable Targets rigd last counted as down; read from the runtime state under the root when absent. */
+  downtime?: () => Promise<Downtime[]>;
+  /** The clock downtime is measured against, ISO 8601; the system clock when absent. */
+  now?: () => string;
 }
 export type LaunchctlRunner = (
   args: readonly string[],
@@ -75,6 +82,26 @@ export interface DaemonStatus {
   /** The daemon this install stopped and replaced, when it was of another version or command. */
   replaced?: { pid: number; version?: string };
   warnings?: string[];
+  /** Each Stable Target rigd counts as down and how long it has been down; absent when none is or rigd is not reachable. */
+  down?: Downtime[];
+}
+/** How long each Stable Target recorded as down under `root` has been down at `now`. */
+export async function recordedDowntime(
+  root: string,
+  now: () => string,
+): Promise<Downtime[]> {
+  return downtimeReport((await new FileStateStore(root).read()).alerts, now());
+}
+/** `status` with how long each Stable Target rigd counts as down has been down, while rigd is reachable. An unreachable rigd
+ * counts nothing, so what it last recorded would read as downtime still growing; runtime state that cannot be read leaves
+ * the downtime out as well, and rig doctor reports that state. */
+export async function withDowntime(
+  status: DaemonStatus,
+  downtime: () => Promise<Downtime[]>,
+): Promise<DaemonStatus> {
+  if (!status.reachable) return status;
+  const down = await downtime().catch(() => []);
+  return down.length ? { ...status, down } : status;
 }
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const xml = (s: string) =>
@@ -98,8 +125,19 @@ export class DaemonAdmin {
         id: randomUUID,
       });
   }
+  /** Installation, process and reachability, and, while rigd is reachable, how long each Stable Target it counts as down
+   * has been down. */
   async status(): Promise<DaemonStatus> {
-    return (await this.inspect()).status;
+    const { status } = await this.inspect();
+    return withDowntime(
+      status,
+      this.options.downtime ??
+        (() =>
+          recordedDowntime(
+            this.options.root,
+            this.options.now ?? (() => new Date().toISOString()),
+          )),
+    );
   }
   /** Status plus what a caller acting on it needs: the ownership records and
    * the hint for records whose pid is alive but cannot be verified as rigd. */
@@ -624,6 +662,8 @@ export class DaemonAdmin {
       ...inheritedEnvironment(process.env),
       RIG_ROOT: this.options.root,
       RIG_DAEMON_CHILD: "1",
+      // The daemon's own defaults differ by install mode: a process-mode rigd posts no macOS notification unless asked.
+      RIG_DAEMON_MODE: this.options.mode,
     };
   }
   private async launchctl(args: string[]): Promise<void> {

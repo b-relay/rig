@@ -58,6 +58,9 @@ function world(
   let preparing: Promise<void> | undefined;
   /** The next start of this Service fails, as a broken release does. */
   const failing = new Set<string>();
+  /** The next start of this Service never confirms it started: the supervisor stops what it spawned, held like any stop
+   * until the test ends it, then fails the start. */
+  const unconfirmed = new Set<string>();
   const effects: TargetEffects = {
     async checkpoint(target) {
       return { targetId: target.id, async commit() {}, async rollback() {} };
@@ -101,7 +104,29 @@ function world(
           });
         });
       },
-      async ensureRunning(request) {
+      async ensureRunning(request, control) {
+        const silent = [...unconfirmed].find((name) =>
+          request.key.endsWith(`:${name}`),
+        );
+        if (silent) {
+          unconfirmed.delete(silent);
+          const graceMs = request.stopGraceMs!;
+          control?.observer?.stopping(graceMs);
+          const ended = await new Promise<StopResult>((resolve) =>
+            held.push({
+              key: request.key,
+              request: {
+                graceMs,
+                ...(control?.kill ? { kill: control.kill } : {}),
+              },
+              exit: (killed) =>
+                resolve({ outcome: "stopped", ...(killed ? { killed } : {}) }),
+              fail: () => resolve({ outcome: "stopped" }),
+            }),
+          );
+          control?.observer?.stopped(ended);
+          throw new Error("the Service never confirmed it started");
+        }
         const broken = [...failing].find((name) =>
           request.key.endsWith(`:${name}`),
         );
@@ -279,6 +304,7 @@ function world(
     stops,
     running,
     failing,
+    unconfirmed,
     stopOf,
     hold: (on = true) => {
       holding = on;
@@ -570,6 +596,45 @@ test("a deploy rollback and the failed start before it each stop within the Serv
       ["web", 120_000],
     ],
   );
+});
+
+test("a start that never confirmed it started is stopped within the Service's stop_timeout, shown stopping on the Operation, and rig down --kill cuts it short", async () => {
+  const w = await registered();
+  w.unconfirmed.add("worker");
+  const up = w.command({ action: "up", target: "local", operationId: "up-1" });
+  const worker = await w.stopOf("worker");
+  expect(worker.request.graceMs).toBe(25 * 60_000);
+  expect(worker.request.kill?.aborted).toBe(false);
+  expect((await w.queue("up-1")).operation).toMatchObject({
+    phase: "stopping",
+    stops: [
+      {
+        service: "worker",
+        target: "local",
+        state: "stopping",
+        killAt: "2026-09-27T04:25:00.000Z",
+      },
+    ],
+  });
+  const kill = w.command({
+    action: "down",
+    target: "local",
+    kill: true,
+    operationId: "down-kill",
+  });
+  for (let i = 0; i < 100 && !worker.request.kill?.aborted; i++)
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  expect(worker.request.kill?.aborted).toBe(true);
+  worker.exit("request");
+  await expect(up).rejects.toThrow("never confirmed it started");
+  await kill;
+  expect(
+    w.state.activity.find(
+      (entry) => entry.action === "up" && entry.outcome === "failed",
+    ),
+  ).toMatchObject({
+    message: expect.stringContaining("worker was killed by --kill (SIGKILL)"),
+  });
 });
 
 test("a Preview destroy waits for the Preview's stop_timeout before its storage is deleted", async () => {

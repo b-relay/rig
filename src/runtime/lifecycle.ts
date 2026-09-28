@@ -373,7 +373,14 @@ export function createTargetLifecycle(
               verified.add(component.name);
             continue;
           }
-          await startService(target, component, supervisor, journal, started);
+          await startService(
+            target,
+            component,
+            supervisor,
+            journal,
+            started,
+            stops,
+          );
           verified.add(component.name);
         }
         // A path an earlier failed start left withheld is released only by that Service passing the gate itself.
@@ -467,7 +474,14 @@ export function createTargetLifecycle(
         const unverified = routedServices(target, (name) => name === service);
         if (unverified.size)
           await effects.route(target, { withhold: unverified });
-        await startService(target, component, supervisor, tracked, started);
+        await startService(
+          target,
+          component,
+          supervisor,
+          tracked,
+          started,
+          stops,
+        );
         await effects.route(target, {
           verified: new Set([service, ...component.dependsOn]),
         });
@@ -565,13 +579,15 @@ export function createTargetLifecycle(
     }
   }
   /** One Service start: approval, spawn with a fresh environment, readiness, report. `started` gains the process key
-   * as soon as a process was spawned, so the caller can stop it when a later step fails. */
+   * as soon as a process was spawned, so the caller can stop it when a later step fails. A spawn that never confirmed it
+   * started is stopped by the supervisor itself, under `stops` like the caller's own stops. */
   async function startService(
     target: TargetRecord,
     component: ManagedComponent,
     supervisor: Supervisor,
     journal: ActivationJournal | undefined,
     started: string[],
+    stops: StopControl = {},
   ): Promise<void> {
     const key = `${target.id}:${component.name}`;
     // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
@@ -579,16 +595,28 @@ export function createTargetLifecycle(
     const incarnation = journal
       ? await journal.starting(component.name)
       : randomUUID();
-    const result = await supervisor.ensureRunning({
-      key,
-      componentName: component.name,
-      command: ["/bin/sh", "-c", component.command],
-      cwd: target.plan.workspacePath,
-      env,
-      logRoot: target.logRoot,
-      incarnation,
-      stopGraceMs: serviceGraceMs(component.stopTimeout),
-    });
+    const kill = stops.kill?.(target);
+    const result = await supervisor.ensureRunning(
+      {
+        key,
+        componentName: component.name,
+        command: ["/bin/sh", "-c", component.command],
+        cwd: target.plan.workspacePath,
+        env,
+        logRoot: target.logRoot,
+        incarnation,
+        stopGraceMs: serviceGraceMs(component.stopTimeout),
+      },
+      {
+        ...(kill ? { kill } : {}),
+        observer: {
+          stopping: (graceMs) =>
+            stops.observer?.stopping(target, component.name, graceMs),
+          stopped: (ended) =>
+            stops.observer?.stopped(target, component.name, ended),
+        },
+      },
+    );
     if (result.outcome === "started") started.push(key);
     const process = { observe: () => supervisor.observe(key) };
     if (!hasReadiness(component))

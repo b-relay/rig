@@ -31,6 +31,19 @@ export interface StopResult {
   readonly killed?: StopKill;
 }
 export type StopKill = "timeout" | "request";
+/** How a start that fails after it spawned its process stops that process, and who hears about it. A supervisor stops what
+ * a failed start spawned within the start's grace, like any stop, before the start fails. */
+export interface StartControl {
+  /** Aborted before or during that stop, it cuts the rest of the grace to the kill wait: `rig down --kill`. */
+  readonly kill?: AbortSignal;
+  /** Hears that stop begin, with the grace it waits, and end, so the Operation can show it as stopping. */
+  readonly observer?: StartCleanupObserver;
+}
+export interface StartCleanupObserver {
+  stopping(graceMs: number): void;
+  /** How the stop ended; `failed` when it could not finish, STOP_DETACHED included. */
+  stopped(ended: StopResult | { readonly outcome: "failed" }): void;
+}
 /** A supervisor starts a process once and never starts it again on its own: whether an exit is retried is the runtime's decision.
  * `stopped` means no process of the start runs any more: under a capture wrapper, neither the wrapper nor the application it
  * last reported; one that may still run is `unknown`. A stopped observation with `exitCode` or `signal` is recorded evidence of
@@ -55,8 +68,11 @@ export type ExitWitness = "launchd" | "rigd";
 export type HealthCheck =
   { readonly ready: true } | { readonly ready: false; readonly reason: string };
 export interface Supervisor {
+  /** Starts `request` unless it runs. A start that fails after it spawned something stops that first, as `control` says;
+   * it fails STOP_DETACHED instead when rigd's shutdown ends that stop's wait, and the process finishes stopping on its own. */
   ensureRunning(
     request: ManagedProcess,
+    control?: StartControl,
   ): Promise<{ outcome: "started" | "unchanged"; pid?: number }>;
   /** SIGTERM, then SIGKILL once the request's grace has passed (sooner after a kill: once the kill wait has). Fails
    * STOP_DETACHED when `detach` aborts first. */

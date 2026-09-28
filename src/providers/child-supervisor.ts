@@ -19,6 +19,7 @@ import { RigError, failureReason } from "../domain/errors";
 import type {
   ManagedProcess,
   ProcessObservation,
+  StartControl,
   StopKill,
   StopRequest,
   StopResult,
@@ -56,6 +57,7 @@ import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
 import { findsExecutable, gatedCommand, releaseGate } from "./start-gate";
+import { ownStopsDetach, stopFailedStart } from "./start-cleanup";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
@@ -87,6 +89,9 @@ export interface ChildSupervisorOptions {
   /** Process identity, group presence, and signals; the owner passes the platform's or a scripted one. */
   readonly processInspection: ProcessInspection;
   readonly captureCommand?: readonly string[];
+  /** Aborted by the owner as rigd begins to shut down, before it drains: a stop this supervisor makes on its own (what a
+   * failed start spawned) stops waiting then, as `detach` makes it, and the process finishes stopping on its own. */
+  readonly shutdown?: AbortSignal;
 }
 /** Daemon-owned groups have identity-checked leases; stop never trusts an unverified recovered PID.
  * A process is started once and never respawned here. Whoever holds the application's child handle records its exit:
@@ -97,6 +102,8 @@ export function createChildSupervisor(
   const processes = new Map<string, OwnedProcess>();
   /** Aborted by `detach`: the stops this supervisor makes on its own stop waiting, as the runtime's do on shutdown. */
   const detaching = new AbortController();
+  /** What the stops this supervisor makes on its own detach on: `detach`, or the owner's shutdown, whichever comes first. */
+  const ownStops = ownStopsDetach(detaching.signal, options.shutdown);
   const operations = new Map<string, Promise<unknown>>();
   const timing = options.timing;
   const now = timing.now;
@@ -387,6 +394,7 @@ export function createChildSupervisor(
   }
   async function ensureRunning(
     request: ManagedProcess,
+    control: StartControl,
   ): Promise<{ outcome: "started" | "unchanged"; pid?: number }> {
     const observed = await observe(request.key);
     if (observed.state === "running")
@@ -401,7 +409,7 @@ export function createChildSupervisor(
     if (processes.has(request.key))
       await stop(request.key, {
         graceMs: graceOf(request),
-        detach: detaching.signal,
+        detach: ownStops,
       });
     if (!request.command.length)
       throw new RigError(
@@ -548,17 +556,19 @@ export function createChildSupervisor(
           wait: (ms) => timing.wait(ms),
         });
     } catch (error) {
-      await stop(request.key, {
-        graceMs: graceOf(request),
-        detach: detaching.signal,
-      });
+      await stopFailedStart(
+        (stopRequest) => stop(request.key, stopRequest),
+        graceOf(request),
+        control,
+        ownStops,
+      );
       throw error;
     }
     return { outcome: "started", pid: child.pid };
   }
   return {
-    ensureRunning: (request) =>
-      serialized(request.key, () => ensureRunning(request)),
+    ensureRunning: (request, control = {}) =>
+      serialized(request.key, () => ensureRunning(request, control)),
     observe,
     stop: (key, request) => serialized(key, () => stop(key, request)),
     async shutdown() {

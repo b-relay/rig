@@ -71,11 +71,34 @@ test("a restart found earlier and not finished is the same one while nothing cha
   expect([
     ...findHostRestart(reboot, { boot: "NEW-BOOT" }).settled,
   ]).toEqual(["t1"]);
-  // Found with only the login readable; read again with the new boot too: the same event keeps its kind.
+  // A new login found while the boot could not be read keeps the boot known before it: read again in that boot it is the
+  // same restart; read in another boot it may be a reboot since (the audit session number repeats across boots), so it
+  // is one, rather than leaving the Stable Targets it stopped down.
   const login = host({ kind: "login", login: "100019" });
   expect(
-    findHostRestart(login, { boot: "NEW-BOOT", login: "100019" }),
+    findHostRestart(login, { boot: BOOT, login: "100019" }),
   ).toMatchObject({ restart: "login", announced: true });
+  expect(
+    findHostRestart(login, { boot: "NEW-BOOT", login: "100019" }),
+  ).toMatchObject({
+    restart: "reboot",
+    announced: false,
+    session: { boot: "NEW-BOOT", login: "100019" },
+  });
+  // A reboot ends every login: a login from before it is never carried across it.
+  expect(
+    findHostRestart(
+      { host: { ...recorded, seenAt: "2026-09-27T08:00:00.000Z" } },
+      { boot: "NEW-BOOT" },
+    ).session,
+  ).toEqual({ boot: "NEW-BOOT" });
+  // A pending restart whose entry could not be written yet is found again unannounced, with what it settled.
+  expect(
+    findHostRestart(
+      host({ kind: "reboot", boot: "NEW-BOOT", settled: ["t1"], unannounced: true }),
+      { boot: "NEW-BOOT" },
+    ),
+  ).toMatchObject({ restart: "reboot", announced: false });
   // A logout and login since the pending reboot is a new restart, announced, with nothing settled.
   const later = findHostRestart(
     host({ kind: "reboot", boot: "NEW-BOOT", login: "100019", settled: ["t1"] }),

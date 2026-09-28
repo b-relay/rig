@@ -155,6 +155,8 @@ export interface RuntimeState {
       /** The Stable Targets already started again (or whose start failed) for this restart; a daemon that finds the
        * restart again does not start them a second time. */
       settled?: string[];
+      /** The restart's Activity entry is not written yet; the daemon that finds it again writes it. */
+      unannounced?: true;
     };
   };
 }

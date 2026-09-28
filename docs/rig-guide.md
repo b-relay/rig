@@ -1195,12 +1195,15 @@ no session yet. A new boot is detected only when both boots could be read, and
 a new login only when both login sessions could be (there is none to read
 without a GUI login, over SSH only, say). A start that finds no restart but
 could not read part of the session keeps the earlier record, so a reboot it
-could not see yet is found at the next start. `rigd` records the session only
+could not see yet is found at the next start. After a restart, a field the
+read missed is kept from what was known before, except that a reboot ends
+every login session, so no login is kept across one. `rigd` records the session only
 once it has acted on the restart for every Target, so a daemon that stops or
 is asked to stop halfway keeps it pending: the next start finishes it (even if
 it can read nothing of the session) without recording it in Activity a second
 time and without starting (or retrying) a Stable Target it already started, or
-failed to start, for that restart. Only a session that changed since the
+failed to start, for that restart. A restart whose Activity entry could not be
+written yet is recorded by the start that finishes it. Only a session that changed since the
 pending restart was found, such as a logout and login after it, is a new
 restart.
 

@@ -616,6 +616,44 @@ test("a restart whose Activity entry could not be written at first is recorded o
   ]);
 });
 
+test("a daemon that never managed to write a restart's entry leaves its Stable starts noted, so the next one announces the restart once and starts nothing again", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const update = f.store.update.bind(f.store);
+  let refuse = true;
+  f.store.update = (change) =>
+    update(async (state) => {
+      await change(state);
+      if (
+        refuse &&
+        state.activity.some((entry) => entry.action === "host-restart")
+      )
+        throw new Error("disk full");
+    });
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect((await f.store.read()).host).toMatchObject({
+    boot: "BOOT-1",
+    restart: { kind: "reboot", unannounced: true },
+  });
+
+  refuse = false;
+  const startsBefore = f.starts.length;
+  f.reopen();
+  await f.reconcile();
+  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.activitySince(before)).toEqual([
+    "up/started live",
+    "host-restart/stopped -",
+  ]);
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-2", login: "100002" });
+  expect(host.restart).toBeUndefined();
+});
+
 test("a logout and login after a reboot the first pass did not finish is a restart of its own: the Stable Target is started again", async () => {
   const f = await fixture();
   await f.startAll();

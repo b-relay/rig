@@ -362,6 +362,12 @@ export const runtimeStateSchema = z
               .describe(
                 "The Stable Targets (by id) already started again, or whose start failed, for this restart; a daemon that finds the restart again does not start them a second time.",
               ),
+            unannounced: z
+              .literal(true)
+              .optional()
+              .describe(
+                "The restart's Activity entry could not be written yet; the daemon that finds the restart again writes it.",
+              ),
           })
           .optional()
           .describe(

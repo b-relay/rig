@@ -49,9 +49,11 @@ import {
 import {
   findHostRestart,
   recordHostRestart,
+  restartMark,
   saveHostSession,
   startAfterHostRestart,
   type HostSessionFinding,
+  type RestartMark,
 } from "./host-restart";
 import type { HostRestart } from "../domain/host-session";
 import type { RuntimeDependencies } from "./contracts";
@@ -1226,6 +1228,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             draining ? undefined : locks.tryAcquire(part.id, part.scopes),
           );
       const restart = finding?.restart;
+      const mark =
+        finding?.restart !== undefined
+          ? restartMark({ ...finding, restart: finding.restart })
+          : undefined;
       // A drain may already have begun: a Target skipped for it is not settled, so the restart is found again.
       expected = eligible.map((target) => target.id);
       jobs = eligible.flatMap((target, index) => {
@@ -1240,6 +1246,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
                 restart,
                 settled,
                 finding?.settled,
+                mark,
               ),
             ]
           : [];
@@ -1323,6 +1330,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     settled?: Set<string>,
     /** Stable Targets an earlier daemon already started again (or failed to) for this same restart. */
     startedBefore?: ReadonlySet<string>,
+    /** The restart a Stable Target's start is noted in. */
+    mark?: RestartMark,
   ): Promise<number | undefined> {
     const entry: Running = {
       view: {
@@ -1353,9 +1362,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
       if (target.desired === "running") {
-        if (restart && target.kind === "live" && !startedBefore?.has(targetId)) {
+        if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
-          if (await startAfterHostRestart(target, restart, deps))
+          if (await startAfterHostRestart(target, mark, deps))
             settled?.add(targetId);
           return undefined;
         }

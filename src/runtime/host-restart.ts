@@ -26,48 +26,87 @@ export interface HostSessionFinding {
   announced: boolean;
   /** The Stable Targets an earlier daemon already started again, or whose start failed, for this same restart. */
   settled: ReadonlySet<string>;
+  /** How the pending restart is identified in state: as an earlier daemon found it, or as found now. */
+  mark?: RestartMark;
   session: HostSession;
   record: boolean;
 }
 
-/** Compares the session read now with the one `state` records. A restart an earlier daemon found and recorded in Activity,
- * but did not finish acting on, stays the restart to act on unless the session read now shows a change since it was found:
- * it keeps its kind, its settled Targets and is not announced again, whatever more or less of the session each read could
- * see (nothing at all included). A change since it was found is a new restart of its own. The session recorded once a
- * restart is acted on fills what the read now missed from the last one known (the pending restart's, else the recorded
- * one), so a field that could not be read this once never erases what the next restart is told by. */
+/** Compares the session read now with what rigd knows of it. Without a pending restart that is the recorded session. A
+ * restart an earlier daemon found but did not finish acting on is pending; what rigd knew when it found it is the recorded
+ * session carried across that restart (see `across`). The pending restart stays the one to act on (its kind, its settled
+ * Targets, announced or not) unless the read now shows a change since; a change is a new restart of its own. The session
+ * recorded once a restart is acted on keeps, where the read now missed a field, what is still known of it. */
 export function findHostRestart(
   state: Pick<RuntimeState, "host">,
   current: HostSession,
 ): HostSessionFinding {
   const pending = state.host?.restart;
-  const known = (session: Pick<HostSession, "boot" | "login"> | undefined) => ({
-    ...(session?.boot === undefined ? {} : { boot: session.boot }),
-    ...(session?.login === undefined ? {} : { login: session.login }),
-  });
-  const filled: HostSession = {
-    ...known(state.host),
-    ...known(pending),
-    ...definedFields(current),
-  };
-  if (pending) {
-    const since = hostRestartBetween(pending, current);
+  const recorded = known(state.host);
+  const baseline = pending
+    ? across(recorded, pending.kind, known(pending))
+    : recorded;
+  const since = hostRestartBetween(
+    pending ? baseline : state.host,
+    current,
+  );
+  if (pending && since === undefined) {
+    const session = across(baseline, undefined, current);
     return {
-      restart: since ?? pending.kind,
-      announced: since === undefined,
-      settled: new Set(since === undefined ? (pending.settled ?? []) : []),
-      session: filled,
-      record: identified(filled),
+      restart: pending.kind,
+      announced: pending.unannounced !== true,
+      settled: new Set(pending.settled ?? []),
+      mark: { kind: pending.kind, ...known(pending) },
+      session,
+      record: identified(session),
     };
   }
-  const restart = hostRestartBetween(state.host, current);
+  if (since) {
+    const session = across(baseline, since, current);
+    return {
+      restart: since,
+      announced: false,
+      settled: new Set(),
+      mark: { kind: since, ...known(session) },
+      session,
+      record: identified(session),
+    };
+  }
   return {
-    ...(restart ? { restart } : {}),
     announced: false,
     settled: new Set(),
-    session: restart ? filled : current,
-    record: restart ? identified(filled) : mayReplace(state.host, current),
+    session: current,
+    record: mayReplace(state.host, current),
   };
+}
+
+/** The boot and login of `session` that were read. */
+function known(
+  session: Pick<HostSession, "boot" | "login"> | undefined,
+): Pick<HostSession, "boot" | "login"> {
+  return {
+    ...(session?.boot === undefined ? {} : { boot: session.boot }),
+    ...(session?.login === undefined ? {} : { login: session.login }),
+  };
+}
+
+/** What is known of the session after `restart`, from what was known `before` it and what was read `after` it. A reboot
+ * ends every login session, so nothing from before it is kept; a new login keeps the boot; no restart keeps both. A field
+ * read after always wins. */
+function across(
+  before: Pick<HostSession, "boot" | "login">,
+  restart: HostRestart | undefined,
+  after: HostSession,
+): HostSession {
+  const kept =
+    restart === "reboot"
+      ? {}
+      : restart === "login"
+        ? before.boot === undefined
+          ? {}
+          : { boot: before.boot }
+        : before;
+  return { ...kept, ...definedFields(after) };
 }
 
 /** The fields of `session` that were read. */
@@ -78,7 +117,7 @@ function definedFields(session: HostSession): HostSession {
 }
 
 /** Records the one Activity entry for a detected Host restart, and, in the same write, that rigd is acting on it, with
- * the Targets already `settled` for it when the entry is written late. */
+ * the Targets already `settled` for it when the entry is written late (together with any a Target's own write noted). */
 export async function recordHostRestart(
   finding: HostSessionFinding & { restart: HostRestart },
   deps: Deps,
@@ -89,7 +128,7 @@ export async function recordHostRestart(
       ? ` (booted ${finding.session.bootedAt})`
       : "";
   const what = hostRestartText(finding.restart);
-  const { boot, login } = finding.session;
+  const mark = restartMark(finding);
   await deps.store.update((state) => {
     recordActivity(state, {
       id: deps.id(),
@@ -100,19 +139,62 @@ export async function recordHostRestart(
     });
     if (state.host)
       state.host.restart = {
-        kind: finding.restart,
-        ...(boot === undefined ? {} : { boot }),
-        ...(login === undefined ? {} : { login }),
-        settled: [...settled],
+        ...mark,
+        settled: [
+          ...new Set([
+            ...finding.settled,
+            // A Stable Target's own write may have noted it in this restart already.
+            ...(sameMark(state.host.restart, mark)
+              ? (state.host.restart?.settled ?? [])
+              : []),
+            ...settled,
+          ]),
+        ],
       };
   });
 }
 
-/** Notes in the pending restart that `targetId`, a Stable Target, was started again or failed to start for it. */
-function markSettled(state: RuntimeState, targetId: string): void {
-  const pending = state.host?.restart;
-  if (pending && !pending.settled?.includes(targetId))
+/** The pending restart a Stable Target's start is noted in: its kind and the boot and login it was found with. */
+export type RestartMark = { kind: HostRestart } & Pick<
+  HostSession,
+  "boot" | "login"
+>;
+
+/** The mark of the restart `finding` found. */
+export function restartMark(
+  finding: HostSessionFinding & { restart: HostRestart },
+): RestartMark {
+  return finding.mark ?? { kind: finding.restart, ...known(finding.session) };
+}
+
+/** Whether the pending restart in state is the one `mark` identifies. */
+function sameMark(
+  pending: RestartMark | undefined,
+  mark: RestartMark,
+): boolean {
+  return (
+    pending !== undefined &&
+    pending.kind === mark.kind &&
+    pending.boot === mark.boot &&
+    pending.login === mark.login
+  );
+}
+
+/** Notes in the pending restart that `targetId`, a Stable Target, was started again or failed to start for it. When the
+ * restart's own entry could not be written, the note starts the pending restart, marked unannounced, so a daemon that
+ * finds it again neither starts the Target again nor forgets to announce it. */
+function markSettled(
+  state: RuntimeState,
+  targetId: string,
+  mark: RestartMark,
+): void {
+  if (!state.host) return;
+  const pending = sameMark(state.host.restart, mark)
+    ? state.host.restart!
+    : { ...mark, settled: [], unannounced: true as const };
+  if (!pending.settled?.includes(targetId))
     pending.settled = [...(pending.settled ?? []), targetId];
+  state.host.restart = pending;
 }
 
 /** Records `session` as the one rigd has acted on, so its next start compares against it; it replaces any pending restart. */
@@ -133,7 +215,7 @@ export async function saveHostSession(
  * started, so the restart is acted on again. */
 export async function startAfterHostRestart(
   target: TargetRecord,
-  restart: HostRestart,
+  mark: RestartMark,
   deps: Pick<
     RuntimeDependencies,
     | "store"
@@ -146,6 +228,7 @@ export async function startAfterHostRestart(
     | "observationDeadline"
   >,
 ): Promise<boolean> {
+  const restart = mark.kind;
   const journal = activationJournal(target, "explicit", deps, {
     afterHostRestart: restart,
   });
@@ -167,7 +250,7 @@ export async function startAfterHostRestart(
       })
       .catch(() => {});
     await deps.store.update((state) => {
-      if (settled) markSettled(state, target.id);
+      if (settled) markSettled(state, target.id, mark);
       recordActivity(state, {
         id: deps.id(),
         projectId: target.projectId,
@@ -189,7 +272,7 @@ export async function startAfterHostRestart(
   await deps.store.update((state) => {
     const index = state.targets.findIndex((t) => t.id === target.id);
     if (index !== -1) state.targets[index] = target;
-    markSettled(state, target.id);
+    markSettled(state, target.id, mark);
     recordActivity(state, {
       id: deps.id(),
       projectId: target.projectId,

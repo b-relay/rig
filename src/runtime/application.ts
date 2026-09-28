@@ -68,6 +68,7 @@ import {
 import { persistTarget, planTarget, selectTarget } from "./targets";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
 import { assertSourceBuildsKnown, withStops } from "./lifecycle";
+import { isStopDetached } from "../domain/stop-budget";
 import {
   activeStops,
   killSignal,
@@ -1054,7 +1055,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             .outcome;
         } catch (error) {
           // The rolled-back Services are recorded as not started; failing to say so leaves their outcome unknown, never retried.
-          await journal.failed(error).catch(() => {});
+          // A start whose clean-up rigd's shutdown detached rolled nothing back: its Services are left as a crash leaves them.
+          if (!isStopDetached(error))
+            await journal.failed(error).catch(() => {});
           throw error;
         }
         intendRunning(target);

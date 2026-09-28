@@ -112,7 +112,8 @@ their callers, and only then closes what is still open, such as a log follow.
 A command sent after the stop began, or one still waiting behind another
 operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
 A stop signal never waits out a Service's `stop_timeout`, which may be an hour:
-a command waiting for a Service to exit stops waiting and fails `STOP_DETACHED`,
+a command waiting for a Service to exit (the stop of a start that never
+confirmed it started included) stops waiting and fails `STOP_DETACHED`,
 and the Service keeps stopping on its own (its capture wrapper, or launchd,
 still enforces the grace and the SIGKILL after it). A daemon killed while an
 operation waits for a Service to exit leaves that Service stopping the same way.
@@ -1104,7 +1105,9 @@ A Service is a long-running process Rig starts and supervises. Its fields:
   (SIGTERM) before Rig ends it with SIGKILL, from `1s` to `1h` (default `10s`).
   It is the time after the signal, not a total. Every stop honours it: `rig
 down`, `rig restart`, a deploy that replaces or rolls back the Target, a
-  Preview destroy, the stop of a failed start, and `rigd` re-stopping a Target
+  Preview destroy, the stop of a failed start (a Service whose capture
+  wrapper never confirmed it started included: the start fails only once
+  that Service has stopped), and `rigd` re-stopping a Target
   at startup. A role patch may set it (`targets.stable.services.worker.stop_timeout`).
   Rig waits for SIGKILL's kill wait (1.5 s) on top. A Service that exits within
   its grace is a requested stop; one that needs SIGKILL is recorded as

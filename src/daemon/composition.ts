@@ -70,6 +70,9 @@ export async function composeDaemon(
     now: () => new Date(),
     ...host.diagnostics,
   });
+  /** Aborted as the runtime begins to drain for shutdown: the stop a supervisor makes on its own (of what a start that never
+   * reported left behind) stops waiting then, instead of holding the drain for the Service's whole grace. */
+  const shuttingDown = new AbortController();
   // The daemon owns the platform clock, command runner, and signal path; every supervisor receives them explicitly.
   const processInspection = createProcessInspection({
     run: runCommand,
@@ -80,6 +83,7 @@ export async function composeDaemon(
     captureCommand,
     timing: createProcessTiming(),
     processInspection,
+    shutdown: shuttingDown.signal,
   });
   const uid = process.getuid?.() ?? 501;
   const launchd = createLaunchdSupervisor({
@@ -91,6 +95,7 @@ export async function composeDaemon(
     inspect: processInspection.identity,
     groupExists: processInspection.groupExists,
     timing: createLaunchdTiming(),
+    shutdown: shuttingDown.signal,
   });
   const supervisors = new Map<string, Supervisor>([
     ["rigd", child],
@@ -223,6 +228,8 @@ export async function composeDaemon(
       stopMonitor?.();
       // An alert evaluation in flight finishes and saves what it delivered, so the next rigd does not deliver it again.
       await stopAlerts?.();
+      // With the runtime's own stops, which its drain detaches as it begins.
+      shuttingDown.abort();
       await runtime.drain();
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();

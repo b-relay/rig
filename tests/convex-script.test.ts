@@ -66,7 +66,14 @@ async function project() {
       },
     );
     cleanups.push(async () => {
-      child.kill("SIGKILL");
+      // SIGTERM first, so the script stops its backend and convex dev: a SIGKILL alone would leave them running after
+      // a failed assertion. SIGKILL only if it does not end.
+      child.kill("SIGTERM");
+      const ended = await Promise.race([
+        child.exited.then(() => true),
+        Bun.sleep(5_000).then(() => false),
+      ]);
+      if (!ended) child.kill("SIGKILL");
       await child.exited;
     });
     return child;

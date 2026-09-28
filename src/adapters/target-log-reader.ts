@@ -23,7 +23,11 @@ import {
 import { familyMayMatch, readFamilyTail, type LogPosition } from "./log-tail";
 
 const positionSchema = z
-  .object({ identity: z.string(), offset: z.number().int().nonnegative() })
+  .object({
+    identity: z.string(),
+    offset: z.number().int().nonnegative(),
+    midRecord: z.literal(true).optional(),
+  })
   .strict();
 const cursorSchema = z
   .object({
@@ -156,7 +160,12 @@ async function readFollowing(
   const previous = Object.fromEntries(
     Object.entries(following).filter(([name]) => included(name)),
   );
-  const snapshot = await openSnapshot(root, included, filter);
+  const snapshot = await openSnapshot(
+    root,
+    included,
+    filter,
+    new Set(Object.values(previous).map((position) => position.identity)),
+  );
   const { sources, opened } = snapshot;
   try {
     const positions = rebind(opened, previous, sources !== undefined);
@@ -189,37 +198,49 @@ const logsBusy = () =>
     "The Target logs rotated repeatedly while they were being read.",
     "Read the logs again.",
   );
-/** Opens every included Target log once, the current file of a family before its older generations, and checks that no
- * rotation happened meanwhile (see `snapshotHolds`). Otherwise a rotation between the listing and the opens could show
- * one file under two names, or hide a generation the rotation just made, and the follow would read lines twice or lose
- * them. An unsettled snapshot is taken again, up to SNAPSHOT_ATTEMPTS times, then fails LOG_BUSY. */
+/** Opens the included Target logs a follow needs, once each: every current file, and each older generation that holds a
+ * file the cursor is following (found by identity, from the directory's metadata, so the rest are never opened and a
+ * Target with many retained generations does not run out of file descriptors). It checks that no rotation happened
+ * meanwhile (see `snapshotHolds`); otherwise a rotation between the listing and the opens could show one file under two
+ * names, or hide the generation a followed file moved to, and the follow would read lines twice or lose them. An
+ * unsettled snapshot is taken again, up to SNAPSHOT_ATTEMPTS times, then fails LOG_BUSY. */
 async function openSnapshot(
   root: string,
   included: (name: string) => boolean,
   filter: LogFilter,
+  following: ReadonlySet<string>,
 ): Promise<{
   sources: readonly LogSource[] | undefined;
   opened: Map<string, OpenLog>;
 }> {
   for (let attempt = 1; ; attempt++) {
     const sources = await listSources(root);
-    const names = (sources ?? [])
+    const listed = (sources ?? [])
       .filter((each) => included(each.name))
-      .sort((a, b) => a.generation - b.generation)
-      .map((each) => each.name);
+      .sort((a, b) => a.generation - b.generation);
+    const identities: Record<string, string> = {};
+    for (const source of listed) {
+      const metadata = await stat(join(root, source.name)).catch(
+        () => undefined,
+      );
+      if (metadata) identities[source.name] = `${metadata.dev}:${metadata.ino}`;
+    }
     const opened = new Map<string, OpenLog>();
-    let holds = false;
+    let holds = true;
     try {
-      for (const name of names) {
-        const log = await openLog(join(root, name));
-        if (log) opened.set(name, log);
+      for (const source of listed) {
+        const identity = identities[source.name];
+        if (source.generation > 0 && !(identity && following.has(identity)))
+          continue;
+        const log = await openLog(join(root, source.name));
+        if (!log) continue;
+        opened.set(source.name, log);
+        if (log.identity !== identity) holds = false;
       }
-      holds = await snapshotHolds(
+      holds &&= await snapshotHolds(
         root,
-        names,
-        Object.fromEntries(
-          [...opened].map(([name, log]) => [name, log.identity]),
-        ),
+        listed.map((each) => each.name),
+        identities,
         filter,
       );
     } catch (error) {
@@ -333,7 +354,21 @@ async function readWindow(
   const { handle: file, identity, size } = log;
   if (previous && (previous.identity !== identity || previous.offset > size))
     throw cursorError();
-  const start = previous?.offset ?? 0;
+  let start = previous?.offset ?? 0;
+  if (previous?.midRecord) {
+    // The rest of a run already reported as unreadable, up to its newline, is not a line of its own.
+    const past = await nextNewline(file, start, size);
+    const ended =
+      past > start &&
+      (past < size || (await readAt(file, size - 1, 1))[0] === 10);
+    if (!ended)
+      return {
+        source,
+        position: { identity, offset: size, midRecord: true },
+        rows: [],
+      };
+    start = past;
+  }
   const bytes = await readAt(
     file,
     start,

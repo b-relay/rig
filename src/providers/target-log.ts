@@ -46,24 +46,41 @@ export async function rotateLogFile(
   if (!full) return;
   const lock = await acquireRotationLock(file, full);
   if (!lock) return;
+  // A holder that stalled past STALE_ROTATION_MS (a Mac asleep mid-rotation) has had its lock removed by the writer that
+  // passed it over, which may have rotated since: it checks before every step and stops, leaving the locks to that one.
+  const held = () => exists(lock);
   try {
+    // Lost at once: the writer that passed it over owns the rotation and its locks.
+    if (!(await held())) return;
     // Another writer may have rotated this file between the size check and the lock.
-    if ((await fullFile(file, retention.maxBytes)) !== full) return;
-    await dropGenerationsFrom(file, retention.generations + 1);
-    for (let generation = retention.generations; generation >= 1; generation--)
-      await renamePresent(
-        generation === 1 ? file : `${file}.${generation - 1}`,
-        `${file}.${generation}`,
-      );
-    if (retention.generations === 0) await rm(file, { force: true });
-  } finally {
-    // This file is no longer the current one, so no writer will rotate it again: every lock of it can go, and so can a
-    // stale lock of any other earlier file, which a writer that crashed after moving that file left behind.
-    await removeRotationLocks(
-      file,
-      (identity, age) => identity === full || age >= STALE_ROTATION_MS,
-    );
+    if ((await fullFile(file, retention.maxBytes)) === full) {
+      await dropGenerationsFrom(file, retention.generations + 1);
+      for (
+        let generation = retention.generations;
+        generation >= 1;
+        generation--
+      ) {
+        if (!(await held())) return;
+        await renamePresent(
+          generation === 1 ? file : `${file}.${generation - 1}`,
+          `${file}.${generation}`,
+        );
+      }
+      if (retention.generations === 0) {
+        if (!(await held())) return;
+        await rm(file, { force: true });
+      }
+    }
+  } catch (error) {
+    await rm(lock, { force: true });
+    throw error;
   }
+  // This file is no longer the current one, so no writer will rotate it again: every lock of it can go, and so can a
+  // stale lock of any other earlier file, which a writer that crashed after moving that file left behind.
+  await removeRotationLocks(
+    file,
+    (identity, age) => identity === full || age >= STALE_ROTATION_MS,
+  );
 }
 
 /** The identity (`<dev>-<ino>`) of `file` when it holds at least `maxBytes`; undefined when it is smaller or missing. */
@@ -81,11 +98,11 @@ async function fullFile(
     throw error;
   }
 }
-/** The lock for rotating one file: `<file>.rotating-<identity>-<n>`, created exclusively. Locks are never taken from
- * another writer: one a crashed writer left (older than STALE_ROTATION_MS) is passed over by creating the next number,
- * which only one writer can create, and every lock of a file is removed once that file has been rotated. A lock that
- * cannot be removed at the right moment can therefore only delay a rotation, never let two writers rotate at once.
- * Undefined while another writer holds the newest lock. */
+/** The lock for rotating one file: `<file>.rotating-<identity>-<n>`, created exclusively. One a crashed or stalled writer
+ * left (older than STALE_ROTATION_MS) is passed over by creating the next number, which only one writer can create; that
+ * writer then removes the older ones, so a stalled holder that wakes finds its lock gone and stops (see
+ * `rotateLogFile`). Every lock of a file is removed once that file has been rotated. Undefined while another writer holds
+ * the newest lock. */
 export async function acquireRotationLock(
   file: string,
   identity: string,
@@ -108,10 +125,21 @@ export async function acquireRotationLock(
   const lock = join(dirname(file), `${prefix}${newest + 1}`);
   try {
     await (await open(lock, "wx", 0o600)).close();
-    return lock;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EEXIST" || code === "ENOENT") return undefined;
+    throw error;
+  }
+  for (const number of numbers)
+    await rm(join(dirname(file), `${prefix}${number}`), { force: true });
+  return lock;
+}
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
 }

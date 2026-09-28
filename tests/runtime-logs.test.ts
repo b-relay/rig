@@ -801,8 +801,8 @@ test("a lock left stale is never taken from anyone: writers that find it race to
     Array.from({ length: 8 }, () => acquireRotationLock(path, "1-2")),
   );
   expect(won.filter(Boolean)).toEqual([`${path}.rotating-1-2-1`]);
-  // The stale lock was passed over, not removed, and the winner's lock is fresh: nobody else gets one now.
-  expect(await exists(stale)).toBe(true);
+  // The winner removed the stale lock it passed over, so its holder, should it wake, stops; the new lock is fresh.
+  expect(await exists(stale)).toBe(false);
   expect(await acquireRotationLock(path, "1-2")).toBeUndefined();
   // Another file's locks are its own.
   expect(await acquireRotationLock(path, "1-3")).toBe(`${path}.rotating-1-3-0`);
@@ -841,7 +841,10 @@ test("finding where complete lines end reads at most a window back, so an endles
     path = join(target.logRoot, "web.stdout.log");
   await writeFile(path, `first\n${"x".repeat(100)}`);
   let handle = await open(path, "r");
-  expect(await completeEnd(handle, (await handle.stat()).size)).toBe(6);
+  expect(await completeEnd(handle, (await handle.stat()).size)).toEqual({
+    end: 6,
+    midRecord: false,
+  });
   await handle.close();
   await writeFile(path, `first\n${"\r".repeat(3 * LOG_WINDOW_BYTES)}`);
   handle = await open(path, "r");
@@ -859,7 +862,10 @@ test("finding where complete lines end reads at most a window back, so an endles
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  expect(await completeEnd(counting, size)).toBe(size);
+  expect(await completeEnd(counting, size)).toEqual({
+    end: size,
+    midRecord: true,
+  });
   expect(read).toBeLessThanOrEqual(LOG_WINDOW_BYTES + 1);
   await handle.close();
 });
@@ -983,10 +989,75 @@ test("a launchd file whose last line never ends is read only a window back for t
     },
   });
   const size = (await handle.stat()).size;
-  const lines = linesBackward(counting, await completeEnd(counting, size));
+  const complete = await completeEnd(counting, size);
+  const lines = linesBackward(counting, complete.end, complete.midRecord);
   expect((await lines.next()).value).toMatchObject({ atLeast: true });
   await lines.return(undefined);
   // Far less than the 32 MiB file: the window completeEnd searches, and the window the run is known past.
   expect(read).toBeLessThanOrEqual(2 * (LOG_WINDOW_BYTES + 1024 * 1024));
   await handle.close();
+});
+
+test("a holder that stalled past the stale age and lost its lock to another writer stops instead of rotating again", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  const retention = { maxBytes: 8, generations: 2 };
+  await writeFile(path, "0123456789\n");
+  await writeFile(`${path}.1`, "older\n");
+  const metadata = await stat(path);
+  const identity = `${metadata.dev}-${metadata.ino}`;
+  // The stalled holder's lock, old enough to be passed over.
+  const stalled = await acquireRotationLock(path, identity);
+  const old = new Date(Date.now() - 120_000);
+  await utimes(stalled!, old, old);
+  // Another writer passes it over and rotates.
+  await rotateLogFile(path, retention);
+  expect(await readFile(`${path}.1`, "utf8")).toBe("0123456789\n");
+  expect(await readFile(`${path}.2`, "utf8")).toBe("older\n");
+  expect(await exists(stalled!)).toBe(false);
+  // New output fills a new file; the stalled holder's lock is gone, so nothing it could still do shifts .1 or .2.
+  await writeFile(path, "abcdefghij\n");
+  await rotateLogFile(path, retention);
+  expect(await readFile(`${path}.1`, "utf8")).toBe("abcdefghij\n");
+  expect(await readFile(`${path}.2`, "utf8")).toBe("0123456789\n");
+});
+
+test("a follow does not open older generations it is not following, so a Target with many of them reads with few files open", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, entry("current"));
+  for (let generation = 1; generation <= 3; generation++) {
+    await writeFile(`${path}.${generation}`, entry(`old ${generation}`));
+    await chmod(`${path}.${generation}`, 0o000);
+  }
+  try {
+    const first = await files.logs(target, undefined, 1);
+    expect(first.entries.map((each) => each.line)).toEqual(["current"]);
+    await appendFile(path, entry("next", "2026-09-09T12:00:01Z"));
+    // Unreadable older generations are never touched: they are not followed.
+    const next = await files.logs(target, first.cursor, 10);
+    expect(next.entries.map((each) => each.line)).toEqual(["next"]);
+  } finally {
+    for (let generation = 1; generation <= 3; generation++)
+      await chmod(`${path}.${generation}`, 0o600);
+  }
+});
+
+test("a follow from a read that ended inside an over-long launchd line skips the rest of that line instead of showing it as a new one", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "web.stdout.log");
+  await writeFile(path, `ready\n${"#".repeat(LOG_WINDOW_BYTES + 10)}`);
+  const first = await files.logs(target, undefined, 5);
+  expect(first.entries.map((each) => each.line)).toEqual([
+    "ready",
+    `Rig skipped an unreadable log record (${LOG_WINDOW_BYTES + 10} bytes).`,
+  ]);
+  await appendFile(path, "still the same line");
+  const middle = await files.logs(target, first.cursor, 5);
+  expect(middle.entries).toEqual([]);
+  await appendFile(path, " and its end\nnext line\n");
+  const next = await files.logs(target, middle.cursor, 5);
+  expect(next.entries.map((each) => each.line)).toEqual(["next line"]);
 });

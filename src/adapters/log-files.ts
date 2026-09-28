@@ -65,20 +65,22 @@ function unreadableFile(path: string, code: string | undefined) {
  * unterminated final line is still being written and waits for a later read. Only the last window (and its newline) is
  * searched: an unterminated run longer than the window (output that never ends a line, such as a progress bar drawn with
  * carriage returns) is taken as ending at `size`, and read as one over-long record, so a read never scans a whole
- * file for a newline. */
+ * file for a newline. `midRecord` says so: whatever is appended to that run before its newline belongs to it. */
 export async function completeEnd(
   file: FileHandle,
   size: number,
-): Promise<number> {
+): Promise<{ end: number; midRecord: boolean }> {
   const floor = Math.max(0, size - LOG_WINDOW_BYTES - 1);
   for (let end = size; end > floor;) {
     const start = Math.max(floor, end - TAIL_CHUNK_BYTES);
     const chunk = await readAt(file, start, end - start);
     const newline = chunk.lastIndexOf(10);
-    if (newline !== -1) return start + newline + 1;
+    if (newline !== -1) return { end: start + newline + 1, midRecord: false };
     end = start;
   }
-  return floor > 0 ? size : 0;
+  return floor > 0
+    ? { end: size, midRecord: true }
+    : { end: 0, midRecord: false };
 }
 
 /** The complete lines of `file` that end at or before `end` (0, an offset just past a newline, or the end of an
@@ -88,10 +90,13 @@ export async function completeEnd(
 export async function* linesBackward(
   file: FileHandle,
   end: number,
+  /** `end` is the end of an unterminated over-long run (`completeEnd`'s `midRecord`), not just past a newline. */
+  unterminated = false,
 ): AsyncGenerator<BackwardLine> {
   let position = end;
-  /** Bytes from `position` up to the newest line not yet yielded, whose start is still unread; ends with its newline. */
-  let pending: Buffer = Buffer.alloc(0);
+  /** Bytes from `position` up to the newest line not yet yielded, whose start is still unread; ends with its newline
+   * (a newline of its own for an unterminated run, so the run is measured as a line). */
+  let pending: Buffer = Buffer.from(unterminated ? "\n" : "");
   /** Bytes of an over-long line already walked past while looking for its start; 0 when none. */
   let skipped = 0;
   while (position > 0) {

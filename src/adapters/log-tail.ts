@@ -18,6 +18,8 @@ import { familyEvidence, type LogSource } from "./log-sources";
 export interface LogPosition {
   identity: string;
   offset: number;
+  /** The offset is inside an over-long run already reported as one unreadable record: a follow skips the rest of it. */
+  midRecord?: true;
 }
 /** Writers of different components append in the order their lines are recorded, which may run a little behind their
  * times: a recent read walks this far past `since` before it stops, so no line inside the window is missed. */
@@ -76,10 +78,14 @@ export async function readFamilyTail(
     const log = await openLog(join(root, member.name));
     if (!log) continue;
     try {
-      const end = await completeEnd(log.handle, log.size);
-      positions[member.name] = { identity: log.identity, offset: end };
+      const { end, midRecord } = await completeEnd(log.handle, log.size);
+      positions[member.name] = {
+        identity: log.identity,
+        offset: end,
+        ...(midRecord ? { midRecord } : {}),
+      };
       if (done) continue;
-      for await (const line of linesBackward(log.handle, end)) {
+      for await (const line of linesBackward(log.handle, end, midRecord)) {
         const parsed =
           line.text === undefined
             ? "unreadable"

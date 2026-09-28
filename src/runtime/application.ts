@@ -13,6 +13,7 @@ import {
 } from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
+import type { MutationInFlight } from "./alert-policy";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import {
   readActions,
@@ -139,6 +140,10 @@ export interface RigRuntime extends ProjectStatusReader {
    * is once they are admitted. A name no Project is registered under is serialized with that name's registration instead. */
   exclusive<T>(project: string, operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
+  /** Every mutation this daemon has accepted and not yet answered, running or waiting for its Target, as its command
+   * selected the Project and Target so far; empty while none is. Config edits and supervision passes are not listed,
+   * except the first pass's work on a Stable Target it may be starting again after a Host restart. */
+  mutations(): MutationInFlight[];
 }
 const reads = readActions;
 /** How many times an Operation selects again because what it selected changed while it waited. */
@@ -180,6 +185,8 @@ const UNLOCKED: Admission = {
 interface Running {
   view: OperationView;
   targetId?: string;
+  /** What the operator alert monitor sees of a command's mutation; absent for supervision passes and config edits. */
+  mutation?: MutationInFlight;
 }
 /** rigd is the one authority over lifecycle state. Mutations of one Target run one at a time; other
  * Targets and Projects run side by side and share Host resources through short critical sections.
@@ -193,6 +200,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   const operations = new Map<string, Running>();
   /** Command executions still running, so a drain waits for them to answer. */
   const executing = new Set<Promise<unknown>>();
+  /** Shows the alert monitor more of what `operationId`'s command selected; a read, which is not listed, is left alone. */
+  const selectedForAlerts = (
+    operationId: string,
+    selected: Partial<MutationInFlight>,
+  ) => {
+    const entry = operations.get(operationId);
+    if (entry?.mutation) entry.mutation = { ...entry.mutation, ...selected };
+  };
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
   const inProgress = (operationId: string) => inFlight.has(operationId);
@@ -313,7 +328,15 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         { operationId },
       );
     inFlight.add(operationId);
-    operations.set(operationId, {
+    // What the alert monitor sees before the command selects anything: its Project and Target as the command names them.
+    const requested: MutationInFlight = {
+      operationId,
+      action: command.action,
+      ...(command.project ? { project: command.project } : {}),
+      ...(command.repoPath ? { repoPath: command.repoPath } : {}),
+      ...(command.target ? { target: command.target } : {}),
+    };
+    const entry: Running = {
       view: {
         operationId,
         action: command.action,
@@ -322,10 +345,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         phase: initialPhase(command.action),
         startedAt: deps.now(),
       },
-    });
+      mutation: requested,
+    };
+    operations.set(operationId, entry);
     try {
       for (let attempt = 1; ; attempt++) {
         const held = admission(operationId, attempt >= MAX_SELECTIONS);
+        // Each attempt selects again, so what an earlier one selected no longer says what this one works on.
+        entry.mutation = requested;
         try {
           return await run(command, operationId, held, {
             ...deps,
@@ -612,6 +639,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               ? targetNames(selection.document!.config).stable
               : PREVIEW_SELECTOR,
         };
+        // The alert monitor sees the Target the push selected from here on: a Preview push leaves the Stable Target alone.
+        selectedForAlerts(operationId, { target: command.target! });
       }
       if (
         command.action === "deploy" &&
@@ -649,6 +678,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         }
       })();
       const kind = selected.kind;
+      // The alert monitor sees which Target the command selected, by role, so a configured name that differs from the
+      // recorded one (mid-rename) still reads as the Stable Target, and in which Project, so a command run from a
+      // directory no Project is registered at (a linked worktree) holds back no other Project's Stable Target.
+      selectedForAlerts(operationId, { project: project.name, kind });
       const name = selected.name ?? command.target ?? "the Working copy";
       aimed = name;
       const find = (recorded: readonly TargetRecord[]) =>
@@ -1093,6 +1126,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   };
   return {
     status,
+    mutations: () =>
+      [...operations.values()].flatMap((entry) =>
+        entry.mutation ? [{ ...entry.mutation }] : [],
+      ),
     async drain() {
       draining = true;
       // Commands already running answer; any that was waiting is refused once admitted.
@@ -1341,6 +1378,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         startedAt: deps.now(),
       },
       targetId,
+      // Until the first pass after a Host restart has started a Stable Target again, its Services' last exits predate
+      // the restart; the alert monitor holds back judgement of it rather than count it down since then.
+      ...(mark && !startedBefore?.has(targetId)
+        ? { mutation: { operationId: lease.id, action, targetId } }
+        : {}),
     };
     operations.set(lease.id, entry);
     let name: string | undefined;
@@ -1348,6 +1390,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (draining) return undefined;
       const state = await deps.store.read();
       const target = state.targets.find((t) => t.id === targetId);
+      // Only a Stable Target meant to run is started again; the alert monitor judges any other Target as usual.
+      if (target?.kind !== "live" || target.desired !== "running")
+        delete entry.mutation;
       if (
         !target ||
         target.recovery ||

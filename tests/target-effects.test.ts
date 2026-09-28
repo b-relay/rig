@@ -8,6 +8,7 @@ import {
   writeFile,
   stat,
   readdir,
+  symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,6 +74,7 @@ function effects(
     PATH: process.env.PATH!,
     HOST: "host",
   },
+  tools: { readonly bun: string | undefined } = { bun: process.execPath },
 ) {
   return createTargetEffects({
     ...localActivation(),
@@ -82,7 +84,7 @@ function effects(
     run: runCommand,
     installer: createArtifactInstaller({
       run: runCommand,
-      bunExecutable: process.execPath,
+      bunExecutable: tools.bun,
     }),
     router: {
       async apply() {},
@@ -274,6 +276,55 @@ test("editing a local source tool keeps its shim usable without reinstalling it"
       new AbortController().signal,
     ),
   ).toBe("missing");
+});
+test("a source tool's shim is republished when the recorded bun changes, and one without a runnable bun keeps the last good shim", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-tool-bun-"));
+  roots.push(root);
+  const record = target(root),
+    signal = new AbortController().signal,
+    shim = join(root, "bin", "tool-local"),
+    component = {
+      name: "tool",
+      kind: "installed" as const,
+      entrypoint: "tool.ts",
+      env: {},
+      dependsOn: [],
+    };
+  const bun = async (name: string) => {
+    await mkdir(join(root, name));
+    await symlink(process.execPath, join(root, name, "bun"));
+    return join(root, name, "bun");
+  };
+  const [first, second] = [await bun("first"), await bun("second")];
+  const withBun = (path: string | undefined) =>
+    effects(root, undefined, undefined, { bun: path });
+  await writeFile(join(root, "tool.ts"), "process.stdout.write('ran')");
+  expect(await withBun(first).install(component, record)).toEqual({
+    outcome: "installed",
+  });
+  expect(await withBun(first).install(component, record)).toEqual({
+    outcome: "unchanged",
+  });
+  // A daemon holding another bun sees the published shim as not its own until it republishes it.
+  expect(
+    await withBun(second).observations.artifact(record, component, signal),
+  ).toBe("unknown");
+  expect(await withBun(second).install(component, record)).toEqual({
+    outcome: "installed",
+  });
+  expect(await readFile(shim, "utf8")).toStartWith(
+    `#!/bin/sh\nexec '${second}' `,
+  );
+  expect(
+    await withBun(second).observations.artifact(record, component, signal),
+  ).toBe("installed");
+  await expect(
+    withBun(undefined).install(component, record),
+  ).rejects.toMatchObject({ code: "BUN_NOT_FOUND" });
+  expect(await readFile(shim, "utf8")).toStartWith(
+    `#!/bin/sh\nexec '${second}' `,
+  );
+  expect((await runCommand({ command: [shim] })).stdout).toBe("ran");
 });
 test("installed names reject another Target owner and unmanaged executables without overwriting either", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-tool-ownership-"));

@@ -12,6 +12,9 @@ import { createRuntime } from "../src/runtime/application";
 import { FileStateStore } from "../src/runtime/state-store";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { UNKNOWN_EXIT_RESTART_BACKOFF_MS } from "../src/runtime/supervision";
+import { evaluateOperatorAlerts } from "../src/runtime/alert-monitor";
+import { ALERT_GRACE_MS } from "../src/runtime/alert-policy";
+import type { OperatorAlert } from "../src/domain/operator-alerts";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { HostSession } from "../src/domain/host-session";
 import type {
@@ -50,6 +53,8 @@ async function fixture() {
   /** Process keys (`<target id>:<service>`) in the order they were started. */
   const starts: string[] = [];
   const refusal: { start?: (key: string) => boolean } = {};
+  /** Starts that stay in progress until the promise it returns for their key settles. */
+  const delay: { start?: (key: string) => Promise<void> | undefined } = {};
   const supervisor: Supervisor = {
     async observe(key) {
       return processes.get(key) ?? { state: "stopped" };
@@ -58,6 +63,7 @@ async function fixture() {
       if (processes.get(request.key)?.state === "running")
         return { outcome: "unchanged" };
       if (refusal.start?.(request.key)) throw new Error("spawn refused");
+      await delay.start?.(request.key);
       starts.push(request.key);
       processes.set(request.key, {
         state: "running",
@@ -193,7 +199,34 @@ async function fixture() {
     host,
     processes,
     refusal,
+    delay,
     store,
+    /** What the running daemon shows its operator alert monitor as in flight. */
+    mutations: () => runtime.mutations(),
+    /** One operator alert evaluation, as the running daemon's alert monitor makes it; returns the alerts sent. */
+    async evaluateAlerts() {
+      const sent: OperatorAlert[] = [];
+      await evaluateOperatorAlerts({
+        store,
+        observations: deps.observations,
+        observationBudgetMs: 2000,
+        observationDeadline: timerObservationDeadline,
+        inspectProxy: deps.inspectProxy,
+        channels: [
+          {
+            channel: "test notification",
+            async send(alert) {
+              sent.push(alert);
+            },
+          },
+        ],
+        now: deps.now,
+        id: deps.id,
+        diagnostic: deps.diagnostic,
+        mutations: () => runtime.mutations(),
+      });
+      return sent;
+    },
     /** A new daemon over the same saved state and whatever processes survived. */
     reopen() {
       runtime = createRuntime(deps);
@@ -425,6 +458,47 @@ test("a new login in the same boot is a Host restart too: Stable Targets come ba
     "It stopped when you logged out and in again",
   );
   expect((await f.store.read()).host).toMatchObject({ login: "100019" });
+});
+
+test("the operator alert monitor holds back judgement of a Stable Target the first pass after a reboot is still starting again", async () => {
+  const f = await fixture();
+  await f.startAll();
+  f.restartHost(REBOOTED);
+  // The Mac was off for two hours, and db's start after it hangs.
+  f.clock.ms += 2 * 60 * 60_000;
+  let release!: () => void;
+  const hanging = new Promise<void>((resolve) => (release = resolve));
+  const db = await f.key("live", "db");
+  let hung = false;
+  f.delay.start = (key) => {
+    if (key !== db) return undefined;
+    hung = true;
+    return hanging;
+  };
+  f.reopen();
+  const pass = f.reconcile();
+  const live = (await f.store.read()).targets.find(
+    (t) => t.kind === "live",
+  )!.id;
+  for (let tries = 0; !hung; tries++) {
+    if (tries > 2000) throw new Error("the Stable start never began");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  expect(f.mutations()).toEqual([
+    { operationId: expect.any(String), action: "reconcile", targetId: live },
+  ]);
+
+  // Evaluations while the start is in progress, well past the grace period, neither alert nor count the Target down.
+  expect(await f.evaluateAlerts()).toEqual([]);
+  f.clock.ms += 2 * ALERT_GRACE_MS;
+  expect(await f.evaluateAlerts()).toEqual([]);
+  expect((await f.store.read()).alerts?.targets ?? []).toEqual([]);
+
+  release();
+  await pass;
+  expect(f.mutations()).toEqual([]);
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.evaluateAlerts()).toEqual([]);
 });
 
 test("a Stable Target meant to be stopped stays stopped after a reboot", async () => {

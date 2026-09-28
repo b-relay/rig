@@ -1,26 +1,33 @@
 import { createHash } from "node:crypto";
-import { open, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { TargetRecord } from "../domain/runtime";
 import type { TargetLogEntry } from "../providers/contracts";
 import { RigError } from "../domain/errors";
+import { matchesLogFilter, type LogFilter } from "../domain/log-filter";
+import {
+  LOG_WINDOW_BYTES,
+  nextNewline,
+  openLog,
+  readAt,
+  type OpenLog,
+} from "./log-files";
+import { parseLogRecord, unreadableEntry } from "./log-records";
+import {
+  familyRotates,
+  logFamilies,
+  logSource,
+  type LogSource,
+} from "./log-sources";
+import { familyMayMatch, readFamilyTail, type LogPosition } from "./log-tail";
 
-const maximumReadBytes = 4 * 1024 * 1024;
-const currentEntry = z.object({
-  timestamp: z.string(),
-  component: z.string(),
-  stream: z.enum(["stdout", "stderr", "health"]),
-  line: z.string(),
-});
-const legacyEvent = z.object({
-  timestamp: z.string().optional(),
-  event: z.string(),
-  component: z.string().optional(),
-  details: z.record(z.string(), z.unknown()).optional(),
-});
 const positionSchema = z
-  .object({ identity: z.string(), offset: z.number().int().nonnegative() })
+  .object({
+    identity: z.string(),
+    offset: z.number().int().nonnegative(),
+    midRecord: z.literal(true).optional(),
+  })
   .strict();
 const cursorSchema = z
   .object({
@@ -29,49 +36,37 @@ const cursorSchema = z
     sources: z.record(z.string(), positionSchema),
   })
   .strict();
-type Position = z.infer<typeof positionSchema>;
 interface LogRow {
   end: number;
   entry?: TargetLogEntry;
+  /** `end` is inside an over-long run that has no newline yet; see LogPosition.midRecord. */
+  midRecord?: true;
 }
 interface SourceWindow {
-  name: string;
-  position: Position;
-  end: number;
+  source: LogSource;
+  position: LogPosition;
   rows: LogRow[];
 }
-const wrapperLog = /^([a-zA-Z0-9_-]+)\.(stdout|stderr)\.log$/;
-/** Rig's own records, their rotated previous generation, legacy events, and the files launchd writes for a job. */
-const recognized = (name: string) =>
-  name === "target.jsonl" ||
-  name === "target.jsonl.1" ||
-  name === "events.jsonl" ||
-  /^[a-zA-Z0-9_-]+\.launchd\.log$/.test(name) ||
-  wrapperLog.test(name);
 const cursorError = () =>
   new RigError(
     "LOG_CURSOR",
     "The Target log cursor is invalid or its files changed.",
     "Read logs again without a cursor.",
   );
-const unreadableFile = (path: string, code: string | undefined) =>
-  new RigError(
-    "LOG_UNREADABLE",
-    `The Target log ${path} could not be read (${code ?? "unknown error"}).`,
-    "Fix its permissions or move it aside, then read the logs again.",
-    { path, code },
-  );
 
-/** Read-only current/legacy log view. Cursors belong to this Target and preserve per-source byte identity.
- * Each source reads at most 4 MiB per call; incomplete final lines wait for a later read.
- * A complete record that cannot be parsed, or a run longer than the window, becomes one
- * "unreadable record" entry so reading and following continue past it.
- * Unknown legacy timestamps/streams remain explicit, and diagnostic event details are never rendered.
- */
+/** Read-only current/legacy log view. Without `after`, the newest `lines` entries `filter` keeps, across every retained
+ * generation (see `readFamilyTail`); with `after`, the next entries past that cursor, at most `lines`, reading at most
+ * 4 MiB per file per call, with entries `filter` leaves out passed over. Incomplete final lines wait for a later read.
+ * Cursors belong to this Target and follow each file by identity, so a follow carries on across rotation; a file that
+ * rotated out of retention is dropped, while one truncated in place or a Target log directory that is gone fails
+ * LOG_CURSOR. A complete record that cannot be parsed, or a run longer than the window, becomes one "unreadable record"
+ * entry so reading and following continue past it. Unknown legacy timestamps/streams remain explicit, and diagnostic
+ * event details are never rendered. */
 export async function readTargetLogs(
   target: TargetRecord,
   after: string | undefined,
   lines: number,
+  filter: LogFilter = {},
 ): Promise<{ entries: TargetLogEntry[]; cursor: string }> {
   if (!Number.isSafeInteger(lines) || lines < 1 || lines > 10000)
     throw new RigError(
@@ -82,75 +77,278 @@ export async function readTargetLogs(
   const identity = createHash("sha256")
     .update(JSON.stringify([target.id, target.logRoot]))
     .digest("hex");
-  const previous = decodeCursor(after, identity);
-  await continueRotated(target.logRoot, previous);
-  let names: string[];
-  try {
-    names = (await readdir(target.logRoot)).filter(recognized);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") names = [];
-    else throw error;
-  }
-  const sourceNames = [...new Set([...names, ...Object.keys(previous)])].sort();
-  const windows: SourceWindow[] = [];
-  for (const name of sourceNames) {
-    const window = await readSource(
-      target.logRoot,
-      name,
-      previous[name],
-      after === undefined,
-    );
-    if (window) windows.push(window);
-  }
-  const entries: TargetLogEntry[] = [];
-  if (after === undefined) {
-    // Unknown-time legacy sources precede dated history without inventing a chronological position.
-    const all = windows.flatMap((window) =>
-      window.rows.flatMap((row, index) =>
-        row.entry ? [{ entry: row.entry, source: window.name, index }] : [],
-      ),
-    );
-    all.sort(
-      (a, b) =>
-        compareEntries(a.entry, b.entry) ||
-        a.source.localeCompare(b.source) ||
-        a.index - b.index,
-    );
-    entries.push(...all.slice(-lines).map((row) => row.entry));
-    for (const window of windows) window.position.offset = window.end;
-  } else {
-    while (entries.length < lines) {
-      for (const window of windows)
-        while (window.rows[0] && !window.rows[0].entry)
-          window.position.offset = window.rows.shift()!.end;
-      const next = windows
-        .filter((window) => window.rows[0]?.entry)
-        .sort(
-          (a, b) =>
-            compareEntries(a.rows[0]!.entry!, b.rows[0]!.entry!) ||
-            a.name.localeCompare(b.name),
-        )[0];
-      if (!next) break;
-      const row = next.rows.shift()!;
-      entries.push(row.entry!);
-      next.position.offset = row.end;
-    }
-  }
-  const sources = Object.fromEntries(
-    windows.map((window) => [window.name, window.position]),
-  );
+  const read =
+    after === undefined
+      ? await readRecent(target.logRoot, lines, filter)
+      : await readFollowing(
+          target.logRoot,
+          decodeCursor(after, identity),
+          lines,
+          filter,
+        );
   return {
-    entries,
+    entries: read.entries,
     cursor: Buffer.from(
-      JSON.stringify({ version: 1, target: identity, sources }),
+      JSON.stringify({ version: 1, target: identity, sources: read.positions }),
     ).toString("base64url"),
   };
 }
+interface Read {
+  entries: TargetLogEntry[];
+  positions: Record<string, LogPosition>;
+}
+/** The Target log files in `root`; undefined when the directory does not exist. */
+async function listSources(root: string): Promise<LogSource[] | undefined> {
+  try {
+    return (await readdir(root)).flatMap((name) => logSource(name) ?? []);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+/** Each family contributes its newest kept entries; entries of unknown time precede dated history without inventing a
+ * chronological position. */
+async function readRecent(
+  root: string,
+  lines: number,
+  filter: LogFilter,
+): Promise<Read> {
+  // A rotation during the read could hide the lines it moved; the read is made again until none happened during it.
+  for (let attempt = 1; ; attempt++) {
+    const sources = (await listSources(root)) ?? [];
+    const read = await readRecentOnce(root, sources, lines, filter);
+    const identities = Object.fromEntries(
+      Object.entries(read.positions).map(([name, at]) => [name, at.identity]),
+    );
+    const names = sources
+      .filter((source) => familyMayMatch(source.family, filter))
+      .map((source) => source.name);
+    if (await snapshotHolds(root, names, identities, filter)) return read;
+    if (attempt === SNAPSHOT_ATTEMPTS) throw logsBusy();
+  }
+}
+async function readRecentOnce(
+  root: string,
+  sources: readonly LogSource[],
+  lines: number,
+  filter: LogFilter,
+): Promise<Read> {
+  const all: { entry: TargetLogEntry; family: string; index: number }[] = [];
+  const positions: Record<string, LogPosition> = {};
+  for (const family of logFamilies(sources)) {
+    const tail = await readFamilyTail(root, family, lines, filter);
+    tail.entries.forEach((entry, index) =>
+      all.push({ entry, family: family.family, index }),
+    );
+    Object.assign(positions, tail.positions);
+  }
+  all.sort(
+    (a, b) =>
+      compareEntries(a.entry, b.entry) ||
+      a.family.localeCompare(b.family) ||
+      a.index - b.index,
+  );
+  return { entries: all.slice(-lines).map((row) => row.entry), positions };
+}
+async function readFollowing(
+  root: string,
+  following: Record<string, LogPosition>,
+  lines: number,
+  filter: LogFilter,
+): Promise<Read> {
+  // A family the filter excludes is neither opened nor followed, as the first read left it out.
+  const included = (name: string) =>
+    familyMayMatch(logSource(name)!.family, filter);
+  const previous = Object.fromEntries(
+    Object.entries(following).filter(([name]) => included(name)),
+  );
+  const snapshot = await openSnapshot(
+    root,
+    included,
+    filter,
+    new Set(Object.values(previous).map((position) => position.identity)),
+  );
+  const { sources, opened, unseen } = snapshot;
+  try {
+    const positions = rebind(opened, previous, sources !== undefined);
+    const names = new Set([...opened.keys(), ...Object.keys(positions)]);
+    const windows: SourceWindow[] = [];
+    for (const name of [...names].sort()) {
+      const source = logSource(name)!;
+      const log = opened.get(name);
+      // A source the cursor knew has gone: that is a cursor problem, not a missing log.
+      if (!log) throw cursorError();
+      // An older generation the cursor never covered is history the first read already chose from, unless it was made
+      // since: then it is read from its start.
+      if (!positions[name] && source.generation > 0 && !unseen.has(name))
+        continue;
+      windows.push(await readWindow(log, source, positions[name]));
+    }
+    const entries = nextEntries(windows, lines, filter);
+    return {
+      entries,
+      // A generation two or more rotations old gets no more writes: once read to its end it is not followed any more,
+      // so a long follow keeps open at most the current file and one or two generations per family.
+      positions: Object.fromEntries(
+        windows
+          .filter(
+            (window) =>
+              window.source.generation < 2 ||
+              window.position.offset < opened.get(window.source.name)!.size,
+          )
+          .map((window) => [window.source.name, window.position]),
+      ),
+    };
+  } finally {
+    for (const log of opened.values()) await log.handle.close();
+  }
+}
+/** How many times a read is made before rotations that keep moving files under it end it with LOG_BUSY. */
+const SNAPSHOT_ATTEMPTS = 5;
+const logsBusy = () =>
+  new RigError(
+    "LOG_BUSY",
+    "The Target logs rotated repeatedly while they were being read.",
+    "Read the logs again.",
+  );
+/** Opens the included Target logs a follow needs, once each: every current file, and each older generation that holds a
+ * file the cursor is following or was made since the cursor (found by identity, from the directory's metadata, so the
+ * rest are never opened and a Target with many retained generations does not run out of file descriptors). It checks that no rotation happened
+ * meanwhile (see `snapshotHolds`); otherwise a rotation between the listing and the opens could show one file under two
+ * names, or hide the generation a followed file moved to, and the follow would read lines twice or lose them. An
+ * unsettled snapshot is taken again, up to SNAPSHOT_ATTEMPTS times, then fails LOG_BUSY. */
+async function openSnapshot(
+  root: string,
+  included: (name: string) => boolean,
+  filter: LogFilter,
+  /** Identities of the files the cursor follows. */
+  following: ReadonlySet<string>,
+): Promise<{
+  sources: readonly LogSource[] | undefined;
+  opened: Map<string, OpenLog>;
+  /** Older generations made since the cursor's read (newer than any file it follows in their family, or in a family
+   * that did not exist then), read from their start: two rotations between reads leave one the follow never saw. */
+  unseen: Set<string>;
+}> {
+  for (let attempt = 1; ; attempt++) {
+    const sources = await listSources(root);
+    const listed = (sources ?? [])
+      .filter((each) => included(each.name))
+      .sort((a, b) => a.generation - b.generation);
+    const identities: Record<string, string> = {};
+    for (const source of listed) {
+      const metadata = await stat(join(root, source.name)).catch(
+        () => undefined,
+      );
+      if (metadata) identities[source.name] = `${metadata.dev}:${metadata.ino}`;
+    }
+    /** Per family, the generation of the newest file the cursor follows; files newer than it were made since. */
+    const newestFollowed = new Map<string, number>();
+    for (const source of listed) {
+      const identity = identities[source.name];
+      if (identity && following.has(identity))
+        newestFollowed.set(
+          source.family,
+          Math.min(
+            newestFollowed.get(source.family) ?? Infinity,
+            source.generation,
+          ),
+        );
+    }
+    const opened = new Map<string, OpenLog>();
+    const unseen = new Set<string>();
+    let holds = true;
+    try {
+      for (const source of listed) {
+        const identity = identities[source.name];
+        const followed = identity !== undefined && following.has(identity);
+        // Newer than the newest file the cursor follows in its family; in a family it follows no file of (one that did
+        // not exist when the cursor was made, or whose followed files were all evicted), every generation is.
+        const madeSince =
+          source.generation > 0 &&
+          !followed &&
+          source.generation < (newestFollowed.get(source.family) ?? Infinity);
+        if (source.generation > 0 && !followed && !madeSince) continue;
+        if (madeSince) unseen.add(source.name);
+        const log = await openLog(join(root, source.name));
+        if (!log) continue;
+        opened.set(source.name, log);
+        if (log.identity !== identity) holds = false;
+      }
+      holds &&= await snapshotHolds(
+        root,
+        listed.map((each) => each.name),
+        identities,
+        filter,
+      );
+    } catch (error) {
+      for (const log of opened.values()) await log.handle.close();
+      throw error;
+    }
+    if (holds) return { sources, opened, unseen };
+    for (const log of opened.values()) await log.handle.close();
+    if (attempt === SNAPSHOT_ATTEMPTS) throw logsBusy();
+  }
+}
+/** Whether the directory still lists exactly `names` (of the families `filter` includes), each name with an identity
+ * is still that file, and no file stood under two names: nothing rotated since the names were listed. */
+export async function snapshotHolds(
+  root: string,
+  names: readonly string[],
+  identities: Readonly<Record<string, string>>,
+  filter: LogFilter,
+): Promise<boolean> {
+  const now = ((await listSources(root)) ?? [])
+    .filter((source) => familyMayMatch(source.family, filter))
+    .map((source) => source.name)
+    .sort();
+  if (now.join("\n") !== [...names].sort().join("\n")) return false;
+  const seen = new Set<string>();
+  for (const [name, identity] of Object.entries(identities)) {
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    const current = await stat(join(root, name)).catch(() => undefined);
+    if (!current || `${current.dev}:${current.ino}` !== identity) return false;
+  }
+  return true;
+}
+/** Takes entries from the windows in time order, at most `lines` that `filter` keeps, advancing each window's position
+ * past every row taken, kept or not. */
+function nextEntries(
+  windows: SourceWindow[],
+  lines: number,
+  filter: LogFilter,
+): TargetLogEntry[] {
+  const entries: TargetLogEntry[] = [];
+  const advance = (window: SourceWindow) => {
+    const row = window.rows.shift()!;
+    window.position.offset = row.end;
+    if (row.midRecord) window.position.midRecord = true;
+    else delete window.position.midRecord;
+    return row;
+  };
+  while (entries.length < lines) {
+    for (const window of windows)
+      while (window.rows[0] && !window.rows[0].entry) advance(window);
+    const next = windows
+      .filter((window) => window.rows[0]?.entry)
+      .sort(
+        (a, b) =>
+          compareEntries(a.rows[0]!.entry!, b.rows[0]!.entry!) ||
+          // Within a family an older generation was written first.
+          a.source.family.localeCompare(b.source.family) ||
+          b.source.generation - a.source.generation,
+      )[0];
+    if (!next) break;
+    const row = advance(next);
+    if (matchesLogFilter(row.entry!, filter)) entries.push(row.entry!);
+  }
+  return entries;
+}
 function decodeCursor(
-  after: string | undefined,
+  after: string,
   target: string,
-): Record<string, Position> {
-  if (after === undefined) return {};
+): Record<string, LogPosition> {
   try {
     if (after.length > 128000) throw cursorError();
     const cursor = cursorSchema.parse(
@@ -158,7 +356,7 @@ function decodeCursor(
     );
     if (
       cursor.target !== target ||
-      Object.keys(cursor.sources).some((name) => !recognized(name))
+      Object.keys(cursor.sources).some((name) => !logSource(name))
     )
       throw cursorError();
     return cursor.sources;
@@ -166,174 +364,97 @@ function decodeCursor(
     throw cursorError();
   }
 }
-/** A follow whose target.jsonl was rotated underneath it carries on from the same bytes in target.jsonl.1. */
-async function continueRotated(
-  root: string,
-  previous: Record<string, Position>,
-): Promise<void> {
-  const current = previous["target.jsonl"];
-  if (!current || previous["target.jsonl.1"]) return;
-  let rotated;
-  try {
-    rotated = await stat(join(root, "target.jsonl.1"));
-  } catch {
-    return;
+/** Moves each cursor position to the file that now has its identity: a rotation renames `target.jsonl` to
+ * `target.jsonl.1` (and each older generation one number up), and the follow carries on in the renamed file. A position
+ * of a rotating family whose file is gone rotated out of retention and is dropped with its unread lines. Any other
+ * position stays under its name, so a file replaced or removed underneath the follow, or a log directory that is gone,
+ * is reported as the cursor problem it is. */
+function rebind(
+  opened: ReadonlyMap<string, OpenLog>,
+  previous: Record<string, LogPosition>,
+  directoryExists: boolean,
+): Record<string, LogPosition> {
+  const holders = new Map(
+    [...opened].map(([name, log]) => [log.identity, name] as const),
+  );
+  const rebound: Record<string, LogPosition> = {};
+  for (const [name, position] of Object.entries(previous)) {
+    const holder = holders.get(position.identity);
+    if (holder) rebound[holder] = position;
+    else if (!directoryExists || !familyRotates(logSource(name)!.family))
+      rebound[name] = position;
   }
-  if (`${rotated.dev}:${rotated.ino}` !== current.identity) return;
-  previous["target.jsonl.1"] = current;
-  delete previous["target.jsonl"];
+  return rebound;
 }
-/** Filesystem adapter retains bytes after the last newline for the next read, including split UTF-8. */
-async function readSource(
-  root: string,
-  name: string,
-  previous: Position | undefined,
-  recent: boolean,
-): Promise<SourceWindow | undefined> {
-  let file: Awaited<ReturnType<typeof open>>;
-  const path = join(root, name);
-  try {
-    file = await open(path, "r");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") throw unreadableFile(path, code);
-    // A source the cursor knew has gone: that is a cursor problem, not a missing log.
-    if (!previous) return undefined;
+/** The complete lines of an open file after `previous` (from the start for a file the cursor has not seen), at most the
+ * window. Bytes after the last newline are left for the next read, including split UTF-8. Fails LOG_CURSOR when the
+ * file is not the one the cursor read or is shorter than the position. */
+async function readWindow(
+  log: OpenLog,
+  source: LogSource,
+  previous: LogPosition | undefined,
+): Promise<SourceWindow> {
+  const { handle: file, identity, size } = log;
+  if (previous && (previous.identity !== identity || previous.offset > size))
     throw cursorError();
+  let start = previous?.offset ?? 0;
+  if (previous?.midRecord) {
+    // The rest of a run already reported as unreadable, up to its newline, is not a line of its own; it is passed a
+    // window per read.
+    const found = await nextNewline(file, start, size);
+    if (found.past === undefined)
+      return {
+        source,
+        position: { identity, offset: found.scanned, midRecord: true },
+        rows: [],
+      };
+    start = found.past;
   }
-  try {
-    const metadata = await file.stat();
-    const identity = `${metadata.dev}:${metadata.ino}`;
-    if (!metadata.isFile())
-      throw new RigError(
-        "LOG_UNREADABLE",
-        `The Target log ${path} is not a regular file.`,
-        "Move it aside so Rig can write its log there, then read the logs again.",
-        { path },
-      );
-    if (
-      previous &&
-      (previous.identity !== identity || previous.offset > metadata.size)
-    )
-      throw cursorError();
-    const start = recent
-      ? Math.max(0, metadata.size - maximumReadBytes)
-      : (previous?.offset ?? 0);
-    const buffer = Buffer.alloc(
-      Math.min(maximumReadBytes, metadata.size - start),
-    );
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
-    const bytes = buffer.subarray(0, bytesRead);
-    let begin = recent && start > 0 ? bytes.indexOf(10) + 1 : 0;
-    let end = start + begin;
-    const rows: LogRow[] = [];
-    let lastTimestamp: string | undefined;
-    const record = (line: string, size: number, at: number) => {
-      const entry = parseLine(name, line, size, lastTimestamp);
-      lastTimestamp = entry?.timestamp ?? lastTimestamp;
-      end = at;
-      rows.push({ end, entry });
-    };
-    for (
-      let newline = bytes.indexOf(10, begin);
-      newline !== -1;
-      newline = bytes.indexOf(10, begin)
-    ) {
-      const line = bytes
-        .subarray(begin, newline)
-        .toString("utf8")
-        .replace(/\r$/, "");
-      record(line, newline - begin, start + newline + 1);
-      begin = newline + 1;
-    }
-    // A run longer than the window has no newline inside it: skip to the newline that
-    // ends it (or to the end of the file) as one unreadable record rather than stalling.
-    if (bytesRead === maximumReadBytes && !rows.length) {
-      const skipTo = await nextNewline(file, start + bytesRead, metadata.size);
-      record("", skipTo - start - 1, skipTo);
-      end = skipTo;
-    }
-    return {
-      name,
-      position: { identity, offset: previous?.offset ?? start },
-      end,
-      rows,
-    };
-  } finally {
-    await file.close();
-  }
-}
-/** Byte offset just past the next newline at or after `from`, or the file size when none follows. */
-async function nextNewline(
-  file: Awaited<ReturnType<typeof open>>,
-  from: number,
-  size: number,
-): Promise<number> {
-  const chunk = Buffer.alloc(maximumReadBytes);
-  for (let at = from; at < size;) {
-    const { bytesRead } = await file.read(chunk, 0, chunk.length, at);
-    if (bytesRead === 0) break;
-    const newline = chunk.subarray(0, bytesRead).indexOf(10);
-    if (newline !== -1) return at + newline + 1;
-    at += bytesRead;
-  }
-  return size;
-}
-/** A complete record that cannot be read is reported in place, at the last known time, so nothing after it is hidden. */
-function unreadable(
-  size: number,
-  timestamp: string | undefined,
-): TargetLogEntry {
-  return {
-    timestamp: timestamp ?? "unknown",
-    component: "unknown",
-    stream: "unknown",
-    line: `Rig skipped an unreadable log record (${size} bytes).`,
+  const bytes = await readAt(
+    file,
+    start,
+    Math.min(LOG_WINDOW_BYTES, size - start),
+  );
+  let begin = 0;
+  const rows: LogRow[] = [];
+  let lastTimestamp: string | undefined;
+  const record = (
+    line: string | undefined,
+    length: number,
+    end: number,
+    unfinished = false,
+  ) => {
+    const parsed =
+      line === undefined ? "unreadable" : parseLogRecord(source.family, line);
+    const entry =
+      parsed === "unreadable"
+        ? unreadableEntry(length, lastTimestamp, unfinished)
+        : parsed;
+    lastTimestamp = entry?.timestamp ?? lastTimestamp;
+    rows.push({ end, entry, ...(unfinished ? { midRecord: true } : {}) });
   };
-}
-function parseLine(
-  name: string,
-  line: string,
-  size: number,
-  lastTimestamp: string | undefined,
-): TargetLogEntry | undefined {
-  if (name.endsWith(".launchd.log"))
-    return {
-      timestamp: "unknown",
-      component: name.slice(0, -".launchd.log".length),
-      stream: "unknown",
-      line,
-    };
-  // launchd writes a job's own stdout/stderr (a crashed wrapper, an uncaptured app) without times.
-  const wrapper = wrapperLog.exec(name);
-  if (wrapper)
-    return {
-      timestamp: "unknown",
-      component: wrapper[1]!,
-      stream: wrapper[2] as "stdout" | "stderr",
-      line,
-    };
-  try {
-    if (name === "target.jsonl" || name === "target.jsonl.1")
-      return currentEntry.parse(JSON.parse(line));
-    const event = legacyEvent.parse(JSON.parse(line));
-    if (
-      event.event !== "component.log" ||
-      typeof event.details?.line !== "string"
-    )
-      return undefined;
-    return {
-      timestamp: event.timestamp ?? "unknown",
-      component: event.component ?? "unknown",
-      stream:
-        event.details.stream === "stdout" || event.details.stream === "stderr"
-          ? event.details.stream
-          : "unknown",
-      line: event.details.line,
-    };
-  } catch {
-    return unreadable(size, lastTimestamp);
+  for (
+    let newline = bytes.indexOf(10, begin);
+    newline !== -1;
+    newline = bytes.indexOf(10, begin)
+  ) {
+    record(
+      bytes.subarray(begin, newline).toString("utf8").replace(/\r$/, ""),
+      newline - begin,
+      start + newline + 1,
+    );
+    begin = newline + 1;
   }
+  // A run longer than the window has no newline inside it: skip to the newline that
+  // ends it (or to the end of the file) as one unreadable record rather than stalling.
+  if (bytes.length === LOG_WINDOW_BYTES && !rows.length) {
+    const found = await nextNewline(file, start + bytes.length, size);
+    // No newline within the next window: what follows, up to the newline, is the rest of this run, passed over later.
+    if (found.past === undefined)
+      record(undefined, found.scanned - start, found.scanned, true);
+    else record(undefined, found.past - start - 1, found.past);
+  }
+  return { source, position: { identity, offset: start }, rows };
 }
 function compareEntries(a: TargetLogEntry, b: TargetLogEntry): number {
   const left = Date.parse(a.timestamp),

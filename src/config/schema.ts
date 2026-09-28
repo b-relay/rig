@@ -311,7 +311,7 @@ const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   bin: text.describe(
-    `Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is published as a shim that runs it with the bun rigd install recorded. ${referencesIn("project")}`,
+    `Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the Stable Target and <tool>-<target> elsewhere. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname "$0" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. ${referencesIn("project")}`,
   ),
 };
 const tool = z.strictObject(toolFields);
@@ -1025,6 +1025,30 @@ export const hostConfigSchema = z.strictObject({
     })
     .prefault({})
     .describe("Rig Diagnostic log policy."),
+  logs: z
+    .strictObject({
+      max_bytes: z
+        .number()
+        .int()
+        .min(1024 * 1024)
+        .default(64 * 1024 * 1024)
+        .describe(
+          "Size in bytes at which a Target log file is rotated: the full file is renamed and writing starts a new one. Default 67108864 (64 MiB); at least 1048576 (1 MiB).",
+        ),
+      generations: z
+        .number()
+        .int()
+        .min(0)
+        .max(20)
+        .default(1)
+        .describe(
+          "How many rotated files are kept beside the current one, newest as .1; an older one is deleted. Default 1; 0 keeps none. A Target log uses at most about max_bytes × (generations + 1) per file.",
+        ),
+    })
+    .prefault({})
+    .describe(
+      "Size limits for Target logs: each Target's target.jsonl and the stdout and stderr files launchd writes for a job. Every writer reads a change within a few seconds.",
+    ),
   alerts: z
     .strictObject({
       channels: z

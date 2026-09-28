@@ -13,6 +13,7 @@ import type { UserOutput } from "./types";
 import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
 import { addRecipeCommands } from "./recipe-commands";
 import type { FoundFormat } from "../config/formats";
+import { addLogsCommand } from "./logs-command";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
@@ -33,6 +34,8 @@ export function createRigCommand(
   execute: ExecuteCommand,
   recipes: readonly Recipe[] = BUNDLED_RECIPES,
   configFormat?: (cwd: string) => Promise<FoundFormat | undefined>,
+  /** The clock relative `rig logs` times count back from. */
+  now: () => Date = () => new Date(),
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -86,7 +89,14 @@ export function createRigCommand(
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
-  addLogsCommand(command, cwd, execute);
+  addLogsCommand(command, {
+    execute,
+    now,
+    targetRequest: (target, branch, options) =>
+      targetRequest("logs", target, branch, cwd, options),
+    nonEmpty,
+    positiveInteger,
+  });
   addRecipeCommands(command, {
     cwd,
     output,
@@ -345,45 +355,6 @@ function addDeployCommands(
       );
     },
   );
-}
-function addLogsCommand(
-  command: Command,
-  cwd: string,
-  execute: ExecuteCommand,
-): void {
-  command
-    .command("logs")
-    .description("Read recent Target logs, including stopped Targets.")
-    .argument(
-      "[target]",
-      "Target name (local and live unless rig.yaml renames them) or preview",
-    )
-    .argument("[branch]", "Preview Branch or name", nonEmpty)
-    .option("--project <name>", "Registered Project identity")
-    .option("--deployment <name>", "Explicit Preview name")
-    .option("--follow", "Follow new output until interrupted")
-    .option("--lines <count>", "Number of recent entries", positiveInteger, 50)
-    .action(
-      async (
-        target: string | undefined,
-        branch: string | undefined,
-        options: ScopeOptions & { lines: number; follow?: boolean },
-      ) => {
-        if (options.lines > 10000)
-          throw new RigError(
-            "USAGE",
-            "Request at most 10000 recent log entries.",
-            "Reduce --lines.",
-          );
-        await execute(
-          {
-            ...targetRequest("logs", target, branch, cwd, options),
-            lines: options.lines,
-          },
-          { follow: options.follow },
-        );
-      },
-    );
 }
 interface InitOptions extends ScopeOptions {
   path?: string;

@@ -93,7 +93,7 @@ export interface ActivationJournal {
 /** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
 export interface StopControl {
   /** The kill for stops of `target`: aborted before or during a stop, it cuts the remaining grace to the kill wait
-   * (`rig down --kill`). Asked as each stop begins. */
+   * (`rig down --kill`). Asked as each stop begins, and as each start begins for the stop of a start that fails. */
   readonly kill?: (target: TargetRecord) => AbortSignal | undefined;
   /** Aborted when rigd shuts down: the stop waiting now fails STOP_DETACHED, no further Service is signalled, and the
    * Services keep stopping on their own for the next daemon to finish. */
@@ -383,7 +383,14 @@ export function createTargetLifecycle(
               verified.add(component.name);
             continue;
           }
-          await startService(target, component, supervisor, journal, started);
+          await startService(
+            target,
+            component,
+            supervisor,
+            journal,
+            started,
+            stops,
+          );
           verified.add(component.name);
         }
         // A path an earlier failed start left withheld is released only by that Service passing the gate itself.
@@ -393,6 +400,9 @@ export function createTargetLifecycle(
           outcome: started.length || installed ? "started" : "unchanged",
         };
       } catch (error) {
+        // A start whose clean-up rigd's shutdown detached is left as a crash leaves it: its Service keeps stopping, and
+        // the Services and effects before it stay for the next daemon, checkpoint included.
+        if (isStopDetached(error)) throw error;
         const rollbackErrors: unknown[] = [];
         for (const key of started.reverse())
           try {
@@ -477,12 +487,21 @@ export function createTargetLifecycle(
         const unverified = routedServices(target, (name) => name === service);
         if (unverified.size)
           await effects.route(target, { withhold: unverified });
-        await startService(target, component, supervisor, tracked, started);
+        await startService(
+          target,
+          component,
+          supervisor,
+          tracked,
+          started,
+          stops,
+        );
         await effects.route(target, {
           verified: new Set([service, ...component.dependsOn]),
         });
         return { outcome: started.length ? "started" : "unchanged" };
       } catch (error) {
+        // The supervisor's clean-up of this start was detached by rigd's shutdown: the Service keeps stopping on its own.
+        if (isStopDetached(error)) throw error;
         // Nothing was asked of the supervisor: the refusal itself says how the attempt ended.
         if (incarnation === undefined) throw error;
         // Seen before the cleanup below removes the evidence, because only a process found running here is one Rig ended.
@@ -592,13 +611,15 @@ export function createTargetLifecycle(
     }
   }
   /** One Service start: approval, spawn with a fresh environment, readiness, report. `started` gains the process key
-   * as soon as a process was spawned, so the caller can stop it when a later step fails. */
+   * as soon as a process was spawned, so the caller can stop it when a later step fails. A spawn that never confirmed it
+   * started is stopped by the supervisor itself, under `stops` like the caller's own stops. */
   async function startService(
     target: TargetRecord,
     component: ManagedComponent,
     supervisor: Supervisor,
     journal: ActivationJournal | undefined,
     started: string[],
+    stops: StopControl = {},
   ): Promise<void> {
     const key = `${target.id}:${component.name}`;
     // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
@@ -606,16 +627,28 @@ export function createTargetLifecycle(
     const incarnation = journal
       ? await journal.starting(component.name)
       : randomUUID();
-    const result = await supervisor.ensureRunning({
-      key,
-      componentName: component.name,
-      command: ["/bin/sh", "-c", component.command],
-      cwd: target.plan.workspacePath,
-      env,
-      logRoot: target.logRoot,
-      incarnation,
-      stopGraceMs: serviceGraceMs(component.stopTimeout),
-    });
+    const kill = stops.kill?.(target);
+    const result = await supervisor.ensureRunning(
+      {
+        key,
+        componentName: component.name,
+        command: ["/bin/sh", "-c", component.command],
+        cwd: target.plan.workspacePath,
+        env,
+        logRoot: target.logRoot,
+        incarnation,
+        stopGraceMs: serviceGraceMs(component.stopTimeout),
+      },
+      {
+        ...(kill ? { kill } : {}),
+        observer: {
+          stopping: (graceMs) =>
+            stops.observer?.stopping(target, component.name, graceMs),
+          stopped: (ended) =>
+            stops.observer?.stopped(target, component.name, ended),
+        },
+      },
+    );
     if (result.outcome === "started") started.push(key);
     const process = { observe: () => supervisor.observe(key) };
     if (!hasReadiness(component))

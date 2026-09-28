@@ -9,6 +9,7 @@ import {
 } from "../domain/errors";
 import type {
   OperationRecord,
+  RuntimeState,
   ServiceOutcome,
   ServiceRun,
   TargetRecord,
@@ -207,8 +208,34 @@ async function saveRun(
   deps: Pick<Deps, "store" | "now" | "id">,
   activity?: Activity,
 ): Promise<void> {
+  await saveRuns(
+    target,
+    { [service]: run },
+    deps,
+    activity &&
+      ((state) =>
+        recordActivity(state, {
+          id: deps.id(),
+          projectId: target.projectId,
+          project: state.projects.find((p) => p.id === target.projectId)?.name,
+          target: target.name,
+          occurredAt: deps.now(),
+          ...activity,
+        })),
+  );
+}
+
+/** Saves the records of `runs` (by Service name) and whatever `alongside` records in one write, so all of it is saved or
+ * none is; of the saved Target only those Services' records change. Rejects TARGET_UNKNOWN when the Target is no longer
+ * recorded. `target` is updated in place and put back when the store refuses, so memory never claims more than disk. */
+async function saveRuns(
+  target: TargetRecord,
+  runs: Readonly<Record<string, ServiceRun>>,
+  deps: Pick<Deps, "store">,
+  alongside?: (state: RuntimeState) => void,
+): Promise<void> {
   const before = target.services;
-  target.services = { ...before, [service]: run };
+  target.services = { ...before, ...runs };
   try {
     await deps.store.update((state) => {
       const saved = state.targets.find((t) => t.id === target.id);
@@ -218,16 +245,8 @@ async function saveRun(
           `${target.name} is no longer recorded, so nothing about its Services can be.`,
           "Run rig status to see the recorded Targets.",
         );
-      saved.services = { ...saved.services, [service]: run };
-      if (activity)
-        recordActivity(state, {
-          id: deps.id(),
-          projectId: target.projectId,
-          project: state.projects.find((p) => p.id === target.projectId)?.name,
-          target: target.name,
-          occurredAt: deps.now(),
-          ...activity,
-        });
+      saved.services = { ...saved.services, ...runs };
+      alongside?.(state);
     });
   } catch (error) {
     if (before) target.services = before;
@@ -370,48 +389,62 @@ export function intendRunning(target: TargetRecord): void {
  * stays as it was. No retry stays scheduled. A Service seen running survived and is left alone; one whose observation does
  * not answer within the status budget is counted as stopped, since a restart ends every process. A Service an operator
  * stopped, or whose automatic attempts are used up, keeps its record. Writes no Activity: the restart's own entry says why.
- * Returns whether every Service was settled; a record that could not be saved goes to the diagnostic log. */
+ * The records, and whatever `alongside` records, are saved in one write. Returns whether they were saved; a failure goes
+ * to the diagnostic log. */
 export async function recordStoppedByHostRestart(
   target: TargetRecord,
   restart: HostRestart,
   deps: Deps,
+  alongside?: (state: RuntimeState) => void,
 ): Promise<boolean> {
-  return await settleStopped(target, deps, (component, run) => {
-    if (run?.intent === "stopped" || run?.exhausted) return undefined;
-    const outcome = run?.outcome;
-    if (
-      outcome &&
-      outcome.kind !== "unknown" &&
-      restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
-        undefined
-    )
-      return undefined;
-    return { kind: "unknown", hostRestart: restart, at: deps.now() };
-  });
+  return await settleStopped(
+    target,
+    deps,
+    (component, run) => {
+      if (run?.intent === "stopped" || run?.exhausted) return undefined;
+      const outcome = run?.outcome;
+      if (
+        outcome &&
+        outcome.kind !== "unknown" &&
+        restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
+          undefined
+      )
+        return undefined;
+      return { kind: "unknown", hostRestart: restart, at: deps.now() };
+    },
+    alongside,
+  );
 }
 
 /** Records, after an explicit start of `target` failed, that each Service not seen running was not started, unless the
  * start's journal already said so (with the same error) or an operator stopped it: nothing retries it automatically before
  * the next explicit start, and status reports it failed. An earlier start's failure is replaced, so status names what the
- * Target needs now. Returns whether every Service was settled. */
+ * Target needs now. `alongside` is recorded in the same write, so the failure and whatever the caller records with it
+ * are saved together or not at all. Returns whether they were saved. */
 export async function recordFailedStart(
   target: TargetRecord,
   error: unknown,
   deps: Deps,
+  alongside?: (state: RuntimeState) => void,
 ): Promise<boolean> {
   const errorCode = diagnosticErrorCode(error);
-  return await settleStopped(target, deps, (_component, run) =>
-    run?.intent === "stopped" ||
-    (run?.outcome?.kind === "start-failed" &&
-      run.outcome.errorCode === errorCode)
-      ? undefined
-      : { kind: "start-failed", errorCode, at: deps.now() },
+  return await settleStopped(
+    target,
+    deps,
+    (_component, run) =>
+      run?.intent === "stopped" ||
+      (run?.outcome?.kind === "start-failed" &&
+        run.outcome.errorCode === errorCode)
+        ? undefined
+        : { kind: "start-failed", errorCode, at: deps.now() },
+    alongside,
   );
 }
 
 /** Gives each managed Service of `target` not seen running the outcome `decide` returns for it, clearing any scheduled
  * retry; `decide` returning nothing leaves the record alone. A Service whose observation does not answer within the status
- * budget counts as not running. Returns whether every Service was settled; each failure goes to the diagnostic log. */
+ * budget counts as not running. The outcomes and whatever `alongside` records are saved in one write, so all of it is
+ * saved or none is. Returns whether it was saved; a failure goes to the diagnostic log. */
 async function settleStopped(
   target: TargetRecord,
   deps: Deps,
@@ -419,12 +452,13 @@ async function settleStopped(
     component: ManagedComponent,
     run: ServiceRun | undefined,
   ) => ServiceOutcome | undefined,
+  alongside?: (state: RuntimeState) => void,
 ): Promise<boolean> {
-  let settled = true;
-  for (const component of target.plan.components) {
-    if (component.kind !== "managed") continue;
-    const service = component.name;
-    try {
+  const runs: Record<string, ServiceRun> = {};
+  try {
+    for (const component of target.plan.components) {
+      if (component.kind !== "managed") continue;
+      const service = component.name;
       const [observed] = await boundedObservations(
         [(signal) => deps.observations.process(target, component, signal)],
         deps.observationBudgetMs,
@@ -444,21 +478,23 @@ async function settleStopped(
         intent: "running",
         attempts: [],
       };
-      await saveRun(target, service, { ...rest, outcome }, deps);
-    } catch (error) {
-      settled = false;
-      await deps
-        .diagnostic({
-          operationId: deps.id(),
-          action: "reconcile",
-          outcome: "failed",
-          target: target.name,
-          errorCode: diagnosticErrorCode(error),
-        })
-        .catch(() => {});
+      runs[service] = { ...rest, outcome };
     }
+    if (Object.keys(runs).length || alongside)
+      await saveRuns(target, runs, deps, alongside);
+    return true;
+  } catch (error) {
+    await deps
+      .diagnostic({
+        operationId: deps.id(),
+        action: "reconcile",
+        outcome: "failed",
+        target: target.name,
+        errorCode: diagnosticErrorCode(error),
+      })
+      .catch(() => {});
+    return false;
   }
-  return settled;
 }
 
 /** One pass over a Target meant to run. A running Service is left alone, which is how a process that survived the daemon is

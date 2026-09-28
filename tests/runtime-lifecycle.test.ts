@@ -6,6 +6,7 @@ import {
 } from "../src/runtime/lifecycle";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { Supervisor } from "../src/providers/contracts";
+import { stopDetached } from "../src/domain/stop-budget";
 const target: TargetRecord = {
   id: "t1",
   projectId: "p1",
@@ -125,6 +126,88 @@ test("readiness expires even when a health provider ignores cancellation, then r
   expect([...running]).toEqual([]);
   expect(rolledBack).toBe(true);
 }, 500);
+test("a start whose clean-up rigd's shutdown detached is left as a crash leaves it: nothing is rolled back or stopped", async () => {
+  const running = new Set<string>();
+  const stops: string[] = [];
+  let rolledBack = false;
+  const effects: TargetEffects = {
+    async checkpoint(record) {
+      return {
+        targetId: record.id,
+        async commit() {},
+        async rollback() {
+          rolledBack = true;
+        },
+      };
+    },
+    async restoreEffects() {},
+    async commitEffects() {},
+    async retireSuperseded() {},
+    async pruneCheckpoints() {
+      return [];
+    },
+    async retireArtifacts() {},
+    supervisor: () => ({
+      async observe(key) {
+        return running.has(key)
+          ? { state: "running", pid: 1 }
+          : { state: "stopped" };
+      },
+      async ensureRunning(request) {
+        if (request.key.endsWith(":web"))
+          throw stopDetached({ key: request.key });
+        running.add(request.key);
+        return { outcome: "started" };
+      },
+      async stop(key) {
+        stops.push(key);
+        running.delete(key);
+        return { outcome: "stopped" };
+      },
+      async shutdown() {},
+      async detach() {},
+    }),
+    async prepare() {},
+    async environment() {
+      return {};
+    },
+    async health() {
+      return { ready: true };
+    },
+    async build() {},
+    async install() {
+      return { outcome: "unchanged" };
+    },
+    async route() {},
+    async removeRoute() {},
+    listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
+  };
+  const lifecycle = createTargetLifecycle(effects, {
+    schedule(delayMs, fire) {
+      const timer = setTimeout(fire, Math.min(delayMs, 1));
+      return () => clearTimeout(timer);
+    },
+    startGraceMs: 0,
+  });
+  await expect(lifecycle.up(structuredClone(target))).rejects.toMatchObject({
+    code: "STOP_DETACHED",
+  });
+  // The Services before it and the effects checkpoint stay for the next daemon.
+  expect(rolledBack).toBe(false);
+  expect(stops).toEqual([]);
+  expect([...running]).toEqual(["t1:api"]);
+  // An automatic restart of that Service is not stopped again either: its clean-up is still under way.
+  await expect(
+    lifecycle.recover(structuredClone(target), "web", {
+      async starting() {
+        return "start-2";
+      },
+      async activated() {},
+    }),
+  ).rejects.toMatchObject({ code: "STOP_DETACHED" });
+  expect(stops).toEqual([]);
+});
+
 test("up preserves running components and rollback stops only newly started components", async () => {
   const stopped: string[] = [];
   const started: string[] = [];

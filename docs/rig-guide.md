@@ -1425,7 +1425,9 @@ so on stderr; commit it with the Project so it deploys with every checkout. A
 file that is already there with the same content is left alone. One that
 differs is never overwritten: `generate` still prints the block, leaves the
 file, and fails `RECIPE_FILE_CHANGED`, pointing at `rig recipe diff`. To take
-Rig's copy, move yours aside and generate again. `--name` renames the Service
+Rig's copy, move yours aside and generate again. A recipe file is a plain file
+of the Project: a path through a symbolic link (a linked `scripts` directory)
+is refused as `RECIPE_FILE_PATH`, since other checkouts would not carry it. `--name` renames the Service
 and every reference the block makes to itself; a recipe file's path stays the
 same. The recipe's programs (`initdb`, `postgres`, `pg_isready`; `bun` and
 `bunx` for Convex) must be on the supervisor's `PATH`; Rig does not install

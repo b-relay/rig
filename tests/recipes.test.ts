@@ -768,12 +768,22 @@ test("a recipe file is never written through a linked directory that leads out o
   );
   expect(linked.code).toBe(1);
   expect(linked.err).toContain(
-    "The recipe file scripts/rig-convex.ts is outside the Project directory",
+    "The recipe file scripts/rig-convex.ts is reached through the symbolic link",
   );
   expect(linked.err).not.toContain("Details:");
   await expect(
     readProjectFile(project, "scripts/rig-convex.ts"),
   ).rejects.toMatchObject({ code: "RECIPE_FILE_PATH" });
+  // A link with an absolute target inside this checkout is refused too: every other checkout would still point here.
+  await rm(join(project, "scripts"));
+  await mkdir(join(project, "actual-scripts"));
+  await symlink(join(project, "actual-scripts"), join(project, "scripts"));
+  await expect(
+    createProjectFiles().create(project, "scripts/rig-convex.ts", "x"),
+  ).rejects.toMatchObject({ code: "RECIPE_FILE_PATH" });
+  await rm(join(project, "scripts"));
+  await createProjectFiles().create(project, "scripts/rig-convex.ts", "x");
+  expect(await readProjectFile(project, "scripts/rig-convex.ts")).toBe("x");
 
   const long = Array.from({ length: 5000 }, (_, n) => `line ${n}`).join("\n");
   expect(lineDiff(long, `${long}\nmore`)).toBeUndefined();

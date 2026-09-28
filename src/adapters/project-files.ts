@@ -1,5 +1,5 @@
-import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { access, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ProjectFiles } from "../cli/types";
 import { RigError, errorMessage } from "../domain/errors";
 
@@ -70,28 +70,28 @@ export function createProjectFiles(): ProjectFiles {
     },
   };
 }
-/** Refuses a path whose file, or nearest existing directory when there is no file, is outside the Project directory
- * once symbolic links are followed: a `scripts` linked elsewhere holds files the Project's commits never carry. */
+/** Refuses a recipe file path any part of which, below the Project directory, is a symbolic link. A link out of the
+ * Project holds files its commits never carry, and a link with an absolute target inside it still points at this one
+ * checkout from every other: a recipe file is a plain file of the Project, at its path. */
 async function refuseLinkOut(
   directory: string,
   absolute: string,
   path: string,
 ): Promise<void> {
-  let parent = absolute;
-  while (!(await present(parent)) && dirname(parent) !== parent)
-    parent = dirname(parent);
-  const [real, project] = await Promise.all([
-    realpath(parent),
-    realpath(directory),
-  ]);
-  const inside = relative(project, real);
-  if (inside.startsWith("..") || isAbsolute(inside))
-    throw new RigError(
-      "RECIPE_FILE_PATH",
-      `The recipe file ${path} is outside the Project directory ${directory}: ${parent} leads to ${real}.`,
-      `Replace the link at ${parent} with a file or directory of the Project itself, so its checkout carries it.`,
-      { path },
-    );
+  const parts = relative(directory, absolute).split(sep);
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const part = join(directory, ...parts.slice(0, depth));
+    const metadata = await lstat(part).catch(() => undefined);
+    // Nothing further down exists yet: create makes plain directories and the file.
+    if (!metadata) return;
+    if (metadata.isSymbolicLink())
+      throw new RigError(
+        "RECIPE_FILE_PATH",
+        `The recipe file ${path} is reached through the symbolic link ${part}, so a checkout of the Project does not carry it as its own.`,
+        `Replace the link at ${part} with a file or directory of the Project itself.`,
+        { path },
+      );
+  }
 }
 async function present(path: string): Promise<boolean> {
   return access(path).then(

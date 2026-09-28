@@ -79,7 +79,7 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 - `bun run format:check`
 
 During development and review rounds, run `bun run typecheck` plus the test
-files covering the changed code (`bun test <path or name fragment>`) or
+files covering the changed code (`bun test <file path fragment>`) or
 `bun run test:fast`. Before merging to main or deploying to live, run the full
 suite, `bun run build`, and `bun run format:check`.
 

@@ -4,6 +4,8 @@ import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import {
   createHealthMonitor,
+  type HealthMonitorDependencies,
+  type HealthRestartOutcome,
   type HealthRestartRequest,
 } from "../src/runtime/health-monitor";
 
@@ -90,8 +92,8 @@ function fixture(
   let answer: (service: string) => Promise<boolean> | boolean = () => true;
   let busy = false;
   /** What the next restarts do: start a new process, fail to stop the old one, or find it already replaced. */
-  let restartOutcome: "restarted" | "failed" | "skipped" = "restarted";
-  const monitorUnderTest = createHealthMonitor({
+  let restartOutcome: HealthRestartOutcome = "restarted";
+  const dependencies: HealthMonitorDependencies = {
     store: {
       async read() {
         return structuredClone(state);
@@ -143,7 +145,8 @@ function fixture(
     },
     async diagnostic() {},
     ...(options.concurrency ? { concurrency: options.concurrency } : {}),
-  });
+  };
+  let monitorUnderTest = createHealthMonitor(dependencies);
   /** Runs one pass per second of fake time up to `until` (milliseconds), letting each pass's work settle. */
   const runUntil = async (until: number) => {
     while (now < until) {
@@ -157,7 +160,13 @@ function fixture(
     }
   };
   return {
-    monitor: monitorUnderTest,
+    get monitor() {
+      return monitorUnderTest;
+    },
+    /** A new rigd: nothing in memory, the same records. */
+    restartDaemon() {
+      monitorUnderTest = createHealthMonitor(dependencies);
+    },
     state,
     checks,
     restarts,
@@ -169,7 +178,7 @@ function fixture(
     set busy(value: boolean) {
       busy = value;
     },
-    set restartOutcome(value: "restarted" | "failed" | "skipped") {
+    set restartOutcome(value: HealthRestartOutcome) {
       restartOutcome = value;
     },
     /** An operator's explicit restart: a new process, with a record that carries no unhealthy stretch. */
@@ -453,4 +462,94 @@ test("a check that waited for a slot does not run once its Target has become bus
   release();
   await f.monitor.idle();
   expect(f.checks.map((check) => check.service)).toEqual(["api"]);
+});
+
+test("a restart that could not observe the process is asked again, without counting as a restart", async () => {
+  const f = fixture({ interval: 5, failures: 1, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartOutcome = "deferred";
+  await f.runUntil(6 * SECOND);
+  f.restartOutcome = "restarted";
+  await f.runUntil(8 * SECOND);
+  expect(
+    f.restarts.map((restart) => [restart.at / SECOND, restart.attempt]),
+  ).toEqual([
+    [6, 1],
+    [7, 1],
+  ]);
+});
+
+test("a check's answer about a process that was replaced meanwhile is dropped", async () => {
+  const f = fixture({ interval: 5, failures: 1 });
+  let answer!: (passed: boolean) => void;
+  f.answer = () => new Promise<boolean>((resolve) => (answer = resolve));
+  await f.runUntil(6 * SECOND);
+  expect(f.checks).toHaveLength(1);
+  // An explicit restart finished while the check was out.
+  f.replace("web");
+  answer(false);
+  await f.monitor.idle();
+  expect(f.monitor.results({ id: "t1" }, "web")).not.toMatchObject({
+    status: "unhealthy",
+  });
+  expect(f.activity()).toEqual([]);
+});
+
+test("an explicit restart clears the old process's result at the next pass, without waiting for its next check", async () => {
+  const f = fixture({ interval: 3600, failures: 1 });
+  f.answer = () => false;
+  await f.runUntil(3602 * SECOND);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "unhealthy",
+    marked: true,
+  });
+  f.replace("web");
+  await f.runUntil(3603 * SECOND);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "pending",
+  });
+  expect(f.monitor.results({ id: "t1" }, "web")).not.toHaveProperty("output");
+});
+
+test("retry_for is judged while the Service stays unhealthy, not only when a new process fails again", async () => {
+  const f = fixture({
+    interval: 3600,
+    failures: 1,
+    onFailure: "restart",
+    retryFor: 600,
+  });
+  f.answer = () => false;
+  await f.runUntil(5000 * SECOND);
+  // Marked and restarted at 3601 s; it gives up at 4201 s, long before the new process's first check at about 7200 s.
+  expect(f.restarts.map((restart) => restart.at / SECOND)).toEqual([3601]);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    gaveUp: true,
+  });
+  expect(f.state.activity.at(-1)?.occurredAt).toBe(
+    new Date(4201 * SECOND).toISOString(),
+  );
+});
+
+test("a new rigd remembers that Rig gave up: it neither restarts the Service again nor says so twice", async () => {
+  const f = fixture({
+    interval: 5,
+    failures: 1,
+    onFailure: "restart",
+    retryFor: 600,
+  });
+  f.answer = () => false;
+  await f.runUntil(700 * SECOND);
+  const restarts = f.restarts.length;
+  const gaveUp = () =>
+    f.activity().filter((message) => message.includes("stopped restarting"));
+  expect(gaveUp()).toHaveLength(1);
+  f.restartDaemon();
+  await f.runUntil(2000 * SECOND);
+  expect(f.restarts).toHaveLength(restarts);
+  expect(gaveUp()).toHaveLength(1);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "unhealthy",
+    marked: true,
+    gaveUp: true,
+  });
 });

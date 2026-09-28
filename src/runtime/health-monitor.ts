@@ -34,6 +34,10 @@ export type HealthResults = (
   service: string,
 ) => ServiceHealth | undefined;
 
+/** How a health restart ended: done, or tried and failed (both count for the back-off); skipped because the process that
+ * was judged is gone or was replaced; or deferred because nothing could be established about it, so it is asked again. */
+export type HealthRestartOutcome =
+  "restarted" | "failed" | "skipped" | "deferred";
 /** A health restart rigd is asked for: which Service, and what the checks saw. */
 export interface HealthRestartRequest {
   targetId: string;
@@ -56,10 +60,8 @@ export interface HealthMonitorDependencies {
   id(): string;
   /** Whether an Operation holds or waits for the Target, so one of its Services may be starting or stopping. */
   busy(target: TargetRecord): boolean;
-  /** Stops and starts one Service through the normal stop path, under its Target's lock; says whether it did. */
-  restart(
-    request: HealthRestartRequest,
-  ): Promise<"restarted" | "skipped" | "failed">;
+  /** Stops and starts one Service through the normal stop path, under its Target's lock; says how that ended. */
+  restart(request: HealthRestartRequest): Promise<HealthRestartOutcome>;
   /** Calls `fire` once after `delayMs`; returns the cancellation. A test passes a fake clock's. */
   schedule(delayMs: number, fire: () => void): () => void;
   diagnostic: RuntimeDependencies["diagnostic"];
@@ -173,8 +175,21 @@ export function createHealthMonitor(
           monitored.add(key);
           policies.set(key, policy);
           if (inFlight.has(key)) continue;
+          const known = states.get(key);
+          const recordedIncarnation = currentRun(
+            target,
+            component.name,
+          )?.incarnation;
+          // Every start is recorded before it spawns: a process other than the one judged is a new one, whose checks start
+          // afresh even before it is observed, so the old one's result never speaks for it.
           const state =
-            states.get(key) ?? seeded(target, component.name, NEW_HEALTH);
+            known === undefined
+              ? seeded(target, component.name, NEW_HEALTH)
+              : known.incarnation !== undefined &&
+                  recordedIncarnation !== undefined &&
+                  recordedIncarnation !== known.incarnation
+                ? fresh(target, component.name, known)
+                : known;
           // Starting or stopping: no check, and checks begin again a full interval after the Target is free.
           if (deps.busy(target)) {
             const { eligibleSince: _paused, ...rest } = state;
@@ -235,6 +250,18 @@ export function createHealthMonitor(
     }
     return true;
   }
+  /** The state of a new process of the Service: no result of its own, and the unhealthy stretch only when its record
+   * carries one on (a health or automatic restart did); the last output stays with a stretch that goes on. */
+  function fresh(
+    target: TargetRecord,
+    service: string,
+    before: HealthState,
+  ): HealthState {
+    const base = seeded(target, service, NEW_HEALTH);
+    return base.episode && before.output !== undefined
+      ? { ...base, output: before.output }
+      : base;
+  }
   /** The state a Service starts from: `base`, with the unhealthy stretch its record says a health restart continued. */
   function seeded(
     target: TargetRecord,
@@ -243,7 +270,14 @@ export function createHealthMonitor(
   ): HealthState {
     const record = currentRun(target, service)?.healthRestarts;
     return record
-      ? { ...base, episode: { since: record.since, restarts: [...record.at] } }
+      ? {
+          ...base,
+          episode: {
+            since: record.since,
+            restarts: [...record.at],
+            ...(record.gaveUp !== undefined ? { gaveUp: record.gaveUp } : {}),
+          },
+        }
       : base;
   }
 
@@ -280,11 +314,7 @@ export function createHealthMonitor(
         const saved = (await deps.store.read()).targets.find(
           (t) => t.id === target.id,
         );
-        const { episode: _ended, ...rest } = state;
-        base = seeded(saved ?? target, component.name, {
-          ...rest,
-          failures: 0,
-        });
+        base = fresh(saved ?? target, component.name, state);
       }
       states.set(key, {
         ...base,
@@ -302,8 +332,20 @@ export function createHealthMonitor(
         deps.observations.health(target, component, signal, policy.timeoutMs),
       policy.timeoutMs,
     );
-    // An Operation that began meanwhile may have stopped the process the check asked; its answer says nothing now.
+    // An Operation that began meanwhile may have stopped the process the check asked, or already replaced it; its answer
+    // then says nothing about what runs now.
     if (paused(target, key)) return undefined;
+    const after = await withinTimeout(
+      (signal) => deps.observations.process(target, component, signal),
+      policy.timeoutMs,
+    );
+    if (
+      after === undefined ||
+      "ready" in after ||
+      after.state !== "running" ||
+      after.incarnation !== observed.incarnation
+    )
+      return undefined;
     const at = deps.now();
     const checked = recordCheck(
       states.get(key) ?? state,
@@ -355,7 +397,9 @@ export function createHealthMonitor(
     const episode = state.episode;
     if (!episode) return;
     if (action.kind === "give-up") {
-      states.set(key, gaveUp(state, deps.now()));
+      const at = deps.now();
+      states.set(key, gaveUp(state, at));
+      await rememberGaveUp(target, component.name, state.incarnation, at);
       await record(target, {
         action: "health",
         outcome: "failed",
@@ -377,6 +421,7 @@ export function createHealthMonitor(
       restarts: episode.restarts,
     });
     const current = states.get(key) ?? state;
+    if (outcome === "deferred") return;
     if (outcome === "skipped") {
       // The process that was judged is gone or was replaced meanwhile: the next pass looks at what runs now, afresh.
       const { incarnation: _gone, eligibleSince: _next, ...rest } = current;
@@ -415,6 +460,21 @@ export function createHealthMonitor(
     }
   }
 
+  /** That Rig gave up, on the stretch's record, so a new rigd does not restart it again or say so twice. */
+  async function rememberGaveUp(
+    target: TargetRecord,
+    service: string,
+    incarnation: string | undefined,
+    at: number,
+  ): Promise<void> {
+    await deps.store.update((state) => {
+      const run = state.targets.find((t) => t.id === target.id)?.services?.[
+        service
+      ];
+      if (run?.healthRestarts && run.incarnation === incarnation)
+        run.healthRestarts = { ...run.healthRestarts, gaveUp: at };
+    });
+  }
   /** A stretch that ended: the record no longer carries it, so a new rigd does not continue it. */
   async function forgetStretch(
     target: TargetRecord,

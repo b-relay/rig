@@ -116,15 +116,16 @@ export function healthAction(
   if (
     policy.onFailure !== "restart" ||
     !episode ||
-    episode.gaveUp !== undefined ||
-    !isMarkedUnhealthy(state, policy)
+    episode.gaveUp !== undefined
   )
     return { kind: "none" };
+  // Judged while the stretch is open, whatever the count of the process now running: a restart starts that again.
   if (
     policy.retryForMs !== undefined &&
     now - episode.since >= policy.retryForMs
   )
     return { kind: "give-up" };
+  if (!isMarkedUnhealthy(state, policy)) return { kind: "none" };
   const last = episode.restarts.at(-1);
   const due =
     last === undefined

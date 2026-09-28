@@ -5,7 +5,10 @@ import { boundedOutput } from "../domain/health-policy";
 import type { OperationPhase } from "../domain/operation-progress";
 import type { TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
-import type { HealthRestartRequest } from "./health-monitor";
+import type {
+  HealthRestartOutcome,
+  HealthRestartRequest,
+} from "./health-monitor";
 import {
   activationJournal,
   recordFailedAttempt,
@@ -25,7 +28,8 @@ type Deps = Pick<
   | "diagnostic"
 >;
 
-/** One health restart, run by an Operation that holds the Target: the Service's process the checks judged is stopped
+/** One health restart, run by an Operation that holds the Target. `deferred` when the process could not be observed, so
+ * nothing is known yet: the monitor asks again. The Service's process the checks judged is stopped
  * through the normal stop path, within its stop_timeout, and started again as automatic restart starts it (fresh
  * environment, start check, route). The start spends none of the crash-restart budget; the record carries the unhealthy
  * stretch on, so a new rigd continues the back-off. Activity records the restart with the checks' last output, or why it
@@ -36,7 +40,7 @@ export async function restartForHealth(
   request: HealthRestartRequest,
   deps: Deps,
   phase: (phase: OperationPhase) => void,
-): Promise<"restarted" | "skipped" | "failed"> {
+): Promise<HealthRestartOutcome> {
   const component = target.plan.components.find(
     (candidate): candidate is ManagedComponent =>
       candidate.kind === "managed" && candidate.name === request.service,
@@ -48,9 +52,11 @@ export async function restartForHealth(
     deps.observationBudgetMs,
     deps.observationDeadline,
   );
-  const observed = seen?.kind === "completed" ? seen.value : undefined;
+  // Nothing established about the process: try again later, as if nothing had happened.
+  if (seen?.kind !== "completed") return "deferred";
+  const observed = seen.value;
   if (
-    observed?.state !== "running" ||
+    observed.state !== "running" ||
     (request.incarnation !== undefined &&
       observed.incarnation !== request.incarnation)
   )

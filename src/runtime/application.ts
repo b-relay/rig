@@ -76,7 +76,10 @@ import {
   type TargetLifecycle,
 } from "./lifecycle";
 import { restartForHealth } from "./health-restart";
-import type { HealthRestartRequest } from "./health-monitor";
+import type {
+  HealthRestartOutcome,
+  HealthRestartRequest,
+} from "./health-monitor";
 import {
   activeStops,
   killSignal,
@@ -158,7 +161,7 @@ export interface RigRuntime extends ProjectStatusReader {
    * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
   restartUnhealthy(
     request: HealthRestartRequest,
-  ): Promise<"restarted" | "skipped" | "failed">;
+  ): Promise<HealthRestartOutcome>;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
@@ -1275,7 +1278,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
    * holds back judgement of a Stable Target while it runs. */
   const restartUnhealthy = async (
     request: HealthRestartRequest,
-  ): Promise<"restarted" | "skipped" | "failed"> => {
+  ): Promise<HealthRestartOutcome> => {
     if (draining) return "skipped";
     const recorded = (await deps.store.read()).targets.find(
       (target) => target.id === request.targetId,

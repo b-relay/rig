@@ -80,7 +80,7 @@ export interface ServiceRun {
   stopKilled?: "timeout" | "request";
   /** The unhealthy stretch a health restart started this process in: when it began and each restart (Unix milliseconds).
    * Automatic starts carry it on; an explicit start clears it. */
-  healthRestarts?: { since: number; at: number[] };
+  healthRestarts?: { since: number; at: number[]; gaveUp?: number };
 }
 
 export interface TargetRecord {

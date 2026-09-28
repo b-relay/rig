@@ -267,6 +267,13 @@ const services = z
             .describe(
               "Unix milliseconds of each health restart in this stretch.",
             ),
+          gaveUp: z
+            .number()
+            .finite()
+            .optional()
+            .describe(
+              "Unix milliseconds when Rig stopped restarting it because health.retry_for ran out.",
+            ),
         })
         .optional()
         .describe(

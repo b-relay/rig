@@ -61,6 +61,8 @@ function world(
   /** The next start of this Service never confirms it started: the supervisor stops what it spawned, held like any stop
    * until the test ends it, then fails the start. */
   const unconfirmed = new Set<string>();
+  /** The next start of this Service is detached by rigd's shutdown while its supervisor cleans it up. */
+  const detachedStarts = new Set<string>();
   const effects: TargetEffects = {
     async checkpoint(target) {
       return { targetId: target.id, async commit() {}, async rollback() {} };
@@ -105,6 +107,13 @@ function world(
         });
       },
       async ensureRunning(request, control) {
+        const detached = [...detachedStarts].find((name) =>
+          request.key.endsWith(`:${name}`),
+        );
+        if (detached) {
+          detachedStarts.delete(detached);
+          throw stopDetached({ key: request.key });
+        }
         const silent = [...unconfirmed].find((name) =>
           request.key.endsWith(`:${name}`),
         );
@@ -305,6 +314,7 @@ function world(
     running,
     failing,
     unconfirmed,
+    detachedStarts,
     stopOf,
     hold: (on = true) => {
       holding = on;
@@ -635,6 +645,24 @@ test("a start that never confirmed it started is stopped within the Service's st
   ).toMatchObject({
     message: expect.stringContaining("worker was killed by --kill (SIGKILL)"),
   });
+});
+
+test("a rig up whose start rigd's shutdown detached records none of its Services as not started: they are left as a crash leaves them", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "down", target: "local" });
+  w.detachedStarts.add("worker");
+  await expect(
+    w.command({ action: "up", target: "local" }),
+  ).rejects.toMatchObject({ code: "STOP_DETACHED" });
+  // web started and keeps its restart policy; nothing marks it start-failed.
+  const services = w.state.targets[0]!.services ?? {};
+  expect(
+    Object.values(services).filter(
+      (run) => run.outcome?.kind === "start-failed",
+    ),
+  ).toEqual([]);
+  expect(w.running.has(`${w.state.targets[0]!.id}:web`)).toBe(true);
 });
 
 test("a Preview destroy waits for the Preview's stop_timeout before its storage is deleted", async () => {

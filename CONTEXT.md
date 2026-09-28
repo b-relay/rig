@@ -714,6 +714,18 @@ A Service's policy for revival after it exits, distinct from an explicit
 Restart or start request.
 _Avoid_: once-per-deploy job, absence of supervision
 
+### Host restart
+
+The Mac restarting (a new boot) or the user logging out and in again (a new
+login session), which ends every process Rig ran (a logout, those of the old
+login session). `rigd` detects one at its
+start by comparing the boot and login session with the ones it last recorded.
+
+_Relationship_: after a Host restart, `rigd` starts each Stable Target meant to
+run as `rig up` would; the Working copy and Previews stay stopped until
+`rig up`, whatever their Automatic restart policy.
+_Avoid_: reboot policy, restart_after_reboot
+
 ### Down (Stable Target)
 
 A Stable Target meant to run that is not serving: one of its Services failed,

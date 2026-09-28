@@ -1195,6 +1195,54 @@ Nothing is started again while `rigd` itself is down; the first pass of the
 next daemon applies the same rules to what it finds. Every start, automatic
 or not, reads the env files fresh.
 
+#### After the Mac restarts or you log in again
+
+A restart of the Mac ends every Service; logging out and in again ends those
+of the old login session. Rig's
+Service launchd jobs live under `$RIG_ROOT/launchd`, not
+`~/Library/LaunchAgents`, so launchd does not load them again at login, but
+`rigd` itself comes back. At each start, `rigd` compares the Host's boot
+(`kern.bootsessionuuid`, new at every boot) and your GUI login session (the
+audit session of launchd's `gui/<uid>` domain, new at every login) with the
+ones it recorded last time:
+
+- **Stable Targets meant to run** are started again the way `rig up` starts
+  them: every Service in dependency order, whatever its `restart` policy, with
+  fresh automatic-restart budgets. Activity records one `host-restart` entry
+  ("The Mac restarted …" or "You logged out and in again …") and one `up` entry
+  per Stable Target. `rig status` says each Service was started again by
+  `rigd` ("restarted after reboot" or "restarted after login"). A Stable Target
+  that fails to start is reported `failed` (every Service the start left stopped
+  is, and none is retried automatically), stays meant to run, and waits for
+  `rig up`.
+- **The Working copy and Previews** stay stopped, even under
+  `restart: always`. `rig status` reports their Services `stopped`, with
+  `exit: unknown` and a reason that says they stopped when the Mac restarted
+  (or when you logged out). Run `rig up` to start them. Until that start, no
+  unknown exit of that Target is retried automatically; after it, the usual
+  rules apply again. A Service that survived a logout is left running, and
+  one whose earlier exit had already left it stopped (a clean exit under
+  `on-failure`, say) keeps that status.
+- Targets meant to be stopped stay stopped.
+
+A plain `rigd` restart in the same boot and login session detects nothing and
+follows the rules above. So does the first start of a `rigd` that had recorded
+no session yet. A new boot is detected only when both boots could be read, and
+a new login only when both login sessions could be (there is none to read
+without a GUI login, over SSH only, say). A start that finds no restart but
+could not read part of the session keeps the earlier record, so a reboot it
+could not see yet is found at the next start. After a restart, a field the
+read missed is kept from what was known before, except that a reboot ends
+every login session, so no login is kept across one. `rigd` records the session only
+once it has acted on the restart for every Target, so a daemon that stops or
+is asked to stop halfway keeps it pending: the next start finishes it (even if
+it can read nothing of the session) without recording it in Activity a second
+time and without starting (or retrying) a Stable Target it already started, or
+failed to start, for that restart. A restart whose Activity entry could not be
+written yet is recorded by the start that finishes it. Only a session that changed since the
+pending restart was found, such as a logout and login after it, is a new
+restart.
+
 ### Operator alerts
 
 `rigd` tells you when a Stable Target stops serving and stays down, so an
@@ -1220,7 +1268,9 @@ its whole Project such as `rig forget`), or an observation that did
 not answer, changes nothing either way: a Target already counted as down gets
 no first alert while an operation may be fixing it. Operations on different
 Targets run at the same time; each one running, or waiting its turn, holds
-back only the Stable Targets it may be changing.
+back only the Stable Targets it may be changing. After the Mac restarts or you
+log in again, `rigd` starting a Stable Target again counts the same way, so
+a slow start is not mistaken for downtime since the restart.
 
 The timing:
 

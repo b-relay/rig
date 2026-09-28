@@ -239,11 +239,11 @@ async function fixture(host: Record<string, unknown> = {}) {
       async artifact() {
         return "missing";
       },
-      async persistent() {
-        return true;
-      },
       async listening() {
         return [];
+      },
+      async persistent() {
+        return true;
       },
     },
     files: {

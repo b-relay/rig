@@ -10,6 +10,7 @@ import type {
   ServiceRun,
   TargetRecord,
 } from "../domain/runtime";
+import { recoveredByDownFirst } from "../domain/errors";
 import { composeAlert, recoverCommand } from "./alert-messages";
 import { currentRun } from "./supervision";
 
@@ -55,6 +56,9 @@ export interface MutationInFlight {
   target?: string;
   /** The kind of Target the command selected, once rigd has selected it; it decides over `target`. */
   kind?: TargetRecord["kind"];
+  /** The recorded Target the operation works on, when rigd's own work names it by id (the first pass starting a Stable
+   * Target again after a Host restart); it decides over everything else. */
+  targetId?: string;
 }
 
 /** Actions that work on one Target, which is the Working copy when the command names none. A `git-push` is not one: it
@@ -68,7 +72,8 @@ const TARGET_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** The ids of the recorded Stable Targets any of `mutations`, the operations in flight at once, may be changing now: the
- * union of what each one may change. Each names its Project by name or directory; one it names by a directory no Project
+ * union of what each one may change. One that names a recorded Target by id may change that Target only. The others
+ * name their Project by name or directory; one that names it by a directory no Project
  * is registered at, or not at all, may be any. Once rigd has selected the kind of Target a mutation works on, that
  * decides: the Stable Target, or none. Before that, a mutation of a Preview changes no Stable
  * Target, nor does a Target action that names no Target, which selects the Working copy; any other mutation without a
@@ -99,6 +104,10 @@ export function engagedTargets(
       if (target.recovery?.operationId === mutation.operationId)
         engaged.add(target.id);
       if (target.kind !== "live") continue;
+      if (mutation.targetId !== undefined) {
+        if (mutation.targetId === target.id) engaged.add(target.id);
+        continue;
+      }
       if (projects && !projects.has(target.projectId)) continue;
       if (mutation.kind !== undefined) {
         if (mutation.kind === "live") engaged.add(target.id);
@@ -214,7 +223,17 @@ export function stableTargetCondition(input: {
       reason: component.reason ?? briefReason(component, runs[index]),
     })),
     ...(unpublishedRoute ? { unpublishedRoute } : {}),
-    recover: recoverCommand(identity),
+    recover: recoverCommand(
+      identity,
+      runs.some(
+        (run) =>
+          run?.outcome &&
+          "errorCode" in run.outcome &&
+          recoveredByDownFirst(run.outcome.errorCode),
+      )
+        ? "down"
+        : undefined,
+    ),
   };
 }
 

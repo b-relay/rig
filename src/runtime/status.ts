@@ -10,7 +10,7 @@ import type {
   PersistentComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import { runningNote, stoppedStanding } from "./supervision";
+import { runningNote, stoppedStanding, supervisionScope } from "./supervision";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
 export interface ObservationEffects {
   process(
@@ -81,7 +81,12 @@ export async function observeTargets(
             };
           const observed = await effects.process(target, component, signal);
           if (observed.state === "stopped") {
-            const standing = stoppedStanding(target, component, observed);
+            const standing = stoppedStanding(
+              target,
+              component,
+              observed,
+              supervisionScope(target),
+            );
             const reason = [observed.reason, standing.reason]
               .filter(Boolean)
               .join(" ");

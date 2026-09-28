@@ -808,8 +808,15 @@ The state file carries a format version (currently 4). A file written by a
 newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
 rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
-newer version's fields survive a temporary downgrade. Services that take
-longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
+newer version's fields survive a temporary downgrade. A new value in a known
+field does not: a `rigd` from before `rig forget` was recorded in Activity
+refuses the state as `STATE_CORRUPT` once a `forgotten` entry is in it. Upgrade
+`rigd` again, or delete the entries whose `outcome` is `forgotten` from
+`activity` in the state file. Restoring `state.json.bak`, as the error
+suggests, helps only when recording the forget was the last write: that copy
+has the Project already removed, just without the `forgotten` entry. After any
+later write it holds the entry too. Services that take longer than about 4 s to stop
+need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
@@ -1127,6 +1134,14 @@ A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
+
+An executable `bin`, anything but the source files below, is copied byte for
+byte into `<RIG_ROOT>/bin` (as `<tool>` or `<tool>-<target name>`; see
+"Environment, builds, and startup") and runs from there, not from the
+workspace. It must therefore be self-contained, like a compiled binary, or
+must itself name the checkout it needs. A shell script that finds its checkout
+with `dirname "$0"` gets `<RIG_ROOT>/bin` instead, which holds none of the
+checkout's files.
 
 A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
 `.cjs`) is not copied. Rig publishes a two-line shim,

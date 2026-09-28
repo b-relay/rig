@@ -1237,7 +1237,10 @@ wrapper's exit code 0 is not counted, because a wrapper from an older `rigd`
 also exits 0 after an outside SIGTERM. If the wrapper is gone but the process
 it ran is still running on its own, the Service is reported `unknown`. Rig
 neither signals that process nor starts another beside it; end it yourself,
-then run `rig up`.
+then run `rig up`. A process only begins once Rig has recorded it: if the
+wrapper (or `rigd`) is killed while it is starting a process, that process
+never runs, so the start fails and a retry never runs a second copy beside one
+Rig cannot see.
 
 A Service that is gone with no record anywhere (its launchd job was unloaded
 too, or nothing could be written or read) has `exit: unknown`. Under

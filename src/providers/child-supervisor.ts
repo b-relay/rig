@@ -50,10 +50,12 @@ import {
   processLeasePath,
   processLeaseRoot,
   processLeaseSchema,
+  type ProcessLease,
 } from "./process-lease";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
+import { findsExecutable, gatedCommand, releaseGate } from "./start-gate";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
@@ -149,6 +151,16 @@ export function createChildSupervisor(
     if (options.captureCommand) await removeExitRecord(wrapperExitRoot, key);
   };
   const leasePath = (key: string) => processLeasePath(options.stateRoot, key);
+  /** Replaces the lease for `lease.key` whole, so a reader sees the previous lease or this one, never a partial one. */
+  const writeLease = async (lease: ProcessLease) => {
+    const temporary = `${leasePath(lease.key)}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify(lease), { mode: 0o600 });
+      await rename(temporary, leasePath(lease.key));
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  };
   function serialized<T>(key: string, action: () => Promise<T>): Promise<T> {
     const pending = (operations.get(key) ?? Promise.resolve())
       .catch(() => {})
@@ -398,6 +410,25 @@ export function createChildSupervisor(
         "Configure a command.",
         { key: request.key },
       );
+    const command = options.captureCommand
+      ? [...options.captureCommand, capturePath(request.key)]
+      : request.command;
+    // The gate fails only once released, where a spawn failed at once: a program that is not there fails the start now.
+    if (
+      !findsExecutable(command[0]!, {
+        cwd: request.cwd,
+        PATH: request.env.PATH,
+      })
+    )
+      throw new RigError(
+        "PROCESS_START",
+        "The managed component could not start.",
+        "Check its executable and working directory.",
+        {
+          key: request.key,
+          cause: `${command[0]} is not an executable file or a program on the PATH.`,
+        },
+      );
     // A record left by an earlier start must not explain the end of this one.
     await removeExitRecords(request.key);
     await mkdir(request.logRoot, { recursive: true });
@@ -405,7 +436,6 @@ export function createChildSupervisor(
     await appendFile(join(request.logRoot, "target.jsonl"), "", {
       mode: 0o600,
     });
-    let command = request.command;
     if (options.captureCommand) {
       await mkdir(captureRoot, { recursive: true });
       await clearCaptureStatus(capturePath(request.key));
@@ -416,15 +446,19 @@ export function createChildSupervisor(
       } finally {
         await rm(temporary, { force: true });
       }
-      command = [...options.captureCommand, capturePath(request.key)];
     }
+    // The process is spawned behind a gate and released only once its lease is on disk: a supervisor that dies in between
+    // leaves no process running that nothing names.
+    const gated = gatedCommand(command);
     let child: ChildProcess;
     try {
-      child = spawn(command[0]!, [...command.slice(1)], {
+      child = spawn(gated[0]!, [...gated.slice(1)], {
         cwd: request.cwd,
         env: request.env,
         detached: true,
-        stdio: options.captureCommand ? "ignore" : ["ignore", "pipe", "pipe"],
+        stdio: options.captureCommand
+          ? ["pipe", "ignore", "ignore"]
+          : ["pipe", "pipe", "pipe"],
       });
     } catch {
       throw new RigError(
@@ -485,24 +519,28 @@ export function createChildSupervisor(
     processes.set(request.key, owned);
     try {
       owned.identity = await inspect(owned.pid);
-      if (owned.identity) {
-        const temporary = `${leasePath(request.key)}.${randomUUID()}.tmp`;
-        try {
-          await writeFile(
-            temporary,
-            JSON.stringify({
-              key: request.key,
-              pid: owned.pid,
-              identity: owned.identity,
-              incarnation: request.incarnation,
-            }),
-            { mode: 0o600 },
-          );
-          await rename(temporary, leasePath(request.key));
-        } finally {
-          await rm(temporary, { force: true });
-        }
-      }
+      // Only a gated process that was killed has no identity yet; it is never released without a lease.
+      if (!owned.identity)
+        throw new RigError(
+          "PROCESS_START",
+          "The managed component ended before its start could be recorded.",
+          "Check the Target logs, then start it again.",
+          { key: request.key },
+        );
+      await writeLease({
+        key: request.key,
+        pid: owned.pid,
+        identity: owned.identity,
+        incarnation: request.incarnation,
+      });
+      await releaseGate(child.stdin!).catch((error: Error) => {
+        throw new RigError(
+          "PROCESS_START",
+          "The managed component ended before it was released to start.",
+          "Check the Target logs, then start it again.",
+          { key: request.key, cause: error.message },
+        );
+      });
       if (options.captureCommand)
         await waitForCaptureStart(capturePath(request.key), {
           timeoutMs: DEFAULT_CAPTURE_START_MS,

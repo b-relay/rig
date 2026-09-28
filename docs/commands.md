@@ -108,6 +108,8 @@ Git runs this helper for `git push rig <branch>`. People never run it.
 - `init` writes one Service (`--service` with `--run`) or one Tool (`--tool`
   with `--bin`). A Tool's `bin` is the executable's path inside the
   repository; Rig copies it into `<RIG_ROOT>/bin` as `<tool>` for the Stable
-  Target and `<tool>-<target name>` for the others.
+  Target and `<tool>-<target name>` for the others. A source file (`.ts`,
+  `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`) is published instead as a shim that
+  runs it with the bun `rigd install` recorded.
 - `RIG_ROOT` is the only environment switch: an absolute path, `~/.rig` by
   default. There are no `--state-root` or `--config` overrides.

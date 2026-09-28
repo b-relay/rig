@@ -20,6 +20,7 @@ import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
 import type { PortReservations } from "./host-reservations";
+import type { HostSessionProbe } from "../domain/host-session";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
@@ -151,6 +152,9 @@ export interface RuntimeDependencies {
    * carries on under each Target's own lease and a later pass reads its outcome, so one slow restart
    * or stop never holds up the next pass. Absent, a pass waits for all of it. */
   supervisionPassBudget?: { ms: number; deadline: ObservationDeadline };
+  /** Reads the Host's boot and login session, which the daemon's first pass compares with the one it last recorded to
+   * tell a Host restart from a plain daemon restart. Absent, no Host restart is ever detected. */
+  hostSession?: HostSessionProbe;
   now(): string;
   id(): string;
   diagnostic(

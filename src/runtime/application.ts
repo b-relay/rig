@@ -13,6 +13,7 @@ import {
 } from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
+import type { MutationInFlight } from "./alert-policy";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import {
   readActions,
@@ -42,8 +43,20 @@ import {
   activationJournal,
   intendRunning,
   intendStopped,
+  recordStoppedByHostRestart,
   superviseTarget,
+  supervisionScope,
 } from "./supervision";
+import {
+  findHostRestart,
+  recordHostRestart,
+  restartMark,
+  saveHostSession,
+  startAfterHostRestart,
+  type HostSessionFinding,
+  type RestartMark,
+} from "./host-restart";
+import type { HostRestart } from "../domain/host-session";
 import type { RuntimeDependencies } from "./contracts";
 import {
   prepareRegistration,
@@ -137,6 +150,10 @@ export interface RigRuntime extends ProjectStatusReader {
    * is once they are admitted. A name no Project is registered under is serialized with that name's registration instead. */
   exclusive<T>(project: string, operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
+  /** Every mutation this daemon has accepted and not yet answered, running or waiting for its Target, as its command
+   * selected the Project and Target so far; empty while none is. Config edits and supervision passes are not listed,
+   * except the first pass's work on a Stable Target it may be starting again after a Host restart. */
+  mutations(): MutationInFlight[];
 }
 const reads = readActions;
 /** How many times an Operation selects again because what it selected changed while it waited. */
@@ -174,8 +191,9 @@ const UNLOCKED: Admission = {
   phase() {},
   moved: () => new Reselect(),
 };
-/** An Operation this daemon is running or holding, the Target it works on when that is known, and its stops. */
-type Running = StopTracking;
+/** An Operation this daemon is running or holding, the Target it works on when that is known, and its stops; and what
+ * the operator alert monitor sees of its mutation, absent for config edits and most supervision work. */
+type Running = StopTracking & { mutation?: MutationInFlight };
 /** rigd is the one authority over lifecycle state. Mutations of one Target run one at a time; other
  * Targets and Projects run side by side and share Host resources through short critical sections.
  * Read-only requests never wait. See docs/adr/0007-per-target-operation-queue.md. */
@@ -188,6 +206,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   const operations = new Map<string, Running>();
   /** Command executions still running, so a drain waits for them to answer. */
   const executing = new Set<Promise<unknown>>();
+  /** Shows the alert monitor more of what `operationId`'s command selected; a read, which is not listed, is left alone. */
+  const selectedForAlerts = (
+    operationId: string,
+    selected: Partial<MutationInFlight>,
+  ) => {
+    const entry = operations.get(operationId);
+    if (entry?.mutation) entry.mutation = { ...entry.mutation, ...selected };
+  };
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
   const inProgress = (operationId: string) => inFlight.has(operationId);
@@ -208,6 +234,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       detach: detaching.signal,
       observer: stopObserver(entry, deps.now),
     });
+  /** Working copies and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
+   * by Target id; each pass tries again. */
+  const unmarked = new Map<string, HostRestart>();
   const stopping = (targetId: string) =>
     [...operations.values()].some(
       (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
@@ -345,7 +374,15 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         "Run rig down <target> --kill or rig restart <target> --kill.",
       );
     }
-    operations.set(operationId, {
+    // What the alert monitor sees before the command selects anything: its Project and Target as the command names them.
+    const requested: MutationInFlight = {
+      operationId,
+      action: command.action,
+      ...(command.project ? { project: command.project } : {}),
+      ...(command.repoPath ? { repoPath: command.repoPath } : {}),
+      ...(command.target ? { target: command.target } : {}),
+    };
+    const entry: Running = {
       kills: new Map(),
       ...(command.kill ? { killAll: true } : {}),
       view: {
@@ -356,15 +393,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         phase: initialPhase(command.action),
         startedAt: deps.now(),
       },
-    });
+      mutation: requested,
+    };
+    operations.set(operationId, entry);
     try {
       for (let attempt = 1; ; attempt++) {
         const held = admission(operationId, attempt >= MAX_SELECTIONS);
+        // Each attempt selects again, so what an earlier one selected no longer says what this one works on.
+        entry.mutation = requested;
         try {
           return await run(command, operationId, held, {
             ...deps,
             ports: reservations.ports(operationId),
-            lifecycle: lifecycleOf(operations.get(operationId)!),
+            lifecycle: lifecycleOf(entry),
           });
         } catch (error) {
           if (!isReselect(error)) throw error;
@@ -649,6 +690,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               ? targetNames(selection.document!.config).stable
               : PREVIEW_SELECTOR,
         };
+        // The alert monitor sees the Target the push selected from here on: a Preview push leaves the Stable Target alone.
+        selectedForAlerts(operationId, { target: command.target! });
       }
       if (
         command.action === "deploy" &&
@@ -686,6 +729,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         }
       })();
       const kind = selected.kind;
+      // The alert monitor sees which Target the command selected, by role, so a configured name that differs from the
+      // recorded one (mid-rename) still reads as the Stable Target, and in which Project, so a command run from a
+      // directory no Project is registered at (a linked worktree) holds back no other Project's Stable Target.
+      selectedForAlerts(operationId, { project: project.name, kind });
       const name = selected.name ?? command.target ?? "the Working copy";
       aimed = name;
       const find = (recorded: readonly TargetRecord[]) =>
@@ -1172,6 +1219,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   };
   return {
     status,
+    mutations: () =>
+      [...operations.values()].flatMap((entry) =>
+        entry.mutation ? [{ ...entry.mutation }] : [],
+      ),
     async drain() {
       draining = true;
       // A stop in progress may wait an hour; shutdown leaves it to the Service and the next daemon.
@@ -1244,6 +1295,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       });
     const host =
       action === "reconcile" ? locks.acquire(hostId, [HOST_SCOPE]) : undefined;
+    // Read while the pass waits for the Host, so a command waits for the read at most for what is left of it.
+    const hostSession =
+      action === "reconcile"
+        ? deps.hostSession?.current().catch(() => undefined)
+        : undefined;
     const failed = (error: unknown, target?: string) =>
       deps
         .diagnostic({
@@ -1257,6 +1313,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         .catch(() => {});
     const lease = await host;
     let jobs: Promise<number | undefined>[];
+    let finding: HostSessionFinding | undefined;
+    /** The Host restart's Activity entry could not be written before the pass acted on it. */
+    let announceLater = false;
+    /** The Targets of this pass, and those whose share of it is done (after a Host restart: acted on). */
+    let expected: string[] = [];
+    const settled = new Set<string>();
     try {
       // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
       let state;
@@ -1268,7 +1330,22 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await failed(error);
         return {};
       }
-      if (action === "reconcile") await pruneCheckpoints(state, deps);
+      if (action === "reconcile") {
+        await pruneCheckpoints(state, deps);
+        const current = await hostSession;
+        if (current) finding = findHostRestart(state, current);
+        if (finding?.restart && !finding.announced) {
+          const found = finding;
+          await recordHostRestart(
+            { ...found, restart: found.restart! },
+            deps,
+          ).catch(async (error) => {
+            // The pass still acts on the restart; the entry is written once it has, with what it settled.
+            announceLater = true;
+            await failed(error);
+          });
+        }
+      }
       const eligible = state.targets.filter(
         (target) =>
           !target.recovery &&
@@ -1284,18 +1361,77 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         : parts.map((part) =>
             draining ? undefined : locks.tryAcquire(part.id, part.scopes),
           );
+      const restart = finding?.restart;
+      const mark =
+        finding?.restart !== undefined
+          ? restartMark({ ...finding, restart: finding.restart })
+          : undefined;
+      // A drain may already have begun: a Target skipped for it is not settled, so the restart is found again.
+      expected = eligible.map((target) => target.id);
       jobs = eligible.flatMap((target, index) => {
         const held = leases[index];
-        return held ? [superviseJob(target.id, held, action, failed)] : [];
+        return held
+          ? [
+              superviseJob(
+                target.id,
+                held,
+                action,
+                failed,
+                restart,
+                settled,
+                finding?.settled,
+                mark,
+              ),
+            ]
+          : [];
       });
     } finally {
       lease?.release();
       operations.delete(hostId);
     }
+    const recorded =
+      finding &&
+      recordSessionAfter(
+        jobs,
+        finding,
+        () => expected.every((id) => settled.has(id)),
+        failed,
+        announceLater ? settled : undefined,
+      );
     const due = (await passResults(jobs)).filter(
       (value): value is number => value !== undefined,
     );
+    if (!deps.supervisionPassBudget) await recorded;
     return due.length ? { nextRetryAt: Math.min(...due) } : {};
+  }
+  /** Records the Host session as acted on once every Target's share of the first pass is over, and only when `complete`
+   * says each one was done and rigd is not draining: a daemon that stopped, drained or failed before it acted on a Host
+   * restart for every Target finds the same restart again at its next start. A restart whose Activity entry could not be
+   * written before the pass acted on it is recorded now, with the Targets `unannounced` holds as settled; while it cannot
+   * be, the session is not recorded, so the next start still announces it. A drain waits for it. Never rejects. */
+  function recordSessionAfter(
+    jobs: readonly Promise<unknown>[],
+    finding: HostSessionFinding,
+    complete: () => boolean,
+    failed: (error: unknown) => Promise<void>,
+    unannounced?: ReadonlySet<string>,
+  ): Promise<void> {
+    const recording = Promise.allSettled(jobs)
+      .then(async () => {
+        if (unannounced && finding.restart)
+          await recordHostRestart(
+            { ...finding, restart: finding.restart },
+            deps,
+            [...unannounced],
+          );
+        // A drain that began before a Target was acted on left it unsettled; one that began later changes nothing.
+        if (!finding.record || (finding.restart && !complete())) return;
+        await saveHostSession(finding.session, deps);
+      })
+      .catch(failed);
+    executing.add(recording);
+    void recording.finally(() => executing.delete(recording));
+    return recording;
   }
   /** What a pass waits for: every Target's work, or with a pass budget only what finishes within it. The rest carries on
    * under its Target's lease. */
@@ -1314,12 +1450,22 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     );
   }
   /** One Target's share of a pass, under `lease`, which it releases. The record is read again under the lease, since a read
-   * made before it may predate what the Operation that last held the Target recorded. Never rejects; failures are recorded. */
+   * made before it may predate what the Operation that last held the Target recorded. After a Host `restart` the first pass
+   * found, a Stable Target meant to run is started again as by `rig up`, and the Working copy's or a Preview's stopped
+   * Services are recorded as stopped by the restart, which keeps them stopped until `rig up`. Adds `targetId` to `settled`
+   * once that is done, or once nothing about a restart is left to do for the Target. Never rejects; failures are
+   * recorded. */
   async function superviseJob(
     targetId: string,
     lease: Lease,
     action: "reconcile" | "supervise",
     failed: (error: unknown, target?: string) => Promise<void>,
+    restart?: HostRestart,
+    settled?: Set<string>,
+    /** Stable Targets an earlier daemon already started again (or failed to) for this same restart. */
+    startedBefore?: ReadonlySet<string>,
+    /** The restart a Stable Target's start is noted in. */
+    mark?: RestartMark,
   ): Promise<number | undefined> {
     const entry: Running = {
       kills: new Map(),
@@ -1330,6 +1476,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         startedAt: deps.now(),
       },
       targetId,
+      // Until the first pass after a Host restart has started a Stable Target again, its Services' last exits predate
+      // the restart; the alert monitor holds back judgement of it rather than count it down since then.
+      ...(mark && !startedBefore?.has(targetId)
+        ? { mutation: { operationId: lease.id, action, targetId } }
+        : {}),
     };
     operations.set(lease.id, entry);
     let name: string | undefined;
@@ -1337,6 +1488,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (draining) return undefined;
       const state = await deps.store.read();
       const target = state.targets.find((t) => t.id === targetId);
+      // Only a Stable Target meant to run is started again; the alert monitor judges any other Target as usual.
+      if (target?.kind !== "live" || target.desired !== "running")
+        delete entry.mutation;
+      if (
+        !target ||
+        target.recovery ||
+        target.destructionPending ||
+        target.desired !== "running"
+      )
+        settled?.add(targetId);
       if (!target || target.recovery || target.destructionPending)
         return undefined;
       name = target.name;
@@ -1344,8 +1505,33 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
       const lifecycle = lifecycleOf(entry);
-      if (target.desired === "running")
-        return await superviseTarget(target, { ...deps, lifecycle });
+      if (target.desired === "running") {
+        if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
+          entry.view.phase = "starting";
+          if (await startAfterHostRestart(target, mark, { ...deps, lifecycle }))
+            settled?.add(targetId);
+          return undefined;
+        }
+        // A Working copy or Preview whose stopped Services could not all be recorded as stopped by the restart is tried
+        // again by each pass of this daemon, and nothing of it is supervised until then.
+        const stoppedBy =
+          target.kind === "live"
+            ? undefined
+            : (restart ?? unmarked.get(targetId));
+        if (stoppedBy) {
+          if (!(await recordStoppedByHostRestart(target, stoppedBy, deps))) {
+            unmarked.set(targetId, stoppedBy);
+            return undefined;
+          }
+          unmarked.delete(targetId);
+        }
+        settled?.add(targetId);
+        return await superviseTarget(
+          target,
+          { ...deps, lifecycle },
+          supervisionScope(target),
+        );
+      }
       if (action === "reconcile") {
         entry.view.phase = "stopping";
         await lifecycle.down(target);

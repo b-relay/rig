@@ -719,6 +719,49 @@ A Service's policy for revival after it exits, distinct from an explicit
 Restart or start request.
 _Avoid_: once-per-deploy job, absence of supervision
 
+### Host restart
+
+The Mac restarting (a new boot) or the user logging out and in again (a new
+login session), which ends every process Rig ran (a logout, those of the old
+login session). `rigd` detects one at its
+start by comparing the boot and login session with the ones it last recorded.
+
+_Relationship_: after a Host restart, `rigd` starts each Stable Target meant to
+run as `rig up` would; the Working copy and Previews stay stopped until
+`rig up`, whatever their Automatic restart policy.
+_Avoid_: reboot policy, restart_after_reboot
+
+### Down (Stable Target)
+
+A Stable Target meant to run that is not serving: one of its Services failed,
+used up its automatic restarts, never gets past starting, or fails its
+readiness check, or its route is unpublished.
+_Avoid_: outage for a single Service, crashed
+
+_Relationship_: A Stable Target that an operator stopped with `rig down` is
+stopped, not down. An operation that is working on the Target decides
+nothing; a deploy that left it mid-transition, with no operation working on it
+any more, keeps it down.
+
+_Relationship_: `rigd` counts downtime for Stable Targets only. `rig doctor`
+and `rigd status` show how long each has been down.
+
+### Operator alert
+
+A message from `rigd` to a person about Stable Targets that are down: a down
+alert once they have been down for the grace period (5 minutes), a reminder
+every 6 hours while any stays down, and one closing message when each is no
+longer down.
+_Avoid_: notification (that is one channel), alarm, page
+
+_Relationship_: Stable Targets that go down together are one event and get one
+alert, and that event is one entry in the Activity log.
+
+_Relationship_: `OperatorAlerts` is the capability; each channel (a macOS
+notification today, push channels later) is a provider selected from the Host
+config. A failed delivery is recorded and never changes a lifecycle
+Operation's outcome.
+
 ### Logs
 
 Runtime output for a Target.

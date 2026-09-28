@@ -1,0 +1,29 @@
+gui/501 = {
+	type = login
+	handle = 100007
+	active count = 412
+	service count = 409
+	active service count = 228
+	creator = loginwindow[171]
+	creator euid = 0
+	session = Aqua
+	endpoint destination = com.apple.xpc.launchd.domain.user.501
+	auxiliary bootstrapper = com.apple.xpc.otherbsd (complete)
+	security context = {
+		uid = 501
+		asid = 100007
+	}
+
+	bringup time = 88 ms
+	death port = 0x13a03
+
+	environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.XXXXXXXXXX/Listeners
+		EXAMPLE_TOKEN => redacted
+	}
+
+	services = {
+		   58156      - 	com.b-relay.rig.000000000000.example
+		       0      0 	com.apple.DataDetectorsLocalSources
+	}
+}

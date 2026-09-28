@@ -1,4 +1,6 @@
 import type { TargetPlan } from "../config/types";
+import type { HostRestart, HostSession } from "./host-session";
+import type { AlertState } from "./operator-alerts";
 
 export interface ProjectRecord {
   id: string;
@@ -44,7 +46,9 @@ export type ServiceOutcome =
       errorCode: string;
       at: string;
     }
-  | { kind: "unknown"; at: string };
+  /** `hostRestart` says the process is gone because the Host restarted or the user logged out, as rigd detected at its
+   * next start; nothing starts such a Service of the Working copy or a Preview again before an explicit start. */
+  | { kind: "unknown"; hostRestart?: HostRestart; at: string };
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
 export interface ServiceRun {
   /** The workspace the Service was started from; a record of another Deployment describes nothing. */
@@ -66,6 +70,8 @@ export interface ServiceRun {
   waitingFor?: { service: string } | { ports: number[] };
   /** The process now running was started automatically after an unknown exit. */
   restartedAfterUnknown?: true;
+  /** The process now running was started by rigd after it detected this Host restart. */
+  startedAfterHostRestart?: HostRestart;
   /** The automatic attempts of the budget the latest outcome draws on are used up; only an explicit start or a new Deployment
    * starts the Service again. */
   exhausted?: true;
@@ -141,6 +147,24 @@ export interface RuntimeState {
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
+  /** The boot and login session rigd last acted on; absent until a rigd that records it has started. */
+  host?: HostSession & {
+    seenAt: string;
+    /** A Host restart rigd has recorded in Activity but not finished acting on, and the boot and login it found then;
+     * a daemon that finds the same restart again acts on it without recording it twice. */
+    restart?: {
+      kind: HostRestart;
+      boot?: string;
+      login?: string;
+      /** The Stable Targets already started again (or whose start failed) for this restart; a daemon that finds the
+       * restart again does not start them a second time. */
+      settled?: string[];
+      /** The restart's Activity entry is not written yet; the daemon that finds it again writes it. */
+      unannounced?: true;
+    };
+  };
+  /** Stable Targets Rig counts as down and what the operator was alerted about; absent until the first alert evaluation. */
+  alerts?: AlertState;
 }
 
 export interface StateStore {

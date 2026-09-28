@@ -129,6 +129,11 @@ const preparation = z
   })
   .optional();
 const at = text.describe("When Rig recorded the outcome.");
+const hostRestart = z
+  .enum(["reboot", "login"])
+  .describe(
+    "A Host restart rigd detected at its start: the Mac restarted (reboot), or the user logged out and in again (login).",
+  );
 const services = z
   .record(
     text,
@@ -170,7 +175,15 @@ const services = z
             errorCode: text,
             at,
           }),
-          z.object({ kind: z.literal("unknown"), at }),
+          z.object({
+            kind: z.literal("unknown"),
+            hostRestart: hostRestart
+              .optional()
+              .describe(
+                "The process is gone because of this Host restart; a Working copy or Preview Service is not started again before rig up.",
+              ),
+            at,
+          }),
         ])
         .optional()
         .describe(
@@ -211,6 +224,11 @@ const services = z
         .optional()
         .describe(
           "The running process was started automatically after an unknown exit.",
+        ),
+      startedAfterHostRestart: hostRestart
+        .optional()
+        .describe(
+          "The running process was started by rigd after it detected this Host restart.",
         ),
       exhausted: z
         .literal(true)
@@ -311,8 +329,86 @@ const operation = z.object({
   occurredAt: text,
   message: z.string().optional(),
 });
+const instant = z
+  .string()
+  .datetime({ offset: true })
+  .describe("An ISO 8601 time.");
+const downService = z.object({
+  name: text.describe("The Service's name."),
+  reason: z.string().describe("The reason status gives for the Service."),
+  brief: z
+    .string()
+    .describe("The same reason in a few words, for a short notification."),
+});
+const resolution = z.object({
+  at: instant.describe("When the down period ended."),
+  how: z
+    .enum(["running", "stopped", "removed"])
+    .describe(
+      "running: it serves again; stopped: an operator stopped it; removed: it is no longer recorded.",
+    ),
+});
+const alerts = z
+  .object({
+    targets: z
+      .array(
+        z.object({
+          targetId: text.describe("The Stable Target's record id."),
+          project: text.describe("The Project's name when last seen."),
+          target: text.describe("The Stable Target's name when last seen."),
+          since: instant.describe("When Rig first counted it as down."),
+          services: z
+            .array(downService)
+            .describe("The Services that keep it down."),
+          unpublishedRoute: text
+            .optional()
+            .describe(
+              "Its route, when the host Caddy does not load Rig's routes.",
+            ),
+          recover: text.describe(
+            "The command that starts it again, as alerts, doctor and rigd status show it.",
+          ),
+          alertedAt: instant
+            .optional()
+            .describe(
+              "When the alert naming it was delivered; absent until then.",
+            ),
+          resolved: resolution
+            .optional()
+            .describe(
+              "The down period ended; kept until the recovery message is delivered.",
+            ),
+        }),
+      )
+      .describe(
+        "Stable Targets counted as down, and alerted ones whose recovery is not yet told.",
+      ),
+    notifiedAt: instant
+      .optional()
+      .describe(
+        "When the last down alert or reminder was delivered; reminders are timed from it.",
+      ),
+    retry: z
+      .object({
+        failures: z
+          .number()
+          .int()
+          .positive()
+          .describe("Deliveries that failed in a row."),
+        at: instant.describe("When the next delivery may be tried."),
+      })
+      .optional()
+      .describe("The wait after a failed delivery."),
+  })
+  .optional()
+  .describe(
+    "Operator alert state: what was alerted and when, so a daemon restart neither repeats nor forgets an alert.",
+  );
 /** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
- * older rigd refuses the file instead of silently dropping what it does not know. */
+ * older rigd refuses the file instead of silently dropping what it does not know. A new optional top-level key, such
+ * as `alerts`, needs no bump: an older rigd validates without it and writes it back unchanged. After such a downgrade and a
+ * re-upgrade, `alerts` is as the newer rigd last left it; its next evaluation reconciles it with the Targets as they are then,
+ * so an outage that ended meanwhile is told as recovered and one that began meanwhile starts its grace period then. */
 export const STATE_VERSION = 4;
 export const runtimeStateSchema = z
   .object({
@@ -320,6 +416,60 @@ export const runtimeStateSchema = z
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),
+    host: z
+      .object({
+        boot: text
+          .optional()
+          .describe(
+            "The kernel's identifier of the boot (kern.bootsessionuuid); a different one at the next start means the Mac restarted.",
+          ),
+        bootedAt: text
+          .optional()
+          .describe(
+            "When the Mac booted (kern.boottime), for people to read; never compared.",
+          ),
+        login: text
+          .optional()
+          .describe(
+            "The audit session of the user's GUI login (launchd gui domain); a different one in the same boot means the user logged in again.",
+          ),
+        seenAt: text.describe(
+          "When rigd last recorded this session, once it had acted on any restart it found.",
+        ),
+        restart: z
+          .object({
+            kind: hostRestart,
+            boot: text
+              .optional()
+              .describe("The boot rigd found when it detected the restart."),
+            login: text
+              .optional()
+              .describe(
+                "The login session rigd found when it detected the restart.",
+              ),
+            settled: z
+              .array(text)
+              .optional()
+              .describe(
+                "The Stable Targets (by id) already started again, or whose start failed, for this restart; a daemon that finds the restart again does not start them a second time.",
+              ),
+            unannounced: z
+              .literal(true)
+              .optional()
+              .describe(
+                "The restart's Activity entry could not be written yet; the daemon that finds the restart again writes it.",
+              ),
+          })
+          .optional()
+          .describe(
+            "A Host restart already recorded in Activity that rigd has not finished acting on; a daemon that finds it again does not record it twice.",
+          ),
+      })
+      .optional()
+      .describe(
+        "The boot and login session rigd last acted on, so its next start can tell whether the Host restarted in between.",
+      ),
+    alerts,
   })
   .superRefine((state, ctx) => {
     const ids = new Set<string>(),

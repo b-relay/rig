@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, realpath } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  realpath,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 /** Names come from the root's own record, so renamed Targets and generated Previews are found as well as local and live. */
@@ -23,12 +30,36 @@ async function recordedTargets(root: string) {
     return [];
   }
 }
-export async function rigFixture() {
+/** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
+ * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. */
+export async function rigFixture(
+  options: {
+    readonly commands?: {
+      readonly rig: readonly string[];
+      readonly rigd: readonly string[];
+    };
+    readonly PATH?: string;
+  } = {},
+) {
   const base = await mkdtemp(join(tmpdir(), "rig-battle-")),
     root = join(base, ".rig"),
     repo = join(base, "project");
   await mkdir(repo);
-  const environment = { ...process.env, RIG_ROOT: root };
+  // A real rigd runs under this root: it must never post a macOS notification to the person running the tests.
+  await mkdir(root, { mode: 0o700 });
+  await writeFile(
+    join(root, "config.yaml"),
+    "alerts:\n  channels:\n    macos:\n      enabled: false\n",
+  );
+  const environment = {
+    ...process.env,
+    ...(options.PATH === undefined ? {} : { PATH: options.PATH }),
+    RIG_ROOT: root,
+  };
+  const commands = options.commands ?? {
+    rig: [process.execPath, join(import.meta.dir, "../../src/index.ts")],
+    rigd: [process.execPath, join(import.meta.dir, "../../src/rigd.ts")],
+  };
   const run = async (args: string[], cwd = repo) => {
     const child = Bun.spawn(args, {
       cwd,
@@ -44,15 +75,8 @@ export async function rigFixture() {
     return { code, stdout, stderr };
   };
   const rig = (args: string[], cwd = repo) =>
-    run(
-      [process.execPath, join(import.meta.dir, "../../src/index.ts"), ...args],
-      cwd,
-    );
-  const rigd = (args: string[]) =>
-    run(
-      [process.execPath, join(import.meta.dir, "../../src/rigd.ts"), ...args],
-      base,
-    );
+    run([...commands.rig, ...args], cwd);
+  const rigd = (args: string[]) => run([...commands.rigd, ...args], base);
   const git = async (args: string[]) => {
     const result = await run(["git", ...args]);
     if (result.code) throw new Error(`git ${args[0]} failed: ${result.stderr}`);

@@ -146,12 +146,13 @@ distinguishable from each other). Deploys build from a clean checkout of the
 Commit, so their stamps are never `-dirty`. A serving daemon reports its stamp to
 `rigd status`, which warns when it differs from the `rigd` you ran. Upgrading
 is `rigd install`: when the serving daemon reports another stamp, or the
-installation record names another stamp or command, the install stops that
+installation record names another stamp, command, or bun for source-file
+Tools (see "Config"), the install stops that
 daemon, starts the current one, and reports what it replaced; managed processes
 keep serving under their leases and the new daemon adopts them. The comparison
 is equality only, so a rollback to an older commit is swapped in the same way,
-and a daemon from before stamps counts as different. A daemon of the same stamp
-and command is reported `unchanged`.
+and a daemon from before stamps counts as different. A daemon of the same stamp,
+command, and bun is reported `unchanged`.
 When `rig` sends a command that the daemon does not accept, the error names
 both versions and says to run `rigd install`, because `rig` only sends commands
 its own grammar allows.
@@ -981,6 +982,10 @@ capability:
 - `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
   reload mode (see Setup)
 - `diagnostics.retention_days` (default 14) and `diagnostics.level`
+- `alerts.channels.macos.enabled`: whether operator alerts are posted as
+  macOS notifications (see "Operator alerts"). When unset, it is on for a
+  `rigd` installed as a LaunchAgent and off for a process-mode `rigd`
+  (`RIG_ROOT` set, as tests and agent runs use)
 
 Editors can check and complete both files from JSON Schemas generated from
 the same validation Rig runs: [`schemas/rig.schema.json`](../schemas/rig.schema.json)
@@ -1099,6 +1104,37 @@ A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
+
+A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
+`.cjs`) is not copied. Rig publishes a two-line shim,
+`exec <bun> <workspace>/<bin> "$@"`, which runs the file in place, so its
+relative imports resolve, and passes its arguments through. `<bun>` is the bun
+that `rigd install` recorded in `<RIG_ROOT>/daemon/install.json`. A `rigd` run
+from source records the bun running it. The compiled `rigd` (the output of
+`bun run build`) is not bun, so it records the first `bun` on the `PATH` of
+the shell that ran `rigd install`. Either way Rig prefers the `PATH` entry
+that resolves to that bun over a versioned Cellar path, so a package upgrade
+does not strand it. Rig never looks bun up when the Tool runs.
+
+When `rigd install` finds no bun it still installs, since built Tools and
+Services do not need one, and warns that source-file Tools will fail. Publishing
+such a Tool without a recorded bun, or with a recorded one that is gone, fails
+as `BUN_NOT_FOUND` and publishes nothing; an earlier shim stays as it was. With
+no recorded bun, every `rig up`, `rig restart`, or deploy of a Target with a
+source-file Tool fails this way when it reaches that Tool, even while its
+earlier shim still runs. A Stable Target or Preview whose Project installs its
+dependencies with bun fails before that, as `DEPENDENCIES_FAILED`, when bun is
+not on the `PATH` that `rigd install` recorded. A shim
+already published with a bun that has since been removed is not republished,
+so `rig status` still shows it `installed`; `rig doctor` reports the missing
+bun as `tool-bun`. Install bun, or fix `PATH`, and run `rigd install` again. A
+different bun counts as a changed installation, so the daemon is replaced, and
+the next `rig up` or deploy republishes each shim with the new bun. Until then,
+and once after upgrading from a Rig that did not record bun, `rig status` and
+`rig doctor` show those Tools as `unknown`; `rig up <target>` republishes them.
+When `rigd install` adopts a running daemon, it cannot know which bun that
+daemon read, so it records none and warns; run `rigd install` again to restart
+the daemon with the current bun.
 
 Durations are a positive whole number with a unit of `s`, `m`, or `h`, such as
 `30s`, `10m`, or `1h`, up to one day.
@@ -1225,6 +1261,134 @@ a Service that survived a `rigd` restart is adopted, not started twice.
 Nothing is started again while `rigd` itself is down; the first pass of the
 next daemon applies the same rules to what it finds. Every start, automatic
 or not, reads the env files fresh.
+
+#### After the Mac restarts or you log in again
+
+A restart of the Mac ends every Service; logging out and in again ends those
+of the old login session. Rig's
+Service launchd jobs live under `$RIG_ROOT/launchd`, not
+`~/Library/LaunchAgents`, so launchd does not load them again at login, but
+`rigd` itself comes back. At each start, `rigd` compares the Host's boot
+(`kern.bootsessionuuid`, new at every boot) and your GUI login session (the
+audit session of launchd's `gui/<uid>` domain, new at every login) with the
+ones it recorded last time:
+
+- **Stable Targets meant to run** are started again the way `rig up` starts
+  them: every Service in dependency order, whatever its `restart` policy, with
+  fresh automatic-restart budgets. Activity records one `host-restart` entry
+  ("The Mac restarted …" or "You logged out and in again …") and one `up` entry
+  per Stable Target. `rig status` says each Service was started again by
+  `rigd` ("restarted after reboot" or "restarted after login"). A Stable Target
+  that fails to start is reported `failed` (every Service the start left stopped
+  is, and none is retried automatically), stays meant to run, and waits for
+  `rig up`.
+- **The Working copy and Previews** stay stopped, even under
+  `restart: always`. `rig status` reports their Services `stopped`, with
+  `exit: unknown` and a reason that says they stopped when the Mac restarted
+  (or when you logged out). Run `rig up` to start them. Until that start, no
+  unknown exit of that Target is retried automatically; after it, the usual
+  rules apply again. A Service that survived a logout is left running, and
+  one whose earlier exit had already left it stopped (a clean exit under
+  `on-failure`, say) keeps that status.
+- Targets meant to be stopped stay stopped.
+
+A plain `rigd` restart in the same boot and login session detects nothing and
+follows the rules above. So does the first start of a `rigd` that had recorded
+no session yet. A new boot is detected only when both boots could be read, and
+a new login only when both login sessions could be (there is none to read
+without a GUI login, over SSH only, say). A start that finds no restart but
+could not read part of the session keeps the earlier record, so a reboot it
+could not see yet is found at the next start. After a restart, a field the
+read missed is kept from what was known before, except that a reboot ends
+every login session, so no login is kept across one. `rigd` records the session only
+once it has acted on the restart for every Target, so a daemon that stops or
+is asked to stop halfway keeps it pending: the next start finishes it (even if
+it can read nothing of the session) without recording it in Activity a second
+time and without starting (or retrying) a Stable Target it already started, or
+failed to start, for that restart. A restart whose Activity entry could not be
+written yet is recorded by the start that finishes it. Only a session that changed since the
+pending restart was found, such as a logout and login after it, is a new
+restart.
+
+### Operator alerts
+
+`rigd` tells you when a Stable Target stops serving and stays down, so an
+outage does not wait for someone to run `rig status`. The Working copy and
+Previews never alert.
+
+Every 30 seconds `rigd` observes each Stable Target that is meant to run, the
+same way `rig status` does. It counts the Target as down when one of its
+Services:
+
+- has failed, including an unknown exit that is not started again;
+- has used up its automatic restarts, even after clean exits;
+- is still `starting`, for example waiting for a dependency that does not come
+  back;
+- fails its readiness check, or does not answer it within 5 seconds.
+
+A Target also counts as down when its route is unpublished (no host Caddyfile
+loads Rig's routes), or when a deploy left it mid-transition: its rollback
+could not finish, or `rigd` stopped during the deploy. Its alert then says to
+run `rig down` first, then `rig up`. An operation that is working on the
+Target now (a deploy, a restart, an up or a down of that Target, or a change to
+its whole Project such as `rig forget`), or an observation that did
+not answer, changes nothing either way: a Target already counted as down gets
+no first alert while an operation may be fixing it. Operations on different
+Targets run at the same time; each one running, or waiting its turn, holds
+back only the Stable Targets it may be changing. After the Mac restarts or you
+log in again, `rigd` starting a Stable Target again counts the same way, so
+a slow start is not mistaken for downtime since the restart.
+
+The timing:
+
+- **After 5 minutes down**, you get one alert. Normal restarts, deploy swaps
+  and the retries after an unknown exit end well within that time, so they
+  stay quiet. The 5 minutes count from the earliest exit Rig recorded for the
+  Target's down Services, or else from when `rigd` first saw it down.
+- **Targets that go down within one minute of each other** are one event and
+  get one alert naming all of them, once each has been down 5 minutes: "3
+  Stable Targets across 3 Projects went down at 13:58:58 UTC".
+- **Every 6 hours** while any alerted Stable Target stays down, a reminder
+  names each one and how long it has been down.
+- **When it comes back**, one message says so, with how long it was down. A
+  Target you stop with `rig down`, or that is no longer recorded, gets the same
+  closing message, worded for that case.
+
+An alert names the Project, the Target, the Services that keep it down with
+the reason Rig recorded, and the command that starts it again
+(`rig up live --project pantry`). A macOS notification carries a short form
+of this: the command first for one Target, or the name of each Target for a
+group (a banner shows its first lines; expand the notification for the rest).
+The full text is in `rig activity`, where each alert that went out is
+one `outage` entry: `failed` when Targets went down, `unchanged` for a
+reminder, and `started` or `stopped` when they are no longer down. A Host-wide
+event is one entry, not one per Service.
+
+`rig doctor` has a `stable-targets` check that lists every Stable Target Rig
+counts as down and for how long ("pantry live for 42 h (since
+2026-09-25T13:58:58.000Z)"), with the commands that recover them. While `rigd`
+is reachable, `rigd status` prints a `Down` line for each.
+
+**Delivery.** The only channel today is a macOS user notification, posted
+with `osascript` from `rigd`'s LaunchAgent in your login session. macOS files
+these notifications under Script Editor. The first time, allow notifications
+for Script Editor in System Settings > Notifications, or macOS may keep them
+out of sight. Set `alerts.channels.macos.enabled: false` in the Host config to
+turn the channel off. Rig then still counts downtime and records each alert in
+Activity and doctor, but sends nothing. A process-mode `rigd` (`RIG_ROOT` set)
+leaves the channel off unless its Host config sets `enabled: true`, so tests
+and agent runs never post to your screen.
+
+A delivery that fails is recorded in Activity (`alert failed`, with the
+reason) and in the diagnostic log. It never changes the outcome of a
+lifecycle operation. Rig tries again after 5 minutes, then waits twice as long
+after each further failure, up to 6 hours. Alert state is kept in runtime
+state under the Rig root, so a `rigd` restart neither repeats an alert nor
+forgets one: a Target that recovered while `rigd` was stopped still gets its
+closing message.
+
+Push channels that reach you away from the Mac, such as Slack, come later,
+together with a place to keep their secrets.
 
 ### Recipes
 
@@ -1382,9 +1546,11 @@ current file.
 `rig up`, `rig restart`, and an activating deploy then work in this order:
 
 1. Tools are installed. The executable is republished only when the built
-   file, its destination, or the Tool's declared policy changed, and is
+   file, its destination, the Tool's declared policy, or (for a source-file
+   `bin`) the recorded bun changed, and is
    otherwise reported `unchanged`; a daemon restarted from another shell
-   republishes nothing. `deploy --no-up` publishes no Tool; the later `rig up`
+   republishes nothing (a `rigd install` that records a different bun
+   republishes each source-file Tool's shim). `deploy --no-up` publishes no Tool; the later `rig up`
    does, under its own checkpoint. Installed executables share one `bin/`
    directory across every Project and Target on the Host: `<tool>` for the
    Stable Target, and `<tool>-<target name>` for the Working copy (by default
@@ -1577,7 +1743,9 @@ Providers receive everything they need from that plan. They do not read Host
 config, Project config, or global path helpers themselves. The bundled
 providers are the `rigd` and `launchd` process supervisors, the Caddy router,
 the Git source store, the artifact installer for Tools, and the command
-runner; their contracts live in `src/providers/contracts.ts`.
+runner; their contracts live in `src/providers/contracts.ts`. Operator alert
+channels implement `OperatorAlerts` (`src/domain/operator-alerts.ts`); the
+macOS notification is the bundled one.
 
 Tests supply isolated provider interfaces and `RIG_ROOT`. There are no
 `--state-root` or `--config` path overrides.

@@ -2,7 +2,7 @@ import type { Writable } from "node:stream";
 
 /** How a gated process ends when its gate closes without a release: its starter died before it could lease it. */
 const START_GATE_CLOSED_EXIT_CODE = 125;
-/** The PATH a lookup uses when the process environment names none or an empty one. */
+/** The PATH a lookup uses when the process environment names none, like the shell that runs the gate. */
 const DEFAULT_LOOKUP_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /** The command a supervisor spawns so that `command` runs only once it is released: a shell that waits for one line on its
@@ -14,7 +14,7 @@ export function gatedCommand(command: readonly string[]): readonly string[] {
   return [
     "/bin/sh",
     "-c",
-    `IFS= read -r release || exit ${START_GATE_CLOSED_EXIT_CODE}; exec "$@" </dev/null`,
+    `IFS= read -r release || exit ${START_GATE_CLOSED_EXIT_CODE}; exec -- "$@" </dev/null`,
     "rig-start",
     ...command,
   ];
@@ -35,7 +35,8 @@ export function releaseGate(gate: Writable): Promise<void> {
 
 /** Whether `executable` names a program the gate can run: a path (resolved against `cwd`) to an executable file, or a name
  * found on the `PATH` the process will get. A spawn would have failed at once for a missing program; the gate only fails once
- * released, so the supervisor asks first. */
+ * released, so the supervisor asks first. A program that is found but still cannot run (a missing interpreter, a format the
+ * system cannot execute) ends once released with the shell's code 126 or 127, like a component command that fails. */
 export function findsExecutable(
   executable: string,
   place: { readonly cwd: string; readonly PATH: string | undefined },
@@ -43,7 +44,7 @@ export function findsExecutable(
   return (
     Bun.which(executable, {
       cwd: place.cwd,
-      PATH: place.PATH || DEFAULT_LOOKUP_PATH,
+      PATH: place.PATH ?? DEFAULT_LOOKUP_PATH,
     }) !== null
   );
 }

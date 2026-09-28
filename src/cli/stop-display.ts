@@ -116,6 +116,8 @@ export function stopBoard(
 
 /** What has been printed about one stop without a terminal. */
 export interface PlainStopState {
+  /** When the stop began, as rigd reported it: a different one is a new stop of the same Service. */
+  since: string;
   /** When its last waiting line was printed, and how long was left then. */
   printedAt: number;
   leftThen: number;
@@ -133,8 +135,12 @@ export function plainStopLines(
   for (const stop of stops) {
     const key = `${stop.target}\u0000${stop.service}`;
     const seen = printed.get(key);
-    // A stop begun again (a rollback stopping the same Service) starts its own lines.
-    const fresh = seen && stop.state === "stopping" && seen.ended;
+    // A stop begun again (a rollback stopping the same Service) starts its own lines, even when the earlier one's end was
+    // never seen between two polls.
+    const fresh =
+      seen &&
+      stop.state === "stopping" &&
+      (seen.ended || seen.since !== stop.since);
     if (!stopVisible(stop, now)) continue;
     const left = Date.parse(stop.killAt) - now.getTime();
     const waiting = `${stop.service} stopping, ${killingText(stop.killAt, now, "minutes", true)}`;
@@ -142,6 +148,7 @@ export function plainStopLines(
       if (stop.state === "stopping") {
         lines.push(waiting);
         printed.set(key, {
+          since: stop.since,
           printedAt: now.getTime(),
           leftThen: left,
           ended: false,

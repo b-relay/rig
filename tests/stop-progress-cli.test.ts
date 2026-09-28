@@ -117,6 +117,29 @@ test("without a terminal, a stop gets one more line when a minute is left, then 
   expect(said).toEqual(["worker stopping, killing in 8s (04:06:17)"]);
 });
 
+test("without a terminal, a stop begun again between two polls (a rollback stopping the same Service) gets its own line and deadline", () => {
+  const printed = new Map<string, PlainStopState>();
+  const first: ServiceStop = {
+    service: "worker",
+    target: "live",
+    state: "stopping",
+    since: iso(0),
+    killAt: iso(25 * MINUTE),
+  };
+  const lines = [...plainStopLines(printed, [first], at(5000))];
+  // The deploy's stop ended and the rollback's began before rig polled again; it never saw the first one end.
+  const again: ServiceStop = {
+    ...first,
+    since: iso(MINUTE),
+    killAt: iso(26 * MINUTE),
+  };
+  lines.push(...plainStopLines(printed, [again], at(MINUTE + 5000)));
+  expect(lines).toEqual([
+    "worker stopping, killing in 25m (04:31:07)",
+    "worker stopping, killing in 25m (04:32:07)",
+  ]);
+});
+
 test("the terminal board lists each Service under its Target, with a countdown while it stops and the Ctrl-C hint", () => {
   const stops: ServiceStop[] = [
     {

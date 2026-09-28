@@ -18,12 +18,14 @@ export function projectFilePath(directory: string, path: string): string {
   return absolute;
 }
 /** The text of the Project's file at `path` under `directory`; undefined when there is no such file. Fails
- * RECIPE_FILE_PATH for a path outside the directory, and PROJECT_FILE_UNREADABLE for one that cannot be read. */
+ * RECIPE_FILE_PATH for a path outside the directory, symbolic links followed (a linked file or directory elsewhere is
+ * not the Project's: its checkout does not carry it), and PROJECT_FILE_UNREADABLE for one that cannot be read. */
 export async function readProjectFile(
   directory: string,
   path: string,
 ): Promise<string | undefined> {
   const absolute = projectFilePath(directory, path);
+  await refuseLinkOut(directory, absolute, path);
   try {
     return await readFile(absolute, "utf8");
   } catch (error) {
@@ -53,7 +55,7 @@ export function createProjectFiles(): ProjectFiles {
     read: readProjectFile,
     async create(directory, path, text) {
       const absolute = projectFilePath(directory, path);
-      await refuseLinkedParent(directory, absolute, path);
+      await refuseLinkOut(directory, absolute, path);
       try {
         await mkdir(dirname(absolute), { recursive: true });
         await writeFile(absolute, text, { flag: "wx", mode: 0o644 });
@@ -68,14 +70,14 @@ export function createProjectFiles(): ProjectFiles {
     },
   };
 }
-/** Refuses a file whose nearest existing directory, symbolic links followed, is outside the Project directory: a
- * `scripts` linked elsewhere would put the file where the Project's commits never carry it. */
-async function refuseLinkedParent(
+/** Refuses a path whose file, or nearest existing directory when there is no file, is outside the Project directory
+ * once symbolic links are followed: a `scripts` linked elsewhere holds files the Project's commits never carry. */
+async function refuseLinkOut(
   directory: string,
   absolute: string,
   path: string,
 ): Promise<void> {
-  let parent = dirname(absolute);
+  let parent = absolute;
   while (!(await present(parent)) && dirname(parent) !== parent)
     parent = dirname(parent);
   const [real, project] = await Promise.all([
@@ -86,8 +88,8 @@ async function refuseLinkedParent(
   if (inside.startsWith("..") || isAbsolute(inside))
     throw new RigError(
       "RECIPE_FILE_PATH",
-      `The recipe file ${path} would be written outside the Project directory ${directory}: ${parent} leads to ${real}.`,
-      `Replace the link at ${parent} with a directory of the Project, or write the file there by hand.`,
+      `The recipe file ${path} is outside the Project directory ${directory}: ${parent} leads to ${real}.`,
+      `Replace the link at ${parent} with a file or directory of the Project itself, so its checkout carries it.`,
       { path },
     );
 }

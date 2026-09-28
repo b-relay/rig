@@ -504,6 +504,8 @@ async function runUntilEnd(
         { port },
       );
     }
+  // A stop during the check reads as a free port; it must not go on to change .env.local.
+  if (stop.aborted) return 0;
   const envFile = join(request.workspace, ".env.local");
   await deps.files.writePrivate(
     envFile,

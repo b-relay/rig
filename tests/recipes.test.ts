@@ -683,6 +683,8 @@ test("generate writes the recipe's script into the Project directory once, never
       " differs from convex@2's copy and was not overwritten.",
   );
   expect(refused.err).toContain("Run rig recipe diff convex to compare.");
+  // The user's own file, not a fault of Rig: no diagnostic log path.
+  expect(refused.err).not.toContain("Details:");
   expect(await readFile(script, "utf8")).toBe(changed);
 
   // The Service block is pasted; diff shows the file line by line, - the Project's and + Rig's.
@@ -752,6 +754,26 @@ test("a recipe file is never written through a linked directory that leads out o
     createProjectFiles().create(project, "scripts/rig-convex.ts", "x"),
   ).rejects.toMatchObject({ code: "RECIPE_FILE_PATH" });
   await expect(readFile(join(elsewhere, "rig-convex.ts"))).rejects.toThrow();
+  // A copy already there through the link is not the Project's either: generate refuses it rather than taking it.
+  await writeFile(
+    join(elsewhere, "rig-convex.ts"),
+    RECIPE_FILE_TEXT["rig-convex.ts"],
+  );
+  const linked = await rig(
+    ["recipe", "generate", "convex"],
+    undefined,
+    undefined,
+    project,
+    createProjectFiles(),
+  );
+  expect(linked.code).toBe(1);
+  expect(linked.err).toContain(
+    "The recipe file scripts/rig-convex.ts is outside the Project directory",
+  );
+  expect(linked.err).not.toContain("Details:");
+  await expect(
+    readProjectFile(project, "scripts/rig-convex.ts"),
+  ).rejects.toMatchObject({ code: "RECIPE_FILE_PATH" });
 
   const long = Array.from({ length: 5000 }, (_, n) => `line ${n}`).join("\n");
   expect(lineDiff(long, `${long}\nmore`)).toBeUndefined();

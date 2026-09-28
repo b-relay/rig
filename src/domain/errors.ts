@@ -84,6 +84,11 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "UNAUTHORIZED",
   "CADDY_UNAVAILABLE",
   "PROVIDER_MISSING",
+  "RECIPE_FILE_CHANGED",
+  "RECIPE_FILE_PATH",
+  "RECIPE_FILE_WRITE",
+  "RECIPE_FILES_UNAVAILABLE",
+  "PROJECT_FILE_UNREADABLE",
 ]);
 /** The user ended the command before it changed anything; the hint says what, if anything, still runs. */
 export function cancelled(hint = "No runtime change was requested."): RigError {

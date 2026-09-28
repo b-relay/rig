@@ -64,6 +64,8 @@ async function harness(
     backendIgnoresStop?: boolean;
     /** What already answers at /instance_name before any backend was started. */
     occupied?: string;
+    /** A stop arrives while the ports are checked, which then read as free. */
+    stopDuringPortCheck?: boolean;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-convex-helper-"));
@@ -146,6 +148,10 @@ async function harness(
       );
     },
     async listening(port) {
+      if (options.stopDuringPortCheck) {
+        stop.abort();
+        return false;
+      }
       return (
         options.occupied !== undefined &&
         port === 47001 &&
@@ -771,4 +777,14 @@ test("under a pin, new credentials are made with a newer cached binary, as conve
     ),
   ]);
   expect(h.children[0]!.command[0]).toBe(`/cache/${OLD}/convex-local-backend`);
+});
+
+test("a stop during the port check starts nothing and leaves .env.local alone", async () => {
+  const h = await harness({ recommended: NEW, stopDuringPortCheck: true });
+  await writeFile(join(h.workspace, ".env.local"), "KEEP=1\n");
+  expect(await h.start()).toBe(0);
+  expect(h.children).toEqual([]);
+  expect(await readFile(join(h.workspace, ".env.local"), "utf8")).toBe(
+    "KEEP=1\n",
+  );
 });

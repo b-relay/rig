@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   matchesLogFilter,
@@ -73,12 +74,21 @@ export async function readFamilyTail(
     unreadableKept && filter.since === undefined && filter.until === undefined;
   let bytesPastFullPage = 0;
   /** Bytes of records before the since bound read in a row. A record can be appended after newer ones when its writer was
-   * held up between timing it and writing it (as across a sleep), so one such record does not end the walk: it ends after
-   * a window's worth of them in a row, or at the end of the file that holds them. */
+   * held up between timing it and writing it (as across a sleep), so its time says nothing of the records before it: one
+   * such record does not end the walk, a window's worth of them in a row does. Whether an older generation can hold a line
+   * inside the window is decided by when it was last written instead (see `writtenBefore`). */
   let bytesPastSince = 0;
   let done = false;
   for (const member of [...family.members].reverse()) {
     if (done && member.generation > 0) break;
+    // A rotated generation last written before the bound holds only lines timed before it, as does every older one: none
+    // is opened, so an unreadable one never fails the read.
+    if (
+      member.generation > 0 &&
+      stopBefore.since !== undefined &&
+      (await writtenBefore(join(root, member.name), stopBefore.since))
+    )
+      break;
     const log = await openLog(join(root, member.name));
     if (!log) continue;
     try {
@@ -134,13 +144,20 @@ export async function readFamilyTail(
     } finally {
       await log.handle.close();
     }
-    // Past the bound at the start of this file: an older generation holds nothing inside the window.
-    if (bytesPastSince > 0) done = true;
   }
   settle(undefined);
   return { entries: kept.slice(0, limit).reverse(), positions };
 }
 
+/** Whether the file at `path` was last written before `time`: every line in it was timed before it too, since a line is
+ * timed before it is written. A file that is gone, or cannot be looked at, is not known to be. */
+async function writtenBefore(path: string, time: string): Promise<boolean> {
+  try {
+    return (await stat(path)).mtimeMs < Date.parse(time);
+  } catch {
+    return false;
+  }
+}
 /** Whether any line of `family` can pass `filter`. A family of records (`target.jsonl`, `events.jsonl`) always may; a
  * family of plain lines launchd wrote belongs to one component and stream, and has no times, so a filter on another
  * component or stream, or any time bound, excludes all of it. */

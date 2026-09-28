@@ -526,6 +526,17 @@ test("a read that reaches its since bound does not open older generations", asyn
       record("web", "older than since", "2026-09-28T10:00:00Z"),
   );
   await writeFile(path, record("web", "recent", "2026-09-28T11:30:00Z"));
+  // Each generation was last written when its newest line was.
+  await utimes(
+    `${path}.2`,
+    new Date("2026-09-27T00:00:00Z"),
+    new Date("2026-09-27T00:00:00Z"),
+  );
+  await utimes(
+    `${path}.1`,
+    new Date("2026-09-28T10:00:00Z"),
+    new Date("2026-09-28T10:00:00Z"),
+  );
   await chmod(`${path}.2`, 0o000);
   try {
     const result = await files.logs(target, undefined, 50, {
@@ -560,6 +571,30 @@ test("a record appended after newer ones, its writer held up across a sleep, doe
     "after wake 2",
     "after wake 3",
   ]);
+});
+test("a late record at the top of the current file does not hide a match in the generation it was rotated from", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(
+    `${path}.1`,
+    record("web", "before the window", "2026-09-28T10:00:00Z") +
+      record("web", "rotated match", "2026-09-28T11:30:00Z"),
+  );
+  await utimes(
+    `${path}.1`,
+    new Date("2026-09-28T11:30:00Z"),
+    new Date("2026-09-28T11:30:00Z"),
+  );
+  // Timed before a sleep, written just after the rotation.
+  await writeFile(
+    path,
+    record("worker", "timed before sleep", "2026-09-28T09:00:00Z"),
+  );
+  const result = await files.logs(target, undefined, 50, {
+    since: "2026-09-28T11:00:00Z",
+  });
+  expect(result.entries.map((entry) => entry.line)).toEqual(["rotated match"]);
 });
 test("a filtered follow returns only matching new entries and still advances past the rest", async () => {
   const target = await fixture(),

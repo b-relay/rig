@@ -1088,6 +1088,41 @@ test("a Working copy's Services are recorded as stopped by a restart only in the
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
 });
 
+test("a later pass that records a Working copy's Services as stopped by the restart records the restart with them, so it is still announced after another reboot", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const failing = failWrites(
+    f.store,
+    (state) => state.host?.restart !== undefined,
+  );
+  f.reopen();
+  await f.reconcile();
+  expect((await f.store.read()).host!.restart).toBeUndefined();
+
+  failing.left = 0;
+  await f.supervise();
+  const local = (await f.store.read()).targets.find((t) => t.kind === "local")!;
+  expect((await f.store.read()).host!.restart).toMatchObject({
+    kind: "reboot",
+    boot: "BOOT-2",
+    unannounced: true,
+    settled: expect.arrayContaining([local.id]),
+  });
+
+  f.restartHost({ ...REBOOTED, boot: "BOOT-3" });
+  f.reopen();
+  await f.reconcile();
+  const entries = (await f.store.read()).activity
+    .slice(before)
+    .filter((entry) => entry.action === "host-restart");
+  expect(entries.map((entry) => entry.message)).toEqual([
+    expect.stringContaining("Recorded late: "),
+    expect.not.stringContaining("Recorded late: "),
+  ]);
+});
+
 test("a restart whose entry was never written is still announced when the Mac restarts again before the next daemon, ahead of the new restart's entry", async () => {
   const f = await fixture();
   await f.startAll();

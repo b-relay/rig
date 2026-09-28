@@ -269,22 +269,18 @@ function markSettled(
   state.host.restart = pending;
 }
 
-/** Records each stopped Service of `target`, a Working copy or Preview, as stopped by `restart` (see
- * `recordStoppedByHostRestart`) and, in the same write, notes the Target settled in the pending restart `mark` identifies,
- * when the pass has one. A daemon that finishes the restart later then does not record them again (an explicit start
- * may by then have ended the restart's hold on them), and a write that records them never leaves the restart itself
- * unrecorded. Returns whether it was saved; a failure goes to the diagnostic log. */
+/** Records each stopped Service of `target`, a Working copy or Preview, as stopped by the restart `mark` identifies (see
+ * `recordStoppedByHostRestart`) and, in the same write, notes the Target settled in that pending restart. A daemon that
+ * finishes the restart later then does not record them again (an explicit start may by then have ended the restart's
+ * hold on them), and a write that records them never leaves the restart itself unrecorded. Returns whether it was saved;
+ * a failure goes to the diagnostic log. */
 export async function recordStoppedAfterHostRestart(
   target: TargetRecord,
-  restart: HostRestart,
-  mark: RestartMark | undefined,
+  mark: RestartMark,
   deps: StartDeps,
 ): Promise<boolean> {
-  return await recordStoppedByHostRestart(
-    target,
-    restart,
-    deps,
-    mark && ((state) => markSettled(state, target.id, mark)),
+  return await recordStoppedByHostRestart(target, mark.kind, deps, (state) =>
+    markSettled(state, target.id, mark),
   );
 }
 

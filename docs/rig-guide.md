@@ -1230,9 +1230,9 @@ to them, and leaves every other byte alone: comments (a comment above
 A `yaml-language-server` comment that names `rig-v1.schema.json` is pointed at
 `rig.schema.json`. Before writing, it checks that the new file parses to
 exactly the config the old one did; when it would not, nothing is written. A
-comment inside a one-line `{ ... }` Service mapping between the settings it
-moves would be lost, so the upgrade refuses (`upgrade_lossy`) and names the
-setting; move the comment, then run it again. The previous text is kept
+Service written as a `{ ... }` mapping with a comment inside it is refused
+(`upgrade_lossy`), since the move could misplace the comment: write that
+Service in block style or move the comment out, then run it again. The previous text is kept
 in `rig.yaml.bak`, as with every Rig config edit. `rig config upgrade
 --dry-run` prints a unified diff and writes nothing. It changes only the file
 in the working tree: nothing is committed, planned or restarted, so commit it

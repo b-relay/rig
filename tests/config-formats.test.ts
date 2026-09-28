@@ -639,3 +639,60 @@ test("the upgrade keeps trailing comments of flow mappings, quoted keys, block s
     upgradeProjectConfig({ repoPath: lossy, dryRun: true }),
   ).rejects.toMatchObject({ code: "upgrade_lossy" });
 });
+
+test("the upgrade keeps block scalars with references and a quoted format, accepts a # inside a quoted flow value, and refuses a flow mapping with a comment", async () => {
+  const root = await project(
+    [
+      'format: "rig/v1"',
+      "name: edge",
+      "services:",
+      "  web:",
+      "    run: |2",
+      "        echo ${services.web.ready}",
+      "    ready: test -f /tmp/ready",
+      '  api: {run: serve, ports: {http: auto}, ready: "test -f /tmp/#x", ready_timeout: "1m"}',
+      "",
+    ].join("\n"),
+  );
+  const before = await readProjectConfig(root);
+  await upgradeProjectConfig({ repoPath: root, dryRun: false });
+  expect(await readFile(join(root, "rig.yaml"), "utf8")).toBe(
+    [
+      'format: "rig/v2"',
+      "name: edge",
+      "services:",
+      "  web:",
+      "    run: |2",
+      "        echo ${services.web.health.check}",
+      "    health:",
+      "      check: test -f /tmp/ready",
+      '  api: {run: serve, ports: {http: auto}, health: {check: "test -f /tmp/#x", start_timeout: "1m"}}',
+      "",
+    ].join("\n"),
+  );
+  expect((await readProjectConfig(root)).config).toEqual(before.config);
+
+  for (const mapping of [
+    "{ready: # why\n      test, run: serve}",
+    "{run: serve, ports: {http: auto}, # budget\n      ready_timeout: 1m}",
+  ]) {
+    const lossy = await project(`name: edge\nservices:\n  web: ${mapping}\n`);
+    await expect(
+      upgradeProjectConfig({ repoPath: lossy, dryRun: true }),
+    ).rejects.toMatchObject({ code: "upgrade_lossy" });
+  }
+});
+
+test("rig recipe generate --format still prints the deprecation line beside a rig/v1 file", async () => {
+  const v1 = await project("name: app\nservices:\n  web: { run: serve }\n");
+  const generated = await cli(
+    ["recipe", "generate", "convex", "--format", "rig/v2"],
+    v1,
+    () => Promise.reject(new Error("generate needs no rigd")),
+    findDeclaredFormat,
+  );
+  expect(generated.out).toContain("    health:\n");
+  expect(generated.err).toStartWith(
+    `Deprecated: ${join(v1, "rig.yaml")} is written in rig.yaml format rig/v1`,
+  );
+});

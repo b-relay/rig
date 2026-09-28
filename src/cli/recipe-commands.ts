@@ -85,10 +85,7 @@ export function addRecipeCommands(
               : "Run rig recipe list to see the bundled recipes.",
           );
         const service = serviceName(options.name ?? found.defaultName);
-        const project =
-          options.format === undefined
-            ? await configFormat?.(cwd).catch(() => undefined)
-            : undefined;
+        const project = await configFormat?.(cwd).catch(() => undefined);
         const format =
           options.format === undefined
             ? (project?.format ?? LATEST_FORMAT)

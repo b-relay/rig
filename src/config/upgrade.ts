@@ -19,6 +19,7 @@ import {
   type MovedSetting,
 } from "./formats";
 import { rewriteReferences } from "./references";
+import { hasComments } from "./editor";
 
 /** The committed JSON Schema file of each format, which a yaml-language-server comment names. */
 const SCHEMA_FILES: Readonly<Record<ConfigFormat, string>> = {
@@ -89,7 +90,7 @@ function lineEnd(text: string, offset: number): number {
   const end = text.indexOf("\n", offset);
   return end === -1 ? text.length : end + 1;
 }
-/** A key written the way `like` was: quoted with the same quote, or plain. */
+/** A key or value written the way `like` was: quoted with the same quote, or plain. */
 function keyLike(like: Scalar, name: string): string {
   return like.type === "QUOTE_DOUBLE"
     ? `"${name}"`
@@ -116,7 +117,7 @@ function setFormat(
       {
         start: declared.value.range[0],
         end: declared.value.range[1],
-        text: LATEST_FORMAT,
+        text: keyLike(declared.value, LATEST_FORMAT),
         changes: [`format: ${LATEST_FORMAT} (was ${format})`],
       },
     ];
@@ -183,8 +184,9 @@ function schemaComment(text: string, format: ConfigFormat): TextEdit[] {
 }
 
 /** Every `${...}` reference to a moved setting, in any string value, spelled the way the step spells it. The key is
- * replaced inside the value's own source text, so its quoting stays; a value whose source spells the reference with an
- * escape is written again as a double-quoted string. */
+ * replaced inside the value's own source text, so its quoting and block style stay; a quoted value whose source spells the
+ * reference with an escape, so the replacement does not read back as the new value in the file, is written again as a
+ * double-quoted string. */
 function followReferences(
   document: Document,
   text: string,
@@ -200,31 +202,31 @@ function followReferences(
       if (next === node.value) return;
       const [start, end] = node.range;
       const spliced = rewriteReferences(text.slice(start, end), rename);
+      const at = keyPath(path, key);
+      const reads =
+        parse(text.slice(0, start) + spliced + text.slice(end)).getIn(at) ===
+        next;
       edits.push({
         start,
         end,
-        text: scalarValue(spliced) === next ? spliced : JSON.stringify(next),
-        changes: [`${dotted(path, key)}: ${node.value} -> ${next}`],
+        text:
+          reads || node.type === "BLOCK_LITERAL" || node.type === "BLOCK_FOLDED"
+            ? spliced
+            : JSON.stringify(next),
+        changes: [`${at.join(".")}: ${node.value} -> ${next}`],
       });
     },
   });
   return edits;
 }
-/** The string one scalar's source text means on its own, or undefined when it is not one scalar. */
-function scalarValue(source: string): unknown {
-  const document = parse(source);
-  return !document.errors.length && isScalar(document.contents)
-    ? document.contents.value
-    : undefined;
-}
-/** The dotted config path of a node from its ancestors, such as services.api.env.URL. */
-function dotted(path: readonly unknown[], key: unknown): string {
-  const segments: string[] = [];
+/** The config path of a node from its ancestors, such as services.api.env.URL or env_file.0. */
+function keyPath(path: readonly unknown[], key: unknown): (string | number)[] {
+  const segments: (string | number)[] = [];
   for (const node of path)
     if (isPair(node) && isScalar(node.key))
       segments.push(String(node.key.value));
-  if (typeof key === "number") segments.push(String(key));
-  return segments.join(".");
+  if (typeof key === "number") segments.push(key);
+  return segments;
 }
 
 /** Every Service mapping with its path: `services.<name>` and `targets.<role>.services.<name>`. */
@@ -308,13 +310,25 @@ function moveInBlock(
   }));
 }
 /** Flow style: the block, a flow mapping padded as its Service is, takes the first moved setting's place, and each value
- * keeps its source text. A later moved setting goes with the comma before it. */
+ * keeps its source text. A later moved setting goes with the comma before it. Comments inside the Service's mapping could
+ * end up beside another setting or be dropped, so a mapping with any is refused. */
 function moveInFlow(
   service: YAMLMap,
   text: string,
   moved: readonly Moved[],
   changes: readonly string[],
 ): TextEdit[] {
+  if (
+    service.items.some(
+      (pair) => hasComments(pair.key) || hasComments(pair.value),
+    )
+  )
+    throw new ConfigError(
+      "This Service's { ... } mapping holds a comment the upgrade could misplace or drop.",
+      "upgrade_lossy",
+      { setting: moved[0]!.move.from[0] },
+      `Write the mapping that holds ${moved[0]!.move.from[0]} in block style, or move its comment out of it, then run rig config upgrade again.`,
+    );
   const padded = /^\{\s/.test(text.slice(service.range![0]));
   const [open, close] = padded ? ["{ ", " }"] : ["{", "}"];
   const valueText = ({ pair }: Moved) =>
@@ -332,13 +346,6 @@ function moveInFlow(
       index === 0
         ? each.pair.key.range![0]
         : text.lastIndexOf(",", each.pair.key.range![0] - 1);
-    if (index > 0 && text.slice(start, end).includes("#"))
-      throw new ConfigError(
-        "Moving this setting would drop a comment inside a flow mapping.",
-        "upgrade_lossy",
-        { setting: each.move.from[0] },
-        `Move the comment out of the { ... } mapping that holds ${each.move.from[0]}, or write the mapping in block style, then run rig config upgrade again.`,
-      );
     return {
       start,
       end,

@@ -4397,4 +4397,27 @@ test("a Working copy whose rig.yaml was only upgraded to rig/v2 is not reported 
       }
     ).warnings,
   ).toEqual([expect.stringContaining("Run rig restart local")]);
+  // The order of Services is what the file says too: it decides the order they start in.
+  const both = (first: string, second: string) =>
+    parseProjectConfig({
+      format: "rig/v2",
+      name: "demo",
+      services: Object.fromEntries(
+        [first, second].map((name, index) => [
+          name,
+          { run: "serve --host 127.0.0.1", ports: { http: 4567 + index } },
+        ]),
+      ),
+    });
+  await runtime.command({ action: "down", project: "demo" });
+  document = { revision: "ab", config: both("alpha", "beta") };
+  await runtime.command({ action: "up", project: "demo" });
+  document = { revision: "ba", config: both("beta", "alpha") };
+  expect(
+    (
+      (await runtime.command({ action: "up", project: "demo" })) as {
+        warnings?: string[];
+      }
+    ).warnings,
+  ).toEqual([expect.stringContaining("Run rig restart local")]);
 });

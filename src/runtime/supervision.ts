@@ -1,7 +1,11 @@
 import type { ManagedComponent, RestartPolicy } from "../config/types";
 import { recordActivity } from "../domain/activity";
 import { hostRestartText, type HostRestart } from "../domain/host-session";
-import { RigError, diagnosticErrorCode } from "../domain/errors";
+import {
+  RigError,
+  diagnosticErrorCode,
+  recoveredByDownFirst,
+} from "../domain/errors";
 import type {
   OperationRecord,
   ServiceOutcome,
@@ -732,7 +736,7 @@ export function stoppedStanding(
       : run?.exhausted
         ? `${ended} after ${RESTART_LIMIT} automatic restarts within ${BUDGETS["known-exit"].window}, so it stays stopped. ${again}`
         : outcome.kind === "start-failed"
-          ? `${ended}. ${again}`
+          ? `${ended}. ${recoveredByDownFirst(outcome.errorCode) ? "Run rig down, then rig up to start it again." : again}`
           : `${ended} and its restart policy is ${policy}, so it stays stopped. ${again}`,
   };
 }

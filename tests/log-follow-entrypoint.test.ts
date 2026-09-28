@@ -100,12 +100,13 @@ test("compiled follow uses production scheduling and terminates on SIGTERM witho
     child = running;
     const output = new Response(running.stdout).text();
     const error = new Response(running.stderr).text();
+    // A watchdog, not a latency bound: on a loaded Host the compiled binary can take seconds to start and poll.
     await Promise.race([
       polled,
       new Promise<never>((_, reject) => {
         watchdog = setTimeout(
           () => reject(new Error("Compiled follow never polled")),
-          5000,
+          15000,
         );
       }),
     ]);
@@ -217,7 +218,8 @@ test("follow exits 0 and stops polling once its stdout reader has gone away", as
         watchdog = setTimeout(
           () =>
             reject(new Error("Follow kept running after its reader closed")),
-          5000,
+          // Includes starting rig from source, which takes seconds on a loaded Host.
+          15000,
         );
       }),
     ]);

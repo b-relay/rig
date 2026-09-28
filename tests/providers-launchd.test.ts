@@ -324,6 +324,8 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
   let loaded = false;
   let bootstrapExit = 0;
   let unloadPrints = 0;
+  // The platform budgets on a clock that moves only through the supervisor's own pauses: 40 polls spend 4 s of it, not of real time.
+  let clock = Date.now();
   const run: CommandRunner = async ({ command }) => {
     const action = command[1];
     if (action === "bootstrap") {
@@ -341,7 +343,7 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
       await writeCaptureObservation(requestPath, {
         wrapperPid: wrapper.pid,
         wrapperIdentity: wrapper.identity,
-        observedAt: Date.now(),
+        observedAt: clock,
         applicationIdentity: application.identity,
         observation: { state: "running", pid: application.pid },
       });
@@ -370,7 +372,13 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     labelPrefix: "test.rig",
     captureCommand: ["/fake/rigd", "capture"],
     run,
-    timing: createLaunchdTiming(),
+    timing: {
+      ...createLaunchdTiming(),
+      now: () => clock,
+      wait: async (ms) => {
+        clock += ms;
+      },
+    },
     // The application ends with its job; one that outlived it would keep its evidence file.
     groupExists: async () => false,
     inspect: async (pid) =>

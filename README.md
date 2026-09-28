@@ -39,7 +39,25 @@ bun install
 bun run typecheck
 bun test
 bun run build
+bun run format:check
 ```
+
+`bun test` runs the full suite one file at a time. `bun run test:parallel` runs
+the same files in four worker processes, starting the slowest files first from
+`tests/timings.json`, and is several times faster. `bun run test:fast` does the
+same without the end-to-end and compiled-binary files. `bun test <fragment>`
+runs only the files whose path contains the fragment, for example
+`bun test providers-launchd`. While working, run the typecheck and the focused
+files for the change (or `test:fast`); run the full suite, the build and the
+format check before merging to main or deploying to live.
+
+Every test in the files `bunfig.toml` lists under `concurrentTestGlob` runs
+concurrently with the file's other tests, so each must own its whole world: a
+temporary `RIG_ROOT`, its own `rigd`, and ephemeral ports. The test scripts
+start the `bun` that runs them (`$npm_execpath`), never whichever `bun` comes
+first on the script `PATH`. After adding or reshaping slow files, refresh the
+timings with
+`bun test --parallel=4 --timings=tests/timings.json --update-timings`.
 
 The build produces `rig`, `rigd`, and `git-remote-rig`. Keep tests and development
 isolated from the installed Host with `RIG_ROOT`:

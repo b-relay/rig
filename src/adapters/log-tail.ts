@@ -87,17 +87,20 @@ export async function readFamilyTail(
     if (member.generation > 0) rotatedReached = true;
     // A rotated generation last written before the bound holds only lines timed before it, as does every older one: none
     // is read, so an unreadable one never fails the read. The one rotated last may still take a line from a writer that
-    // opened it just before the rotation: a follow is given its end, so it reads what that writer appends.
+    // opened it just before the rotation: a follow is given its end, so it reads what that writer appends. A line
+    // appended between the check and taking the end would fall behind that end unread, so the check is made again after
+    // it: a file written meanwhile is read like any other.
     if (
       member.generation > 0 &&
       stopBefore.since !== undefined &&
       (await writtenBefore(join(root, member.name), stopBefore.since))
     ) {
-      if (newestRotated) {
-        const position = await positionAtEnd(join(root, member.name));
+      if (!newestRotated) break;
+      const position = await positionAtEnd(join(root, member.name));
+      if (await writtenBefore(join(root, member.name), stopBefore.since)) {
         if (position) positions[member.name] = position;
+        break;
       }
-      break;
     }
     const log = await openLog(join(root, member.name));
     if (!log) continue;

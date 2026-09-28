@@ -11,25 +11,22 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runConvexCli } from "../src/cli/convex-command";
-import { RigError } from "../src/domain/errors";
-import type {
-  ChildExit,
-  ConvexCommandOptions,
-  ConvexHelperDependencies,
-  RunningChild,
-} from "../src/helpers/convex-contracts";
+// The helper script convex@2 writes into a Project, tested through its exported functions with fakes for the download,
+// the processes and the clock over real temporary files. tests/convex-script.test.ts runs it as a process.
 import {
   backendArguments,
+  deploymentStore,
+  HelperError,
   newDeploymentRelease,
   nextRelease,
+  readSettings,
+  runDeployment,
   selfHostedEnvFile,
-} from "../src/helpers/convex-deployment";
-import {
-  runConvexDeployment,
+  type ChildExit,
   type ConvexRunRequest,
-} from "../src/helpers/convex-local";
-import { createDeploymentFiles } from "../src/providers/deployment-files";
+  type Dependencies,
+  type RunningChild,
+} from "../src/recipes/files/rig-convex";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -61,7 +58,7 @@ async function harness(
     backendEnds?: ChildExit;
     /** A stop arrives while keygen runs, which then fails as a cancelled command does. */
     stopDuringKeygen?: boolean;
-    /** Releases whose download breaks with an error that is not a RigError. */
+    /** Releases whose download breaks with an error that is not a HelperError. */
     broken?: string[];
     /** The backend ignores SIGTERM; only a kill ends it. */
     backendIgnoresStop?: boolean;
@@ -78,7 +75,7 @@ async function harness(
   const events: string[] = [];
   let out = "";
   let err = "";
-  const deps: ConvexHelperDependencies = {
+  const deps: Dependencies = {
     releases: {
       async recommended() {
         events.push("recommended");
@@ -92,7 +89,7 @@ async function harness(
         if (options.broken?.includes(release))
           throw new Error("ECONNRESET while reading the body");
         if (options.unavailable?.includes(release))
-          throw new RigError(
+          throw new HelperError(
             "CONVEX_BACKEND_DOWNLOAD",
             `Convex backend ${release} could not be downloaded (offline).`,
             "Connect.",
@@ -133,12 +130,12 @@ async function harness(
         return child;
       },
     },
-    files: createDeploymentFiles(),
+    files: deploymentStore(),
     async run(request) {
       events.push(`run ${request.command.slice(1).join(" ")}`);
       if (options.stopDuringKeygen) {
         stop.abort();
-        throw new RigError("COMMAND_CANCELLED", "Cancelled.", "Retry.");
+        throw new HelperError("COMMAND_CANCELLED", "Cancelled.", "Retry.");
       }
       return (
         options.keygen ?? {
@@ -191,7 +188,7 @@ async function harness(
     during: (both: { backend: FakeChild; dev: FakeChild }) => void = () =>
       stop.abort(),
   ) => {
-    const result = runConvexDeployment(
+    const result = runDeployment(
       { ...request, ...overrides },
       deps,
       stop.signal,
@@ -287,7 +284,7 @@ test("a first start creates the deployment in the state directory, points .env.l
     expect(dev!.env[key]).toBe("");
   expect(backend!.stopped && dev!.stopped).toBe(true);
   expect(await readFile(join(h.workspace, ".env.local"), "utf8")).toBe(
-    "# Deployment used by `npx convex dev`\n# CONVEX_DEPLOYMENT=dev:cloud-app # team: x  # set aside by rigd convex\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\n# export CONVEX_DEPLOY_KEY=prod:app|key  # set aside by rigd convex\nAPP_KEY=keep\n\n# Convex backend run by rigd convex (the convex recipe)\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:47001\nCONVEX_SELF_HOSTED_ADMIN_KEY=convex-self-hosted|admin-key\n",
+    "# Deployment used by `npx convex dev`\n# CONVEX_DEPLOYMENT=dev:cloud-app # team: x  # set aside by rig-convex.ts\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\n# export CONVEX_DEPLOY_KEY=prod:app|key  # set aside by rig-convex.ts\nAPP_KEY=keep\n\n# Convex backend run by scripts/rig-convex.ts\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:47001\nCONVEX_SELF_HOSTED_ADMIN_KEY=convex-self-hosted|admin-key\n",
   );
   expect(h.output().out).toContain(
     `Created Convex deployment convex-self-hosted (backend ${NEW}) in ${h.stateDir}`,
@@ -391,7 +388,7 @@ test("offline, a new deployment starts on the newest cached release, and fails b
   const failure = await empty.start().catch((error: unknown) => error);
   expect(failure).toMatchObject({
     code: "CONVEX_BACKEND_UNAVAILABLE",
-    hint: expect.stringContaining("--backend-version"),
+    hint: expect.stringContaining("CONVEX_BACKEND_VERSION"),
   });
   expect(empty.children).toEqual([]);
   expect(await empty.output().err).toBe("");
@@ -539,7 +536,7 @@ test("the backend is only ever bound to loopback, and .env.local keeps every lin
 
   const pair = { url: "http://127.0.0.1:9", adminKey: "key" };
   const managed =
-    "# Convex backend run by rigd convex (the convex recipe)\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:9\nCONVEX_SELF_HOSTED_ADMIN_KEY=key\n";
+    "# Convex backend run by scripts/rig-convex.ts\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:9\nCONVEX_SELF_HOSTED_ADMIN_KEY=key\n";
   expect(selfHostedEnvFile(undefined, pair)).toBe(managed);
   expect(selfHostedEnvFile("", pair)).toBe(managed);
   // Written by design's hand-written script: its lines are replaced, not doubled.
@@ -551,98 +548,71 @@ test("the backend is only ever bound to loopback, and .env.local keeps every lin
   );
 });
 
-test("rigd convex checks its options before running anything, passes operands to convex dev, and answers --help and -h", async () => {
-  const runs: ConvexCommandOptions[] = [];
-  let out = "";
-  let err = "";
-  const cli = (...args: string[]) => {
-    out = "";
-    err = "";
-    return runConvexCli(["convex", ...args], {
-      output: {
-        write: (text) => void (out += text),
-        error: (text) => void (err += text),
-      },
-      run: async (options) => {
-        runs.push(options);
-        return 7;
-      },
-    });
+test("the script reads its settings from the environment, checks them before running anything, and passes arguments to convex dev", () => {
+  const valid = {
+    CONVEX_CLOUD_PORT: "47001",
+    CONVEX_SITE_PORT: "47002",
+    CONVEX_STATE_DIR: "/data/backend",
   };
-  for (const flag of ["--help", "-h"]) {
-    expect(await cli(flag)).toBe(0);
-    expect(out).toContain("Usage: rigd convex [options] [convex-dev-args...]");
-    expect(out).toContain("--state-dir <dir>");
-  }
-  const valid = [
-    "--cloud-port",
-    "47001",
-    "--site-port",
-    "47002",
-    "--state-dir",
-    "/data/backend",
-  ];
-  expect(await cli(...valid, "--", "--typecheck", "disable")).toBe(7);
-  expect(runs).toEqual([
-    {
-      cloudPort: 47001,
-      sitePort: 47002,
-      stateDir: "/data/backend",
-      instanceName: "convex-self-hosted",
-      devArguments: ["--typecheck", "disable"],
-    },
-  ]);
   expect(
-    await cli(...valid, "--backend-version", NEW, "--instance-name", "app"),
-  ).toBe(7);
-  expect(runs.at(-1)).toMatchObject({
-    backendVersion: NEW,
+    readSettings(valid, ["--", "--typecheck", "disable"], "/work"),
+  ).toEqual({
+    cloudPort: 47001,
+    sitePort: 47002,
+    stateDir: "/data/backend",
+    workspace: "/work",
+    instanceName: "convex-self-hosted",
+    devArguments: ["--typecheck", "disable"],
+    environment: valid,
+  });
+  expect(
+    readSettings(
+      { ...valid, CONVEX_BACKEND_VERSION: NEW, CONVEX_INSTANCE_NAME: "app" },
+      [],
+      "/work",
+    ),
+  ).toMatchObject({
+    pinnedRelease: NEW,
     instanceName: "app",
+    devArguments: [],
   });
-  for (const [args, message] of [
+  for (const [changes, message] of [
     [
-      ["--site-port", "2", "--state-dir", "/d"],
-      "required option '--cloud-port <port>' not specified",
+      { CONVEX_CLOUD_PORT: undefined },
+      "CONVEX_CLOUD_PORT must be a port number from 1 to 65535.",
     ],
     [
-      ["--cloud-port", "x", "--site-port", "2", "--state-dir", "/d"],
-      "--cloud-port must be a port number from 1 to 65535.",
+      { CONVEX_CLOUD_PORT: "x" },
+      "CONVEX_CLOUD_PORT must be a port number from 1 to 65535.",
     ],
     [
-      ["--cloud-port", "70000", "--site-port", "2", "--state-dir", "/d"],
-      "--cloud-port must be a port number from 1 to 65535.",
+      { CONVEX_SITE_PORT: "70000" },
+      "CONVEX_SITE_PORT must be a port number from 1 to 65535.",
     ],
     [
-      ["--cloud-port", "2", "--site-port", "2", "--state-dir", "/d"],
-      "--site-port must differ from --cloud-port.",
+      { CONVEX_SITE_PORT: "47001" },
+      "CONVEX_SITE_PORT must differ from CONVEX_CLOUD_PORT.",
     ],
     [
-      ["--cloud-port", "1", "--site-port", "2", "--state-dir", "data"],
-      "--state-dir must be an absolute path",
+      { CONVEX_STATE_DIR: "data" },
+      "CONVEX_STATE_DIR must be an absolute directory",
     ],
     [
-      [...valid, "--backend-version", "../../etc"],
-      "--backend-version must be a Convex backend release name",
+      { CONVEX_BACKEND_VERSION: "../../etc" },
+      "CONVEX_BACKEND_VERSION must be a Convex backend release name",
     ],
     [
-      [...valid, "--instance-name", "Bad Name"],
-      "--instance-name must be lowercase",
+      { CONVEX_INSTANCE_NAME: "Bad Name" },
+      "CONVEX_INSTANCE_NAME must be lowercase",
     ],
-  ] as const) {
-    const before = runs.length;
-    expect(await cli(...args)).toBe(1);
-    expect(err).toContain(message);
-    expect(err).toContain("Run rigd convex --help.");
-    expect(runs).toHaveLength(before);
-  }
-  const failing = await runConvexCli(["convex", ...valid], {
-    output: { write: () => {}, error: (text) => void (err = text) },
-    run: async () => {
-      throw new RigError("CONVEX_KEYGEN", "No key.", "Check the binary.");
-    },
-  });
-  expect(failing).toBe(1);
-  expect(err).toBe("rigd convex: No key. (CONVEX_KEYGEN)\nCheck the binary.\n");
+  ] as const)
+    expect(() => readSettings({ ...valid, ...changes }, [], "/work")).toThrow(
+      expect.objectContaining({
+        code: "CONVEX_SETTINGS",
+        message: expect.stringContaining(message),
+        hint: expect.stringContaining("rig.yaml"),
+      }),
+    );
 });
 
 test("a deployment an older Convex CLI made without credentials of its own gets new ones before its backend runs", async () => {

@@ -12,18 +12,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// The real effects of the helper script convex@2 writes into a Project: downloads from a loopback stand-in for
+// Convex's servers into a temporary HOME, real child processes, and real files in temporary directories.
 import { runCommand } from "../src/providers/command-runner";
 import {
   assetName,
-  createConvexReleases,
-} from "../src/providers/convex-releases";
-import { createDeploymentFiles } from "../src/providers/deployment-files";
-import { createForegroundChildren } from "../src/providers/foreground-children";
-import {
-  rigdLauncher,
-  rigdLauncherPath,
-  writeRigdLauncher,
-} from "../src/daemon/rigd-launcher";
+  backendReleases,
+  childProcesses,
+  deploymentStore,
+} from "../src/recipes/files/rig-convex";
 
 const roots: string[] = [];
 const servers: { stop(force?: boolean): unknown }[] = [];
@@ -65,6 +62,15 @@ async function releaseServer(root: string, answer: unknown) {
         return new Response(Bun.file(zip));
       if (path === `/download/precompiled-2026-09-22-notzip/${asset}`)
         return new Response("not a zip");
+      if (path === `/download/precompiled-2026-09-23-broken/${asset}`)
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(64));
+              controller.error(new Error("connection reset"));
+            },
+          }),
+        );
       return new Response("missing", { status: 404 });
     },
   });
@@ -80,13 +86,11 @@ test("releases: the recommended release is read from Convex's answer, a missing 
   const root = await temporary();
   const home = join(root, "home");
   const served = await releaseServer(root, { version: RELEASE });
-  const releases = createConvexReleases({
+  const releases = backendReleases({
     home,
     platform: process.platform,
     arch: process.arch,
-    run: runCommand,
     PATH: process.env.PATH,
-    fetch,
     sources: served.sources,
   });
   const signal = new AbortController().signal;
@@ -118,16 +122,12 @@ test("releases: an answer without a usable version, or no answer, recommends not
     home: join(root, "home"),
     platform: process.platform,
     arch: process.arch,
-    run: runCommand,
     PATH: process.env.PATH,
-    fetch,
     sources: served.sources,
   };
   const signal = new AbortController().signal;
-  expect(
-    await createConvexReleases(options).recommended(signal),
-  ).toBeUndefined();
-  const offline = createConvexReleases({
+  expect(await backendReleases(options).recommended(signal)).toBeUndefined();
+  const offline = backendReleases({
     ...options,
     sources: {
       recommended: "http://127.0.0.1:1/version",
@@ -137,9 +137,9 @@ test("releases: an answer without a usable version, or no answer, recommends not
   expect(await offline.recommended(signal)).toBeUndefined();
   await expect(offline.binary(RELEASE, signal)).rejects.toMatchObject({
     code: "CONVEX_BACKEND_DOWNLOAD",
-    hint: expect.stringContaining("--backend-version"),
+    hint: expect.stringContaining("CONVEX_BACKEND_VERSION"),
   });
-  const releases = createConvexReleases(options);
+  const releases = backendReleases(options);
   await expect(
     releases.binary("precompiled-2026-01-01-gone", signal),
   ).rejects.toMatchObject({
@@ -168,7 +168,7 @@ test("releases: an answer without a usable version, or no answer, recommends not
 
 test("children: a child writes where this process does, a stop reaches it, and one that cannot start says so", async () => {
   const root = await temporary();
-  const children = createForegroundChildren();
+  const children = childProcesses();
   const marker = join(root, "stopped");
   const child = children.start({
     command: [
@@ -197,7 +197,7 @@ test("children: a child writes where this process does, a stop reaches it, and o
 
 test("files: private files are written whole with mode 600, a missing file reads as undefined, and a copy never overwrites", async () => {
   const root = await temporary();
-  const files = createDeploymentFiles();
+  const files = deploymentStore();
   const path = join(root, "state", "config.json");
   expect(await files.read(path)).toBeUndefined();
   await writeFile(join(root, "loose"), "x", { mode: 0o644 });
@@ -234,87 +234,30 @@ test("files: private files are written whole with mode 600, a missing file reads
 
 test("releases: a download that breaks while its body is read is a tagged download failure and leaves nothing in the cache", async () => {
   const root = await temporary();
-  const releases = createConvexReleases({
+  const served = await releaseServer(root, { version: RELEASE });
+  const releases = backendReleases({
     home: join(root, "home"),
     platform: process.platform,
     arch: process.arch,
-    run: runCommand,
     PATH: process.env.PATH,
-    fetch: (async () =>
-      new Response(
-        new ReadableStream({
-          pull(controller) {
-            controller.error(new Error("connection reset"));
-          },
-        }),
-      )) as unknown as typeof fetch,
+    sources: served.sources,
   });
   await expect(
-    releases.binary(RELEASE, new AbortController().signal),
-  ).rejects.toMatchObject({
-    code: "CONVEX_BACKEND_DOWNLOAD",
-    message: expect.stringContaining("connection reset"),
-  });
+    releases.binary(
+      "precompiled-2026-09-23-broken",
+      new AbortController().signal,
+    ),
+  ).rejects.toMatchObject({ code: "CONVEX_BACKEND_DOWNLOAD" });
   expect(
     await readdir(join(root, "home", ".cache", "convex", "binaries")),
   ).toEqual([]);
-});
-
-// It starts a real bun, which takes seconds when the whole suite runs in parallel: hence its own timeout.
-test("the rigd launcher runs the installed rigd with its arguments, quoted, and from source keeps the workspace's .env files out", async () => {
-  expect(rigdLauncher(["/Applications/Rig's Tools/rigd"])).toContain(
-    `exec '/Applications/Rig'\\''s Tools/rigd' "$@"`,
-  );
-  const root = await temporary();
-  const script = join(root, "fake-rigd.ts");
-  await writeFile(
-    script,
-    "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), dotenv: process.env.FROM_DOTENV ?? null }));\n",
-  );
-  const workspace = join(root, "workspace");
-  await mkdir(workspace);
-  await writeFile(join(workspace, ".env"), "FROM_DOTENV=leaked\n");
-  const launcher = await writeRigdLauncher(join(root, "rig root"), [
-    process.execPath,
-    script,
-  ]);
-  expect(launcher).toBe(rigdLauncherPath(join(root, "rig root")));
-  expect((await Bun.file(launcher).stat()).mode & 0o777).toBe(0o755);
-  const ran = await runCommand({
-    command: [launcher, "convex", "an argument"],
-    cwd: workspace,
-  });
-  expect(JSON.parse(ran.stdout)).toEqual({
-    args: ["convex", "an argument"],
-    dotenv: null,
-  });
-  // Written again by the next rigd, whole.
-  await writeRigdLauncher(join(root, "rig root"), ["/usr/local/bin/rigd"]);
-  expect(await readFile(launcher, "utf8")).toContain(
-    "exec '/usr/local/bin/rigd' \"$@\"",
-  );
-  expect(await readdir(join(root, "rig root", "daemon"))).toEqual(["rigd"]);
-}, 30_000);
-
-test("a launcher that cannot be written is a tagged error naming the directory", async () => {
-  const root = await temporary();
-  await writeFile(join(root, "daemon"), "a file where the directory belongs");
-  await expect(
-    writeRigdLauncher(root, ["/usr/local/bin/rigd"]),
-  ).rejects.toMatchObject({
-    code: "RIGD_LAUNCHER",
-    hint: expect.stringContaining(join(root, "daemon")),
-  });
 });
 
 test("files: a write the filesystem refuses is a tagged error naming the path", async () => {
   const root = await temporary();
   await writeFile(join(root, "blocker"), "a file where a directory belongs");
   await expect(
-    createDeploymentFiles().writePrivate(
-      join(root, "blocker", "config.json"),
-      "{}",
-    ),
+    deploymentStore().writePrivate(join(root, "blocker", "config.json"), "{}"),
   ).rejects.toMatchObject({
     code: "CONVEX_FILES",
     message: expect.stringContaining(join(root, "blocker", "config.json")),
@@ -328,13 +271,11 @@ test("releases: a cache that exists but cannot be read is a tagged error, not an
   await chmod(cache, 0o000);
   try {
     await expect(
-      createConvexReleases({
+      backendReleases({
         home: join(root, "home"),
         platform: process.platform,
         arch: process.arch,
-        run: runCommand,
         PATH: process.env.PATH,
-        fetch,
       }).cached(),
     ).rejects.toMatchObject({ code: "CONVEX_CACHE" });
   } finally {

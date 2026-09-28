@@ -47,10 +47,6 @@ test("daemon administration uses observed state and never reveals private paths"
       calls++;
       return 0;
     },
-    convex: async () => {
-      calls++;
-      return 0;
-    },
   };
   for (const command of [
     [],
@@ -58,7 +54,6 @@ test("daemon administration uses observed state and never reveals private paths"
     ["status"],
     ["uninstall"],
     ["capture"],
-    ["convex"],
   ])
     for (const flag of ["--help", "-h"]) {
       text = "";
@@ -104,10 +99,6 @@ test("rigd --version prints the version without touching the daemon", async () =
       calls++;
       return 0;
     },
-    convex: async () => {
-      calls++;
-      return 0;
-    },
   });
   expect(code).toBe(0);
   expect(text.trim()).toBe(RIG_BUILD);
@@ -147,7 +138,6 @@ test("rigd capture is a documented command that needs its request file and retur
       captured.push(requestFile);
       return 3;
     },
-    convex: async () => 0,
   };
   expect(await runRigdCli(["--help"], options)).toBe(0);
   expect(text).toContain("capture");

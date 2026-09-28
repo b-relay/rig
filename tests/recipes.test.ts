@@ -10,7 +10,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
+import {
+  createProjectFiles,
+  readProjectFile,
+} from "../src/adapters/project-files";
 import { renderResult } from "../src/cli/output";
+import type { ProjectFiles } from "../src/cli/types";
+import { renderRecipeFileModule } from "../src/recipes/file-module";
+import { RECIPE_FILE_TEXT } from "../src/recipes/generated-files";
+import { lineDiff } from "../src/recipes/text-diff";
 import { runRigCli } from "../src/cli/rig";
 import {
   editProjectConfig,
@@ -30,11 +38,22 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-const RESOLVE_HOST = {
-  operatorHome: "/home/operator",
-  envRoot: "/rig/env",
-  rigd: "/opt/rig/bin/rigd",
-};
+const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+/** Project files kept in memory, for commands whose written files a test does not look at. */
+function memoryFiles(): ProjectFiles {
+  const files = new Map<string, string>();
+  return {
+    async projectDirectory(cwd) {
+      return cwd;
+    },
+    async read(directory, path) {
+      return files.get(join(directory, path));
+    },
+    async create(directory, path, text) {
+      files.set(join(directory, path), text);
+    },
+  };
+}
 
 /** A recipe with a history, which no bundled recipe has yet: version 2 changed the readiness check and added a timeout. */
 const CACHE: Recipe = {
@@ -98,6 +117,7 @@ async function fixture(yaml: string, recipes: readonly Recipe[] = [CACHE]) {
     store: new FileStateStore(root),
     documents: {
       read: (path: string) => readProjectConfig(path),
+      readProjectFile,
       async discover(path: string) {
         return {
           repoPath: path,
@@ -132,7 +152,8 @@ async function fixture(yaml: string, recipes: readonly Recipe[] = [CACHE]) {
     file,
     repo,
     runtime,
-    rig: (...args: string[]) => rig(args, recipes, runtime, repo),
+    rig: (...args: string[]) =>
+      rig(args, recipes, runtime, repo, createProjectFiles()),
   };
 }
 async function rig(
@@ -140,12 +161,14 @@ async function rig(
   recipes: readonly Recipe[] | undefined,
   runtime?: { command(request: RuntimeCommand): Promise<unknown> },
   cwd = "/workspace",
+  projectFiles: ProjectFiles = memoryFiles(),
 ) {
   let out = "";
   let err = "";
   const code = await runRigCli(args, {
     root: "/isolated/.rig",
     cwd,
+    projectFiles,
     ...(recipes ? { recipes } : {}),
     client: {
       async status() {
@@ -556,8 +579,13 @@ test("a Service generated from convex@1, which cannot pass the loopback check, i
     `Warning: ${notice} Run rig recipe generate convex for convex@2.\n`,
   );
   const current = await rig(["recipe", "generate", "convex"], undefined);
-  expect(current.err).toBe("");
-  expect(current.out).toContain("exec ${rig.rigd} convex --cloud-port");
+  expect(current.code).toBe(0);
+  expect(current.err).toBe(
+    "Wrote scripts/rig-convex.ts in /workspace; commit it with the Project. The Service runs it.\n",
+  );
+  expect(current.out).toContain(
+    "run: exec bun --no-env-file scripts/rig-convex.ts",
+  );
   expect(current.out).toContain("CONVEX_STATE_DIR: ${rig.data}/backend");
 
   const f = await fixture(APP + old.out, BUNDLED_RECIPES);
@@ -583,26 +611,24 @@ test("a Service generated from convex@1, which cannot pass the loopback check, i
   ).not.toHaveProperty("notices");
 });
 
-test("${rig.rigd} names the rigd that plans the Target, and a plan made without one refuses it rather than guessing", async () => {
+test("the convex@2 Service runs the Project's own helper script with bun, keeping .env files out, and its deployment in its persistent data", async () => {
   const block = (await rig(["recipe", "generate", "convex"], undefined)).out;
-  const input = {
-    config: parseProjectConfig(parse(APP + block)),
-    target: "local" as const,
-    workspacePath: "/work",
-    dataRoot: "/data dir",
-    assignedPorts: {
-      "web.http": 47001,
-      "convex.cloud": 47002,
-      "convex.site": 47003,
+  const plan = resolveTargetPlan(
+    {
+      config: parseProjectConfig(parse(APP + block)),
+      target: "live",
+      workspacePath: "/checkout",
+      dataRoot: "/data dir",
+      assignedPorts: {
+        "web.http": 47001,
+        "convex.cloud": 47002,
+        "convex.site": 47003,
+      },
     },
-  };
-  const plan = resolveTargetPlan(input, {
-    ...RESOLVE_HOST,
-    rigd: "/Applications/Rig Tools/rigd",
-  });
+    RESOLVE_HOST,
+  );
   expect(plan.components.find(({ name }) => name === "convex")).toMatchObject({
-    command:
-      'exec \'/Applications/Rig Tools/rigd\' convex --cloud-port "$CONVEX_CLOUD_PORT" --site-port "$CONVEX_SITE_PORT" --state-dir "$CONVEX_STATE_DIR"',
+    command: "exec bun --no-env-file scripts/rig-convex.ts",
     env: {
       CONVEX_CLOUD_PORT: "47002",
       CONVEX_SITE_PORT: "47003",
@@ -611,14 +637,104 @@ test("${rig.rigd} names the rigd that plans the Target, and a plan made without 
     health: "http://127.0.0.1:47002/instance_name",
     readyTimeout: 180,
   });
-  const { rigd: _, ...withoutRigd } = RESOLVE_HOST;
-  expect(() => resolveTargetPlan(input, withoutRigd)).toThrow(
-    expect.objectContaining({
-      code: "invalid_context",
-      message: expect.stringContaining("${rig.rigd} in services.convex.run"),
-    }),
+});
+
+test("generate writes the recipe's script into the Project directory once, never over a changed copy, and diff and doctor compare the Project's copy with Rig's", async () => {
+  const f = await fixture(APP, BUNDLED_RECIPES);
+  const nested = join(f.repo, "src", "deep");
+  await mkdir(nested, { recursive: true });
+  const script = join(f.repo, "scripts", "rig-convex.ts");
+  const generate = () =>
+    rig(
+      ["recipe", "generate", "convex"],
+      undefined,
+      undefined,
+      nested,
+      createProjectFiles(),
+    );
+
+  // From anywhere in the Project, the file goes beside rig.yaml.
+  const first = await generate();
+  expect(first.code).toBe(0);
+  expect(first.err).toContain(`Wrote scripts/rig-convex.ts in ${f.repo}`);
+  expect(await readFile(script, "utf8")).toBe(
+    await readFile(
+      join(import.meta.dir, "../src/recipes/files/rig-convex.ts"),
+      "utf8",
+    ),
   );
-  expect(() =>
-    resolveTargetPlan(input, { ...RESOLVE_HOST, rigd: "relative/rigd" }),
-  ).toThrow(expect.objectContaining({ code: "relative_root" }));
+  const again = await generate();
+  expect(again.code).toBe(0);
+  expect(again.err).toContain("is already convex@2's copy.");
+
+  // Once the Project has changed it, generate still prints the block, but leaves the file and fails.
+  const changed = (await readFile(script, "utf8")).replace(
+    "const BACKEND_POLL_MS = 250;",
+    "const BACKEND_POLL_MS = 500;",
+  );
+  await writeFile(script, changed);
+  const refused = await generate();
+  expect(refused.code).toBe(1);
+  expect(refused.out).toContain("# rig-recipe: convex@2 name=convex");
+  expect(refused.err).toContain(
+    "scripts/rig-convex.ts in " +
+      f.repo +
+      " differs from convex@2's copy and was not overwritten.",
+  );
+  expect(refused.err).toContain("Run rig recipe diff convex to compare.");
+  expect(await readFile(script, "utf8")).toBe(changed);
+
+  // The Service block is pasted; diff shows the file line by line, - the Project's and + Rig's.
+  await writeFile(f.file, APP + refused.out);
+  const diff = await f.rig("recipe", "diff", "convex");
+  expect(diff.code).toBe(0);
+  expect(diff.out).toContain(
+    "  scripts/rig-convex.ts differs from convex@2's copy (- the Project's, + convex@2's):",
+  );
+  expect(diff.out).toContain("    -const BACKEND_POLL_MS = 500;");
+  expect(diff.out).toContain("    +const BACKEND_POLL_MS = 250;");
+  expect((await f.rig("doctor")).out).not.toContain("Notices");
+
+  await rm(script);
+  expect((await f.rig("recipe", "diff", "convex")).out).toContain(
+    "  scripts/rig-convex.ts: not in the Project. rig recipe generate convex writes convex@2's copy.",
+  );
+  const doctor = await f.rig("doctor");
+  expect(doctor.code).toBe(0);
+  expect(doctor.out).toContain(
+    "convex: scripts/rig-convex.ts, which convex@2 runs, is not in the Project. Run rig recipe generate convex to write it.",
+  );
+  await generate();
+  expect((await f.rig("recipe", "diff", "convex")).out).toContain(
+    "  scripts/rig-convex.ts: as convex@2 writes it.",
+  );
+});
+
+test("the recipe files built into rig are the source files, and a recipe file path cannot leave the Project", async () => {
+  expect(
+    await readFile(
+      join(import.meta.dir, "../src/recipes/generated-files.ts"),
+      "utf8",
+    ),
+  ).toBe(await renderRecipeFileModule());
+  expect(RECIPE_FILE_TEXT["rig-convex.ts"]).toContain("--interface");
+  await expect(
+    readProjectFile("/project", "../elsewhere"),
+  ).rejects.toMatchObject({
+    code: "RECIPE_FILE_PATH",
+  });
+  await expect(
+    readProjectFile("/project", "/etc/passwd"),
+  ).rejects.toMatchObject({
+    code: "RECIPE_FILE_PATH",
+  });
+});
+
+test("the line diff shows each change with its context, in unified hunks", () => {
+  expect(lineDiff("a\nb\nc", "a\nb\nc")).toEqual([]);
+  expect(
+    lineDiff("1\n2\n3\n4\n5\n6\n7\n8\n9", "1\n2\n3\n4\nfive\n6\n7\n8\n9", 1),
+  ).toEqual(["@@ -4,3 +4,3 @@", " 4", "-5", "+five", " 6"]);
+  expect(lineDiff("a\nc", "a\nb\nc", 0)).toEqual(["@@ -1,0 +2,1 @@", "+b"]);
+  expect(lineDiff("a\nb", "a", 0)).toEqual(["@@ -2,1 +1,0 @@", "-b"]);
 });

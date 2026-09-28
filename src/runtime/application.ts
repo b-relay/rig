@@ -40,7 +40,7 @@ import {
   retainFailureCauses,
   failureCauses,
 } from "../domain/errors";
-import { resolve as resolvePath } from "node:path";
+import { dirname, resolve as resolvePath } from "node:path";
 import {
   activationJournal,
   intendRunning,
@@ -646,10 +646,15 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (command.action === "config")
         return { project: project.name, ...selection.document };
       if (command.action === "recipe-diff")
-        return recipeReport(
+        return await recipeReport(
           project.name,
           selection.document!,
           command,
+          (path) =>
+            deps.documents.readProjectFile(
+              dirname(selection.document!.path),
+              path,
+            ),
           deps.recipes,
         );
       if (command.action === "activity")

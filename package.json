@@ -7,11 +7,12 @@
     "build": "STAMP=\"$(git describe --always --dirty --abbrev=12 --exclude='*' 2>/dev/null || echo dev)\" && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/index.ts --outfile rig && bun build --compile --no-compile-autoload-dotenv --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/rigd.ts --outfile rigd && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/git/remote-helper.ts --outfile git-remote-rig",
     "start": "bun run src/index.ts",
     "test:parallel": "\"$npm_execpath\" test --parallel=4 --timings=tests/timings.json",
-    "test:fast": "\"$npm_execpath\" test --parallel=4 --timings=tests/timings.json --path-ignore-patterns='**/tests/*e2e.test.ts' --path-ignore-patterns='**/tests/release-matrix.test.ts' --path-ignore-patterns='**/tests/tool-shim-compiled.test.ts' --path-ignore-patterns='**/tests/log-follow-entrypoint.test.ts'",
+    "test:fast": "\"$npm_execpath\" test --parallel=4 --timings=tests/timings.json --path-ignore-patterns='**/tests/*e2e.test.ts' --path-ignore-patterns='**/tests/release-matrix.test.ts' --path-ignore-patterns='**/tests/tool-shim-compiled.test.ts' --path-ignore-patterns='**/tests/log-follow-entrypoint.test.ts' --path-ignore-patterns='**/tests/rigd-compiled-dotenv.test.ts'",
     "web:dev": "bun --bun next dev web -H 127.0.0.1",
     "web:build": "bun --bun next build web",
     "web:start": "bun --bun next start web -H 127.0.0.1",
     "schema": "bun run scripts/generate-schema.ts",
+    "recipe-files": "bun run scripts/generate-recipe-files.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web"

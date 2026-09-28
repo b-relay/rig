@@ -1,5 +1,7 @@
 import { BUNDLED_RECIPES } from "../recipes/catalog";
 import { compareRecipes } from "../recipes/compare";
+import { withRecipeFiles } from "../recipes/files";
+import { dirname } from "node:path";
 import { recipeNotices } from "./recipes";
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
@@ -121,7 +123,18 @@ export async function doctor(
   const notices =
     repository.outcome === "usable"
       ? recipeNotices(
-          compareRecipes(repository.document, deps.recipes ?? BUNDLED_RECIPES),
+          await withRecipeFiles(
+            compareRecipes(
+              repository.document,
+              deps.recipes ?? BUNDLED_RECIPES,
+            ),
+            deps.recipes ?? BUNDLED_RECIPES,
+            (path) =>
+              deps.documents.readProjectFile(
+                dirname(repository.document.path),
+                path,
+              ),
+          ),
         )
       : [];
   for (const target of targets) {

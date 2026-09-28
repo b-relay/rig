@@ -101,6 +101,9 @@ function fixture() {
         throw new Error("unused");
       },
       resolve: resolveTargetPlan,
+      async readProjectFile() {
+        return undefined;
+      },
       async host() {
         return parseHostConfig({});
       },

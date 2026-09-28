@@ -1,8 +1,20 @@
+import { RECIPE_FILE_TEXT } from "./generated-files";
+
+/** A file a recipe version writes into the Project, which the Project then owns and commits (a helper script its Service
+ * runs, for example). */
+export interface RecipeFile {
+  /** Where it goes, relative to the Project directory (the one holding rig.yaml), with `/` separators. */
+  readonly path: string;
+  readonly content: string;
+}
 /** One released form of a recipe. `service` is the Service exactly as it would be written in rig.yaml under `name`,
  * with every reference to itself spelled with that name. */
 export interface RecipeVersion {
   readonly version: number;
   service(name: string): Readonly<Record<string, unknown>>;
+  /** Files `rig recipe generate` writes into the Project beside the Service; a file's content belongs to this version,
+   * so a changed file is a new version. */
+  readonly files?: readonly RecipeFile[];
   /** Why a Service generated from this version should move to a newer one, when that is more than an update: `rig recipe
    * generate`, `rig recipe diff`, `rig doctor` and `rig init` repeat it. One or more sentences. */
   readonly notice?: string;
@@ -42,7 +54,7 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
   {
     name: "convex",
     summary:
-      "A local Convex backend on two loopback ports, run by rigd convex with its deployment in the Service's persistent data, and convex dev pushing the Project's functions to it; needs bunx on PATH, and the network or Convex's binary cache for the backend on the first start.",
+      "A local Convex backend on two loopback ports, with its deployment in the Service's persistent data and convex dev pushing the Project's functions to it, run by scripts/rig-convex.ts, which generate writes into the Project; needs bun and bunx on PATH, and the network or Convex's binary cache for the backend on the first start.",
     defaultName: "convex",
     versions: [
       {
@@ -62,10 +74,11 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
       },
       {
         version: 2,
-        // rigd convex starts the backend itself, bound to 127.0.0.1, and runs convex dev against it as a self-hosted
-        // deployment. The first start may download the backend, hence the longer readiness budget.
+        // scripts/rig-convex.ts starts the backend itself, bound to 127.0.0.1, and runs convex dev against it as a
+        // self-hosted deployment. The first start may download the backend, hence the longer readiness budget. bun runs
+        // it without loading .env files, so it sees only the environment Rig gives the Service.
         service: (name) => ({
-          run: 'exec ${rig.rigd} convex --cloud-port "$CONVEX_CLOUD_PORT" --site-port "$CONVEX_SITE_PORT" --state-dir "$CONVEX_STATE_DIR"',
+          run: "exec bun --no-env-file scripts/rig-convex.ts",
           ports: { cloud: "auto", site: "auto" },
           env: {
             CONVEX_CLOUD_PORT: `\${services.${name}.ports.cloud}`,
@@ -75,6 +88,12 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
           ready: `http://127.0.0.1:\${services.${name}.ports.cloud}/instance_name`,
           ready_timeout: "3m",
         }),
+        files: [
+          {
+            path: "scripts/rig-convex.ts",
+            content: RECIPE_FILE_TEXT["rig-convex.ts"],
+          },
+        ],
       },
     ],
   },

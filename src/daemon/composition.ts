@@ -55,15 +55,13 @@ import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import type { Supervisor } from "../providers/contracts";
 /** Composition root selects adapters. Runtime and command code see capability Interfaces only.
- * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none.
- * `rigd` is the launcher plans name as `${rig.rigd}`, for a Service's command to run a Service helper with. */
+ * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none. */
 export async function composeDaemon(
   root: string,
   captureCommand: readonly string[],
   toolBun: string | undefined,
   /** How rigd was installed: `process` under RIG_ROOT for tests and agent runs, `launchd` as the user's LaunchAgent. */
-  mode: "process" | "launchd",
-  rigd: string,
+  mode: "process" | "launchd" = "launchd",
 ): Promise<Omit<DaemonHostOptions, "root" | "port">> {
   const host = await readHostConfig(root);
   const diagnostic = createFileDiagnosticLog({
@@ -149,13 +147,7 @@ export async function composeDaemon(
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
     store,
-    documents: createProjectDocuments(
-      root,
-      runCommand,
-      environment,
-      homedir(),
-      rigd,
-    ),
+    documents: createProjectDocuments(root, runCommand, environment, homedir()),
     sources: createDeploymentSources(
       createGitSourceStore({ root: join(root, "sources"), run: runCommand }),
       runCommand,

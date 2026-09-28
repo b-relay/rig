@@ -9,7 +9,7 @@ import { RigError } from "../domain/errors";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
-import type { UserOutput } from "./types";
+import type { UserOutput, ProjectFiles } from "./types";
 import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
 import { addRecipeCommands } from "./recipe-commands";
 
@@ -31,6 +31,7 @@ export function createRigCommand(
   output: UserOutput,
   execute: ExecuteCommand,
   recipes: readonly Recipe[] = BUNDLED_RECIPES,
+  projectFiles?: ProjectFiles,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -90,6 +91,7 @@ export function createRigCommand(
     recipes,
     execute,
     projectScope,
+    ...(projectFiles ? { projectFiles } : {}),
   });
   addHelpCommand(command, "rig");
   command

@@ -64,7 +64,6 @@ export function resolveTargetPlan(
     ["dataRoot", input.dataRoot],
     ["operatorHome", host.operatorHome],
     ["envRoot", host.envRoot],
-    ...(host.rigd === undefined ? [] : [["rigd", host.rigd] as const]),
   ] as const)
     if (!isAbsolute(value))
       throw new ConfigError(
@@ -112,7 +111,6 @@ export function resolveTargetPlan(
         : `http://127.0.0.1:${rootPort}`,
     data: (service) => join(input.dataRoot, service),
     port: (service, port) => ports[`services.${service}.ports.${port}`]!,
-    ...(host.rigd === undefined ? {} : { rigd: host.rigd }),
   });
   /** Listed files, then the operator's optional all.env and role file for this scope. */
   const envFiles = (

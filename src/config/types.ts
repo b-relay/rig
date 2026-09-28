@@ -113,9 +113,6 @@ export interface ResolveHost {
   operatorHome: string;
   /** Absolute directory of operator convention files: <envRoot>/<project>[/<service>]/{all,<role>}.env. */
   envRoot: string;
-  /** Absolute path of the launcher that runs the Host's rigd (<RIG_ROOT>/daemon/rigd), which `${rig.rigd}` names. A caller that
-   * plans without running anything may leave it out; `${rig.rigd}` is then refused as invalid_context. */
-  rigd?: string;
 }
 /** Roots are caller-acquired strings; resolveTargetPlan validates absolute identity before calculation. */
 export interface ResolveTargetPlanInput {

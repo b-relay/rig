@@ -19,6 +19,7 @@ import type {
 import type { CommandRunner } from "../providers/contracts";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
+import { readProjectFile } from "./project-files";
 import { renameRigRemote } from "../git/remotes";
 import {
   createProjectDiscovery,
@@ -34,14 +35,8 @@ export function createProjectDocuments(
   env: Readonly<Record<string, string>>,
   /** Absolute operator home that `~` in an env_file path means. */
   operatorHome: string,
-  /** The rigd launcher `${rig.rigd}` names in a plan; absent for a caller that only discovers and reads config. */
-  rigd?: string,
 ): ProjectDocuments {
-  const host = {
-    operatorHome,
-    envRoot: join(root, "env"),
-    ...(rigd === undefined ? {} : { rigd }),
-  };
+  const host = { operatorHome, envRoot: join(root, "env") };
   const discovery = createProjectDiscovery(run, env);
   // The adapter is the effect owner: it binds the config documents on disk once, here.
   const reads: InitializationReads = {
@@ -71,6 +66,7 @@ export function createProjectDocuments(
       return { ...found, gitRequired: location.gitRequired };
     },
     read: readProjectConfig,
+    readProjectFile,
     resolve: (input) => resolveTargetPlan(input, host),
     host: () => readHostConfig(root),
     async initializationInfo(path) {

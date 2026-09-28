@@ -3,8 +3,6 @@ import type { DaemonAdmin, UserOutput } from "./types";
 import { addHelpCommand, commandPath, terminalCommand } from "./commands";
 import { isHelp, recordDiagnostic, reportFailure } from "./failure";
 import { object, renderResult } from "./output";
-import { addConvexCommand } from "./convex-command";
-import type { ConvexCommandOptions } from "../helpers/convex-contracts";
 
 export interface RigdCliDependencies {
   admin: DaemonAdmin;
@@ -13,8 +11,6 @@ export interface RigdCliDependencies {
   newOperationId: () => string;
   /** Runs one managed Component from the request file rigd wrote; returns the wrapper's exit code. */
   capture(requestFile: string): Promise<number>;
-  /** Runs the Convex Service helper as the Service's own process; returns its exit code. */
-  convex(options: ConvexCommandOptions): Promise<number>;
 }
 /** Daemon administration is explicit and separate from normal Project requests. */
 export async function runRigdCli(
@@ -67,7 +63,6 @@ export async function runRigdCli(
     .action(async (requestFile: string) => {
       exitCode = await dependencies.capture(requestFile);
     });
-  addConvexCommand(command, dependencies.convex, (code) => (exitCode = code));
   addHelpCommand(command, "rigd");
   try {
     await command.parseAsync(args.length ? [...args] : ["--help"], {

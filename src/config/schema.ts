@@ -46,7 +46,7 @@ type ReferenceScope = "project" | "service";
 /** The one owner of the reference list an editor shows on hover; the long form is "References" in docs/rig-guide.md.
  * ${rig.data} is one Service's directory, so only a Service's own fields offer it. */
 const referencesIn = (scope: ReferenceScope) =>
-  `References: \${env.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.ready_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}, \${rig.rigd}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
+  `References: \${env.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.ready_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -574,7 +574,6 @@ function validateReferences(
     url: "",
     data: () => "/data",
     port: () => 1,
-    rigd: "/rigd",
   });
   const fields: [string[], string | undefined][] = [
     [["build"], settings.build],

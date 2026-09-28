@@ -56,9 +56,11 @@ rig
 │
 ├─ recipe
 │    ├─ list                        bundled recipes and their versions
-│    ├─ generate <recipe>           name or name@version; prints a Service block
+│    ├─ generate <recipe>           name or name@version; prints a Service block,
+│    │                              and writes the recipe's files, if any
 │    │    --name <service>
-│    └─ diff [service]              compare generated Services to their recipes
+│    └─ diff [service]              compare generated Services (and recipe files)
+│                                   to their recipes
 │         --project <name>
 │
 └─ help [command...]                for example: rig help deploy preview
@@ -71,14 +73,7 @@ rigd
 ├─ install                          install and verify the daemon
 ├─ status                           installed, running, reachable
 ├─ uninstall                        refused while Targets run or await recovery
-├─ capture <request-file>           internal; see below
-└─ convex                           Service helper; see below
-     --cloud-port <port>            loopback port of the backend's API
-     --site-port <port>             loopback port of its HTTP actions
-     --state-dir <dir>              absolute; keeps the deployment
-     --instance-name <name>         name of a new deployment
-     --backend-version <release>    run this backend release
-     [-- <convex dev args>...]
+└─ capture <request-file>           internal; see below
 ```
 
 `rigd capture` is not a user command. Under the `launchd` supervisor, launchd
@@ -87,11 +82,6 @@ own command. The wrapper starts the Service as its child, writes its output to
 the Target logs, and records its status and exit, which launchd alone would
 not give Rig. The request file is a small JSON document `rigd` writes for that
 Service: its command, working directory, environment, and log directory.
-
-`rigd convex` is a Service helper: a Service's `run` starts it as
-`${rig.rigd} convex ...`, and it runs as that Service's process. The `convex`
-recipe uses it; see "Recipes" in the [guide](rig-guide.md#recipes). It reads
-no Rig state and needs no `RIG_ROOT`.
 
 ## git-remote-rig
 

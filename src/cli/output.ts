@@ -108,9 +108,33 @@ function renderRecipeDiff(report: Record<string, unknown>): string {
         lines.push(
           `  Nothing was changed. To see the new block: rig recipe generate ${word(finding.recipe)} --name ${service}`,
         );
+      for (const file of rows(finding.files))
+        lines.push(...recipeFileLines(file, word(finding.recipe)));
     }
   }
   return `${lines.join("\n")}\n`;
+}
+/** A recipe file of the Project against the bundled recipe's copy; a changed one as unified-diff lines. */
+function recipeFileLines(
+  file: Record<string, unknown>,
+  recipe: string,
+): string[] {
+  const path = word(file.path);
+  const bundled = `${recipe}@${Number(file.bundled)}`;
+  if (file.state === "same") return [`  ${path}: as ${bundled} writes it.`];
+  if (file.state === "missing")
+    return [
+      `  ${path}: not in the Project. rig recipe generate ${recipe} writes ${bundled}'s copy.`,
+    ];
+  const omitted = Number(file.omitted) || 0;
+  return [
+    `  ${path} differs from ${bundled}'s copy (- the Project's, + ${bundled}'s):`,
+    ...(Array.isArray(file.diff) ? file.diff : []).map(
+      (line) => `    ${word(line)}`,
+    ),
+    ...(omitted ? [`    ... ${omitted} more diff lines`] : []),
+    `  Nothing was changed. To take ${bundled}'s copy, move ${path} aside and run rig recipe generate ${recipe}.`,
+  ];
 }
 function changeLines(change: Record<string, unknown>): string[] {
   const path = word(change.path);

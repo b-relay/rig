@@ -82,6 +82,7 @@ They need permission to bind localhost and a local Caddy executable.
 | `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.            |
 | `src/git`                          | Branch preflight, repository registration, and Git remote protocol.           |
 | `src/recipes`                      | Bundled recipe catalog, rendering, and comparison against a Project's config. |
+| `src/helpers`                      | Service helpers a Service runs through `${rig.rigd}`, such as `rigd convex`.  |
 | `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.   |
 
 ## Documentation

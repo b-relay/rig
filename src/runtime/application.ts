@@ -1,4 +1,6 @@
-import { recipeReport } from "./recipes";
+import { recipeNotices, recipeReport } from "./recipes";
+import { BUNDLED_RECIPES } from "../recipes/catalog";
+import { compareRecipes } from "../recipes/compare";
 import type {
   ProjectStatusReader,
   ProjectStatusReport,
@@ -540,10 +542,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           { project: identity.name },
         );
         attempted = true;
-        project = await registerProject(command, identity, deps);
+        const initialized = await registerProject(command, identity, deps);
+        project = initialized.project;
         const kept = identity.configPath ? unappliedInitFlags(command) : [];
+        // A kept config may hold Services generated from an older recipe; init says so as doctor would.
+        const notices = recipeNotices(
+          compareRecipes(initialized.document, deps.recipes ?? BUNDLED_RECIPES),
+        );
         return await finish("registered", {
           path: project.configPath,
+          ...(notices.length ? { notices } : {}),
           ...(kept.length
             ? {
                 warnings: [

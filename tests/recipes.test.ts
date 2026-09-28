@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { renderResult } from "../src/cli/output";
 import { runRigCli } from "../src/cli/rig";
 import {
   editProjectConfig,
@@ -29,7 +30,11 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+const RESOLVE_HOST = {
+  operatorHome: "/home/operator",
+  envRoot: "/rig/env",
+  rigd: "/opt/rig/bin/rigd",
+};
 
 /** A recipe with a history, which no bundled recipe has yet: version 2 changed the readiness check and added a timeout. */
 const CACHE: Recipe = {
@@ -125,6 +130,8 @@ async function fixture(yaml: string, recipes: readonly Recipe[] = [CACHE]) {
   await runtime.command({ action: "init", repoPath: repo });
   return {
     file,
+    repo,
+    runtime,
     rig: (...args: string[]) => rig(args, recipes, runtime, repo),
   };
 }
@@ -534,4 +541,84 @@ test("a '# rig-recipe:' line that is a Service's shell text is not provenance, a
   expect(hostile.err).not.toContain(escape);
   expect(hostile.err).not.toContain("\nweb: fine");
   expect(hostile.err).toContain("is not a Service name.");
+});
+
+test("a Service generated from convex@1, which cannot pass the loopback check, is steered to convex@2 by generate, diff, doctor and init, and none of them changes the file", async () => {
+  const convex = BUNDLED_RECIPES.find(({ name }) => name === "convex")!;
+  const notice = convex.versions.find(({ version }) => version === 1)!.notice!;
+  expect(notice).toContain("LISTENER_NONLOCAL");
+  expect(convex.versions.at(-1)!.version).toBe(2);
+
+  const old = await rig(["recipe", "generate", "convex@1"], undefined);
+  expect(old.code).toBe(0);
+  expect(old.out).toContain("# rig-recipe: convex@1 name=convex");
+  expect(old.err).toBe(
+    `Warning: ${notice} Run rig recipe generate convex for convex@2.\n`,
+  );
+  const current = await rig(["recipe", "generate", "convex"], undefined);
+  expect(current.err).toBe("");
+  expect(current.out).toContain("exec ${rig.rigd} convex --cloud-port");
+  expect(current.out).toContain("CONVEX_STATE_DIR: ${rig.data}/backend");
+
+  const f = await fixture(APP + old.out, BUNDLED_RECIPES);
+  const before = await readFile(f.file);
+  const diff = await f.rig("recipe", "diff", "convex");
+  expect(diff.out).toContain(
+    `convex: convex@1, bundled is convex@2\n  ${notice}\n`,
+  );
+  expect(diff.out).toContain("rig recipe generate convex --name convex");
+  const expected = `convex: generated from convex@1; convex@2 is bundled. ${notice} Run rig recipe diff convex to compare.`;
+  const doctor = await f.rig("doctor");
+  expect(doctor.code).toBe(0);
+  expect(doctor.out).toContain(expected);
+  const init = await f.runtime.command({ action: "init", repoPath: f.repo });
+  expect(init).toMatchObject({ outcome: "registered", notices: [expected] });
+  expect(renderResult("init", init)).toContain(`Notice: ${expected}\n`);
+  expect(await readFile(f.file)).toEqual(before);
+
+  // A Project already on the bundled version hears nothing from init.
+  const fresh = await fixture(APP + current.out, BUNDLED_RECIPES);
+  expect(
+    await fresh.runtime.command({ action: "init", repoPath: fresh.repo }),
+  ).not.toHaveProperty("notices");
+});
+
+test("${rig.rigd} names the rigd that plans the Target, and a plan made without one refuses it rather than guessing", async () => {
+  const block = (await rig(["recipe", "generate", "convex"], undefined)).out;
+  const input = {
+    config: parseProjectConfig(parse(APP + block)),
+    target: "local" as const,
+    workspacePath: "/work",
+    dataRoot: "/data dir",
+    assignedPorts: {
+      "web.http": 47001,
+      "convex.cloud": 47002,
+      "convex.site": 47003,
+    },
+  };
+  const plan = resolveTargetPlan(input, {
+    ...RESOLVE_HOST,
+    rigd: "/Applications/Rig Tools/rigd",
+  });
+  expect(plan.components.find(({ name }) => name === "convex")).toMatchObject({
+    command:
+      'exec \'/Applications/Rig Tools/rigd\' convex --cloud-port "$CONVEX_CLOUD_PORT" --site-port "$CONVEX_SITE_PORT" --state-dir "$CONVEX_STATE_DIR"',
+    env: {
+      CONVEX_CLOUD_PORT: "47002",
+      CONVEX_SITE_PORT: "47003",
+      CONVEX_STATE_DIR: "/data dir/convex/backend",
+    },
+    health: "http://127.0.0.1:47002/instance_name",
+    readyTimeout: 180,
+  });
+  const { rigd: _, ...withoutRigd } = RESOLVE_HOST;
+  expect(() => resolveTargetPlan(input, withoutRigd)).toThrow(
+    expect.objectContaining({
+      code: "invalid_context",
+      message: expect.stringContaining("${rig.rigd} in services.convex.run"),
+    }),
+  );
+  expect(() =>
+    resolveTargetPlan(input, { ...RESOLVE_HOST, rigd: "relative/rigd" }),
+  ).toThrow(expect.objectContaining({ code: "relative_root" }));
 });

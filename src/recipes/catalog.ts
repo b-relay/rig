@@ -3,6 +3,9 @@
 export interface RecipeVersion {
   readonly version: number;
   service(name: string): Readonly<Record<string, unknown>>;
+  /** Why a Service generated from this version should move to a newer one, when that is more than an update: `rig recipe
+   * generate`, `rig recipe diff`, `rig doctor` and `rig init` repeat it. One or more sentences. */
+  readonly notice?: string;
 }
 /** A Service that Rig can write out for the user to copy. It is a starting point, not something a Project depends on. */
 export interface Recipe {
@@ -39,11 +42,13 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
   {
     name: "convex",
     summary:
-      "A local Convex backend on two loopback ports; needs bunx on PATH. The Convex CLI decides where its local state is kept, so it is not in the Service's persistent data.",
+      "A local Convex backend on two loopback ports, run by rigd convex with its deployment in the Service's persistent data, and convex dev pushing the Project's functions to it; needs bunx on PATH, and the network or Convex's binary cache for the backend on the first start.",
     defaultName: "convex",
     versions: [
       {
         version: 1,
+        notice:
+          "convex@1 cannot start under Rig: convex dev --local binds its backend to 0.0.0.0, so the loopback check refuses the Service (LISTENER_NONLOCAL). convex@2 runs the backend on 127.0.0.1.",
         service: (name) => ({
           run: 'exec bunx convex dev --local --local-cloud-port "$CONVEX_CLOUD_PORT" --local-site-port "$CONVEX_SITE_PORT"',
           ports: { cloud: "auto", site: "auto" },
@@ -53,6 +58,22 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
           },
           ready: `http://127.0.0.1:\${services.${name}.ports.cloud}/instance_name`,
           ready_timeout: "60s",
+        }),
+      },
+      {
+        version: 2,
+        // rigd convex starts the backend itself, bound to 127.0.0.1, and runs convex dev against it as a self-hosted
+        // deployment. The first start may download the backend, hence the longer readiness budget.
+        service: (name) => ({
+          run: 'exec ${rig.rigd} convex --cloud-port "$CONVEX_CLOUD_PORT" --site-port "$CONVEX_SITE_PORT" --state-dir "$CONVEX_STATE_DIR"',
+          ports: { cloud: "auto", site: "auto" },
+          env: {
+            CONVEX_CLOUD_PORT: `\${services.${name}.ports.cloud}`,
+            CONVEX_SITE_PORT: `\${services.${name}.ports.site}`,
+            CONVEX_STATE_DIR: "${rig.data}/backend",
+          },
+          ready: `http://127.0.0.1:\${services.${name}.ports.cloud}/instance_name`,
+          ready_timeout: "3m",
         }),
       },
     ],

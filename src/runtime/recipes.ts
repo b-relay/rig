@@ -58,7 +58,7 @@ export function recipeNotices(findings: readonly RecipeFinding[]): string[] {
     return finding.version === finding.bundled
       ? []
       : [
-          `${service}: generated from ${finding.recipe}@${finding.version}; ${finding.recipe}@${finding.bundled} is bundled. Run rig recipe diff ${service} to compare.`,
+          `${service}: generated from ${finding.recipe}@${finding.version}; ${finding.recipe}@${finding.bundled} is bundled.${finding.notice ? ` ${finding.notice}` : ""} Run rig recipe diff ${service} to compare.`,
         ];
   });
 }

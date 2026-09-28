@@ -33,6 +33,8 @@ export type RecipeFinding =
       readonly customized: readonly RecipeChange[];
       /** The version it was generated from against the bundled one; empty when they are the same version. */
       readonly update: readonly RecipeChange[];
+      /** The catalog's notice on the version it was generated from, when that version has one. */
+      readonly notice?: string;
     };
 /** Pure: compares every marked Service of one document with the catalog. Both sides pass through the config parser, so a
  * difference in spelling that the parser does not keep is not a difference. */
@@ -75,6 +77,7 @@ export function compareRecipes(
         generated,
         fields(parsed(service, latest(recipe).service(service))),
       ),
+      ...(origin.notice === undefined ? {} : { notice: origin.notice }),
     };
   });
 }

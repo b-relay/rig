@@ -1418,6 +1418,8 @@ rig recipe diff orders-db --project pantry
 for that). `--name` renames the Service and every reference the block makes to
 itself. The recipe's programs (`initdb`, `postgres`, `pg_isready`; `bunx` for
 Convex) must be on the supervisor's `PATH`; Rig does not install them.
+Generating an older version that the catalog marks as not to be used (such as
+`convex@1`) prints the block and a warning on stderr.
 
 The first line of the block records where it came from:
 
@@ -1440,11 +1442,77 @@ older version than the one bundled, or when a recipe comment names a recipe or
 version this Rig does not bundle or is not in the form Rig writes. Notices are
 information: they do not fail doctor or change its exit code. A Service that
 matches the bundled version, customized or not, is not mentioned. The offline
-doctor (when `rigd` is unreachable) does not compute notices.
+doctor (when `rigd` is unreachable) does not compute notices. `rig init` of a
+Project whose `rig.yaml` already exists prints the same notices, and when the
+older version has a known problem, doctor, init and `rig recipe diff` say what
+it is.
 
-The Convex recipe keeps its backend state where the Convex CLI puts it (under
-the user's home directory, per Convex project), not in `${rig.data}`: the CLI
-offers no option for it. Targets of one Project may therefore share that state.
+#### Convex
+
+`convex@2` runs a local Convex backend on two loopback ports and keeps
+`convex dev` pushing the Project's `convex/` functions to it:
+
+```yaml
+services:
+  # rig-recipe: convex@2 name=convex
+  convex:
+    run: exec ${rig.rigd} convex --cloud-port "$CONVEX_CLOUD_PORT" --site-port "$CONVEX_SITE_PORT" --state-dir "$CONVEX_STATE_DIR"
+    ports:
+      cloud: auto
+      site: auto
+    env:
+      CONVEX_CLOUD_PORT: ${services.convex.ports.cloud}
+      CONVEX_SITE_PORT: ${services.convex.ports.site}
+      CONVEX_STATE_DIR: ${rig.data}/backend
+    ready: http://127.0.0.1:${services.convex.ports.cloud}/instance_name
+    ready_timeout: 3m
+```
+
+`convex dev --local` cannot run under Rig: it always starts its backend on
+`0.0.0.0`, which the loopback check refuses (`LISTENER_NONLOCAL`), so
+`convex@1`, which ran it, never starts. `convex@2` runs `rigd convex`, a
+Service helper bundled in `rigd` (`${rig.rigd}` is the `rigd` executable, see
+[References](#references)). It runs as the Service's own process and:
+
+- keeps the deployment in `--state-dir`, the Service's persistent data, in the
+  layout `convex dev --local` uses (`config.json` with the instance name,
+  backend release, admin key and instance secret; the SQLite database; file
+  storage). A deployed Target's fresh checkout keeps its data, and each Target
+  has a deployment of its own. The first start makes a new, empty deployment,
+  or copies one that `convex dev --local` left in the workspace's
+  `.convex/local/default` (the original stays in place);
+- runs the backend release Convex recommends (asked of `version.convex.dev`),
+  moving an existing deployment to it as `convex dev` does, and takes the
+  binary from Convex's own cache, `~/.cache/convex/binaries`, which
+  `convex dev` shares. A release missing from the cache is downloaded from
+  GitHub, which needs the network and `unzip`. Offline, an existing deployment
+  stays on its release if it is cached, and a new one starts on the newest
+  cached release. `--backend-version <release>` pins a release;
+- starts the backend with `--interface 127.0.0.1`, without `TZ` (the backend
+  refuses to start with it set), and writes `CONVEX_SELF_HOSTED_URL` and
+  `CONVEX_SELF_HOSTED_ADMIN_KEY` for it into the workspace's `.env.local`,
+  keeping the file's other lines and removing a `CONVEX_DEPLOYMENT` line that
+  would conflict. Keep `.env.local` out of Git: it holds the admin key. Other
+  `bunx convex` commands (`run`, `data`, `export`) in the workspace then reach
+  the backend while it runs;
+- runs `bunx convex dev` (arguments after `--` go to it) and supervises both.
+  When either ends by itself, the other is stopped and the Service ends with a
+  failure. A stop (SIGTERM, within the Service's `stop_timeout`) is passed to
+  both, and the helper exits once they have.
+
+The Target log shows the helper's lines, the backend's warnings and
+`convex dev`'s function logs. The first start may download the backend, hence
+the 3 minute `ready_timeout`. Other Services reach the backend at
+`http://127.0.0.1:${services.convex.ports.cloud}`.
+
+To move a Service from `convex@1`, or from a hand-written script that ran the
+backend binary itself, generate `convex@2` with the Service's name and replace
+the block. A deployment in `.convex/local/default` is copied on the first
+start. A script that kept the deployment in that layout elsewhere (for example
+under `${rig.data}/local/default` in a deployed Target) can keep it there by
+setting `CONVEX_STATE_DIR` to that directory. A deployment in another layout
+cannot be adopted: move its data with `bunx convex export` and
+`bunx convex import`.
 
 ### Environment, builds, and startup
 
@@ -1640,6 +1708,10 @@ applied), or one of the `rig.*` values Rig generates:
 - `${rig.url}`: `https://<hostname>` when the Target has a route;
   `http://127.0.0.1:<port>` of the `/` upstream when it has a `proxy` but no
   hostname; empty without a `proxy`.
+- `${rig.rigd}`: the `rigd` executable that runs the Target, so a Service's
+  command can start a Service helper such as `rigd convex` whether or not
+  `rigd` is on the Service's `PATH`. It is the compiled `rigd`, or `src/rigd.ts`
+  when `rigd` runs from source, which then needs `bun` on the `PATH`.
 
 References are checked when the config is parsed, for the base config and for
 each role's patched settings, so a typo never reaches a shell. Each rejection
@@ -1650,7 +1722,8 @@ names the field that holds the reference, such as `services.web.run`:
 - `reference_into_targets`: the path reaches into `targets`. A reference reads
   the selected Target's settings, not another role's patch.
 - `reference_cycle`: values reference each other in a loop.
-- `invalid_context`: `${rig.data}` outside a Service, or a shared or Tool
+- `invalid_context`: `${rig.data}` outside a Service, `${rig.rigd}` in a plan
+  no `rigd` makes, or a shared or Tool
   `build` that reaches a Service's `env` or data, directly or through another
   value. Those builds run with Project inputs only. A reference inside a
   backquoted command is refused the same way; write `$(...)` instead.

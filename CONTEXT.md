@@ -45,7 +45,8 @@ status of `rigd`; it should not expose broad manual daemon control.
 
 _Relationship_: User-facing inventory commands such as Project listing belong
 to `rig`, even when `rig` queries `rigd` for the data. The `rigd` CLI should
-remain limited to daemon administration.
+remain limited to daemon administration, apart from the commands a Service
+runs rather than a person: the capture wrapper and Service helpers.
 
 _Relationship_: `rigd install` creates the local control-plane auth token as
 part of daemon setup.
@@ -259,6 +260,18 @@ A named executable a Project makes available for invocation, rather than a
 Service kept running by Rig. A Project can contain Tools, Services, or both.
 _Avoid_: Service, background process
 
+### Service helper
+
+A program bundled in `rigd` that a Service's own `run` command starts through
+`${rig.rigd}`, such as `rigd convex`, which the Convex recipe runs. It runs as
+that Service's process, under the Service's environment, and is supervised
+like any Service command.
+_Avoid_: plugin, provider, daemon command
+
+_Relationship_: A Service helper reads and writes no Rig state and needs no
+`RIG_ROOT`. What it keeps belongs to the Service, usually in `${rig.data}`.
+It reports on stdout and stderr, which the Target log records.
+
 ### Recipe
 
 A versioned, bundled template that prints an ordinary Service block for the user
@@ -272,6 +285,11 @@ running a Target never read the recipe comment or the recipe catalog; only
 
 _Relationship_: Rig never regenerates or rewrites a generated Service. A newer
 recipe version is an informational notice, never a failing check.
+
+_Relationship_: A recipe version may carry a notice saying why a Service
+generated from it should move on (`convex@1` cannot pass the loopback check).
+`rig recipe generate`, `rig recipe diff`, `rig doctor` and `rig init` repeat
+it; it stays information.
 
 ### Target role
 

@@ -69,6 +69,10 @@ export function addRecipeCommands(
         );
       const service = serviceName(options.name ?? found.defaultName);
       output.write(renderRecipe(found, chosen, service));
+      if (chosen !== latest(found) && chosen.notice)
+        output.error(
+          `Warning: ${chosen.notice} Run rig recipe generate ${found.name} for ${found.name}@${latest(found).version}.\n`,
+        );
     });
   recipe
     .command("diff")

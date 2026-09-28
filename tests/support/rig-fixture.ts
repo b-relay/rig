@@ -31,7 +31,8 @@ async function recordedTargets(root: string) {
   }
 }
 /** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
- * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. */
+ * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. `HOME` does the same for the home
+ * directory, which is where the Services the daemon runs find the operator's caches. */
 export async function rigFixture(
   options: {
     readonly commands?: {
@@ -39,6 +40,7 @@ export async function rigFixture(
       readonly rigd: readonly string[];
     };
     readonly PATH?: string;
+    readonly HOME?: string;
   } = {},
 ) {
   const base = await mkdtemp(join(tmpdir(), "rig-battle-")),
@@ -54,6 +56,7 @@ export async function rigFixture(
   const environment = {
     ...process.env,
     ...(options.PATH === undefined ? {} : { PATH: options.PATH }),
+    ...(options.HOME === undefined ? {} : { HOME: options.HOME }),
     RIG_ROOT: root,
   };
   const commands = options.commands ?? {

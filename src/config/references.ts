@@ -22,6 +22,8 @@ export interface GeneratedValues {
   data(service: string): string;
   /** The concrete number of a declared port. */
   port(service: string, port: string): number;
+  /** The rigd executable a Service's command can run a Service helper with; absent where no Service runs. */
+  rigd?: string;
 }
 export interface ReferenceResolver {
   /** Resolves `${...}` in the string declared at config path `at`; that path decides the Service scope. */
@@ -46,7 +48,7 @@ function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
 
 /** Pure recursive resolution over one patched settings graph. A reference is an exact path to a scalar in that graph or a rig.* value;
  * `$${` escapes to a literal `${`. Throws ConfigError `unknown_reference`, `reference_not_scalar`, `reference_into_targets`,
- * `invalid_context` (rig.data outside a Service) or `reference_cycle`, each naming the config path that holds the reference. */
+ * `invalid_context` (rig.data outside a Service, rig.rigd where no rigd runs) or `reference_cycle`, each naming the config path that holds the reference. */
 export function referenceResolver(
   settings: Readonly<Record<string, unknown>>,
   generated: GeneratedValues,
@@ -87,6 +89,15 @@ export function referenceResolver(
           return plain(generated.host);
         case "rig.url":
           return plain(generated.url);
+        case "rig.rigd":
+          if (generated.rigd === undefined)
+            throw new ConfigError(
+              `\${rig.rigd} in ${at} names the rigd that runs the Target, and this plan is not made by one.`,
+              "invalid_context",
+              { key, path: at },
+              "Plan and run the Target through rigd (rig up, rig deploy), which knows its own executable.",
+            );
+          return plain(generated.rigd);
         case "rig.data":
           if (service === undefined)
             throw fail(

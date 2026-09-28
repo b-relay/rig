@@ -34,8 +34,14 @@ export function createProjectDocuments(
   env: Readonly<Record<string, string>>,
   /** Absolute operator home that `~` in an env_file path means. */
   operatorHome: string,
+  /** The rigd executable `${rig.rigd}` names in a plan; absent for a caller that only discovers and reads config. */
+  rigd?: string,
 ): ProjectDocuments {
-  const host = { operatorHome, envRoot: join(root, "env") };
+  const host = {
+    operatorHome,
+    envRoot: join(root, "env"),
+    ...(rigd === undefined ? {} : { rigd }),
+  };
   const discovery = createProjectDiscovery(run, env);
   // The adapter is the effect owner: it binds the config documents on disk once, here.
   const reads: InitializationReads = {

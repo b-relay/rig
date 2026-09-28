@@ -38,9 +38,14 @@ export function renderResult(action: string, value: unknown): string {
             : ""
         }`
       : "";
-  const warnings = Array.isArray(report.warnings)
-    ? report.warnings.map((value) => `Warning: ${word(value)}\n`).join("")
-    : "";
+  const warnings = [
+    ...(Array.isArray(report.warnings)
+      ? report.warnings.map((value) => `Warning: ${word(value)}\n`)
+      : []),
+    ...(Array.isArray(report.notices)
+      ? report.notices.map((value) => `Notice: ${word(value)}\n`)
+      : []),
+  ].join("");
   const replaced = object(report.replaced);
   const upgrade =
     action === "daemon-install" && report.replaced
@@ -88,6 +93,7 @@ function renderRecipeDiff(report: Record<string, unknown>): string {
         lines.push(
           `  Generated as '${word(finding.generatedAs)}'; compared as '${service}'.`,
         );
+      if (finding.notice) lines.push(`  ${word(finding.notice)}`);
       const update = rows(finding.update);
       const customized = rows(finding.customized);
       if (update.length)

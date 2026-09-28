@@ -151,6 +151,11 @@ export async function daemonCommand(): Promise<readonly string[]> {
     ? [executable, join(import.meta.dir, "..", "rigd.ts")]
     : [join(dirname(executable), "rigd")];
 }
+/** The one executable a Service's command runs rigd by, which plans name as `${rig.rigd}`: the compiled rigd, or
+ * src/rigd.ts when rigd runs from source, which its `#!/usr/bin/env bun` line runs with the bun on the Service's PATH. */
+export function rigdExecutable(daemon: readonly string[]): string {
+  return daemon.at(-1)!;
+}
 /** The bun that Tools whose `bin` is a source file run with, resolved once when rigd is installed: the running executable
  * when rigd runs from source, otherwise the first `bun` on the installing shell's PATH. Either way it is the stable PATH
  * entry, so a package upgrade does not strand it. Undefined when a compiled rigd finds no bun on PATH. */

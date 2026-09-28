@@ -1,8 +1,10 @@
+#!/usr/bin/env bun
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { runRigdCli } from "./cli/rigd";
 import {
   daemonCommand,
+  rigdExecutable,
   resolveToolBun,
   reportRootFailure,
   rigRoot,
@@ -16,7 +18,18 @@ import { readInstallationRecord } from "./daemon/installation";
 import { runDaemonHost } from "./daemon/host";
 import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
+import { runConvexCli } from "./cli/convex-command";
+import { runConvexProcess } from "./helpers/convex-process";
 export async function main(args: readonly string[]): Promise<number> {
+  // A Service helper runs as a Service's process, whose environment has no RIG_ROOT: it reads and writes no Rig state,
+  // so it is dispatched before the root is resolved, and its failures go to stderr (the Target log), not a Rig log.
+  if (args[0] === "convex") {
+    const output = userOutput();
+    return await runConvexCli(args, {
+      output,
+      run: (options) => runConvexProcess(options, output),
+    });
+  }
   let root: string;
   try {
     root = rigRoot();
@@ -44,6 +57,7 @@ export async function main(args: readonly string[]): Promise<number> {
         [...command, "capture"],
         installation?.bun,
         process.env.RIG_DAEMON_MODE === "process" ? "process" : "launchd",
+        rigdExecutable(command),
       );
     } catch (error) {
       // runDaemonHost records its own failures; composition failures need the same record.
@@ -68,6 +82,7 @@ export async function main(args: readonly string[]): Promise<number> {
     output: userOutput(),
     newOperationId: randomUUID,
     capture: runCapturedProcess,
+    convex: (options) => runConvexProcess(options, userOutput()),
     diagnostics: createHostDiagnosticLog({
       root,
       source: "rigd",

@@ -11,6 +11,7 @@ import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
 import { targetNames } from "../config/schema";
+import { withPlanDefaults } from "../config/plan-defaults";
 import { recordedPorts } from "./ports";
 import { downtimeReport } from "./alert-messages";
 import type { Downtime } from "../domain/operator-alerts";
@@ -300,8 +301,8 @@ function projectConfigCheck(
       };
   }
 }
-/** Compares the acquired config, resolved against the recorded ports, with the recorded plan.
- * A config that parses but adds components the record has no port for is drift, not an invalid config. */
+/** Compares the acquired config, resolved against the recorded ports, with the recorded plan read with the defaults of
+ * fields added since it was recorded. A config that parses but adds components the record has no port for is drift, not an invalid config. */
 async function configCheck(
   project: Pick<ProjectRecord, "name">,
   target: TargetRecord,
@@ -372,7 +373,8 @@ async function configCheck(
       commit: target.commit,
       assignedPorts: recordedPorts(target.plan.components),
     });
-    return isDeepStrictEqual(current, target.plan)
+    // A plan recorded before the planner wrote a field is compared as holding that field's default, so an upgrade alone is no drift.
+    return isDeepStrictEqual(current, withPlanDefaults(target.plan))
       ? {
           name,
           ok: true,

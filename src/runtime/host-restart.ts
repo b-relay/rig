@@ -9,12 +9,17 @@ import {
   type HostRestart,
   type HostSession,
 } from "../domain/host-session";
-import type { RuntimeState, TargetRecord } from "../domain/runtime";
+import type {
+  OperationRecord,
+  RuntimeState,
+  TargetRecord,
+} from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import {
   activationJournal,
   intendRunning,
   recordFailedStart,
+  recordStoppedByHostRestart,
 } from "./supervision";
 
 type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
@@ -37,8 +42,11 @@ export interface HostSessionFinding {
 /** Compares the session read now with what rigd knows of it. Without a pending restart that is the recorded session. A
  * restart an earlier daemon found but did not finish acting on is pending; what rigd knew when it found it is the recorded
  * session carried across that restart (see `across`). The pending restart stays the one to act on (its kind, its settled
- * Targets, announced or not) unless the read now shows a change since; a change is a new restart of its own. The session
- * recorded once a restart is acted on keeps, where the read now missed a field, what is still known of it. */
+ * Targets, announced or not) unless the read now shows a change since; a change is a new restart of its own, whose mark
+ * carries the pending restart forward when its Activity entry was never written, so it is announced still. A restart
+ * that left nothing in state (none of the writes that record it succeeded) cannot be told apart from a later one: after
+ * another reboot the Host shows only the new boot, so the two are one restart here. The session recorded once a restart
+ * is acted on keeps, where the read now missed a field, what is still known of it. */
 export function findHostRestart(
   state: Pick<RuntimeState, "host">,
   current: HostSession,
@@ -49,13 +57,15 @@ export function findHostRestart(
     ? across(recorded, pending.kind, known(pending))
     : recorded;
   const since = hostRestartBetween(pending ? baseline : state.host, current);
+  // Earlier restarts no daemon could announce; only an unannounced pending restart carries any.
+  const earlier = pending?.unannounced ? (pending.unannouncedBefore ?? []) : [];
   if (pending && since === undefined) {
     const session = across(baseline, undefined, current);
     return {
       restart: pending.kind,
       announced: pending.unannounced !== true,
       settled: new Set(pending.settled ?? []),
-      mark: { kind: pending.kind, ...known(pending) },
+      mark: withEarlier(identity(pending), earlier),
       session,
       record: identified(session),
     };
@@ -66,7 +76,11 @@ export function findHostRestart(
       restart: since,
       announced: false,
       settled: new Set(),
-      mark: { kind: since, ...known(session) },
+      // A pending restart not announced yet is announced with this one, ahead of it.
+      mark: withEarlier(
+        { kind: since, ...known(session) },
+        pending?.unannounced ? [...earlier, identity(pending)] : [],
+      ),
       session,
       record: identified(session),
     };
@@ -108,6 +122,21 @@ function across(
   return { ...kept, ...definedFields(after) };
 }
 
+/** How a restart recorded in state is identified: its kind and the boot and login it was found with. */
+function identity(restart: RestartIdentity): RestartIdentity {
+  return { kind: restart.kind, ...known(restart) };
+}
+
+/** `mark`, carrying the `earlier` restarts still to be announced when there are any. */
+function withEarlier(
+  mark: RestartIdentity,
+  earlier: readonly RestartIdentity[],
+): RestartMark {
+  return earlier.length
+    ? { ...mark, unannouncedBefore: earlier.map(identity) }
+    : mark;
+}
+
 /** The fields of `session` that were read. */
 function definedFields(session: HostSession): HostSession {
   return Object.fromEntries(
@@ -116,26 +145,32 @@ function definedFields(session: HostSession): HostSession {
 }
 
 /** Records the one Activity entry for a detected Host restart, and, in the same write, that rigd is acting on it, with
- * the Targets already `settled` for it when the entry is written late (together with any a Target's own write noted). */
+ * the Targets already `settled` for it when the entry is written late (together with any a Target's own write noted).
+ * Earlier restarts whose entries no daemon could write (the mark's `unannouncedBefore`) get theirs first, oldest first. */
 export async function recordHostRestart(
   finding: HostSessionFinding & { restart: HostRestart },
   deps: Deps,
   settled: readonly string[] = [],
 ): Promise<void> {
-  const booted =
-    finding.restart === "reboot" && finding.session.bootedAt
-      ? ` (booted ${finding.session.bootedAt})`
-      : "";
-  const what = hostRestartText(finding.restart);
-  const mark = restartMark(finding);
+  const { unannouncedBefore = [], ...mark } = restartMark(finding);
+  const bootedAt =
+    finding.restart === "reboot" ? finding.session.bootedAt : undefined;
   await deps.store.update((state) => {
-    recordActivity(state, {
-      id: deps.id(),
-      action: "host-restart",
-      outcome: "stopped",
-      occurredAt: deps.now(),
-      message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stops the Services Rig runs. rigd starts the Stable Targets meant to run again; the Working copy's and Previews' Services that stopped stay stopped until rig up.`,
-    });
+    // A write reported failed may still have landed; a restart state already shows announced is not announced again.
+    const announced =
+      sameMark(state.host?.restart, mark) && !state.host!.restart!.unannounced;
+    if (!announced) {
+      for (const earlier of unannouncedBefore)
+        recordActivity(state, hostRestartEntry(earlier.kind, "late", deps));
+      recordActivity(
+        state,
+        hostRestartEntry(
+          finding.restart,
+          bootedAt ? { bootedAt } : "found",
+          deps,
+        ),
+      );
+    }
     if (state.host)
       state.host.restart = {
         ...mark,
@@ -153,11 +188,39 @@ export async function recordHostRestart(
   });
 }
 
-/** The pending restart a Stable Target's start is noted in: its kind and the boot and login it was found with. */
-export type RestartMark = { kind: HostRestart } & Pick<
+/** The Activity entry for a Host restart of kind `restart`: one just found (with when the Mac booted, when read), or an
+ * earlier one whose entry is written `late`, after a later restart was found. */
+function hostRestartEntry(
+  restart: HostRestart,
+  when: "found" | { bootedAt: string } | "late",
+  deps: Pick<Deps, "id" | "now">,
+): OperationRecord {
+  const what = hostRestartText(restart);
+  const booted = typeof when === "object" ? ` (booted ${when.bootedAt})` : "";
+  const late =
+    when === "late"
+      ? " Recorded late: rigd could not write this entry when it found the restart, and the Host restarted again since."
+      : "";
+  return {
+    id: deps.id(),
+    action: "host-restart",
+    outcome: "stopped",
+    occurredAt: deps.now(),
+    message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stops the Services Rig runs. rigd starts the Stable Targets meant to run again; the Working copy's and Previews' Services that stopped stay stopped until rig up.${late}`,
+  };
+}
+
+/** A Host restart as rigd identifies it: its kind and the boot and login it was found with. */
+export type RestartIdentity = { kind: HostRestart } & Pick<
   HostSession,
   "boot" | "login"
 >;
+
+/** The pending restart a Stable Target's start is noted in, with the earlier restarts whose Activity entries no daemon has
+ * written yet, oldest first. */
+export type RestartMark = RestartIdentity & {
+  unannouncedBefore?: readonly RestartIdentity[];
+};
 
 /** The mark of the restart `finding` found. */
 export function restartMark(
@@ -181,31 +244,44 @@ function sameMark(
 
 /** Notes in the pending restart that `targetId` is settled for it: a Stable Target started again or failed to start, or
  * a Working copy or Preview whose stopped Services were recorded as stopped by it. When the
- * restart's own entry could not be written, the note starts the pending restart, marked unannounced, so a daemon that
- * finds it again neither starts the Target again nor forgets to announce it. */
+ * restart's own entry could not be written, the note starts the pending restart, marked unannounced and carrying the
+ * earlier restarts still unannounced, so a daemon that finds it again neither starts the Target again nor forgets to
+ * announce any of them. */
 function markSettled(
   state: RuntimeState,
   targetId: string,
   mark: RestartMark,
 ): void {
   if (!state.host) return;
+  const { unannouncedBefore, ...found } = mark;
   const pending = sameMark(state.host.restart, mark)
     ? state.host.restart!
-    : { ...mark, settled: [], unannounced: true as const };
+    : {
+        ...found,
+        settled: [],
+        unannounced: true as const,
+        ...(unannouncedBefore?.length
+          ? { unannouncedBefore: [...unannouncedBefore] }
+          : {}),
+      };
   if (!pending.settled?.includes(targetId))
     pending.settled = [...(pending.settled ?? []), targetId];
   state.host.restart = pending;
 }
 
-/** Notes in the pending restart that `targetId`, a Working copy or Preview, has had its stopped Services recorded as
- * stopped by it, so a daemon that finishes the restart later does not record them again: by then an explicit start may
- * have ended the restart's hold on them. */
-export async function noteMarkedForHostRestart(
-  targetId: string,
+/** Records each stopped Service of `target`, a Working copy or Preview, as stopped by the restart `mark` identifies (see
+ * `recordStoppedByHostRestart`) and, in the same write, notes the Target settled in that pending restart. A daemon that
+ * finishes the restart later then does not record them again (an explicit start may by then have ended the restart's
+ * hold on them), and a write that records them never leaves the restart itself unrecorded. Returns whether it was saved;
+ * a failure goes to the diagnostic log. */
+export async function recordStoppedAfterHostRestart(
+  target: TargetRecord,
   mark: RestartMark,
-  deps: Deps,
-): Promise<void> {
-  await deps.store.update((state) => markSettled(state, targetId, mark));
+  deps: StartDeps,
+): Promise<boolean> {
+  return await recordStoppedByHostRestart(target, mark.kind, deps, (state) =>
+    markSettled(state, target.id, mark),
+  );
 }
 
 /** Records `session` as the one rigd has acted on, so its next start compares against it; it replaces any pending restart. */
@@ -218,28 +294,78 @@ export async function saveHostSession(
   });
 }
 
+type StartDeps = Pick<
+  RuntimeDependencies,
+  | "store"
+  | "now"
+  | "id"
+  | "lifecycle"
+  | "diagnostic"
+  | "observations"
+  | "observationBudgetMs"
+  | "observationDeadline"
+>;
+
+/** How a Stable Target's start after a Host restart left it for that restart. */
+export type HostRestartStart =
+  /** Started, found running, or its failure recorded: the restart is done for it. */
+  | { readonly outcome: "settled" }
+  /** rigd's shutdown detached the start: the next daemon starts it again. */
+  | { readonly outcome: "pending" }
+  /** The start failed with `error`, and the failure could not be saved yet. */
+  | { readonly outcome: "unrecorded"; readonly error: unknown };
+
+/** Saves, in one write, that the start of Stable Target `target` after the restart `mark` identifies failed with `error`:
+ * each Service not running as not started (see `recordFailedStart`), the Target as settled for the restart, and the start's
+ * one Activity entry. All of it is saved or none is, so a later daemon never starts again a Target whose failure it can
+ * read, and never finds a failure recorded without its entry. Returns whether it was saved; a failure goes to the
+ * diagnostic log. */
+export async function recordFailedAfterHostRestart(
+  target: TargetRecord,
+  error: unknown,
+  mark: RestartMark,
+  deps: StartDeps,
+): Promise<boolean> {
+  const errorCode = diagnosticErrorCode(error);
+  const after = hostRestartText(mark.kind);
+  return await recordFailedStart(target, error, deps, (state) => {
+    // A write reported failed may still have landed; a Target already settled for the restart has its entry.
+    if (
+      sameMark(state.host?.restart, mark) &&
+      state.host!.restart!.settled?.includes(target.id)
+    )
+      return;
+    markSettled(state, target.id, mark);
+    recordActivity(state, {
+      id: deps.id(),
+      projectId: target.projectId,
+      project: state.projects.find((p) => p.id === target.projectId)?.name,
+      target: target.name,
+      action: "up",
+      outcome: "failed",
+      occurredAt: deps.now(),
+      message: `${target.name} could not be started again after ${after} (${errorCode}). ${
+        recoveredByDownFirst(errorCode)
+          ? `Run rig down ${target.name}, then rig up ${target.name}.`
+          : `Run rig up ${target.name} once the cause is fixed.`
+      }`,
+    });
+  });
+}
+
 /** Starts a Stable Target meant to run again after `restart`, the way an explicit `rig up` does: every stopped Service in
  * dependency order, whatever its restart policy, with full automatic-restart budgets. A Service still running is adopted.
  * Records one Activity entry for the Target. A start that fails leaves every Service not running recorded as not started
  * (never retried automatically) and the Target meant to run, which status reports as failed until `rig up`; the failure is
  * recorded, never raised. A start whose clean-up stop rigd's shutdown detached records nothing, as after a crash: the
- * restart stays pending for the Target, and the next daemon starts it again. Returns whether the Target is settled: false
- * when a Service could not be recorded as not started, or the start was detached, so the restart is acted on again. */
+ * restart stays pending for the Target, and the next daemon starts it again. Resolves `settled` once the Target is settled
+ * for the restart; `pending` when the start was detached; `unrecorded` when the start failed and its failure could not be
+ * saved, which the caller saves later with `recordFailedAfterHostRestart` before anything else acts on the Target. */
 export async function startAfterHostRestart(
   target: TargetRecord,
   mark: RestartMark,
-  deps: Pick<
-    RuntimeDependencies,
-    | "store"
-    | "now"
-    | "id"
-    | "lifecycle"
-    | "diagnostic"
-    | "observations"
-    | "observationBudgetMs"
-    | "observationDeadline"
-  >,
-): Promise<boolean> {
+  deps: StartDeps,
+): Promise<HostRestartStart> {
   const restart = mark.kind;
   const journal = activationJournal(target, "explicit", deps, {
     afterHostRestart: restart,
@@ -249,37 +375,20 @@ export async function startAfterHostRestart(
   try {
     outcome = (await deps.lifecycle.up(target, undefined, journal)).outcome;
   } catch (error) {
-    if (isStopDetached(error)) return false;
+    if (isStopDetached(error)) return { outcome: "pending" };
     await journal.failed(error).catch(() => {});
-    const settled = await recordFailedStart(target, error, deps);
-    const errorCode = diagnosticErrorCode(error);
     await deps
       .diagnostic({
         operationId: deps.id(),
         action: "up",
         outcome: "failed",
         target: target.name,
-        errorCode,
+        errorCode: diagnosticErrorCode(error),
       })
       .catch(() => {});
-    await deps.store.update((state) => {
-      if (settled) markSettled(state, target.id, mark);
-      recordActivity(state, {
-        id: deps.id(),
-        projectId: target.projectId,
-        project: state.projects.find((p) => p.id === target.projectId)?.name,
-        target: target.name,
-        action: "up",
-        outcome: "failed",
-        occurredAt: deps.now(),
-        message: `${target.name} could not be started again after ${after} (${errorCode}). ${
-          recoveredByDownFirst(errorCode)
-            ? `Run rig down ${target.name}, then rig up ${target.name}.`
-            : `Run rig up ${target.name} once the cause is fixed.`
-        }`,
-      });
-    });
-    return settled;
+    return (await recordFailedAfterHostRestart(target, error, mark, deps))
+      ? { outcome: "settled" }
+      : { outcome: "unrecorded", error };
   }
   intendRunning(target);
   // As after an explicit up: the recorded plan is installed, routed and started under its own committed checkpoint.
@@ -304,5 +413,5 @@ export async function startAfterHostRestart(
           : `Found already running after ${after}.`,
     });
   });
-  return true;
+  return { outcome: "settled" };
 }

@@ -1,5 +1,22 @@
 import type { OperationRecord, RuntimeState } from "./runtime";
 
+/** Every outcome a final Operation can record in Activity. The state schema validates against this same list,
+ * so an outcome the runtime records is always one the state file accepts. */
+export const OPERATION_OUTCOMES = [
+  "started",
+  "stopped",
+  "deployed",
+  "failed",
+  "unchanged",
+  "registered",
+  "renamed",
+  "repointed",
+  "forgotten",
+  "installed",
+  "uninstalled",
+] as const;
+export type OperationOutcome = (typeof OPERATION_OUTCOMES)[number];
+
 /** How many final Operations state.json keeps. Every Operation is also written to the
  * diagnostic log, which has its own retention, so older activity is not lost, only unlisted. */
 export const ACTIVITY_RETAINED = 1000;

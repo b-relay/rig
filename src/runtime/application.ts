@@ -43,21 +43,20 @@ import {
   activationJournal,
   intendRunning,
   intendStopped,
-  recordStoppedByHostRestart,
   superviseTarget,
   supervisionScope,
 } from "./supervision";
 import {
   findHostRestart,
-  noteMarkedForHostRestart,
+  recordFailedAfterHostRestart,
   recordHostRestart,
+  recordStoppedAfterHostRestart,
   restartMark,
   saveHostSession,
   startAfterHostRestart,
   type HostSessionFinding,
   type RestartMark,
 } from "./host-restart";
-import type { HostRestart } from "../domain/host-session";
 import type { RuntimeDependencies } from "./contracts";
 import {
   prepareRegistration,
@@ -237,8 +236,28 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       observer: stopObserver(entry, deps.now),
     });
   /** Working copies and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
-   * by Target id; each pass tries again. */
-  const unmarked = new Map<string, HostRestart>();
+   * by Target id, with that restart as the first pass identified it; each pass tries again. */
+  const unmarked = new Map<string, RestartMark>();
+  /** Stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
+   * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
+  const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
+  /** Records the failed start after a Host restart that this daemon could not record yet for `target`, if there is one,
+   * under the caller's lease of the Target. Resolves whether none is left unrecorded; a failure is in the diagnostic log. */
+  const recordUnrecorded = async (target: TargetRecord): Promise<boolean> => {
+    const failure = unrecorded.get(target.id);
+    if (!failure) return true;
+    if (
+      !(await recordFailedAfterHostRestart(
+        target,
+        failure.error,
+        failure.mark,
+        deps,
+      ))
+    )
+      return false;
+    unrecorded.delete(target.id);
+    return true;
+  };
   const stopping = (targetId: string) =>
     [...operations.values()].some(
       (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
@@ -779,6 +798,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           { target: name },
         );
         target = find(targets);
+        // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the Target.
+        if (target && !(await recordUnrecorded(target)))
+          throw new RigError(
+            "STATE_WRITE",
+            `${target.name}'s failed start after the Host restarted could not be recorded, so nothing was done.`,
+            "rigd could not write its state under RIG_ROOT/runtime; rig doctor and the rigd diagnostic log show why. Free disk space or fix the permissions, then retry.",
+            { target: target.name },
+          );
         // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
         if (
           command.action !== "down" &&
@@ -1365,7 +1392,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         : parts.map((part) =>
             draining ? undefined : locks.tryAcquire(part.id, part.scopes),
           );
-      const restart = finding?.restart;
       const mark =
         finding?.restart !== undefined
           ? restartMark({ ...finding, restart: finding.restart })
@@ -1381,7 +1407,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
                 held,
                 action,
                 failed,
-                restart,
                 settled,
                 finding?.settled,
                 mark,
@@ -1454,8 +1479,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     );
   }
   /** One Target's share of a pass, under `lease`, which it releases. The record is read again under the lease, since a read
-   * made before it may predate what the Operation that last held the Target recorded. After a Host `restart` the first pass
-   * found, a Stable Target meant to run is started again as by `rig up`, and the Working copy's or a Preview's stopped
+   * made before it may predate what the Operation that last held the Target recorded. After the Host restart `mark` the
+   * first pass found, a Stable Target meant to run is started again as by `rig up`, and the Working copy's or a Preview's stopped
    * Services are recorded as stopped by the restart, which keeps them stopped until `rig up`. Adds `targetId` to `settled`
    * once that is done, or once nothing about a restart is left to do for the Target. Never rejects; failures are
    * recorded. */
@@ -1464,12 +1489,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     lease: Lease,
     action: "reconcile" | "supervise",
     failed: (error: unknown, target?: string) => Promise<void>,
-    restart?: HostRestart,
     settled?: Set<string>,
     /** Targets an earlier daemon already settled for this same restart: Stable Targets started again (or failed to), and
      * Working copies and Previews whose stopped Services it recorded as stopped by the restart. */
     startedBefore?: ReadonlySet<string>,
-    /** The restart a Stable Target's start is noted in. */
+    /** The Host restart the first pass found, as it is identified in state; a later pass has none. */
     mark?: RestartMark,
   ): Promise<number | undefined> {
     const entry: Running = {
@@ -1511,29 +1535,42 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (project) entry.view.project = project.name;
       const lifecycle = lifecycleOf(entry);
       if (target.desired === "running") {
+        // A Stable Target whose failed start after a Host restart could not be recorded has it recorded by each later pass
+        // of this daemon until that succeeds, and nothing of it is started or supervised until then.
+        if (unrecorded.has(targetId)) {
+          await recordUnrecorded(target);
+          return undefined;
+        }
         if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
-          if (await startAfterHostRestart(target, mark, { ...deps, lifecycle }))
-            settled?.add(targetId);
+          const started = await startAfterHostRestart(target, mark, {
+            ...deps,
+            lifecycle,
+          });
+          if (started.outcome === "settled") settled?.add(targetId);
+          if (started.outcome === "unrecorded")
+            unrecorded.set(targetId, { error: started.error, mark });
           return undefined;
         }
         // A Working copy or Preview whose stopped Services could not all be recorded as stopped by the restart is tried
         // again by each pass of this daemon, and nothing of it is supervised until then. One an earlier daemon already
         // recorded is not recorded again: an explicit start since then has ended the restart's hold on it.
+        // A later pass has no restart of its own, so it records the one the first pass kept, as that pass would have.
         const stoppedBy =
           target.kind === "live" || startedBefore?.has(targetId)
             ? undefined
-            : (restart ?? unmarked.get(targetId));
+            : (mark ?? unmarked.get(targetId));
         if (stoppedBy) {
-          if (!(await recordStoppedByHostRestart(target, stoppedBy, deps))) {
+          if (
+            !(await recordStoppedAfterHostRestart(target, stoppedBy, {
+              ...deps,
+              lifecycle,
+            }))
+          ) {
             unmarked.set(targetId, stoppedBy);
             return undefined;
           }
           unmarked.delete(targetId);
-          if (mark)
-            await noteMarkedForHostRestart(targetId, mark, deps).catch(
-              (error: unknown) => failed(error, target.name),
-            );
         }
         settled?.add(targetId);
         return await superviseTarget(

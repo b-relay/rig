@@ -703,3 +703,43 @@ test("a newline-free output run is recorded as bounded records that reassemble l
   expect(records.at(-1)!.line).toBe("done");
   await supervisor.stop(request.key, { graceMs: 1500 });
 });
+test("output a rigd-held process writes rotates under the supervisor's log retention", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const root = await mkdtemp(join(tmpdir(), "rig-process-retention-"));
+  roots.push(root);
+  const supervisor = createChildSupervisor({
+    ...platform(),
+    stateRoot: root,
+    logRetention: async () => ({ maxBytes: 400, generations: 1 }),
+  });
+  supervisors.push(supervisor);
+  const logRoot = join(root, "logs");
+  const request = {
+    key: "target/web",
+    componentName: "web",
+    command: [
+      process.execPath,
+      "-e",
+      "for (let n = 0; n < 40; n++) process.stdout.write(`line ${n}\\n`); process.stdout.write('done\\n'); setInterval(()=>{},1000)",
+    ],
+    cwd: root,
+    env: { PATH: "/usr/bin:/bin" },
+    logRoot,
+    incarnation: "start-1",
+  };
+  await supervisor.ensureRunning(request);
+  const newest = async () =>
+    (await readFile(join(logRoot, "target.jsonl"), "utf8").catch(() => ""))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line).line as string);
+  for (let i = 0; i < 200 && !(await newest()).includes("done"); i++)
+    await Bun.sleep(10);
+  expect(await newest()).toContain("done");
+  expect(
+    (await readdir(logRoot))
+      .filter((name) => name.startsWith("target.jsonl"))
+      .sort(),
+  ).toEqual(["target.jsonl", "target.jsonl.1"]);
+  await supervisor.stop(request.key, { graceMs: 1500 });
+});

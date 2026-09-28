@@ -431,3 +431,22 @@ test("an installed path is claimed by one Target's checkpoint until it commits o
   await second.commit();
   await (await transactions.checkpoint("alpha", [artifact("alpha")])).commit();
 });
+
+test("an effect-checkpoints path that is not a readable directory fails every operation as EFFECTS_CHECKPOINT, changing nothing", async () => {
+  const f = await fixture();
+  const checkpoints = join(f.root, "effect-checkpoints");
+  await writeFile(checkpoints, "not a directory");
+  const operations: ((
+    transactions: ReturnType<typeof f.transactions>,
+  ) => Promise<unknown>)[] = [
+    (transactions) => transactions.checkpoint("target", []),
+    (transactions) => transactions.restore("target"),
+    (transactions) => transactions.commit("target"),
+    (transactions) => transactions.pruneCheckpoints(new Set()),
+  ];
+  for (const operation of operations)
+    await expect(operation(f.transactions())).rejects.toMatchObject({
+      code: "EFFECTS_CHECKPOINT",
+    });
+  expect(await readFile(checkpoints, "utf8")).toBe("not a directory");
+});

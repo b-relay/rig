@@ -54,6 +54,10 @@ import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import type { Supervisor } from "../providers/contracts";
+import {
+  hostLogRetention,
+  LOG_RETENTION_REFRESH_MS,
+} from "../domain/log-retention";
 /** Composition root selects adapters. Runtime and command code see capability Interfaces only.
  * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none. */
 export async function composeDaemon(
@@ -70,16 +74,28 @@ export async function composeDaemon(
     now: () => new Date(),
     ...host.diagnostics,
   });
+  /** Aborted as the runtime begins to drain for shutdown: the stop a supervisor makes on its own (of what a start that never
+   * reported left behind) stops waiting then, instead of holding the drain for the Service's whole grace. */
+  const shuttingDown = new AbortController();
   // The daemon owns the platform clock, command runner, and signal path; every supervisor receives them explicitly.
   const processInspection = createProcessInspection({
     run: runCommand,
     kill: platformKill,
+  });
+  // Writers read the Host's logs settings as they are now, so a change needs no daemon restart.
+  const logRetention = hostLogRetention({
+    read: () => readHostConfig(root),
+    now: Date.now,
+    refreshMs: LOG_RETENTION_REFRESH_MS,
   });
   const child = createChildSupervisor({
     stateRoot: root,
     captureCommand,
     timing: createProcessTiming(),
     processInspection,
+    logRetention,
+    configRoot: root,
+    shutdown: shuttingDown.signal,
   });
   const uid = process.getuid?.() ?? 501;
   const launchd = createLaunchdSupervisor({
@@ -87,10 +103,13 @@ export async function composeDaemon(
     domain: `gui/${uid}`,
     labelPrefix: `com.b-relay.rig.${createHash("sha256").update(root).digest("hex").slice(0, 12)}`,
     captureCommand,
+    logRetention,
+    configRoot: root,
     run: runCommand,
     inspect: processInspection.identity,
     groupExists: processInspection.groupExists,
     timing: createLaunchdTiming(),
+    shutdown: shuttingDown.signal,
   });
   const supervisors = new Map<string, Supervisor>([
     ["rigd", child],
@@ -100,6 +119,7 @@ export async function composeDaemon(
   const environment = inheritedEnvironment(process.env);
   const effects = createTargetEffects({
     recordingTime: () => new Date().toISOString(),
+    logRetention,
     root,
     supervisors,
     run: runCommand,
@@ -223,6 +243,8 @@ export async function composeDaemon(
       stopMonitor?.();
       // An alert evaluation in flight finishes and saves what it delivered, so the next rigd does not deliver it again.
       await stopAlerts?.();
+      // With the runtime's own stops, which its drain detaches as it begins.
+      shuttingDown.abort();
       await runtime.drain();
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();

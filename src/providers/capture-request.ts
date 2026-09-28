@@ -13,16 +13,36 @@ const captureRequestSchema = z.object({
   incarnation: z.string().min(1),
   /** The application's grace after SIGTERM, from its Service's stop_timeout; a request written by an older rigd has none. */
   stopGraceMs: z.number().int().nonnegative().optional(),
+  /** The Rig root whose config.yaml `logs` settings the wrapper rotates the Target log by, read as rigd reads them; a
+   * request written by an older rigd has none and gets the defaults. */
+  configRoot: z.string().min(1).optional(),
 });
 export type CaptureRequest = z.infer<typeof captureRequestSchema>;
+/** The document a capture wrapper reads: the process to run and, when the supervisor has one, the Rig root whose logs
+ * settings it rotates by. */
+export function captureDocument(
+  request: ManagedProcess,
+  configRoot: string | undefined,
+): CaptureRequest {
+  return {
+    ...request,
+    command: [...request.command],
+    ...(configRoot ? { configRoot } : {}),
+  };
+}
 /** The wrapper reads the request on its own schedule, so it is replaced whole: a reader sees the previous or the new document, never a partial one. */
 export async function writeCaptureRequest(
   requestPath: string,
   request: ManagedProcess,
+  configRoot?: string,
 ): Promise<void> {
   const temporary = `${requestPath}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, JSON.stringify(request), { mode: 0o600 });
+    await writeFile(
+      temporary,
+      JSON.stringify(captureDocument(request, configRoot)),
+      { mode: 0o600 },
+    );
     await rename(temporary, requestPath);
   } finally {
     await rm(temporary, { force: true });

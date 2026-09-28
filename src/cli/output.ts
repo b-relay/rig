@@ -283,7 +283,10 @@ export function renderLogs(value: unknown, heading: boolean): string {
       `${time}  ${word(entry.component)}  ${marker} ${word(entry.line)}`,
     );
   }
-  if (heading && !rows(report.entries).length) lines.push("No logs yet.");
+  if (heading && !rows(report.entries).length)
+    lines.push(
+      report.filtered === true ? "No matching log lines." : "No logs yet.",
+    );
   return lines.length ? `${lines.join("\n")}\n` : "";
 }
 /** One line per record ending in its Operation id, with the recorded message beneath it. */

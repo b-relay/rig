@@ -71,6 +71,62 @@ test("launchd up does not restart a running job, never asks launchd to respawn i
   await supervisor.stop(request.key, { graceMs: 1500 });
   expect((await supervisor.observe(request.key)).state).toBe("stopped");
 });
+test("the files launchd writes for a job rotate under the log retention before the job starts", async () => {
+  const { writeFile, readdir } = await import("node:fs/promises");
+  const root = await mkdtemp(join(tmpdir(), "rig-launchd-rotate-"));
+  roots.push(root);
+  const logRoot = join(root, "logs");
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(logRoot);
+  await writeFile(join(logRoot, "web.stdout.log"), "a crash trace\n".repeat(4));
+  await writeFile(join(logRoot, "web.stdout.log.1"), "older\n");
+  await writeFile(join(logRoot, "web.stdout.log.2"), "oldest\n");
+  await writeFile(join(logRoot, "web.stderr.log"), "short\n");
+  let running = false;
+  const run: CommandRunner = async ({ command }) => {
+    if (command[1] === "bootstrap") running = true;
+    return command[1] === "print"
+      ? {
+          exitCode: running ? 0 : 113,
+          stdout: running ? "state = running\n\tpid = 1234\n" : "",
+          stderr: running ? "" : "Could not find service",
+        }
+      : { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const supervisor = createLaunchdSupervisor({
+    root,
+    domain: "gui/99999",
+    labelPrefix: "test.rig",
+    run,
+    groupExists: async () => false,
+    inspect: async () => undefined,
+    timing: createLaunchdTiming(),
+    logRetention: async () => ({ maxBytes: 20, generations: 2 }),
+  });
+  await supervisor.ensureRunning({
+    key: "stable-id/web",
+    command: ["/bin/sh", "-c", "serve"],
+    componentName: "web",
+    cwd: root,
+    env: { PATH: "/usr/bin:/bin" },
+    logRoot,
+    incarnation: "start-1",
+  });
+  expect((await readdir(logRoot)).sort()).toEqual([
+    "web.stderr.log",
+    "web.stdout.log.1",
+    "web.stdout.log.2",
+  ]);
+  expect(await readFile(join(logRoot, "web.stdout.log.1"), "utf8")).toBe(
+    "a crash trace\n".repeat(4),
+  );
+  expect(await readFile(join(logRoot, "web.stdout.log.2"), "utf8")).toBe(
+    "older\n",
+  );
+  expect(await readFile(join(logRoot, "web.stderr.log"), "utf8")).toBe(
+    "short\n",
+  );
+});
 test("real launchd capture stops its managed child and retains stdout and stderr logs", async () => {
   if (process.platform !== "darwin") return;
   const { randomUUID } = await import("node:crypto");

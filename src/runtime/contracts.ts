@@ -17,6 +17,7 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { TargetLogEntry } from "../providers/contracts";
+import type { LogFilter } from "../domain/log-filter";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
@@ -108,10 +109,12 @@ export interface RuntimeFiles {
     occupied: ReadonlyMap<number, { target: string; project: string }>;
     policy: "configured" | "dynamic";
   }): Promise<Record<string, number>>;
+  /** The newest `lines` entries `filter` keeps, or with `after` the next ones past that cursor; see `readTargetLogs`. */
   logs(
     target: TargetRecord,
     after: string | undefined,
     lines: number,
+    filter?: LogFilter,
   ): Promise<{ entries: TargetLogEntry[]; cursor: string }>;
 }
 /** Bounded evidence of a background channel that is failing inside the daemon. */

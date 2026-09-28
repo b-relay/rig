@@ -112,7 +112,8 @@ their callers, and only then closes what is still open, such as a log follow.
 A command sent after the stop began, or one still waiting behind another
 operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
 A stop signal never waits out a Service's `stop_timeout`, which may be an hour:
-a command waiting for a Service to exit stops waiting and fails `STOP_DETACHED`,
+a command waiting for a Service to exit (the stop of a start that never
+confirmed it started included) stops waiting and fails `STOP_DETACHED`,
 and the Service keeps stopping on its own (its capture wrapper, or launchd,
 still enforces the grace and the SIGKILL after it). A daemon killed while an
 operation waits for a Service to exit leaves that Service stopping the same way.
@@ -636,6 +637,20 @@ decision (roll-forward) without treating its own half-finished write as an
 external edit. Only a change made to an owned file _after_ the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
+Installed executables share one bin directory, so while a Target's checkpoint
+is unfinished, no other Target may install at a path it covers: that install is
+refused as `ARTIFACT_CONFLICT`, naming the Project and Target to run
+`rig down` for. This holds across a rigd restart, because rigd reads the
+unfinished journals left on disk before it starts any change, including
+journals it could not recover itself (from a newer rigd, say); if a journal
+or an executable's ownership record cannot be read then, the change fails
+rather than guess. A recovery holds the paths it undoes while it runs. If
+another Target nevertheless owns an executable the interrupted change was
+writing (an older rigd could let it install there), recovery refuses as
+`EFFECTS_CHANGED`, removes nothing and keeps the checkpoint. Give that other
+Component a different `installName` and deploy it again, or remove its Target;
+then run `rig down` for the first Target again.
+
 Each journal carries a format version (currently 1). A journal written by a
 newer rigd whose version this one does not read is refused as
 `EFFECTS_CHECKPOINT` with both versions named and nothing changed; a journal of
@@ -676,11 +691,44 @@ Logs:
 rig logs live
 rig logs preview feature/login
 rig logs preview feature/login --follow
+rig logs local --service scheduler --since 1h
+rig logs live --stream stderr --follow
+rig logs live --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
 ```
 
 `rig logs` prints recent stdout and stderr together by default and exits.
-`--follow` streams. Logs may be read for stopped Targets when logs exist. Every
-follow page is validated the same way as the first; a malformed page ends the
+`--follow` streams. Logs may be read for stopped Targets when logs exist.
+
+Filters narrow what is printed; without them the output is the whole Target
+interleaved, as before:
+
+- `--service <name>` keeps one component's lines. Repeat it for more than one.
+  A name is a Service or Tool from `rig.yaml` (a Tool's build and install
+  output is logged under its name), or `setup` for dependency installation
+  and the shared build. An unknown name fails as `USAGE` and lists the names
+  the Target has.
+- `--stream stdout` or `--stream stderr` keeps one stream; health-check
+  evidence is left out.
+- `--since <time>` and `--until <time>` keep lines recorded in that window,
+  both ends included. A time is a duration back from now (`90s`, `15m`, `1h`,
+  `2d`, `1w`, or combined as `1h30m`) or an ISO time with a zone
+  (`2026-09-28T03:00:00Z`, `2026-09-28T05:00:00+02:00`); a time without a zone
+  is refused rather than guessed. Lines with no recorded time (the files
+  launchd writes for a job, see below) are left out once either is set.
+- `--lines` counts the lines the filters keep, so
+  `--service scheduler --lines 20` is the scheduler's last 20 lines however
+  much another Service wrote since.
+- `--follow` prints the matching history first, then keeps printing new lines
+  that pass `--service` and `--stream`. `--until` cannot be combined with
+  `--follow`.
+
+A filtered read walks back through every retained file from the newest line
+and stops once it has `--lines` matches or has passed `--since`, so it never
+loads whole files; `--since` reaches back as far as the retained files go.
+When nothing matches, `rig logs` says `No matching log lines.` instead of
+`No logs yet.`
+
+Every follow page is validated the same way as the first; a malformed page ends the
 follow with `DAEMON_PROTOCOL` and no further poll, which is distinct from
 cancellation.
 `--lines` sizes the first page only; a follow then fetches up to 1000 new
@@ -704,21 +752,60 @@ local time. Build and install
 output is recorded line by line as the command produces it, each line at
 the time it was seen, so a long build is visible in `rig logs --follow` while
 it runs rather than as one burst afterwards.
-A Target's `target.jsonl` is rotated once it reaches 64 MiB: the full file
-becomes `target.jsonl.1`, replacing the previous one, so a chatty Component
-holds at most about 128 MiB of log on disk. `rig logs` reads both generations
-and a `--follow` continues across the rotation without repeating or losing
-lines. The files launchd writes for a job (`<component>.stdout.log` and
+
+Log files are bounded by size, not by age. Two Host settings in
+`<RIG_ROOT>/config.yaml` control it:
+
+```yaml
+logs:
+  max_bytes: 67108864 # 64 MiB, the default
+  generations: 1 # the default
+```
+
+- `max_bytes` is how big a log file may grow. Once `target.jsonl` reaches it,
+  Rig renames the full file to `target.jsonl.1` and starts a new, empty
+  `target.jsonl`. This is called rotation.
+- `generations` is how many of those older, rotated files are kept. With `1`,
+  only `target.jsonl.1` is kept, and the next rotation replaces it. With `3`,
+  Rig keeps `.1` (newest) to `.3` (oldest) and deletes the file that would
+  become `.4`. With `0`, a full file is deleted and nothing older is kept; a
+  line another writer appends at the moment of deletion goes with it.
+
+So a Target keeps at most about `max_bytes × (generations + 1)` of log: 128 MiB
+with the defaults. The limit is shared by every Service of the Target, so a
+chatty web Service can push a quiet worker's lines out; raise either setting to
+keep more history for `--since`. `max_bytes` is at least 1 MiB; `generations`
+is 0 to 20. `rig logs` reads every retained generation, oldest first, and a
+`--follow` continues across a rotation without repeating lines. A follow
+loses lines only when they are deleted before it reads them: with
+`generations: 0`, or when it falls more than `generations` rotations behind.
+A change needs no restart: rigd and every Service's capture wrapper read
+`config.yaml` again within a few seconds, so every writer of a file rotates it
+the same way. (A Service started by a Rig release before these settings
+existed uses the defaults until it restarts.) While `config.yaml` is invalid,
+the last valid settings stay in force, so log output is never lost to a config
+mistake.
+
+The files launchd writes for a job (`<component>.stdout.log` and
 `<component>.stderr.log`, which hold a capture wrapper's own crash output or
 an uncaptured app's output) are shown under their Component with an unknown
-time. A log file that cannot be opened, or that is not a regular file, fails
+time. They rotate under the same two settings, each file on its own (for
+example `web.stderr.log.1`), when Rig starts the job: launchd holds them open
+while the job runs, so they are never rotated under a running job.
+
+A log file that cannot be opened, or that is not a regular file, fails
 as `LOG_UNREADABLE` naming the file and the reason; `LOG_CURSOR` is reserved
-for a follow whose cursor no longer matches the files.
+for a follow whose cursor no longer matches the files. A file `--service`,
+`--stream` or a time bound leaves out entirely (another Service's launchd
+file) is not opened at all. A read that sees files rotate under it reads again;
+`LOG_BUSY` means they kept rotating, and reading again is all it asks.
 A record that cannot be parsed (for example one cut short by a crash and glued
 onto the next), or a run longer than the reader's 4 MiB window, is shown in
 place as an unknown-stream line "Rig skipped an unreadable log record (N
 bytes)." and reading or following continues past it; Rig never edits the
-retained file. Rig's own writers record a newline-free run in pieces of at most
+retained file. A recent read reports a newest run it only walked partway as
+"(more than N bytes)": a launchd file whose output never ends a line is read
+a window back, not whole. Rig's own writers record a newline-free run in pieces of at most
 64 Ki characters, so their records never exceed that window.
 A Target log directory removed while a component runs is recreated by the
 next line of output. While output cannot be recorded at all (the path is not a
@@ -795,8 +882,15 @@ The state file carries a format version (currently 4). A file written by a
 newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
 rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
-newer version's fields survive a temporary downgrade. Services that take
-longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
+newer version's fields survive a temporary downgrade. A new value in a known
+field does not: a `rigd` from before `rig forget` was recorded in Activity
+refuses the state as `STATE_CORRUPT` once a `forgotten` entry is in it. Upgrade
+`rigd` again, or delete the entries whose `outcome` is `forgotten` from
+`activity` in the state file. Restoring `state.json.bak`, as the error
+suggests, helps only when recording the forget was the last write: that copy
+has the Project already removed, just without the `forgotten` entry. After any
+later write it holds the entry too. Services that take longer than about 4 s to stop
+need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, `health.start_timeout`, each
@@ -984,6 +1078,9 @@ capability:
 - `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
   reload mode (see Setup)
 - `diagnostics.retention_days` (default 14) and `diagnostics.level`
+- `logs.max_bytes` (default 64 MiB) and `logs.generations` (default 1): the
+  size at which a Target log file is rotated and how many rotated files are
+  kept (see Logs)
 - `alerts.channels.macos.enabled`: whether operator alerts are posted as
   macOS notifications (see "Operator alerts"). When unset, it is on for a
   `rigd` installed as a LaunchAgent and off for a process-mode `rigd`
@@ -1093,7 +1190,9 @@ A Service is a long-running process Rig starts and supervises. Its fields:
   (SIGTERM) before Rig ends it with SIGKILL, from `1s` to `1h` (default `10s`).
   It is the time after the signal, not a total. Every stop honours it: `rig
 down`, `rig restart`, a deploy that replaces or rolls back the Target, a
-  Preview destroy, the stop of a failed start, and `rigd` re-stopping a Target
+  Preview destroy, the stop of a failed start (a Service whose capture
+  wrapper never confirmed it started included: the start fails only once
+  that Service has stopped), and `rigd` re-stopping a Target
   at startup. A role patch may set it (`targets.stable.services.worker.stop_timeout`).
   Rig waits for SIGKILL's kill wait (1.5 s) on top. A Service that exits within
   its grace is a requested stop; one that needs SIGKILL is recorded as
@@ -1123,6 +1222,14 @@ A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
+
+An executable `bin`, anything but the source files below, is copied byte for
+byte into `<RIG_ROOT>/bin` (as `<tool>` or `<tool>-<target name>`; see
+"Environment, builds, and startup") and runs from there, not from the
+workspace. It must therefore be self-contained, like a compiled binary, or
+must itself name the checkout it needs. A shell script that finds its checkout
+with `dirname "$0"` gets `<RIG_ROOT>/bin` instead, which holds none of the
+checkout's files.
 
 A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
 `.cjs`) is not copied. Rig publishes a two-line shim,
@@ -1311,7 +1418,10 @@ wrapper's exit code 0 is not counted, because a wrapper from an older `rigd`
 also exits 0 after an outside SIGTERM. If the wrapper is gone but the process
 it ran is still running on its own, the Service is reported `unknown`. Rig
 neither signals that process nor starts another beside it; end it yourself,
-then run `rig up`.
+then run `rig up`. A process only begins once Rig has recorded it: if the
+wrapper (or `rigd`) is killed while it is starting a process, that process
+never runs, so the start fails and a retry never runs a second copy beside one
+Rig cannot see.
 
 A Service that is gone with no record anywhere (its launchd job was unloaded
 too, or nothing could be written or read) has `exit: unknown`. Under
@@ -1391,7 +1501,20 @@ time and without starting (or retrying) a Stable Target it already started, or
 failed to start, for that restart. A restart whose Activity entry could not be
 written yet is recorded by the start that finishes it. Only a session that changed since the
 pending restart was found, such as a logout and login after it, is a new
-restart.
+restart; a pending restart whose entry was never written still gets its entry,
+ahead of the new one's, marked as recorded late.
+
+When a Stable Target's start fails and its failure cannot be recorded (a full
+disk, say), each later pass of the same `rigd` records it again, and does not
+supervise that Target meanwhile. A command you run on the Target records the
+failure first, and is refused with `STATE_WRITE` while it cannot be. If `rigd`
+stops before that write succeeds, the next start finds the Target not settled
+for the restart and without the start's Activity entry, and starts it once
+more, even though the Service whose start failed may already read `failed`.
+Likewise, if none of the writes that record the restart succeeded before
+`rigd` stopped (its own entry, and every Target's note that it acted on it),
+nothing records that restart: after a second reboot the Host shows only the new
+boot, so the next start sees one restart and writes one entry.
 
 ### Operator alerts
 

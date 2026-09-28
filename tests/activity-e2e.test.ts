@@ -5,9 +5,10 @@ import { rigFixture } from "./support/rig-fixture";
 test("daemon records observed terminal crashes once and exposes verified administration activity", async () => {
   const f = await rigFixture();
   try {
+    // It crashes well after the 500 ms start grace, so up counts it started even on a loaded Host.
     await writeFile(
       join(f.repo, "app.ts"),
-      "process.stdout.write('started\\n');setTimeout(()=>process.exit(7),750)",
+      "process.stdout.write('started\\n');setTimeout(()=>process.exit(7),2000)",
     );
     await writeFile(
       join(f.repo, "rig.yaml"),

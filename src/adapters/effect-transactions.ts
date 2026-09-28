@@ -176,10 +176,16 @@ export function createEffectTransactions(options: {
   };
   const seedClaims = async (): Promise<void> => {
     for (const journal of await unfinishedJournals())
-      for (const path of journal.paths)
+      for (const path of executables(journal.paths))
         if (!claims.has(path) && !(await heldElsewhere(path, journal.owner)))
           claims.set(path, journal.owner);
   };
+  /** The installed executables among a journal's `paths`. A claim names an executable only: its ownership record and a
+   * Target's receipt follow from it, so claiming those too would only let two Targets hold parts of one executable. */
+  const executables = (paths: readonly string[]) =>
+    paths.filter(
+      (path) => resolve(dirname(path)) === resolve(options.root, "bin"),
+    );
   /** The owner and paths of every journal under effect-checkpoints/ that is not committed, read as loosely as the paths
    * allow, so a journal this rigd would refuse to recover (a newer version, an invalid value, a bad layout) still keeps its
    * paths until someone deals with it. A journal that is not JSON naming its Target and paths, or that sits under another
@@ -237,7 +243,6 @@ export function createEffectTransactions(options: {
    * Target from moving or removing its executable; recovery claims the path itself when it runs. Rejects ARTIFACT_OWNER
    * when the record cannot be read, so no path is handed out on a guess. */
   const heldElsewhere = async (path: string, owner: ClaimOwner) => {
-    if (resolve(dirname(path)) !== resolve(options.root, "bin")) return false;
     try {
       const recorded = await options.ownership.owner(path);
       return recorded !== undefined && recorded.targetId !== owner.targetId;
@@ -456,9 +461,9 @@ export function createEffectTransactions(options: {
         "The Target effects have already been committed.",
         "Inspect current Target state before changing effects.",
       );
-    // Recovery holds every path it may write from its checks to its writes, so no other Target installs there in between;
-    // a refusal hands back what it took, so the Target that owns a path can still move or remove its executable.
-    const paths = journal.files.map((file) => file.path);
+    // Recovery holds every executable it may write from its checks to its writes, so no other Target installs there in
+    // between; a refusal hands back what it took, so the Target that owns one can still move or remove it.
+    const paths = executables(journal.files.map((file) => file.path));
     const taken = paths.filter(
       (path) => claims.get(path)?.targetId !== journal.targetId,
     );

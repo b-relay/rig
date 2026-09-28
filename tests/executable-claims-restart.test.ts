@@ -315,6 +315,28 @@ test.each([
   },
 );
 
+test("a failed change of the Target that owns an executable a crashed Target's journal covers still rolls back, and neither Target is left stuck", async () => {
+  const f = await fixture();
+  await crashWhileInstalling(f.root, f.a);
+  expect(await effects(f.root).install(tool, f.b)).toEqual({
+    outcome: "installed",
+  });
+  // B's next start fails at its route, after its checkpoint covered the executable and its ownership record.
+  let checks = 0;
+  const restarted = daemon(f.root, undefined, async (key) => {
+    if (key === f.b.id && ++checks === 2)
+      throw new Error("caddy is not answering");
+  });
+  await expect(restarted.up(f.b)).rejects.toThrow("caddy is not answering");
+  expect(await f.owner(f.executable)).toMatchObject({ targetId: f.b.id });
+  await expect(restarted.restoreEffects(f.a)).rejects.toMatchObject({
+    code: "EFFECTS_CHANGED",
+  });
+  await restarted.retire(f.b);
+  await restarted.restoreEffects(f.a);
+  expect(await readdir(join(f.root, "effect-checkpoints"))).toEqual([]);
+});
+
 test("an ownership record that cannot be read when claims are rebuilt fails the change instead of guessing, and a later change rebuilds them", async () => {
   const f = await fixture();
   await crashWhileInstalling(f.root, f.a);

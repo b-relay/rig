@@ -365,24 +365,31 @@ export function intendRunning(target: TargetRecord): void {
  * stays as it was. No retry stays scheduled. A Service seen running survived and is left alone; one whose observation does
  * not answer within the status budget is counted as stopped, since a restart ends every process. A Service an operator
  * stopped, or whose automatic attempts are used up, keeps its record. Writes no Activity: the restart's own entry says why.
- * The records are saved in one write. Returns whether they were saved; a failure goes to the diagnostic log. */
+ * The records, and whatever `alongside` records, are saved in one write. Returns whether they were saved; a failure goes
+ * to the diagnostic log. */
 export async function recordStoppedByHostRestart(
   target: TargetRecord,
   restart: HostRestart,
   deps: Deps,
+  alongside?: (state: RuntimeState) => void,
 ): Promise<boolean> {
-  return await settleStopped(target, deps, (component, run) => {
-    if (run?.intent === "stopped" || run?.exhausted) return undefined;
-    const outcome = run?.outcome;
-    if (
-      outcome &&
-      outcome.kind !== "unknown" &&
-      restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
-        undefined
-    )
-      return undefined;
-    return { kind: "unknown", hostRestart: restart, at: deps.now() };
-  });
+  return await settleStopped(
+    target,
+    deps,
+    (component, run) => {
+      if (run?.intent === "stopped" || run?.exhausted) return undefined;
+      const outcome = run?.outcome;
+      if (
+        outcome &&
+        outcome.kind !== "unknown" &&
+        restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
+          undefined
+      )
+        return undefined;
+      return { kind: "unknown", hostRestart: restart, at: deps.now() };
+    },
+    alongside,
+  );
 }
 
 /** Records, after an explicit start of `target` failed, that each Service not seen running was not started, unless the

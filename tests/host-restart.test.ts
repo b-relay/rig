@@ -1027,6 +1027,67 @@ test("a login after a reboot whose entry was never written is announced with it 
   expect(host.restart).toBeUndefined();
 });
 
+test("a second reconcile of the same daemon does not start again a Stable Target whose failed start it could not record", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const db = await f.key("live", "db");
+  f.refusal.start = (key) => key === db;
+  const failing = failWrites(f.store, (state) =>
+    state.activity
+      .slice(before)
+      .some((entry) => entry.action === "up" && entry.outcome === "failed"),
+  );
+  f.reopen();
+  await f.reconcile();
+  f.refusal.start = undefined;
+  const startsBefore = f.starts.length;
+  await f.reconcile();
+  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+
+  failing.left = 0;
+  await f.reconcile();
+  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/failed live",
+  ]);
+});
+
+test("a Working copy's Services are recorded as stopped by a restart only in the same write as the restart itself, so no such record outlives a restart nothing remembers", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  // Every write that would leave the restart in state fails: its entry, and every Target's note in the pending restart.
+  const failing = failWrites(
+    f.store,
+    (state) => state.host?.restart !== undefined,
+  );
+  f.reopen();
+  await f.reconcile();
+  const saved = await f.store.read();
+  expect(saved.host).toMatchObject({ boot: "BOOT-1" });
+  expect(saved.host!.restart).toBeUndefined();
+  const local = saved.targets.find((t) => t.kind === "local")!;
+  for (const run of Object.values(local.services ?? {}))
+    expect(run.outcome).not.toHaveProperty("hostRestart");
+
+  failing.left = 0;
+  f.reopen();
+  await f.reconcile();
+  expect(await f.status("local")).toMatchObject({
+    api: { state: "stopped", exit: "unknown" },
+  });
+  expect(
+    (await f.activitySince(before)).filter((entry) =>
+      entry.startsWith("host-restart"),
+    ),
+  ).toEqual(["host-restart/stopped -"]);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
+});
+
 test("a restart whose entry was never written is still announced when the Mac restarts again before the next daemon, ahead of the new restart's entry", async () => {
   const f = await fixture();
   await f.startAll();

@@ -1324,11 +1324,13 @@ When a Stable Target's start fails and its failure cannot be recorded (a full
 disk, say), each later pass of the same `rigd` records it again, and does not
 supervise that Target meanwhile. A command you run on the Target records the
 failure first, and is refused with `STATE_WRITE` while it cannot be. If `rigd`
-stops before the failure is recorded, the next start knows nothing of it and
-starts that Target once more. Likewise, if no state write at all succeeded
-before `rigd` stopped, nothing records the restart it found: after a second
-reboot the Host shows only the new boot, so the next start sees one restart
-and writes one entry.
+stops before that write succeeds, the next start finds the Target not settled
+for the restart and without the start's Activity entry, and starts it once
+more, even though the Service whose start failed may already read `failed`.
+Likewise, if none of the writes that record the restart succeeded before
+`rigd` stopped (its own entry, and every Target's note that it acted on it),
+nothing records that restart: after a second reboot the Host shows only the new
+boot, so the next start sees one restart and writes one entry.
 
 ### Operator alerts
 

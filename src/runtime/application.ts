@@ -43,15 +43,14 @@ import {
   activationJournal,
   intendRunning,
   intendStopped,
-  recordStoppedByHostRestart,
   superviseTarget,
   supervisionScope,
 } from "./supervision";
 import {
   findHostRestart,
-  noteMarkedForHostRestart,
   recordFailedAfterHostRestart,
   recordHostRestart,
+  recordStoppedAfterHostRestart,
   restartMark,
   saveHostSession,
   startAfterHostRestart,
@@ -1537,6 +1536,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (project) entry.view.project = project.name;
       const lifecycle = lifecycleOf(entry);
       if (target.desired === "running") {
+        // A Stable Target whose failed start after a Host restart could not be recorded has it recorded by each later pass
+        // of this daemon until that succeeds, and nothing of it is started or supervised until then.
+        if (unrecorded.has(targetId)) {
+          await recordUnrecorded(target);
+          return undefined;
+        }
         if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
           const started = await startAfterHostRestart(target, mark, {
@@ -1548,12 +1553,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             unrecorded.set(targetId, { error: started.error, mark });
           return undefined;
         }
-        // A Stable Target whose failed start after a Host restart could not be recorded has it recorded by each later pass
-        // of this daemon until that succeeds, and nothing of it is supervised until then.
-        if (unrecorded.has(targetId)) {
-          await recordUnrecorded(target);
-          return undefined;
-        }
         // A Working copy or Preview whose stopped Services could not all be recorded as stopped by the restart is tried
         // again by each pass of this daemon, and nothing of it is supervised until then. One an earlier daemon already
         // recorded is not recorded again: an explicit start since then has ended the restart's hold on it.
@@ -1562,15 +1561,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             ? undefined
             : (restart ?? unmarked.get(targetId));
         if (stoppedBy) {
-          if (!(await recordStoppedByHostRestart(target, stoppedBy, deps))) {
+          if (
+            !(await recordStoppedAfterHostRestart(target, stoppedBy, mark, {
+              ...deps,
+              lifecycle,
+            }))
+          ) {
             unmarked.set(targetId, stoppedBy);
             return undefined;
           }
           unmarked.delete(targetId);
-          if (mark)
-            await noteMarkedForHostRestart(targetId, mark, deps).catch(
-              (error: unknown) => failed(error, target.name),
-            );
         }
         settled?.add(targetId);
         return await superviseTarget(

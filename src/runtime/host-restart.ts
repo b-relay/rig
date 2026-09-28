@@ -19,6 +19,7 @@ import {
   activationJournal,
   intendRunning,
   recordFailedStart,
+  recordStoppedByHostRestart,
 } from "./supervision";
 
 type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
@@ -43,7 +44,7 @@ export interface HostSessionFinding {
  * session carried across that restart (see `across`). The pending restart stays the one to act on (its kind, its settled
  * Targets, announced or not) unless the read now shows a change since; a change is a new restart of its own, whose mark
  * carries the pending restart forward when its Activity entry was never written, so it is announced still. A restart
- * that left nothing in state (no write of the daemon that found it succeeded) cannot be told apart from a later one: after
+ * that left nothing in state (none of the writes that record it succeeded) cannot be told apart from a later one: after
  * another reboot the Host shows only the new boot, so the two are one restart here. The session recorded once a restart
  * is acted on keeps, where the read now missed a field, what is still known of it. */
 export function findHostRestart(
@@ -268,15 +269,23 @@ function markSettled(
   state.host.restart = pending;
 }
 
-/** Notes in the pending restart that `targetId`, a Working copy or Preview, has had its stopped Services recorded as
- * stopped by it, so a daemon that finishes the restart later does not record them again: by then an explicit start may
- * have ended the restart's hold on them. */
-export async function noteMarkedForHostRestart(
-  targetId: string,
-  mark: RestartMark,
-  deps: Deps,
-): Promise<void> {
-  await deps.store.update((state) => markSettled(state, targetId, mark));
+/** Records each stopped Service of `target`, a Working copy or Preview, as stopped by `restart` (see
+ * `recordStoppedByHostRestart`) and, in the same write, notes the Target settled in the pending restart `mark` identifies,
+ * when the pass has one. A daemon that finishes the restart later then does not record them again (an explicit start
+ * may by then have ended the restart's hold on them), and a write that records them never leaves the restart itself
+ * unrecorded. Returns whether it was saved; a failure goes to the diagnostic log. */
+export async function recordStoppedAfterHostRestart(
+  target: TargetRecord,
+  restart: HostRestart,
+  mark: RestartMark | undefined,
+  deps: StartDeps,
+): Promise<boolean> {
+  return await recordStoppedByHostRestart(
+    target,
+    restart,
+    deps,
+    mark && ((state) => markSettled(state, target.id, mark)),
+  );
 }
 
 /** Records `session` as the one rigd has acted on, so its next start compares against it; it replaces any pending restart. */

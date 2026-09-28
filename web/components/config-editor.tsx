@@ -157,7 +157,8 @@ export function ConfigEditor({
     () => ({
       tree,
       fields: source.fields,
-      format: source.format ?? LATEST_FORMAT,
+      // An older rigd names no format and answers in rig/v1 spelling, the only one it knows.
+      format: source.format ?? "rig/v1",
       set: (path, value) => setTree((current) => setAt(current, path, value)),
       remove: (path) => setTree((current) => removeAt(current, path)),
     }),

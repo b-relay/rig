@@ -4403,9 +4403,12 @@ test("a Working copy whose rig.yaml was only upgraded to rig/v2 is not reported 
       format: "rig/v2",
       name: "demo",
       services: Object.fromEntries(
-        [first, second].map((name, index) => [
+        [first, second].map((name) => [
           name,
-          { run: "serve --host 127.0.0.1", ports: { http: 4567 + index } },
+          {
+            run: "serve --host 127.0.0.1",
+            ports: { http: name === "alpha" ? 4567 : 4568 },
+          },
         ]),
       ),
     });

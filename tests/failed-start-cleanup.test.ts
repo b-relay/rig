@@ -4,6 +4,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
+import { createProcessIdentityReader } from "../src/providers/process-identity";
 import { runCommand } from "../src/providers/command-runner";
 import type {
   CommandRunner,
@@ -27,14 +28,18 @@ import {
 /** A start whose capture wrapper never reports that its application started, under each supervisor: the start is cleaned
  * up within the Service's grace, shown as a stop, cut short by a kill, and left to finish on its own once rigd shuts down. */
 const roots: string[] = [];
-const groups: number[] = [];
+const identityOf = createProcessIdentityReader(runCommand);
+/** Process groups a test started, with their leader's birth identity read while it was known to run: cleanup signals a
+ * group only while that identity still matches, never a reused id. */
+const groups: { pid: number; identity: string }[] = [];
 afterEach(async () => {
   for (const group of groups.splice(0))
-    try {
-      process.kill(-group, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
+    if ((await identityOf(group.pid)) === group.identity)
+      try {
+        process.kill(-group.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -229,6 +234,11 @@ describe("rigd supervisor", () => {
       processInspection: {
         ...platform,
         signalGroup: async (pid: number, signal: NodeJS.Signals) => {
+          if (!signalled) {
+            // Read before the first signal, while the wrapper is known to run: cleanup ends it only while it is still that one.
+            const identity = await platform.identity(pid);
+            if (identity) groups.push({ pid, identity });
+          }
           signalled = true;
           signals.push([pid, signal]);
           await platform.signalGroup(pid, signal);
@@ -266,7 +276,6 @@ describe("rigd supervisor", () => {
     await expect(
       w.supervisor.ensureRunning(request(w.root, 300), control),
     ).rejects.toMatchObject({ code: "PROCESS_START_TIMEOUT" });
-    groups.push(w.signals[0]![0]);
     // The wrapper ignores SIGTERM: it is SIGKILLed once its budget (grace, kill wait and headroom) is over.
     expect(w.signals.map(([, signal]) => signal)).toEqual([
       "SIGTERM",
@@ -291,7 +300,6 @@ describe("rigd supervisor", () => {
     );
     for (let i = 0; i < 500 && !w.signals.length; i++) await Bun.sleep(10);
     const wrapper = w.signals[0]![0];
-    groups.push(wrapper);
     const at = performance.now();
     w.shutdown.abort();
     await expect(starting).rejects.toMatchObject({ code: "STOP_DETACHED" });
@@ -316,7 +324,6 @@ describe("rigd supervisor", () => {
       control,
     );
     for (let i = 0; i < 500 && !w.signals.length; i++) await Bun.sleep(10);
-    groups.push(w.signals[0]![0]);
     kill.abort();
     await expect(starting).rejects.toMatchObject({
       code: "PROCESS_START_TIMEOUT",
@@ -333,7 +340,6 @@ describe("rigd supervisor", () => {
     const failure = await w.supervisor
       .ensureRunning(request(w.root, 3_600_000))
       .catch((error: unknown) => error);
-    groups.push(w.signals[0]![0]);
     expect(failure).toMatchObject({
       code: "STOP_DETACHED",
       details: {
@@ -371,7 +377,8 @@ describe("rigd supervisor", () => {
       incarnation: "start-2",
       command: ["/bin/sh", "-c", "exec sleep 30"],
     });
-    groups.push(again.pid!);
+    const identity = await identityOf(again.pid!);
+    if (identity) groups.push({ pid: again.pid!, identity });
     expect(again.outcome).toBe("started");
     await supervisor.shutdown();
   });

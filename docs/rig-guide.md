@@ -635,6 +635,20 @@ decision (roll-forward) without treating its own half-finished write as an
 external edit. Only a change made to an owned file _after_ the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
+Installed executables share one bin directory, so while a Target's checkpoint
+is unfinished, no other Target may install at a path it covers: that install is
+refused as `ARTIFACT_CONFLICT`, naming the Project and Target to run
+`rig down` for. This holds across a rigd restart, because rigd reads the
+unfinished journals left on disk before it starts any change, including
+journals it could not recover itself (from a newer rigd, say); if a journal
+or an executable's ownership record cannot be read then, the change fails
+rather than guess. A recovery holds the paths it undoes while it runs. If
+another Target nevertheless owns an executable the interrupted change was
+writing (an older rigd could let it install there), recovery refuses as
+`EFFECTS_CHANGED`, removes nothing and keeps the checkpoint. Give that other
+Component a different `installName` and deploy it again, or remove its Target;
+then run `rig down` for the first Target again.
+
 Each journal carries a format version (currently 1). A journal written by a
 newer rigd whose version this one does not read is refused as
 `EFFECTS_CHECKPOINT` with both versions named and nothing changed; a journal of
@@ -794,8 +808,15 @@ The state file carries a format version (currently 4). A file written by a
 newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
 rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
-newer version's fields survive a temporary downgrade. Services that take
-longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
+newer version's fields survive a temporary downgrade. A new value in a known
+field does not: a `rigd` from before `rig forget` was recorded in Activity
+refuses the state as `STATE_CORRUPT` once a `forgotten` entry is in it. Upgrade
+`rigd` again, or delete the entries whose `outcome` is `forgotten` from
+`activity` in the state file. Restoring `state.json.bak`, as the error
+suggests, helps only when recording the forget was the last write: that copy
+has the Project already removed, just without the `forgotten` entry. After any
+later write it holds the entry too. Services that take longer than about 4 s to stop
+need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
@@ -1113,6 +1134,14 @@ A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
+
+An executable `bin`, anything but the source files below, is copied byte for
+byte into `<RIG_ROOT>/bin` (as `<tool>` or `<tool>-<target name>`; see
+"Environment, builds, and startup") and runs from there, not from the
+workspace. It must therefore be self-contained, like a compiled binary, or
+must itself name the checkout it needs. A shell script that finds its checkout
+with `dirname "$0"` gets `<RIG_ROOT>/bin` instead, which holds none of the
+checkout's files.
 
 A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
 `.cjs`) is not copied. Rig publishes a two-line shim,

@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
+import { OPERATION_OUTCOMES } from "../domain/activity";
 const text = z.string().min(1);
 /** Registered paths are stored absolute, so comparing two of them never depends on rigd's working directory. */
 const absolutePath = text.refine(isAbsolute, {
@@ -314,18 +315,11 @@ const operation = z.object({
   project: text.optional(),
   target: text.optional(),
   action: text,
-  outcome: z.enum([
-    "started",
-    "stopped",
-    "deployed",
-    "failed",
-    "unchanged",
-    "registered",
-    "renamed",
-    "repointed",
-    "installed",
-    "uninstalled",
-  ]),
+  // `forgotten` joined this list without a STATE_VERSION bump (see there). A rigd from before it refuses the state as
+  // STATE_CORRUPT once a `rig forget` is recorded, until rigd is upgraded again or the entry is deleted by hand.
+  outcome: z
+    .enum(OPERATION_OUTCOMES)
+    .describe("How the Operation ended, as rig activity shows it."),
   occurredAt: text,
   message: z.string().optional(),
 });
@@ -404,11 +398,14 @@ const alerts = z
   .describe(
     "Operator alert state: what was alerted and when, so a daemon restart neither repeats nor forgets an alert.",
   );
-/** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
- * older rigd refuses the file instead of silently dropping what it does not know. A new optional top-level key, such
- * as `alerts`, needs no bump: an older rigd validates without it and writes it back unchanged. After such a downgrade and a
- * re-upgrade, `alerts` is as the newer rigd last left it; its next evaluation reconciles it with the Targets as they are then,
- * so an outage that ended meanwhile is told as recovered and one that began meanwhile starts its grace period then. */
+/** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an older rigd
+ * refuses the file instead of silently dropping what it does not know. Two kinds of change are not bumped.
+ * A new optional top-level key, such as `alerts`, needs no bump: an older rigd validates without it and writes it back
+ * unchanged. After such a downgrade and a re-upgrade, `alerts` is as the newer rigd last left it; its next evaluation
+ * reconciles it with the Targets as they are then, so an outage that ended meanwhile is told as recovered and one that
+ * began meanwhile starts its grace period then.
+ * A new value of an existing enum, such as an Activity outcome, needs none either: the file stays readable by an older
+ * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it. */
 export const STATE_VERSION = 4;
 export const runtimeStateSchema = z
   .object({

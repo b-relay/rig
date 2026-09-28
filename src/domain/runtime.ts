@@ -1,6 +1,7 @@
 import type { TargetPlan } from "../config/types";
 import type { HostRestart, HostSession } from "./host-session";
 import type { AlertState } from "./operator-alerts";
+import type { OperationOutcome } from "./activity";
 
 export interface ProjectRecord {
   id: string;
@@ -126,18 +127,7 @@ export interface OperationRecord {
   project?: string;
   target?: string;
   action: string;
-  outcome:
-    | "started"
-    | "stopped"
-    | "deployed"
-    | "failed"
-    | "unchanged"
-    | "registered"
-    | "renamed"
-    | "repointed"
-    | "forgotten"
-    | "installed"
-    | "uninstalled";
+  outcome: OperationOutcome;
   occurredAt: string;
   message?: string;
 }

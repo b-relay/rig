@@ -777,8 +777,8 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
     },
   });
 }
-/** A Working copy, Stable Target and Preview of that Project exactly as the rigd before #298 recorded them (paths and domain
- * replaced): no Service's plan has a stopTimeout. */
+/** A Working copy, Stable Target and Preview of that Project exactly as the rigd before #298 (issue #278, stop_timeout)
+ * recorded them, with paths and domain replaced: no Service's plan has a stopTimeout. */
 async function recordedBeforeStopTimeout(): Promise<RuntimeState> {
   return runtimeStateSchema.parse(
     JSON.parse(
@@ -812,7 +812,7 @@ async function configChecks(w: ReturnType<typeof world>) {
   return report.checks.filter((check) => check.name.endsWith("/config"));
 }
 
-test("after an upgrade, Targets recorded before stop_timeout existed show no config drift, and nothing is re-planned", async () => {
+test("after an upgrade, Targets recorded before stop_timeout existed show no config drift, and doctor, status and a same-Commit deploy leave their plans as recorded", async () => {
   const w = await upgraded(designConfig());
   expect(
     w.recorded.targets.flatMap((target) =>

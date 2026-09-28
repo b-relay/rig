@@ -1351,6 +1351,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           target.destructionPending
         )
           return { outcome: "skipped" as const };
+        // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the
+        // Target, as a supervision pass and an admitted command do; the monitor asks again and judges what is recorded then.
+        if (unrecorded.has(target.id)) {
+          await recordUnrecorded(target);
+          return { outcome: "deferred" as const };
+        }
         const project = state.projects.find((p) => p.id === target.projectId);
         if (project) entry.view.project = project.name;
         return await restartForHealth(

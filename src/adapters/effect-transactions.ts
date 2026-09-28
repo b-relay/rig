@@ -106,6 +106,16 @@ const journalSchema = z
   })
   .loose();
 type Journal = z.infer<typeof journalSchema>;
+/** Just enough of any journal, of any version, to know which Target it holds paths for and which paths. */
+const unfinishedSchema = z
+  .object({
+    targetId: z.string(),
+    project: z.string().optional(),
+    target: z.string().optional(),
+    phase: z.unknown(),
+    files: z.array(z.object({ path: z.string() }).loose()),
+  })
+  .loose();
 const versionSchema = z.object({ version: z.number().optional() }).loose();
 const CHECKPOINTS = "effect-checkpoints";
 /** A pending journal whose recorded state still equals its captured state has nothing to undo. */
@@ -165,51 +175,84 @@ export function createEffectTransactions(options: {
     return seeded;
   };
   const seedClaims = async (): Promise<void> => {
-    for (const journal of await recoverableJournals())
-      for (const { path } of journal.files)
-        if (!claims.has(path) && !(await ownedByAnother(path, journal)))
-          claims.set(path, claimOwner(journal));
+    for (const journal of await unfinishedJournals())
+      for (const path of journal.paths)
+        if (!claims.has(path) && !(await heldElsewhere(path, journal.owner)))
+          claims.set(path, journal.owner);
   };
-  /** The pending journals under effect-checkpoints/ that recovery could act on. One that cannot be read, sits under another
-   * Target's directory, or fails the layout check is left out: recovery refuses it before touching any path it lists. */
-  const recoverableJournals = async (): Promise<Journal[]> => {
+  /** The owner and paths of every journal under effect-checkpoints/ that is not committed, read as loosely as the paths
+   * allow, so a journal this rigd would refuse to recover (a newer version, an invalid value, a bad layout) still keeps its
+   * paths until someone deals with it. A journal that is not JSON naming its Target and paths, or that sits under another
+   * Target's directory, cannot be recovered by anyone and is left out. Rejects EFFECTS_CHECKPOINT when a file cannot be
+   * read, so no path is handed out on a guess. */
+  const unfinishedJournals = async (): Promise<
+    { owner: ClaimOwner; paths: string[] }[]
+  > => {
     const root = join(options.root, CHECKPOINTS);
+    const unreadable = (path: string, error: unknown) =>
+      new RigError(
+        "EFFECTS_CHECKPOINT",
+        "The effect checkpoints could not be read; nothing was changed.",
+        `Rig reads ${path} before any change, to learn which executables an unfinished change still covers. Make it readable by you, then retry.`,
+        { path },
+        failureCauses(error),
+      );
     let names: string[];
     try {
       names = await readdir(root);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw new RigError(
-        "EFFECTS_CHECKPOINT",
-        "The effect checkpoints could not be read; nothing was changed.",
-        `Rig reads ${root} before any change, to learn which executables an unfinished change still covers. Make it a readable directory owned by you, then retry.`,
-        { path: root },
-        failureCauses(error),
-      );
+      throw unreadable(root, error);
     }
-    const journals: Journal[] = [];
+    const journals: { owner: ClaimOwner; paths: string[] }[] = [];
     for (const name of names) {
       const entry = classify(name);
       if (entry?.kind !== "directory") continue;
-      const journal = await readJournal(join(root, name, "journal.json")).catch(
-        () => undefined,
-      );
-      if (journal?.phase !== "pending" || hash(journal.targetId) !== entry.hash)
-        continue;
-      const valid = await preparation.validateLayout(journal.targetId).then(
-        () => true,
-        () => false,
-      );
-      if (valid) journals.push(journal);
+      const path = join(root, name, "journal.json");
+      let text: string;
+      try {
+        text = await readFile(path, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw unreadable(path, error);
+      }
+      const parsed = (() => {
+        try {
+          return unfinishedSchema.safeParse(JSON.parse(text));
+        } catch {
+          return undefined;
+        }
+      })();
+      if (!parsed?.success || parsed.data.phase === "committed") continue;
+      if (hash(parsed.data.targetId) !== entry.hash) continue;
+      journals.push({
+        owner: claimOwner(parsed.data),
+        paths: parsed.data.files.map((file) => file.path),
+      });
     }
     return journals;
   };
-  /** Whether an ownership record already gives executable `path` to a Target other than `journal`'s. Its recovery refuses
-   * to touch such a path, so claiming it would only stop that other Target from moving or removing its executable. */
-  const ownedByAnother = async (path: string, journal: Journal) => {
+  /** Whether executable `path` must not be claimed for `owner`: its ownership record names another Target, whose executable
+   * `owner`'s recovery would refuse to touch, or is invalid, so its owner is unknown. Claiming it would only stop that
+   * Target from moving or removing its executable; recovery claims the path itself when it runs. Rejects ARTIFACT_OWNER
+   * when the record cannot be read, so no path is handed out on a guess. */
+  const heldElsewhere = async (path: string, owner: ClaimOwner) => {
     if (resolve(dirname(path)) !== resolve(options.root, "bin")) return false;
-    const owner = await options.ownership.owner(path).catch(() => undefined);
-    return owner !== undefined && owner.targetId !== journal.targetId;
+    try {
+      const recorded = await options.ownership.owner(path);
+      return recorded !== undefined && recorded.targetId !== owner.targetId;
+    } catch (error) {
+      if (error instanceof RigError && error.code === "ARTIFACT_OWNER")
+        return true;
+      const record = options.ownership.ownerPath(path);
+      throw new RigError(
+        "ARTIFACT_OWNER",
+        `The ownership record of the executable ${path} could not be read; nothing was changed.`,
+        `Rig reads ${record} before any change, to learn whether an unfinished change still covers ${path}. Make it readable by you, then retry.`,
+        { path: record, destination: path },
+        failureCauses(error),
+      );
+    }
   };
   /** Claims `destinations` for `owner` in one step, or claims none and rejects ARTIFACT_CONFLICT naming the path and,
    * when known, the Project and Target whose change holds it. */
@@ -413,6 +456,42 @@ export function createEffectTransactions(options: {
         "The Target effects have already been committed.",
         "Inspect current Target state before changing effects.",
       );
+    // Recovery holds every path it may write from its checks to its writes, so no other Target installs there in between;
+    // a refusal hands back what it took, so the Target that owns a path can still move or remove its executable.
+    const paths = journal.files.map((file) => file.path);
+    const taken = paths.filter(
+      (path) => claims.get(path)?.targetId !== journal.targetId,
+    );
+    claim(claimOwner(journal), paths);
+    try {
+      await assertRecoverable(journal);
+    } catch (error) {
+      for (const path of taken) claims.delete(path);
+      throw error;
+    }
+    for (const file of journal.files) {
+      if (file.before === null) await rm(file.path, { force: true });
+      else
+        await atomicFile(
+          file.path,
+          await readFile(join(directory(journal.targetId), file.backup)),
+          file.mode,
+        );
+      file.expected = file.before;
+      delete file.applying;
+      await save(journal);
+    }
+    await options.router.restore(journal.route.before, journal.route.expected);
+    journal.route.expected = journal.route.before;
+    delete journal.route.applying;
+    await save(journal);
+    await removeCheckpoint(journal.targetId, { allowMissingDirectory: false });
+    active.delete(journal.targetId);
+  };
+  /** Rejects, changing no file, when `journal` cannot be rolled back as saved: a path outside what checkpoints own, a
+   * backup that changed, an executable another Target has since installed, a file or route changed after the journal
+   * captured it. A route change begun but not captured takes the current route as its own work. */
+  const assertRecoverable = async (journal: Journal) => {
     for (const file of journal.files) {
       const allowed = [
         join(options.root, "bin"),
@@ -465,24 +544,6 @@ export function createEffectTransactions(options: {
         "The route changed after its checkpoint.",
         "Inspect the current route before recovery.",
       );
-    for (const file of journal.files) {
-      if (file.before === null) await rm(file.path, { force: true });
-      else
-        await atomicFile(
-          file.path,
-          await readFile(join(directory(journal.targetId), file.backup)),
-          file.mode,
-        );
-      file.expected = file.before;
-      delete file.applying;
-      await save(journal);
-    }
-    await options.router.restore(journal.route.before, journal.route.expected);
-    journal.route.expected = journal.route.before;
-    delete journal.route.applying;
-    await save(journal);
-    await removeCheckpoint(journal.targetId, { allowMissingDirectory: false });
-    active.delete(journal.targetId);
   };
   return {
     pruneCheckpoints,

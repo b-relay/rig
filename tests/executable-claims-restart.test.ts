@@ -94,7 +94,12 @@ function installer(stall?: () => void): ArtifactInstaller {
 
 /** One rigd's Target effects over `root`. A second call over the same root is the daemon after a restart: nothing in memory
  * survives. */
-function effects(root: string, stall?: () => void) {
+function effects(
+  root: string,
+  stall?: () => void,
+  /** Awaited before the route checkpoint of each Target, so a test can hold an operation between its checks and writes. */
+  routeCheck: (key: string) => Promise<void> = async () => {},
+) {
   return createTargetEffects({
     ...localActivation(),
     root,
@@ -110,6 +115,7 @@ function effects(root: string, stall?: () => void) {
         return [];
       },
       async checkpoint(key) {
+        await routeCheck(key);
         return { key, value: null };
       },
       async restore() {},
@@ -117,8 +123,28 @@ function effects(root: string, stall?: () => void) {
     environment: { PATH: process.env.PATH! },
   });
 }
-const daemon = (root: string, stall?: () => void) =>
-  createTargetLifecycle(effects(root, stall));
+const daemon = (
+  root: string,
+  stall?: () => void,
+  routeCheck?: (key: string) => Promise<void>,
+) => createTargetLifecycle(effects(root, stall, routeCheck));
+/** Rewrites Target `id`'s journal under `root` through `edit`, as another rigd version or a damaged file would leave it. */
+async function editJournal(
+  root: string,
+  id: string,
+  edit: (journal: Record<string, unknown>) => Record<string, unknown>,
+) {
+  const path = join(
+    root,
+    "effect-checkpoints",
+    createHash("sha256").update(id).digest("hex"),
+    "journal.json",
+  );
+  await writeFile(
+    path,
+    JSON.stringify(edit(JSON.parse(await readFile(path, "utf8")))),
+  );
+}
 
 /** Target `a` begins publishing `<RIG_ROOT>/bin/tool` for the first time, and rigd dies before the write is captured. */
 async function crashWhileInstalling(root: string, a: TargetRecord) {
@@ -229,4 +255,87 @@ test("a crashed checkpoint of a Target no longer in state does not hold the path
   ]);
   expect(await restarted.up(f.b)).toEqual({ outcome: "started" });
   expect(await f.owner(f.executable)).toMatchObject({ targetId: f.b.id });
+});
+
+test("while a crashed Target's recovery runs, another Target cannot install at a path it is about to undo, even one that Target owned at the restart", async () => {
+  const f = await fixture();
+  await crashWhileInstalling(f.root, f.a);
+  // B owns the path when the daemon restarts, so it is not claimed for A, and B frees it through its own change.
+  expect(await effects(f.root).install(tool, f.b)).toEqual({
+    outcome: "installed",
+  });
+  let reached!: () => void;
+  const atRouteCheck = new Promise<void>((resolve) => (reached = resolve));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const restarted = daemon(f.root, undefined, async (key) => {
+    if (key !== f.a.id) return;
+    reached();
+    await held;
+  });
+  await restarted.retire(f.b);
+  // A's recovery has checked that nothing of B is left at the path and is about to remove its own half-written work.
+  const recovering = restarted.restoreEffects(f.a);
+  await atRouteCheck;
+  await expect(restarted.up(f.b)).rejects.toMatchObject({
+    code: "ARTIFACT_CONFLICT",
+    details: { destination: f.executable, owner: { targetId: f.a.id } },
+  });
+  release();
+  await recovering;
+  expect(await restarted.up(f.b)).toEqual({ outcome: "started" });
+  expect(await readFile(f.executable, "utf8")).toBe("#!/bin/sh\necho b\n");
+  expect(await f.owner(f.executable)).toMatchObject({ targetId: f.b.id });
+});
+
+test.each([
+  {
+    shape: "a newer format version",
+    edit: (journal: Record<string, unknown>) => ({ ...journal, version: 2 }),
+  },
+  {
+    shape: "an invalid value",
+    edit: (journal: Record<string, unknown>) => ({
+      ...journal,
+      phase: "later",
+    }),
+  },
+])(
+  "a crashed Target's journal with $shape, which this rigd refuses to recover, still keeps its paths after a restart",
+  async ({ edit }) => {
+    const f = await fixture();
+    await crashWhileInstalling(f.root, f.a);
+    await editJournal(f.root, f.a.id, edit);
+    const restarted = daemon(f.root);
+    await expect(restarted.up(f.b)).rejects.toMatchObject({
+      code: "ARTIFACT_CONFLICT",
+      details: { destination: f.executable, owner: { targetId: f.a.id } },
+    });
+    expect(await Bun.file(f.executable).exists()).toBe(false);
+  },
+);
+
+test("an ownership record that cannot be read when claims are rebuilt fails the change instead of guessing, and a later change rebuilds them", async () => {
+  const f = await fixture();
+  await crashWhileInstalling(f.root, f.a);
+  expect(await effects(f.root).install(tool, f.b)).toEqual({
+    outcome: "installed",
+  });
+  const record = createArtifactOwnership(f.root).ownerPath(f.executable);
+  await chmod(record, 0o000);
+  const restarted = daemon(f.root);
+  const refused = await restarted.retire(f.b).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await chmod(record, 0o600);
+  expect(refused).toMatchObject({
+    code: "ARTIFACT_OWNER",
+    details: { path: record },
+  });
+  // Nothing was claimed on a guess: B, which owns the path, can still remove its executable.
+  await restarted.retire(f.b);
+  expect(await Bun.file(f.executable).exists()).toBe(false);
+  await restarted.restoreEffects(f.a);
+  expect(await readdir(join(f.root, "effect-checkpoints"))).toEqual([]);
 });

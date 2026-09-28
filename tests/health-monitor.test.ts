@@ -97,6 +97,10 @@ function fixture(
   let lockWait = 0;
   /** An observation that answers with this process whatever runs: a stale snapshot. */
   let staleProcess: string | undefined;
+  /** Observations that name no process, as leases from before incarnations did. */
+  let anonymous = false;
+  /** Whether the process is running, as observed. */
+  let processState: "running" | "stopped" = "running";
   const dependencies: HealthMonitorDependencies = {
     store: {
       async read() {
@@ -108,12 +112,17 @@ function fixture(
     },
     observations: {
       async process(_target, component) {
+        if (processState === "stopped") return { state: "stopped" };
         return {
           state: "running",
           pid: 42,
-          incarnation:
-            staleProcess ??
-            `${component.name}-${incarnations.get(component.name)}`,
+          ...(anonymous
+            ? {}
+            : {
+                incarnation:
+                  staleProcess ??
+                  `${component.name}-${incarnations.get(component.name)}`,
+              }),
         };
       },
       async health(_target, component) {
@@ -195,6 +204,12 @@ function fixture(
     },
     set staleProcess(value: string | undefined) {
       staleProcess = value;
+    },
+    set anonymous(value: boolean) {
+      anonymous = value;
+    },
+    set processState(value: "running" | "stopped") {
+      processState = value;
     },
     /** An operator's explicit restart: a new process, with a record that carries no unhealthy stretch. */
     replace(service: string) {
@@ -615,4 +630,44 @@ test("the back-off counts from when a restart was attempted, after it waited for
   f.lockWait = 300 * SECOND;
   await f.runUntil(400 * SECOND);
   expect(f.restarts.map((restart) => restart.at / SECOND)).toEqual([6, 366]);
+});
+
+test("with observations that name no process, the run record says which process a check asked", async () => {
+  const f = fixture({ interval: 5, failures: 1 });
+  f.anonymous = true;
+  let answer!: (passed: boolean) => void;
+  f.answer = () => new Promise<boolean>((resolve) => (answer = resolve));
+  await f.runUntil(6 * SECOND);
+  expect(f.checks).toHaveLength(1);
+  f.replace("web");
+  answer(false);
+  await f.monitor.idle();
+  expect(f.monitor.results({ id: "t1" }, "web")).not.toMatchObject({
+    status: "unhealthy",
+  });
+  expect(f.activity()).toEqual([]);
+});
+
+test("an answer from a process that ended during the check is dropped, and its recorded stretch stays", async () => {
+  // A long timeout, so the check is still out when the process ends.
+  const f = fixture({
+    interval: 5,
+    timeout: 60,
+    failures: 1,
+    onFailure: "restart",
+  });
+  f.answer = () => false;
+  await f.runUntil(6 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  const stretch = f.state.targets[0]!.services!.web!.healthRestarts;
+  expect(stretch).toBeDefined();
+  let answer!: (passed: boolean) => void;
+  f.answer = () => new Promise<boolean>((resolve) => (answer = resolve));
+  await f.runUntil(20 * SECOND);
+  // The new process ends while its check is out; supervision has not recorded it yet. The late pass says nothing.
+  f.processState = "stopped";
+  answer(true);
+  await f.monitor.idle();
+  expect(f.activity()).not.toContain("web passes its health check again.");
+  expect(f.state.targets[0]!.services!.web!.healthRestarts).toEqual(stretch);
 });

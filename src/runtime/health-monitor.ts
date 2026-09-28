@@ -283,6 +283,34 @@ export function createHealthMonitor(
       : base;
   }
 
+  /** The process a Service runs now, as the run record names it (every start records its incarnation before it spawns),
+   * confirmed running by an observation. Undefined when it is not running, cannot be observed in time, or the observation
+   * names another process, as while a start or stop is between its record and its effect. */
+  async function runningProcess(
+    target: TargetRecord,
+    component: ManagedComponent,
+    timeoutMs: number,
+  ): Promise<{ identity: string | undefined } | "stopped" | undefined> {
+    const saved = (await deps.store.read()).targets.find(
+      (t) => t.id === target.id,
+    );
+    const recorded = saved && currentRun(saved, component.name)?.incarnation;
+    const observed = await withinTimeout(
+      (signal) => deps.observations.process(target, component, signal),
+      timeoutMs,
+    );
+    if (observed === undefined || "ready" in observed) return undefined;
+    if (observed.state !== "running") return "stopped";
+    if (
+      recorded !== undefined &&
+      observed.incarnation !== undefined &&
+      observed.incarnation !== recorded
+    )
+      return undefined;
+    // A record from before incarnations were kept leaves the observation to say which process it is.
+    return { identity: recorded ?? observed.incarnation };
+  }
+
   /** One Service's turn: find its process, check it once it may be checked, record what changed, and return the restart or
    * give-up the result calls for. */
   async function check(
@@ -294,25 +322,20 @@ export function createHealthMonitor(
     const state = states.get(key) ?? NEW_HEALTH;
     // The Target may have become busy while this waited for a slot: nothing is checked while it starts or stops.
     if (paused(target, key)) return undefined;
-    const observed = await withinTimeout(
-      (signal) => deps.observations.process(target, component, signal),
-      policy.timeoutMs,
-    );
-    if (observed === undefined || "ready" in observed) return undefined;
-    if (observed.state !== "running") {
+    const before = await runningProcess(target, component, policy.timeoutMs);
+    if (before === undefined) return undefined;
+    if (before === "stopped") {
       // Not running: starting it again is automatic restart's work. The stretch goes on until a check passes.
       const { eligibleSince: _gone, incarnation: _was, ...rest } = state;
       states.set(key, { ...rest, failures: 0 });
       return undefined;
     }
-    if (
-      state.eligibleSince === undefined ||
-      observed.incarnation !== state.incarnation
-    ) {
+    const { identity } = before;
+    if (state.eligibleSince === undefined || identity !== state.incarnation) {
       // A process first seen with its Target free: its start check has passed. Its checks begin an interval from now. A
       // new process continues the stretch only when its record says so: an explicit start ends it.
       let base = state;
-      if (observed.incarnation !== state.incarnation) {
+      if (identity !== state.incarnation) {
         const saved = (await deps.store.read()).targets.find(
           (t) => t.id === target.id,
         );
@@ -320,9 +343,7 @@ export function createHealthMonitor(
       }
       states.set(key, {
         ...base,
-        ...(observed.incarnation !== undefined
-          ? { incarnation: observed.incarnation }
-          : {}),
+        ...(identity !== undefined ? { incarnation: identity } : {}),
         eligibleSince: deps.now(),
       });
       return undefined;
@@ -334,16 +355,15 @@ export function createHealthMonitor(
         deps.observations.health(target, component, signal, policy.timeoutMs),
       policy.timeoutMs,
     );
-    // An Operation that began meanwhile may have stopped the process the check asked, or already replaced it; its answer
-    // then says nothing about what runs now.
-    // Every start is recorded before it spawns, so the record says whether the process is still the one asked.
-    const saved = (await deps.store.read()).targets.find(
-      (t) => t.id === target.id,
-    );
-    const now = saved && currentRun(saved, component.name)?.incarnation;
+    // The answer speaks only for the process it asked: one an Operation began to stop or replace meanwhile, or that ended
+    // on its own before supervision recorded it, is not what runs now.
+    if (paused(target, key)) return undefined;
+    const after = await runningProcess(target, component, policy.timeoutMs);
     if (
-      paused(target, key) ||
-      (observed.incarnation !== undefined && now !== observed.incarnation)
+      after === undefined ||
+      after === "stopped" ||
+      after.identity !== identity ||
+      paused(target, key)
     )
       return undefined;
     const at = deps.now();
@@ -380,7 +400,7 @@ export function createHealthMonitor(
         outcome: "unchanged",
         message: `${component.name} passes its health check again.`,
       });
-      await forgetStretch(target, component.name, state.incarnation);
+      await forgetStretch(target, component.name, identity);
     }
     const action = healthAction(checked.state, policy, at);
     return isDue(action) ? action : undefined;
@@ -459,8 +479,8 @@ export function createHealthMonitor(
     }
   }
 
-  /** That Rig gave up, recorded with the whole stretch on the running process's record (the one judged, or whatever the
-   * record names when this rigd has not seen it yet), so a new rigd neither restarts it again nor says so twice. */
+  /** That Rig gave up, recorded with the whole stretch on the running process's record, so a new rigd neither restarts it
+   * again nor says so twice. */
   async function rememberGaveUp(
     target: TargetRecord,
     service: string,
@@ -472,10 +492,13 @@ export function createHealthMonitor(
     await deps.store.update((state) => {
       const saved = state.targets.find((t) => t.id === target.id);
       const run = saved && currentRun(saved, service);
+      // Only onto the run that owns the stretch: the one judged, or, before this rigd judged one, the run whose record
+      // carries the stretch. An explicit start's run carries none.
       if (
         run &&
-        (judged.incarnation === undefined ||
-          run.incarnation === judged.incarnation)
+        (judged.incarnation !== undefined
+          ? run.incarnation === judged.incarnation
+          : run.healthRestarts?.since === episode.since)
       )
         run.healthRestarts = {
           since: episode.since,

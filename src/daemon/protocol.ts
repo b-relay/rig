@@ -143,6 +143,37 @@ export const activityResultSchema = z
     operation: z.string().optional(),
   })
   .passthrough();
+const operationViewSchema = z
+  .object({
+    operationId: z.string(),
+    action: z.string(),
+    project: z.string().optional(),
+    target: z.string().optional(),
+    phase: z.string(),
+    startedAt: z.string(),
+  })
+  .passthrough();
+/** The part of the `queue` read a waiting command renders: where its own Operation stands. */
+export const queueResultSchema = z
+  .object({
+    operation: z
+      .discriminatedUnion("state", [
+        z
+          .object({ state: z.literal("running"), phase: z.string() })
+          .passthrough(),
+        z
+          .object({
+            state: z.literal("waiting"),
+            waitingOn: z.array(operationViewSchema),
+            ahead: z.number().int().nonnegative(),
+          })
+          .passthrough(),
+        z.object({ state: z.literal("unknown") }).passthrough(),
+      ])
+      .optional(),
+  })
+  .passthrough();
+export type QueueResult = z.infer<typeof queueResultSchema>;
 export type ListResult = z.infer<typeof listResultSchema>;
 export type LogsResult = z.infer<typeof logsResultSchema>;
 export type ActivityResult = z.infer<typeof activityResultSchema>;

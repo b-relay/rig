@@ -864,6 +864,25 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
   let text = "";
   const asked: string[] = [];
   let finish!: (value: unknown) => void;
+  const stopping = {
+    operationId: "slow-down",
+    action: "down",
+    project: "beta",
+    target: "live",
+    phase: "stopping",
+    startedAt: "2026-09-14T10:00:00.000Z",
+  };
+  // What rigd says about this command on each poll: behind a stop (twice), then behind a start, then running.
+  const positions = [
+    { state: "waiting", waitingOn: [stopping], ahead: 1 },
+    { state: "waiting", waitingOn: [stopping], ahead: 1 },
+    {
+      state: "waiting",
+      waitingOn: [{ ...stopping, operationId: "next-up", phase: "starting" }],
+      ahead: 0,
+    },
+    { state: "running", phase: "starting" },
+  ];
   const dependencies = {
     root: "/isolated/.rig",
     cwd: "/workspace",
@@ -871,19 +890,12 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
       async status(): Promise<ProjectStatusReport> {
         throw new Error("Unexpected status read");
       },
-      async command(request: { action: string }) {
+      async command(request: { action: string; operation?: string }) {
         asked.push(request.action);
-        if (request.action === "queue")
-          return {
-            running: {
-              operationId: "slow-up",
-              action: "up",
-              project: "alpha",
-              target: "live",
-              startedAt: "2026-09-14T10:00:00.000Z",
-            },
-            waiting: 2,
-          };
+        if (request.action === "queue") {
+          expect(request.operation).toBe("mine");
+          return { waiting: 2, operations: [], operation: positions.shift() };
+        }
         return await new Promise((resolve) => (finish = resolve));
       },
     },
@@ -906,11 +918,20 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
     newOperationId: () => "mine",
   };
   const run = runRigCli(["up", "live", "--project", "beta"], dependencies);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(asked).toEqual(["up", "queue"]);
-  expect(text).toContain("slow-up");
-  expect(text).toContain("alpha live up");
-  expect(text).toContain("1 more");
+  // Polls until rigd has nothing more to say, however slowly the machine runs.
+  for (
+    const deadline = Date.now() + 5000;
+    asked.length < 6 && Date.now() < deadline;
+  )
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // Polling goes on while the command runs, and stops once rigd has nothing to say about it.
+  expect(asked).toEqual(["up", "queue", "queue", "queue", "queue", "queue"]);
+  // One plain appended line per change of what it waits for; no cursor movement.
+  expect(text).toBe(
+    "Waiting: beta live is stopping (operation slow-down, started 2026-09-14T10:00:00.000Z); 1 more ahead of this command.\n" +
+      "Waiting: beta live is starting (operation next-up, started 2026-09-14T10:00:00.000Z).\n",
+  );
   finish({
     project: "beta",
     target: "live",

@@ -1029,7 +1029,7 @@ test("a deploy still moving a Stable Target decides nothing; one whose rollback 
   });
   for (const offset of [0, ALERT_GRACE_MS, 2 * ALERT_GRACE_MS]) {
     rig.at(offset);
-    await rig.evaluate({ mutation: deploying });
+    await rig.evaluate({ mutations: () => [deploying()] });
   }
   expect(rig.channel.sent).toEqual([]);
 
@@ -1105,10 +1105,10 @@ test("an operation working on a Stable Target decides nothing: a restart is neit
     target: "live",
   });
   rig.at(ALERT_GRACE_MS + MINUTE);
-  await rig.evaluate({ mutation: restarting });
+  await rig.evaluate({ mutations: () => [restarting()] });
   // Selected by the Project's directory rather than its name, the same restart holds the Target just the same.
   await rig.evaluate({
-    mutation: () => ({ operationId: "restart-1", repoPath: "/repos/pantry" }),
+    mutations: () => [{ operationId: "restart-1", repoPath: "/repos/pantry" }],
   });
   expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
 
@@ -1133,7 +1133,7 @@ test("an operation on another Project or on a Preview does not hold back a Stabl
     { operationId: "deploy-3", project: "pantry", target: "preview" },
   ]) {
     rig.at(ALERT_GRACE_MS);
-    await rig.evaluate({ mutation: () => mutation });
+    await rig.evaluate({ mutations: () => [mutation] });
   }
   expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(["down"]);
 });
@@ -1185,11 +1185,43 @@ test("a Target command that names no Target works on the Working copy and does n
     await rig.evaluate();
     // The Working copy's build outlasts the grace period.
     rig.at(ALERT_GRACE_MS);
-    await rig.evaluate({ mutation: () => mutation });
+    await rig.evaluate({ mutations: () => [mutation] });
     expect(rig.channel.sent.map((alert) => alert.kind)).toEqual(
       alerted ? ["down"] : [],
     );
   }
+});
+
+test("operations running at once each hold back what they may change: a Working copy's up leaves one Project's Stable Target judged while another Project's restart holds its own back", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  const design = await rig.addTarget("design", "live", "live");
+  await rig.crash(pantry, "web");
+  await rig.crash(design, "web");
+  const inFlight = () => [
+    {
+      operationId: "up-1",
+      action: "up",
+      project: "pantry",
+      target: "dev",
+      kind: "local" as const,
+    },
+    {
+      operationId: "restart-2",
+      action: "restart",
+      project: "design",
+      target: "live",
+      kind: "live" as const,
+    },
+  ];
+  await rig.evaluate({ mutations: inFlight });
+  rig.at(ALERT_GRACE_MS);
+  await rig.evaluate({ mutations: inFlight });
+  expect(rig.channel.sent).toHaveLength(1);
+  expect(rig.channel.sent[0]!.kind).toBe("down");
+  expect(rig.channel.sent[0]!.targets.map((target) => target.project)).toEqual([
+    "pantry",
+  ]);
 });
 
 test("a down period an operation is working on sends no first alert, even past the grace period", async () => {
@@ -1213,7 +1245,7 @@ test("a down period an operation is working on sends no first alert, even past t
   });
   for (const offset of [MINUTE, ALERT_GRACE_MS, ALERT_GRACE_MS + MINUTE]) {
     rig.at(offset);
-    await rig.evaluate({ mutation: deploying });
+    await rig.evaluate({ mutations: () => [deploying()] });
   }
   expect(rig.channel.sent).toEqual([]);
   await rig.change(pantry, (saved) => {

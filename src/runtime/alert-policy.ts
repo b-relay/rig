@@ -67,13 +67,14 @@ const TARGET_ACTIONS: ReadonlySet<string> = new Set([
   "destroy",
 ]);
 
-/** The ids of the recorded Stable Targets `mutation` may be changing now. It names its Project by name or directory; one it
- * names by a directory no Project is registered at, or not at all, may be any. Once rigd has selected the kind of Target
- * the mutation works on, that decides: the Stable Target, or none. Before that, a mutation of a Preview changes no Stable
+/** The ids of the recorded Stable Targets any of `mutations`, the operations in flight at once, may be changing now: the
+ * union of what each one may change. Each names its Project by name or directory; one it names by a directory no Project
+ * is registered at, or not at all, may be any. Once rigd has selected the kind of Target a mutation works on, that
+ * decides: the Stable Target, or none. Before that, a mutation of a Preview changes no Stable
  * Target, nor does a Target action that names no Target, which selects the Working copy; any other mutation without a
  * Target may change every Target of its Project. A deploy's own transition is always its own. */
 export function engagedTargets(
-  mutation: MutationInFlight | undefined,
+  mutations: readonly MutationInFlight[],
   state: {
     projects: readonly Pick<ProjectRecord, "id" | "name" | "repoPath">[];
     targets: readonly Pick<
@@ -83,35 +84,36 @@ export function engagedTargets(
   },
 ): Set<string> {
   const engaged = new Set<string>();
-  if (!mutation) return engaged;
-  const named = mutation.project
-    ? state.projects.filter((project) => project.name === mutation.project)
-    : mutation.repoPath
-      ? state.projects.filter(
-          (project) => project.repoPath === mutation.repoPath,
-        )
-      : [];
-  const projects = named.length
-    ? new Set(named.map((project) => project.id))
-    : undefined;
-  for (const target of state.targets) {
-    if (target.recovery?.operationId === mutation.operationId)
-      engaged.add(target.id);
-    if (target.kind !== "live") continue;
-    if (projects && !projects.has(target.projectId)) continue;
-    if (mutation.kind !== undefined) {
-      if (mutation.kind === "live") engaged.add(target.id);
-      continue;
+  for (const mutation of mutations) {
+    const named = mutation.project
+      ? state.projects.filter((project) => project.name === mutation.project)
+      : mutation.repoPath
+        ? state.projects.filter(
+            (project) => project.repoPath === mutation.repoPath,
+          )
+        : [];
+    const projects = named.length
+      ? new Set(named.map((project) => project.id))
+      : undefined;
+    for (const target of state.targets) {
+      if (target.recovery?.operationId === mutation.operationId)
+        engaged.add(target.id);
+      if (target.kind !== "live") continue;
+      if (projects && !projects.has(target.projectId)) continue;
+      if (mutation.kind !== undefined) {
+        if (mutation.kind === "live") engaged.add(target.id);
+        continue;
+      }
+      if (mutation.target === "preview") continue;
+      if (
+        mutation.target === undefined &&
+        mutation.action !== undefined &&
+        TARGET_ACTIONS.has(mutation.action)
+      )
+        continue;
+      if (mutation.target === undefined || mutation.target === target.name)
+        engaged.add(target.id);
     }
-    if (mutation.target === "preview") continue;
-    if (
-      mutation.target === undefined &&
-      mutation.action !== undefined &&
-      TARGET_ACTIONS.has(mutation.action)
-    )
-      continue;
-    if (mutation.target === undefined || mutation.target === target.name)
-      engaged.add(target.id);
   }
   return engaged;
 }

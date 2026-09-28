@@ -70,13 +70,14 @@ const targetReportSchema = z
         "unhealthy",
         "running",
         "starting",
+        "stopping",
         "stopped",
         "failed",
         "ready",
         "degraded",
       ])
       .describe(
-        "Aggregate Target state without replacing individual observations.",
+        "Aggregate Target state without replacing individual observations. `stopping` means an Operation is waiting for the Target's Services to exit right now.",
       ),
     branch: z.string().optional().describe("Recorded source Branch."),
     commit: z.string().optional().describe("Recorded source Commit."),

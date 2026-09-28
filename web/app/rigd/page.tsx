@@ -15,7 +15,13 @@ export default async function RigdPage() {
   ]);
   const settings = site();
   const queued = queue.ok ? (queue.value as QueueResult) : undefined;
-  const running = queued?.running;
+  // Operations on different Targets run side by side; rigd's own brief supervision passes are left out.
+  const running = (
+    queued?.operations ?? (queued?.running ? [queued.running] : [])
+  ).filter(
+    (operation) =>
+      operation.action !== "supervise" && operation.action !== "reconcile",
+  );
   return (
     <>
       <div>
@@ -50,29 +56,32 @@ export default async function RigdPage() {
       </Section>
       <Section title="Operation queue">
         {!queue.ok ? <Failure failure={queue.failure} /> : null}
-        {running ? (
+        {running.map((operation) => (
           <Facts
+            key={operation.operationId}
             items={[
               [
                 "Running",
-                [running.action, running.project, running.target]
+                [operation.action, operation.project, operation.target]
                   .filter(Boolean)
                   .join(" "),
               ],
-              ["Started", when(running.startedAt)],
+              ["Started", when(operation.startedAt)],
               [
                 "Operation",
                 <a
                   key="o"
-                  href={`/activity?operation=${encodeURIComponent(running.operationId)}`}
+                  href={`/activity?operation=${encodeURIComponent(operation.operationId)}`}
                   className="font-mono text-xs"
                 >
-                  {running.operationId}
+                  {operation.operationId}
                 </a>,
               ],
-              ["Waiting", queued?.waiting ?? 0],
             ]}
           />
+        ))}
+        {running.length ? (
+          <Empty>{queued?.waiting ?? 0} waiting.</Empty>
         ) : queued ? (
           <Empty>Nothing is running; {queued.waiting} waiting.</Empty>
         ) : null}

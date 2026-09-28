@@ -22,8 +22,21 @@ export function pulseStamp(readings: PulseReadings): Pulse {
     ? `${readings.health.value.instanceId}:${readings.health.value.pid}`
     : `down:${readings.health.failure.code}`;
   const running = readings.queue.ok ? readings.queue.value.running : undefined;
+  // Several Operations run at once on different Targets; each one starting, finishing or changing phase (a Target
+  // beginning to stop) is news. rigd's own brief supervision passes are not.
+  const commands = readings.queue.ok
+    ? (readings.queue.value.operations ?? []).filter(
+        (operation) =>
+          operation.action !== "supervise" && operation.action !== "reconcile",
+      )
+    : [];
   const queue = readings.queue.ok
-    ? `${running?.operationId ?? "-"}:${readings.queue.value.waiting}`
+    ? `${
+        commands
+          .map((operation) => `${operation.operationId}/${operation.phase}`)
+          .join(",") ||
+        (running?.operationId ?? "-")
+      }:${readings.queue.value.waiting}`
     : "?";
   const operations = readings.activity.ok
     ? readings.activity.value.operations
@@ -38,6 +51,6 @@ export function pulseStamp(readings: PulseReadings): Pulse {
     : "?";
   return {
     stamp: `${daemon}|${queue}|${activity}`,
-    busy: running !== undefined,
+    busy: running !== undefined || commands.length > 0,
   };
 }

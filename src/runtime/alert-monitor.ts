@@ -47,8 +47,9 @@ export interface AlertMonitorDependencies {
   now(): string;
   id(): string;
   diagnostic: RuntimeDependencies["diagnostic"];
-  /** The mutation rigd is executing now, if any; a Stable Target it may be changing is not judged. None when absent. */
-  mutation?(): MutationInFlight | undefined;
+  /** Every mutation rigd is executing or holding now; operations on different Targets run at once. A Stable Target any of
+   * them may be changing is not judged. None when absent. */
+  mutations?(): readonly MutationInFlight[];
 }
 
 type Activity = Pick<OperationRecord, "action" | "outcome" | "message">;
@@ -61,7 +62,7 @@ type Activity = Pick<OperationRecord, "action" | "outcome" | "message">;
 export async function evaluateOperatorAlerts(
   deps: AlertMonitorDependencies,
 ): Promise<void> {
-  const began = deps.mutation?.();
+  const began = deps.mutations?.() ?? [];
   const state = await deps.store.read();
   const now = deps.now();
   const before = state.alerts ?? NO_ALERTS;
@@ -118,7 +119,7 @@ export async function evaluateOperatorAlerts(
   });
 }
 
-/** The condition of every recorded Stable Target. A Target the mutation in flight when the evaluation began (`began`) or when
+/** The condition of every recorded Stable Target. A Target any mutation in flight when the evaluation began (`began`) or when
  * its observation ended may be changing is inconclusive: its record and processes may be caught between two steps, as a
  * restart's stop is before its start. Of the rest, only those meant to run and not left mid-deploy are observed, within the
  * observation budget; a readiness check that has not answered by half of it counts as failing, so a hung endpoint is down
@@ -126,7 +127,7 @@ export async function evaluateOperatorAlerts(
 async function observeStableTargets(
   state: RuntimeState,
   deps: AlertMonitorDependencies,
-  began: MutationInFlight | undefined,
+  began: readonly MutationInFlight[],
 ): Promise<StableTargetCondition[]> {
   const stable = state.targets.filter((target) => target.kind === "live");
   const engagedAtStart = engagedTargets(began, state);
@@ -150,7 +151,7 @@ async function observeStableTargets(
       ? routePublication(deps)
       : ("unknown" as const),
   ]);
-  const engagedAtEnd = engagedTargets(deps.mutation?.(), state);
+  const engagedAtEnd = engagedTargets(deps.mutations?.() ?? [], state);
   const changed = await changedMeanwhile(stable, deps);
   return stable.map((target) =>
     stableTargetCondition({

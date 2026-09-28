@@ -99,31 +99,48 @@ export function createArtifactOwnership(
       );
     return { owner: saved, revision: current };
   };
+  // The bin directory is shared by every Project; Targets run side by side, so one destination is published at a time and a
+  // second claimant sees the first one's ownership record instead of overwriting its executable.
+  const publishing = new Map<string, Promise<void>>();
+  const oneAtATime = (destination: string, change: () => Promise<void>) => {
+    const next = (publishing.get(destination) ?? Promise.resolve())
+      .catch(() => {})
+      .then(change);
+    publishing.set(destination, next);
+    void next
+      .finally(() => {
+        if (publishing.get(destination) === next)
+          publishing.delete(destination);
+      })
+      .catch(() => {});
+    return next;
+  };
   return {
     inspect,
     owner,
     ownerPath,
-    async publish(identity: ArtifactIdentity, write: () => Promise<void>) {
-      await inspect(identity);
-      await write();
-      const published = await digest(identity.destination);
-      if (!published)
-        throw new RigError(
-          "ARTIFACT_MISSING",
-          "The installer did not publish an executable.",
-          "Inspect the Component installation.",
+    publish: (identity: ArtifactIdentity, write: () => Promise<void>) =>
+      oneAtATime(identity.destination, async () => {
+        await inspect(identity);
+        await write();
+        const published = await digest(identity.destination);
+        if (!published)
+          throw new RigError(
+            "ARTIFACT_MISSING",
+            "The installer did not publish an executable.",
+            "Inspect the Component installation.",
+          );
+        await atomicFile(
+          ownerPath(identity.destination),
+          JSON.stringify({
+            targetId: identity.targetId,
+            componentName: identity.componentName,
+            ...(identity.project ? { project: identity.project } : {}),
+            ...(identity.target ? { target: identity.target } : {}),
+            revision: published,
+          }),
         );
-      await atomicFile(
-        ownerPath(identity.destination),
-        JSON.stringify({
-          targetId: identity.targetId,
-          componentName: identity.componentName,
-          ...(identity.project ? { project: identity.project } : {}),
-          ...(identity.target ? { target: identity.target } : {}),
-          revision: published,
-        }),
-      );
-    },
+      }),
   };
 }
 export async function optionalFile(path: string): Promise<Buffer | undefined> {

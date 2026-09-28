@@ -154,6 +154,12 @@ export async function composeDaemon(
     observations: effects.observations,
     observationBudgetMs: OBSERVATION_BUDGET_MS,
     observationDeadline: timerObservationDeadline,
+    // A pass hands slow work (a restart waiting for readiness, a stop waiting for an exit) to its Target's lease and returns,
+    // so the next pass still reaches every other Target on time.
+    supervisionPassBudget: {
+      ms: OBSERVATION_BUDGET_MS,
+      deadline: timerObservationDeadline,
+    },
     files: createRuntimeFiles(),
     now: () => new Date().toISOString(),
     id: randomUUID,
@@ -204,7 +210,7 @@ export async function composeDaemon(
             now: () => new Date().toISOString(),
             id: randomUUID,
             diagnostic: recordingDiagnostic(diagnostic, notices),
-            mutation: runtime.mutation,
+            mutations: runtime.mutations,
           }),
       });
     },

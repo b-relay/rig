@@ -84,8 +84,8 @@ export interface ConfigEditorDependencies {
       input: ConfigEditInput,
     ): Promise<ProjectConfigPreview & { backupPath: string }>;
   };
-  /** Share the runtime mutation queue so Project rename/repoint cannot race an apply. */
-  exclusive<T>(operation: () => Promise<T>): Promise<T>;
+  /** Runs `operation` while no other mutation of the named Project runs, so a Project rename or repoint cannot race an apply. */
+  exclusive<T>(project: string, operation: () => Promise<T>): Promise<T>;
 }
 interface Field {
   path: string;
@@ -242,7 +242,7 @@ export function createConfigEditor(dependencies: ConfigEditorDependencies) {
       };
     };
     return request.action === "apply"
-      ? dependencies.exclusive(execute)
+      ? dependencies.exclusive(request.project, execute)
       : execute();
   };
 }

@@ -53,6 +53,8 @@ export async function projectStatus(
     documents: Pick<RuntimeDependencies["documents"], "read">;
     /** Whether the daemon is executing this operation right now. */
     inProgress(operationId: string): boolean;
+    /** Whether an Operation is waiting for this Target's Services to exit right now. */
+    stopping?(targetId: string): boolean;
   },
 ): Promise<ProjectStatusReport> {
   let configWarning: string | undefined;
@@ -109,6 +111,14 @@ export async function projectStatus(
         });
     }
   }
+  // A stop in progress is a phase of an Operation, not something observation can see.
+  for (const target of selected)
+    if (deps.stopping?.(target.id)) {
+      const report = reports.find(
+        (r) => r.kind === target.kind && r.name === target.name,
+      );
+      if (report) report.state = "stopping";
+    }
   for (const target of selected)
     if (transitionInProgress(target, deps.inProgress))
       warnings.push(

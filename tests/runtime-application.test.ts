@@ -3416,28 +3416,50 @@ test("the queue read names the mutation rigd is running and how many wait behind
     operationId: "later-down",
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  expect(await runtime.command({ action: "queue" })).toEqual({
-    running: {
-      operationId: "slow-up",
-      action: "up",
-      project: "demo",
-      startedAt: expect.any(String),
-    },
-    waiting: 1,
-  });
-  // The operator alert monitor sees the same mutation, with its action, so an up that names no Target reads as the
-  // Working copy's.
-  expect(runtime.mutation()).toEqual({
+  const running = {
     operationId: "slow-up",
     action: "up",
     project: "demo",
-    kind: "local",
+    target: "local",
+    phase: "starting",
+    startedAt: expect.any(String),
+  };
+  expect(await runtime.command({ action: "queue" })).toEqual({
+    running,
+    waiting: 1,
+    operations: [running],
   });
+  // The second command on the same Target names what it waits for.
+  expect(
+    await runtime.command({ action: "queue", operation: "later-down" }),
+  ).toMatchObject({
+    operation: { state: "waiting", waitingOn: [running], ahead: 0 },
+  });
+  expect(
+    await runtime.command({ action: "queue", operation: "slow-up" }),
+  ).toMatchObject({ operation: { state: "running", phase: "starting" } });
+  // The operator alert monitor sees both mutations, the waiting one too, each with its action and the Target kind it
+  // selected, so an up or down that names no Target reads as the Working copy's.
+  expect(runtime.mutations()).toEqual([
+    { operationId: "slow-up", action: "up", project: "demo", kind: "local" },
+    {
+      operationId: "later-down",
+      action: "down",
+      project: "demo",
+      kind: "local",
+    },
+  ]);
   release();
   await first;
   await second;
-  expect(await runtime.command({ action: "queue" })).toEqual({ waiting: 0 });
-  expect(runtime.mutation()).toBeUndefined();
+  expect(await runtime.command({ action: "queue" })).toEqual({
+    waiting: 0,
+    operations: [],
+  });
+  expect(
+    await runtime.command({ action: "queue", operation: "slow-up" }),
+  ).toMatchObject({ operation: { state: "unknown" } });
+  expect(runtime.mutations()).toEqual([]);
 });
 
 test("usage mistakes that never reached an Operation leave activity untouched; a refused attempt is recorded", async () => {
@@ -3713,12 +3735,14 @@ test("a push shows the operator alert monitor the Target its Branch selects: a P
       })
       .catch(() => {});
     while (!resolving) await new Promise((resolve) => setTimeout(resolve, 1));
-    expect(runtime.mutation()).toMatchObject({
-      operationId: `push-${branch}`,
-      action: "git-push",
-      target,
-      kind: target,
-    });
+    expect(runtime.mutations()).toMatchObject([
+      {
+        operationId: `push-${branch}`,
+        action: "git-push",
+        target,
+        kind: target,
+      },
+    ]);
     release();
     await push;
   }

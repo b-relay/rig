@@ -19,6 +19,7 @@ import type { TargetLogEntry } from "../providers/contracts";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
+import type { PortReservations } from "./host-reservations";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
@@ -142,6 +143,14 @@ export interface RuntimeDependencies {
   /** Schedules that budget's expiry; the timer in production, scripted in tests. */
   observationDeadline: ObservationDeadline;
   files: RuntimeFiles;
+  /** The running Operation's port claims. Present while an Operation plans, so ports it chose but has
+   * not recorded yet are never handed to an Operation running beside it; absent, planning sees only
+   * the recorded Targets. */
+  ports?: PortReservations;
+  /** How long a supervision pass waits for the Targets it is working on before it returns. The work
+   * carries on under each Target's own lease and a later pass reads its outcome, so one slow restart
+   * or stop never holds up the next pass. Absent, a pass waits for all of it. */
+  supervisionPassBudget?: { ms: number; deadline: ObservationDeadline };
   now(): string;
   id(): string;
   diagnostic(

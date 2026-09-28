@@ -6,7 +6,11 @@ import type {
 } from "../domain/project-status";
 import { stopRecordedTarget } from "./stop";
 import { doctor, hostDoctor } from "./doctor";
-import { forgetProject, updateRegistration } from "./registration";
+import {
+  assertRecordedStopped,
+  forgetProject,
+  updateRegistration,
+} from "./registration";
 import { recordActivity } from "../domain/activity";
 import { ConfigError } from "../config/errors";
 import type { MutationInFlight } from "./alert-policy";
@@ -62,6 +66,27 @@ import {
   releaseUnreferencedRevisions,
   stopForRecovery,
 } from "./deploy";
+import {
+  HOST_SCOPE,
+  configScope,
+  createOperationLocks,
+  isWithin,
+  projectScope,
+  projectTargetsScope,
+  registrationScope,
+  targetScope,
+  type Lease,
+  type LockScope,
+} from "./operation-locks";
+import { createHostReservations } from "./host-reservations";
+import { boundedObservations } from "./bounded-observations";
+import {
+  initialPhase,
+  type OperationPhase,
+  type OperationPosition,
+  type OperationView,
+  type QueueReport,
+} from "../domain/operation-progress";
 /**
  * Retire a Preview marked for destruction. `retire` leaves effects changed only
  * when it fails with RETIRE_COMMIT_PENDING or RETIRE_ROLLBACK; any other
@@ -98,32 +123,91 @@ export interface RigRuntime extends ProjectStatusReader {
   reconcile(): Promise<SupervisionPass>;
   /** A later pass: applies restart policy to the Targets meant to run. Never raises; failures go to the diagnostic log. */
   supervise(): Promise<SupervisionPass>;
-  exclusive<T>(operation: () => Promise<T>): Promise<T>;
+  /** Runs `operation`, a config edit, while no other config edit, `init`, `rename`, `repoint` or `forget` of the named
+   * Project runs. It does not wait for the Project's Target operations, which run beside it and plan from rig.yaml as it
+   * is once they are admitted. A name no Project is registered under is serialized with that name's registration instead. */
+  exclusive<T>(project: string, operation: () => Promise<T>): Promise<T>;
   drain(): Promise<void>;
-  /** The mutation executing now, as its command selected the Project and Target; absent while none is. */
-  mutation(): MutationInFlight | undefined;
+  /** Every mutation this daemon has accepted and not yet answered, running or waiting for its Target, as its command
+   * selected the Project and Target so far; empty while none is. Supervision passes and config edits are not listed. */
+  mutations(): MutationInFlight[];
 }
 const reads = readActions;
-/** What one serialized mutation looks like from outside while it runs. */
-interface RunningOperation {
-  operationId: string;
-  action: RuntimeCommand["action"];
-  project?: string;
-  target?: string;
-  startedAt: string;
+/** How many times an Operation selects again because what it selected changed while it waited. */
+const MAX_SELECTIONS = 3;
+/** What an Operation selected changed while it waited for its scopes; it selects again. */
+class Reselect extends Error {
+  constructor() {
+    super("The selection changed while the Operation waited.");
+    reselections.add(this);
+  }
 }
-/** One authority serializes mutations, while read-only requests probe the last committed inventory. */
+const reselections = new WeakSet<object>();
+/** Identity, not `instanceof`: a thrown value may be anything, even a Proxy whose prototype cannot be read. */
+function isReselect(error: unknown): boolean {
+  return typeof error === "object" && error !== null && reselections.has(error);
+}
+/** How one Operation takes the scopes it works on. Reads take none. */
+interface Admission {
+  /** Waits until this Operation holds `scopes`; `subject` names what it works on for waiting commands and status. */
+  admit(
+    scopes: readonly LockScope[],
+    subject: { project?: string; target?: string },
+  ): Promise<void>;
+  /** Whether the admitted scopes cover `scopes`. */
+  holds(scopes: readonly LockScope[]): boolean;
+  /** Names what the Operation is doing now; `target` is the recorded Target it does it to. */
+  phase(phase: OperationPhase, target?: Pick<TargetRecord, "id">): void;
+  /** The failure for a selection that changed while this Operation waited. */
+  moved(): Error;
+}
+/** For reads, which run beside everything and never wait. */
+const UNLOCKED: Admission = {
+  async admit() {},
+  holds: () => true,
+  phase() {},
+  moved: () => new Reselect(),
+};
+/** An Operation this daemon is running or holding, and the Target it works on when that is known. */
+interface Running {
+  view: OperationView;
+  targetId?: string;
+  /** What the operator alert monitor sees of a command's mutation; absent for supervision passes and config edits. */
+  mutation?: MutationInFlight;
+}
+/** rigd is the one authority over lifecycle state. Mutations of one Target run one at a time; other
+ * Targets and Projects run side by side and share Host resources through short critical sections.
+ * Read-only requests never wait. See docs/adr/0007-per-target-operation-queue.md. */
 export function createRuntime(deps: RuntimeDependencies): RigRuntime {
-  let queue: Promise<unknown> = Promise.resolve();
+  const locks = createOperationLocks();
+  const reservations = createHostReservations();
   let draining = false;
-  // The mutation executing now and how many are queued behind it: the answer to
-  // "what is holding the host" for a caller whose command has not returned.
-  let running: RunningOperation | undefined;
-  let mutating: MutationInFlight | undefined;
-  let waiting = 0;
+  let passes = 0;
+  /** Every Operation this daemon is running or holding, its own supervision work included. */
+  const operations = new Map<string, Running>();
+  /** Command executions still running, so a drain waits for them to answer. */
+  const executing = new Set<Promise<unknown>>();
+  /** Shows the alert monitor more of what `operationId`'s command selected; a read, which is not listed, is left alone. */
+  const selectedForAlerts = (
+    operationId: string,
+    selected: Partial<MutationInFlight>,
+  ) => {
+    const entry = operations.get(operationId);
+    if (entry?.mutation) entry.mutation = { ...entry.mutation, ...selected };
+  };
   /** Mutations this daemon is executing right now; a transition they own is in progress, not abandoned. */
   const inFlight = new Set<string>();
   const inProgress = (operationId: string) => inFlight.has(operationId);
+  const stopping = (targetId: string) =>
+    [...operations.values()].some(
+      (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
+    );
+  const drainingError = () =>
+    new RigError(
+      "DAEMON_DRAINING",
+      "rigd is preparing to stop.",
+      "Wait for administration to complete before retrying.",
+    );
   const status = async (
     selection: StatusSelection,
   ): Promise<ProjectStatusReport> => {
@@ -134,38 +218,147 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       project,
       state.targets.filter((target) => target.projectId === project.id),
       selection,
-      { ...deps, inProgress },
+      { ...deps, inProgress, stopping },
     );
+  };
+  /** The Operations running and waiting, and where `operationId` stands when one is named. */
+  const queueReport = (operationId?: string): QueueReport => {
+    const running = [...operations.values()]
+      .filter((entry) => !locks.position(entry.view.operationId))
+      .map((entry) => ({ ...entry.view }));
+    // Older readers show `running` as the one thing rigd is busy with; rigd's own brief supervision work is not that.
+    const command = running.find(
+      (view) => view.action !== "supervise" && view.action !== "reconcile",
+    );
+    return {
+      ...(command ? { running: command } : {}),
+      waiting: locks.waiting(),
+      operations: running,
+      ...(operationId ? { operation: positionOf(operationId) } : {}),
+    };
+  };
+  const positionOf = (operationId: string): OperationPosition => {
+    const entry = operations.get(operationId);
+    if (!entry) return { state: "unknown" };
+    const position = locks.position(operationId);
+    if (!position) return { state: "running", phase: entry.view.phase };
+    const view = (id: string) => {
+      const found = operations.get(id);
+      return found ? [{ ...found.view }] : [];
+    };
+    // Held behind nothing that runs, only behind earlier requests: the first of them is what it waits for.
+    const blocking = position.holders.length
+      ? position.holders
+      : position.queued.slice(0, 1);
+    return {
+      state: "waiting",
+      waitingOn: blocking.flatMap(view),
+      ahead:
+        position.queued.length -
+        (position.holders.length ? 0 : blocking.length),
+    };
+  };
+  /** One selection attempt's hold on its scopes; `release` ends it. The last attempt fails instead of selecting again. */
+  const admission = (
+    operationId: string,
+    final: boolean,
+  ): Admission & { release(): void } => {
+    let lease: Lease | undefined;
+    const entry = operations.get(operationId)!;
+    return {
+      async admit(scopes, subject) {
+        // One admission per selection: a second would hold two leases, and nothing could release the first.
+        if (lease)
+          throw new Error(`Operation ${operationId} was admitted twice.`);
+        if (subject.project) entry.view.project = subject.project;
+        if (subject.target) entry.view.target = subject.target;
+        lease = await locks.acquire(operationId, scopes);
+        if (draining) throw drainingError();
+      },
+      holds: (scopes) =>
+        scopes.every((scope) =>
+          lease?.scopes.some((held) => isWithin(scope, held)),
+        ),
+      phase(phase, target) {
+        entry.view.phase = phase;
+        if (target) entry.targetId = target.id;
+      },
+      moved: () =>
+        final
+          ? new RigError(
+              "OPERATION_CONTENDED",
+              "What this command selected kept changing while it waited for other operations.",
+              "Run rig status to see the current Targets, then run the command again.",
+            )
+          : new Reselect(),
+      release() {
+        lease?.release();
+        lease = undefined;
+        delete entry.targetId;
+        entry.view.phase = initialPhase(entry.view.action);
+      },
+    };
   };
   const execute = async (command: RuntimeCommand): Promise<unknown> => {
     const operationId = command.operationId ?? deps.id();
-    if (reads.has(command.action)) return run(command, operationId);
+    if (reads.has(command.action))
+      return run(command, operationId, UNLOCKED, deps);
+    // Operations now run side by side, so an id must name one of them at a time.
+    if (operations.has(operationId))
+      throw new RigError(
+        "OPERATION_DUPLICATE",
+        `Operation ${operationId} is already running.`,
+        "Send each command with its own operation id; rig does this for you.",
+        { operationId },
+      );
     inFlight.add(operationId);
-    running = {
-      operationId,
-      action: command.action,
-      ...(command.project ? { project: command.project } : {}),
-      ...(command.target ? { target: command.target } : {}),
-      startedAt: deps.now(),
-    };
-    mutating = {
+    // What the alert monitor sees before the command selects anything: its Project and Target as the command names them.
+    const requested: MutationInFlight = {
       operationId,
       action: command.action,
       ...(command.project ? { project: command.project } : {}),
       ...(command.repoPath ? { repoPath: command.repoPath } : {}),
       ...(command.target ? { target: command.target } : {}),
     };
+    const entry: Running = {
+      view: {
+        operationId,
+        action: command.action,
+        ...(command.project ? { project: command.project } : {}),
+        ...(command.target ? { target: command.target } : {}),
+        phase: initialPhase(command.action),
+        startedAt: deps.now(),
+      },
+      mutation: requested,
+    };
+    operations.set(operationId, entry);
     try {
-      return await run(command, operationId);
+      for (let attempt = 1; ; attempt++) {
+        const held = admission(operationId, attempt >= MAX_SELECTIONS);
+        // Each attempt selects again, so what an earlier one selected no longer says what this one works on.
+        entry.mutation = requested;
+        try {
+          return await run(command, operationId, held, {
+            ...deps,
+            ports: reservations.ports(operationId),
+          });
+        } catch (error) {
+          if (!isReselect(error)) throw error;
+        } finally {
+          held.release();
+          reservations.release(operationId);
+        }
+      }
     } finally {
       inFlight.delete(operationId);
-      running = undefined;
-      mutating = undefined;
+      operations.delete(operationId);
     }
   };
   const run = async (
     command: RuntimeCommand,
     operationId: string,
+    admission: Admission,
+    deps: RuntimeDependencies,
   ): Promise<unknown> => {
     let project: ProjectRecord | undefined, target: TargetRecord | undefined;
     // The Target a command aimed at, so a failure before its record exists is still filed under its name.
@@ -185,6 +378,15 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           "Wait for administration to complete before retrying.",
         );
       if (command.action === "prepare-uninstall") {
+        // Refused rather than queued: waiting for the whole Host would hold every later operation, automatic restarts
+        // included, behind whatever runs now, only to refuse once it ended with Targets still running.
+        if (locks.busy(HOST_SCOPE))
+          throw new RigError(
+            "TARGETS_RUNNING",
+            "Cannot uninstall rigd while operations are running.",
+            "Wait for them to finish (rig activity shows them), stop all Targets, then retry.",
+          );
+        await admission.admit([HOST_SCOPE], {});
         const state = await deps.store.read();
         if (state.targets.some((t) => t.recovery || t.destructionPending))
           throw new RigError(
@@ -214,8 +416,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         draining = true;
         return { ready: true };
       }
-      if (command.action === "queue")
-        return { ...(running ? { running } : {}), waiting };
+      if (command.action === "queue") return queueReport(command.operation);
       if (command.action === "list") {
         const state = await deps.store.read();
         // An inventory listing reads the record only; Target liveness is status's job and is not observed here.
@@ -256,6 +457,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "init") {
         const identity = await prepareRegistration(command, deps);
+        // Initializing a registered Project again writes at most its rig.yaml, as a config edit does, and adds the
+        // Project's `rig` Git remote when it is missing; neither is a Target's. So it takes the Project's config scope and
+        // never waits for (or holds the Project's other Targets behind) a Target's stop. A new Project takes only its name.
+        const registered = (await deps.store.read()).projects.find(
+          (p) => p.name === identity.name && p.repoPath === identity.repoPath,
+        );
+        await admission.admit(
+          [
+            registered
+              ? configScope(registered.id)
+              : registrationScope(identity.name),
+          ],
+          { project: identity.name },
+        );
         attempted = true;
         project = await registerProject(command, identity, deps);
         const kept = identity.configPath ? unappliedInitFlags(command) : [];
@@ -272,14 +487,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "forget") {
         project = (await selectProject(command, deps, false)).project;
-        attempted = true;
-        const warnings = await forgetProject(
-          project,
+        refuseActive(
           (await deps.store.read()).targets.filter(
             (t) => t.projectId === project!.id,
           ),
-          deps,
         );
+        const targets = await enter([projectScope(project.id)]);
+        attempted = true;
+        const warnings = await forgetProject(project, targets, deps);
         return await finish("forgotten", warnings.length ? { warnings } : {});
       }
       if (command.action === "doctor" && !command.project) {
@@ -320,7 +535,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       );
       project = selection.project;
       const state = await deps.store.read();
-      const targets = state.targets.filter((t) => t.projectId === project!.id);
+      let targets = state.targets.filter((t) => t.projectId === project!.id);
       if (command.action === "deployment-context") {
         let currentBranch: string | null;
         try {
@@ -369,6 +584,15 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (command.action === "doctor")
         return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
+        if (command.action === "repoint" || command.newName !== project.name)
+          refuseActive(targets);
+        targets = await enter([
+          projectScope(project.id),
+          // A rename also takes its new name, so a registration of that name cannot race it.
+          ...(command.action === "rename" && command.newName
+            ? [registrationScope(command.newName)]
+            : []),
+        ]);
         attempted = true;
         const updated = await updateRegistration(
           command,
@@ -400,8 +624,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               : PREVIEW_SELECTOR,
         };
         // The alert monitor sees the Target the push selected from here on: a Preview push leaves the Stable Target alone.
-        if (mutating?.operationId === operationId)
-          mutating = { ...mutating, target: command.target! };
+        selectedForAlerts(operationId, { target: command.target! });
       }
       if (
         command.action === "deploy" &&
@@ -440,15 +663,51 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       })();
       const kind = selected.kind;
       // The alert monitor sees which Target the command selected, by role, so a configured name that differs from the
-      // recorded one (mid-rename) still reads as the Stable Target.
-      if (mutating?.operationId === operationId)
-        mutating = { ...mutating, kind };
+      // recorded one (mid-rename) still reads as the Stable Target, and in which Project, so a command run from a
+      // directory no Project is registered at (a linked worktree) holds back no other Project's Stable Target.
+      selectedForAlerts(operationId, { project: project.name, kind });
       const name = selected.name ?? command.target ?? "the Working copy";
       aimed = name;
-      target =
+      const find = (recorded: readonly TargetRecord[]) =>
         kind === "preview"
-          ? targets.find((t) => t.name === name)
-          : targets.find((t) => t.kind === kind);
+          ? recorded.find((t) => t.name === name)
+          : recorded.find((t) => t.kind === kind);
+      target = find(targets);
+      if (!reads.has(command.action)) {
+        // A new Preview over the limit also takes the Previews it will replace; the choice is made
+        // again once they are held, and refused there when it must be.
+        let replacing: TargetRecord[] = [];
+        if (
+          (command.action === "deploy" || command.action === "git-push") &&
+          kind === "preview" &&
+          !target
+        )
+          try {
+            replacing = previewsToReplace(
+              targets,
+              reservations.claimedPreviews(project.id, operationId),
+              (await deps.documents.host()).deploy.previews,
+            );
+          } catch {
+            replacing = [];
+          }
+        targets = await enter(
+          [
+            targetScope(project.id, { kind, name }),
+            ...replacing.map((t) => targetScope(project!.id, t)),
+          ],
+          { target: name },
+        );
+        target = find(targets);
+        // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
+        if (
+          command.action !== "down" &&
+          command.action !== "destroy" &&
+          (await checkoutConfig(undefined, project, deps)).document
+            ?.revision !== configured.document?.revision
+        )
+          throw admission.moved();
+      }
       if (target && target.kind !== kind)
         throw new RigError(
           "TARGET_IDENTITY",
@@ -528,12 +787,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             ...previous,
           });
         const replacements =
-          kind === "preview" && !target
-            ? previewsToReplace(
-                targets,
-                (await deps.documents.host()).deploy.previews,
-              )
-            : [];
+          kind === "preview" && !target ? await claimPreviewSlot(name) : [];
         const candidate = await planTarget(
           {
             command: { ...command, branch, commit },
@@ -601,8 +855,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           );
         if (!target) throw missingTarget(command, name);
         attempted = true;
+        admission.phase("stopping", target);
         if (target.recovery) target = await stopForRecovery(target, deps);
-        await destroyPreview(target, deps);
+        await destroyPreview(target, deps, admission.phase);
         return await finish("stopped");
       }
       if (!target && (command.action !== "up" || kind !== "local"))
@@ -640,6 +895,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             "This Target has an unresolved deployment transition.",
             "Run down for this Target to stop both recorded plans first.",
           );
+        admission.phase("stopping", target);
         target = await stopForRecovery(target, deps);
       }
       let outcome: OperationRecord["outcome"];
@@ -649,6 +905,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         intendStopped(target);
         target.updatedAt = deps.now();
         await persistTarget(target, deps.store);
+        admission.phase("stopping", target);
         outcome = (await stopRecordedTarget(target, deps.lifecycle)).outcome;
       } else {
         if (command.action === "restart") {
@@ -656,7 +913,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           intendStopped(target);
           target.updatedAt = deps.now();
           await persistTarget(target, deps.store);
+          admission.phase("stopping", target);
           await stopRecordedTarget(target, deps.lifecycle);
+          admission.phase("starting", target);
           if (target.kind === "local")
             target = await replanWorkingCopy(
               target,
@@ -701,6 +960,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       await persistTarget(target, deps.store);
       return await finish(outcome, warnings.length ? { warnings } : {});
     } catch (error) {
+      // Selecting again is not an outcome: nothing was changed and the command is not over.
+      if (isReselect(error)) throw error;
       if (!reads.has(command.action)) {
         const errorCode = diagnosticErrorCode(error);
         const causes = diagnosticCauses(error);
@@ -775,90 +1036,264 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         ...extra,
       };
     }
+    /** Refuses a Project-wide change at once while a Target is recorded as running or mid-transition, instead of queueing
+     * it behind that Target's operations (and every later operation of the Project behind it) only to refuse it then.
+     * The refusal is an attempted Operation, recorded as one; the same check is made again once admitted. */
+    function refuseActive(targets: readonly TargetRecord[]): void {
+      try {
+        assertRecordedStopped(targets);
+        // A stop records its Target stopped before it waits for the exit, so the record alone does not show it.
+        if (locks.busy(projectTargetsScope(project!.id)))
+          throw new RigError(
+            "PROJECT_ACTIVE",
+            "Project registration can only change while no Target of the Project has an operation running.",
+            "Wait for the running operations to finish (rig status shows a stopping Target), then retry.",
+          );
+      } catch (error) {
+        attempted = true;
+        throw error;
+      }
+    }
+    /** Takes `scopes` within the selected Project and returns its Targets as recorded once they are
+     * held. A Project renamed, repointed or forgotten while this command waited is selected again. */
+    async function enter(
+      scopes: readonly LockScope[],
+      subject: { target?: string } = {},
+    ): Promise<TargetRecord[]> {
+      const selected = project!;
+      await admission.admit(scopes, { project: selected.name, ...subject });
+      const current = await deps.store.read();
+      const now = current.projects.find((p) => p.id === selected.id);
+      if (
+        !now ||
+        now.name !== selected.name ||
+        now.repoPath !== selected.repoPath
+      )
+        throw admission.moved();
+      project = now;
+      return current.targets.filter((t) => t.projectId === now.id);
+    }
+    /** Counts a new Preview against its Project's limit and returns the Previews that must leave to
+     * make room. The count and the claim happen with nothing awaited between them, so two deploys
+     * of new Previews always see each other. A replacement chosen now that this command did not
+     * take before it was admitted sends it back to select again. */
+    async function claimPreviewSlot(name: string): Promise<TargetRecord[]> {
+      const policy = (await deps.documents.host()).deploy.previews;
+      // Claims are read after the state, so a deploy that failed meanwhile is not counted and no Preview is destroyed for
+      // it. A claim that ended during the read may belong to a deploy that recorded its Preview after the read began, so
+      // the state is read again until no claim ended across the read: every deploy is then counted by its record or its
+      // claim.
+      let recorded: TargetRecord[];
+      for (;;) {
+        const ended = reservations.endedPreviewClaims(project!.id);
+        recorded = (await deps.store.read()).targets.filter(
+          (t) => t.projectId === project!.id,
+        );
+        if (reservations.endedPreviewClaims(project!.id) === ended) break;
+      }
+      const replacements = previewsToReplace(
+        recorded,
+        reservations.claimedPreviews(project!.id, operationId),
+        policy,
+      );
+      if (
+        !admission.holds(
+          replacements.map((replacement) =>
+            targetScope(project!.id, replacement),
+          ),
+        )
+      )
+        throw admission.moved();
+      reservations.claimPreview(operationId, project!.id, name);
+      return replacements;
+    }
   };
   return {
     status,
-    mutation: () => mutating,
+    mutations: () =>
+      [...operations.values()].flatMap((entry) =>
+        entry.mutation ? [{ ...entry.mutation }] : [],
+      ),
     async drain() {
       draining = true;
-      await queue.catch(() => {});
+      // Commands already running answer; any that was waiting is refused once admitted.
+      while (executing.size) await Promise.allSettled([...executing]);
+      await locks.idle();
     },
-    exclusive<T>(operation: () => Promise<T>): Promise<T> {
-      const result = queue
-        .catch(() => {})
-        .then(async () => {
-          if (draining)
-            throw new RigError(
-              "DAEMON_DRAINING",
-              "rigd is preparing to stop.",
-              "Wait for administration to complete.",
-            );
-          return await operation();
-        });
-      queue = result;
-      return result;
+    async exclusive<T>(
+      projectName: string,
+      operation: () => Promise<T>,
+    ): Promise<T> {
+      if (draining) throw drainingError();
+      const project = (await deps.store.read()).projects.find(
+        (p) => p.name === projectName,
+      );
+      const id = `config:${deps.id()}`;
+      operations.set(id, {
+        view: {
+          operationId: id,
+          action: "config",
+          project: projectName,
+          phase: "editing config",
+          startedAt: deps.now(),
+        },
+      });
+      const lease = await locks.acquire(id, [
+        project ? configScope(project.id) : registrationScope(projectName),
+      ]);
+      try {
+        if (draining) throw drainingError();
+        return await operation();
+      } finally {
+        lease.release();
+        operations.delete(id);
+      }
     },
     command(command) {
-      if (reads.has(command.action)) return execute(command);
-      waiting++;
-      const operation = queue
-        .catch(() => {})
-        .then(() => {
-          waiting--;
-          return execute(command);
-        });
-      queue = operation;
-      return operation;
+      const running = execute(command);
+      if (!reads.has(command.action)) {
+        executing.add(running);
+        void running.finally(() => executing.delete(running)).catch(() => {});
+      }
+      return running;
     },
     reconcile: () => pass("reconcile"),
     supervise: () => pass("supervise"),
   };
-  /** One serialized pass over the recorded Targets. Both passes supervise the Targets meant to run; only `reconcile`, the
-   * daemon's first pass, also re-stops the Targets meant to be stopped and reclaims orphaned checkpoints. */
-  function pass(action: "reconcile" | "supervise"): Promise<SupervisionPass> {
-    const operation = queue
-      .catch(() => {})
-      .then(async (): Promise<SupervisionPass> => {
-        if (draining) return {};
-        const failed = (error: unknown, target?: string) =>
-          deps
-            .diagnostic({
-              operationId: deps.id(),
-              action,
-              outcome: "failed",
-              ...(target ? { target } : {}),
-              errorCode: diagnosticErrorCode(error),
-              ...diagnosticCauses(error),
-            })
-            .catch(() => {});
-        // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
-        let state;
-        try {
-          state = await deps.store.read();
-        } catch (error) {
-          await failed(error);
-          return {};
-        }
-        if (action === "reconcile") await pruneCheckpoints(state, deps);
-        let nextRetryAt: number | undefined;
-        for (const target of state.targets) {
-          if (draining) break;
-          if (target.recovery || target.destructionPending) continue;
-          try {
-            if (target.desired === "running") {
-              const due = await superviseTarget(target, deps);
-              if (due !== undefined)
-                nextRetryAt = Math.min(nextRetryAt ?? due, due);
-            } else if (action === "reconcile")
-              await deps.lifecycle.down(target);
-          } catch (error) {
-            await failed(error, target.name);
-          }
-        }
-        return nextRetryAt === undefined ? {} : { nextRetryAt };
+  /** One pass over the recorded Targets. Both passes supervise the Targets meant to run; only `reconcile`, the daemon's first
+   * pass, also re-stops the Targets meant to be stopped and reclaims orphaned checkpoints. Each Target is worked on under its
+   * own lease, side by side with the others. `supervise` skips a Target another Operation holds: that Operation owns it now
+   * and the next pass looks again. `reconcile` holds the whole Host while it reclaims checkpoints, then hands each Target its
+   * own lease before anything queued behind it runs. */
+  async function pass(
+    action: "reconcile" | "supervise",
+  ): Promise<SupervisionPass> {
+    if (draining) return {};
+    // Requested before anything is awaited, so a reconcile called at startup is ahead of every command.
+    const hostId = `reconcile:${++passes}`;
+    if (action === "reconcile")
+      operations.set(hostId, {
+        view: {
+          operationId: hostId,
+          action,
+          phase: initialPhase(action),
+          startedAt: deps.now(),
+        },
       });
-    queue = operation;
-    return operation;
+    const host =
+      action === "reconcile" ? locks.acquire(hostId, [HOST_SCOPE]) : undefined;
+    const failed = (error: unknown, target?: string) =>
+      deps
+        .diagnostic({
+          operationId: deps.id(),
+          action,
+          outcome: "failed",
+          ...(target ? { target } : {}),
+          errorCode: diagnosticErrorCode(error),
+          ...diagnosticCauses(error),
+        })
+        .catch(() => {});
+    const lease = await host;
+    let jobs: Promise<number | undefined>[];
+    try {
+      // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
+      let state;
+      try {
+        state = await deps.store.read();
+      } catch (error) {
+        lease?.release();
+        operations.delete(hostId);
+        await failed(error);
+        return {};
+      }
+      if (action === "reconcile") await pruneCheckpoints(state, deps);
+      const eligible = state.targets.filter(
+        (target) =>
+          !target.recovery &&
+          !target.destructionPending &&
+          (action === "reconcile" || target.desired === "running"),
+      );
+      const parts = eligible.map((target) => ({
+        id: `${action}:${target.id}`,
+        scopes: [targetScope(target.projectId, target)],
+      }));
+      const leases = lease
+        ? lease.split(parts)
+        : parts.map((part) =>
+            draining ? undefined : locks.tryAcquire(part.id, part.scopes),
+          );
+      jobs = eligible.flatMap((target, index) => {
+        const held = leases[index];
+        return held ? [superviseJob(target.id, held, action, failed)] : [];
+      });
+    } finally {
+      lease?.release();
+      operations.delete(hostId);
+    }
+    const due = (await passResults(jobs)).filter(
+      (value): value is number => value !== undefined,
+    );
+    return due.length ? { nextRetryAt: Math.min(...due) } : {};
+  }
+  /** What a pass waits for: every Target's work, or with a pass budget only what finishes within it. The rest carries on
+   * under its Target's lease. */
+  async function passResults(
+    jobs: Promise<number | undefined>[],
+  ): Promise<(number | undefined)[]> {
+    const budget = deps.supervisionPassBudget;
+    if (!budget) return await Promise.all(jobs);
+    const results = await boundedObservations(
+      jobs.map((job) => () => job),
+      budget.ms,
+      budget.deadline,
+    );
+    return results.map((result) =>
+      result.kind === "completed" ? result.value : undefined,
+    );
+  }
+  /** One Target's share of a pass, under `lease`, which it releases. The record is read again under the lease, since a read
+   * made before it may predate what the Operation that last held the Target recorded. Never rejects; failures are recorded. */
+  async function superviseJob(
+    targetId: string,
+    lease: Lease,
+    action: "reconcile" | "supervise",
+    failed: (error: unknown, target?: string) => Promise<void>,
+  ): Promise<number | undefined> {
+    const entry: Running = {
+      view: {
+        operationId: lease.id,
+        action,
+        phase: initialPhase(action),
+        startedAt: deps.now(),
+      },
+      targetId,
+    };
+    operations.set(lease.id, entry);
+    let name: string | undefined;
+    try {
+      if (draining) return undefined;
+      const state = await deps.store.read();
+      const target = state.targets.find((t) => t.id === targetId);
+      if (!target || target.recovery || target.destructionPending)
+        return undefined;
+      name = target.name;
+      entry.view.target = target.name;
+      const project = state.projects.find((p) => p.id === target.projectId);
+      if (project) entry.view.project = project.name;
+      if (target.desired === "running")
+        return await superviseTarget(target, deps);
+      if (action === "reconcile") {
+        entry.view.phase = "stopping";
+        await deps.lifecycle.down(target);
+      }
+      return undefined;
+    } catch (error) {
+      await failed(error, name);
+      return undefined;
+    } finally {
+      operations.delete(lease.id);
+      lease.release();
+    }
   }
 }
 /** A push whose repository is another registered Project must be told which remote to use; repoint would hijack the named Project. */
@@ -1016,13 +1451,19 @@ async function replanWorkingCopy(
   return replanned;
 }
 /** The oldest Previews that must leave so a new Preview fits under the Host limit; none while the Project is under it.
- * Rejects PREVIEW_LIMIT under the reject policy and DEPLOY_RECOVERY when a chosen Preview is mid-transition. */
+ * `creating` names the Previews other deploys are creating right now: they count against the limit whether or not they
+ * are recorded yet, and are never chosen to leave. Rejects PREVIEW_LIMIT under the reject policy or when only Previews
+ * being created could make room, and DEPLOY_RECOVERY when a chosen Preview is mid-transition. */
 function previewsToReplace(
   targets: readonly TargetRecord[],
+  creating: ReadonlySet<string>,
   policy: { max: number; replace_policy: "oldest" | "reject" },
 ): TargetRecord[] {
   const previews = targets.filter((t) => t.kind === "preview");
-  const overflow = previews.length - policy.max + 1;
+  const unrecorded = [...creating].filter(
+    (name) => !previews.some((preview) => preview.name === name),
+  );
+  const overflow = previews.length + unrecorded.length - policy.max + 1;
   if (overflow <= 0) return [];
   if (policy.replace_policy === "reject")
     throw new RigError(
@@ -1030,13 +1471,20 @@ function previewsToReplace(
       "The Project has reached its Preview limit.",
       "Remove an existing Preview or change the Host Preview limit.",
     );
-  const oldest = [...previews]
+  const oldest = previews
+    .filter((preview) => !creating.has(preview.name))
     .sort(
       (a, b) =>
         evictionRank(a) - evictionRank(b) ||
         a.createdAt.localeCompare(b.createdAt),
     )
     .slice(0, overflow);
+  if (oldest.length < overflow)
+    throw new RigError(
+      "PREVIEW_LIMIT",
+      "The Project's Preview limit is taken by Previews that are being deployed right now.",
+      "Wait for those deploys to finish, then retry; the oldest Preview is replaced then.",
+    );
   if (oldest.some((t) => t.recovery || t.destructionPending))
     throw new RigError(
       "DEPLOY_RECOVERY",
@@ -1050,6 +1498,8 @@ function previewsToReplace(
 async function destroyPreview(
   target: TargetRecord,
   deps: RuntimeDependencies,
+  /** Told when the Preview has stopped and its storage is being deleted. */
+  progress: (phase: OperationPhase) => void = () => {},
 ): Promise<void> {
   await deps.files.inspectPreviewDeletion({
     root: deps.root,
@@ -1062,6 +1512,7 @@ async function destroyPreview(
   target.updatedAt = deps.now();
   await persistTarget(target, deps.store);
   await retireForDestruction(target, deps);
+  progress("destroying");
   await deps.files.destroyPreview({
     root: deps.root,
     target,

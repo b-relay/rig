@@ -109,8 +109,15 @@ them through their recorded process leases without starting them again.
 A stop signal (SIGTERM, `launchctl bootout`) first stops the daemon accepting
 new connections, then lets the commands already running finish and answer
 their callers, and only then closes what is still open, such as a log follow.
-A command sent after the stop began is refused as `DAEMON_DRAINING` or fails
-to connect.
+A command sent after the stop began, or one still waiting behind another
+operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
+A stop signal lets a stop that is already running finish, like any other
+running command. A daemon killed while an operation waits for a Service to exit
+leaves that Service stopping on its own. For `rig down` and `rig restart` the
+Target was recorded as meant to be stopped before its stop began, so the next
+daemon's startup pass stops it again; an interrupted Preview destroy or a
+`down` that was resolving an unfinished deploy is left for you to run again,
+and `rig status` says so.
 `rigd uninstall` is the exception: it refuses while any Target is running.
 When the daemon is not reachable at all, `rigd uninstall` still removes the
 launchd job and installation record and warns that Targets were left as they
@@ -795,12 +802,34 @@ distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
 into the offline host report. Reads are answered without queueing, so run
 `rig activity` to see what `rigd` is doing, then retry.
 
-`rigd` runs one mutation at a time across all Projects, so a slow build or
-readiness wait in one Project delays `rig up` and `rig deploy` elsewhere. When
-a mutation has gone two seconds without an answer, `rig` prints on stderr
-which operation `rigd` is running (Project, Target, action, operation id, and
-start time) and how many more commands are ahead, so a wait always has a
-visible cause; the command then keeps waiting for its own result.
+`rigd` runs one mutation at a time per Target, and Projects are independent:
+a slow build, readiness wait or stop in one Project never delays `rig up`,
+`rig deploy` or an automatic restart in another, and the Targets of one Project
+(its Working copy, Stable Target and each Preview) run their operations side by
+side. Only two operations on the same Target wait for each other, in the order
+they arrived. Operations on the whole Project (`rename`, `repoint` and
+`forget`) wait for every operation of that Project;
+`rename`, `repoint` and `forget` refuse at once with `PROJECT_ACTIVE` while a
+Target is running, mid-transition or still stopping, instead of waiting only to
+refuse. A config edit from the website, and `rig init` of a Project already
+registered, waits only for another edit, `init`, rename, repoint or forget of
+the same Project, never for a Target. `rigd uninstall` refuses at
+once with `TARGETS_RUNNING` while any operation runs. Resources the Targets share, such as ports chosen for `auto`, the
+Preview limit, the route file and the state file, are taken only for the moment
+each choice or write needs, never while a process is being stopped or built. A
+deploy of a new Preview at the Preview limit also takes the Preview it is about
+to replace, so that Preview's own commands wait until it is gone. See
+[ADR 0007](adr/0007-per-target-operation-queue.md).
+
+When a lifecycle or deploy command has gone two seconds without an answer and
+`rigd` is holding it behind another operation, `rig` prints on stderr what it
+is waiting for, for example
+`Waiting: fletcher local is stopping (operation <id>, started <time>).`, and how
+many more operations are ahead of it. It checks again every two seconds and
+prints a new line only when what it waits for changes, such as a `restart`
+moving from stopping to starting. The lines are plain appended text in a
+terminal, a pipe or a log alike; nothing is redrawn. The command then keeps
+waiting for its own result.
 
 Ctrl-C (or SIGTERM) before a lifecycle or deploy command is submitted cancels
 it: `rig` exits 0 and no runtime change was requested. Ctrl-C during a read
@@ -833,7 +862,10 @@ healthy process is degraded, not healthy. A Target whose processes all run but
 at least one fails its health check is unhealthy, which is distinct from failed
 (a process that exited or was never found). Processes decide whether a Target
 is live at all: a Target whose processes are all stopped is stopped whatever
-the state of its data. A deployed Target's line shows the
+the state of its data. While an operation is waiting for a Target's Services to
+exit (`rig down`, the stop half of `rig restart`, a Preview destroy, or the
+daemon re-stopping it at startup), the Target is `stopping`, whatever its
+processes show at that moment. A deployed Target's line shows the
 Branch and the short Commit it serves (`live  healthy  main@abc1234`); the
 Working copy shows `working copy` there instead. Recorded routes stay
 visible when stopped, and show `unpublished` when no Host Caddyfile loads Rig's
@@ -1186,7 +1218,9 @@ run `rig down` first, then `rig up`. An operation that is working on the
 Target now (a deploy, a restart, an up or a down of that Target, or a change to
 its whole Project such as `rig forget`), or an observation that did
 not answer, changes nothing either way: a Target already counted as down gets
-no first alert while an operation may be fixing it.
+no first alert while an operation may be fixing it. Operations on different
+Targets run at the same time; each one running, or waiting its turn, holds
+back only the Stable Targets it may be changing.
 
 The timing:
 

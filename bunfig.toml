@@ -1,0 +1,8 @@
+[test]
+# Every test in these files owns its whole world (a temporary RIG_ROOT, its own rigd, ephemeral ports), so a file's
+# tests run concurrently. Add a file here only when none of its tests share state with another.
+concurrentTestGlob = [
+  "**/tests/*e2e.test.ts",
+  "**/tests/release-matrix.test.ts",
+  "**/tests/tool-shim-compiled.test.ts",
+]

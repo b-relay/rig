@@ -24,6 +24,8 @@ export function parseLogRecord(
 ): TargetLogEntry | "unreadable" | undefined {
   const plain = familyEvidence(family);
   if (plain) return { timestamp: "unknown", ...plain, line };
+  // Every record is a JSON object; anything else is unreadable without the cost of a parse failure.
+  if (!line.trimStart().startsWith("{")) return "unreadable";
   try {
     if (family === "target.jsonl") return currentEntry.parse(JSON.parse(line));
     const event = legacyEvent.parse(JSON.parse(line));

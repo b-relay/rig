@@ -3586,6 +3586,19 @@ test("a logs filter reaches the reader and marks the reply filtered; an unknown 
     hint: "Pass --service with one of: web, setup.",
   });
   expect(reads).toHaveLength(2);
+  // A follow page is not refused when the Service it filters by has gone from the plan since the follow began.
+  await runtime.command({
+    action: "logs",
+    project: "demo",
+    target: "local",
+    after: "cursor",
+    logFilter: { services: ["scheduler"] },
+  });
+  expect(reads[2]!.slice(1)).toEqual([
+    "cursor",
+    100,
+    { services: ["scheduler"] },
+  ]);
 });
 
 test("runtime list, logs and activity replies satisfy the client contract end to end", async () => {

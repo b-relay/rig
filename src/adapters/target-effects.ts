@@ -55,7 +55,8 @@ import { RigError, failureCauses } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
-import { appendTargetLog, type LogRetention } from "../providers/target-log";
+import { appendTargetLog } from "../providers/target-log";
+import type { LogRetention } from "../domain/log-retention";
 export interface TargetAdapterOptions {
   root: string;
   /** Acquires an ISO timestamp per recorded output entry, after buffered execution. */

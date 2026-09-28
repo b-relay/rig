@@ -12,7 +12,12 @@ import { readCaptureRequest } from "./capture-request";
 import { CAPTURE_KILL_SIGNAL, writeCaptureStop } from "./capture-stop";
 import { serviceGraceMs } from "../domain/stop-budget";
 import { createChildSupervisor } from "./child-supervisor";
-import { DEFAULT_LOG_RETENTION } from "./target-log";
+import {
+  DEFAULT_LOG_RETENTION,
+  hostLogRetention,
+  LOG_RETENTION_REFRESH_MS,
+} from "../domain/log-retention";
+import { readHostConfig } from "../config/documents";
 import { runCommand } from "./command-runner";
 import { createProcessInspection, platformKill } from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
@@ -55,7 +60,14 @@ async function runUntilStopped(
     stateRoot: dirname(requestPath),
     timing: createProcessTiming(),
     processInspection,
-    logRetention: async () => request.logRetention ?? DEFAULT_LOG_RETENTION,
+    // The wrapper reads the Host's logs settings as rigd does, so every writer of the Target log rotates it alike.
+    logRetention: request.configRoot
+      ? hostLogRetention({
+          read: () => readHostConfig(request.configRoot!),
+          now: Date.now,
+          refreshMs: LOG_RETENTION_REFRESH_MS,
+        })
+      : async () => DEFAULT_LOG_RETENTION,
   });
   let stopping: Promise<unknown> | undefined;
   let received: NodeJS.Signals | undefined;

@@ -765,7 +765,7 @@ export const hostConfigSchema = z.strictObject({
     })
     .prefault({})
     .describe(
-      "Size limits for Target logs: each Target's target.jsonl and the stdout and stderr files launchd writes for a job. A change applies within seconds to the lines Rig records itself, and to each Service the next time it starts.",
+      "Size limits for Target logs: each Target's target.jsonl and the stdout and stderr files launchd writes for a job. Every writer reads a change within a few seconds.",
     ),
   alerts: z
     .strictObject({

@@ -53,7 +53,8 @@ import {
 } from "./process-lease";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
-import { appendTargetLog, type LogRetention } from "./target-log";
+import { appendTargetLog } from "./target-log";
+import type { LogRetention } from "../domain/log-retention";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
@@ -89,9 +90,11 @@ export interface ChildSupervisorOptions {
   /** Process identity, group presence, and signals; the owner passes the platform's or a scripted one. */
   readonly processInspection: ProcessInspection;
   readonly captureCommand?: readonly string[];
-  /** Reads how the Target log of a process is rotated, once per start: by this supervisor, or by the capture wrapper the
-   * start writes it into. The default when absent. */
+  /** Reads how the Target log is rotated, at each line this supervisor records; the default when absent. */
   readonly logRetention?: () => Promise<LogRetention>;
+  /** The Rig root whose config.yaml logs settings the capture wrappers this supervisor starts rotate by; absent, they use
+   * the defaults. */
+  readonly configRoot?: string;
 }
 /** Daemon-owned groups have identity-checked leases; stop never trusts an unverified recovered PID.
  * A process is started once and never respawned here. Whoever holds the application's child handle records its exit:
@@ -413,7 +416,6 @@ export function createChildSupervisor(
       mode: 0o600,
     });
     let command = request.command;
-    const retention = await options.logRetention?.();
     if (options.captureCommand) {
       await mkdir(captureRoot, { recursive: true });
       await clearCaptureStatus(capturePath(request.key));
@@ -421,7 +423,7 @@ export function createChildSupervisor(
       try {
         await writeFile(
           temporary,
-          JSON.stringify(captureDocument(request, retention)),
+          JSON.stringify(captureDocument(request, options.configRoot)),
           { mode: 0o600 },
         );
         await rename(temporary, capturePath(request.key));
@@ -479,7 +481,8 @@ export function createChildSupervisor(
           resolve(recordExit(wrapperExitRoot, code, signal)),
         ),
       );
-    if (!options.captureCommand) captureOutput(owned, request, now, retention);
+    if (!options.captureCommand)
+      captureOutput(owned, request, now, options.logRetention);
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", (error) =>
@@ -562,7 +565,7 @@ function captureOutput(
   owned: OwnedProcess,
   request: ManagedProcess,
   now: () => Date,
-  retention: LogRetention | undefined,
+  retention: (() => Promise<LogRetention>) | undefined,
 ): void {
   for (const stream of ["stdout", "stderr"] as const) {
     const pipe = owned.child![stream]!;
@@ -586,7 +589,9 @@ function captureOutput(
             line,
           };
           owned.writes = owned.writes
-            .then(() => recordLine(request.logRoot, entry, retention))
+            .then(async () =>
+              recordLine(request.logRoot, entry, await retention?.()),
+            )
             .then(
               () => {
                 owned.outputFailure = undefined;

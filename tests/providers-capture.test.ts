@@ -48,26 +48,33 @@ test("the launchd capture entrypoint preserves the real app exit code and stream
     "bad",
   ]);
 });
-test("the capture wrapper rotates the Target log by the retention its request carries", async () => {
-  const { readdir } = await import("node:fs/promises");
+test("the capture wrapper rotates the Target log by the logs settings in the config.yaml its request names", async () => {
+  const { readdir, mkdir } = await import("node:fs/promises");
   const root = await mkdtemp(join(tmpdir(), "rig-capture-retention-"));
   roots.push(root);
+  const configRoot = join(root, "rig-root");
+  await mkdir(configRoot);
+  await writeFile(
+    join(configRoot, "config.yaml"),
+    "logs:\n  max_bytes: 1048576\n  generations: 2\n",
+  );
   const requestPath = join(root, "request.json");
   await writeFile(
     requestPath,
     JSON.stringify({
       key: "capture",
       componentName: "web",
+      // 70 lines of 60 KB, each one record: about four 1 MiB files.
       command: [
         process.execPath,
         "-e",
-        "for (let n = 0; n < 40; n++) process.stdout.write(`line ${n}\\n`)",
+        "for (let n = 0; n < 70; n++) process.stdout.write(`line ${n} ${'x'.repeat(60000)}\\n`)",
       ],
       cwd: root,
       env: {},
       logRoot: root,
       incarnation: "start-1",
-      logRetention: { maxBytes: 400, generations: 2 },
+      configRoot,
     }),
   );
   const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[1]);`;
@@ -83,7 +90,7 @@ test("the capture wrapper rotates the Target log by the retention its request ca
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line).line);
-  expect(newest.at(-1)).toBe("line 39");
+  expect(newest.at(-1)).toStartWith("line 69 ");
 });
 test("the captured application sees the operator's account name from the execution baseline, and none of the wrapper's own environment", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-env-"));

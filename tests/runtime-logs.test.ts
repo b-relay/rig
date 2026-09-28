@@ -14,11 +14,8 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
-import {
-  appendTargetLog,
-  DEFAULT_LOG_RETENTION,
-  rotateLogFile,
-} from "../src/providers/target-log";
+import { appendTargetLog, rotateLogFile } from "../src/providers/target-log";
+import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { LogFilter } from "../src/domain/log-filter";
 const roots: string[] = [];
@@ -715,4 +712,61 @@ test("rig logs --follow keeps to --service and --stream", async () => {
     lines: 1000,
     logFilter: { services: ["scheduler"], stream: "stdout" },
   });
+});
+test("a follow under zero generations carries on when the full file is deleted, for Rig's records and launchd's files alike", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles();
+  for (const name of ["target.jsonl", "web.stdout.log"]) {
+    const path = join(target.logRoot, name);
+    await writeFile(path, name === "target.jsonl" ? entry("a") : "a\n");
+    const first = await files.logs(target, undefined, 10);
+    await rotateLogFile(path, { maxBytes: 1, generations: 0 });
+    const gone = await files.logs(target, first.cursor, 10);
+    expect(gone.entries).toEqual([]);
+    await writeFile(path, name === "target.jsonl" ? entry("b") : "b\n");
+    expect(
+      (await files.logs(target, gone.cursor, 10)).entries.map((e) => e.line),
+    ).toEqual(["b"]);
+    await rm(path);
+  }
+  // A missing log directory, or a legacy file replaced underneath the follow, is still a cursor problem.
+  await writeFile(join(target.logRoot, "events.jsonl"), "");
+  const legacy = await files.logs(target, undefined, 10);
+  await rm(join(target.logRoot, "events.jsonl"));
+  await writeFile(join(target.logRoot, "events.jsonl"), "");
+  await expect(files.logs(target, legacy.cursor, 10)).rejects.toMatchObject({
+    code: "LOG_CURSOR",
+  });
+  const cursor = (await files.logs(target, undefined, 10)).cursor;
+  await rm(target.logRoot, { recursive: true, force: true });
+  await expect(files.logs(target, cursor, 10)).rejects.toMatchObject({
+    code: "LOG_CURSOR",
+  });
+});
+test("a recent read over a file of unreadable records stops a window past the page instead of walking every generation", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(`${path}.1`, entry("older"));
+  await writeFile(path, "not json\n".repeat(700_000));
+  await chmod(`${path}.1`, 0o000);
+  try {
+    const result = await files.logs(target, undefined, 3);
+    expect(result.entries).toEqual(
+      Array(3).fill({
+        timestamp: "unknown",
+        component: "unknown",
+        stream: "unknown",
+        line: "Rig skipped an unreadable log record (8 bytes).",
+      }),
+    );
+    // A filter that no unreadable record can pass never holds them, and finds the older line.
+    await chmod(`${path}.1`, 0o600);
+    const filtered = await files.logs(target, undefined, 3, {
+      services: ["web"],
+    });
+    expect(filtered.entries.map((e) => e.line)).toEqual(["older"]);
+  } finally {
+    await chmod(`${path}.1`, 0o600);
+  }
 });

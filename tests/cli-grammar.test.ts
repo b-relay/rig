@@ -197,6 +197,10 @@ test("rig logs refuses a malformed time, stream or Service name, and --until wit
     [["--stream", "health"], "Allowed choices are stdout, stderr"],
     [["--service", "bad name"], "--service 'bad name' is not a Service name"],
     [["--until", "1h", "--follow"], "--until cannot be combined with --follow"],
+    [
+      Array.from({ length: 65 }, (_, n) => ["--service", `s${n}`]).flat(),
+      "--service is given 65 names; rig logs takes at most 64.",
+    ],
   ] as const) {
     const h = harness(logsReply());
     expect(await runRigCli(["logs", "local", ...args], h.deps)).toBe(1);

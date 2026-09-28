@@ -5,7 +5,12 @@ import {
   type LogFilter,
 } from "../domain/log-filter";
 import type { TargetLogEntry } from "../providers/contracts";
-import { completeEnd, linesBackward, openLog } from "./log-files";
+import {
+  completeEnd,
+  linesBackward,
+  LOG_WINDOW_BYTES,
+  openLog,
+} from "./log-files";
 import { parseLogRecord, unreadableEntry } from "./log-records";
 import { familyEvidence, type LogSource } from "./log-sources";
 
@@ -51,12 +56,20 @@ export async function readFamilyTail(
   const keep = (entry: TargetLogEntry) => {
     if (matchesLogFilter(entry, filter)) kept.push(entry);
   };
-  /** Sizes of unreadable records met since the last readable one; they take the time of the readable record before them. */
+  /** Sizes of unreadable records met since the last readable one; they take the time of the readable record before them.
+   * Only as many are held as could still make the page: older ones are counted, never kept. */
   let unreadable: number[] = [];
   const settle = (timestamp: string | undefined) => {
     for (const size of unreadable) keep(unreadableEntry(size, timestamp));
     unreadable = [];
   };
+  // An unreadable record names no component or stream, so a --service or --stream read never keeps one.
+  const unreadableKept = !filter.services && !filter.stream;
+  // Without a time bound every unreadable record is kept, so a full page of them ends the walk once the time they take
+  // is found, or once a window's worth of bytes past it has none.
+  const unreadableCounts =
+    unreadableKept && filter.since === undefined && filter.until === undefined;
+  let bytesPastFullPage = 0;
   let done = !searching;
   for (const member of [...family.members].reverse()) {
     if (done && member.generation > 0) break;
@@ -73,7 +86,16 @@ export async function readFamilyTail(
             : parseLogRecord(family.family, line.text);
         if (parsed === undefined) continue;
         if (parsed === "unreadable") {
-          unreadable.push(line.size);
+          if (!unreadableKept) continue;
+          if (unreadable.length < limit - kept.length)
+            unreadable.push(line.size);
+          else if (
+            unreadableCounts &&
+            (bytesPastFullPage += line.size + 1) > LOG_WINDOW_BYTES
+          ) {
+            done = true;
+            break;
+          }
           continue;
         }
         settle(parsed.timestamp);

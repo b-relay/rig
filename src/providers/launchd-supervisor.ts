@@ -10,11 +10,11 @@ import {
   waitForCaptureStart,
 } from "./capture-status";
 import { readCaptureRequest, writeCaptureRequest } from "./capture-request";
+import { rotateLogFile } from "./target-log";
 import {
   DEFAULT_LOG_RETENTION,
-  rotateLogFile,
   type LogRetention,
-} from "./target-log";
+} from "../domain/log-retention";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -60,8 +60,11 @@ export interface LaunchdOptions {
   readonly timing: LaunchdTiming;
   /** rigd's private capture command, used to timestamp and separate both application streams. */
   readonly captureCommand?: readonly string[];
-  /** Reads how the Target log and the files launchd writes for a job are rotated, once per start; the default when absent. */
+  /** Reads how the files launchd writes for a job are rotated, before each start; the default when absent. */
   readonly logRetention?: () => Promise<LogRetention>;
+  /** The Rig root whose config.yaml logs settings the capture wrappers of these jobs rotate the Target log by; absent,
+   * they use the defaults. */
+  readonly configRoot?: string;
 }
 /** The clock this supervisor polls by and how long each wait may run on it; the platform implementation is the effect owner, a test supplies a scripted one. */
 export interface LaunchdTiming {
@@ -336,7 +339,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       let command = request.command;
       if (options.captureCommand) {
         await clearCaptureStatus(requestPath);
-        await writeCaptureRequest(requestPath, request, retention);
+        await writeCaptureRequest(requestPath, request, options.configRoot);
         command = [...options.captureCommand, requestPath];
       }
       const plist = join(options.root, `${jobLabel}.plist`);

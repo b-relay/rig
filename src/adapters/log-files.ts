@@ -50,7 +50,7 @@ export async function openLog(path: string): Promise<OpenLog | undefined> {
     throw error;
   }
 }
-export function unreadableFile(path: string, code: string | undefined) {
+function unreadableFile(path: string, code: string | undefined) {
   return new RigError(
     "LOG_UNREADABLE",
     `The Target log ${path} could not be read (${code ?? "unknown error"}).`,

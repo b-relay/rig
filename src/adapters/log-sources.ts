@@ -16,9 +16,10 @@ export interface FamilyEvidence {
 const wrapperLog = /^([a-zA-Z0-9_-]+)\.(stdout|stderr)\.log$/;
 const launchdLog = /^([a-zA-Z0-9_-]+)\.launchd\.log$/;
 const rotated = /^(.+)\.([1-9]\d{0,2})$/;
-/** Families whose writers rotate: Rig's own records and the files launchd writes for a job. */
-const rotates = (family: string) =>
-  family === "target.jsonl" || wrapperLog.test(family);
+/** Whether a family's writers rotate it: Rig's own records and the files launchd writes for a job. */
+export function familyRotates(family: string): boolean {
+  return family === "target.jsonl" || wrapperLog.test(family);
+}
 
 /** The source `name` is, or undefined for a file that is not a Target log (such as a rotation lock). Rig's own records,
  * legacy events, launchd's legacy job log, the files launchd writes for a job, and each rotated generation of the
@@ -32,7 +33,7 @@ export function logSource(name: string): LogSource | undefined {
   )
     return { name, family: name, generation: 0 };
   const generation = rotated.exec(name);
-  if (generation && rotates(generation[1]!))
+  if (generation && familyRotates(generation[1]!))
     return {
       name,
       family: generation[1]!,

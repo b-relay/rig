@@ -54,9 +54,10 @@ import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import type { Supervisor } from "../providers/contracts";
-import { hostLogRetention } from "./log-retention";
-/** How long rigd's writers use the logs settings they read before reading config.yaml again. */
-const LOG_RETENTION_REFRESH_MS = 5000;
+import {
+  hostLogRetention,
+  LOG_RETENTION_REFRESH_MS,
+} from "../domain/log-retention";
 /** Composition root selects adapters. Runtime and command code see capability Interfaces only.
  * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none. */
 export async function composeDaemon(
@@ -90,6 +91,7 @@ export async function composeDaemon(
     timing: createProcessTiming(),
     processInspection,
     logRetention,
+    configRoot: root,
   });
   const uid = process.getuid?.() ?? 501;
   const launchd = createLaunchdSupervisor({
@@ -98,6 +100,7 @@ export async function composeDaemon(
     labelPrefix: `com.b-relay.rig.${createHash("sha256").update(root).digest("hex").slice(0, 12)}`,
     captureCommand,
     logRetention,
+    configRoot: root,
     run: runCommand,
     inspect: processInspection.identity,
     groupExists: processInspection.groupExists,

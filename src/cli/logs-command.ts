@@ -15,6 +15,8 @@ interface LogsOptions {
   since?: string;
   until?: string;
 }
+/** The most --service names one request carries, as the control plane allows. */
+const MAX_SERVICES = 64;
 const TIME_HELP = `
 Times are a duration back from now, such as 90s, 15m, 1h, 2d or 1w (parts
 combine, as in 1h30m), or an ISO time with a zone, such as 2026-09-28T03:00:00Z
@@ -125,7 +127,14 @@ function logsFilter(
   options: LogsOptions,
   now: Date,
 ): RuntimeCommand["logFilter"] {
-  for (const name of options.service ?? [])
+  const services = [...new Set(options.service ?? [])];
+  if (services.length > MAX_SERVICES)
+    throw new RigError(
+      "USAGE",
+      `--service is given ${services.length} names; rig logs takes at most ${MAX_SERVICES}.`,
+      "Pass fewer --service names, or none to read every Service.",
+    );
+  for (const name of services)
     if (!logComponentName.safeParse(name).success)
       throw new RigError(
         "USAGE",
@@ -140,7 +149,7 @@ function logsFilter(
     );
   const window = logTimeWindow(options, now);
   const filter: NonNullable<RuntimeCommand["logFilter"]> = {
-    ...(options.service ? { services: [...new Set(options.service)] } : {}),
+    ...(services.length ? { services } : {}),
     ...(options.stream ? { stream: options.stream } : {}),
     ...window,
   };

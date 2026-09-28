@@ -1,19 +1,9 @@
 import { appendFile, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-
-/** How a Target log file is bounded on disk: the Host config's `logs` settings. */
-export interface LogRetention {
-  /** A file at or past this many bytes is rotated before the next write to it. */
-  readonly maxBytes: number;
-  /** How many rotated files are kept beside the current one: `<file>.1` is the newest, `<file>.<generations>` the oldest.
-   * 0 keeps none: a full file is removed and writing starts a fresh one. */
-  readonly generations: number;
-}
-/** 64 MiB and one previous generation: the policy when the Host config sets no `logs`. */
-export const DEFAULT_LOG_RETENTION: LogRetention = {
-  maxBytes: 64 * 1024 * 1024,
-  generations: 1,
-};
+import {
+  DEFAULT_LOG_RETENTION,
+  type LogRetention,
+} from "../domain/log-retention";
 /** A rotation lock older than this was left by a writer that died mid-rotation and is reclaimed. */
 const STALE_ROTATION_MS = 30_000;
 

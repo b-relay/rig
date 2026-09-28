@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseHostConfig } from "../src/config";
-import { hostLogRetention } from "../src/daemon/log-retention";
+import { hostLogRetention } from "../src/domain/log-retention";
 
 test("the Host's log retention is re-read once the refresh interval has passed, and callers in between share one read", async () => {
   let clock = 0,

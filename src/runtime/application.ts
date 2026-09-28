@@ -805,7 +805,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         );
       if (command.action === "logs") {
         if (!target) throw missingTarget(command, name);
-        assertLogServices(target, command.logFilter);
+        // Checked on the first page only: a follow carries on when a deploy removes a Service it filters by.
+        if (command.after === undefined)
+          assertLogServices(target, command.logFilter);
         return {
           project: project.name,
           target: target.name,

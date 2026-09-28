@@ -390,6 +390,9 @@ export function createTargetLifecycle(
           outcome: started.length || installed ? "started" : "unchanged",
         };
       } catch (error) {
+        // A start whose clean-up rigd's shutdown detached is left as a crash leaves it: its Service keeps stopping, and
+        // the Services and effects before it stay for the next daemon, checkpoint included.
+        if (isStopDetached(error)) throw error;
         const rollbackErrors: unknown[] = [];
         for (const key of started.reverse())
           try {
@@ -487,6 +490,8 @@ export function createTargetLifecycle(
         });
         return { outcome: started.length ? "started" : "unchanged" };
       } catch (error) {
+        // The supervisor's clean-up of this start was detached by rigd's shutdown: the Service keeps stopping on its own.
+        if (isStopDetached(error)) throw error;
         // Nothing was asked of the supervisor: the refusal itself says how the attempt ended.
         if (incarnation === undefined) throw error;
         // Seen before the cleanup below removes the evidence, because only a process found running here is one Rig ended.

@@ -319,17 +319,14 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         await removeJobFiles(key);
         return { outcome: "unchanged" };
       }
-      if (signalWhenDetached)
-        await run({
-          command: ["launchctl", "bootout", service(key)],
-          timeoutMs: 10_000,
-        });
-      throw new RigError(
-        "LAUNCHD_UNKNOWN",
-        "The existing job could not be inspected.",
-        "Resolve launchd access before stopping it.",
-        { key },
-      );
+      // A failed start's clean-up boots out the job it just loaded all the same, and waits for it to leave.
+      if (!signalWhenDetached)
+        throw new RigError(
+          "LAUNCHD_UNKNOWN",
+          "The existing job could not be inspected.",
+          "Resolve launchd access before stopping it.",
+          { key },
+        );
     }
     // launchd sends SIGTERM and returns at once; a job already booted out gets SIGTERM again, which its wrapper ignores.
     // A bootout that fails or hangs while the job is still there (one a previous daemon began booting out) is waited

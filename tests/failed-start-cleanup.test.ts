@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,9 +86,14 @@ describe("launchd supervisor", () => {
   }
 
   /** A scripted launchctl whose job runs a capture wrapper that never reports its start. A bootout leaves the job loaded for
-   * `unloadAfter` more prints, as a wrapper giving its application the grace does; `onPrint` sees each print after it. */
+   * `unloadAfter` more prints, as a wrapper giving its application the grace does; `onPrint` sees each print after it. With
+   * `firstPrintFails`, the first print after the bootstrap times out, as a busy launchd does. */
   async function neverReports(
-    options: { unloadAfter?: number; onPrint?: (prints: number) => void } = {},
+    options: {
+      unloadAfter?: number;
+      onPrint?: (prints: number) => void;
+      firstPrintFails?: boolean;
+    } = {},
   ) {
     const root = await mkdtemp(join(tmpdir(), "rig-failed-start-launchd-"));
     roots.push(root);
@@ -101,6 +107,10 @@ describe("launchd supervisor", () => {
       if (action === "bootstrap") loaded = true;
       if (action === "bootout") unloadIn = options.unloadAfter ?? 0;
       if (action !== "print") return { exitCode: 0, stdout: "", stderr: "" };
+      if (options.firstPrintFails && loaded && unloadIn === undefined) {
+        options.firstPrintFails = false;
+        return { exitCode: 1, stdout: "", stderr: "", timedOut: true };
+      }
       if (unloadIn !== undefined) {
         options.onPrint?.(++printsAfterBootout);
         if (unloadIn-- <= 0) loaded = false;
@@ -169,6 +179,24 @@ describe("launchd supervisor", () => {
     ).toBe(true);
   });
 
+  test("a clean-up whose first launchctl print times out still boots the job out and waits for it to leave", async () => {
+    const w = await neverReports({ unloadAfter: 3, firstPrintFails: true });
+    const { control, heard } = recordingControl();
+    await expect(
+      w.supervisor.ensureRunning(request(w.root, 300), control),
+    ).rejects.toMatchObject({ code: "PROCESS_START_TIMEOUT" });
+    expect(w.commands.slice(w.commands.lastIndexOf("bootstrap"))).toEqual([
+      "bootstrap",
+      "print",
+      "bootout",
+      "print",
+      "print",
+      "print",
+      "print",
+    ]);
+    expect(heard.at(-1)).toEqual(["stopped", { outcome: "stopped" }]);
+  });
+
   test("a kill cuts that wait short: the wrapper is told to kill its application", async () => {
     const kill = new AbortController();
     let w!: Awaited<ReturnType<typeof neverReports>>;
@@ -208,13 +236,20 @@ describe("launchd supervisor", () => {
 describe("rigd supervisor", () => {
   /** Real time, except that from the moment `ready` exists until the first signal is sent every wait passes at once: the
    * start's five-second wait for its wrapper is over immediately, and the clean-up stop that follows runs in real time. */
-  function fastUntilSignalled(ready: string) {
+  function fastUntilSignalled(ready: string, lease: string) {
     let skew = 0;
     let signalled = false;
+    let registered = false;
     const timing: ProcessTiming = {
       now: () => new Date(Date.now() + skew),
       wait: async (ms) => {
         if (signalled || !existsSync(ready)) return await Bun.sleep(ms);
+        // The wrapper runs, so its lease (pid and birth identity, written before its release) names it: cleanup ends it
+        // whether or not the supervisor ever signals it.
+        if (!registered) {
+          registered = true;
+          groups.push(JSON.parse(readFileSync(lease, "utf8")));
+        }
         skew += ms;
         await Promise.resolve();
       },
@@ -234,11 +269,6 @@ describe("rigd supervisor", () => {
       processInspection: {
         ...platform,
         signalGroup: async (pid: number, signal: NodeJS.Signals) => {
-          if (!signalled) {
-            // Read before the first signal, while the wrapper is known to run: cleanup ends it only while it is still that one.
-            const identity = await platform.identity(pid);
-            if (identity) groups.push({ pid, identity });
-          }
           signalled = true;
           signals.push([pid, signal]);
           await platform.signalGroup(pid, signal);
@@ -252,7 +282,14 @@ describe("rigd supervisor", () => {
     const root = await mkdtemp(join(tmpdir(), "rig-failed-start-rigd-"));
     roots.push(root);
     // The wrapper's trap must be set before any SIGTERM reaches it.
-    const clock = fastUntilSignalled(join(root, "trapping"));
+    const clock = fastUntilSignalled(
+      join(root, "trapping"),
+      join(
+        root,
+        "process-leases",
+        `${createHash("sha256").update("target-1:web").digest("hex")}.json`,
+      ),
+    );
     const shutdown = new AbortController();
     const supervisor = createChildSupervisor({
       stateRoot: root,

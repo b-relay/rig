@@ -1,8 +1,21 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveRigRoot, verifyRigRoot } from "../src/cli/entry-environment";
+import {
+  resolveRigRoot,
+  resolveToolBun,
+  runsFromSource,
+  verifyRigRoot,
+} from "../src/cli/entry-environment";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -160,4 +173,44 @@ test("rigd capture with a missing request file reports the failure in one line e
   expect(arity.stderr).toBe(
     "missing required argument 'request-file'\nRun rigd capture --help.\n",
   );
+});
+test("rigd runs from source only when bun is executing a TypeScript entrypoint; a compiled rigd's entrypoint is itself", () => {
+  expect(runsFromSource("/repo/src/rigd.ts")).toBe(true);
+  expect(runsFromSource("/$bunfs/root/rigd")).toBe(false);
+  expect(runsFromSource(undefined)).toBe(false);
+});
+test("the bun for source-file Tools is rigd's own executable from source; a compiled rigd finds it on PATH; both prefer the stable PATH entry", async () => {
+  const base = await mkdtemp(join(tmpdir(), "rig-entry-bun-"));
+  roots.push(base);
+  const cellar = join(base, "Cellar", "bun", "1.4.2", "bin");
+  const bin = join(base, "bin");
+  await mkdir(cellar, { recursive: true });
+  await mkdir(bin);
+  await symlink(process.execPath, join(cellar, "bun"));
+  await symlink(join(cellar, "bun"), join(bin, "bun"));
+  // From source the running executable is bun; its stable PATH entry survives a package upgrade.
+  expect(
+    await resolveToolBun({
+      execPath: join(cellar, "bun"),
+      entrypoint: "/repo/src/rigd.ts",
+      PATH: bin,
+    }),
+  ).toBe(join(bin, "bun"));
+  // A compiled rigd's executable is rigd itself, never bun, so bun comes from PATH.
+  const compiled = {
+    execPath: join(base, "rigd"),
+    entrypoint: "/$bunfs/root/rigd",
+  };
+  expect(
+    await resolveToolBun({
+      ...compiled,
+      PATH: `${join(base, "empty")}:${bin}`,
+    }),
+  ).toBe(join(bin, "bun"));
+  expect(
+    await resolveToolBun({ ...compiled, PATH: join(base, "empty") }),
+  ).toBeUndefined();
+  expect(
+    await resolveToolBun({ ...compiled, PATH: undefined }),
+  ).toBeUndefined();
 });

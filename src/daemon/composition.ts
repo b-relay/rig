@@ -53,10 +53,12 @@ import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import type { Supervisor } from "../providers/contracts";
-/** Composition root selects adapters. Runtime and command code see capability Interfaces only. */
+/** Composition root selects adapters. Runtime and command code see capability Interfaces only.
+ * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none. */
 export async function composeDaemon(
   root: string,
   captureCommand: readonly string[],
+  toolBun: string | undefined,
   /** How rigd was installed: `process` under RIG_ROOT for tests and agent runs, `launchd` as the user's LaunchAgent. */
   mode: "process" | "launchd" = "launchd",
 ): Promise<Omit<DaemonHostOptions, "root" | "port">> {
@@ -103,7 +105,7 @@ export async function composeDaemon(
     listeners: createListenerInspection(runCommand),
     installer: createArtifactInstaller({
       run: runCommand,
-      bunExecutable: process.execPath,
+      bunExecutable: toolBun,
     }),
     router: createCaddyRouter({
       caddyfile:

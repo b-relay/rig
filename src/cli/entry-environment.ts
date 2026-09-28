@@ -137,12 +137,32 @@ export async function stableExecutablePath(
     return execPath;
   }
 }
+/** True when bun is running a rig entrypoint from source (`bun src/rigd.ts`), so the running executable is bun.
+ * A `bun build --compile` binary is its own entrypoint, so its executable is rig or rigd, never bun. */
+export function runsFromSource(entrypoint: string | undefined): boolean {
+  return entrypoint?.endsWith(".ts") === true;
+}
 export async function daemonCommand(): Promise<readonly string[]> {
   const executable = await stableExecutablePath(
     process.execPath,
     process.env.PATH,
   );
-  return process.argv[1]?.endsWith(".ts")
+  return runsFromSource(process.argv[1])
     ? [executable, join(import.meta.dir, "..", "rigd.ts")]
     : [join(dirname(executable), "rigd")];
+}
+/** The bun that Tools whose `bin` is a source file run with, resolved once when rigd is installed: the running executable
+ * when rigd runs from source, otherwise the first `bun` on the installing shell's PATH. Either way it is the stable PATH
+ * entry, so a package upgrade does not strand it. Undefined when a compiled rigd finds no bun on PATH. */
+export async function resolveToolBun(running: {
+  readonly execPath: string;
+  readonly entrypoint: string | undefined;
+  readonly PATH: string | undefined;
+}): Promise<string | undefined> {
+  const bun = runsFromSource(running.entrypoint)
+    ? running.execPath
+    : running.PATH
+      ? Bun.which("bun", { PATH: running.PATH })
+      : null;
+  return bun ? await stableExecutablePath(bun, running.PATH) : undefined;
 }

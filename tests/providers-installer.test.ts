@@ -1,7 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+  stat,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 const roots: string[] = [];
@@ -63,13 +70,16 @@ test("the installer builds through the supplied runner and shims source entrypoi
   const root = await mkdtemp(join(tmpdir(), "rig-install-explicit-"));
   roots.push(root);
   await writeFile(join(root, "main.ts"), "export {};");
+  const bun = join(root, "private bun", "bin", "bun");
+  await mkdir(dirname(bun), { recursive: true });
+  await writeFile(bun, "#!/bin/sh\n", { mode: 0o755 });
   const commands: string[][] = [];
   const installer = createArtifactInstaller({
     async run(request) {
       commands.push([...request.command]);
       return { exitCode: 0, stdout: "", stderr: "" };
     },
-    bunExecutable: "/opt/private bun/bin/bun",
+    bunExecutable: bun,
   });
   const installed = await installer.install({
     cwd: root,
@@ -80,6 +90,66 @@ test("the installer builds through the supplied runner and shims source entrypoi
   });
   expect(commands).toEqual([["/bin/sh", "-c", "echo building"]]);
   expect(await readFile(installed.path, "utf8")).toBe(
-    `#!/bin/sh\nexec '/opt/private bun/bin/bun' '${join(root, "main.ts")}' "$@"\n`,
+    `#!/bin/sh\nexec '${bun}' '${join(root, "main.ts")}' "$@"\n`,
+  );
+});
+test("a source entrypoint without a runnable bun fails as BUN_NOT_FOUND before building, and nothing is published", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-install-no-bun-"));
+  roots.push(root);
+  await writeFile(join(root, "main.ts"), "export {};");
+  const destination = join(root, "bin", "tool");
+  const commands: string[][] = [];
+  const run = async (request: { command: readonly string[] }) => {
+    commands.push([...request.command]);
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const request = {
+    cwd: root,
+    entrypoint: "main.ts",
+    destination,
+    build: "echo building",
+    env: { PATH: "" },
+  };
+  await expect(
+    createArtifactInstaller({ run, bunExecutable: undefined }).install(request),
+  ).rejects.toMatchObject({
+    _tag: "RigError",
+    code: "BUN_NOT_FOUND",
+    message: expect.stringContaining(join(root, "main.ts")),
+    hint: expect.stringContaining("rigd install"),
+    details: { entrypoint: join(root, "main.ts") },
+  });
+  // A recorded bun that has since been removed is as unusable as none.
+  const gone = join(root, "removed", "bun");
+  await expect(
+    createArtifactInstaller({ run, bunExecutable: gone }).install(request),
+  ).rejects.toMatchObject({
+    code: "BUN_NOT_FOUND",
+    message: expect.stringContaining(gone),
+    hint: expect.stringContaining("rigd install"),
+    details: { entrypoint: join(root, "main.ts"), bun: gone },
+  });
+  // A directory where the recorded bun was is searchable, so X_OK alone would pass; it still cannot run a Tool.
+  const directory = join(root, "directory-bun");
+  await mkdir(directory);
+  await expect(
+    createArtifactInstaller({ run, bunExecutable: directory }).install(
+      request,
+    ),
+  ).rejects.toMatchObject({
+    code: "BUN_NOT_FOUND",
+    message: expect.stringContaining(directory),
+    details: { entrypoint: join(root, "main.ts"), bun: directory },
+  });
+  expect(commands).toEqual([]);
+  await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  // A built executable never needs bun.
+  await writeFile(join(root, "built"), "#!/bin/sh\necho ready\n");
+  const installed = await createArtifactInstaller({
+    run,
+    bunExecutable: undefined,
+  }).install({ ...request, entrypoint: "built" });
+  expect(await readFile(installed.path, "utf8")).toBe(
+    "#!/bin/sh\necho ready\n",
   );
 });

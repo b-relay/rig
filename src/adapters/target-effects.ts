@@ -552,8 +552,11 @@ export function createTargetEffects(
         (await digestFile(destination)) === receipt.installedRevision;
       const unchanged = async () =>
         published &&
-        (await installedSourceRevision(source, digestFile)) ===
-          receipt!.sourceRevision;
+        (await installedSourceRevision(
+          source,
+          digestFile,
+          options.installer,
+        )) === receipt!.sourceRevision;
       if (await unchanged()) return { outcome: "unchanged" };
       await transactions.withArtifactChange(
         target.id,
@@ -572,6 +575,7 @@ export function createTargetEffects(
             sourceRevision: (await installedSourceRevision(
               source,
               digestFile,
+              options.installer,
             ))!,
             installedRevision: (await digestFile(destination))!,
           });
@@ -659,6 +663,7 @@ export function createTargetEffects(
               (await installedSourceRevision(
                 resolve(target.plan.workspacePath, component.entrypoint),
                 digestFile,
+                options.installer,
               ))
           )
             return "unknown";
@@ -746,15 +751,16 @@ function installationPolicyKey(
     )
     .digest("hex");
 }
+/** The receipt's view of the source: the file's digest when it is copied, or the installer's shim revision when it is shimmed,
+ * since a shim reads the file at run time and changes only with its interpreter. Undefined when the source is missing. */
 async function installedSourceRevision(
   source: string,
   digestFile: FileDigest,
+  installer: ArtifactInstaller,
 ): Promise<string | undefined> {
-  return isSourceEntrypoint(source)
-    ? (await exists(source))
-      ? "source-shim"
-      : undefined
-    : await digestFile(source);
+  const shim = installer.shimRevision(source);
+  if (shim === undefined) return await digestFile(source);
+  return (await exists(source)) ? shim : undefined;
 }
 /** Convex only knows `<cwd>/.convex/local/default`; a deployed checkout is pointed at the persistent state directory instead of growing its own. */
 async function linkConvexState(

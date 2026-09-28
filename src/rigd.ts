@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { runRigdCli } from "./cli/rigd";
 import {
   daemonCommand,
+  resolveToolBun,
   reportRootFailure,
   rigRoot,
   verifyRigRoot,
@@ -11,6 +12,7 @@ import {
 import { createHostDiagnosticLog } from "./diagnostics/host-log";
 import { DaemonAdmin } from "./daemon/admin";
 import { composeDaemon } from "./daemon/composition";
+import { readInstallationRecord } from "./daemon/installation";
 import { runDaemonHost } from "./daemon/host";
 import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
@@ -35,9 +37,12 @@ export async function main(args: readonly string[]): Promise<number> {
     const command = await daemonCommand();
     let runtime;
     try {
+      // The installing shell chose bun; the daemon never looks it up itself.
+      const installation = await readInstallationRecord(root);
       runtime = await composeDaemon(
         root,
         [...command, "capture"],
+        installation?.bun,
         process.env.RIG_DAEMON_MODE === "process" ? "process" : "launchd",
       );
     } catch (error) {
@@ -52,6 +57,11 @@ export async function main(args: readonly string[]): Promise<number> {
     admin: new DaemonAdmin({
       root,
       command: await daemonCommand(),
+      bun: await resolveToolBun({
+        execPath: process.execPath,
+        entrypoint: process.argv[1],
+        PATH: process.env.PATH,
+      }),
       mode: process.env.RIG_ROOT ? "process" : "launchd",
       userHome: homedir(),
     }),

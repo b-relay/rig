@@ -1,0 +1,412 @@
+{
+  "version": 4,
+  "projects": [
+    {
+      "id": "37319ba0-c4fd-4fc8-aa9e-11898fc33851",
+      "name": "design",
+      "repoPath": "/work/design",
+      "configPath": "/work/design/rig.yaml",
+      "createdAt": "2026-09-22T04:33:28.476Z"
+    }
+  ],
+  "targets": [
+    {
+      "id": "da2d6119-4c6c-4fe4-88a9-0d5e35b1239b",
+      "projectId": "37319ba0-c4fd-4fc8-aa9e-11898fc33851",
+      "name": "local",
+      "kind": "local",
+      "plan": {
+        "project": "design",
+        "target": "local",
+        "workspacePath": "/work/design",
+        "dataRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/da2d6119-4c6c-4fe4-88a9-0d5e35b1239b/data",
+        "deploymentName": "local",
+        "branchSlug": "local",
+        "subdomain": "local",
+        "providers": {
+          "processSupervisor": "rigd"
+        },
+        "env": {},
+        "envFiles": [
+          {
+            "path": "/rig/env/design/all.env",
+            "required": false
+          },
+          {
+            "path": "/rig/env/design/working.env",
+            "required": false
+          }
+        ],
+        "components": [
+          {
+            "name": "convex",
+            "kind": "managed",
+            "env": {
+              "CONVEX_CLOUD_PORT": "3210",
+              "CONVEX_SITE_PORT": "3211"
+            },
+            "dependsOn": [],
+            "envFiles": [
+              {
+                "path": "/rig/env/design/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/working.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/convex/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/convex/working.env",
+                "required": false
+              }
+            ],
+            "command": "exec bun scripts/convex-backend.ts",
+            "port": 3210,
+            "ports": {
+              "cloud": 3210,
+              "site": 3211
+            },
+            "readyTimeout": 60,
+            "restart": "always",
+            "health": "http://127.0.0.1:3210/instance_name"
+          },
+          {
+            "name": "web",
+            "kind": "managed",
+            "env": {
+              "CONVEX_URL": "http://127.0.0.1:3210",
+              "APP_ORIGIN": "http://127.0.0.1:5199",
+              "NEXT_TELEMETRY_DISABLED": "1",
+              "STUDIO_ENV": "development"
+            },
+            "dependsOn": ["convex"],
+            "envFiles": [
+              {
+                "path": "/rig/env/design/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/working.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/web/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/web/working.env",
+                "required": false
+              }
+            ],
+            "command": "exec bunx next dev --hostname 127.0.0.1 --port 5199",
+            "port": 5199,
+            "ports": {
+              "http": 5199
+            },
+            "readyTimeout": 120,
+            "restart": "always",
+            "health": "http://127.0.0.1:5199/api/health"
+          }
+        ],
+        "builds": [
+          {
+            "id": "service:web",
+            "component": "web",
+            "command": "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell",
+            "timeout": 600
+          }
+        ],
+        "preparedComponents": [],
+        "domain": "dev.design.example.test",
+        "proxy": {
+          "upstream": "web",
+          "routes": [
+            {
+              "prefix": "/",
+              "service": "web",
+              "port": 5199
+            }
+          ]
+        }
+      },
+      "desired": "running",
+      "createdAt": "2026-09-22T05:00:03.545Z",
+      "updatedAt": "2026-09-27T21:48:04.036Z",
+      "logRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/da2d6119-4c6c-4fe4-88a9-0d5e35b1239b/logs",
+      "configRevision": "c21aec9bbe7a4f5c73a827caae8efd4d526698f96cef15eab57280d4661f577f"
+    },
+    {
+      "id": "7d99e3b0-7162-4ed2-8cab-2f7d72af22e2",
+      "projectId": "37319ba0-c4fd-4fc8-aa9e-11898fc33851",
+      "name": "migrate-next-rig-agent-sdk-28897383",
+      "kind": "preview",
+      "branch": "studio-feedback",
+      "commit": "0dd2d41b72c41c8929d612bf1bc60de1dce83a2d",
+      "plan": {
+        "project": "design",
+        "target": "preview",
+        "workspacePath": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/7d99e3b0-7162-4ed2-8cab-2f7d72af22e2/revisions/5d5a70b1-bf45-4b47-86f1-82208b4ec4f8",
+        "dataRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/7d99e3b0-7162-4ed2-8cab-2f7d72af22e2/data",
+        "deploymentName": "migrate-next-rig-agent-sdk-28897383",
+        "branchSlug": "migrate-next-rig-agent-sdk-28897383",
+        "subdomain": "migrate-next-rig-agent-sdk-28897383",
+        "branch": "studio-feedback",
+        "commit": "0dd2d41b72c41c8929d612bf1bc60de1dce83a2d",
+        "providers": {
+          "processSupervisor": "rigd"
+        },
+        "env": {},
+        "envFiles": [
+          {
+            "path": "/rig/env/design/all.env",
+            "required": false
+          },
+          {
+            "path": "/rig/env/design/preview.env",
+            "required": false
+          }
+        ],
+        "components": [
+          {
+            "name": "convex",
+            "kind": "managed",
+            "env": {
+              "CONVEX_CLOUD_PORT": "50067",
+              "CONVEX_SITE_PORT": "50068",
+              "CONVEX_STATE_DIR": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/7d99e3b0-7162-4ed2-8cab-2f7d72af22e2/data/convex"
+            },
+            "dependsOn": [],
+            "envFiles": [
+              {
+                "path": "/rig/env/design/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/preview.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/convex/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/convex/preview.env",
+                "required": false
+              }
+            ],
+            "command": "exec bun scripts/convex-backend.ts",
+            "port": 50067,
+            "ports": {
+              "cloud": 50067,
+              "site": 50068
+            },
+            "readyTimeout": 60,
+            "restart": "always",
+            "health": "http://127.0.0.1:50067/instance_name"
+          },
+          {
+            "name": "web",
+            "kind": "managed",
+            "env": {
+              "CONVEX_URL": "http://127.0.0.1:50067",
+              "APP_ORIGIN": "http://127.0.0.1:50069",
+              "NEXT_TELEMETRY_DISABLED": "1",
+              "COMPONENT_STUDIO_DIR": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/7d99e3b0-7162-4ed2-8cab-2f7d72af22e2/data/web"
+            },
+            "dependsOn": ["convex"],
+            "envFiles": [
+              {
+                "path": "/rig/env/design/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/preview.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/web/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/web/preview.env",
+                "required": false
+              }
+            ],
+            "command": "exec bunx next start --hostname 127.0.0.1 --port 50069",
+            "port": 50069,
+            "ports": {
+              "http": 50069
+            },
+            "readyTimeout": 120,
+            "restart": "always",
+            "health": "http://127.0.0.1:50069/api/health"
+          }
+        ],
+        "builds": [
+          {
+            "id": "service:web",
+            "component": "web",
+            "command": "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell && bunx next build",
+            "timeout": 600
+          }
+        ],
+        "preparedComponents": [],
+        "domain": "migrate-next-rig-agent-sdk-28897383.design.example.test",
+        "proxy": {
+          "upstream": "web",
+          "routes": [
+            {
+              "prefix": "/",
+              "service": "web",
+              "port": 50069
+            }
+          ]
+        }
+      },
+      "desired": "running",
+      "createdAt": "2026-09-22T05:32:13.663Z",
+      "updatedAt": "2026-09-23T19:07:58.840Z",
+      "logRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/7d99e3b0-7162-4ed2-8cab-2f7d72af22e2/logs",
+      "sourceRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/7d99e3b0-7162-4ed2-8cab-2f7d72af22e2/revisions"
+    },
+    {
+      "id": "cd5efa3c-99dc-4926-ab36-d6992e5e752f",
+      "projectId": "37319ba0-c4fd-4fc8-aa9e-11898fc33851",
+      "name": "live",
+      "kind": "live",
+      "branch": "main",
+      "commit": "ad56f0fe0d19674716e9d40fb0529fd19c0f2e45",
+      "plan": {
+        "project": "design",
+        "target": "live",
+        "workspacePath": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/cd5efa3c-99dc-4926-ab36-d6992e5e752f/revisions/b7cc3a72-9bec-450a-91d7-67fd1a64346e",
+        "dataRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/cd5efa3c-99dc-4926-ab36-d6992e5e752f/data",
+        "deploymentName": "live",
+        "branchSlug": "live",
+        "subdomain": "live",
+        "branch": "main",
+        "commit": "ad56f0fe0d19674716e9d40fb0529fd19c0f2e45",
+        "providers": {
+          "processSupervisor": "rigd"
+        },
+        "env": {},
+        "envFiles": [
+          {
+            "path": "/rig/env/design/all.env",
+            "required": false
+          },
+          {
+            "path": "/rig/env/design/stable.env",
+            "required": false
+          }
+        ],
+        "components": [
+          {
+            "name": "convex",
+            "kind": "managed",
+            "env": {
+              "CONVEX_CLOUD_PORT": "54033",
+              "CONVEX_SITE_PORT": "54034",
+              "CONVEX_STATE_DIR": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/cd5efa3c-99dc-4926-ab36-d6992e5e752f/data/convex"
+            },
+            "dependsOn": [],
+            "envFiles": [
+              {
+                "path": "/rig/env/design/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/stable.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/convex/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/convex/stable.env",
+                "required": false
+              }
+            ],
+            "command": "exec bun scripts/convex-backend.ts",
+            "port": 54033,
+            "ports": {
+              "cloud": 54033,
+              "site": 54034
+            },
+            "readyTimeout": 60,
+            "restart": "always",
+            "health": "http://127.0.0.1:54033/instance_name"
+          },
+          {
+            "name": "web",
+            "kind": "managed",
+            "env": {
+              "CONVEX_URL": "http://127.0.0.1:54033",
+              "APP_ORIGIN": "http://127.0.0.1:54035",
+              "NEXT_TELEMETRY_DISABLED": "1",
+              "COMPONENT_STUDIO_DIR": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/cd5efa3c-99dc-4926-ab36-d6992e5e752f/data/web"
+            },
+            "dependsOn": ["convex"],
+            "envFiles": [
+              {
+                "path": "/rig/env/design/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/stable.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/web/all.env",
+                "required": false
+              },
+              {
+                "path": "/rig/env/design/web/stable.env",
+                "required": false
+              }
+            ],
+            "command": "exec bunx next start --hostname 127.0.0.1 --port 54035",
+            "port": 54035,
+            "ports": {
+              "http": 54035
+            },
+            "readyTimeout": 120,
+            "restart": "always",
+            "health": "http://127.0.0.1:54035/api/health"
+          }
+        ],
+        "builds": [
+          {
+            "id": "service:web",
+            "component": "web",
+            "command": "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell && bunx next build",
+            "timeout": 600
+          }
+        ],
+        "preparedComponents": [],
+        "domain": "design.example.test",
+        "proxy": {
+          "upstream": "web",
+          "routes": [
+            {
+              "prefix": "/",
+              "service": "web",
+              "port": 54035
+            }
+          ]
+        }
+      },
+      "desired": "running",
+      "createdAt": "2026-09-23T07:59:46.898Z",
+      "updatedAt": "2026-09-27T08:04:24.525Z",
+      "logRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/cd5efa3c-99dc-4926-ab36-d6992e5e752f/logs",
+      "sourceRoot": "/rig/targets/37319ba0-c4fd-4fc8-aa9e-11898fc33851/cd5efa3c-99dc-4926-ab36-d6992e5e752f/revisions"
+    }
+  ],
+  "activity": []
+}

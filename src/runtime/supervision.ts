@@ -1,4 +1,5 @@
 import type { ManagedComponent, RestartPolicy } from "../config/types";
+import { DEFAULT_RESTART_POLICY } from "../config/plan-defaults";
 import { recordActivity } from "../domain/activity";
 import { hostRestartText, type HostRestart } from "../domain/host-session";
 import {
@@ -357,7 +358,8 @@ export async function recordStoppedByHostRestart(
     if (
       outcome &&
       outcome.kind !== "unknown" &&
-      restartBudget(component.restart ?? "always", outcome) === undefined
+      restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
+        undefined
     )
       return undefined;
     return { kind: "unknown", hostRestart: restart, at: deps.now() };
@@ -489,7 +491,7 @@ async function superviseService(
   const observation = observed.value;
   let run = currentRun(target, service);
   if (run?.intent === "stopped" || run?.exhausted) return undefined;
-  const policy = component.restart ?? "always";
+  const policy = component.restart ?? DEFAULT_RESTART_POLICY;
   if (!run?.outcome) {
     const outcome = observedOutcome(run, observation, deps.now());
     run = {
@@ -702,7 +704,7 @@ export function stoppedStanding(
       exit: "unknown",
       reason: `It stopped when ${hostRestartText(outcome.hostRestart)}. Only Stable Targets are started again after that; the Working copy and Previews stay stopped. ${again}`,
     };
-  const policy = component.restart ?? "always";
+  const policy = component.restart ?? DEFAULT_RESTART_POLICY;
   const budget = restartBudget(policy, outcome, scope);
   const pending = budget !== undefined && !run?.exhausted;
   const next = run?.waitingFor

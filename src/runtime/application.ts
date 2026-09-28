@@ -1178,6 +1178,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const lease = await host;
     let jobs: Promise<number | undefined>[];
     let finding: HostSessionFinding | undefined;
+    /** The Host restart's Activity entry could not be written before the pass acted on it. */
+    let announceLater = false;
     /** The Targets of this pass, and those whose share of it is done (after a Host restart: acted on). */
     let expected: string[] = [];
     const settled = new Set<string>();
@@ -1202,8 +1204,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             { ...found, restart: found.restart! },
             deps,
           ).catch(async (error) => {
-            // Unrecorded, the restart must be found again: the session is not recorded, so the next start announces it.
-            finding = { ...found, record: false };
+            // The pass still acts on the restart; the entry is written once it has, with what it settled.
+            announceLater = true;
             await failed(error);
           });
         }
@@ -1253,6 +1255,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         finding,
         () => expected.every((id) => settled.has(id)),
         failed,
+        announceLater ? settled : undefined,
       );
     const due = (await passResults(jobs)).filter(
       (value): value is number => value !== undefined,
@@ -1262,15 +1265,24 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   }
   /** Records the Host session as acted on once every Target's share of the first pass is over, and only when `complete`
    * says each one was done and rigd is not draining: a daemon that stopped, drained or failed before it acted on a Host
-   * restart for every Target finds the same restart again at its next start. A drain waits for it. Never rejects. */
+   * restart for every Target finds the same restart again at its next start. A restart whose Activity entry could not be
+   * written before the pass acted on it is recorded now, with the Targets `unannounced` holds as settled; while it cannot
+   * be, the session is not recorded, so the next start still announces it. A drain waits for it. Never rejects. */
   function recordSessionAfter(
     jobs: readonly Promise<unknown>[],
     finding: HostSessionFinding,
     complete: () => boolean,
     failed: (error: unknown) => Promise<void>,
+    unannounced?: ReadonlySet<string>,
   ): Promise<void> {
     const recording = Promise.allSettled(jobs)
       .then(async () => {
+        if (unannounced && finding.restart)
+          await recordHostRestart(
+            { ...finding, restart: finding.restart },
+            deps,
+            [...unannounced],
+          );
         // A drain that began before a Target was acted on left it unsettled; one that began later changes nothing.
         if (!finding.record || (finding.restart && !complete())) return;
         await saveHostSession(finding.session, deps);

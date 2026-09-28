@@ -5,8 +5,8 @@ import {
   hostRestartBetween,
   identified,
   mayReplace,
-  sameRestart,
 } from "../src/domain/host-session";
+import { findHostRestart } from "../src/runtime/host-restart";
 import {
   createHostSessionProbe,
   parseBootSession,
@@ -53,23 +53,36 @@ test("nothing recorded, or a side that could not be read, detects nothing it can
   expect(hostRestartBetween(recorded, { login: "100019" })).toBe("login");
 });
 
-test("a session counts as identified by its boot or its login, and a restart found earlier is the same one when what identifies it matches", () => {
+test("a session counts as identified by its boot or its login", () => {
   expect(identified({})).toBe(false);
   expect(identified({ bootedAt: recorded.bootedAt })).toBe(false);
   expect(identified({ login: "100019" })).toBe(true);
-  // A reboot is its boot, whatever of the login either daemon could read.
-  const reboot = { kind: "reboot" as const, boot: BOOT };
-  expect(sameRestart(reboot, { boot: BOOT, login: "100002" })).toBe(true);
-  expect(sameRestart({ ...reboot, login: "100002" }, { boot: BOOT })).toBe(
-    true,
+});
+
+test("a restart found earlier and not finished is the same one while nothing changed since, whatever each read could see, and a change since is a new restart", () => {
+  const host = (restart: Record<string, unknown>) => ({
+    host: { ...recorded, seenAt: "2026-09-27T08:00:00.000Z", restart },
+  }) as Parameters<typeof findHostRestart>[0];
+  // Found with only the boot readable; read again with the login too.
+  const reboot = host({ kind: "reboot", boot: "NEW-BOOT", settled: ["t1"] });
+  expect(
+    findHostRestart(reboot, { boot: "NEW-BOOT", login: "100019" }),
+  ).toMatchObject({ restart: "reboot", announced: true });
+  expect([
+    ...findHostRestart(reboot, { boot: "NEW-BOOT" }).settled,
+  ]).toEqual(["t1"]);
+  // Found with only the login readable; read again with the new boot too: the same event keeps its kind.
+  const login = host({ kind: "login", login: "100019" });
+  expect(
+    findHostRestart(login, { boot: "NEW-BOOT", login: "100019" }),
+  ).toMatchObject({ restart: "login", announced: true });
+  // A logout and login since the pending reboot is a new restart, announced, with nothing settled.
+  const later = findHostRestart(
+    host({ kind: "reboot", boot: "NEW-BOOT", login: "100019", settled: ["t1"] }),
+    { boot: "NEW-BOOT", login: "100020" },
   );
-  expect(sameRestart(reboot, { login: "100002" })).toBe(false);
-  expect(sameRestart(reboot, { boot: "ANOTHER" })).toBe(false);
-  // A new login is its login session.
-  const login = { kind: "login" as const, login: "100019" };
-  expect(sameRestart(login, { boot: BOOT, login: "100019" })).toBe(true);
-  expect(sameRestart(login, { boot: BOOT, login: "100020" })).toBe(false);
-  expect(sameRestart({ kind: "login" }, { login: "100019" })).toBe(false);
+  expect(later).toMatchObject({ restart: "login", announced: false });
+  expect(later.settled.size).toBe(0);
 });
 
 test("a read with no restart replaces the recorded session only when it read everything the recorded one names", () => {

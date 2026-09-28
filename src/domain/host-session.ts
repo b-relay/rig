@@ -35,17 +35,6 @@ export function hostRestartBetween(
   return undefined;
 }
 
-/** Whether `current` shows the same Host restart as `pending`, found earlier: the same boot after a reboot, the same login
- * after a new login. Only what identifies the restart is compared, so a daemon that could read more (or less) of the rest
- * of the session than the one that found it still recognises it. */
-export function sameRestart(
-  pending: Pick<HostSession, "boot" | "login"> & { kind: HostRestart },
-  current: Pick<HostSession, "boot" | "login">,
-): boolean {
-  const field = pending.kind === "reboot" ? "boot" : "login";
-  return pending[field] !== undefined && pending[field] === current[field];
-}
-
 /** Whether anything identifying the session was read; a session with neither is never recorded, so the last one that was
  * stays the one the next start compares against. */
 export function identified(session: HostSession): boolean {

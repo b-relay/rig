@@ -585,32 +585,61 @@ test("a Stable Target whose start failed after a restart is not retried by the d
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
 });
 
-test("a restart whose Activity entry could not be written is not recorded as acted on, so the next start still records it", async () => {
+test("a restart whose Activity entry could not be written at first is recorded once the pass has acted on it, and not again by the next start", async () => {
   const f = await fixture();
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
   const update = f.store.update.bind(f.store);
-  let refuse = true;
+  let refusals = 1;
   f.store.update = (change) =>
     update(async (state) => {
       await change(state);
-      if (refuse && state.activity.some((entry) => entry.action === "host-restart"))
+      if (
+        refusals > 0 &&
+        state.activity.some((entry) => entry.action === "host-restart")
+      ) {
+        refusals--;
         throw new Error("disk full");
+      }
     });
   f.reopen();
   await f.reconcile();
-  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
 
-  refuse = false;
   f.reopen();
   await f.reconcile();
-  expect(
-    (await f.activitySince(before)).filter((entry) =>
-      entry.startsWith("host-restart"),
-    ),
-  ).toEqual(["host-restart/stopped -"]);
-  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
+  expect((await f.activitySince(before)).sort()).toEqual([
+    "host-restart/stopped -",
+    "up/started live",
+  ]);
+});
+
+test("a logout and login after a reboot the first pass did not finish is a restart of its own: the Stable Target is started again", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const failing = failWorkingCopyMarking(f.store);
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+
+  failing.on = false;
+  f.restartHost({ ...REBOOTED, login: "100019" });
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/started live",
+    "host-restart/stopped -",
+    "up/started live",
+  ]);
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-2", login: "100019" });
+  expect(host.restart).toBeUndefined();
 });
 
 test("after a reboot an outcome that already kept a Working copy Service stopped is kept, and one that would have been retried is replaced", async () => {

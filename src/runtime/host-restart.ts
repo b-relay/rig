@@ -5,7 +5,6 @@ import {
   hostRestartText,
   identified,
   mayReplace,
-  sameRestart,
   type HostRestart,
   type HostSession,
 } from "../domain/host-session";
@@ -31,30 +30,53 @@ export interface HostSessionFinding {
   record: boolean;
 }
 
-/** Compares the session read now with the one `state` records. */
+/** Compares the session read now with the one `state` records. A restart an earlier daemon found and recorded in Activity,
+ * but did not finish acting on, is the same restart when nothing in the session changed since it was found (as far as both
+ * reads can tell, and they can tell something): it keeps its kind, whatever more or less of the session each read could
+ * see, and is not announced again. A session that changed since then is a new restart of its own. */
 export function findHostRestart(
   state: Pick<RuntimeState, "host">,
   current: HostSession,
 ): HostSessionFinding {
-  const restart = hostRestartBetween(state.host, current);
   const pending = state.host?.restart;
-  const announced =
-    restart !== undefined &&
-    pending?.kind === restart &&
-    sameRestart(pending, current);
+  if (pending) {
+    const comparable =
+      (pending.boot !== undefined && current.boot !== undefined) ||
+      (pending.login !== undefined && current.login !== undefined);
+    const since = hostRestartBetween(pending, current);
+    if (comparable && since === undefined)
+      return {
+        restart: pending.kind,
+        announced: true,
+        settled: new Set(pending.settled ?? []),
+        session: current,
+        record: identified(current),
+      };
+    if (since)
+      return {
+        restart: since,
+        announced: false,
+        settled: new Set(),
+        session: current,
+        record: identified(current),
+      };
+  }
+  const restart = hostRestartBetween(state.host, current);
   return {
     ...(restart ? { restart } : {}),
-    announced,
-    settled: new Set(announced ? (pending?.settled ?? []) : []),
+    announced: false,
+    settled: new Set(),
     session: current,
     record: restart ? identified(current) : mayReplace(state.host, current),
   };
 }
 
-/** Records the one Activity entry for a detected Host restart, and, in the same write, that rigd is acting on it. */
+/** Records the one Activity entry for a detected Host restart, and, in the same write, that rigd is acting on it, with
+ * the Targets already `settled` for it when the entry is written late. */
 export async function recordHostRestart(
   finding: HostSessionFinding & { restart: HostRestart },
   deps: Deps,
+  settled: readonly string[] = [],
 ): Promise<void> {
   const booted =
     finding.restart === "reboot" && finding.session.bootedAt
@@ -75,7 +97,7 @@ export async function recordHostRestart(
         kind: finding.restart,
         ...(boot === undefined ? {} : { boot }),
         ...(login === undefined ? {} : { login }),
-        settled: [],
+        settled: [...settled],
       };
   });
 }

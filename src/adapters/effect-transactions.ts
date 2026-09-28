@@ -13,9 +13,14 @@ import type {
   PrunedCheckpoint,
   TargetEffectCheckpoint,
 } from "../runtime/lifecycle";
-import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
+import {
+  atomicFile,
+  createArtifactOwnership,
+  describeOwner,
+  ownerDetails,
+} from "./artifact-ownership";
 import { fileDigest } from "./file-digest";
-import type { ArtifactIdentity } from "./artifact-ownership";
+import type { ArtifactIdentity, ArtifactOwner } from "./artifact-ownership";
 const routeSchema = z
   .object({
     key: z.string().describe("Stable Target route identity."),
@@ -122,6 +127,39 @@ export function createEffectTransactions(options: {
     for (const [path, owner] of claims)
       if (owner === targetId) claims.delete(path);
   };
+  /** Settles once `claims` also holds every path of a pending journal an earlier rigd left on disk, so a Target whose
+   * change was interrupted keeps its paths across a restart until recovery commits or rolls it back. Read once per
+   * adapter; a failed read rejects every waiter and is retried by the next one. */
+  let seeded: Promise<void> | undefined;
+  const claimsSeeded = (): Promise<void> => {
+    seeded ??= seedClaims(join(options.root, CHECKPOINTS)).catch((error) => {
+      seeded = undefined;
+      throw error;
+    });
+    return seeded;
+  };
+  /** Claims the paths of each pending journal under `root` for the Target it names. A journal that cannot be read, or that
+   * sits under another Target's directory, is skipped: recovery refuses it before touching any path it lists. */
+  const seedClaims = async (root: string): Promise<void> => {
+    let names: string[];
+    try {
+      names = await readdir(root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const name of names) {
+      const entry = classify(name);
+      if (entry?.kind !== "directory") continue;
+      const journal = await readJournal(join(root, name, "journal.json")).catch(
+        () => undefined,
+      );
+      if (journal?.phase !== "pending" || hash(journal.targetId) !== entry.hash)
+        continue;
+      for (const file of journal.files)
+        if (!claims.has(file.path)) claims.set(file.path, journal.targetId);
+    }
+  };
   /** Claims `destinations` for `targetId` in one step, or claims none and rejects ARTIFACT_CONFLICT naming the path. */
   const claim = (targetId: string, destinations: readonly string[]) => {
     const taken = destinations.find((path) => {
@@ -213,6 +251,7 @@ export function createEffectTransactions(options: {
   const pruneCheckpoints = async (
     live: ReadonlySet<string>,
   ): Promise<PrunedCheckpoint[]> => {
+    await claimsSeeded();
     const root = join(options.root, CHECKPOINTS);
     let names: string[];
     try {
@@ -231,7 +270,7 @@ export function createEffectTransactions(options: {
       orphans.set(entry.hash, found);
     }
     const pruned: PrunedCheckpoint[] = [];
-    for (const { directory, claim } of orphans.values()) {
+    for (const [orphan, { directory, claim }] of orphans) {
       // A claim beside its directory leaves with it; alone, it is the whole orphan.
       if (!directory) {
         const targetId = await claimedTarget(claim!);
@@ -249,6 +288,9 @@ export function createEffectTransactions(options: {
       );
       const journal = read.journal;
       const targetId = journal ? { targetId: journal.targetId } : {};
+      // No Target in state can run this checkpoint's recovery, so kept or not, it no longer holds its paths.
+      if (journal && hash(journal.targetId) === orphan)
+        releaseClaims(journal.targetId);
       // Unreadable evidence and undone changes are kept; only what nothing depends on leaves.
       const reason =
         "error" in read
@@ -283,6 +325,28 @@ export function createEffectTransactions(options: {
     });
     await preparation.release(targetId);
   };
+  /** The first executable `journal` was still writing, itself or its ownership record, that an ownership record now gives to
+   * another Target. That Target published there after this change was interrupted, so undoing the change would remove or
+   * replace its executable. Rejects ARTIFACT_OWNER when a record is invalid. */
+  const takenOverExecutable = async (
+    journal: Journal,
+  ): Promise<{ path: string; owner: ArtifactOwner } | undefined> => {
+    const bin = resolve(options.root, "bin");
+    const applying = new Set(
+      journal.files.filter((file) => file.applying).map((file) => file.path),
+    );
+    for (const { path } of journal.files) {
+      if (resolve(dirname(path)) !== bin) continue;
+      if (
+        !applying.has(path) &&
+        !applying.has(options.ownership.ownerPath(path))
+      )
+        continue;
+      const owner = await options.ownership.owner(path);
+      if (owner && owner.targetId !== journal.targetId) return { path, owner };
+    }
+    return undefined;
+  };
   const rollback = async (journal: Journal) => {
     await preparation.validateLayout(journal.targetId);
     if (journal.phase === "committed")
@@ -314,7 +378,15 @@ export function createEffectTransactions(options: {
           "Preserve current files and inspect the checkpoint before recovery.",
         );
     }
-    // A write this transaction began but never captured is its own work:
+    const takenOver = await takenOverExecutable(journal);
+    if (takenOver)
+      throw new RigError(
+        "EFFECTS_CHANGED",
+        `${describeOwner(takenOver.owner)} installed the executable ${takenOver.path} after this Target's change to it was interrupted.`,
+        "Nothing was removed, and the checkpoint is kept. Free the path first: give that Component a different installName and deploy it again, or remove its Target. Then run rig down for this Target again.",
+        { path: takenOver.path, owner: ownerDetails(takenOver.owner) },
+      );
+    // Any other write this transaction began but never captured is its own work:
     // whatever is there now was put there by the interrupted daemon.
     for (const file of journal.files)
       if (
@@ -360,6 +432,7 @@ export function createEffectTransactions(options: {
       targetId: string,
       artifacts: readonly ArtifactCheckpointInput[],
     ): Promise<TargetEffectCheckpoint> {
+      await claimsSeeded();
       const prior = await load(targetId);
       if (prior?.phase === "committed") {
         await removeCheckpoint(targetId, { allowMissingDirectory: false });
@@ -495,6 +568,7 @@ export function createEffectTransactions(options: {
       }
     },
     async commit(targetId: string) {
+      await claimsSeeded();
       await preparation.validateLayout(targetId);
       const journal = active.get(targetId) ?? (await load(targetId));
       if (!journal) return preparation.recover(targetId);
@@ -530,6 +604,7 @@ export function createEffectTransactions(options: {
       );
     },
     async restore(targetId: string) {
+      await claimsSeeded();
       await preparation.validateLayout(targetId);
       const journal = active.get(targetId) ?? (await load(targetId));
       if (!journal) return preparation.recover(targetId);

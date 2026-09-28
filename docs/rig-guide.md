@@ -635,6 +635,14 @@ decision (roll-forward) without treating its own half-finished write as an
 external edit. Only a change made to an owned file _after_ the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
+Installed executables share one bin directory, so while a Target's checkpoint
+is unfinished, no other Target may install at a path it covers: that install is
+refused as `ARTIFACT_CONFLICT`, naming the Target to run `rig down` for. This
+holds across a rigd restart, because rigd reads the unfinished journals left
+on disk before it starts any change. If another Target nevertheless owns an
+executable the interrupted change was writing, recovery refuses as
+`EFFECTS_CHANGED` and removes nothing.
+
 Each journal carries a format version (currently 1). A journal written by a
 newer rigd whose version this one does not read is refused as
 `EFFECTS_CHECKPOINT` with both versions named and nothing changed; a journal of

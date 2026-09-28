@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
 import {
   appendFile,
+  link,
   mkdir,
+  readFile,
   open,
   readdir,
   rename,
@@ -68,7 +71,7 @@ export async function rotateLogFile(
       }
       if (retention.generations === 0) {
         if (!(await held())) return;
-        await rm(file, { force: true });
+        await dropCurrentFile(file, full);
       }
     }
   } catch (error) {
@@ -133,6 +136,30 @@ export async function acquireRotationLock(
   for (const number of numbers)
     await rm(join(dirname(file), `${prefix}${number}`), { force: true });
   return lock;
+}
+/** Deletes the current file only if it is still the full file `identity` names: it is moved aside first (atomic), and a
+ * newer file that was there instead, which a stalled holder could otherwise delete, is put back, its lines appended to
+ * any file started meanwhile. */
+export async function dropCurrentFile(
+  file: string,
+  identity: string,
+): Promise<void> {
+  const aside = `${file}.dropping-${randomUUID()}`;
+  try {
+    await rename(file, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const moved = await stat(aside);
+  if (`${moved.dev}-${moved.ino}` !== identity)
+    try {
+      await link(aside, file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await appendFile(file, await readFile(aside), { mode: 0o600 });
+    }
+  await rm(aside, { force: true });
 }
 async function exists(path: string): Promise<boolean> {
   try {

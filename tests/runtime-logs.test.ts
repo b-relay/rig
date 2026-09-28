@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
 import {
   acquireRotationLock,
+  dropCurrentFile,
   appendTargetLog,
   rotateLogFile,
 } from "../src/providers/target-log";
@@ -1059,5 +1060,69 @@ test("a follow from a read that ended inside an over-long launchd line skips the
   expect(middle.entries).toEqual([]);
   await appendFile(path, " and its end\nnext line\n");
   const next = await files.logs(target, middle.cursor, 5);
+  expect(next.entries.map((each) => each.line)).toEqual(["next line"]);
+});
+
+test("under zero generations a holder deletes only the full file it locked; a newer file found in its place is kept", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, "full\n");
+  const full = await stat(path);
+  // Passed over while stalled: another writer already deleted the full file, and new output started a new one.
+  await rm(path);
+  await writeFile(path, "newer\n");
+  await dropCurrentFile(path, `${full.dev}-${full.ino}`);
+  expect(await readFile(path, "utf8")).toBe("newer\n");
+  // The full file itself is deleted.
+  const current = await stat(path);
+  await dropCurrentFile(path, `${current.dev}-${current.ino}`);
+  expect(await exists(path)).toBe(false);
+  expect(
+    (await readdir(target.logRoot)).filter((name) => name.includes("dropping")),
+  ).toEqual([]);
+});
+
+test("a long follow stops following generations two rotations old once read, so its open files stay few", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  const retention = { maxBytes: 64, generations: 20 };
+  await appendTargetLog(target.logRoot, entry("start"), retention);
+  let cursor = (await files.logs(target, undefined, 10)).cursor;
+  const seen: string[] = [];
+  for (let n = 0; n < 12; n++) {
+    await appendTargetLog(
+      target.logRoot,
+      entry(
+        `line ${n}`,
+        `2026-09-09T12:00:${String(10 + n).padStart(2, "0")}Z`,
+      ),
+      retention,
+    );
+    const next = await files.logs(target, cursor, 100);
+    seen.push(...next.entries.map((each) => each.line));
+    cursor = next.cursor;
+  }
+  expect(seen).toEqual(Array.from({ length: 12 }, (_, n) => `line ${n}`));
+  expect(await exists(`${path}.5`)).toBe(true);
+  const followed = Object.keys(
+    JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")).sources,
+  );
+  expect(followed.length).toBeLessThanOrEqual(3);
+});
+
+test("a launchd line that grows past the window during a follow is reported once, and its end is not shown as a line of its own", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "web.stdout.log");
+  await writeFile(path, "ready\n");
+  const first = await files.logs(target, undefined, 5);
+  await appendFile(path, "#".repeat(LOG_WINDOW_BYTES + 10));
+  const grown = await files.logs(target, first.cursor, 5);
+  expect(grown.entries.map((each) => each.line)).toEqual([
+    `Rig skipped an unreadable log record (more than ${LOG_WINDOW_BYTES + 10} bytes).`,
+  ]);
+  await appendFile(path, "its end\nnext line\n");
+  const next = await files.logs(target, grown.cursor, 5);
   expect(next.entries.map((each) => each.line)).toEqual(["next line"]);
 });

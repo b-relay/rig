@@ -39,6 +39,8 @@ const cursorSchema = z
 interface LogRow {
   end: number;
   entry?: TargetLogEntry;
+  /** `end` is inside an over-long run that has no newline yet; see LogPosition.midRecord. */
+  midRecord?: true;
 }
 interface SourceWindow {
   source: LogSource;
@@ -180,10 +182,19 @@ async function readFollowing(
       if (!positions[name] && source.generation > 0) continue;
       windows.push(await readWindow(log, source, positions[name]));
     }
+    const entries = nextEntries(windows, lines, filter);
     return {
-      entries: nextEntries(windows, lines, filter),
+      entries,
+      // A generation two or more rotations old gets no more writes: once read to its end it is not followed any more,
+      // so a long follow keeps open at most the current file and one or two generations per family.
       positions: Object.fromEntries(
-        windows.map((window) => [window.source.name, window.position]),
+        windows
+          .filter(
+            (window) =>
+              window.source.generation < 2 ||
+              window.position.offset < opened.get(window.source.name)!.size,
+          )
+          .map((window) => [window.source.name, window.position]),
       ),
     };
   } finally {
@@ -282,10 +293,16 @@ function nextEntries(
   filter: LogFilter,
 ): TargetLogEntry[] {
   const entries: TargetLogEntry[] = [];
+  const advance = (window: SourceWindow) => {
+    const row = window.rows.shift()!;
+    window.position.offset = row.end;
+    if (row.midRecord) window.position.midRecord = true;
+    else delete window.position.midRecord;
+    return row;
+  };
   while (entries.length < lines) {
     for (const window of windows)
-      while (window.rows[0] && !window.rows[0].entry)
-        window.position.offset = window.rows.shift()!.end;
+      while (window.rows[0] && !window.rows[0].entry) advance(window);
     const next = windows
       .filter((window) => window.rows[0]?.entry)
       .sort(
@@ -296,8 +313,7 @@ function nextEntries(
           b.source.generation - a.source.generation,
       )[0];
     if (!next) break;
-    const row = next.rows.shift()!;
-    next.position.offset = row.end;
+    const row = advance(next);
     if (matchesLogFilter(row.entry!, filter)) entries.push(row.entry!);
   }
   return entries;
@@ -377,13 +393,20 @@ async function readWindow(
   let begin = 0;
   const rows: LogRow[] = [];
   let lastTimestamp: string | undefined;
-  const record = (line: string | undefined, length: number, end: number) => {
+  const record = (
+    line: string | undefined,
+    length: number,
+    end: number,
+    unfinished = false,
+  ) => {
     const parsed =
       line === undefined ? "unreadable" : parseLogRecord(source.family, line);
     const entry =
-      parsed === "unreadable" ? unreadableEntry(length, lastTimestamp) : parsed;
+      parsed === "unreadable"
+        ? unreadableEntry(length, lastTimestamp, unfinished)
+        : parsed;
     lastTimestamp = entry?.timestamp ?? lastTimestamp;
-    rows.push({ end, entry });
+    rows.push({ end, entry, ...(unfinished ? { midRecord: true } : {}) });
   };
   for (
     let newline = bytes.indexOf(10, begin);
@@ -401,7 +424,11 @@ async function readWindow(
   // ends it (or to the end of the file) as one unreadable record rather than stalling.
   if (bytes.length === LOG_WINDOW_BYTES && !rows.length) {
     const skipTo = await nextNewline(file, start + bytes.length, size);
-    record(undefined, skipTo - start - 1, skipTo);
+    // No newline yet: the run is still being written, and what follows it up to its newline is part of it.
+    const unfinished =
+      skipTo === size && (await readAt(file, size - 1, 1))[0] !== 10;
+    if (unfinished) record(undefined, size - start, size, true);
+    else record(undefined, skipTo - start - 1, skipTo);
   }
   return { source, position: { identity, offset: start }, rows };
 }

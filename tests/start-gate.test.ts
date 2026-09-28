@@ -70,7 +70,8 @@ const supervisor = createChildSupervisor({
   timing: createProcessTiming(),
   processInspection: { ...platform, identity: async (pid) => {
     if (pid !== process.pid) {
-      writeFileSync(${JSON.stringify(spawned)}, String(pid));
+      // Read while the gated process is known to wait at its gate, so the test can end it without ever signalling a reused pid.
+      writeFileSync(${JSON.stringify(spawned)}, JSON.stringify({ pid, identity: await platform.identity(pid) }));
       process.kill(process.pid, "SIGKILL");
       await new Promise(() => {});
     }
@@ -92,10 +93,11 @@ await supervisor.ensureRunning(${JSON.stringify({
     stderr: "ignore",
   });
   await supervisor.exited;
-  return {
-    signal: supervisor.signalCode,
-    spawned: Number(await readFile(spawned, "utf8")),
-  };
+  const gated: { pid: number; identity?: string } = JSON.parse(
+    await readFile(spawned, "utf8"),
+  );
+  if (gated.identity) groups.push({ pid: gated.pid, identity: gated.identity });
+  return { signal: supervisor.signalCode, spawned: gated.pid };
 }
 
 test("a supervisor killed between spawning a process and leasing it leaves nothing running: the command never started", async () => {
@@ -109,9 +111,7 @@ test("a supervisor killed between spawning a process and leasing it leaves nothi
   ]);
   expect(signal).toBe("SIGKILL");
   // The process the supervisor spawned waited to be released, and ended once its supervisor was gone.
-  const ended = await gone(spawned);
-  if (!ended) await track(spawned);
-  expect(ended).toBe(true);
+  expect(await gone(spawned)).toBe(true);
   expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
   // Nothing names it, and nothing needs to: a later supervisor starts the one and only copy.
   const later = createChildSupervisor({
@@ -155,22 +155,35 @@ test("rigd killed between spawning a capture wrapper and leasing it leaves nothi
     wrapper,
     `import {runCapturedProcess} from ${src("captured-process.ts")}; process.exitCode = await runCapturedProcess(process.argv[2]!);`,
   );
+  // An application that starts records its pid and birth time, so cleanup can end it without ever signalling a reused pid.
   const { signal, spawned } = await killedInSpawnWindow(
     root,
-    ["/bin/sh", "-c", `echo $$ >> ${starts}; exec sleep 30`],
+    [
+      "/bin/sh",
+      "-c",
+      `echo "$$ $(LC_ALL=C TZ=UTC /bin/ps -p $$ -o lstart=)" >> ${starts}; exec sleep 30`,
+    ],
     [process.execPath, wrapper],
   );
-  expect(signal).toBe("SIGKILL");
   const ended = await gone(spawned);
-  if (!ended) await track(spawned);
-  expect(ended).toBe(true);
-  // The wrapper never ran: it wrote no status and started no application.
   await Bun.sleep(200);
   const applications = (await readFile(starts, "utf8").catch(() => ""))
     .split("\n")
-    .filter(Boolean);
-  // Should one have started after all, it runs in its own group: cleanup ends that too.
-  for (const application of applications) await track(Number(application));
+    .filter(Boolean)
+    .map((line) => {
+      const [pid, ...birth] = line.split(" ");
+      return {
+        pid: Number(pid),
+        identity: createHash("sha256")
+          .update(`${pid}:${birth.join(" ").trim()}`)
+          .digest("hex"),
+      };
+    });
+  // Should one have started after all, it runs in its own group: cleanup ends that too, before any assertion can fail.
+  groups.push(...applications);
+  expect(signal).toBe("SIGKILL");
+  expect(ended).toBe(true);
+  // The wrapper never ran: it wrote no status and started no application.
   expect(applications).toEqual([]);
   const capture = join(
     root,
@@ -280,9 +293,12 @@ function scriptedSpawnRead(
     timing: createProcessTiming(),
     processInspection: {
       ...platform,
-      identity: (pid) => {
+      identity: async (pid) => {
         if (world.spawned || pid === process.pid) return platform.identity(pid);
         world.spawned = pid;
+        // Read while the gated process is known to wait at its gate, so cleanup never signals a reused pid.
+        const identity = await platform.identity(pid);
+        if (identity) groups.push({ pid, identity });
         return inspectSpawned(pid, platform.identity);
       },
     },
@@ -311,9 +327,7 @@ test("a spawned process whose identity cannot be read is never released: the sta
     await expect(
       world.supervisor.ensureRunning(gatedRequest(root)),
     ).rejects.toMatchObject({ code: "PROCESS_START" });
-    const ended = await gone(world.spawned);
-    if (!ended) await track(world.spawned);
-    expect(ended).toBe(true);
+    expect(await gone(world.spawned)).toBe(true);
     expect(await readFile(join(root, "starts"), "utf8").catch(() => "")).toBe(
       "",
     );

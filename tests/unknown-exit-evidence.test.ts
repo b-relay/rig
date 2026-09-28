@@ -121,7 +121,8 @@ const armed = ${JSON.stringify(armed)};
 process.exitCode = await runCapturedProcess(process.argv[2]!, { processInspection: { ...platform, identity: async (pid) => {
   if (pid !== process.pid && existsSync(armed)) {
     rmSync(armed);
-    writeFileSync(armed + ".pid", String(pid));
+    // Read while the gated process is known to wait at its gate, so the test can end it without ever signalling a reused pid.
+    writeFileSync(armed + ".pid", JSON.stringify({ pid, identity: await platform.identity(pid) }));
     process.kill(process.pid, "SIGKILL");
     await new Promise(() => {});
   }
@@ -172,6 +173,7 @@ const identityOf = createProcessIdentityReader(runCommand);
  * signals it only while that identity still matches: a pid seen gone may belong to another process by then. */
 const tracked: Promise<{ pid: number; identity: string } | undefined>[] = [];
 const pids = {
+  /** Records `pid` with the birth identity read now; for a process the test knows is running. */
   push(pid: number): void {
     tracked.push(
       identityOf(pid).then(
@@ -179,6 +181,10 @@ const pids = {
         () => undefined,
       ),
     );
+  },
+  /** Records `pid` with a birth identity read while it was known to run. */
+  known(pid: number, identity: string | undefined): void {
+    if (identity) tracked.push(Promise.resolve({ pid, identity }));
   },
 };
 afterEach(async () => {
@@ -357,10 +363,13 @@ for (const [name, witness] of [
         await expect(supervisor.ensureRunning(req)).rejects.toMatchObject({
           code: "PROCESS_START_TIMEOUT",
         });
-        const spawned = Number(await readFile(`${armed}.pid`, "utf8"));
+        const gated: { pid: number; identity?: string } = JSON.parse(
+          await readFile(`${armed}.pid`, "utf8"),
+        );
+        const spawned = gated.pid;
+        pids.known(spawned, gated.identity);
         // What the wrapper spawned was never released to become the application, and ended with its wrapper.
         for (let i = 0; i < 100 && alive(spawned); i++) await Bun.sleep(10);
-        pids.push(spawned);
         expect(alive(spawned)).toBe(false);
         expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
         // So the retry is the one and only application.

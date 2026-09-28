@@ -133,21 +133,20 @@ export async function* linesBackward(
     yield line(pending.subarray(0, pending.length - 1));
 }
 
-/** Byte offset just past the next newline at or after `from`, or `size` when none follows. */
+/** The next newline at or after `from`, searched at most one window far (and never past `size`): `past` is the offset
+ * just after it, or undefined when there is none in that stretch; `scanned` is where the search stopped. So one read of a
+ * run without a newline costs a window, however long the run has grown. */
 export async function nextNewline(
   file: FileHandle,
   from: number,
   size: number,
-): Promise<number> {
-  const chunk = Buffer.alloc(LOG_WINDOW_BYTES);
-  for (let at = from; at < size;) {
-    const { bytesRead } = await file.read(chunk, 0, chunk.length, at);
-    if (bytesRead === 0) break;
-    const newline = chunk.subarray(0, bytesRead).indexOf(10);
-    if (newline !== -1) return at + newline + 1;
-    at += bytesRead;
-  }
-  return size;
+): Promise<{ past?: number; scanned: number }> {
+  const limit = Math.min(size, from + LOG_WINDOW_BYTES);
+  const bytes = await readAt(file, from, limit - from);
+  const newline = bytes.indexOf(10);
+  return newline === -1
+    ? { scanned: from + bytes.length }
+    : { past: from + newline + 1, scanned: from + newline + 1 };
 }
 
 export async function readAt(

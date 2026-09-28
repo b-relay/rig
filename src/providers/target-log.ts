@@ -3,7 +3,6 @@ import {
   appendFile,
   link,
   mkdir,
-  readFile,
   open,
   readdir,
   rename,
@@ -138,8 +137,9 @@ export async function acquireRotationLock(
   return lock;
 }
 /** Deletes the current file only if it is still the full file `identity` names: it is moved aside first (atomic), and a
- * newer file that was there instead, which a stalled holder could otherwise delete, is put back, its lines appended to
- * any file started meanwhile. */
+ * newer file that was there instead, which a stalled holder could otherwise delete, is put back by name, never copied, so
+ * a writer holding it open keeps appending to it. When yet another file has been started in its place meanwhile, the
+ * newer file becomes `<file>.1`, where reads still find it; zero generations keep no `.1`, so the next rotation drops it. */
 export async function dropCurrentFile(
   file: string,
   identity: string,
@@ -152,14 +152,17 @@ export async function dropCurrentFile(
     throw error;
   }
   const moved = await stat(aside);
-  if (`${moved.dev}-${moved.ino}` !== identity)
-    try {
-      await link(aside, file);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      await appendFile(file, await readFile(aside), { mode: 0o600 });
-    }
-  await rm(aside, { force: true });
+  if (`${moved.dev}-${moved.ino}` === identity) {
+    await rm(aside, { force: true });
+    return;
+  }
+  try {
+    await link(aside, file);
+    await rm(aside, { force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    await rename(aside, `${file}.1`);
+  }
 }
 async function exists(path: string): Promise<boolean> {
   try {

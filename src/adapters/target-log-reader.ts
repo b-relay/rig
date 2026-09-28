@@ -162,13 +162,15 @@ async function readFollowing(
   const previous = Object.fromEntries(
     Object.entries(following).filter(([name]) => included(name)),
   );
-  const snapshot = await openSnapshot(
-    root,
-    included,
-    filter,
-    new Set(Object.values(previous).map((position) => position.identity)),
-  );
-  const { sources, opened } = snapshot;
+  const snapshot = await openSnapshot(root, included, filter, {
+    identities: new Set(
+      Object.values(previous).map((position) => position.identity),
+    ),
+    families: new Set(
+      Object.keys(previous).map((name) => logSource(name)!.family),
+    ),
+  });
+  const { sources, opened, unseen } = snapshot;
   try {
     const positions = rebind(opened, previous, sources !== undefined);
     const names = new Set([...opened.keys(), ...Object.keys(positions)]);
@@ -178,8 +180,10 @@ async function readFollowing(
       const log = opened.get(name);
       // A source the cursor knew has gone: that is a cursor problem, not a missing log.
       if (!log) throw cursorError();
-      // An older generation the cursor never covered is history the first read already chose from.
-      if (!positions[name] && source.generation > 0) continue;
+      // An older generation the cursor never covered is history the first read already chose from, unless it was made
+      // since: then it is read from its start.
+      if (!positions[name] && source.generation > 0 && !unseen.has(name))
+        continue;
       windows.push(await readWindow(log, source, positions[name]));
     }
     const entries = nextEntries(windows, lines, filter);
@@ -219,10 +223,18 @@ async function openSnapshot(
   root: string,
   included: (name: string) => boolean,
   filter: LogFilter,
-  following: ReadonlySet<string>,
+  following: {
+    /** Identities of the files the cursor follows. */
+    readonly identities: ReadonlySet<string>;
+    /** Families the cursor has a position in. */
+    readonly families: ReadonlySet<string>;
+  },
 ): Promise<{
   sources: readonly LogSource[] | undefined;
   opened: Map<string, OpenLog>;
+  /** Older generations made since the cursor's read (newer than any file it follows in their family), read from their
+   * start: two rotations between reads leave one the follow never saw. */
+  unseen: Set<string>;
 }> {
   for (let attempt = 1; ; attempt++) {
     const sources = await listSources(root);
@@ -236,13 +248,34 @@ async function openSnapshot(
       );
       if (metadata) identities[source.name] = `${metadata.dev}:${metadata.ino}`;
     }
+    /** Per family, the generation of the newest file the cursor follows; files newer than it were made since. */
+    const newestFollowed = new Map<string, number>();
+    for (const source of listed) {
+      const identity = identities[source.name];
+      if (identity && following.identities.has(identity))
+        newestFollowed.set(
+          source.family,
+          Math.min(
+            newestFollowed.get(source.family) ?? Infinity,
+            source.generation,
+          ),
+        );
+    }
     const opened = new Map<string, OpenLog>();
+    const unseen = new Set<string>();
     let holds = true;
     try {
       for (const source of listed) {
         const identity = identities[source.name];
-        if (source.generation > 0 && !(identity && following.has(identity)))
-          continue;
+        const followed =
+          identity !== undefined && following.identities.has(identity);
+        const madeSince =
+          source.generation > 0 &&
+          !followed &&
+          following.families.has(source.family) &&
+          source.generation < (newestFollowed.get(source.family) ?? Infinity);
+        if (source.generation > 0 && !followed && !madeSince) continue;
+        if (madeSince) unseen.add(source.name);
         const log = await openLog(join(root, source.name));
         if (!log) continue;
         opened.set(source.name, log);
@@ -258,7 +291,7 @@ async function openSnapshot(
       for (const log of opened.values()) await log.handle.close();
       throw error;
     }
-    if (holds) return { sources, opened };
+    if (holds) return { sources, opened, unseen };
     for (const log of opened.values()) await log.handle.close();
     if (attempt === SNAPSHOT_ATTEMPTS) throw logsBusy();
   }
@@ -372,18 +405,16 @@ async function readWindow(
     throw cursorError();
   let start = previous?.offset ?? 0;
   if (previous?.midRecord) {
-    // The rest of a run already reported as unreadable, up to its newline, is not a line of its own.
-    const past = await nextNewline(file, start, size);
-    const ended =
-      past > start &&
-      (past < size || (await readAt(file, size - 1, 1))[0] === 10);
-    if (!ended)
+    // The rest of a run already reported as unreadable, up to its newline, is not a line of its own; it is passed a
+    // window per read.
+    const found = await nextNewline(file, start, size);
+    if (found.past === undefined)
       return {
         source,
-        position: { identity, offset: size, midRecord: true },
+        position: { identity, offset: found.scanned, midRecord: true },
         rows: [],
       };
-    start = past;
+    start = found.past;
   }
   const bytes = await readAt(
     file,
@@ -423,12 +454,11 @@ async function readWindow(
   // A run longer than the window has no newline inside it: skip to the newline that
   // ends it (or to the end of the file) as one unreadable record rather than stalling.
   if (bytes.length === LOG_WINDOW_BYTES && !rows.length) {
-    const skipTo = await nextNewline(file, start + bytes.length, size);
-    // No newline yet: the run is still being written, and what follows it up to its newline is part of it.
-    const unfinished =
-      skipTo === size && (await readAt(file, size - 1, 1))[0] !== 10;
-    if (unfinished) record(undefined, size - start, size, true);
-    else record(undefined, skipTo - start - 1, skipTo);
+    const found = await nextNewline(file, start + bytes.length, size);
+    // No newline within the next window: what follows, up to the newline, is the rest of this run, passed over later.
+    if (found.past === undefined)
+      record(undefined, found.scanned - start, found.scanned, true);
+    else record(undefined, found.past - start - 1, found.past);
   }
   return { source, position: { identity, offset: start }, rows };
 }

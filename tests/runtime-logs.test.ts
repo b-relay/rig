@@ -1126,3 +1126,59 @@ test("a launchd line that grows past the window during a follow is reported once
   const next = await files.logs(target, grown.cursor, 5);
   expect(next.entries.map((each) => each.line)).toEqual(["next line"]);
 });
+
+test("two rotations between follow reads leave a generation the follow never saw, and it is read from its start", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  const retention = { maxBytes: 64, generations: 1 };
+  await appendTargetLog(
+    target.logRoot,
+    entry("start", "2026-09-09T12:00:00Z"),
+    retention,
+  );
+  const first = await files.logs(target, undefined, 10);
+  // Two rotations: the followed file is evicted, the one after it is now .1, and a third is current.
+  for (let n = 1; n <= 4; n++)
+    await appendTargetLog(
+      target.logRoot,
+      entry(`line ${n}`, `2026-09-09T12:00:0${n}Z`),
+      retention,
+    );
+  expect(await exists(`${path}.1`)).toBe(true);
+  const next = await files.logs(target, first.cursor, 100);
+  const seen = next.entries.map((each) => each.line);
+  // Whatever the evicted file held past the cursor is gone with it; every retained line is shown, in order.
+  const retained = [
+    ...(await readFile(`${path}.1`, "utf8")).trim().split("\n"),
+    ...(await readFile(path, "utf8")).trim().split("\n"),
+  ].map((line) => JSON.parse(line).line);
+  expect(seen.slice(-retained.length)).toEqual(retained);
+  expect(retained.length).toBeGreaterThan(1);
+});
+
+test("a follow passes an endless launchd line a window per read, however far it has grown, and resumes at its end", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "web.stdout.log");
+  await writeFile(path, "ready\n");
+  let cursor = (await files.logs(target, undefined, 5)).cursor;
+  await appendFile(
+    path,
+    "#".repeat(4 * LOG_WINDOW_BYTES) + " its end\nnext line\n",
+  );
+  const shown: string[] = [];
+  let reads = 0;
+  while (!shown.includes("next line") && reads < 10) {
+    const next = await files.logs(target, cursor, 5);
+    shown.push(...next.entries.map((each) => each.line));
+    cursor = next.cursor;
+    reads++;
+  }
+  expect(shown).toEqual([
+    `Rig skipped an unreadable log record (more than ${2 * LOG_WINDOW_BYTES} bytes).`,
+    "next line",
+  ]);
+  // Each read passed at most a window of the run.
+  expect(reads).toBeGreaterThanOrEqual(3);
+});

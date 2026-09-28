@@ -635,6 +635,20 @@ decision (roll-forward) without treating its own half-finished write as an
 external edit. Only a change made to an owned file _after_ the journal
 captured it is refused as `EFFECTS_CHANGED`.
 
+Installed executables share one bin directory, so while a Target's checkpoint
+is unfinished, no other Target may install at a path it covers: that install is
+refused as `ARTIFACT_CONFLICT`, naming the Project and Target to run
+`rig down` for. This holds across a rigd restart, because rigd reads the
+unfinished journals left on disk before it starts any change, including
+journals it could not recover itself (from a newer rigd, say); if a journal
+or an executable's ownership record cannot be read then, the change fails
+rather than guess. A recovery holds the paths it undoes while it runs. If
+another Target nevertheless owns an executable the interrupted change was
+writing (an older rigd could let it install there), recovery refuses as
+`EFFECTS_CHANGED`, removes nothing and keeps the checkpoint. Give that other
+Component a different `installName` and deploy it again, or remove its Target;
+then run `rig down` for the first Target again.
+
 Each journal carries a format version (currently 1). A journal written by a
 newer rigd whose version this one does not read is refused as
 `EFFECTS_CHECKPOINT` with both versions named and nothing changed; a journal of
@@ -794,8 +808,15 @@ The state file carries a format version (currently 4). A file written by a
 newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
 rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
-newer version's fields survive a temporary downgrade. Services that take
-longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
+newer version's fields survive a temporary downgrade. A new value in a known
+field does not: a `rigd` from before `rig forget` was recorded in Activity
+refuses the state as `STATE_CORRUPT` once a `forgotten` entry is in it. Upgrade
+`rigd` again, or delete the entries whose `outcome` is `forgotten` from
+`activity` in the state file. Restoring `state.json.bak`, as the error
+suggests, helps only when recording the forget was the last write: that copy
+has the Project already removed, just without the `forgotten` entry. After any
+later write it holds the entry too. Services that take longer than about 4 s to stop
+need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
@@ -1114,6 +1135,14 @@ process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
 
+An executable `bin`, anything but the source files below, is copied byte for
+byte into `<RIG_ROOT>/bin` (as `<tool>` or `<tool>-<target name>`; see
+"Environment, builds, and startup") and runs from there, not from the
+workspace. It must therefore be self-contained, like a compiled binary, or
+must itself name the checkout it needs. A shell script that finds its checkout
+with `dirname "$0"` gets `<RIG_ROOT>/bin` instead, which holds none of the
+checkout's files.
+
 A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
 `.cjs`) is not copied. Rig publishes a two-line shim,
 `exec <bun> <workspace>/<bin> "$@"`, which runs the file in place, so its
@@ -1320,7 +1349,20 @@ time and without starting (or retrying) a Stable Target it already started, or
 failed to start, for that restart. A restart whose Activity entry could not be
 written yet is recorded by the start that finishes it. Only a session that changed since the
 pending restart was found, such as a logout and login after it, is a new
-restart.
+restart; a pending restart whose entry was never written still gets its entry,
+ahead of the new one's, marked as recorded late.
+
+When a Stable Target's start fails and its failure cannot be recorded (a full
+disk, say), each later pass of the same `rigd` records it again, and does not
+supervise that Target meanwhile. A command you run on the Target records the
+failure first, and is refused with `STATE_WRITE` while it cannot be. If `rigd`
+stops before that write succeeds, the next start finds the Target not settled
+for the restart and without the start's Activity entry, and starts it once
+more, even though the Service whose start failed may already read `failed`.
+Likewise, if none of the writes that record the restart succeeded before
+`rigd` stopped (its own entry, and every Target's note that it acted on it),
+nothing records that restart: after a second reboot the Host shows only the new
+boot, so the next start sees one restart and writes one entry.
 
 ### Operator alerts
 

@@ -209,6 +209,7 @@ export function failureCategory(error: unknown): FailureCategory {
           return "effects";
         case "STATE_READ":
         case "STATE_CORRUPT":
+        case "STATE_WRITE":
           return "storage";
         default:
           return "rig";

@@ -235,7 +235,7 @@ const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   bin: text.describe(
-    `Executable path relative to the workspace; published under the Tool name for the Stable Target and <tool>-<target> elsewhere. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is published as a shim that runs it with the bun rigd install recorded. ${referencesIn("project")}`,
+    `Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the Stable Target and <tool>-<target> elsewhere. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname "$0" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. ${referencesIn("project")}`,
   ),
 };
 const tool = z.strictObject(toolFields);

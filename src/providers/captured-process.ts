@@ -13,13 +13,34 @@ import { createChildSupervisor } from "./child-supervisor";
 import { runCommand } from "./command-runner";
 import { createProcessInspection, platformKill } from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
-/** Private rigd entrypoint used by launchd; owns signal handlers and the captured child lifetime. */
 /** Unchanged evidence is rewritten this often; the reader trusts evidence younger than one second. */
 const OBSERVATION_HEARTBEAT_MS = 250;
+/** Signals that ask the wrapper to stop its application; the wrapper then ends by the same signal. */
+const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+/** Private rigd entrypoint used by launchd and rigd; owns signal handlers and the captured child lifetime.
+ * Runs the requested application until it stops or the wrapper is asked to stop, and returns the wrapper's exit code: the
+ * application's own when it stopped by itself. A wrapper asked to stop by a signal stops its application, then ends by that
+ * same signal through `endBy`, so whoever holds the wrapper (launchd's job record, or rigd's child handle) sees a signal
+ * rather than a clean exit when the application's own exit record is gone. */
 export async function runCapturedProcess(
   requestPath: string,
-  dependencies: { inspect?: ProcessIdentityReader } = {},
+  dependencies: {
+    inspect?: ProcessIdentityReader;
+    /** Ends this process by `signal` once its handlers are removed; the default raises it on the wrapper itself. */
+    endBy?: (signal: NodeJS.Signals) => void;
+  } = {},
 ): Promise<number> {
+  const ended = await runUntilStopped(requestPath, dependencies);
+  if (ended.signal)
+    (dependencies.endBy ?? ((signal) => process.kill(process.pid, signal)))(
+      ended.signal,
+    );
+  return ended.exitCode;
+}
+async function runUntilStopped(
+  requestPath: string,
+  dependencies: { inspect?: ProcessIdentityReader },
+): Promise<{ exitCode: number; signal?: NodeJS.Signals }> {
   const request = await readCaptureRequest(requestPath);
   // The wrapper is the effect owner: it names the platform runner once and shares it with its supervisor.
   const processInspection = createProcessInspection({
@@ -32,12 +53,20 @@ export async function runCapturedProcess(
     processInspection,
   });
   let stopping: Promise<unknown> | undefined;
+  let received: NodeJS.Signals | undefined;
   const stop = () => {
     stopping ??= supervisor.stop(request.key);
   };
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
-  process.on("SIGHUP", stop);
+  const handlers = STOP_SIGNALS.map((signal) => {
+    const handler = () => {
+      received ??= signal;
+      stop();
+    };
+    process.on(signal, handler);
+    return [signal, handler] as const;
+  });
+  const ended = (exitCode: number) =>
+    received ? { exitCode, signal: received } : { exitCode };
   const inspect = dependencies.inspect ?? processInspection.identity;
   let applicationPid: number | undefined;
   try {
@@ -70,13 +99,15 @@ export async function runCapturedProcess(
       { heartbeatMs: OBSERVATION_HEARTBEAT_MS, now: Date.now },
     );
     try {
-      return await observeUntilStopped({
-        supervisor,
-        key: request.key,
-        inspect,
-        publish,
-        stopping: () => stopping,
-      });
+      return ended(
+        await observeUntilStopped({
+          supervisor,
+          key: request.key,
+          inspect,
+          publish,
+          stopping: () => stopping,
+        }),
+      );
     } catch (error) {
       // The component was running; stopping it deliberately beats leaving it unobserved.
       stop();
@@ -88,7 +119,7 @@ export async function runCapturedProcess(
         pid: applicationPid,
         message,
       });
-      return 1;
+      return ended(1);
     }
   } catch (error) {
     if (applicationPid === undefined)
@@ -96,11 +127,10 @@ export async function runCapturedProcess(
         state: "failed",
         message: `The managed component could not start (${describe(error)}).`,
       });
-    return 1;
+    return ended(1);
   } finally {
-    process.removeListener("SIGTERM", stop);
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGHUP", stop);
+    for (const [signal, handler] of handlers)
+      process.removeListener(signal, handler);
     await supervisor.shutdown();
   }
 }

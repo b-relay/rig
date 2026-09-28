@@ -202,10 +202,11 @@ async function launchdWorld(): Promise<World> {
         captureCommand: ["/fake/rigd", "capture"],
         run,
         timing: createLaunchdTiming(),
+        groupExists: async () => false,
         inspect: async (pid) =>
           pid === wrapper.pid
             ? wrapper.identity
-            : pid === application.pid
+            : pid === application.pid && job?.alive
               ? application.identity
               : undefined,
       }),
@@ -230,7 +231,8 @@ async function launchdWorld(): Promise<World> {
       job!.alive = false;
     },
     async vanish() {
-      job!.alive = false;
+      // Nothing is left to say how it ended: not the wrapper, and not launchd, which unloaded the job (as at a logout).
+      job = undefined;
     },
     starts: async () => starts,
     cleanup: () => rm(root, { recursive: true, force: true }),

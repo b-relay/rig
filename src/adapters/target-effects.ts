@@ -673,6 +673,18 @@ export function createTargetEffects(
         }
       },
       persistent: (_target, component) => exists(component.path),
+      async listening(_target, component, signal) {
+        const ports = [
+          ...new Set([
+            ...Object.values(declaredPorts(component)),
+            ...(component.sitePort ? [component.sitePort] : []),
+          ]),
+        ].sort((a, b) => a - b);
+        const open: number[] = [];
+        for (const port of ports)
+          if ((await options.connect(port, signal)).ready) open.push(port);
+        return open;
+      },
     },
   };
 }

@@ -15,7 +15,6 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { z } from "zod";
 import { RigError, failureReason } from "../domain/errors";
 import type {
   ManagedProcess,
@@ -27,8 +26,15 @@ import {
   exitEvidence,
   readExitRecord,
   removeExitRecord,
+  wrapperExitEvidence,
   writeExitRecord,
 } from "./exit-record";
+import { survivingApplication } from "./capture-observation";
+import {
+  processLeasePath,
+  processLeaseRoot,
+  processLeaseSchema,
+} from "./process-lease";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
@@ -41,26 +47,6 @@ const DEFAULT_KILL_WAIT_MS = 1500;
 /** Worst-case shutdown of a supervisor with default timing, as the launchd capture wrapper runs it. */
 export const DEFAULT_SHUTDOWN_BUDGET_MS =
   DEFAULT_STOP_TIMEOUT_MS + DEFAULT_KILL_WAIT_MS;
-const leaseSchema = z.object({
-  key: z.string().describe("Stable component ownership key."),
-  pid: z
-    .number()
-    .int()
-    .min(2)
-    .describe(
-      "Owned process group leader; the group id equals this PID, so the group can outlive the leader.",
-    ),
-  identity: z
-    .string()
-    .length(64)
-    .describe("Digest of immutable process birth time and PID."),
-  incarnation: z
-    .string()
-    .optional()
-    .describe(
-      "The start that produced this process; absent on a lease written before starts were named.",
-    ),
-});
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
 function recordLine(logRoot: string, entry: TargetLogEntry): Promise<void> {
   return appendTargetLog(logRoot, JSON.stringify(entry) + "\n");
@@ -103,20 +89,55 @@ export function createChildSupervisor(
   const now = timing.now;
   const inspection = options.processInspection;
   const inspect = inspection.identity;
-  const leaseRoot = join(options.stateRoot, "process-leases");
+  const leaseRoot = processLeaseRoot(options.stateRoot);
   const captureRoot = join(options.stateRoot, "capture");
   /** Where the holder of the application's child handle records exits. */
   const exitRoot = options.captureCommand ? captureRoot : options.stateRoot;
-  const stoppedObservation = async (
-    key: string,
-  ): Promise<ProcessObservation> => ({
-    state: "stopped",
-    ...exitEvidence(await readExitRecord(exitRoot, key)),
-  });
+  /** Where this supervisor records how a capture wrapper it spawned ended. */
+  const wrapperExitRoot = join(captureRoot, "wrapper");
   const capturePath = (key: string) =>
     join(captureRoot, `${createHash("sha256").update(key).digest("hex")}.json`);
-  const leasePath = (key: string) =>
-    join(leaseRoot, `${createHash("sha256").update(key).digest("hex")}.json`);
+  /** What a start whose process is gone left behind. Under capture, an application the wrapper reported that still runs is
+   * `unknown`, unless `survivors` is `ignore`; the application's own exit record comes first, then this supervisor's
+   * record of how the wrapper ended. */
+  const stoppedObservation = async (
+    key: string,
+    survivors: "check" | "ignore",
+  ): Promise<ProcessObservation> => {
+    if (!options.captureCommand)
+      return {
+        state: "stopped",
+        ...exitEvidence(await readExitRecord(exitRoot, key)),
+      };
+    if (survivors === "check") {
+      const survivor = await survivingApplication({
+        requestPath: capturePath(key),
+        key,
+        inspect,
+        groupExists: inspection.groupExists,
+      });
+      if (survivor) return survivor;
+    }
+    const recorded = exitEvidence(await readExitRecord(exitRoot, key));
+    if (recorded) return { state: "stopped", ...recorded };
+    const wrapper = await readExitRecord(wrapperExitRoot, key);
+    const ended = wrapper && wrapperExitEvidence(wrapper);
+    return {
+      state: "stopped",
+      ...(ended
+        ? {
+            incarnation: wrapper!.incarnation,
+            ...ended,
+            recordedBy: "rigd" as const,
+          }
+        : {}),
+    };
+  };
+  const removeExitRecords = async (key: string) => {
+    await removeExitRecord(exitRoot, key);
+    if (options.captureCommand) await removeExitRecord(wrapperExitRoot, key);
+  };
+  const leasePath = (key: string) => processLeasePath(options.stateRoot, key);
   function serialized<T>(key: string, action: () => Promise<T>): Promise<T> {
     const pending = (operations.get(key) ?? Promise.resolve())
       .catch(() => {})
@@ -139,7 +160,7 @@ export function createChildSupervisor(
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
-    const parsed = leaseSchema.safeParse(JSON.parse(raw));
+    const parsed = processLeaseSchema.safeParse(JSON.parse(raw));
     if (!parsed.success || parsed.data.key !== key)
       throw new RigError(
         "PROCESS_LEASE",
@@ -170,6 +191,7 @@ export function createChildSupervisor(
   async function observe(
     key: string,
     signal?: AbortSignal,
+    survivors: "check" | "ignore" = "check",
   ): Promise<ProcessObservation> {
     if (signal?.aborted)
       return { state: "unknown", reason: "Observation cancelled." };
@@ -184,7 +206,7 @@ export function createChildSupervisor(
     }
     if (signal?.aborted)
       return { state: "unknown", reason: "Observation cancelled." };
-    if (!owned) return await stoppedObservation(key);
+    if (!owned) return await stoppedObservation(key, survivors);
     const running = {
       state: "running" as const,
       pid: owned.pid,
@@ -195,7 +217,7 @@ export function createChildSupervisor(
       (owned.child.exitCode !== null || owned.child.signalCode !== null)
     ) {
       await owned.exitRecorded;
-      return await stoppedObservation(key);
+      return await stoppedObservation(key, survivors);
     }
     // A spawned child's handle is authoritative: Bun reports its exit within milliseconds, so no OS probe second-guesses it.
     if (owned.child)
@@ -205,7 +227,7 @@ export function createChildSupervisor(
       };
     try {
       if ((await inspect(owned.pid)) === owned.identity) return running;
-      return await stoppedObservation(key);
+      return await stoppedObservation(key, survivors);
     } catch {
       return {
         state: "unknown",
@@ -218,7 +240,8 @@ export function createChildSupervisor(
   ): Promise<{ outcome: "stopped" | "unchanged" }> {
     const owned = await recover(key);
     if (!owned) return { outcome: "unchanged" };
-    const before = await observe(key);
+    // An application that outlived its wrapper is not this stop's to end: the stop releases only what it owns.
+    const before = await observe(key, undefined, "ignore");
     if (before.state === "unknown")
       throw new RigError(
         "PROCESS_UNKNOWN",
@@ -277,7 +300,7 @@ export function createChildSupervisor(
     if (options.captureCommand) await rm(capturePath(key), { force: true });
     // Ending a running process was a request, not an exit to explain; an exit that came first stays on record,
     // which is how the capture wrapper's own cleanup leaves its application's exit readable.
-    if (before.state === "running") await removeExitRecord(exitRoot, key);
+    if (before.state === "running") await removeExitRecords(key);
     return { outcome: before.state === "running" ? "stopped" : "unchanged" };
   }
   /** Waits for in-flight operations so ownership can be handed over or ended. */
@@ -308,7 +331,7 @@ export function createChildSupervisor(
         { key: request.key },
       );
     // A record left by an earlier start must not explain the end of this one.
-    await removeExitRecord(exitRoot, request.key);
+    await removeExitRecords(request.key);
     await mkdir(request.logRoot, { recursive: true });
     await mkdir(leaseRoot, { recursive: true });
     await appendFile(join(request.logRoot, "target.jsonl"), "", {
@@ -350,18 +373,31 @@ export function createChildSupervisor(
       drains: [],
       writes: Promise.resolve(),
     };
-    // Under a capture command this child is the wrapper, whose exit says nothing of the application's.
+    // An exit that cannot be written stays unknown: nothing is remembered that a later daemon could not also read.
+    const recordExit = (
+      root: string,
+      code: number | null,
+      signal: NodeJS.Signals | null,
+    ) =>
+      writeExitRecord(root, {
+        key: request.key,
+        incarnation: request.incarnation,
+        ...(code === null ? {} : { exitCode: code }),
+        ...(signal === null ? {} : { signal }),
+        at: now().toISOString(),
+      }).catch(() => {});
     if (!options.captureCommand)
       child.once("exit", (code, signal) => {
-        // An exit that cannot be written stays unknown: nothing is remembered that a later daemon could not also read.
-        owned.exitRecorded = writeExitRecord(exitRoot, {
-          key: request.key,
-          incarnation: request.incarnation,
-          ...(code === null ? {} : { exitCode: code }),
-          ...(signal === null ? {} : { signal }),
-          at: now().toISOString(),
-        }).catch(() => {});
+        owned.exitRecorded = recordExit(exitRoot, code, signal);
       });
+    // Under a capture command this child is the wrapper. Its own end is kept apart from its application's record and read only
+    // when that record is missing; settling once it is on disk lets a stop remove it after the wrapper has gone.
+    else
+      owned.exitRecorded = new Promise((resolve) =>
+        child.once("exit", (code, signal) =>
+          resolve(recordExit(wrapperExitRoot, code, signal)),
+        ),
+      );
     if (!options.captureCommand) captureOutput(owned, request, now);
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);

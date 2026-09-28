@@ -1121,6 +1121,14 @@ process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
 
+An executable `bin`, anything but the source files below, is copied byte for
+byte into `<RIG_ROOT>/bin` (as `<tool>` or `<tool>-<target name>`; see
+"Environment, builds, and startup") and runs from there, not from the
+workspace. It must therefore be self-contained, like a compiled binary, or
+must itself name the checkout it needs. A shell script that finds its checkout
+with `dirname "$0"` gets `<RIG_ROOT>/bin` instead, which holds none of the
+checkout's files.
+
 A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
 `.cjs`) is not copied. Rig publishes a two-line shim,
 `exec <bun> <workspace>/<bin> "$@"`, which runs the file in place, so its

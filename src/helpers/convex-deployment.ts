@@ -134,14 +134,22 @@ export function nextRelease(
 
 /** Lines of `.env.local` that point `bunx convex` at a self-hosted backend: this helper's, or a hand-written script's. */
 const MANAGED_LINE =
-  /^(?:CONVEX_SELF_HOSTED_URL|CONVEX_SELF_HOSTED_ADMIN_KEY)=|^# Convex backend run by /;
-/** The deployment `convex dev` would otherwise use, which the Convex CLI refuses beside the self-hosted pair. */
-const OTHER_DEPLOYMENT = /^CONVEX_DEPLOYMENT=/;
+  /^\s*(?:export\s+)?(?:CONVEX_SELF_HOSTED_URL|CONVEX_SELF_HOSTED_ADMIN_KEY)\s*=|^# Convex backend run by /;
+/** Variables that choose another deployment: a Cloud deploy key or token, which the Convex CLI prefers to the self-hosted
+ * pair, and `CONVEX_DEPLOYMENT`, which it refuses beside the pair. In any dotenv spelling. */
+export const OTHER_DEPLOYMENT_VARIABLES = [
+  "CONVEX_DEPLOY_KEY",
+  "CONVEX_DEPLOYMENT_TOKEN",
+  "CONVEX_DEPLOYMENT",
+] as const;
+const OTHER_DEPLOYMENT = new RegExp(
+  `^\\s*(?:export\\s+)?(?:${OTHER_DEPLOYMENT_VARIABLES.join("|")})\\s*=`,
+);
 const HEADER = "# Convex backend run by rigd convex (the convex recipe)";
 const SET_ASIDE = "  # set aside by rigd convex";
-/** Pure: `.env.local` with the self-hosted pair pointing at this backend. A `CONVEX_DEPLOYMENT` line is commented out
- * rather than removed, so a cloud deployment it named is not lost; every other line is kept, in order. The pair and its
- * comment go last. */
+/** Pure: `.env.local` with the self-hosted pair pointing at this backend. A line setting one of
+ * OTHER_DEPLOYMENT_VARIABLES is commented out rather than removed, so a Cloud deployment or key it named is not lost;
+ * every other line is kept, in order. The pair and its comment go last. */
 export function selfHostedEnvFile(
   existing: string | undefined,
   input: { url: string; adminKey: string },
@@ -161,16 +169,18 @@ export function selfHostedEnvFile(
   ].join("\n");
   return `${kept ? `${kept}\n\n` : ""}${pair}\n`;
 }
-/** Pure: `convex dev`'s environment. The self-hosted pair is set here as well as in `.env.local`, because a variable a
- * parent loaded from an older `.env.local` would otherwise win over the file; `CONVEX_DEPLOYMENT` is removed for the
- * same reason. */
+/** Pure: `convex dev`'s environment. The self-hosted pair is set here as well as in `.env.local`, so a stale value from
+ * the Service's environment cannot win over the file. OTHER_DEPLOYMENT_VARIABLES are set empty: the Convex CLI treats
+ * an empty value as unset, and its dotenv loading never replaces a variable that is set, so a deploy key or
+ * `CONVEX_DEPLOYMENT` in `.env` (which this helper does not rewrite) cannot send `convex dev` elsewhere. */
 export function convexDevEnvironment(
   environment: Readonly<Record<string, string | undefined>>,
   input: { url: string; adminKey: string },
 ): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(environment))
-    if (value !== undefined && key !== "CONVEX_DEPLOYMENT") result[key] = value;
+    if (value !== undefined) result[key] = value;
+  for (const key of OTHER_DEPLOYMENT_VARIABLES) result[key] = "";
   result.CONVEX_SELF_HOSTED_URL = input.url;
   result.CONVEX_SELF_HOSTED_ADMIN_KEY = input.adminKey;
   return result;

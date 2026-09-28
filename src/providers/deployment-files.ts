@@ -2,6 +2,7 @@ import {
   chmod,
   cp,
   mkdir,
+  mkdtemp,
   readdir,
   readFile,
   realpath,
@@ -47,18 +48,21 @@ export function createDeploymentFiles(): DeploymentFiles {
       }
     },
     async copyDirectory(from, to) {
-      const staging = `${to}.partial`;
-      // What an interrupted copy left is only ever a staging directory, never `to`.
-      await rm(staging, { recursive: true, force: true });
       await mkdir(dirname(to), { recursive: true, mode: 0o700 });
-      await cp(from, staging, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-        preserveTimestamps: true,
-      });
-      // rename replaces an empty directory and refuses one with entries.
-      await rename(staging, to);
+      // A staging directory of its own, which an interrupted copy leaves behind instead of a partial `to`.
+      const staging = await mkdtemp(`${to}.rig-copy-`);
+      try {
+        await cp(from, join(staging, "tree"), {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+          preserveTimestamps: true,
+        });
+        // rename replaces an empty directory and refuses one with entries.
+        await rename(join(staging, "tree"), to);
+      } finally {
+        await rm(staging, { recursive: true, force: true });
+      }
     },
     async ensureDirectory(path) {
       await mkdir(path, { recursive: true, mode: 0o700 });

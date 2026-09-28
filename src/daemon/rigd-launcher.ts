@@ -1,5 +1,6 @@
 import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { RigError, errorMessage } from "../domain/errors";
 
 /** Where the launcher lives under a Rig root. Plans record this path for `${rig.rigd}`, so it must not change while the
  * root does not. */
@@ -24,12 +25,21 @@ export async function writeRigdLauncher(
   daemon: readonly string[],
 ): Promise<string> {
   const path = rigdLauncherPath(root);
-  await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
-  const staged = `${path}.${process.pid}.tmp`;
-  await writeFile(staged, rigdLauncher(daemon), { mode: 0o755 });
-  await chmod(staged, 0o755);
-  await rename(staged, path);
-  return path;
+  try {
+    await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
+    const staged = `${path}.${process.pid}.tmp`;
+    await writeFile(staged, rigdLauncher(daemon), { mode: 0o755 });
+    await chmod(staged, 0o755);
+    await rename(staged, path);
+    return path;
+  } catch (error) {
+    throw new RigError(
+      "RIGD_LAUNCHER",
+      `rigd could not write its launcher ${path} (${errorMessage(error)}).`,
+      `Make ${join(root, "daemon")} a directory you can write, then run rigd install again.`,
+      { path },
+    );
+  }
 }
 function quoted(word: string): string {
   return `'${word.replaceAll("'", "'\\''")}'`;

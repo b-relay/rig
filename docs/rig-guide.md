@@ -1492,13 +1492,16 @@ Service helper bundled in `rigd` (`${rig.rigd}` runs the installed `rigd`, see
   GitHub, which needs the network and `unzip`. Offline, an existing deployment
   stays on its release if it is cached, and a new one starts on the newest
   cached release. When a newer release cannot be downloaded (a download gives
-  up after 2 minutes), the deployment stays on its own.
+  up after 2 minutes), an existing deployment stays on its own release and a
+  new one starts on the newest cached release.
   `--backend-version <release>` pins a release;
 - starts the backend with `--interface 127.0.0.1`, without `TZ` (the backend
   refuses to start with it set), and writes `CONVEX_SELF_HOSTED_URL` and
   `CONVEX_SELF_HOSTED_ADMIN_KEY` for it into the workspace's `.env.local`,
-  keeping the file's other lines. A `CONVEX_DEPLOYMENT` line, which the Convex
-  CLI refuses beside the self-hosted pair, is commented out, not deleted. Keep
+  keeping the file's other lines. A line setting `CONVEX_DEPLOYMENT`,
+  `CONVEX_DEPLOY_KEY` or `CONVEX_DEPLOYMENT_TOKEN`, which would send the Convex
+  CLI to another deployment, is commented out, not deleted, and `convex dev`
+  runs with those three set empty, so a value in `.env` cannot win either. Keep
   `.env.local` out of Git: it holds the admin key. Other
   `bunx convex` commands (`run`, `data`, `export`) in the workspace then reach
   the backend while it runs;

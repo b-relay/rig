@@ -278,3 +278,14 @@ test("the rigd launcher runs the installed rigd with its arguments, quoted, and 
   );
   expect(await readdir(join(root, "rig root", "daemon"))).toEqual(["rigd"]);
 });
+
+test("a launcher that cannot be written is a tagged error naming the directory", async () => {
+  const root = await temporary();
+  await writeFile(join(root, "daemon"), "a file where the directory belongs");
+  await expect(
+    writeRigdLauncher(root, ["/usr/local/bin/rigd"]),
+  ).rejects.toMatchObject({
+    code: "RIGD_LAUNCHER",
+    hint: expect.stringContaining(join(root, "daemon")),
+  });
+});

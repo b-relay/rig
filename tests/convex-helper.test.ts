@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import {
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   stat,
@@ -216,7 +217,7 @@ test("a first start creates the deployment in the state directory, points .env.l
   const h = await harness({ recommended: NEW });
   await writeFile(
     join(h.workspace, ".env.local"),
-    "# Deployment used by `npx convex dev`\nCONVEX_DEPLOYMENT=dev:cloud-app # team: x\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\nAPP_KEY=keep\n",
+    "# Deployment used by `npx convex dev`\nCONVEX_DEPLOYMENT=dev:cloud-app # team: x\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\nexport CONVEX_DEPLOY_KEY=prod:app|key\nAPP_KEY=keep\n",
   );
   expect(await h.start()).toBe(0);
 
@@ -274,10 +275,16 @@ test("a first start creates the deployment in the state directory, points .env.l
     CONVEX_SELF_HOSTED_URL: "http://127.0.0.1:47001",
     CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-self-hosted|admin-key",
   });
-  expect(dev!.env.CONVEX_DEPLOYMENT).toBeUndefined();
+  // Set empty, so neither the Service's environment nor a dotenv file can pick another deployment.
+  for (const key of [
+    "CONVEX_DEPLOYMENT",
+    "CONVEX_DEPLOY_KEY",
+    "CONVEX_DEPLOYMENT_TOKEN",
+  ])
+    expect(dev!.env[key]).toBe("");
   expect(backend!.stopped && dev!.stopped).toBe(true);
   expect(await readFile(join(h.workspace, ".env.local"), "utf8")).toBe(
-    "# Deployment used by `npx convex dev`\n# CONVEX_DEPLOYMENT=dev:cloud-app # team: x  # set aside by rigd convex\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\nAPP_KEY=keep\n\n# Convex backend run by rigd convex (the convex recipe)\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:47001\nCONVEX_SELF_HOSTED_ADMIN_KEY=convex-self-hosted|admin-key\n",
+    "# Deployment used by `npx convex dev`\n# CONVEX_DEPLOYMENT=dev:cloud-app # team: x  # set aside by rigd convex\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\n# export CONVEX_DEPLOY_KEY=prod:app|key  # set aside by rigd convex\nAPP_KEY=keep\n\n# Convex backend run by rigd convex (the convex recipe)\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:47001\nCONVEX_SELF_HOSTED_ADMIN_KEY=convex-self-hosted|admin-key\n",
   );
   expect(h.output().out).toContain(
     `Created Convex deployment convex-self-hosted (backend ${NEW}) in ${h.stateDir}`,
@@ -664,11 +671,12 @@ test("a state directory with files but no config.json is refused, an empty one i
   });
   expect(cluttered.children).toEqual([]);
 
-  // An empty state directory (as Rig or an earlier failed start leaves it) takes a copied deployment.
+  // An empty state directory (as Rig or an earlier failed start leaves it) takes a copied deployment; a sibling the
+  // copy does not own is left alone, and nothing of the copy is left beside it.
   const empty = await harness({ recommended: NEW });
   await mkdir(empty.stateDir, { recursive: true });
   await mkdir(`${empty.stateDir}.partial`, { recursive: true });
-  await writeFile(join(`${empty.stateDir}.partial`, "config.json"), "{half");
+  await writeFile(join(`${empty.stateDir}.partial`, "keep"), "mine");
   const local = join(empty.workspace, ".convex", "local", "default");
   await mkdir(local, { recursive: true });
   await writeFile(
@@ -685,7 +693,13 @@ test("a state directory with files but no config.json is refused, an empty one i
     JSON.parse(await readFile(join(empty.stateDir, "config.json"), "utf8"))
       .deploymentName,
   ).toBe("anonymous-app");
-  await expect(stat(`${empty.stateDir}.partial`)).rejects.toThrow();
+  expect(
+    await readFile(join(`${empty.stateDir}.partial`, "keep"), "utf8"),
+  ).toBe("mine");
+  expect((await readdir(join(empty.stateDir, ".."))).sort()).toEqual([
+    "backend",
+    "backend.partial",
+  ]);
 });
 
 test("a child that ignores SIGTERM after the other ended by itself is killed, so the failed Service ends", async () => {
@@ -695,4 +709,41 @@ test("a child that ignores SIGTERM after the other ended by itself is killed, so
   expect(h.output().err).toContain(
     "did not stop within 10 s of SIGTERM; killing it.",
   );
+});
+
+test("a backend that ends right after its deployment's name answered (another one owns the port) is not taken as up, and its release is not recorded", async () => {
+  const h = await harness({ recommended: NEW, backendEnds: { code: 1 } });
+  await mkdir(h.stateDir, { recursive: true });
+  const config = JSON.stringify({
+    deploymentName: "convex-self-hosted",
+    backendVersion: OLD,
+    adminKey: "k",
+    instanceSecret: "s",
+  });
+  await writeFile(join(h.stateDir, "config.json"), config);
+  expect(await h.start()).toBe(1);
+  expect(h.children).toHaveLength(1);
+  expect(await readFile(join(h.stateDir, "config.json"), "utf8")).toBe(config);
+  expect(h.output().err).toContain("The Convex backend exited with code 1");
+});
+
+test("a new deployment whose recommended release cannot be downloaded starts on the newest cached one, unless a release was pinned", async () => {
+  const h = await harness({
+    recommended: NEW,
+    cached: [OLD],
+    unavailable: [NEW],
+  });
+  expect(await h.start()).toBe(0);
+  expect(
+    JSON.parse(await readFile(join(h.stateDir, "config.json"), "utf8"))
+      .backendVersion,
+  ).toBe(OLD);
+  expect(h.output().err).toContain(
+    `Starting on the cached Convex backend ${OLD}: Convex backend ${NEW} could not be downloaded (offline).`,
+  );
+
+  const pinned = await harness({ cached: [OLD], unavailable: [NEW] });
+  await expect(pinned.start({ pinnedRelease: NEW })).rejects.toMatchObject({
+    code: "CONVEX_BACKEND_DOWNLOAD",
+  });
 });

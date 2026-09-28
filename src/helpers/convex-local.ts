@@ -214,11 +214,16 @@ async function createDeployment(
       "No Convex backend release could be chosen for a new deployment: version.convex.dev did not answer, and Convex's binary cache (~/.cache/convex/binaries) holds no backend.",
       "Start the Service again with a network connection, or fill the cache by running bunx convex dev --local once, or pass --backend-version with a release to download.",
     );
-  const binary = await deps.releases.binary(release, stop);
+  const { release: chosen, binary } = await newDeploymentBackend(
+    release,
+    offer,
+    deps,
+    stop,
+  );
   const instanceSecret = deps.newInstanceSecret();
   const deployment: Deployment = {
     deploymentName: request.instanceName,
-    backendVersion: release,
+    backendVersion: chosen,
     adminKey: await adminKey(
       binary,
       request.instanceName,
@@ -234,11 +239,36 @@ async function createDeployment(
     `${JSON.stringify(deployment, null, 2)}\n`,
   );
   deps.output.write(
-    `Created Convex deployment ${deployment.deploymentName} (backend ${release}) in ${request.stateDir}\n`,
+    `Created Convex deployment ${deployment.deploymentName} (backend ${chosen}) in ${request.stateDir}\n`,
   );
   return deployment;
 }
 
+/** The binary a new deployment starts on: the chosen release, or when that cannot be obtained and was not pinned, the
+ * newest release already in the cache. */
+async function newDeploymentBackend(
+  release: string,
+  offer: { pinned?: string },
+  deps: Pick<ConvexHelperDependencies, "releases" | "output">,
+  stop: AbortSignal,
+): Promise<{ release: string; binary: string }> {
+  try {
+    return { release, binary: await deps.releases.binary(release, stop) };
+  } catch (error) {
+    if (stop.aborted || offer.pinned) throw error;
+    const cached = newDeploymentRelease({
+      cached: (await deps.releases.cached()).filter((each) => each !== release),
+    });
+    if (!cached) throw error;
+    deps.output.error(
+      `Starting on the cached Convex backend ${cached}: ${errorMessage(error)}\n`,
+    );
+    return {
+      release: cached,
+      binary: await deps.releases.binary(cached, stop),
+    };
+  }
+}
 /** New credentials for a deployment an older Convex CLI made without its own, saved before the backend runs on them. */
 async function newCredentials(
   config: DeploymentConfig,
@@ -346,7 +376,12 @@ async function backendAnswers(
   for (;;) {
     if (stop.aborted) return "stopped";
     const answer = await deps.probe(`${input.url}/instance_name`, stop);
-    if (answer === input.name) return "up";
+    if (answer === input.name) {
+      // An older backend of this deployment on the port answers too; the one just started then fails to bind and ends.
+      await deps.wait(BACKEND_POLL_MS, stop);
+      if (stop.aborted) return "stopped";
+      return ended ?? "up";
+    }
     if (stop.aborted) return "stopped";
     if (ended) return ended;
     if (answer !== undefined)

@@ -34,10 +34,12 @@ export type HealthResults = (
   service: string,
 ) => ServiceHealth | undefined;
 
-/** How a health restart ended: done, or tried and failed (both count for the back-off); skipped because the process that
- * was judged is gone or was replaced; or deferred because nothing could be established about it, so it is asked again. */
-export type HealthRestartOutcome =
-  "restarted" | "failed" | "skipped" | "deferred";
+/** How a health restart ended: done, or tried and failed, at the time it was attempted, which the back-off counts from and
+ * the Service's record holds; skipped because the process that was judged is gone or was replaced; or deferred because
+ * nothing could be established about it, so it is asked again. */
+export type HealthRestartResult =
+  | { outcome: "restarted" | "failed"; at: number }
+  | { outcome: "skipped" | "deferred" };
 /** A health restart rigd is asked for: which Service, and what the checks saw. */
 export interface HealthRestartRequest {
   targetId: string;
@@ -61,7 +63,7 @@ export interface HealthMonitorDependencies {
   /** Whether an Operation holds or waits for the Target, so one of its Services may be starting or stopping. */
   busy(target: TargetRecord): boolean;
   /** Stops and starts one Service through the normal stop path, under its Target's lock; says how that ended. */
-  restart(request: HealthRestartRequest): Promise<HealthRestartOutcome>;
+  restart(request: HealthRestartRequest): Promise<HealthRestartResult>;
   /** Calls `fire` once after `delayMs`; returns the cancellation. A test passes a fake clock's. */
   schedule(delayMs: number, fire: () => void): () => void;
   diagnostic: RuntimeDependencies["diagnostic"];
@@ -334,16 +336,14 @@ export function createHealthMonitor(
     );
     // An Operation that began meanwhile may have stopped the process the check asked, or already replaced it; its answer
     // then says nothing about what runs now.
-    if (paused(target, key)) return undefined;
-    const after = await withinTimeout(
-      (signal) => deps.observations.process(target, component, signal),
-      policy.timeoutMs,
+    // Every start is recorded before it spawns, so the record says whether the process is still the one asked.
+    const saved = (await deps.store.read()).targets.find(
+      (t) => t.id === target.id,
     );
+    const now = saved && currentRun(saved, component.name)?.incarnation;
     if (
-      after === undefined ||
-      "ready" in after ||
-      after.state !== "running" ||
-      after.incarnation !== observed.incarnation
+      paused(target, key) ||
+      (observed.incarnation !== undefined && now !== observed.incarnation)
     )
       return undefined;
     const at = deps.now();
@@ -399,7 +399,7 @@ export function createHealthMonitor(
     if (action.kind === "give-up") {
       const at = deps.now();
       states.set(key, gaveUp(state, at));
-      await rememberGaveUp(target, component.name, state.incarnation, at);
+      await rememberGaveUp(target, component.name, state, at);
       await record(target, {
         action: "health",
         outcome: "failed",
@@ -407,8 +407,7 @@ export function createHealthMonitor(
       });
       return;
     }
-    const at = deps.now();
-    const outcome = await deps.restart({
+    const result = await deps.restart({
       targetId: target.id,
       service: component.name,
       ...(state.incarnation !== undefined
@@ -421,15 +420,15 @@ export function createHealthMonitor(
       restarts: episode.restarts,
     });
     const current = states.get(key) ?? state;
-    if (outcome === "deferred") return;
-    if (outcome === "skipped") {
+    if (!("at" in result)) {
+      if (result.outcome === "deferred") return;
       // The process that was judged is gone or was replaced meanwhile: the next pass looks at what runs now, afresh.
       const { incarnation: _gone, eligibleSince: _next, ...rest } = current;
       states.set(key, { ...rest, failures: 0 });
       return;
     }
     // A failed restart counts for the back-off too, so a Service that cannot start is not asked again at once.
-    states.set(key, restarted(current, at));
+    states.set(key, restarted(current, result.at));
   }
 
   /** Runs `observe`, aborted after `timeoutMs`: its answer, a failure as a failed check, or undefined when it did not
@@ -460,19 +459,29 @@ export function createHealthMonitor(
     }
   }
 
-  /** That Rig gave up, on the stretch's record, so a new rigd does not restart it again or say so twice. */
+  /** That Rig gave up, recorded with the whole stretch on the running process's record (the one judged, or whatever the
+   * record names when this rigd has not seen it yet), so a new rigd neither restarts it again nor says so twice. */
   async function rememberGaveUp(
     target: TargetRecord,
     service: string,
-    incarnation: string | undefined,
+    judged: HealthState,
     at: number,
   ): Promise<void> {
+    const episode = judged.episode;
+    if (!episode) return;
     await deps.store.update((state) => {
-      const run = state.targets.find((t) => t.id === target.id)?.services?.[
-        service
-      ];
-      if (run?.healthRestarts && run.incarnation === incarnation)
-        run.healthRestarts = { ...run.healthRestarts, gaveUp: at };
+      const saved = state.targets.find((t) => t.id === target.id);
+      const run = saved && currentRun(saved, service);
+      if (
+        run &&
+        (judged.incarnation === undefined ||
+          run.incarnation === judged.incarnation)
+      )
+        run.healthRestarts = {
+          since: episode.since,
+          at: [...episode.restarts],
+          gaveUp: at,
+        };
     });
   }
   /** A stretch that ended: the record no longer carries it, so a new rigd does not continue it. */

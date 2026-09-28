@@ -77,7 +77,7 @@ import {
 } from "./lifecycle";
 import { restartForHealth } from "./health-restart";
 import type {
-  HealthRestartOutcome,
+  HealthRestartResult,
   HealthRestartRequest,
 } from "./health-monitor";
 import {
@@ -159,9 +159,7 @@ export interface RigRuntime extends ProjectStatusReader {
   ): boolean;
   /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
    * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
-  restartUnhealthy(
-    request: HealthRestartRequest,
-  ): Promise<HealthRestartOutcome>;
+  restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
@@ -1278,12 +1276,12 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
    * holds back judgement of a Stable Target while it runs. */
   const restartUnhealthy = async (
     request: HealthRestartRequest,
-  ): Promise<HealthRestartOutcome> => {
-    if (draining) return "skipped";
+  ): Promise<HealthRestartResult> => {
+    if (draining) return { outcome: "skipped" };
     const recorded = (await deps.store.read()).targets.find(
       (target) => target.id === request.targetId,
     );
-    if (!recorded) return "skipped";
+    if (!recorded) return { outcome: "skipped" };
     const operationId = `health:${deps.id()}`;
     const entry: Running = {
       kills: new Map(),
@@ -1307,7 +1305,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         targetScope(recorded.projectId, recorded),
       ]);
       try {
-        if (draining) return "skipped" as const;
+        if (draining) return { outcome: "skipped" as const };
         const state = await deps.store.read();
         const target = state.targets.find((t) => t.id === request.targetId);
         if (
@@ -1316,7 +1314,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           target.recovery ||
           target.destructionPending
         )
-          return "skipped" as const;
+          return { outcome: "skipped" as const };
         const project = state.projects.find((p) => p.id === target.projectId);
         if (project) entry.view.project = project.name;
         return await restartForHealth(
@@ -1338,7 +1336,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             ...diagnosticCauses(error),
           })
           .catch(() => {});
-        return "failed" as const;
+        return { outcome: "failed" as const, at: Date.parse(deps.now()) };
       } finally {
         lease.release();
         operations.delete(operationId);

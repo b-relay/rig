@@ -5,7 +5,7 @@ import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import {
   createHealthMonitor,
   type HealthMonitorDependencies,
-  type HealthRestartOutcome,
+  type HealthRestartResult,
   type HealthRestartRequest,
 } from "../src/runtime/health-monitor";
 
@@ -92,7 +92,11 @@ function fixture(
   let answer: (service: string) => Promise<boolean> | boolean = () => true;
   let busy = false;
   /** What the next restarts do: start a new process, fail to stop the old one, or find it already replaced. */
-  let restartOutcome: HealthRestartOutcome = "restarted";
+  let restartOutcome: HealthRestartResult["outcome"] = "restarted";
+  /** How long a restart waits for its Target's lock before it is attempted (fake milliseconds). */
+  let lockWait = 0;
+  /** An observation that answers with this process whatever runs: a stale snapshot. */
+  let staleProcess: string | undefined;
   const dependencies: HealthMonitorDependencies = {
     store: {
       async read() {
@@ -107,7 +111,9 @@ function fixture(
         return {
           state: "running",
           pid: 42,
-          incarnation: `${component.name}-${incarnations.get(component.name)}`,
+          incarnation:
+            staleProcess ??
+            `${component.name}-${incarnations.get(component.name)}`,
         };
       },
       async health(_target, component) {
@@ -122,7 +128,10 @@ function fixture(
     busy: () => busy,
     async restart(request) {
       restarts.push({ ...request, at: now });
-      if (restartOutcome !== "restarted") return restartOutcome;
+      if (restartOutcome === "skipped" || restartOutcome === "deferred")
+        return { outcome: restartOutcome };
+      if (restartOutcome === "failed")
+        return { outcome: "failed", at: now + lockWait };
       const next = incarnations.get(request.service)! + 1;
       incarnations.set(request.service, next);
       // As the restart's journal records it on the Service.
@@ -136,7 +145,7 @@ function fixture(
           at: [...request.restarts, now],
         },
       };
-      return "restarted";
+      return { outcome: "restarted", at: now };
     },
     schedule(delayMs, fire) {
       const timer = { at: now + delayMs, fire };
@@ -178,8 +187,14 @@ function fixture(
     set busy(value: boolean) {
       busy = value;
     },
-    set restartOutcome(value: HealthRestartOutcome) {
+    set restartOutcome(value: HealthRestartResult["outcome"]) {
       restartOutcome = value;
+    },
+    set lockWait(value: number) {
+      lockWait = value;
+    },
+    set staleProcess(value: string | undefined) {
+      staleProcess = value;
     },
     /** An operator's explicit restart: a new process, with a record that carries no unhealthy stretch. */
     replace(service: string) {
@@ -552,4 +567,52 @@ test("a new rigd remembers that Rig gave up: it neither restarts the Service aga
     marked: true,
     gaveUp: true,
   });
+});
+
+test("giving up is recorded even when no restart could be made, so a new rigd keeps it", async () => {
+  const f = fixture({
+    interval: 5,
+    failures: 1,
+    onFailure: "restart",
+    retryFor: 600,
+  });
+  f.answer = () => false;
+  f.restartOutcome = "deferred";
+  await f.runUntil(700 * SECOND);
+  expect(f.state.targets[0]!.services!.web!.healthRestarts).toMatchObject({
+    since: 6 * SECOND,
+    gaveUp: 606 * SECOND,
+  });
+  const asked = f.restarts.length;
+  f.restartDaemon();
+  await f.runUntil(900 * SECOND);
+  expect(f.restarts).toHaveLength(asked);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    gaveUp: true,
+  });
+});
+
+test("an answer is dropped when the record names another process, even if an observation still shows the old one", async () => {
+  const f = fixture({ interval: 5, failures: 1 });
+  let answer!: (passed: boolean) => void;
+  f.answer = () => new Promise<boolean>((resolve) => (answer = resolve));
+  await f.runUntil(6 * SECOND);
+  f.staleProcess = "web-1";
+  f.replace("web");
+  answer(false);
+  await f.monitor.idle();
+  expect(f.monitor.results({ id: "t1" }, "web")).not.toMatchObject({
+    status: "unhealthy",
+  });
+  expect(f.activity()).toEqual([]);
+});
+
+test("the back-off counts from when a restart was attempted, after it waited for its Target", async () => {
+  const f = fixture({ interval: 5, failures: 1, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartOutcome = "failed";
+  // Asked at 6 s, the restart waited 5 minutes for its Target before its stop failed.
+  f.lockWait = 300 * SECOND;
+  await f.runUntil(400 * SECOND);
+  expect(f.restarts.map((restart) => restart.at / SECOND)).toEqual([6, 366]);
 });

@@ -6,8 +6,8 @@ import type { OperationPhase } from "../domain/operation-progress";
 import type { TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import type {
-  HealthRestartOutcome,
   HealthRestartRequest,
+  HealthRestartResult,
 } from "./health-monitor";
 import {
   activationJournal,
@@ -40,12 +40,12 @@ export async function restartForHealth(
   request: HealthRestartRequest,
   deps: Deps,
   phase: (phase: OperationPhase) => void,
-): Promise<HealthRestartOutcome> {
+): Promise<HealthRestartResult> {
   const component = target.plan.components.find(
     (candidate): candidate is ManagedComponent =>
       candidate.kind === "managed" && candidate.name === request.service,
   );
-  if (!component) return "skipped";
+  if (!component) return { outcome: "skipped" };
   // Bounded like every observation made under a Target's lock: one that never answers decides nothing and holds nothing.
   const [seen] = await boundedObservations(
     [(signal) => deps.observations.process(target, component, signal)],
@@ -53,14 +53,14 @@ export async function restartForHealth(
     deps.observationDeadline,
   );
   // Nothing established about the process: try again later, as if nothing had happened.
-  if (seen?.kind !== "completed") return "deferred";
+  if (seen?.kind !== "completed") return { outcome: "deferred" };
   const observed = seen.value;
   if (
     observed.state !== "running" ||
     (request.incarnation !== undefined &&
       observed.incarnation !== request.incarnation)
   )
-    return "skipped";
+    return { outcome: "skipped" };
   const at = Date.parse(deps.now());
   const stretch = { since: request.since, at: [...request.restarts, at] };
   // Recorded before the stop, so whatever starts it next (this restart, or automatic restart after a failed one) carries
@@ -88,7 +88,7 @@ export async function restartForHealth(
       "failed",
       `${request.service} was to be restarted because ${why}, but it could not be stopped (${diagnosticErrorCode(error)}).`,
     ).catch(() => {});
-    return "failed";
+    return { outcome: "failed", at };
   }
   phase("starting");
   const journal = activationJournal(target, "health", deps, {
@@ -104,11 +104,11 @@ export async function restartForHealth(
       "failed",
       `${request.service} was stopped because ${why}, and could not be started again (${diagnosticErrorCode(error)}); automatic restart takes it from here.`,
     ).catch(() => {});
-    return "failed";
+    return { outcome: "failed", at };
   }
   await activity(
     "started",
     `${request.service} was restarted because ${why} (health restart ${request.attempt}).`,
   );
-  return "restarted";
+  return { outcome: "restarted", at };
 }

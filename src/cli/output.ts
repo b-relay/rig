@@ -195,7 +195,7 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
       const state =
         component.state === "stopping" && typeof component.killAt === "string"
           ? `stopping · ${killingText(component.killAt, now, "minutes", false)}`
-          : word(component.state);
+          : healthText(component, now) || word(component.state);
       lines.push(
         `  ${[word(component.name), state, port, route].filter(Boolean).join("  ")}`,
       );
@@ -225,6 +225,37 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
   for (const warning of report.warnings ?? [])
     lines.push(`Warning: ${word(warning)}`);
   return `${lines.join("\n")}\n`;
+}
+/** The state of a Service judged by its ongoing checks, as the cached result says: `healthy · checked 12s ago`,
+ * `unhealthy 2/3 · HTTP 503`, with `· gave up restarting` once Rig stopped restarting it. Empty for any other. */
+function healthText(
+  component: ProjectStatusReport["targets"][number]["components"][number],
+  now: Date,
+): string {
+  const health = component.health;
+  if (!health || !["healthy", "unhealthy"].includes(component.state)) return "";
+  if (component.state === "healthy")
+    return health.checkedAt
+      ? `healthy · checked ${ago(health.checkedAt, now)}`
+      : "healthy";
+  return [
+    `unhealthy ${health.failures}/${health.threshold}`,
+    word(health.output),
+    health.gaveUp ? "gave up restarting" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+/** "12s ago", "3m ago", "2h ago". */
+function ago(at: string, now: Date): string {
+  const seconds = Math.max(
+    0,
+    Math.round((now.getTime() - Date.parse(at)) / 1000),
+  );
+  if (!Number.isFinite(seconds)) return "at an unknown time";
+  if (seconds < 120) return `${seconds}s ago`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)}m ago`;
+  return `${Math.round(seconds / 3600)}h ago`;
 }
 /** A deployed Target shows the Branch and Commit it serves; the Working copy shows neither. */
 function deployedFrom(

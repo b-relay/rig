@@ -121,5 +121,8 @@ Git runs this helper for `git push rig <branch>`. People never run it.
   `rig config upgrade`, as does a deploy of a Commit whose `rig.yaml` is
   `rig/v1`. `rig config upgrade` changes only the file in the working tree;
   commit it yourself.
+- `rig status` shows a Service with `health.interval` by its last ongoing
+  check (`healthy · checked 12s ago`, `unhealthy 2/3 · <output>`) without
+  running the check; others are checked when status runs.
 - `RIG_ROOT` is the only environment switch: an absolute path, `~/.rig` by
   default. There are no `--state-root` or `--config` overrides.

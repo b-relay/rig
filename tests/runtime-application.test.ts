@@ -146,6 +146,9 @@ function fixture() {
         plans.push(target);
         return { outcome: "started" };
       },
+      async stop() {
+        return { outcome: "stopped" as const };
+      },
       async down(target) {
         plans.push(target);
         return { outcome: "stopped" };

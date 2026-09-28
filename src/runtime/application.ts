@@ -70,7 +70,13 @@ import { persistTarget, planTarget, selectTarget } from "./targets";
 import { configDigest } from "../config/config-digest";
 import { watchConfigFormats, withDeprecation } from "./config-format-notice";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
-import { assertSourceBuildsKnown, withStops } from "./lifecycle";
+import {
+  assertSourceBuildsKnown,
+  withStops,
+  type TargetLifecycle,
+} from "./lifecycle";
+import { restartForHealth } from "./health-restart";
+import type { HealthRestartRequest } from "./health-monitor";
 import {
   activeStops,
   killSignal,
@@ -143,6 +149,16 @@ export interface SupervisionPass {
   nextRetryAt?: number;
 }
 export interface RigRuntime extends ProjectStatusReader {
+  /** Whether an Operation holds or waits for `target`, so one of its Services may be starting or stopping. A supervision
+   * pass that only observes the Target does not count; one that is starting a Service again does. */
+  targetBusy(
+    target: Pick<TargetRecord, "projectId" | "kind" | "name">,
+  ): boolean;
+  /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
+   * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
+  restartUnhealthy(
+    request: HealthRestartRequest,
+  ): Promise<"restarted" | "skipped" | "failed">;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
@@ -1255,8 +1271,91 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       return replacements;
     }
   };
+  /** A health restart: an Operation on one Target, listed like a command so status shows its stop and the alert monitor
+   * holds back judgement of a Stable Target while it runs. */
+  const restartUnhealthy = async (
+    request: HealthRestartRequest,
+  ): Promise<"restarted" | "skipped" | "failed"> => {
+    if (draining) return "skipped";
+    const recorded = (await deps.store.read()).targets.find(
+      (target) => target.id === request.targetId,
+    );
+    if (!recorded) return "skipped";
+    const operationId = `health:${deps.id()}`;
+    const entry: Running = {
+      kills: new Map(),
+      targetId: recorded.id,
+      view: {
+        operationId,
+        action: "health-restart",
+        target: recorded.name,
+        phase: "restarting",
+        startedAt: deps.now(),
+      },
+      mutation: {
+        operationId,
+        action: "health-restart",
+        targetId: recorded.id,
+      },
+    };
+    operations.set(operationId, entry);
+    const running = (async () => {
+      const lease = await locks.acquire(operationId, [
+        targetScope(recorded.projectId, recorded),
+      ]);
+      try {
+        if (draining) return "skipped" as const;
+        const state = await deps.store.read();
+        const target = state.targets.find((t) => t.id === request.targetId);
+        if (
+          !target ||
+          target.desired !== "running" ||
+          target.recovery ||
+          target.destructionPending
+        )
+          return "skipped" as const;
+        const project = state.projects.find((p) => p.id === target.projectId);
+        if (project) entry.view.project = project.name;
+        return await restartForHealth(
+          target,
+          request,
+          { ...deps, lifecycle: lifecycleOf(entry) },
+          (phase) => {
+            entry.view.phase = phase;
+          },
+        );
+      } catch (error) {
+        await deps
+          .diagnostic({
+            operationId,
+            action: "health-restart",
+            outcome: "failed",
+            target: recorded.name,
+            errorCode: diagnosticErrorCode(error),
+            ...diagnosticCauses(error),
+          })
+          .catch(() => {});
+        return "failed" as const;
+      } finally {
+        lease.release();
+        operations.delete(operationId);
+      }
+    })();
+    executing.add(running);
+    void running.finally(() => executing.delete(running)).catch(() => {});
+    return await running;
+  };
   return {
     status,
+    restartUnhealthy,
+    targetBusy: (target) =>
+      locks.busy(targetScope(target.projectId, target), (id) => {
+        const entry = operations.get(id);
+        return (
+          entry?.view.action === "supervise" &&
+          entry.view.phase === initialPhase("supervise")
+        );
+      }),
     mutations: () =>
       [...operations.values()].flatMap((entry) =>
         entry.mutation ? [{ ...entry.mutation }] : [],
@@ -1543,7 +1642,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       entry.view.target = target.name;
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
-      const lifecycle = lifecycleOf(entry);
+      const observing = lifecycleOf(entry);
+      // While it starts a Service again the pass is starting, not observing: the health monitor pauses the Target's checks.
+      const lifecycle: TargetLifecycle = {
+        ...observing,
+        async recover(recovering, service, journal, stops) {
+          entry.view.phase = "starting";
+          try {
+            return await observing.recover(recovering, service, journal, stops);
+          } finally {
+            entry.view.phase = initialPhase(action);
+          }
+        },
+      };
       if (target.desired === "running") {
         if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";

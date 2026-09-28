@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { ConfigError } from "./errors";
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
-import { DEFAULT_RESTART_POLICY } from "./plan-defaults";
+import {
+  DEFAULT_HEALTH_FAILURES,
+  DEFAULT_HEALTH_ON_FAILURE,
+  DEFAULT_HEALTH_TIMEOUT_SECONDS,
+  DEFAULT_RESTART_POLICY,
+} from "./plan-defaults";
 import {
   DEFAULT_TARGET_NAMES,
   hostConfigSchema,
@@ -39,7 +44,7 @@ export interface ConfigJsonSchemas {
  * tests/config-json-schema.test.ts holds each entry to what resolveTargetPlan does. */
 const planningDefaults = (
   format: ConfigFormat,
-): readonly (readonly [string[], string])[] => [
+): readonly (readonly [readonly string[], string | number])[] => [
   [["supervisor"], "rigd"],
   [["build_timeout"], "10m"],
   [
@@ -48,6 +53,16 @@ const planningDefaults = (
   ],
   [["services", "*", "stop_timeout"], `${DEFAULT_STOP_TIMEOUT_SECONDS}s`],
   [["services", "*", "restart"], DEFAULT_RESTART_POLICY],
+  ...(format === UNDECLARED_FORMAT
+    ? []
+    : ([
+        [
+          ["services", "*", "health", "timeout"],
+          `${DEFAULT_HEALTH_TIMEOUT_SECONDS}s`,
+        ],
+        [["services", "*", "health", "failures"], DEFAULT_HEALTH_FAILURES],
+        [["services", "*", "health", "on_failure"], DEFAULT_HEALTH_ON_FAILURE],
+      ] as const)),
   [["targets", "working", "name"], DEFAULT_TARGET_NAMES.working],
   [["targets", "stable", "name"], DEFAULT_TARGET_NAMES.stable],
 ];

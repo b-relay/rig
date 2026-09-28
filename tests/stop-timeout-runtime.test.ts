@@ -933,3 +933,61 @@ test("a Service whose plan was recorded before stop_timeout existed is stopped w
   convex.exit();
   expect(await down).toMatchObject({ outcome: "stopped" });
 });
+
+test("a health restart stops the Service within its stop_timeout under its Target's lock, spends no restart budget, records why, and holds up no other Target", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "deploy", target: "live", branch: "main" });
+  const local = () => w.state.targets.find((t) => t.kind === "local")!;
+  const before = local().services!.web!;
+  w.hold();
+  const restart = w.runtime.restartUnhealthy({
+    targetId: local().id,
+    service: "web",
+    attempt: 2,
+    failures: 3,
+    output: "HTTP 503",
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    restarts: [Date.parse("2026-09-27T03:50:00.000Z")],
+  });
+  // The normal stop path: web's own stop_timeout, shown as the Target stopping.
+  const stop = await w.stopOf("web");
+  expect(stop.request.graceMs).toBe(2 * 60_000);
+  expect(
+    (await w.runtime.status({ project: "fletcher" })).targets.find(
+      (t) => t.kind === "local",
+    )!.state,
+  ).toBe("stopping");
+  // The Working copy is held; the Stable Target is not.
+  expect(w.runtime.targetBusy(local())).toBe(true);
+  expect(
+    w.runtime.targetBusy(w.state.targets.find((t) => t.kind === "live")!),
+  ).toBe(false);
+  expect(await w.command({ action: "up", target: "live" })).toMatchObject({
+    target: "live",
+  });
+  w.hold(false);
+  stop.exit();
+  expect(await restart).toBe("restarted");
+  const after = local().services!.web!;
+  expect(after.incarnation).not.toBe(before.incarnation);
+  expect(after.attempts).toEqual([]);
+  expect(after.healthRestarts).toEqual({
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    at: [
+      Date.parse("2026-09-27T03:50:00.000Z"),
+      Date.parse("2026-09-27T04:00:00.000Z"),
+    ],
+  });
+  expect(w.state.activity.at(-1)).toMatchObject({
+    action: "health-restart",
+    outcome: "started",
+    target: "local",
+    message:
+      "web was restarted because it failed 3 health checks in a row (last output: HTTP 503) (health restart 2).",
+  });
+  expect(w.runtime.targetBusy(local())).toBe(false);
+  // An explicit restart ends the stretch.
+  await w.command({ action: "restart", target: "local" });
+  expect(local().services!.web!.healthRestarts).toBeUndefined();
+});

@@ -223,6 +223,13 @@ _Relationship_: `healthy` means a configured health check passed. A managed
 component without a configured health check may be `running`, but should not be
 reported as `healthy` without evidence.
 
+_Relationship_: A Service with `health.interval` has **ongoing checks**: `rigd`
+keeps running its health check while it runs, and status shows the last
+result instead of checking. `health.failures` failed checks in a row mark it
+**unhealthy**; `health.on_failure` decides whether Rig only reports that or
+also makes a **health restart**, which is separate from an automatic restart
+and its budget.
+
 _Relationship_: A Target may be running while its components have different
 states. `rig status` should show the Target state first and component states
 underneath it.

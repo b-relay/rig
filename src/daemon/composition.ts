@@ -1,6 +1,7 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
 import {
   ALERT_MONITOR,
+  HEALTH_MONITOR,
   createNoticeBoard,
   recordingDiagnostic,
   startFailureMonitor,
@@ -11,6 +12,11 @@ import {
   evaluateOperatorAlerts,
 } from "../runtime/alert-monitor";
 import { alertChannels } from "./alert-channels";
+import {
+  HEALTH_MONITOR_TICK_MS,
+  createHealthMonitor,
+  type HealthMonitor,
+} from "../runtime/health-monitor";
 import type { DaemonHostOptions } from "./host";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
@@ -140,8 +146,11 @@ export async function composeDaemon(
     now: () => new Date().toISOString(),
     id: randomUUID,
   });
+  // Built after the runtime, which restarts what it finds unhealthy; the runtime reads its results for status.
+  let health: HealthMonitor | undefined;
   const runtime = createRuntime({
     root,
+    healthResults: (target, service) => health?.results(target, service),
     notices: notices.list,
     readAdminActivity: adminActivity.read,
     inspectHost: () => inspectHost(root),
@@ -169,6 +178,20 @@ export async function composeDaemon(
     id: randomUUID,
     diagnostic: recordingDiagnostic(diagnostic, notices),
   });
+  health = createHealthMonitor({
+    store,
+    observations: effects.observations,
+    now: () => Date.now(),
+    id: randomUUID,
+    busy: runtime.targetBusy,
+    restart: runtime.restartUnhealthy,
+    schedule(delayMs, fire) {
+      const timer = setTimeout(fire, delayMs);
+      return () => clearTimeout(timer);
+    },
+    diagnostic: recordingDiagnostic(diagnostic, notices),
+  });
+  const monitor = health;
   const editor = createConfigEditor({
     async resolveProject(name) {
       return (await store.read()).projects.find(
@@ -186,6 +209,7 @@ export async function composeDaemon(
   let stopped = false;
   let stopMonitor: (() => Promise<void>) | undefined;
   let stopAlerts: (() => Promise<void>) | undefined;
+  let stopHealth: (() => Promise<void>) | undefined;
   return {
     handle: runtime.command,
     editor,
@@ -215,12 +239,21 @@ export async function composeDaemon(
             id: randomUUID,
             diagnostic: recordingDiagnostic(diagnostic, notices),
             mutations: runtime.mutations,
+            healthResults: monitor.results,
           }),
+      });
+      // Ongoing checks run beside the operation queue; a restart they ask for waits for its Target like any command.
+      stopHealth = startFailureMonitor({
+        intervalMs: HEALTH_MONITOR_TICK_MS,
+        notices,
+        channel: HEALTH_MONITOR,
+        run: () => monitor.pass(),
       });
     },
     async shutdown() {
       stopped = true;
       stopMonitor?.();
+      await stopHealth?.();
       // An alert evaluation in flight finishes and saves what it delivered, so the next rigd does not deliver it again.
       await stopAlerts?.();
       await runtime.drain();

@@ -239,14 +239,18 @@ async function saveRun(
 /** The journal a start runs under. Every `starting` is saved before it answers, so a process never carries an incarnation the
  * record does not name. An `explicit` start (an operator's up or restart, a deployment, rigd's start of a Stable Target
  * after a Host restart) begins a new activation with full budgets of automatic attempts; an automatic one spends an
- * attempt of the named budget of the current activation. `afterHostRestart` marks each process an explicit start makes as
- * started after that restart, which status reports.
+ * attempt of the named budget of the current activation. A `health` restart spends from neither budget and carries both
+ * on, with `healthRestarts`, the unhealthy stretch it continues. `afterHostRestart` marks each process an explicit start
+ * makes as started after that restart, which status reports.
  * `failed` marks the Services an explicit start began as not started after it was rolled back; nothing retries that. */
 export function activationJournal(
   target: TargetRecord,
-  mode: "explicit" | RestartBudget,
+  mode: "explicit" | RestartBudget | "health",
   deps: Pick<Deps, "store" | "now" | "id">,
-  options: { afterHostRestart?: HostRestart } = {},
+  options: {
+    afterHostRestart?: HostRestart;
+    healthRestarts?: NonNullable<ServiceRun["healthRestarts"]>;
+  } = {},
 ): ActivationJournal & { failed(error: unknown): Promise<void> } {
   const begun: string[] = [];
   return {
@@ -267,7 +271,14 @@ export function activationJournal(
         service,
         mode === "explicit"
           ? fresh
-          : automaticStart(fresh, current, mode, Date.parse(deps.now())),
+          : mode === "health"
+            ? {
+                ...carriedOver(fresh, current),
+                ...(options.healthRestarts
+                  ? { healthRestarts: options.healthRestarts }
+                  : {}),
+              }
+            : automaticStart(fresh, current, mode, Date.parse(deps.now())),
         deps,
       );
       begun.push(service);
@@ -296,6 +307,23 @@ export function activationJournal(
     },
   };
 }
+/** `fresh` with what a start that is not explicit carries over from `current`: both budgets' spent attempts, and the
+ * unhealthy stretch a health restart began. */
+function carriedOver(
+  fresh: ServiceRun,
+  current: ServiceRun | undefined,
+): ServiceRun {
+  return {
+    ...fresh,
+    attempts: current?.attempts ?? [],
+    ...(current?.unknownAttempts
+      ? { unknownAttempts: current.unknownAttempts }
+      : {}),
+    ...(current?.healthRestarts
+      ? { healthRestarts: current.healthRestarts }
+      : {}),
+  };
+}
 /** The record of an automatic start at `now`: both budgets carry over from `current`, and `budget` spends one attempt. */
 function automaticStart(
   fresh: ServiceRun,
@@ -304,11 +332,7 @@ function automaticStart(
   now: number,
 ): ServiceRun {
   const carried: ServiceRun = {
-    ...fresh,
-    attempts: current?.attempts ?? [],
-    ...(current?.unknownAttempts
-      ? { unknownAttempts: current.unknownAttempts }
-      : {}),
+    ...carriedOver(fresh, current),
     ...(budget === "unknown-exit" ? { restartedAfterUnknown: true } : {}),
   };
   return withAttempts(carried, budget, [
@@ -652,6 +676,27 @@ async function holdBack(
   });
 }
 
+/** Records how a start that was not explicit (a health restart's) failed, as a failed automatic attempt is recorded, so
+ * automatic restart judges the Service by its policy from here; no scheduled retry is kept. */
+export async function recordFailedAttempt(
+  target: TargetRecord,
+  service: string,
+  error: unknown,
+  deps: Pick<Deps, "store" | "now" | "id">,
+): Promise<void> {
+  const current = currentRun(target, service);
+  if (!current) return;
+  const { retryAt: _retryAt, waitingFor: _waitingFor, ...rest } = current;
+  await saveRun(
+    target,
+    service,
+    {
+      ...rest,
+      outcome: failedAttemptOutcome(error, deps.now()),
+    },
+    deps,
+  );
+}
 /** What a failed automatic attempt leaves on record. A start refused before it was journalled, or one Rig itself stopped, is a failure it witnessed. A process that
  * ended on its own before it was ready is judged like any other exit: by its evidence, and `unknown` without any. A rollback
  * that could not be verified may have left the process behind, and a start the supervisor failed may have ended unseen. */

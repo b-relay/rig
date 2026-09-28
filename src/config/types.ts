@@ -50,6 +50,21 @@ export interface ManagedComponent extends ComponentContext {
   stopTimeout?: number;
   /** When Rig starts the Service again after a known exit; a plan recorded without it means always. */
   restart?: RestartPolicy;
+  /** Ongoing checks of `health` while the Service runs, from health.interval and its companions (seconds); absent when
+   * the check runs only at start. */
+  healthMonitor?: HealthMonitorPlan;
+}
+/** How rigd keeps checking a running Service (#282). */
+export interface HealthMonitorPlan {
+  /** Seconds between checks. */
+  interval: number;
+  /** Seconds one check may take before it counts as failed. */
+  timeout: number;
+  /** Failed checks in a row before Rig acts. */
+  failures: number;
+  onFailure: "report" | "restart";
+  /** Seconds Rig keeps restarting a Service that stays unhealthy; forever when absent. */
+  retryFor?: number;
 }
 /** One path prefix of a Target's hostname and the declared port behind it. A prefix matches at a slash boundary and the upstream sees the path unchanged. */
 export interface PlanRoute {

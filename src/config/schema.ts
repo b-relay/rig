@@ -254,13 +254,56 @@ const v1Readiness = {
     ),
 };
 /** The health block of a Service or of a role's Service patch; every field is optional so a patch can change one. */
+/** The shortest pause between two ongoing checks of one Service. */
+export const MIN_HEALTH_INTERVAL_SECONDS = 5;
+/** How long Rig may be told to keep restarting an unhealthy Service: 30 days. It is compared with elapsed time, never held
+ * by a timer. */
+const MAX_RETRY_FOR_SECONDS = 30 * 86400;
 const healthBlock = z
   .strictObject({
     check: health.describe(CHECK_RULE).optional(),
     start_timeout: duration.optional().describe(START_TIMEOUT_RULE),
+    interval: duration
+      .refine(
+        (value) => durationSeconds(value) >= MIN_HEALTH_INTERVAL_SECONDS,
+        `must be at least ${MIN_HEALTH_INTERVAL_SECONDS}s`,
+      )
+      .optional()
+      .describe(
+        `How often Rig runs health.check while the Service runs, such as 30s (at least ${MIN_HEALTH_INTERVAL_SECONDS}s). Without it the check runs only at start. Checks begin one interval after the start check passed, pause while the Service is starting or stopping, and never overlap.`,
+      ),
+    timeout: duration
+      .optional()
+      .describe(
+        "How long one ongoing check may take before it counts as failed, such as 5s (the default). Needs health.interval; the start check is bounded by start_timeout instead.",
+      ),
+    failures: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        "Failed ongoing checks in a row before Rig marks the Service unhealthy and acts, from 1 to 100 (default 3). Needs health.interval.",
+      ),
+    on_failure: z
+      .enum(["report", "restart"])
+      .optional()
+      .describe(
+        "What Rig does once the Service is marked unhealthy: report (the default) shows it unhealthy in status and Activity, and a Stable Target counts as down; restart stops it through the normal stop path, within its stop_timeout, and starts it again, waiting about 1 min, 5 min, 15 min, then an hour between restarts while it stays unhealthy. Health restarts do not use the automatic restart budget. Needs health.interval.",
+      ),
+    retry_for: text
+      .refine((value) => {
+        const seconds = durationSeconds(value);
+        return seconds >= 1 && seconds <= MAX_RETRY_FOR_SECONDS;
+      }, "must be a positive duration of at most 720h (30 days), such as 6h")
+      .optional()
+      .describe(
+        "With on_failure: restart, how long Rig keeps restarting a Service that stays unhealthy, such as 6h. After that Rig leaves it as it is, reports it unhealthy and says in status that it gave up. Omitted, Rig never gives up.",
+      ),
   })
   .describe(
-    "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection.",
+    "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection. With health.interval Rig keeps checking while it runs.",
   );
 /** rig/v2 groups start readiness in the health block. */
 const v2Readiness = { health: healthBlock.optional() };
@@ -623,6 +666,13 @@ function validateGraph(
     done.add(key);
   };
   for (const key of Object.keys(services)) visit(key);
+  for (const [key, entry] of Object.entries(services))
+    validateHealth(
+      entry.health,
+      [...at, "services", key, "health"],
+      key,
+      report,
+    );
   const pinned = new Map<number, string>();
   for (const [key, entry] of Object.entries(services))
     for (const [port, value] of Object.entries(entry.ports ?? {})) {
@@ -662,6 +712,38 @@ function validateGraph(
         `Proxy '${prefix}' references '${upstream.service}.${upstream.port}', which is not a declared Service port.`,
       );
   }
+}
+/** The settings of ongoing checks, in the order a health block lists them; each needs health.interval. */
+const ONGOING_FIELDS = ["timeout", "failures", "on_failure", "retry_for"];
+/** Rules of one Service's health block, after patching: ongoing checks need a check to run and an interval to run it at,
+ * and retry_for only bounds restarts. rig/v1 has no health block, so nothing is checked there. */
+function validateHealth(
+  block: unknown,
+  at: readonly PropertyKey[],
+  service: string,
+  report: (path: PropertyKey[], message: string) => void,
+): void {
+  if (!isRecord(block)) return;
+  const set = (field: string) => block[field] !== undefined;
+  if (!set("check"))
+    for (const field of ["interval", ...ONGOING_FIELDS])
+      if (set(field))
+        report(
+          [...at, field],
+          `health.${field} of Service '${service}' needs health.check: ongoing checks run it.`,
+        );
+  if (!set("interval"))
+    for (const field of ONGOING_FIELDS)
+      if (set(field))
+        report(
+          [...at, field],
+          `health.${field} of Service '${service}' needs health.interval; without it the check runs only at start.`,
+        );
+  if (set("retry_for") && block.on_failure !== "restart")
+    report(
+      [...at, "retry_for"],
+      `health.retry_for of Service '${service}' applies only with health.on_failure: restart.`,
+    );
 }
 /** Resolves every reference-bearing string against placeholder generated values, so a missing path, a collection,
  * a cycle, a reference into targets or rig.data outside a Service is reported when the document is read, not at the first deploy. */

@@ -1086,9 +1086,11 @@ A Service is a long-running process Rig starts and supervises. Its fields:
   or a shell command; it must pass before the Service counts as started and
   before a Service that depends on it starts. `health.start_timeout` (default
   `30s`) bounds that wait, and without a check it bounds the wait for the
-  Service's ports. A role patch may set either field
-  (`targets.stable.services.api.health.start_timeout`). In a `rig/v1` file they
-  are the Service fields `ready` and `ready_timeout`.
+  Service's ports. In a `rig/v1` file these two are the Service fields `ready`
+  and `ready_timeout`. With `health.interval` Rig keeps checking the Service
+  while it runs; `timeout`, `failures`, `on_failure` and `retry_for` say how.
+  See "Health checks". A role patch may set any `health` field
+  (`targets.stable.services.api.health.on_failure`).
 - `stop_timeout`: how long the Service may take to exit after its stop signal
   (SIGTERM) before Rig ends it with SIGKILL, from `1s` to `1h` (default `10s`).
   It is the time after the signal, not a total. Every stop honours it: `rig
@@ -1393,6 +1395,93 @@ written yet is recorded by the start that finishes it. Only a session that chang
 pending restart was found, such as a logout and login after it, is a new
 restart.
 
+### Health checks
+
+A Service's `health.check` runs when it starts. Add `health.interval` and Rig
+keeps running it while the Service runs, so a Service that is alive but stuck
+(deadlocked, waiting on a dead socket, its heartbeat stopped) is found. Without
+`interval` nothing changes: the check runs only at start, as before.
+
+```yaml
+format: rig/v2
+services:
+  web:
+    run: bun run start
+    ports: { http: auto }
+    health:
+      check: http://127.0.0.1:${services.web.ports.http}/healthz
+      start_timeout: 60s # the start check's budget
+      interval: 30s # keep checking every 30 s; at least 5s
+      timeout: 5s # one check's budget (default 5s)
+      failures: 3 # failed checks in a row before Rig acts (default 3)
+      on_failure: restart # report (default) or restart
+      retry_for: 6h # with restart only; omitted, Rig never gives up
+```
+
+- Checks begin one `interval` after the start check passed, and pause while
+  the Service's Target is starting or stopping anything (an `up`, a `down`, a
+  `restart`, a deploy, an automatic or health restart); they begin again one
+  `interval` after it is free. Checks of one Service never overlap, and at most
+  four run at once across the Host. They run beside the operation queue, so a
+  slow check holds up no command. A check that does not answer within
+  `timeout` failed.
+- `failures` failed checks in a row mark the Service unhealthy, and Activity
+  records it with the last check's output. A passing check ends that, and
+  Activity records that too.
+- `on_failure: report` (the default) only reports: `rig status` shows the
+  Service `unhealthy`, and a Stable Target with an unhealthy Service counts as
+  down for operator alerts, which go out after 5 minutes as for any Stable
+  Target that is down.
+- `on_failure: restart` also restarts it: Rig stops it through the normal stop
+  path, within its `stop_timeout` (`rig status` shows it `stopping`), and
+  starts it again as an automatic restart does, with its start check. The
+  restart waits for its Target like any command, so it never runs beside
+  another operation on that Target. The first restart is made as soon as the
+  Service is marked unhealthy; while it stays unhealthy, the next ones wait
+  about 1 min, 5 min, 15 min, then an hour after the one before. Health
+  restarts do not use the automatic restart budget (see "Automatic restart"),
+  and a start that fails is left to it. Activity records each restart with the
+  check's last output, cut to 200 characters.
+- `retry_for` bounds how long Rig keeps restarting: once the Service has been
+  unhealthy that long, Rig stops restarting it, leaves it as it is, keeps
+  checking it and reports it unhealthy, and `rig status` and Activity say that
+  Rig gave up. `rig restart` or any explicit start clears that. A new `rigd`
+  continues the back-off and `retry_for` of a Service a health restart
+  started.
+
+`rig status` shows the result of the last check without running one:
+
+```text
+live  unhealthy  main@1a2b3c4
+  web  healthy · checked 12s ago  :4312  app.test
+  scheduler  unhealthy 2/3 · exit code 1: heartbeat 93 s old
+```
+
+`2/3` is failed checks in a row of `failures`. Until the first check of a new
+process answers, the Service shows `running`. Services without `interval` are
+checked when `rig status` runs, as before.
+
+A worker without a port has no traffic that would reveal it is stuck. Let it
+prove it is working: each time it finishes a unit of work, or on a timer inside
+its main loop, it touches a file under its persistent data, and the check tests
+the file's age.
+
+```yaml
+services:
+  scheduler:
+    run: bun run src/scheduler.ts # touches $STATE/heartbeat every 10 s
+    env:
+      STATE: ${rig.data}
+    health:
+      check: test $(( $(date +%s) - $(stat -f %m "$STATE/heartbeat") )) -lt 60
+      interval: 30s
+      on_failure: restart
+```
+
+The check runs under `/bin/sh -c` in the workspace with the Service's
+environment, so it sees `STATE` as the Service does. `stat -f %m` is macOS's
+form of the file's modification time.
+
 ### Operator alerts
 
 `rigd` tells you when a Stable Target stops serving and stays down, so an
@@ -1407,7 +1496,10 @@ Services:
 - has used up its automatic restarts, even after clean exits;
 - is still `starting`, for example waiting for a dependency that does not come
   back;
-- fails its readiness check, or does not answer it within 5 seconds.
+- fails its readiness check, or does not answer it within 5 seconds;
+- with `health.interval`, is marked unhealthy by its ongoing checks. For such
+  a Service the alert monitor reads the last result and does not run the
+  check itself; a failed check or two below `health.failures` is not down.
 
 A Target also counts as down when its route is unpublished (no host Caddyfile
 loads Rig's routes), or when a deploy left it mid-transition: its rollback

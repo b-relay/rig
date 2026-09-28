@@ -1317,7 +1317,18 @@ time and without starting (or retrying) a Stable Target it already started, or
 failed to start, for that restart. A restart whose Activity entry could not be
 written yet is recorded by the start that finishes it. Only a session that changed since the
 pending restart was found, such as a logout and login after it, is a new
-restart.
+restart; a pending restart whose entry was never written still gets its entry,
+ahead of the new one's, marked as recorded late.
+
+When a Stable Target's start fails and its failure cannot be recorded (a full
+disk, say), each later pass of the same `rigd` records it again, and does not
+supervise that Target meanwhile. A command you run on the Target records the
+failure first, and is refused with `STATE_WRITE` while it cannot be. If `rigd`
+stops before the failure is recorded, the next start knows nothing of it and
+starts that Target once more. Likewise, if no state write at all succeeded
+before `rigd` stopped, nothing records the restart it found: after a second
+reboot the Host shows only the new boot, so the next start sees one restart
+and writes one entry.
 
 ### Operator alerts
 

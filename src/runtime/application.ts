@@ -50,6 +50,7 @@ import {
 import {
   findHostRestart,
   noteMarkedForHostRestart,
+  recordFailedAfterHostRestart,
   recordHostRestart,
   restartMark,
   saveHostSession,
@@ -238,6 +239,26 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
   /** Working copies and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
    * by Target id; each pass tries again. */
   const unmarked = new Map<string, HostRestart>();
+  /** Stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
+   * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
+  const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
+  /** Records the failed start after a Host restart that this daemon could not record yet for `target`, if there is one,
+   * under the caller's lease of the Target. Resolves whether none is left unrecorded; a failure is in the diagnostic log. */
+  const recordUnrecorded = async (target: TargetRecord): Promise<boolean> => {
+    const failure = unrecorded.get(target.id);
+    if (!failure) return true;
+    if (
+      !(await recordFailedAfterHostRestart(
+        target,
+        failure.error,
+        failure.mark,
+        deps,
+      ))
+    )
+      return false;
+    unrecorded.delete(target.id);
+    return true;
+  };
   const stopping = (targetId: string) =>
     [...operations.values()].some(
       (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
@@ -778,6 +799,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           { target: name },
         );
         target = find(targets);
+        // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the Target.
+        if (target && !(await recordUnrecorded(target)))
+          throw new RigError(
+            "STATE_WRITE",
+            `${target.name}'s failed start after the Host restarted could not be recorded, so nothing was done.`,
+            "rigd could not write its state under RIG_ROOT/runtime; rig doctor and the rigd diagnostic log show why. Free disk space or fix the permissions, then retry.",
+            { target: target.name },
+          );
         // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
         if (
           command.action !== "down" &&
@@ -1510,8 +1539,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       if (target.desired === "running") {
         if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
-          if (await startAfterHostRestart(target, mark, { ...deps, lifecycle }))
-            settled?.add(targetId);
+          const started = await startAfterHostRestart(target, mark, {
+            ...deps,
+            lifecycle,
+          });
+          if (started.outcome === "settled") settled?.add(targetId);
+          if (started.outcome === "unrecorded")
+            unrecorded.set(targetId, { error: started.error, mark });
+          return undefined;
+        }
+        // A Stable Target whose failed start after a Host restart could not be recorded has it recorded by each later pass
+        // of this daemon until that succeeds, and nothing of it is supervised until then.
+        if (unrecorded.has(targetId)) {
+          await recordUnrecorded(target);
           return undefined;
         }
         // A Working copy or Preview whose stopped Services could not all be recorded as stopped by the restart is tried

@@ -17,6 +17,7 @@ import { ALERT_GRACE_MS } from "../src/runtime/alert-policy";
 import type { OperatorAlert } from "../src/domain/operator-alerts";
 import { stopDetached } from "../src/domain/stop-budget";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
+import type { RuntimeState } from "../src/domain/runtime";
 import type { HostSession } from "../src/domain/host-session";
 import type {
   ProcessObservation,
@@ -861,6 +862,254 @@ test("a daemon that never managed to write a restart's entry leaves its Stable s
   ]);
   const host = (await f.store.read()).host!;
   expect(host).toMatchObject({ boot: "BOOT-2", login: "100002" });
+  expect(host.restart).toBeUndefined();
+});
+
+/** Makes the next `times` state writes whose result `matches` fail, as a full disk would; `left` counts those still to fail. */
+function failWrites(
+  store: FileStateStore,
+  matches: (state: RuntimeState) => boolean,
+  times = Number.POSITIVE_INFINITY,
+) {
+  const failing = { left: times };
+  const update = store.update.bind(store);
+  store.update = (change) =>
+    update(async (state) => {
+      await change(state);
+      if (failing.left > 0 && matches(state)) {
+        failing.left--;
+        throw new Error("disk full");
+      }
+    });
+  return failing;
+}
+const HOST_ENTRY = (state: RuntimeState) =>
+  state.activity.some((entry) => entry.action === "host-restart");
+
+test("a failed Stable start after a restart whose record could not be written is recorded by a later pass, and no daemon starts it again", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const db = await f.key("live", "db");
+  f.refusal.start = (key) => key === db;
+  // The write that records the failed start, with its Activity entry, fails twice.
+  const failing = failWrites(
+    f.store,
+    (state) =>
+      state.activity
+        .slice(before)
+        .some((entry) => entry.action === "up" && entry.outcome === "failed"),
+    2,
+  );
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual([]);
+
+  // Nothing of the Target is started while its failure is unrecorded, nor once a later pass has recorded it.
+  f.refusal.start = undefined;
+  for (const delay of [...UNKNOWN_EXIT_RESTART_BACKOFF_MS, 600_000]) {
+    f.clock.ms += delay;
+    await f.supervise();
+  }
+  expect(failing.left).toBe(0);
+  expect(await f.running("live")).toEqual([]);
+  const status = await f.status("live");
+  for (const service of ["api", "db", "worker"])
+    expect(status[service]).toMatchObject({ state: "failed" });
+
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual([]);
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/failed live",
+  ]);
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-2" });
+  expect(host.restart).toBeUndefined();
+  await f.command({ action: "up", project: "demo", target: "live" });
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+});
+
+test("an Operation on a Stable Target whose failed start after a restart is still unrecorded records that failure first, and is refused while it cannot", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const db = await f.key("live", "db");
+  f.refusal.start = (key) => key === db;
+  const failing = failWrites(f.store, (state) =>
+    state.activity
+      .slice(before)
+      .some((entry) => entry.action === "up" && entry.outcome === "failed"),
+  );
+  f.reopen();
+  await f.reconcile();
+  f.refusal.start = undefined;
+  await expect(
+    f.command({ action: "up", project: "demo", target: "live" }),
+  ).rejects.toMatchObject({ code: "STATE_WRITE" });
+  expect(await f.running("live")).toEqual([]);
+
+  // Even an Operation refused before it acts leaves the failure recorded, in its place ahead of the Operation's own entry.
+  failing.left = 0;
+  await expect(
+    f.command({ action: "destroy", project: "demo", target: "live" }),
+  ).rejects.toMatchObject({ code: "DESTROY_TARGET" });
+  const activity = await f.activitySince(before);
+  expect(activity.slice(0, 2)).toEqual([
+    "host-restart/stopped -",
+    "up/failed live",
+  ]);
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual([]);
+  expect(await f.activitySince(before)).toEqual(activity);
+  expect((await f.store.read()).host!.restart).toBeUndefined();
+  await f.command({ action: "up", project: "demo", target: "live" });
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+});
+
+test("a write reported failed after it was saved is not repeated: one Host entry and one failed start", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const db = await f.key("live", "db");
+  f.refusal.start = (key) => key === db;
+  // The first write carrying each entry is saved, then reported failed, as a failed directory sync would be.
+  const reported = new Set<string>();
+  const update = f.store.update.bind(f.store);
+  f.store.update = async (change) => {
+    let saved: RuntimeState | undefined;
+    await update(async (state) => {
+      await change(state);
+      saved = state;
+    });
+    for (const entry of saved!.activity.slice(before))
+      if (!reported.has(entry.action)) {
+        reported.add(entry.action);
+        throw new Error("fsync failed");
+      }
+  };
+  f.reopen();
+  await f.reconcile();
+  f.refusal.start = undefined;
+  f.clock.ms += UNKNOWN_EXIT_RESTART_BACKOFF_MS[0]!;
+  await f.supervise();
+  expect(await f.activitySince(before)).toEqual([
+    "host-restart/stopped -",
+    "up/failed live",
+  ]);
+  expect(await f.running("live")).toEqual([]);
+});
+
+test("a login after a reboot whose entry was never written is announced with it by the late write, each in its own words", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const failing = failWrites(f.store, HOST_ENTRY);
+  f.reopen();
+  await f.reconcile();
+
+  // The next daemon's early write fails too; its late write, once the pass has acted, succeeds.
+  failing.left = 1;
+  f.restartHost({ ...REBOOTED, login: "100019" });
+  f.reopen();
+  await f.reconcile();
+  const entries = (await f.store.read()).activity
+    .slice(before)
+    .filter((entry) => entry.action === "host-restart");
+  expect(entries.map((entry) => entry.message)).toEqual([
+    expect.stringMatching(/^The Mac restarted, .* Recorded late: /),
+    expect.stringMatching(/^You logged out and in again/),
+  ]);
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-2", login: "100019" });
+  expect(host.restart).toBeUndefined();
+});
+
+test("a restart whose entry was never written is still announced when the Mac restarts again before the next daemon, ahead of the new restart's entry", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const failing = failWrites(f.store, HOST_ENTRY);
+  f.reopen();
+  await f.reconcile();
+  expect((await f.store.read()).host).toMatchObject({
+    boot: "BOOT-1",
+    restart: { kind: "reboot", boot: "BOOT-2", unannounced: true },
+  });
+
+  failing.left = 0;
+  f.clock.ms += 3_600_000;
+  f.restartHost({
+    boot: "BOOT-3",
+    bootedAt: "2026-09-27T08:59:00.000Z",
+    login: "100002",
+  });
+  f.reopen();
+  await f.reconcile();
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.activitySince(before)).toEqual([
+    "up/started live",
+    "host-restart/stopped -",
+    "host-restart/stopped -",
+    "up/started live",
+  ]);
+  const [first, second] = (await f.store.read()).activity
+    .slice(before)
+    .filter((entry) => entry.action === "host-restart");
+  expect(first!.message).toStartWith("The Mac restarted, which stops");
+  expect(second!.message).toContain("(booted 2026-09-27T08:59:00.000Z)");
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-3" });
+  expect(host.restart).toBeUndefined();
+
+  // Announced once: the next start finds nothing to say.
+  f.reopen();
+  await f.reconcile();
+  expect(await f.activitySince(before)).toHaveLength(4);
+});
+
+test("restarts whose entries no daemon could write are carried from one pending restart to the next and announced once each, oldest first", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  const failing = failWrites(f.store, HOST_ENTRY);
+  f.reopen();
+  await f.reconcile();
+
+  f.restartHost({ ...REBOOTED, boot: "BOOT-3" });
+  f.reopen();
+  await f.reconcile();
+  expect((await f.store.read()).host).toMatchObject({
+    boot: "BOOT-1",
+    restart: {
+      kind: "reboot",
+      boot: "BOOT-3",
+      unannounced: true,
+      unannouncedBefore: [{ kind: "reboot", boot: "BOOT-2" }],
+    },
+  });
+
+  failing.left = 0;
+  const startsBefore = f.starts.length;
+  f.reopen();
+  await f.reconcile();
+  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.activitySince(before)).toEqual([
+    "up/started live",
+    "up/started live",
+    "host-restart/stopped -",
+    "host-restart/stopped -",
+  ]);
+  const host = (await f.store.read()).host!;
+  expect(host).toMatchObject({ boot: "BOOT-3" });
   expect(host.restart).toBeUndefined();
 });
 

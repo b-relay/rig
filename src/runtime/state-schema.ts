@@ -459,10 +459,30 @@ export const runtimeStateSchema = z
               .describe(
                 "The restart's Activity entry could not be written yet; the daemon that finds the restart again writes it.",
               ),
+            unannouncedBefore: z
+              .array(
+                z.object({
+                  kind: hostRestart,
+                  boot: text
+                    .optional()
+                    .describe(
+                      "The boot rigd found when it detected that restart.",
+                    ),
+                  login: text
+                    .optional()
+                    .describe(
+                      "The login session rigd found when it detected that restart.",
+                    ),
+                }),
+              )
+              .optional()
+              .describe(
+                "Earlier Host restarts, oldest first, whose Activity entries no daemon could write before this restart was found; their entries are written ahead of this one's. Only an unannounced restart carries any.",
+              ),
           })
           .optional()
           .describe(
-            "A Host restart already recorded in Activity that rigd has not finished acting on; a daemon that finds it again does not record it twice.",
+            "A Host restart rigd found but has not finished acting on, recorded in Activity unless marked unannounced; a daemon that finds it again does not record it twice.",
           ),
       })
       .optional()

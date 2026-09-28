@@ -191,8 +191,10 @@ function monitoredHealth(
       reason: "Its ongoing health check has not answered since it started.",
     };
   if (health.status === "healthy") return { state: "healthy", health };
-  const failed = `${health.failures} health ${health.failures === 1 ? "check" : "checks"} in a row failed${health.output ? ` (${health.output})` : ""}`;
-  const acting = health.failures >= health.threshold;
+  const failed = health.marked
+    ? `It was marked unhealthy after ${health.threshold} failed health ${health.threshold === 1 ? "check" : "checks"} in a row${health.output ? ` (last: ${health.output})` : ""}, and none has passed since`
+    : `${health.failures} health ${health.failures === 1 ? "check" : "checks"} in a row failed${health.output ? ` (${health.output})` : ""}`;
+  const acting = health.marked === true;
   return {
     state: "unhealthy",
     health,

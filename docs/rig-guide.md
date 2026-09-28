@@ -1457,9 +1457,13 @@ live  unhealthy  main@1a2b3c4
   scheduler  unhealthy 2/3 · exit code 1: heartbeat 93 s old
 ```
 
-`2/3` is failed checks in a row of `failures`. Until the first check of a new
-process answers, the Service shows `running`. Services without `interval` are
-checked when `rig status` runs, as before.
+`2/3` is failed checks in a row of `failures`. Once they reach it the Service is
+marked unhealthy, and stays marked, through any health restart, until a check
+passes: `unhealthy · <output> · restarted 2 times`, with `· gave up restarting`
+once `retry_for` has run out. A marked Service keeps a Stable Target down. Until
+the first check of a new process answers, a Service that is not marked shows
+`running`. Services without `interval` are checked when `rig status` runs, as
+before.
 
 A worker without a port has no traffic that would reveal it is stuck. Let it
 prove it is working: each time it finishes a unit of work, or on a timer inside

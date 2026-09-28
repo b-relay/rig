@@ -953,6 +953,8 @@ test("a health restart stops the Service within its stop_timeout under its Targe
   // The normal stop path: web's own stop_timeout, shown as the Target stopping.
   const stop = await w.stopOf("web");
   expect(stop.request.graceMs).toBe(2 * 60_000);
+  // Recorded before the stop, so whatever starts web next carries the stretch on.
+  expect(local().services!.web!.healthRestarts?.at).toHaveLength(2);
   expect(
     (await w.runtime.status({ project: "fletcher" })).targets.find(
       (t) => t.kind === "local",

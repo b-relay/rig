@@ -140,14 +140,22 @@ export function healthAction(
     ? { kind: "restart", attempt: episode.restarts.length + 1 }
     : { kind: "wait", until: due };
 }
-/** The state after a health restart made at `at`: the stretch goes on, the count starts again for the new process. */
+/** The state after a health restart was attempted at `at`: the stretch goes on and counts the attempt, and the count starts
+ * again. It still names the process that was judged, so a new one is recognized when it is seen, and one whose stop failed
+ * is not mistaken for a new one. The last result stays, so the Service is still reported as marked. */
 export function restarted(state: HealthState, at: number): HealthState {
   const episode = state.episode ?? { since: at, restarts: [] };
+  const { eligibleSince: _next, ...rest } = state;
   return {
+    ...rest,
     failures: 0,
-    ...(state.output !== undefined ? { output: state.output } : {}),
     episode: { ...episode, restarts: [...episode.restarts, at] },
   };
+}
+/** Whether the Service is marked unhealthy: its failures reached the policy's count and no check has passed since, across
+ * any health restart in between. */
+export function isMarked(state: HealthState): boolean {
+  return state.episode !== undefined;
 }
 /** The state after Rig gave up restarting at `at`: it keeps checking and reporting. */
 export function gaveUp(state: HealthState, at: number): HealthState {

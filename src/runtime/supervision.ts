@@ -676,6 +676,22 @@ async function holdBack(
   });
 }
 
+/** Records on the Service's current run the unhealthy stretch a health restart is about to continue. */
+export async function recordHealthStretch(
+  target: TargetRecord,
+  service: string,
+  stretch: NonNullable<ServiceRun["healthRestarts"]>,
+  deps: Pick<Deps, "store" | "now" | "id">,
+): Promise<void> {
+  const current = currentRun(target, service);
+  if (current)
+    await saveRun(
+      target,
+      service,
+      { ...current, healthRestarts: stretch },
+      deps,
+    );
+}
 /** Records how a start that was not explicit (a health restart's) failed, as a failed automatic attempt is recorded, so
  * automatic restart judges the Service by its policy from here; no scheduled retry is kept. */
 export async function recordFailedAttempt(

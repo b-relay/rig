@@ -239,8 +239,13 @@ function healthText(
       ? `healthy · checked ${ago(health.checkedAt, now)}`
       : "healthy";
   return [
-    `unhealthy ${health.failures}/${health.threshold}`,
+    health.marked
+      ? "unhealthy"
+      : `unhealthy ${health.failures}/${health.threshold}`,
     word(health.output),
+    health.restarts
+      ? `restarted ${health.restarts} ${health.restarts === 1 ? "time" : "times"}`
+      : "",
     health.gaveUp ? "gave up restarting" : "",
   ]
     .filter(Boolean)

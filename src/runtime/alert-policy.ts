@@ -135,13 +135,14 @@ const DOWN_STATES = new Set<ComponentReport["state"]>([
   "unhealthy",
 ]);
 
-/** An unhealthy Service whose ongoing checks have failed fewer times in a row than its health.failures: Rig has not marked it
- * unhealthy yet, so it does not keep its Target down. A check status ran itself has no count and always does. */
+/** An unhealthy Service whose ongoing checks have not marked it unhealthy: they failed fewer times in a row than its
+ * health.failures, so it does not keep its Target down. A marked one stays marked through a health restart until a check
+ * passes. A check status ran itself has no count and always does. */
 function belowThreshold(component: ComponentReport): boolean {
   return (
     component.state === "unhealthy" &&
     component.health !== undefined &&
-    component.health.failures < component.health.threshold
+    component.health.marked !== true
   );
 }
 

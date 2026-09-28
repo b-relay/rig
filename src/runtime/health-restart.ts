@@ -6,7 +6,12 @@ import type { OperationPhase } from "../domain/operation-progress";
 import type { TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import type { HealthRestartRequest } from "./health-monitor";
-import { activationJournal, recordFailedAttempt } from "./supervision";
+import {
+  activationJournal,
+  recordFailedAttempt,
+  recordHealthStretch,
+} from "./supervision";
+import { boundedObservations } from "./bounded-observations";
 
 type Deps = Pick<
   RuntimeDependencies,
@@ -37,15 +42,24 @@ export async function restartForHealth(
       candidate.kind === "managed" && candidate.name === request.service,
   );
   if (!component) return "skipped";
-  const observed = await deps.observations
-    .process(target, component, AbortSignal.timeout(deps.observationBudgetMs))
-    .catch(() => undefined);
+  // Bounded like every observation made under a Target's lock: one that never answers decides nothing and holds nothing.
+  const [seen] = await boundedObservations(
+    [(signal) => deps.observations.process(target, component, signal)],
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
+  const observed = seen?.kind === "completed" ? seen.value : undefined;
   if (
     observed?.state !== "running" ||
     (request.incarnation !== undefined &&
       observed.incarnation !== request.incarnation)
   )
     return "skipped";
+  const at = Date.parse(deps.now());
+  const stretch = { since: request.since, at: [...request.restarts, at] };
+  // Recorded before the stop, so whatever starts it next (this restart, or automatic restart after a failed one) carries
+  // the stretch on, and its back-off and retry_for hold.
+  await recordHealthStretch(target, request.service, stretch, deps);
   const why = `it failed ${request.failures} health checks in a row${request.output ? ` (last output: ${boundedOutput(request.output)})` : ""}`;
   const activity = (outcome: "started" | "failed", message: string) =>
     deps.store.update((state) =>
@@ -71,9 +85,8 @@ export async function restartForHealth(
     return "failed";
   }
   phase("starting");
-  const at = Date.parse(deps.now());
   const journal = activationJournal(target, "health", deps, {
-    healthRestarts: { since: request.since, at: [...request.restarts, at] },
+    healthRestarts: stretch,
   });
   try {
     await deps.lifecycle.recover(target, request.service, journal);

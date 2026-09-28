@@ -4,6 +4,7 @@ import { diagnosticErrorCode, failureReason } from "../domain/errors";
 import {
   NEW_HEALTH,
   gaveUp,
+  isMarked,
   healthAction,
   nextCheckAt,
   recordCheck,
@@ -131,13 +132,16 @@ export function createHealthMonitor(
       const state = states.get(key),
         policy = policies.get(key);
       if (!state || !policy) return undefined;
+      const marked = isMarked(state);
       return {
-        status:
-          state.checkedAt === undefined
+        status: marked
+          ? "unhealthy"
+          : state.checkedAt === undefined
             ? "pending"
             : state.passed
               ? "healthy"
               : "unhealthy",
+        ...(marked ? { marked: true as const } : {}),
         ...(state.checkedAt !== undefined
           ? { checkedAt: new Date(state.checkedAt).toISOString() }
           : {}),
@@ -221,6 +225,16 @@ export function createHealthMonitor(
     },
   };
 
+  /** Whether the Target is busy, in which case the Service's checks pause: they begin again an interval after it is free. */
+  function paused(target: TargetRecord, key: string): boolean {
+    if (!deps.busy(target)) return false;
+    const state = states.get(key);
+    if (state) {
+      const { eligibleSince: _paused, ...rest } = state;
+      states.set(key, rest);
+    }
+    return true;
+  }
   /** The state a Service starts from: `base`, with the unhealthy stretch its record says a health restart continued. */
   function seeded(
     target: TargetRecord,
@@ -242,6 +256,8 @@ export function createHealthMonitor(
     key: string,
   ): Promise<Due | undefined> {
     const state = states.get(key) ?? NEW_HEALTH;
+    // The Target may have become busy while this waited for a slot: nothing is checked while it starts or stops.
+    if (paused(target, key)) return undefined;
     const observed = await withinTimeout(
       (signal) => deps.observations.process(target, component, signal),
       policy.timeoutMs,
@@ -280,13 +296,14 @@ export function createHealthMonitor(
       return undefined;
     }
     if (deps.now() < nextCheckAt(state, policy)!) return undefined;
+    if (paused(target, key)) return undefined;
     const result = await withinTimeout(
       (signal) =>
         deps.observations.health(target, component, signal, policy.timeoutMs),
       policy.timeoutMs,
     );
     // An Operation that began meanwhile may have stopped the process the check asked; its answer says nothing now.
-    if (deps.busy(target)) return undefined;
+    if (paused(target, key)) return undefined;
     const at = deps.now();
     const checked = recordCheck(
       states.get(key) ?? state,
@@ -359,9 +376,15 @@ export function createHealthMonitor(
       since: episode.since,
       restarts: episode.restarts,
     });
-    if (outcome === "skipped") return;
+    const current = states.get(key) ?? state;
+    if (outcome === "skipped") {
+      // The process that was judged is gone or was replaced meanwhile: the next pass looks at what runs now, afresh.
+      const { incarnation: _gone, eligibleSince: _next, ...rest } = current;
+      states.set(key, { ...rest, failures: 0 });
+      return;
+    }
     // A failed restart counts for the back-off too, so a Service that cannot start is not asked again at once.
-    states.set(key, restarted(states.get(key) ?? state, at));
+    states.set(key, restarted(current, at));
   }
 
   /** Runs `observe`, aborted after `timeoutMs`: its answer, a failure as a failed check, or undefined when it did not

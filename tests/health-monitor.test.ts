@@ -89,6 +89,8 @@ function fixture(
   const restarts: (HealthRestartRequest & { at: number })[] = [];
   let answer: (service: string) => Promise<boolean> | boolean = () => true;
   let busy = false;
+  /** What the next restarts do: start a new process, fail to stop the old one, or find it already replaced. */
+  let restartOutcome: "restarted" | "failed" | "skipped" = "restarted";
   const monitorUnderTest = createHealthMonitor({
     store: {
       async read() {
@@ -118,6 +120,7 @@ function fixture(
     busy: () => busy,
     async restart(request) {
       restarts.push({ ...request, at: now });
+      if (restartOutcome !== "restarted") return restartOutcome;
       const next = incarnations.get(request.service)! + 1;
       incarnations.set(request.service, next);
       // As the restart's journal records it on the Service.
@@ -165,6 +168,20 @@ function fixture(
     },
     set busy(value: boolean) {
       busy = value;
+    },
+    set restartOutcome(value: "restarted" | "failed" | "skipped") {
+      restartOutcome = value;
+    },
+    /** An operator's explicit restart: a new process, with a record that carries no unhealthy stretch. */
+    replace(service: string) {
+      const next = incarnations.get(service)! + 1;
+      incarnations.set(service, next);
+      state.targets[0]!.services![service] = {
+        deployment: "/work",
+        intent: "running",
+        incarnation: `${service}-${next}`,
+        attempts: [],
+      };
     },
     activity: () => state.activity.map((entry) => entry.message ?? ""),
   };
@@ -363,4 +380,77 @@ test("a new rigd continues the unhealthy stretch a health restart recorded, and 
   expect(
     f.restarts.map((restart) => [restart.at / SECOND, restart.attempt]),
   ).toEqual([[60, 2]]);
+});
+
+test("a restart that could not stop the Service still counts for the back-off, and it stays marked until a check passes", async () => {
+  const f = fixture({ interval: 5, failures: 1, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartOutcome = "failed";
+  await f.runUntil(200 * SECOND);
+  const at = f.restarts.map((restart) => restart.at / SECOND);
+  // Marked at 6 s; a stop that failed still counts, so the next attempt waits the minute.
+  expect(at).toEqual([6, 66]);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "unhealthy",
+    marked: true,
+    restarts: 2,
+  });
+});
+
+test("after a health restart the Service stays marked unhealthy while the new process has not passed a check", async () => {
+  const f = fixture({ interval: 30, failures: 3, onFailure: "restart" });
+  f.answer = () => false;
+  await f.runUntil(92 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  // The new process has not been checked yet: still marked, so a Stable Target stays down and its alert timer runs on.
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "unhealthy",
+    marked: true,
+    failures: 0,
+    restarts: 1,
+  });
+  f.answer = () => true;
+  await f.runUntil(130 * SECOND);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "healthy",
+  });
+  expect(f.monitor.results({ id: "t1" }, "web")).not.toHaveProperty("marked");
+});
+
+test("a restart that finds the process already replaced is dropped, and the new process is checked afresh", async () => {
+  const f = fixture({ interval: 5, failures: 1, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartOutcome = "skipped";
+  await f.runUntil(6 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  // Meanwhile an operator restarted it: the next checks are of the new process, and the old stretch is over.
+  f.replace("web");
+  f.answer = () => true;
+  await f.runUntil(30 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  expect(f.checks.at(-1)!.at).toBeGreaterThan(20 * SECOND);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    status: "healthy",
+  });
+});
+
+test("a check that waited for a slot does not run once its Target has become busy", async () => {
+  const f = fixture(
+    { interval: 5 },
+    { services: ["api", "web"], concurrency: 1 },
+  );
+  let release!: () => void;
+  f.answer = (service) =>
+    service === "api"
+      ? new Promise<boolean>((resolve) => {
+          release = () => resolve(true);
+        })
+      : true;
+  await f.runUntil(6 * SECOND);
+  // api holds the only slot; web waits for it.
+  expect(f.checks.map((check) => check.service)).toEqual(["api"]);
+  f.busy = true;
+  release();
+  await f.monitor.idle();
+  expect(f.checks.map((check) => check.service)).toEqual(["api"]);
 });

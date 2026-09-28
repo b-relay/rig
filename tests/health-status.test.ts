@@ -181,6 +181,7 @@ test("rig status shows the cached result: when it was checked, or failures of th
                 failures: 9,
                 threshold: 3,
                 output: "exit code 1",
+                marked: true,
                 restarts: 4,
                 gaveUp: true,
               },
@@ -194,7 +195,7 @@ test("rig status shows the cached result: when it was checked, or failures of th
   expect(text).toContain("  web  healthy · checked 12s ago\n");
   expect(text).toContain("  scheduler  unhealthy 2/3 · HTTP 503\n");
   expect(text).toContain(
-    "  worker  unhealthy 9/3 · exit code 1 · gave up restarting\n",
+    "  worker  unhealthy · exit code 1 · restarted 4 times · gave up restarting\n",
   );
   expect(text).toContain(
     "  live scheduler: 2 health checks in a row failed (HTTP 503); Rig acts after 3.",
@@ -202,7 +203,7 @@ test("rig status shows the cached result: when it was checked, or failures of th
 });
 
 test("a Stable Target is down while a Service is marked unhealthy, not while its failures are still below the threshold", () => {
-  const judged = (failures: number) =>
+  const judged = (failures: number, marked = failures >= 3) =>
     stableTargetCondition({
       target: live([component("web", true)]),
       project: "demo",
@@ -222,6 +223,7 @@ test("a Stable Target is down while a Service is marked unhealthy, not while its
               failures,
               threshold: 3,
               output: "HTTP 503",
+              ...(marked ? { marked: true as const } : {}),
               restarts: 0,
             },
           },
@@ -229,6 +231,8 @@ test("a Stable Target is down while a Service is marked unhealthy, not while its
       },
     });
   expect(judged(2).state).toBe("up");
+  // Right after a health restart the count starts again, but it stays marked until a check passes: still down.
+  expect(judged(0, true).state).toBe("down");
   expect(judged(3)).toMatchObject({
     state: "down",
     services: [{ name: "web", brief: "failing its health checks" }],

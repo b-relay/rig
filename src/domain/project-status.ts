@@ -22,6 +22,12 @@ export const serviceHealthSchema = z
       .string()
       .optional()
       .describe("The last failed check's output, one bounded line."),
+    marked: z
+      .literal(true)
+      .optional()
+      .describe(
+        "Marked unhealthy: failed checks in a row reached threshold and none has passed since, restarts included. A marked Service keeps a Stable Target down.",
+      ),
     restarts: z
       .number()
       .int()

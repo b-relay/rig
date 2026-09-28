@@ -1,6 +1,7 @@
 import type { TargetPlan } from "../config/types";
 import type { HostRestart, HostSession } from "./host-session";
 import type { AlertState } from "./operator-alerts";
+import type { OperationOutcome } from "./activity";
 
 export interface ProjectRecord {
   id: string;
@@ -78,6 +79,9 @@ export interface ServiceRun {
   /** The operator's latest stop needed SIGKILL: the stop_timeout ran out (`timeout`), or `--kill` cut it short (`request`).
    * A new start clears it. */
   stopKilled?: "timeout" | "request";
+  /** The unhealthy stretch a health restart started this process in: when it began and each restart (Unix milliseconds).
+   * Automatic starts carry it on; an explicit start clears it. */
+  healthRestarts?: { since: number; at: number[]; gaveUp?: number };
 }
 
 export interface TargetRecord {
@@ -105,6 +109,8 @@ export interface TargetRecord {
   uncertainBuild?: { branch?: string; commit?: string; unit: string };
   /** Revision of the rig.yaml a Working copy plan was made from. */
   configRevision?: string;
+  /** Digest of what that rig.yaml said, whatever its format, comments or layout; absent on a Target an older rigd planned. */
+  configDigest?: string;
   recovery?: {
     plan: TargetPlan;
     /** Build outcomes of the plan restored by rollback. */
@@ -126,18 +132,7 @@ export interface OperationRecord {
   project?: string;
   target?: string;
   action: string;
-  outcome:
-    | "started"
-    | "stopped"
-    | "deployed"
-    | "failed"
-    | "unchanged"
-    | "registered"
-    | "renamed"
-    | "repointed"
-    | "forgotten"
-    | "installed"
-    | "uninstalled";
+  outcome: OperationOutcome;
   occurredAt: string;
   message?: string;
 }
@@ -150,8 +145,8 @@ export interface RuntimeState {
   /** The boot and login session rigd last acted on; absent until a rigd that records it has started. */
   host?: HostSession & {
     seenAt: string;
-    /** A Host restart rigd has recorded in Activity but not finished acting on, and the boot and login it found then;
-     * a daemon that finds the same restart again acts on it without recording it twice. */
+    /** A Host restart rigd found but has not finished acting on, recorded in Activity unless `unannounced`, and the boot and
+     * login it found then; a daemon that finds the same restart again acts on it without recording it twice. */
     restart?: {
       kind: HostRestart;
       boot?: string;
@@ -162,6 +157,13 @@ export interface RuntimeState {
       settled?: string[];
       /** The restart's Activity entry is not written yet; the daemon that finds it again writes it. */
       unannounced?: true;
+      /** Earlier restarts, oldest first, whose Activity entries no daemon could write before this restart was found; their
+       * entries are written ahead of this one's. Only an unannounced restart carries any. */
+      unannouncedBefore?: {
+        kind: HostRestart;
+        boot?: string;
+        login?: string;
+      }[];
     };
   };
   /** Stable Targets Rig counts as down and what the operator was alerted about; absent until the first alert evaluation. */

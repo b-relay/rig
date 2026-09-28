@@ -3,6 +3,10 @@ import type { PlanComponent, RestartPolicy, TargetPlan } from "./types";
 
 /** When Rig starts a Service again after a known exit, when its config sets no `restart`. */
 export const DEFAULT_RESTART_POLICY: RestartPolicy = "always";
+/** An ongoing check's time limit, failures in a row before Rig acts, and what it does then, when health sets none. */
+export const DEFAULT_HEALTH_TIMEOUT_SECONDS = 5;
+export const DEFAULT_HEALTH_FAILURES = 3;
+export const DEFAULT_HEALTH_ON_FAILURE = "report" as const;
 
 /** A recorded plan with every field a later rigd added and a plan recorded before it lacks filled with the value the
  * planner gives when config does not set it: a managed Service's `stopTimeout` and `restart`. A plan recorded before such a

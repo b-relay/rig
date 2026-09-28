@@ -5,10 +5,19 @@ import { renderRecipe } from "../recipes/render";
 import type { ExecuteCommand } from "./commands";
 import { terminalText } from "./terminal-text";
 import type { ProjectFiles, UserOutput } from "./types";
+import {
+  CONFIG_FORMATS,
+  LATEST_FORMAT,
+  deprecationLine,
+  isConfigFormat,
+  isDeprecatedFormat,
+  type ConfigFormat,
+  type FoundFormat,
+} from "../config/formats";
 const SERVICE_NAME = /^[a-z0-9][a-z0-9-]*$/;
-/** `list` and `generate` need no rigd. `list` only reads the catalog; `generate` prints the Service block and writes the
- * recipe's own files, if it has any, into the Project directory (see `writeRecipeFiles`). `diff` reads the Project's
- * document and files, which rigd does. */
+/** `list` and `generate` need no rigd. `list` only reads the catalog; `generate` reads at most the `format` of the
+ * rig.yaml it would be pasted into, prints the Service block, and writes the recipe's own files, if it has any, into the
+ * Project directory (see `writeRecipeFiles`). `diff` reads the Project's document and files, which rigd does. */
 export function addRecipeCommands(
   command: Command,
   {
@@ -17,12 +26,15 @@ export function addRecipeCommands(
     recipes,
     execute,
     projectScope,
+    configFormat,
     projectFiles,
   }: {
     cwd: string;
     output: UserOutput;
     recipes: readonly Recipe[];
     execute: ExecuteCommand;
+    /** The format of the rig.yaml found from `cwd`, when there is one. */
+    configFormat?: (cwd: string) => Promise<FoundFormat | undefined>;
     /** The grammar's one check of a --project value. */
     projectScope(options: { project?: string }): { project?: string };
     projectFiles?: ProjectFiles;
@@ -53,35 +65,51 @@ export function addRecipeCommands(
     )
     .argument("<recipe>", "Recipe name, or name@version for an older one")
     .option("--name <service>", "Service name to generate the block for")
-    .action(async (selector: string, options: { name?: string }) => {
-      const [name, version] = selector.split("@", 2);
-      const found = recipes.find((each) => each.name === name);
-      const chosen =
-        found && version === undefined
-          ? latest(found)
-          : found?.versions.find((each) => String(each.version) === version);
-      if (!found || !chosen)
-        throw new RigError(
-          "USAGE",
-          found
-            ? `${found.name} has no version '${terminalText(version ?? "")}'.`
-            : `There is no recipe named '${terminalText(name ?? "")}'.`,
-          found
-            ? `Bundled versions: ${found.versions.map((each) => each.version).join(", ")}.`
-            : "Run rig recipe list to see the bundled recipes.",
-        );
-      const service = serviceName(options.name ?? found.defaultName);
-      output.write(renderRecipe(found, chosen, service));
-      await writeRecipeFiles(found, chosen, service, {
-        cwd,
-        output,
-        projectFiles,
-      });
-      if (chosen !== latest(found) && chosen.notice)
-        output.error(
-          `Warning: ${chosen.notice} Run rig recipe generate ${found.name} for ${found.name}@${latest(found).version}.\n`,
-        );
-    });
+    .option(
+      "--format <format>",
+      `rig.yaml format to write the block in (${CONFIG_FORMATS.join(", ")}); default: the format of the rig.yaml found from the current directory, else ${LATEST_FORMAT}`,
+    )
+    .action(
+      async (selector: string, options: { name?: string; format?: string }) => {
+        const [name, version] = selector.split("@", 2);
+        const found = recipes.find((each) => each.name === name);
+        const chosen =
+          found && version === undefined
+            ? latest(found)
+            : found?.versions.find((each) => String(each.version) === version);
+        if (!found || !chosen)
+          throw new RigError(
+            "USAGE",
+            found
+              ? `${found.name} has no version '${terminalText(version ?? "")}'.`
+              : `There is no recipe named '${terminalText(name ?? "")}'.`,
+            found
+              ? `Bundled versions: ${found.versions.map((each) => each.version).join(", ")}.`
+              : "Run rig recipe list to see the bundled recipes.",
+          );
+        const service = serviceName(options.name ?? found.defaultName);
+        const project = await configFormat?.(cwd).catch(() => undefined);
+        const format =
+          options.format === undefined
+            ? (project?.format ?? LATEST_FORMAT)
+            : requestedFormat(options.format);
+        output.write(renderRecipe(found, chosen, service, format));
+        await writeRecipeFiles(found, chosen, service, {
+          cwd,
+          output,
+          projectFiles,
+        });
+        if (chosen !== latest(found) && chosen.notice)
+          output.error(
+            `Warning: ${chosen.notice} Run rig recipe generate ${found.name} for ${found.name}@${latest(found).version}.\n`,
+          );
+        // Like every command run in a Project whose rig.yaml is older, one line says so.
+        if (project && isDeprecatedFormat(project.format))
+          output.error(
+            `Deprecated: ${terminalText(deprecationLine(project.path, project.format))}\n`,
+          );
+      },
+    );
   recipe
     .command("diff")
     .description(
@@ -138,6 +166,14 @@ async function writeRecipeFiles(
       `Run rig recipe diff ${service} to compare. To take Rig's copy, move yours aside and run rig recipe generate again.`,
       { files: changed },
     );
+}
+function requestedFormat(text: string): ConfigFormat {
+  if (isConfigFormat(text)) return text;
+  throw new RigError(
+    "USAGE",
+    `'${terminalText(text)}' is not a rig.yaml format.`,
+    `Use one of ${CONFIG_FORMATS.join(", ")}.`,
+  );
 }
 /** Refuses text that cannot be a Service key before it is sent anywhere or echoed back. */
 function serviceName(text: string): string {

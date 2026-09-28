@@ -1,6 +1,12 @@
 import { parseProjectConfig } from "../config/schema";
 import type { ProjectConfig, RecipeMarker } from "../config/types";
-import { latest, type Recipe } from "./catalog";
+import {
+  LATEST_FORMAT,
+  UNDECLARED_FORMAT,
+  servicePathIn,
+  type ConfigFormat,
+} from "../config/formats";
+import { latest, type Recipe, type RecipeVersion } from "./catalog";
 import type { RecipeFileFinding } from "./files";
 /** One field that differs, by its path inside the Service (`env.PGDATA`); a side that lacks the field has no value. */
 export interface RecipeChange {
@@ -41,11 +47,24 @@ export type RecipeFinding =
       readonly files?: readonly RecipeFileFinding[];
     };
 /** Pure: compares every marked Service of one document with the catalog. Both sides pass through the config parser, so a
- * difference in spelling that the parser does not keep is not a difference. */
+ * difference in spelling that the parser does not keep is not a difference, nor is the format a recipe or the document is
+ * written in. Each changed field is named the way the document's format spells it. */
 export function compareRecipes(
-  document: { config: ProjectConfig; recipeMarkers?: readonly RecipeMarker[] },
+  document: {
+    config: ProjectConfig;
+    recipeMarkers?: readonly RecipeMarker[];
+    format?: ConfigFormat;
+  },
   catalog: readonly Recipe[],
 ): RecipeFinding[] {
+  const spelled = (list: RecipeChange[]) =>
+    list.map((change) => ({
+      ...change,
+      path: servicePathIn(
+        document.format ?? LATEST_FORMAT,
+        change.path.split("."),
+      ).join("."),
+    }));
   return (document.recipeMarkers ?? []).map((marker): RecipeFinding => {
     if ("malformed" in marker)
       return {
@@ -63,7 +82,7 @@ export function compareRecipes(
         recipe: recipeName,
         version,
       };
-    const generated = fields(parsed(service, origin.service(service)));
+    const generated = fields(parsed(service, origin));
     return {
       service,
       status: "compared",
@@ -73,21 +92,23 @@ export function compareRecipes(
       ...(marker.name !== undefined && marker.name !== service
         ? { generatedAs: marker.name }
         : {}),
-      customized: changes(
-        generated,
-        fields(document.config.services?.[service]),
+      customized: spelled(
+        changes(generated, fields(document.config.services?.[service])),
       ),
-      update: changes(
-        generated,
-        fields(parsed(service, latest(recipe).service(service))),
+      update: spelled(
+        changes(generated, fields(parsed(service, latest(recipe)))),
       ),
       ...(origin.notice === undefined ? {} : { notice: origin.notice }),
     };
   });
 }
-function parsed(name: string, service: Readonly<Record<string, unknown>>) {
-  return parseProjectConfig({ name: "recipe", services: { [name]: service } })
-    .services![name];
+/** One recipe version's Service under `name`, as the config parser reads it in the format the version is written in. */
+function parsed(name: string, version: RecipeVersion) {
+  return parseProjectConfig({
+    format: version.format ?? UNDECLARED_FORMAT,
+    name: "recipe",
+    services: { [name]: version.service(name) },
+  }).services![name];
 }
 /** Leaf values by dotted path; a list is one value, because its order is its meaning. */
 function fields(value: unknown, at = ""): Map<string, string> {

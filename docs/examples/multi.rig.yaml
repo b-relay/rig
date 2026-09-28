@@ -1,4 +1,5 @@
 # yaml-language-server: $schema=../../schemas/rig.schema.json
+format: rig/v2
 # tests/config-examples-e2e.test.ts validates this file.
 # These example programs use ordinary application-defined environment inputs.
 name: acme
@@ -18,7 +19,8 @@ services:
     env:
       HOST: 127.0.0.1
       PORT: ${services.web.ports.http}
-    ready: http://127.0.0.1:${services.web.ports.http}/health
+    health:
+      check: http://127.0.0.1:${services.web.ports.http}/health
     depends_on: [api]
 
   api:
@@ -31,7 +33,8 @@ services:
       DATA_DIR: ${rig.data}
       DATABASE_URL: postgres://postgres@127.0.0.1:${services.db.ports.pg}/postgres
     env_file: ~/.rig/env/acme/api-secrets.env
-    ready: http://127.0.0.1:${services.api.ports.http}/health
+    health:
+      check: http://127.0.0.1:${services.api.ports.http}/health
     depends_on: [db]
 
   # rig-recipe: postgres@1 name=db
@@ -44,7 +47,8 @@ services:
       PGHOST: 127.0.0.1
       PGPORT: ${services.db.ports.pg}
       PGDATA: ${rig.data}/pg
-    ready: pg_isready -h ${services.db.env.PGHOST} -p ${services.db.ports.pg}
+    health:
+      check: pg_isready -h ${services.db.env.PGHOST} -p ${services.db.ports.pg}
 
 tools:
   acmectl:

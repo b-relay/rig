@@ -3,7 +3,13 @@ import { prepareInteractiveRequest } from "./interaction";
 import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
-import { renderResult, renderStatus, object, renderLogs } from "./output";
+import {
+  renderDeprecation,
+  renderResult,
+  renderStatus,
+  object,
+  renderLogs,
+} from "./output";
 import { waitStatus } from "./wait-notice";
 import {
   liveDisplay,
@@ -218,6 +224,9 @@ export async function runRigCli(
           ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
           : renderResult(request.action, result),
     );
+    // One line, once per command, however many rig.yaml files it read or pages it follows.
+    const deprecation = renderDeprecation(status ?? result);
+    if (deprecation) dependencies.output.error(deprecation);
     const evidence = await recordDiagnostic(dependencies.diagnostics, {
       event: "command.completed",
       operationId,
@@ -235,6 +244,8 @@ export async function runRigCli(
     dependencies.output,
     execute,
     dependencies.recipes,
+    dependencies.configFormat,
+    dependencies.now,
     dependencies.projectFiles,
   );
   try {

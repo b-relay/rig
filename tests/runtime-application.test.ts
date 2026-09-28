@@ -107,6 +107,9 @@ function fixture() {
       async host() {
         return parseHostConfig({});
       },
+      async upgrade(): Promise<never> {
+        throw new Error("rig config upgrade is not part of these tests");
+      },
     },
     sources: {
       async preflight() {
@@ -145,6 +148,9 @@ function fixture() {
       async up(target) {
         plans.push(target);
         return { outcome: "started" };
+      },
+      async stop() {
+        return { outcome: "stopped" as const };
       },
       async down(target) {
         plans.push(target);
@@ -3542,6 +3548,68 @@ test("activity retains the most recent 1000 Operations, dropping the oldest firs
   );
 });
 
+test("a logs filter reaches the reader and marks the reply filtered; an unknown Service fails USAGE listing the Target's own", async () => {
+  const { runtime, deps } = fixture();
+  const reads: unknown[][] = [];
+  deps.files.logs = async (...args: unknown[]) => {
+    reads.push(args);
+    return { entries: [], cursor: "0" };
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  const logFilter = {
+    services: ["web", "setup"],
+    stream: "stderr" as const,
+    since: "2026-09-28T11:00:00.000Z",
+  };
+  expect(
+    await runtime.command({
+      action: "logs",
+      project: "demo",
+      target: "local",
+      lines: 20,
+      logFilter,
+    }),
+  ).toEqual({
+    project: "demo",
+    target: "local",
+    entries: [],
+    cursor: "0",
+    filtered: true,
+  });
+  expect(reads[0]!.slice(1)).toEqual([undefined, 20, logFilter]);
+  expect(
+    await runtime.command({ action: "logs", project: "demo", target: "local" }),
+  ).toEqual({ project: "demo", target: "local", entries: [], cursor: "0" });
+  expect(reads[1]!.slice(1)).toEqual([undefined, 100, undefined]);
+  await expect(
+    runtime.command({
+      action: "logs",
+      project: "demo",
+      target: "local",
+      logFilter: { services: ["web", "scheduler"] },
+    }),
+  ).rejects.toMatchObject({
+    code: "USAGE",
+    message: "Target 'local' has no Service or Tool named 'scheduler'.",
+    hint: "Pass --service with one of: web, setup.",
+  });
+  expect(reads).toHaveLength(2);
+  // A follow page is not refused when the Service it filters by has gone from the plan since the follow began.
+  await runtime.command({
+    action: "logs",
+    project: "demo",
+    target: "local",
+    after: "cursor",
+    logFilter: { services: ["scheduler"] },
+  });
+  expect(reads[2]!.slice(1)).toEqual([
+    "cursor",
+    100,
+    { services: ["scheduler"] },
+  ]);
+});
+
 test("runtime list, logs and activity replies satisfy the client contract end to end", async () => {
   const { runtime } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
@@ -3966,6 +4034,34 @@ test("forget refuses running Targets and retained Previews, list marks a missing
   });
 });
 
+test("forget against the file store removes the Project and records the forget in Activity", async () => {
+  const { deps } = fixture();
+  const root = await mkdtemp(join(tmpdir(), "rig-forget-"));
+  try {
+    deps.root = root;
+    deps.store = new FileStateStore(root);
+    const runtime = createRuntime(deps);
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+    expect(
+      await runtime.command({ action: "forget", project: "demo" }),
+    ).toMatchObject({
+      action: "forget",
+      outcome: "forgotten",
+      project: "demo",
+    });
+    const saved = await new FileStateStore(root).read();
+    expect(saved.projects).toEqual([]);
+    expect(saved.targets).toEqual([]);
+    expect(saved.activity.at(-1)).toMatchObject({
+      action: "forget",
+      outcome: "forgotten",
+      project: "demo",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("configured Target names select the Working copy and Stable Target, and a push selects the Stable Target by role", async () => {
   const { runtime, state, deps, config } = fixture();
   config.targets = { working: { name: "dev" }, stable: { name: "production" } };
@@ -4289,4 +4385,138 @@ test("while the checkout config is unreadable a recorded name still stops its Ta
     await runtime.command({ action: "down", project: "demo" }),
   ).toMatchObject({ outcome: "stopped", target: "dev" });
   expect(state.targets[0]!.desired).toBe("stopped");
+});
+
+/** The fixture's documents, each read reporting the format `formatOf` gives its directory. */
+function readsInFormats(
+  deps: RuntimeDependencies,
+  formatOf: (path: string) => "rig/v1" | "rig/v2",
+) {
+  const read = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => ({
+    ...(await read(path)),
+    format: formatOf(path),
+  });
+}
+const DEPRECATED = (path: string) =>
+  `${path} is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.`;
+
+test("a command in a Project whose rig.yaml is rig/v1 replies with one deprecation line naming rig config upgrade; one in a rig/v2 Project does not", async () => {
+  const { runtime, deps } = fixture();
+  let format: "rig/v1" | "rig/v2" = "rig/v2";
+  readsInFormats(deps, () => format);
+  expect(
+    await runtime.command({ action: "init", repoPath: "/tmp/developer" }),
+  ).not.toHaveProperty("deprecation");
+  expect(
+    await runtime.command({ action: "config", project: "demo" }),
+  ).not.toHaveProperty("deprecation");
+  format = "rig/v1";
+  const line = DEPRECATED("/tmp/developer/rig.yaml");
+  for (const command of [
+    { action: "config", project: "demo" },
+    { action: "doctor", project: "demo" },
+    { action: "up", project: "demo" },
+    { action: "doctor", repoPath: "/tmp/developer" },
+    { action: "down", project: "demo" },
+  ] as const)
+    expect(await runtime.command(command)).toMatchObject({
+      deprecation: line,
+    });
+  expect(await runtime.status({ project: "demo" })).toMatchObject({
+    deprecation: line,
+  });
+});
+
+test("deploying a Commit whose committed rig.yaml is rig/v1 works and replies with the deprecation line for that file", async () => {
+  const { runtime, deps, plans } = fixture();
+  // The Working copy is already upgraded; the Commit being deployed is not.
+  readsInFormats(deps, (path) =>
+    path === "/tmp/developer" ? "rig/v2" : "rig/v1",
+  );
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deployed = (await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "live",
+    branch: "main",
+  })) as { outcome: string; deprecation: string };
+  expect(deployed.outcome).toBe("deployed");
+  const committed = `${plans.at(-1).plan.workspacePath}/rig.yaml`;
+  expect(committed).not.toBe("/tmp/developer/rig.yaml");
+  expect(deployed.deprecation).toBe(DEPRECATED(committed));
+});
+
+test("a Working copy whose rig.yaml was only upgraded to rig/v2 is not reported as changed; a change of what it says is", async () => {
+  const { runtime, deps } = fixture();
+  const v1 = parseProjectConfig({
+    name: "demo",
+    services: {
+      web: {
+        run: "serve --host 127.0.0.1",
+        ports: { http: 4567 },
+        ready: "http://127.0.0.1:4567/health",
+        ready_timeout: "1m",
+      },
+    },
+  });
+  const v2 = parseProjectConfig({
+    format: "rig/v2",
+    name: "demo",
+    services: {
+      web: {
+        run: "serve --host 127.0.0.1",
+        ports: { http: 4567 },
+        health: { check: "http://127.0.0.1:4567/health", start_timeout: "1m" },
+      },
+    },
+  });
+  let document = { revision: "v1-text", config: v1 };
+  deps.documents.read = async (path) => ({
+    path: `${path}/rig.yaml`,
+    ...document,
+  });
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  document = { revision: "v2-text", config: v2 };
+  expect(
+    await runtime.command({ action: "up", project: "demo" }),
+  ).not.toHaveProperty("warnings");
+  document = {
+    revision: "v2-edited",
+    config: { ...v2, description: "changed" },
+  };
+  expect(
+    (
+      (await runtime.command({ action: "up", project: "demo" })) as {
+        warnings: string[];
+      }
+    ).warnings,
+  ).toEqual([expect.stringContaining("Run rig restart local")]);
+  // The order of Services is what the file says too: it decides the order they start in.
+  const both = (first: string, second: string) =>
+    parseProjectConfig({
+      format: "rig/v2",
+      name: "demo",
+      services: Object.fromEntries(
+        [first, second].map((name) => [
+          name,
+          {
+            run: "serve --host 127.0.0.1",
+            ports: { http: name === "alpha" ? 4567 : 4568 },
+          },
+        ]),
+      ),
+    });
+  await runtime.command({ action: "down", project: "demo" });
+  document = { revision: "ab", config: both("alpha", "beta") };
+  await runtime.command({ action: "up", project: "demo" });
+  document = { revision: "ba", config: both("beta", "alpha") };
+  expect(
+    (
+      (await runtime.command({ action: "up", project: "demo" })) as {
+        warnings?: string[];
+      }
+    ).warnings,
+  ).toEqual([expect.stringContaining("Run rig restart local")]);
 });

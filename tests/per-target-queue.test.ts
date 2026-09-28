@@ -169,6 +169,9 @@ async function fixture(host: Record<string, unknown> = {}) {
       async host() {
         return parseHostConfig(host);
       },
+      async upgrade(): Promise<never> {
+        throw new Error("rig config upgrade is not part of these tests");
+      },
     },
     sources: {
       // The Commit is named after its Branch, so a test can hold one Branch's checkout.
@@ -220,6 +223,9 @@ async function fixture(host: Record<string, unknown> = {}) {
         const incarnation = await journal.starting(service);
         processes.set(key(target, service), { state: "running", incarnation });
         return { outcome: "started" };
+      },
+      async stop() {
+        return { outcome: "stopped" as const };
       },
       async down(target) {
         events.push(`stop ${target.plan.project} ${target.name}`);

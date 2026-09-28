@@ -26,6 +26,9 @@ rig
 │    --project <name>
 ├─ config                           show the validated rig.yaml and its path
 │    --project <name>
+│    └─ upgrade                     rewrite rig.yaml in the latest format, keeping comments and layout
+│         --project <name>
+│         --dry-run                 print the diff without writing
 ├─ activity [operation]             the latest 100 actions, or one Operation by id
 │
 ├─ deploy [target] [branch]         target: the Stable Target's name, or "preview"
@@ -45,8 +48,12 @@ rig
 │
 ├─ logs [target] [branch]
 │    --project <name>   --deployment <name>
-│    --follow                       stream until interrupted
-│    --lines <count>                default 50, at most 10000
+│    --follow                       stream until interrupted, after the matching history
+│    --lines <count>                default 50, at most 10000, counted after filtering
+│    --service <name>               only this Service's or Tool's lines; repeatable
+│    --stream stdout|stderr         only this stream
+│    --since <time>  --until <time> 1h, 15m, 2d … back from now, or an ISO time with a zone;
+│                                   --until cannot be combined with --follow
 │
 ├─ rename <name>                    new identity; the Project must be stopped
 │    --project <name>               current identity
@@ -59,6 +66,7 @@ rig
 │    ├─ generate <recipe>           name or name@version; prints a Service block,
 │    │                              and writes the recipe's files, if any
 │    │    --name <service>
+│    │    --format <format>         rig/v1 or rig/v2 (default: the nearby rig.yaml's, else rig/v2)
 │    └─ diff [service]              compare generated Services (and recipe files)
 │                                   to their recipes
 │         --project <name>
@@ -107,11 +115,30 @@ Git runs this helper for `git push rig <branch>`. People never run it.
 - `--project` is needed only outside the Project's repository.
 - `--json` exists on `status`, `deploy`, `up`, `down`, and `restart` only.
 - `--destroy` is its own confirmation; there is no prompt and no `--yes`.
+- `logs --service` takes a Service or Tool name from `rig.yaml`, or `setup`
+  for dependency installation; an unknown name fails as `USAGE` and lists the
+  Target's names. `--since` and `--until` are inclusive, and leave out lines
+  with no recorded time (the files launchd writes for a job). A time is a
+  duration back from now (`90s`, `15m`, `1h`, `2d`, `1w`, or combined as
+  `1h30m`) or an ISO time with a zone (`2026-09-28T03:00:00Z`,
+  `2026-09-28T05:00:00+02:00`). How much history exists to filter depends on
+  the Host `logs` settings (see the guide's Logs section).
 - `init` writes one Service (`--service` with `--run`) or one Tool (`--tool`
   with `--bin`). A Tool's `bin` is the executable's path inside the
   repository; Rig copies it into `<RIG_ROOT>/bin` as `<tool>` for the Stable
-  Target and `<tool>-<target name>` for the others. A source file (`.ts`,
-  `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`) is published instead as a shim that
-  runs it with the bun `rigd install` recorded.
+  Target and `<tool>-<target name>` for the others, so it must be
+  self-contained or name its checkout itself (`dirname "$0"` is
+  `<RIG_ROOT>/bin`). A source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
+  `.cjs`) is published instead as a shim that runs it in place with the bun
+  `rigd install` recorded, so its relative imports resolve.
+- `rig init` writes `rig.yaml` in the latest format, `rig/v2`. Every command
+  run in a Project whose `rig.yaml` is the older `rig/v1` (a file without
+  `format`) prints one `Deprecated:` line on stderr naming
+  `rig config upgrade`, as does a deploy of a Commit whose `rig.yaml` is
+  `rig/v1`. `rig config upgrade` changes only the file in the working tree;
+  commit it yourself.
+- `rig status` shows a Service with `health.interval` by its last ongoing
+  check (`healthy · checked 12s ago`, `unhealthy 2/3 · <output>`) without
+  running the check; others are checked when status runs.
 - `RIG_ROOT` is the only environment switch: an absolute path, `~/.rig` by
   default. There are no `--state-root` or `--config` overrides.

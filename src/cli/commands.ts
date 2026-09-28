@@ -12,6 +12,8 @@ import { RIG_BUILD } from "../domain/version";
 import type { UserOutput, ProjectFiles } from "./types";
 import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
 import { addRecipeCommands } from "./recipe-commands";
+import type { FoundFormat } from "../config/formats";
+import { addLogsCommand } from "./logs-command";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
@@ -31,6 +33,9 @@ export function createRigCommand(
   output: UserOutput,
   execute: ExecuteCommand,
   recipes: readonly Recipe[] = BUNDLED_RECIPES,
+  configFormat?: (cwd: string) => Promise<FoundFormat | undefined>,
+  /** The clock relative `rig logs` times count back from. */
+  now: () => Date = () => new Date(),
   projectFiles?: ProjectFiles,
 ): Command {
   const command = terminalCommand("rig", output).description(
@@ -81,10 +86,18 @@ export function createRigCommand(
         ),
       );
   }
+  addConfigUpgradeCommand(command, cwd, execute);
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
-  addLogsCommand(command, cwd, execute);
+  addLogsCommand(command, {
+    execute,
+    now,
+    targetRequest: (target, branch, options) =>
+      targetRequest("logs", target, branch, cwd, options),
+    nonEmpty,
+    positiveInteger,
+  });
   addRecipeCommands(command, {
     cwd,
     output,
@@ -92,6 +105,7 @@ export function createRigCommand(
     execute,
     projectScope,
     ...(projectFiles ? { projectFiles } : {}),
+    ...(configFormat ? { configFormat } : {}),
   });
   addHelpCommand(command, "rig");
   command
@@ -213,6 +227,29 @@ function previewScope(options: Pick<ScopeOptions, "deployment">): {
   return { deployment: options.deployment };
 }
 
+/** `rig config upgrade`: rewrites the Project's rig.yaml into the latest format in place, through rigd. */
+function addConfigUpgradeCommand(
+  command: Command,
+  cwd: string,
+  execute: ExecuteCommand,
+): void {
+  const config = command.commands.find((child) => child.name() === "config")!;
+  config
+    .command("upgrade")
+    .description(
+      "Rewrite rig.yaml in the latest format, keeping comments and layout, and print what changed. Only the file changes; commit it yourself.",
+    )
+    .option("--project <name>", "Registered Project identity")
+    .option("--dry-run", "Print the diff without writing rig.yaml")
+    .action(async (options: ScopeOptions & { dryRun?: boolean }) =>
+      execute({
+        action: "config-upgrade",
+        repoPath: cwd,
+        ...projectScope(options),
+        ...(options.dryRun ? { dryRun: true } : {}),
+      }),
+    );
+}
 function addLifecycleCommands(
   command: Command,
   cwd: string,
@@ -320,45 +357,6 @@ function addDeployCommands(
       );
     },
   );
-}
-function addLogsCommand(
-  command: Command,
-  cwd: string,
-  execute: ExecuteCommand,
-): void {
-  command
-    .command("logs")
-    .description("Read recent Target logs, including stopped Targets.")
-    .argument(
-      "[target]",
-      "Target name (local and live unless rig.yaml renames them) or preview",
-    )
-    .argument("[branch]", "Preview Branch or name", nonEmpty)
-    .option("--project <name>", "Registered Project identity")
-    .option("--deployment <name>", "Explicit Preview name")
-    .option("--follow", "Follow new output until interrupted")
-    .option("--lines <count>", "Number of recent entries", positiveInteger, 50)
-    .action(
-      async (
-        target: string | undefined,
-        branch: string | undefined,
-        options: ScopeOptions & { lines: number; follow?: boolean },
-      ) => {
-        if (options.lines > 10000)
-          throw new RigError(
-            "USAGE",
-            "Request at most 10000 recent log entries.",
-            "Reduce --lines.",
-          );
-        await execute(
-          {
-            ...targetRequest("logs", target, branch, cwd, options),
-            lines: options.lines,
-          },
-          { follow: options.follow },
-        );
-      },
-    );
 }
 interface InitOptions extends ScopeOptions {
   path?: string;

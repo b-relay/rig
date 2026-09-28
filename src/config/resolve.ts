@@ -1,11 +1,16 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { ConfigError } from "./errors";
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
-import { DEFAULT_RESTART_POLICY } from "./plan-defaults";
+import {
+  DEFAULT_HEALTH_FAILURES,
+  DEFAULT_HEALTH_ON_FAILURE,
+  DEFAULT_HEALTH_TIMEOUT_SECONDS,
+  DEFAULT_RESTART_POLICY,
+} from "./plan-defaults";
 import {
   durationSeconds,
-  parseProjectConfig,
   patchedSettings,
+  projectModel,
   proxyUpstream,
   targetNames,
   localhostCommand,
@@ -72,7 +77,7 @@ export function resolveTargetPlan(
         { field },
         "Supply absolute workspace, Persistent storage, operator home and env roots from discovery or runtime composition.",
       );
-  const config = parseProjectConfig(input.config),
+  const config = projectModel(input.config),
     role = ROLE_OF[input.target],
     settings = patchedSettings(config, role);
   const deploymentName =
@@ -150,15 +155,16 @@ export function resolveTargetPlan(
           "invalid_binding",
           { service: name },
         );
-      // A readiness URL is data for the HTTP probe; only a shell check is quoted for /bin/sh.
+      // A health URL is data for the HTTP probe; only a shell check is quoted for /bin/sh.
+      const check = service.health?.check;
       const probe =
-        service.ready === undefined
+        check === undefined
           ? undefined
-          : references.text(service.ready, `${at}.ready`);
+          : references.text(check, `${at}.health.check`);
       const ready =
         probe === undefined || isHealthUrl(probe.value)
           ? probe
-          : references.shell(service.ready!, `${at}.ready`);
+          : references.shell(check!, `${at}.health.check`);
       if (ready !== undefined && !localhostHealth(ready.value))
         throw new ConfigError(
           "Resolved readiness check addresses a host outside localhost.",
@@ -193,12 +199,29 @@ export function resolveTargetPlan(
         ...(inputs.length ? { commandInputs: inputs } : {}),
         command: run.value,
         ...declaredPorts(name, service, ports),
-        readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
+        readyTimeout: durationSeconds(service.health?.start_timeout ?? "30s"),
         stopTimeout: durationSeconds(
           service.stop_timeout ?? `${DEFAULT_STOP_TIMEOUT_SECONDS}s`,
         ),
         restart: service.restart ?? DEFAULT_RESTART_POLICY,
         ...(ready !== undefined ? { health: ready.value } : {}),
+        ...(ready !== undefined && service.health?.interval !== undefined
+          ? {
+              healthMonitor: {
+                interval: durationSeconds(service.health.interval),
+                timeout: durationSeconds(
+                  service.health.timeout ??
+                    `${DEFAULT_HEALTH_TIMEOUT_SECONDS}s`,
+                ),
+                failures: service.health.failures ?? DEFAULT_HEALTH_FAILURES,
+                onFailure:
+                  service.health.on_failure ?? DEFAULT_HEALTH_ON_FAILURE,
+                ...(service.health.retry_for !== undefined
+                  ? { retryFor: durationSeconds(service.health.retry_for) }
+                  : {}),
+              },
+            }
+          : {}),
       };
     }),
     ...Object.entries(settings.tools ?? {})

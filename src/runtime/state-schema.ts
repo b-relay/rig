@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
+import { OPERATION_OUTCOMES } from "../domain/activity";
 const text = z.string().min(1);
 /** Registered paths are stored absolute, so comparing two of them never depends on rigd's working directory. */
 const absolutePath = text.refine(isAbsolute, {
@@ -36,6 +37,18 @@ const component = z.discriminatedUnion("kind", [
       .max(MAX_STOP_TIMEOUT_SECONDS)
       .optional(),
     restart: z.enum(["always", "on-failure", "no"]).optional(),
+    healthMonitor: z
+      .object({
+        interval: z.number().int().positive(),
+        timeout: z.number().int().positive(),
+        failures: z.number().int().positive(),
+        onFailure: z.enum(["report", "restart"]),
+        retryFor: z.number().int().positive().optional(),
+      })
+      .optional()
+      .describe(
+        "Ongoing checks of health while the Service runs, in seconds; absent when it is checked only at start.",
+      ),
   }),
   z.object({
     ...common,
@@ -242,6 +255,31 @@ const services = z
         .describe(
           "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
         ),
+      healthRestarts: z
+        .object({
+          since: z
+            .number()
+            .finite()
+            .describe(
+              "Unix milliseconds when the Service was marked unhealthy in this stretch.",
+            ),
+          at: z
+            .array(z.number().finite())
+            .describe(
+              "Unix milliseconds of each health restart in this stretch.",
+            ),
+          gaveUp: z
+            .number()
+            .finite()
+            .optional()
+            .describe(
+              "Unix milliseconds when Rig stopped restarting it because health.retry_for ran out.",
+            ),
+        })
+        .optional()
+        .describe(
+          "The unhealthy stretch the running process was started in by a health restart, so a new rigd continues its back-off; an explicit start clears it.",
+        ),
     }),
   )
   .optional()
@@ -293,6 +331,11 @@ const target = z.object({
     .describe(
       "Revision of the rig.yaml a Working copy plan was made from, for reporting drift.",
     ),
+  configDigest: text
+    .optional()
+    .describe(
+      "Digest of what that rig.yaml said, whatever its format, comments or layout; drift is reported when it changes.",
+    ),
   recovery: z
     .object({
       plan: targetPlanSchema,
@@ -314,18 +357,11 @@ const operation = z.object({
   project: text.optional(),
   target: text.optional(),
   action: text,
-  outcome: z.enum([
-    "started",
-    "stopped",
-    "deployed",
-    "failed",
-    "unchanged",
-    "registered",
-    "renamed",
-    "repointed",
-    "installed",
-    "uninstalled",
-  ]),
+  // `forgotten` joined this list without a STATE_VERSION bump (see there). A rigd from before it refuses the state as
+  // STATE_CORRUPT once a `rig forget` is recorded, until rigd is upgraded again or the entry is deleted by hand.
+  outcome: z
+    .enum(OPERATION_OUTCOMES)
+    .describe("How the Operation ended, as rig activity shows it."),
   occurredAt: text,
   message: z.string().optional(),
 });
@@ -404,11 +440,14 @@ const alerts = z
   .describe(
     "Operator alert state: what was alerted and when, so a daemon restart neither repeats nor forgets an alert.",
   );
-/** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an
- * older rigd refuses the file instead of silently dropping what it does not know. A new optional top-level key, such
- * as `alerts`, needs no bump: an older rigd validates without it and writes it back unchanged. After such a downgrade and a
- * re-upgrade, `alerts` is as the newer rigd last left it; its next evaluation reconciles it with the Targets as they are then,
- * so an outage that ended meanwhile is told as recovered and one that began meanwhile starts its grace period then. */
+/** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an older rigd
+ * refuses the file instead of silently dropping what it does not know. Two kinds of change are not bumped.
+ * A new optional top-level key, such as `alerts`, needs no bump: an older rigd validates without it and writes it back
+ * unchanged. After such a downgrade and a re-upgrade, `alerts` is as the newer rigd last left it; its next evaluation
+ * reconciles it with the Targets as they are then, so an outage that ended meanwhile is told as recovered and one that
+ * began meanwhile starts its grace period then.
+ * A new value of an existing enum, such as an Activity outcome, needs none either: the file stays readable by an older
+ * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it. */
 export const STATE_VERSION = 4;
 export const runtimeStateSchema = z
   .object({
@@ -459,10 +498,30 @@ export const runtimeStateSchema = z
               .describe(
                 "The restart's Activity entry could not be written yet; the daemon that finds the restart again writes it.",
               ),
+            unannouncedBefore: z
+              .array(
+                z.object({
+                  kind: hostRestart,
+                  boot: text
+                    .optional()
+                    .describe(
+                      "The boot rigd found when it detected that restart.",
+                    ),
+                  login: text
+                    .optional()
+                    .describe(
+                      "The login session rigd found when it detected that restart.",
+                    ),
+                }),
+              )
+              .optional()
+              .describe(
+                "Earlier Host restarts, oldest first, whose Activity entries no daemon could write before this restart was found; their entries are written ahead of this one's. Only an unannounced restart carries any.",
+              ),
           })
           .optional()
           .describe(
-            "A Host restart already recorded in Activity that rigd has not finished acting on; a daemon that finds it again does not record it twice.",
+            "A Host restart rigd found but has not finished acting on, recorded in Activity unless marked unannounced; a daemon that finds it again does not record it twice.",
           ),
       })
       .optional()

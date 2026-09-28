@@ -171,6 +171,11 @@ async function rig(
     cwd,
     projectFiles,
     ...(recipes ? { recipes } : {}),
+    // Generated blocks are pasted into APP, which is a rig/v1 file, so generate writes rig/v1.
+    configFormat: async () => ({
+      path: "/workspace/rig.yaml",
+      format: "rig/v1" as const,
+    }),
     client: {
       async status() {
         throw new Error("status is not part of these tests");
@@ -576,13 +581,16 @@ test("a Service generated from convex@1, which cannot pass the loopback check, i
   const old = await rig(["recipe", "generate", "convex@1"], undefined);
   expect(old.code).toBe(0);
   expect(old.out).toContain("# rig-recipe: convex@1 name=convex");
+  // APP is a rig/v1 file, so each generate also ends with the line every command run beside one prints.
+  const deprecated =
+    "Deprecated: /workspace/rig.yaml is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.\n";
   expect(old.err).toBe(
-    `Warning: ${notice} Run rig recipe generate convex for convex@2.\n`,
+    `Warning: ${notice} Run rig recipe generate convex for convex@2.\n${deprecated}`,
   );
   const current = await rig(["recipe", "generate", "convex"], undefined);
   expect(current.code).toBe(0);
   expect(current.err).toBe(
-    "Wrote scripts/rig-convex.ts in /workspace; commit it with the Project. The Service runs it.\n",
+    `Wrote scripts/rig-convex.ts in /workspace; commit it with the Project. The Service runs it.\n${deprecated}`,
   );
   expect(current.out).toContain(
     "run: exec bun --no-env-file scripts/rig-convex.ts",

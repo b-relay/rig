@@ -112,7 +112,8 @@ their callers, and only then closes what is still open, such as a log follow.
 A command sent after the stop began, or one still waiting behind another
 operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
 A stop signal never waits out a Service's `stop_timeout`, which may be an hour:
-a command waiting for a Service to exit stops waiting and fails `STOP_DETACHED`,
+a command waiting for a Service to exit (the stop of a start that never
+confirmed it started included) stops waiting and fails `STOP_DETACHED`,
 and the Service keeps stopping on its own (its capture wrapper, or launchd,
 still enforces the grace and the SIGKILL after it). A daemon killed while an
 operation waits for a Service to exit leaves that Service stopping the same way.
@@ -286,7 +287,8 @@ rig init --tool report --bin .rig-build/report \
 
 `--service <name> --run <command>` declares one Service; `--port <n>` pins its
 `http` port (otherwise the port is `auto`) and `--ready <check>` sets its
-readiness check. `--tool <name> --bin <path>` declares one Tool, with
+`health.check`. `rig init` writes `rig.yaml` in the latest format (see "Config
+formats"). `--tool <name> --bin <path>` declares one Tool, with
 `--tool-build <command>` as its build. Both may be given together, under
 different names. `--run`, `--port`, or `--ready` without `--service`, and
 `--bin` or `--tool-build` without `--tool`, are usage errors. With neither a
@@ -592,7 +594,7 @@ If `rig up preview feature/login` names a Preview that has not been deployed,
 Rig should fail and tell the user to deploy it first.
 
 `up` reports `started` only for processes Rig has confirmed alive. A Service
-with a `ready` URL is polled until it answers or `ready_timeout` (default
+with a `health.check` URL is polled until it answers or `health.start_timeout` (default
 `30s`) expires, and
 between polls Rig asks its supervisor whether the process still exists: a
 process that exits fails the start at once as `PROCESS_EXITED`, naming the exit
@@ -601,14 +603,14 @@ Rig's own process is running, so a foreign listener on the port cannot certify
 a dead Service. An HTTP probe is ready on any answer below 400, a redirect
 included, since a process that redirects is serving; a status of 400 or more,
 a refused connection, or a shell check that exits non-zero is not ready. When
-`ready_timeout` expires, `HEALTH_FAILED` names the last observation, for
+`health.start_timeout` expires, `HEALTH_FAILED` names the last observation, for
 example `web did not become ready (last check: HTTP 503).` or `(last check:
 exit code 3: probing)`, and the Target log records each change in that
 observation as a `health` line, so a probe that never answers, a 5xx, or a
 check command's last output line is visible in `rig logs` rather than
-discarded. A Service without a `ready` check is ready once every port it
+discarded. A Service without a `health.check` check is ready once every port it
 declares accepts a connection on `127.0.0.1` or `::1`, within the same
-`ready_timeout`. A Service with neither a check nor a port must survive a short
+`health.start_timeout`. A Service with neither a check nor a port must survive a short
 start grace period (half a second) before it counts as started; a command that
 exits earlier, such as a missing binary or a port already in use, fails `up`
 and rolls the start back. `HEALTH_FAILED` details carry `outcome`:
@@ -634,6 +636,20 @@ between is recovered by the next `rig down` (rollback) or the recorded commit
 decision (roll-forward) without treating its own half-finished write as an
 external edit. Only a change made to an owned file _after_ the journal
 captured it is refused as `EFFECTS_CHANGED`.
+
+Installed executables share one bin directory, so while a Target's checkpoint
+is unfinished, no other Target may install at a path it covers: that install is
+refused as `ARTIFACT_CONFLICT`, naming the Project and Target to run
+`rig down` for. This holds across a rigd restart, because rigd reads the
+unfinished journals left on disk before it starts any change, including
+journals it could not recover itself (from a newer rigd, say); if a journal
+or an executable's ownership record cannot be read then, the change fails
+rather than guess. A recovery holds the paths it undoes while it runs. If
+another Target nevertheless owns an executable the interrupted change was
+writing (an older rigd could let it install there), recovery refuses as
+`EFFECTS_CHANGED`, removes nothing and keeps the checkpoint. Give that other
+Component a different `installName` and deploy it again, or remove its Target;
+then run `rig down` for the first Target again.
 
 Each journal carries a format version (currently 1). A journal written by a
 newer rigd whose version this one does not read is refused as
@@ -675,11 +691,44 @@ Logs:
 rig logs live
 rig logs preview feature/login
 rig logs preview feature/login --follow
+rig logs local --service scheduler --since 1h
+rig logs live --stream stderr --follow
+rig logs live --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
 ```
 
 `rig logs` prints recent stdout and stderr together by default and exits.
-`--follow` streams. Logs may be read for stopped Targets when logs exist. Every
-follow page is validated the same way as the first; a malformed page ends the
+`--follow` streams. Logs may be read for stopped Targets when logs exist.
+
+Filters narrow what is printed; without them the output is the whole Target
+interleaved, as before:
+
+- `--service <name>` keeps one component's lines. Repeat it for more than one.
+  A name is a Service or Tool from `rig.yaml` (a Tool's build and install
+  output is logged under its name), or `setup` for dependency installation
+  and the shared build. An unknown name fails as `USAGE` and lists the names
+  the Target has.
+- `--stream stdout` or `--stream stderr` keeps one stream; health-check
+  evidence is left out.
+- `--since <time>` and `--until <time>` keep lines recorded in that window,
+  both ends included. A time is a duration back from now (`90s`, `15m`, `1h`,
+  `2d`, `1w`, or combined as `1h30m`) or an ISO time with a zone
+  (`2026-09-28T03:00:00Z`, `2026-09-28T05:00:00+02:00`); a time without a zone
+  is refused rather than guessed. Lines with no recorded time (the files
+  launchd writes for a job, see below) are left out once either is set.
+- `--lines` counts the lines the filters keep, so
+  `--service scheduler --lines 20` is the scheduler's last 20 lines however
+  much another Service wrote since.
+- `--follow` prints the matching history first, then keeps printing new lines
+  that pass `--service` and `--stream`. `--until` cannot be combined with
+  `--follow`.
+
+A filtered read walks back through every retained file from the newest line
+and stops once it has `--lines` matches or has passed `--since`, so it never
+loads whole files; `--since` reaches back as far as the retained files go.
+When nothing matches, `rig logs` says `No matching log lines.` instead of
+`No logs yet.`
+
+Every follow page is validated the same way as the first; a malformed page ends the
 follow with `DAEMON_PROTOCOL` and no further poll, which is distinct from
 cancellation.
 `--lines` sizes the first page only; a follow then fetches up to 1000 new
@@ -703,21 +752,60 @@ local time. Build and install
 output is recorded line by line as the command produces it, each line at
 the time it was seen, so a long build is visible in `rig logs --follow` while
 it runs rather than as one burst afterwards.
-A Target's `target.jsonl` is rotated once it reaches 64 MiB: the full file
-becomes `target.jsonl.1`, replacing the previous one, so a chatty Component
-holds at most about 128 MiB of log on disk. `rig logs` reads both generations
-and a `--follow` continues across the rotation without repeating or losing
-lines. The files launchd writes for a job (`<component>.stdout.log` and
+
+Log files are bounded by size, not by age. Two Host settings in
+`<RIG_ROOT>/config.yaml` control it:
+
+```yaml
+logs:
+  max_bytes: 67108864 # 64 MiB, the default
+  generations: 1 # the default
+```
+
+- `max_bytes` is how big a log file may grow. Once `target.jsonl` reaches it,
+  Rig renames the full file to `target.jsonl.1` and starts a new, empty
+  `target.jsonl`. This is called rotation.
+- `generations` is how many of those older, rotated files are kept. With `1`,
+  only `target.jsonl.1` is kept, and the next rotation replaces it. With `3`,
+  Rig keeps `.1` (newest) to `.3` (oldest) and deletes the file that would
+  become `.4`. With `0`, a full file is deleted and nothing older is kept; a
+  line another writer appends at the moment of deletion goes with it.
+
+So a Target keeps at most about `max_bytes × (generations + 1)` of log: 128 MiB
+with the defaults. The limit is shared by every Service of the Target, so a
+chatty web Service can push a quiet worker's lines out; raise either setting to
+keep more history for `--since`. `max_bytes` is at least 1 MiB; `generations`
+is 0 to 20. `rig logs` reads every retained generation, oldest first, and a
+`--follow` continues across a rotation without repeating lines. A follow
+loses lines only when they are deleted before it reads them: with
+`generations: 0`, or when it falls more than `generations` rotations behind.
+A change needs no restart: rigd and every Service's capture wrapper read
+`config.yaml` again within a few seconds, so every writer of a file rotates it
+the same way. (A Service started by a Rig release before these settings
+existed uses the defaults until it restarts.) While `config.yaml` is invalid,
+the last valid settings stay in force, so log output is never lost to a config
+mistake.
+
+The files launchd writes for a job (`<component>.stdout.log` and
 `<component>.stderr.log`, which hold a capture wrapper's own crash output or
 an uncaptured app's output) are shown under their Component with an unknown
-time. A log file that cannot be opened, or that is not a regular file, fails
+time. They rotate under the same two settings, each file on its own (for
+example `web.stderr.log.1`), when Rig starts the job: launchd holds them open
+while the job runs, so they are never rotated under a running job.
+
+A log file that cannot be opened, or that is not a regular file, fails
 as `LOG_UNREADABLE` naming the file and the reason; `LOG_CURSOR` is reserved
-for a follow whose cursor no longer matches the files.
+for a follow whose cursor no longer matches the files. A file `--service`,
+`--stream` or a time bound leaves out entirely (another Service's launchd
+file) is not opened at all. A read that sees files rotate under it reads again;
+`LOG_BUSY` means they kept rotating, and reading again is all it asks.
 A record that cannot be parsed (for example one cut short by a crash and glued
 onto the next), or a run longer than the reader's 4 MiB window, is shown in
 place as an unknown-stream line "Rig skipped an unreadable log record (N
 bytes)." and reading or following continues past it; Rig never edits the
-retained file. Rig's own writers record a newline-free run in pieces of at most
+retained file. A recent read reports a newest run it only walked partway as
+"(more than N bytes)": a launchd file whose output never ends a line is read
+a window back, not whole. Rig's own writers record a newline-free run in pieces of at most
 64 Ki characters, so their records never exceed that window.
 A Target log directory removed while a component runs is recreated by the
 next line of output. While output cannot be recorded at all (the path is not a
@@ -794,11 +882,18 @@ The state file carries a format version (currently 4). A file written by a
 newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
 rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
-newer version's fields survive a temporary downgrade. Services that take
-longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
+newer version's fields survive a temporary downgrade. A new value in a known
+field does not: a `rigd` from before `rig forget` was recorded in Activity
+refuses the state as `STATE_CORRUPT` once a `forgotten` entry is in it. Upgrade
+`rigd` again, or delete the entries whose `outcome` is `forgotten` from
+`activity` in the state file. Restoring `state.json.bak`, as the error
+suggests, helps only when recording the forget was the last write: that copy
+has the Project already removed, just without the `forgotten` entry. After any
+later write it holds the entry too. Services that take longer than about 4 s to stop
+need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
-it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
+it takes; `rigd` owns every budget (`build_timeout`, `health.start_timeout`, each
 at most one day, and the fixed dependency-install budget). Reads such
 as `status`, `list`, and `doctor` give up after five seconds and report
 `rigd did not answer the doctor read within 5 s; it may be busy`, which is
@@ -897,7 +992,7 @@ for a transition that no live operation owns, such as one interrupted by a
 daemon crash.
 
 Status shares one two-second budget across concurrent observations. Services
-without a `ready` check are running, not healthy; uncertain observations
+without a `health.check` check are running, not healthy; uncertain observations
 are unknown. Configured-only Components are configured, Tool-only Targets
 can be ready, and partial runtime capability is degraded. Every Component
 counts toward the Target state: a missing database or executable beside a
@@ -983,6 +1078,9 @@ capability:
 - `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
   reload mode (see Setup)
 - `diagnostics.retention_days` (default 14) and `diagnostics.level`
+- `logs.max_bytes` (default 64 MiB) and `logs.generations` (default 1): the
+  size at which a Target log file is rotated and how many rotated files are
+  kept (see Logs)
 - `alerts.channels.macos.enabled`: whether operator alerts are posted as
   macOS notifications (see "Operator alerts"). When unset, it is on for a
   `rigd` installed as a LaunchAgent and off for a process-mode `rigd`
@@ -1019,6 +1117,7 @@ they match.
 A small `rig.yaml` with two Services, a Tool, and a route:
 
 ```yaml
+format: rig/v2
 name: pantry
 production_branch: main
 domain: pantry.test
@@ -1034,14 +1133,16 @@ services:
       HOST: 127.0.0.1
       PORT: ${services.api.ports.http}
       DATA_DIR: ${rig.data}
-    ready: http://127.0.0.1:${services.api.ports.http}/health
+    health:
+      check: http://127.0.0.1:${services.api.ports.http}/health
   web:
     run: bun run src/web.ts --port ${services.web.ports.http}
     ports: { http: 3000 }
     env:
       API_URL: http://127.0.0.1:${services.api.ports.http}
-    ready: http://127.0.0.1:${services.web.ports.http}/
-    ready_timeout: 1m
+    health:
+      check: http://127.0.0.1:${services.web.ports.http}/
+      start_timeout: 1m
     depends_on: [api]
 
 tools:
@@ -1063,7 +1164,8 @@ targets:
     domain: ${rig.target}.preview.pantry.test
 ```
 
-Top-level fields: `name` (required Project identity), `description`,
+Top-level fields: `format` (see "Config formats"), `name` (required Project
+identity), `description`,
 `production_branch`, `domain`, `supervisor`, `build`, `build_timeout`, `env`,
 `env_file`, `services`, `tools`, `proxy`, and `targets`. A Project needs at
 least one Service or Tool, and a Tool cannot share a Service's name. Service
@@ -1077,13 +1179,22 @@ A Service is a long-running process Rig starts and supervises. Its fields:
 - `ports`: named local TCP ports. `auto` lets Rig choose a free port and keep
   it for the Target; a number from 1 to 65535 pins it. Previews always use
   chosen ports, so a pin applies to the Working copy and Stable Target only.
-- `ready`: a localhost HTTP URL or a shell command that reports readiness, and
-  `ready_timeout` (default `30s`).
+- `health`: how Rig checks the Service. `health.check` is a localhost HTTP URL
+  or a shell command; it must pass before the Service counts as started and
+  before a Service that depends on it starts. `health.start_timeout` (default
+  `30s`) bounds that wait, and without a check it bounds the wait for the
+  Service's ports. In a `rig/v1` file these two are the Service fields `ready`
+  and `ready_timeout`. With `health.interval` Rig keeps checking the Service
+  while it runs; `timeout`, `failures`, `on_failure` and `retry_for` say how.
+  See "Health checks". A role patch may set any `health` field
+  (`targets.stable.services.api.health.on_failure`).
 - `stop_timeout`: how long the Service may take to exit after its stop signal
   (SIGTERM) before Rig ends it with SIGKILL, from `1s` to `1h` (default `10s`).
   It is the time after the signal, not a total. Every stop honours it: `rig
 down`, `rig restart`, a deploy that replaces or rolls back the Target, a
-  Preview destroy, the stop of a failed start, and `rigd` re-stopping a Target
+  Preview destroy, the stop of a failed start (a Service whose capture
+  wrapper never confirmed it started included: the start fails only once
+  that Service has stopped), and `rigd` re-stopping a Target
   at startup. A role patch may set it (`targets.stable.services.worker.stop_timeout`).
   Rig waits for SIGKILL's kill wait (1.5 s) on top. A Service that exits within
   its grace is a requested stop; one that needs SIGKILL is recorded as
@@ -1113,6 +1224,14 @@ A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
 to the workspace; `build` is an optional shell command that produces it, and
 `build_timeout` bounds that build.
+
+An executable `bin`, anything but the source files below, is copied byte for
+byte into `<RIG_ROOT>/bin` (as `<tool>` or `<tool>-<target name>`; see
+"Environment, builds, and startup") and runs from there, not from the
+workspace. It must therefore be self-contained, like a compiled binary, or
+must itself name the checkout it needs. A shell script that finds its checkout
+with `dirname "$0"` gets `<RIG_ROOT>/bin` instead, which holds none of the
+checkout's files.
 
 A `bin` that is a source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, or
 `.cjs`) is not copied. Rig publishes a two-line shim,
@@ -1169,6 +1288,70 @@ no `proxy` gets no route. A Tool-only Project needs neither.
 
 The Production branch is `production_branch`, else the Host config's
 `deploy.production_branch`, else `main`.
+
+### Config formats
+
+A `rig.yaml` declares the format it is written in with a top-level
+`format`. `rig/v2` is the current format, and the one `rig init`,
+`rig config upgrade` and `rig recipe generate` write. A file without `format`
+is `rig/v1`, the format of every `rig.yaml` written before formats existed.
+Rig reads both, with the same meaning: whatever format a file is in, Rig plans
+the same Targets from it, so a file's format is never config drift.
+
+`rig/v2` changes one thing. A Service's `ready` and `ready_timeout` become
+`health.check` and `health.start_timeout`, in every Service and in every role's
+Service patch, and a `${...}` reference to one of them uses the new path:
+
+```yaml
+# rig/v1                              # rig/v2
+                                      format: rig/v2
+services:                             services:
+  web:                                  web:
+    run: bun run start                    run: bun run start
+    ready: http://127.0.0.1:3000/         health:
+    ready_timeout: 1m                       check: http://127.0.0.1:3000/
+                                            start_timeout: 1m
+```
+
+A `rig/v2` file that uses `ready` or `ready_timeout` is refused with the field
+path and where it moved (`Fix services.web.ready: rig/v2 moved ready to
+health.check.`). A `rig/v1` file that uses `health` is refused with a pointer
+to `rig config upgrade`. A `format` Rig does not know is refused: it needs a
+newer Rig.
+
+Every `rig` command run in a Project whose `rig.yaml` is `rig/v1` prints one
+line on stderr after its result:
+
+```text
+Deprecated: /path/to/rig.yaml is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.
+```
+
+A deploy (or `git push rig`, even with `--quiet`) of a Commit whose committed
+`rig.yaml` is `rig/v1` works as before and prints the same line, naming that
+Commit's copy of the file. `rig recipe generate` run beside a `rig/v1` file
+prints its block in `rig/v1` and the same line. The dashboard's config editor shows the same notice, and edits a
+`rig/v1` file in its own spelling.
+
+`rig config upgrade` rewrites the Project's `rig.yaml` into `rig/v2` in place
+and prints each change. It moves the settings above and follows the references
+to them, and leaves every other byte alone: comments (a comment above
+`ready` moves with it), order, quoting, blank lines, flow style and long lines.
+A `yaml-language-server` comment that names `rig-v1.schema.json` is pointed at
+`rig.schema.json`. Before writing, it checks that the new file parses to
+exactly the config the old one did; when it would not, nothing is written. A
+Service written as a `{ ... }` mapping with a comment inside it is refused
+(`upgrade_lossy`), since the move could misplace the comment: write that
+Service in block style or move the comment out, then run it again. The previous text is kept
+in `rig.yaml.bak`, as with every Rig config edit. `rig config upgrade
+--dry-run` prints a unified diff and writes nothing. It changes only the file
+in the working tree: nothing is committed, planned or restarted, so commit it
+yourself. Running Targets are not affected, and the upgrade is not reported as
+drift by `rig up` or `rig doctor`.
+
+Editors: `schemas/rig.schema.json` describes the current format. A `rig/v1`
+file checked against it shows `ready` as unknown and `format` as missing;
+upgrade the file, or point its `yaml-language-server` comment at
+`schemas/rig-v1.schema.json`, the frozen `rig/v1` schema, until you do.
 
 ### Target names and settings patches
 
@@ -1237,7 +1420,10 @@ wrapper's exit code 0 is not counted, because a wrapper from an older `rigd`
 also exits 0 after an outside SIGTERM. If the wrapper is gone but the process
 it ran is still running on its own, the Service is reported `unknown`. Rig
 neither signals that process nor starts another beside it; end it yourself,
-then run `rig up`.
+then run `rig up`. A process only begins once Rig has recorded it: if the
+wrapper (or `rigd`) is killed while it is starting a process, that process
+never runs, so the start fails and a retry never runs a second copy beside one
+Rig cannot see.
 
 A Service that is gone with no record anywhere (its launchd job was unloaded
 too, or nothing could be written or read) has `exit: unknown`. Under
@@ -1317,7 +1503,115 @@ time and without starting (or retrying) a Stable Target it already started, or
 failed to start, for that restart. A restart whose Activity entry could not be
 written yet is recorded by the start that finishes it. Only a session that changed since the
 pending restart was found, such as a logout and login after it, is a new
-restart.
+restart; a pending restart whose entry was never written still gets its entry,
+ahead of the new one's, marked as recorded late.
+
+When a Stable Target's start fails and its failure cannot be recorded (a full
+disk, say), each later pass of the same `rigd` records it again, and does not
+supervise that Target meanwhile. A command you run on the Target records the
+failure first, and is refused with `STATE_WRITE` while it cannot be. If `rigd`
+stops before that write succeeds, the next start finds the Target not settled
+for the restart and without the start's Activity entry, and starts it once
+more, even though the Service whose start failed may already read `failed`.
+Likewise, if none of the writes that record the restart succeeded before
+`rigd` stopped (its own entry, and every Target's note that it acted on it),
+nothing records that restart: after a second reboot the Host shows only the new
+boot, so the next start sees one restart and writes one entry.
+
+### Health checks
+
+A Service's `health.check` runs when it starts. Add `health.interval` and Rig
+keeps running it while the Service runs, so a Service that is alive but stuck
+(deadlocked, waiting on a dead socket, its heartbeat stopped) is found. Without
+`interval` nothing changes: the check runs only at start, as before.
+
+```yaml
+format: rig/v2
+services:
+  web:
+    run: bun run start
+    ports: { http: auto }
+    health:
+      check: http://127.0.0.1:${services.web.ports.http}/healthz
+      start_timeout: 60s # the start check's budget
+      interval: 30s # keep checking every 30 s; at least 5s
+      timeout: 5s # one check's budget (default 5s)
+      failures: 3 # failed checks in a row before Rig acts (default 3)
+      on_failure: restart # report (default) or restart
+      retry_for: 6h # with restart only; omitted, Rig never gives up
+```
+
+- Checks begin one `interval` after the start check passed, and pause while
+  the Service's Target is starting or stopping anything (an `up`, a `down`, a
+  `restart`, a deploy, an automatic or health restart); they begin again one
+  `interval` after it is free. Checks of one Service never overlap, and at most
+  four run at once across the Host. They run beside the operation queue, so a
+  slow check holds up no command. A check that does not answer within
+  `timeout` failed.
+- `failures` failed checks in a row mark the Service unhealthy, and Activity
+  records it with the last check's output. A passing check ends that, and
+  Activity records that too.
+- `on_failure: report` (the default) only reports: `rig status` shows the
+  Service `unhealthy`, and a Stable Target with an unhealthy Service counts as
+  down for operator alerts, which go out after 5 minutes as for any Stable
+  Target that is down.
+- `on_failure: restart` also restarts it: Rig stops it through the normal stop
+  path, within its `stop_timeout` (`rig status` shows it `stopping`), and
+  starts it again as an automatic restart does, with its start check. The
+  restart waits for its Target like any command, so it never runs beside
+  another operation on that Target. The first restart is made as soon as the
+  Service is marked unhealthy; while it stays unhealthy, the next ones wait
+  about 1 min, 5 min, 15 min, then an hour after the one before. Health
+  restarts do not use the automatic restart budget (see "Automatic restart"),
+  and a start that fails is left to it. Activity records each restart with the
+  check's last output, cut to 200 characters.
+- `retry_for` bounds how long Rig keeps restarting: once the Service has been
+  unhealthy that long, Rig stops restarting it, leaves it as it is, keeps
+  checking it and reports it unhealthy, and `rig status` and Activity say that
+  Rig gave up. `rig restart` or any explicit start clears that. A new `rigd`
+  continues the back-off and `retry_for` of a Service a health restart
+  started.
+- A health restart acts only on the process the checks judged, which Rig knows
+  by the identity it records for every start. A process that a `rigd` too old
+  to record one started, and that is still running, is checked and reported
+  but not restarted for its checks; `rig restart` it once.
+
+`rig status` shows the result of the last check without running one:
+
+```text
+live  unhealthy  main@1a2b3c4
+  web  healthy · checked 12s ago  :4312  app.test
+  scheduler  unhealthy 2/3 · exit code 1: heartbeat 93 s old
+```
+
+`2/3` is failed checks in a row of `failures`. Once they reach it the Service is
+marked unhealthy, and stays marked, through any health restart, until a check
+passes: `unhealthy · <output> · restarted 2 times`, with `· gave up restarting`
+once `retry_for` has run out. A marked Service keeps a Stable Target down. Until
+the first check of a new process answers, a Service that is not marked shows
+`running`. Services without `interval` are checked when `rig status` runs, as
+before.
+
+A worker without a port has no traffic that would reveal it is stuck. Let it
+prove it is working: each time it finishes a unit of work, or on a timer inside
+its main loop, it touches a file under its persistent data, and the check tests
+the file's age.
+
+```yaml
+services:
+  scheduler:
+    run: bun run src/scheduler.ts # touches $STATE/heartbeat every 10 s
+    env:
+      STATE: ${rig.data}
+    health:
+      check: test $(( $(date +%s) - $(stat -f %m "$STATE/heartbeat") )) -lt 60
+      interval: 30s
+      on_failure: restart
+```
+
+The check runs under `/bin/sh -c` in the workspace with the Service's
+environment, so it sees `STATE` as the Service does. `stat -f %m` is macOS's
+form of the file's modification time.
 
 ### Operator alerts
 
@@ -1333,7 +1627,10 @@ Services:
 - has used up its automatic restarts, even after clean exits;
 - is still `starting`, for example waiting for a dependency that does not come
   back;
-- fails its readiness check, or does not answer it within 5 seconds.
+- fails its readiness check, or does not answer it within 5 seconds;
+- with `health.interval`, is marked unhealthy by its ongoing checks. For such
+  a Service the alert monitor reads the last result and does not run the
+  check itself; a failed check or two below `health.failures` is not down.
 
 A Target also counts as down when its route is unpublished (no host Caddyfile
 loads Rig's routes), or when a deploy left it mid-transition: its rollback
@@ -1402,7 +1699,7 @@ together with a place to keep their secrets.
 ### Recipes
 
 A recipe prints an ordinary Service for a common local dependency. There is no
-plugin behind it: the block uses the same `run`, `ports`, `env` and `ready` you
+plugin behind it: the block uses the same `run`, `ports`, `env` and `health.check` you
 would write by hand, and once pasted it is yours to edit. Some recipes also
 come with a recipe file the Service runs, such as the Convex recipe's
 `scripts/rig-convex.ts`; `generate` writes it into the Project, and it is
@@ -1614,7 +1911,7 @@ the Target log asking for `chmod 600`.
 
 When a file supplies a name that `env` or a lower file also supplies, the
 Target log notes the name and the sources, never the values. One case is
-refused rather than noted. If a `run`, `build`, or shell `ready` command
+refused rather than noted. If a `run`, `build`, or shell `health.check` command
 reaches a public env value through a reference, directly or through another
 `env` value, that value is already part of the command text. A file that gives
 the same name a different final value would make the command text and the
@@ -1690,7 +1987,7 @@ current file.
    `rig down preview --destroy` too): both name the file, and moving or
    deleting it is the way through.
 2. Each Service in dependency order: the process start, then readiness.
-   Readiness means the `ready` check passed; without `ready`, that every
+   Readiness means the `health.check` check passed; without `health.check`, that every
    declared port accepts a connection; without ports either, that the process
    survived the start grace period. Then its listeners are inspected. A
    Service that was already running is skipped, except that one another
@@ -1708,12 +2005,12 @@ Rig has no hooks and no plugins. Run a database as an ordinary Service whose `ru
 starts it, and put preparation steps in a `build` or in the script `run`
 invokes. A `run` command whose executable the shell cannot find fails as
 `PROCESS_EXITED` with exit code 127 and a hint that names the missing tool
-problem instead of waiting out `ready_timeout`.
+problem instead of waiting out `health.start_timeout`.
 
 ### Localhost binding
 
-Every process Rig starts must listen on localhost only. `run`, `ready`, and
-`build` commands are checked when the config is parsed, and `run` and `ready`
+Every process Rig starts must listen on localhost only. `run`, `health.check`, and
+`build` commands are checked when the config is parsed, and `run` and `health.check`
 again after references are resolved: an explicit bind flag such as `--host`,
 `--bind`, `--listen`, or `--addr` must name a literal `127.0.0.1` or
 `localhost` (not a reference), and a wildcard
@@ -1724,15 +2021,15 @@ keys (`HOST`, `HOSTNAME`, `BIND`, `BIND_ADDR`, `BIND_ADDRESS`, `BIND_HOST`,
 may not hold a wildcard address; other env values are not inspected, because
 `HOST` often names a public hostname rather than a bind address. A process
 that reads its bind address from somewhere Rig cannot see is your
-responsibility. A `ready` value that starts with `http://` or `https://` in
+responsibility. A `health.check` value that starts with `http://` or `https://` in
 any letter case is an HTTP probe: the whole string must parse as a URL with
 no username or password and a hostname of `127.0.0.1` or `localhost`. Query
-strings may mention other hosts. Any other `ready` value is a shell command
+strings may mention other hosts. Any other `health.check` value is a shell command
 and follows the command rule.
 
 ### References
 
-`run`, `ready`, `build`, `bin`, `env` values, and `env_file` paths
+`run`, `health.check`, `build`, `bin`, `env` values, and `env_file` paths
 may use `${...}` references. A reference is the exact path of one value in the
 selected Target's own settings (the base config with that role's patch
 applied), or one of the `rig.*` values Rig generates:
@@ -1740,7 +2037,7 @@ applied), or one of the `rig.*` values Rig generates:
 - `${env.<NAME>}` and `${services.<service>.env.<NAME>}`: a public `env`
   value. Values may reference each other; Rig resolves them recursively.
 - any other scalar setting by its path, such as
-  `${services.api.ready_timeout}`.
+  `${services.api.health.start_timeout}`.
 - `${services.<service>.ports.<port>}`: the concrete number of a declared
   port in this Target. `proxy` values must be exactly one such reference.
 - `${rig.target}`: the Target's actual name, configured or generated. It is
@@ -1775,7 +2072,7 @@ patch replace it. Env file contents are never referenceable. Write `$${VAR}`
 for a literal `${VAR}` the shell should expand; `$VAR` is always left to the
 shell.
 
-Because `run`, a shell `ready`, and `build` run under `/bin/sh -c`, Rig
+Because `run`, a shell `health.check`, and `build` run under `/bin/sh -c`, Rig
 substitutes every value as literal data, never as shell code. A bare
 reference is single-quoted when its value is empty or contains a space or
 other shell-special character, so a repository or `RIG_ROOT` under a path
@@ -1783,7 +2080,7 @@ like `~/Projects/My App` still resolves to one argument. Inside the author's
 own double or single quotes the value is escaped for that quote (a `$(...)`
 inside them starts a command of its own and is quoted as such), so a `$`, a
 backquote, or a quote character in the value stays part of the argument. A
-`ready` value that resolves to an HTTP URL is handed to the HTTP probe
+`health.check` value that resolves to an HTTP URL is handed to the HTTP probe
 unquoted. Values substituted into `env`, `domain`, `env_file`, and `bin` are
 never quoted.
 

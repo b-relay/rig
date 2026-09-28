@@ -16,7 +16,7 @@ export function validateEditPath(path: readonly string[]): void {
 }
 
 /** Whether the node or anything inside it carries a comment. */
-function hasComments(node: unknown): boolean {
+export function hasComments(node: unknown): boolean {
   let commented = false;
   if (isNode(node))
     visit(node, (_key, child) => {

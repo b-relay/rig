@@ -56,6 +56,7 @@ import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
 import { appendTargetLog } from "../providers/target-log";
+import type { LogRetention } from "../domain/log-retention";
 export interface TargetAdapterOptions {
   root: string;
   /** Acquires an ISO timestamp per recorded output entry, after buffered execution. */
@@ -68,6 +69,8 @@ export interface TargetAdapterOptions {
   connect: PortProbe;
   listeners: ListenerInspection;
   environment: Readonly<Record<string, string>>;
+  /** Reads how the Target log is rotated each time build, install and health lines are recorded; the default when absent. */
+  logRetention?: () => Promise<LogRetention>;
 }
 export function installedPath(
   root: string,
@@ -85,6 +88,8 @@ export function installedPath(
 /** Budget in seconds when the Project config declares none. */
 const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
+/** How long a shell check status or a start runs may take; an ongoing check has its own health.timeout. */
+const SHELL_CHECK_TIMEOUT_MS = 2000;
 export function createTargetEffects(
   options: TargetAdapterOptions,
 ): TargetEffects & { observations: ObservationEffects } {
@@ -240,6 +245,7 @@ export function createTargetEffects(
           }),
         )
         .join("\n") + "\n",
+      await options.logRetention?.(),
     );
   };
   /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. */
@@ -248,9 +254,10 @@ export function createTargetEffects(
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
+    timeoutMs?: number,
   ): Promise<HealthCheck> => {
     const check = component.health
-      ? await probe(component, target, signal)
+      ? await probe(component, target, signal, timeoutMs)
       : await connections(component, signal);
     const evidence = check.ready ? "ready" : check.reason;
     const key = `${target.id}:${component.name}`;
@@ -279,6 +286,7 @@ export function createTargetEffects(
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
+    timeoutMs = SHELL_CHECK_TIMEOUT_MS,
   ): Promise<HealthCheck> => {
     try {
       if (isHealthUrl(component.health!)) {
@@ -296,13 +304,13 @@ export function createTargetEffects(
         cwd: target.plan.workspacePath,
         env: await environment(target, component),
         signal,
-        timeoutMs: 2000,
+        timeoutMs,
       });
       if (result.exitCode === 0) return { ready: true };
       const detail = lastLine(result.stderr) ?? lastLine(result.stdout);
       return {
         ready: false,
-        reason: `${result.timedOut ? "timed out after 2s" : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
+        reason: `${result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
       };
     } catch (error) {
       if (signal.aborted) throw error;
@@ -627,7 +635,8 @@ export function createTargetEffects(
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),
-      health: (target, component, signal) => health(component, target, signal),
+      health: (target, component, signal, timeoutMs) =>
+        health(component, target, signal, timeoutMs),
       artifact: async (target, component) => {
         try {
           if (

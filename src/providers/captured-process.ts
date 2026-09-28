@@ -12,8 +12,18 @@ import { readCaptureRequest } from "./capture-request";
 import { CAPTURE_KILL_SIGNAL, writeCaptureStop } from "./capture-stop";
 import { serviceGraceMs } from "../domain/stop-budget";
 import { createChildSupervisor } from "./child-supervisor";
+import {
+  DEFAULT_LOG_RETENTION,
+  hostLogRetention,
+  LOG_RETENTION_REFRESH_MS,
+} from "../domain/log-retention";
+import { readHostConfig } from "../config/documents";
 import { runCommand } from "./command-runner";
-import { createProcessInspection, platformKill } from "./process-inspection";
+import {
+  createProcessInspection,
+  platformKill,
+  type ProcessInspection,
+} from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
 /** Unchanged evidence is rewritten this often; the reader trusts evidence younger than one second. */
 const OBSERVATION_HEARTBEAT_MS = 250;
@@ -29,6 +39,8 @@ export async function runCapturedProcess(
   requestPath: string,
   dependencies: {
     inspect?: ProcessIdentityReader;
+    /** How the wrapper's own supervisor inspects and signals its application; the platform's when absent. */
+    processInspection?: ProcessInspection;
     /** Ends this process by `signal` once its handlers are removed; the default raises it on the wrapper itself. */
     endBy?: (signal: NodeJS.Signals) => void;
   } = {},
@@ -42,18 +54,31 @@ export async function runCapturedProcess(
 }
 async function runUntilStopped(
   requestPath: string,
-  dependencies: { inspect?: ProcessIdentityReader },
+  dependencies: {
+    inspect?: ProcessIdentityReader;
+    processInspection?: ProcessInspection;
+  },
 ): Promise<{ exitCode: number; signal?: NodeJS.Signals }> {
   const request = await readCaptureRequest(requestPath);
   // The wrapper is the effect owner: it names the platform runner once and shares it with its supervisor.
-  const processInspection = createProcessInspection({
-    run: runCommand,
-    kill: platformKill,
-  });
+  const processInspection =
+    dependencies.processInspection ??
+    createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    });
   const supervisor = createChildSupervisor({
     stateRoot: dirname(requestPath),
     timing: createProcessTiming(),
     processInspection,
+    // The wrapper reads the Host's logs settings as rigd does, so every writer of the Target log rotates it alike.
+    logRetention: request.configRoot
+      ? hostLogRetention({
+          read: () => readHostConfig(request.configRoot!),
+          now: Date.now,
+          refreshMs: LOG_RETENTION_REFRESH_MS,
+        })
+      : async () => DEFAULT_LOG_RETENTION,
   });
   let stopping: Promise<unknown> | undefined;
   let received: NodeJS.Signals | undefined;

@@ -439,3 +439,53 @@ test("list for-push withholds a deployment whose local Branch no longer contains
     ["c1", "b".repeat(40)],
   ]);
 });
+
+test("a push of a Commit whose rig.yaml is an older format prints its deprecation line, even with --quiet", async () => {
+  for (const quiet of [false, true]) {
+    let error = "";
+    const exit = await runRemoteHelper("rig://localhost/example", {
+      repoPath: "/repo",
+      input: input([
+        "capabilities",
+        ...(quiet ? ["option verbosity 0"] : []),
+        "list for-push",
+        "push refs/heads/main:refs/heads/main",
+        "",
+        "",
+      ]),
+      output: {
+        write() {},
+        error(value) {
+          error += value;
+        },
+      },
+      client: {
+        async command(command) {
+          if (command.action === "status")
+            return { project: "example", targets: [] };
+          return {
+            outcome: "deployed",
+            target: "live",
+            deprecation:
+              "/rig/revisions/a/rig.yaml is written in rig.yaml format rig/v1, which is deprecated.",
+          };
+        },
+      },
+      source: {
+        async resolve() {
+          return "a".repeat(40);
+        },
+        async verifyBranch() {},
+        async rewritten() {
+          return false;
+        },
+      },
+      newOperationId: () => "push-op",
+    });
+    expect(exit).toBe(0);
+    const line =
+      "Deprecated: /rig/revisions/a/rig.yaml is written in rig.yaml format rig/v1, which is deprecated.\n";
+    expect(error.endsWith(line)).toBe(true);
+    if (quiet) expect(error).toBe(line);
+  }
+});

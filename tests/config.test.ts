@@ -213,7 +213,7 @@ test("scaffold writes a Service, a Tool, or both, and refuses a Project with nei
       web: {
         run: "serve --host localhost",
         ports: { http: 3210 },
-        ready: "http://127.0.0.1:3210/health",
+        health: { check: "http://127.0.0.1:3210/health" },
       },
     },
     tools: { ctl: { build: "make ctl", bin: "bin/ctl" } },
@@ -270,7 +270,9 @@ test("Project init writes the scaffold as YAML once and leaves an existing docum
   expect(raw.split("\n")[0]).toBe(
     "# yaml-language-server: $schema=https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json",
   );
-  expect(parse(raw)).toEqual(config);
+  // rig init writes the latest format.
+  expect(parse(raw)).toEqual({ format: "rig/v2", ...config });
+  expect(document.format).toBe("rig/v2");
   expect(await readProjectConfig(root)).toEqual(document);
   await expect(
     initializeProjectConfig(
@@ -506,9 +508,12 @@ test.each(["service", "tool", "multi"])(
     );
     const root = await fixture();
     await writeFile(join(root, "rig.yaml"), raw);
-    const { config } = await readProjectConfig(root);
-    // Nothing is defaulted, dropped or rewritten on the way in.
-    expect(config).toEqual(parse(raw));
+    const { config, format } = await readProjectConfig(root);
+    // The examples are written in the latest format, so nothing is defaulted, dropped or rewritten on the way in.
+    const { format: declared, ...written } = parse(raw);
+    expect(declared).toBe("rig/v2");
+    expect(format).toBe("rig/v2");
+    expect(config).toEqual(written);
   },
 );
 
@@ -1030,7 +1035,8 @@ test.each([
   "curl -fsS http://example.com/ping",
 ])("readiness value %s is accepted", (ready) => {
   const config = parseProjectConfig({ name: "app", services: web({ ready }) });
-  expect(config.services!.web).toMatchObject({ ready });
+  // The parsed config has the latest format's shape: a rig/v1 `ready` is its health.check.
+  expect(config.services!.web).toMatchObject({ health: { check: ready } });
 });
 
 test("an unknown supervisor is rejected with the valid choices, at every level that takes one", () => {

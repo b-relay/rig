@@ -45,21 +45,20 @@ import {
   activationJournal,
   intendRunning,
   intendStopped,
-  recordStoppedByHostRestart,
   superviseTarget,
   supervisionScope,
 } from "./supervision";
 import {
   findHostRestart,
-  noteMarkedForHostRestart,
+  recordFailedAfterHostRestart,
   recordHostRestart,
+  recordStoppedAfterHostRestart,
   restartMark,
   saveHostSession,
   startAfterHostRestart,
   type HostSessionFinding,
   type RestartMark,
 } from "./host-restart";
-import type { HostRestart } from "../domain/host-session";
 import type { RuntimeDependencies } from "./contracts";
 import {
   prepareRegistration,
@@ -69,8 +68,21 @@ import {
   registeredDirectoryMissing,
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
+import { configDigest } from "../config/config-digest";
+import { watchConfigFormats, withDeprecation } from "./config-format-notice";
+import { assertLogServices } from "./log-services";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
-import { assertSourceBuildsKnown, withStops } from "./lifecycle";
+import {
+  assertSourceBuildsKnown,
+  withStops,
+  type TargetLifecycle,
+} from "./lifecycle";
+import { restartForHealth } from "./health-restart";
+import type {
+  HealthRestartResult,
+  HealthRestartRequest,
+} from "./health-monitor";
+import { isStopDetached } from "../domain/stop-budget";
 import {
   activeStops,
   killSignal,
@@ -143,6 +155,14 @@ export interface SupervisionPass {
   nextRetryAt?: number;
 }
 export interface RigRuntime extends ProjectStatusReader {
+  /** Whether an Operation holds or waits for `target`, so one of its Services may be starting or stopping. A supervision
+   * pass that only observes the Target does not count; one that is starting a Service again does. */
+  targetBusy(
+    target: Pick<TargetRecord, "projectId" | "kind" | "name">,
+  ): boolean;
+  /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
+   * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
+  restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
@@ -238,8 +258,28 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       observer: stopObserver(entry, deps.now),
     });
   /** Working copies and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
-   * by Target id; each pass tries again. */
-  const unmarked = new Map<string, HostRestart>();
+   * by Target id, with that restart as the first pass identified it; each pass tries again. */
+  const unmarked = new Map<string, RestartMark>();
+  /** Stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
+   * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
+  const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
+  /** Records the failed start after a Host restart that this daemon could not record yet for `target`, if there is one,
+   * under the caller's lease of the Target. Resolves whether none is left unrecorded; a failure is in the diagnostic log. */
+  const recordUnrecorded = async (target: TargetRecord): Promise<boolean> => {
+    const failure = unrecorded.get(target.id);
+    if (!failure) return true;
+    if (
+      !(await recordFailedAfterHostRestart(
+        target,
+        failure.error,
+        failure.mark,
+        deps,
+      ))
+    )
+      return false;
+    unrecorded.delete(target.id);
+    return true;
+  };
   const stopping = (targetId: string) =>
     [...operations.values()].some(
       (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
@@ -256,17 +296,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const command = { ...selection, action: "status" as const };
     const { project } = await selectProject(command, deps, false);
     const state = await deps.store.read();
-    return projectStatus(
+    const formats = watchConfigFormats(deps.documents);
+    const report = await projectStatus(
       project,
       state.targets.filter((target) => target.projectId === project.id),
       selection,
       {
         ...deps,
+        documents: formats.documents,
         inProgress,
         stopping,
         serviceStops: (targetId) => activeStops(operations.values(), targetId),
       },
     );
+    return withDeprecation(report, formats.deprecation());
   };
   /** The Operations running and waiting, and where `operationId` stands when one is named. */
   const queueReport = (operationId?: string): QueueReport => {
@@ -353,10 +396,22 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       },
     };
   };
+  /** Runs one command and adds the deprecation line when a rig.yaml it read is in an older format; the upgrade itself
+   * reports formats on its own. */
   const execute = async (command: RuntimeCommand): Promise<unknown> => {
+    const formats = watchConfigFormats(deps.documents);
+    const reply = await operate(command, formats.documents);
+    return command.action === "config-upgrade"
+      ? reply
+      : withDeprecation(reply, formats.deprecation());
+  };
+  const operate = async (
+    command: RuntimeCommand,
+    documents: RuntimeDependencies["documents"],
+  ): Promise<unknown> => {
     const operationId = command.operationId ?? deps.id();
     if (reads.has(command.action))
-      return run(command, operationId, UNLOCKED, deps);
+      return run(command, operationId, UNLOCKED, { ...deps, documents });
     // Operations now run side by side, so an id must name one of them at a time.
     if (operations.has(operationId))
       throw new RigError(
@@ -407,6 +462,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         try {
           return await run(command, operationId, held, {
             ...deps,
+            documents,
             ports: reservations.ports(operationId),
             lifecycle: lifecycleOf(entry),
           });
@@ -602,6 +658,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         deps,
         [
           "config",
+          "config-upgrade",
           "recipe-diff",
           "deploy",
           "deployment-context",
@@ -645,6 +702,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "config")
         return { project: project.name, ...selection.document };
+      // A config edit: it waits for other edits of the Project's rig.yaml, never for its Targets, and is not Activity.
+      if (command.action === "config-upgrade") {
+        if (!command.dryRun)
+          await admission.admit([configScope(project.id)], {
+            project: project.name,
+          });
+        return {
+          project: project.name,
+          ...(await deps.documents.upgrade(project.repoPath, {
+            dryRun: command.dryRun === true,
+          })),
+        };
+      }
       if (command.action === "recipe-diff")
         return await recipeReport(
           project.name,
@@ -791,6 +861,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           { target: name },
         );
         target = find(targets);
+        // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the Target.
+        if (target && !(await recordUnrecorded(target)))
+          throw new RigError(
+            "STATE_WRITE",
+            `${target.name}'s failed start after the Host restarted could not be recorded, so nothing was done.`,
+            "rigd could not write its state under RIG_ROOT/runtime; rig doctor and the rigd diagnostic log show why. Free disk space or fix the permissions, then retry.",
+            { target: target.name },
+          );
         // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
         if (
           command.action !== "down" &&
@@ -817,6 +895,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         );
       if (command.action === "logs") {
         if (!target) throw missingTarget(command, name);
+        // Checked on the first page only: a follow carries on when a deploy removes a Service it filters by.
+        if (command.after === undefined)
+          assertLogServices(target, command.logFilter);
         return {
           project: project.name,
           target: target.name,
@@ -824,7 +905,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             target,
             command.after,
             command.lines ?? 100,
+            command.logFilter,
           )),
+          ...(command.logFilter ? { filtered: true } : {}),
         } satisfies LogsResult;
       }
       if (command.action === "deploy" || command.action === "git-push") {
@@ -1025,11 +1108,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             command.action === "restart" ? "all" : "stopped",
             deps,
           );
+        // What the file says is compared, so a comment or an upgrade of its format is no drift. A Target planned by a rigd
+        // that recorded no digest is compared by the file's text.
+        const current = configured.document;
         const drift =
           target.kind === "local" &&
           target.configRevision !== undefined &&
-          configured.document !== undefined &&
-          configured.document.revision !== target.configRevision;
+          current !== undefined &&
+          (target.configDigest !== undefined
+            ? configDigest(current.config) !== target.configDigest
+            : current.revision !== target.configRevision);
         if (drift)
           warnings.push(
             `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${target.name} to apply the current rig.yaml.`,
@@ -1040,7 +1128,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             .outcome;
         } catch (error) {
           // The rolled-back Services are recorded as not started; failing to say so leaves their outcome unknown, never retried.
-          await journal.failed(error).catch(() => {});
+          // A start whose clean-up rigd's shutdown detached rolled nothing back: its Services are left as a crash leaves them.
+          if (!isStopDetached(error))
+            await journal.failed(error).catch(() => {});
           throw error;
         }
         intendRunning(target);
@@ -1231,8 +1321,97 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       return replacements;
     }
   };
+  /** A health restart: an Operation on one Target, listed like a command so status shows its stop and the alert monitor
+   * holds back judgement of a Stable Target while it runs. */
+  const restartUnhealthy = async (
+    request: HealthRestartRequest,
+  ): Promise<HealthRestartResult> => {
+    if (draining) return { outcome: "skipped" };
+    const recorded = (await deps.store.read()).targets.find(
+      (target) => target.id === request.targetId,
+    );
+    if (!recorded) return { outcome: "skipped" };
+    const operationId = `health:${deps.id()}`;
+    const entry: Running = {
+      kills: new Map(),
+      targetId: recorded.id,
+      view: {
+        operationId,
+        action: "health-restart",
+        target: recorded.name,
+        phase: "restarting",
+        startedAt: deps.now(),
+      },
+      mutation: {
+        operationId,
+        action: "health-restart",
+        targetId: recorded.id,
+      },
+    };
+    operations.set(operationId, entry);
+    const running = (async () => {
+      const lease = await locks.acquire(operationId, [
+        targetScope(recorded.projectId, recorded),
+      ]);
+      try {
+        if (draining) return { outcome: "skipped" as const };
+        const state = await deps.store.read();
+        const target = state.targets.find((t) => t.id === request.targetId);
+        if (
+          !target ||
+          target.desired !== "running" ||
+          target.recovery ||
+          target.destructionPending
+        )
+          return { outcome: "skipped" as const };
+        // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the
+        // Target, as a supervision pass and an admitted command do; the monitor asks again and judges what is recorded then.
+        if (unrecorded.has(target.id)) {
+          await recordUnrecorded(target);
+          return { outcome: "deferred" as const };
+        }
+        const project = state.projects.find((p) => p.id === target.projectId);
+        if (project) entry.view.project = project.name;
+        return await restartForHealth(
+          target,
+          request,
+          { ...deps, lifecycle: lifecycleOf(entry) },
+          (phase) => {
+            entry.view.phase = phase;
+          },
+        );
+      } catch (error) {
+        await deps
+          .diagnostic({
+            operationId,
+            action: "health-restart",
+            outcome: "failed",
+            target: recorded.name,
+            errorCode: diagnosticErrorCode(error),
+            ...diagnosticCauses(error),
+          })
+          .catch(() => {});
+        return { outcome: "failed" as const, at: Date.parse(deps.now()) };
+      } finally {
+        lease.release();
+        operations.delete(operationId);
+      }
+    })();
+    executing.add(running);
+    void running.finally(() => executing.delete(running)).catch(() => {});
+    return await running;
+  };
   return {
     status,
+    restartUnhealthy,
+    targetBusy: (target) =>
+      locks.busy(targetScope(target.projectId, target), (id) => {
+        const entry = operations.get(id);
+        return (
+          entry?.view.action === "supervise" &&
+          entry.view.phase === initialPhase("supervise")
+        );
+      }),
     mutations: () =>
       [...operations.values()].flatMap((entry) =>
         entry.mutation ? [{ ...entry.mutation }] : [],
@@ -1375,7 +1554,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         : parts.map((part) =>
             draining ? undefined : locks.tryAcquire(part.id, part.scopes),
           );
-      const restart = finding?.restart;
       const mark =
         finding?.restart !== undefined
           ? restartMark({ ...finding, restart: finding.restart })
@@ -1391,7 +1569,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
                 held,
                 action,
                 failed,
-                restart,
                 settled,
                 finding?.settled,
                 mark,
@@ -1464,8 +1641,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     );
   }
   /** One Target's share of a pass, under `lease`, which it releases. The record is read again under the lease, since a read
-   * made before it may predate what the Operation that last held the Target recorded. After a Host `restart` the first pass
-   * found, a Stable Target meant to run is started again as by `rig up`, and the Working copy's or a Preview's stopped
+   * made before it may predate what the Operation that last held the Target recorded. After the Host restart `mark` the
+   * first pass found, a Stable Target meant to run is started again as by `rig up`, and the Working copy's or a Preview's stopped
    * Services are recorded as stopped by the restart, which keeps them stopped until `rig up`. Adds `targetId` to `settled`
    * once that is done, or once nothing about a restart is left to do for the Target. Never rejects; failures are
    * recorded. */
@@ -1474,12 +1651,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     lease: Lease,
     action: "reconcile" | "supervise",
     failed: (error: unknown, target?: string) => Promise<void>,
-    restart?: HostRestart,
     settled?: Set<string>,
     /** Targets an earlier daemon already settled for this same restart: Stable Targets started again (or failed to), and
      * Working copies and Previews whose stopped Services it recorded as stopped by the restart. */
     startedBefore?: ReadonlySet<string>,
-    /** The restart a Stable Target's start is noted in. */
+    /** The Host restart the first pass found, as it is identified in state; a later pass has none. */
     mark?: RestartMark,
   ): Promise<number | undefined> {
     const entry: Running = {
@@ -1519,31 +1695,56 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       entry.view.target = target.name;
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
-      const lifecycle = lifecycleOf(entry);
+      const observing = lifecycleOf(entry);
+      // While it starts a Service again the pass is starting, not observing: the health monitor pauses the Target's checks.
+      const lifecycle: TargetLifecycle = {
+        ...observing,
+        async recover(recovering, service, journal, stops) {
+          entry.view.phase = "starting";
+          try {
+            return await observing.recover(recovering, service, journal, stops);
+          } finally {
+            entry.view.phase = initialPhase(action);
+          }
+        },
+      };
       if (target.desired === "running") {
+        // A Stable Target whose failed start after a Host restart could not be recorded has it recorded by each later pass
+        // of this daemon until that succeeds, and nothing of it is started or supervised until then.
+        if (unrecorded.has(targetId)) {
+          await recordUnrecorded(target);
+          return undefined;
+        }
         if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
-          if (await startAfterHostRestart(target, mark, { ...deps, lifecycle }))
-            settled?.add(targetId);
+          const started = await startAfterHostRestart(target, mark, {
+            ...deps,
+            lifecycle,
+          });
+          if (started.outcome === "settled") settled?.add(targetId);
+          if (started.outcome === "unrecorded")
+            unrecorded.set(targetId, { error: started.error, mark });
           return undefined;
         }
         // A Working copy or Preview whose stopped Services could not all be recorded as stopped by the restart is tried
         // again by each pass of this daemon, and nothing of it is supervised until then. One an earlier daemon already
         // recorded is not recorded again: an explicit start since then has ended the restart's hold on it.
+        // A later pass has no restart of its own, so it records the one the first pass kept, as that pass would have.
         const stoppedBy =
           target.kind === "live" || startedBefore?.has(targetId)
             ? undefined
-            : (restart ?? unmarked.get(targetId));
+            : (mark ?? unmarked.get(targetId));
         if (stoppedBy) {
-          if (!(await recordStoppedByHostRestart(target, stoppedBy, deps))) {
+          if (
+            !(await recordStoppedAfterHostRestart(target, stoppedBy, {
+              ...deps,
+              lifecycle,
+            }))
+          ) {
             unmarked.set(targetId, stoppedBy);
             return undefined;
           }
           unmarked.delete(targetId);
-          if (mark)
-            await noteMarkedForHostRestart(targetId, mark, deps).catch(
-              (error: unknown) => failed(error, target.name),
-            );
         }
         settled?.add(targetId);
         return await superviseTarget(

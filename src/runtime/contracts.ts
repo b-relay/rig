@@ -9,6 +9,7 @@ import type {
   TargetPlan,
 } from "../config/types";
 import type { RuntimeCommand } from "../daemon/protocol";
+import type { ConfigUpgrade } from "../config/documents";
 import type {
   OperationRecord,
   ProjectRecord,
@@ -16,11 +17,13 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { TargetLogEntry } from "../providers/contracts";
+import type { LogFilter } from "../domain/log-filter";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
 import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
+import type { HealthResults } from "./health-monitor";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
@@ -63,6 +66,12 @@ export interface ProjectDocuments {
    * undefined when there is no such file. Fails RECIPE_FILE_PATH for a path that leaves the directory, and
    * PROJECT_FILE_UNREADABLE for one that cannot be read. */
   readProjectFile(directory: string, path: string): Promise<string | undefined>;
+  /** Rewrites the Project's rig.yaml into the latest format in place, keeping comments and layout, or with `dryRun` only
+   * reports what would change. Never changes what the file means. */
+  upgrade(
+    repoPath: string,
+    options: { dryRun: boolean },
+  ): Promise<ConfigUpgrade>;
 }
 export interface DeploymentSources {
   prepare(request: {
@@ -105,10 +114,12 @@ export interface RuntimeFiles {
     occupied: ReadonlyMap<number, { target: string; project: string }>;
     policy: "configured" | "dynamic";
   }): Promise<Record<string, number>>;
+  /** The newest `lines` entries `filter` keeps, or with `after` the next ones past that cursor; see `readTargetLogs`. */
   logs(
     target: TargetRecord,
     after: string | undefined,
     lines: number,
+    filter?: LogFilter,
   ): Promise<{ entries: TargetLogEntry[]; cursor: string }>;
 }
 /** Bounded evidence of a background channel that is failing inside the daemon. */
@@ -177,6 +188,9 @@ export interface RuntimeDependencies {
       evidence?: string;
     },
   ): Promise<void>;
+  /** The health monitor's cached results of ongoing checks, which status reads instead of running them; absent where no
+   * monitor runs. */
+  healthResults?: HealthResults;
 }
 
 /** Borrowed inventory snapshot under the runtime mutation queue. */

@@ -1,3 +1,9 @@
+import {
+  UNDECLARED_FORMAT,
+  serviceFromFormat,
+  serviceIn,
+  type ConfigFormat,
+} from "../config/formats";
 import { RECIPE_FILE_TEXT } from "./generated-files";
 
 /** A file a recipe version writes into the Project, which the Project then owns and commits (a helper script its Service
@@ -7,10 +13,12 @@ export interface RecipeFile {
   readonly path: string;
   readonly content: string;
 }
-/** One released form of a recipe. `service` is the Service exactly as it would be written in rig.yaml under `name`,
- * with every reference to itself spelled with that name. */
+/** One released form of a recipe. `service` is the Service exactly as it would be written under `name` in a rig.yaml of
+ * `format`, with every reference to itself spelled with that name. It is printed in the Project's own format. */
 export interface RecipeVersion {
   readonly version: number;
+  /** The rig.yaml format `service` is written in; rig/v1 when absent, as every version released before formats was. */
+  readonly format?: ConfigFormat;
   service(name: string): Readonly<Record<string, unknown>>;
   /** Files `rig recipe generate` writes into the Project beside the Service; a file's content belongs to this version,
    * so a changed file is a new version. */
@@ -38,6 +46,7 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
     versions: [
       {
         version: 1,
+        format: "rig/v2",
         service: (name) => ({
           run: 'test -s "$PGDATA/PG_VERSION" || initdb -D "$PGDATA" -U postgres --auth=trust || exit $?; exec postgres -D "$PGDATA" -h "$PGHOST" -p "$PGPORT"',
           ports: { pg: "auto" },
@@ -46,7 +55,9 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
             PGPORT: `\${services.${name}.ports.pg}`,
             PGDATA: "${rig.data}/pg",
           },
-          ready: `pg_isready -h \${services.${name}.env.PGHOST} -p \${services.${name}.ports.pg}`,
+          health: {
+            check: `pg_isready -h \${services.${name}.env.PGHOST} -p \${services.${name}.ports.pg}`,
+          },
         }),
       },
     ],
@@ -59,6 +70,7 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
     versions: [
       {
         version: 1,
+        format: "rig/v2",
         notice:
           "convex@1 cannot start under Rig: convex dev --local binds its backend to 0.0.0.0, so the loopback check refuses the Service (LISTENER_NONLOCAL). convex@2 runs the backend on 127.0.0.1.",
         service: (name) => ({
@@ -68,8 +80,10 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
             CONVEX_CLOUD_PORT: `\${services.${name}.ports.cloud}`,
             CONVEX_SITE_PORT: `\${services.${name}.ports.site}`,
           },
-          ready: `http://127.0.0.1:\${services.${name}.ports.cloud}/instance_name`,
-          ready_timeout: "60s",
+          health: {
+            check: `http://127.0.0.1:\${services.${name}.ports.cloud}/instance_name`,
+            start_timeout: "60s",
+          },
         }),
       },
       {
@@ -77,6 +91,7 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
         // scripts/rig-convex.ts starts the backend itself, bound to 127.0.0.1, and runs convex dev against it as a
         // self-hosted deployment. The first start may download the backend, hence the longer readiness budget. bun runs
         // it without loading .env files, so it sees only the environment Rig gives the Service.
+        format: "rig/v2",
         service: (name) => ({
           run: "exec bun --no-env-file scripts/rig-convex.ts",
           ports: { cloud: "auto", site: "auto" },
@@ -85,8 +100,10 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
             CONVEX_SITE_PORT: `\${services.${name}.ports.site}`,
             CONVEX_STATE_DIR: "${rig.data}/backend",
           },
-          ready: `http://127.0.0.1:\${services.${name}.ports.cloud}/instance_name`,
-          ready_timeout: "3m",
+          health: {
+            check: `http://127.0.0.1:\${services.${name}.ports.cloud}/instance_name`,
+            start_timeout: "3m",
+          },
         }),
         files: [
           {
@@ -98,6 +115,19 @@ export const BUNDLED_RECIPES: readonly Recipe[] = [
     ],
   },
 ];
+/** The Service of one recipe version under `name`, spelled the way `format` spells it. */
+export function recipeService(
+  version: RecipeVersion,
+  name: string,
+  format: ConfigFormat,
+): Record<string, unknown> {
+  return serviceIn(
+    format,
+    serviceFromFormat(version.format ?? UNDECLARED_FORMAT, {
+      ...version.service(name),
+    }),
+  );
+}
 /** The newest version of a recipe; every recipe has at least one. */
 export function latest(recipe: Recipe): RecipeVersion {
   return recipe.versions.at(-1)!;

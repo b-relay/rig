@@ -58,6 +58,11 @@ function world(
   let preparing: Promise<void> | undefined;
   /** The next start of this Service fails, as a broken release does. */
   const failing = new Set<string>();
+  /** The next start of this Service never confirms it started: the supervisor stops what it spawned, held like any stop
+   * until the test ends it, then fails the start. */
+  const unconfirmed = new Set<string>();
+  /** The next start of this Service is detached by rigd's shutdown while its supervisor cleans it up. */
+  const detachedStarts = new Set<string>();
   const effects: TargetEffects = {
     async checkpoint(target) {
       return { targetId: target.id, async commit() {}, async rollback() {} };
@@ -101,7 +106,36 @@ function world(
           });
         });
       },
-      async ensureRunning(request) {
+      async ensureRunning(request, control) {
+        const detached = [...detachedStarts].find((name) =>
+          request.key.endsWith(`:${name}`),
+        );
+        if (detached) {
+          detachedStarts.delete(detached);
+          throw stopDetached({ key: request.key });
+        }
+        const silent = [...unconfirmed].find((name) =>
+          request.key.endsWith(`:${name}`),
+        );
+        if (silent) {
+          unconfirmed.delete(silent);
+          const graceMs = request.stopGraceMs!;
+          control?.observer?.stopping(graceMs);
+          const ended = await new Promise<StopResult>((resolve) =>
+            held.push({
+              key: request.key,
+              request: {
+                graceMs,
+                ...(control?.kill ? { kill: control.kill } : {}),
+              },
+              exit: (killed) =>
+                resolve({ outcome: "stopped", ...(killed ? { killed } : {}) }),
+              fail: () => resolve({ outcome: "stopped" }),
+            }),
+          );
+          control?.observer?.stopped(ended);
+          throw new Error("the Service never confirmed it started");
+        }
         const broken = [...failing].find((name) =>
           request.key.endsWith(`:${name}`),
         );
@@ -201,6 +235,9 @@ function world(
       async host() {
         return parseHostConfig({});
       },
+      async upgrade(): Promise<never> {
+        throw new Error("rig config upgrade is not part of these tests");
+      },
     },
     sources: {
       async preflight() {
@@ -282,6 +319,8 @@ function world(
     stops,
     running,
     failing,
+    unconfirmed,
+    detachedStarts,
     stopOf,
     hold: (on = true) => {
       holding = on;
@@ -573,6 +612,63 @@ test("a deploy rollback and the failed start before it each stop within the Serv
       ["web", 120_000],
     ],
   );
+});
+
+test("a start that never confirmed it started is stopped within the Service's stop_timeout, shown stopping on the Operation, and rig down --kill cuts it short", async () => {
+  const w = await registered();
+  w.unconfirmed.add("worker");
+  const up = w.command({ action: "up", target: "local", operationId: "up-1" });
+  const worker = await w.stopOf("worker");
+  expect(worker.request.graceMs).toBe(25 * 60_000);
+  expect(worker.request.kill?.aborted).toBe(false);
+  expect((await w.queue("up-1")).operation).toMatchObject({
+    phase: "stopping",
+    stops: [
+      {
+        service: "worker",
+        target: "local",
+        state: "stopping",
+        killAt: "2026-09-27T04:25:00.000Z",
+      },
+    ],
+  });
+  const kill = w.command({
+    action: "down",
+    target: "local",
+    kill: true,
+    operationId: "down-kill",
+  });
+  for (let i = 0; i < 100 && !worker.request.kill?.aborted; i++)
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  expect(worker.request.kill?.aborted).toBe(true);
+  worker.exit("request");
+  await expect(up).rejects.toThrow("never confirmed it started");
+  await kill;
+  expect(
+    w.state.activity.find(
+      (entry) => entry.action === "up" && entry.outcome === "failed",
+    ),
+  ).toMatchObject({
+    message: expect.stringContaining("worker was killed by --kill (SIGKILL)"),
+  });
+});
+
+test("a rig up whose start rigd's shutdown detached records none of its Services as not started: they are left as a crash leaves them", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "down", target: "local" });
+  w.detachedStarts.add("worker");
+  await expect(
+    w.command({ action: "up", target: "local" }),
+  ).rejects.toMatchObject({ code: "STOP_DETACHED" });
+  // web started and keeps its restart policy; nothing marks it start-failed.
+  const services = w.state.targets[0]!.services ?? {};
+  expect(
+    Object.values(services).filter(
+      (run) => run.outcome?.kind === "start-failed",
+    ),
+  ).toEqual([]);
+  expect(w.running.has(`${w.state.targets[0]!.id}:web`)).toBe(true);
 });
 
 test("a Preview destroy waits for the Preview's stop_timeout before its storage is deleted", async () => {
@@ -932,4 +1028,83 @@ test("a Service whose plan was recorded before stop_timeout existed is stopped w
   expect(convex.request.graceMs).toBe(10_000);
   convex.exit();
   expect(await down).toMatchObject({ outcome: "stopped" });
+});
+
+test("a health restart stops the Service within its stop_timeout under its Target's lock, spends no restart budget, records why, and holds up no other Target", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "deploy", target: "live", branch: "main" });
+  const local = () => w.state.targets.find((t) => t.kind === "local")!;
+  const before = local().services!.web!;
+  w.hold();
+  const restart = w.runtime.restartUnhealthy({
+    targetId: local().id,
+    service: "web",
+    incarnation: before.incarnation!,
+    attempt: 2,
+    failures: 3,
+    output: "HTTP 503",
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    restarts: [Date.parse("2026-09-27T03:50:00.000Z")],
+  });
+  // The normal stop path: web's own stop_timeout, shown as the Target stopping.
+  const stop = await w.stopOf("web");
+  expect(stop.request.graceMs).toBe(2 * 60_000);
+  // Recorded before the stop, so whatever starts web next carries the stretch on.
+  expect(local().services!.web!.healthRestarts?.at).toHaveLength(2);
+  expect(
+    (await w.runtime.status({ project: "fletcher" })).targets.find(
+      (t) => t.kind === "local",
+    )!.state,
+  ).toBe("stopping");
+  // The Working copy is held; the Stable Target is not.
+  expect(w.runtime.targetBusy(local())).toBe(true);
+  expect(
+    w.runtime.targetBusy(w.state.targets.find((t) => t.kind === "live")!),
+  ).toBe(false);
+  expect(await w.command({ action: "up", target: "live" })).toMatchObject({
+    target: "live",
+  });
+  w.hold(false);
+  stop.exit();
+  expect(await restart).toEqual({
+    outcome: "restarted",
+    at: Date.parse("2026-09-27T04:00:00.000Z"),
+  });
+  const after = local().services!.web!;
+  expect(after.incarnation).not.toBe(before.incarnation);
+  expect(after.attempts).toEqual([]);
+  expect(after.healthRestarts).toEqual({
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    at: [
+      Date.parse("2026-09-27T03:50:00.000Z"),
+      Date.parse("2026-09-27T04:00:00.000Z"),
+    ],
+  });
+  expect(w.state.activity.at(-1)).toMatchObject({
+    action: "health-restart",
+    outcome: "started",
+    target: "local",
+    message:
+      "web was restarted because it failed 3 health checks in a row (last output: HTTP 503) (health restart 2).",
+  });
+  expect(w.runtime.targetBusy(local())).toBe(false);
+  // A request that names no process, or another one than the record does, is never acted on.
+  for (const incarnation of [undefined, "some-other-process"])
+    expect(
+      await w.runtime.restartUnhealthy({
+        targetId: local().id,
+        service: "web",
+        ...(incarnation ? { incarnation } : {}),
+        attempt: 3,
+        failures: 3,
+        since: 0,
+        restarts: [],
+      }),
+    ).toEqual({ outcome: "skipped" });
+  // Still only the one stop the health restart made.
+  expect(w.stops.filter((stop) => stop.key.endsWith(":web"))).toHaveLength(1);
+  // An explicit restart ends the stretch.
+  await w.command({ action: "restart", target: "local" });
+  expect(local().services!.web!.healthRestarts).toBeUndefined();
 });

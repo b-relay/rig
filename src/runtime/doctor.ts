@@ -12,9 +12,8 @@ import { observeTargets, OBSERVATION_EXPIRED } from "./status";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
-import { targetNames } from "../config/schema";
 import { withPlanDefaults } from "../config/plan-defaults";
-import { recordedPorts } from "./ports";
+import { replannedPolicy } from "./plan-drift";
 import { downtimeReport } from "./alert-messages";
 import type { Downtime } from "../domain/operator-alerts";
 import { transitionInProgress } from "./project-status";
@@ -203,6 +202,7 @@ export async function doctor(
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
+    deps.healthResults,
   );
   for (const report of reports)
     for (const component of report.components)
@@ -373,20 +373,7 @@ async function configCheck(
     (service) => !recorded.has(service),
   );
   try {
-    const current = deps.documents.resolve({
-      config,
-      target: target.kind,
-      workspacePath: target.plan.workspacePath,
-      dataRoot: target.plan.dataRoot,
-      // A renamed Working copy or Stable Target is drift until it is planned again.
-      deploymentName:
-        target.kind === "preview"
-          ? target.name
-          : targetNames(config)[target.kind === "local" ? "working" : "stable"],
-      branch: target.branch,
-      commit: target.commit,
-      assignedPorts: recordedPorts(target.plan.components),
-    });
+    const current = replannedPolicy(target, config, deps.documents.resolve);
     // A plan recorded before the planner wrote a field is compared as holding that field's default, so an upgrade alone is no drift.
     return isDeepStrictEqual(current, withPlanDefaults(target.plan))
       ? {

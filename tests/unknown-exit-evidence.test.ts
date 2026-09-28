@@ -78,7 +78,16 @@ describe("launchd's record of a job, read from real launchctl print output", () 
 
 /** An application that takes a moment to stop after SIGTERM, as a server draining its connections does: the wrapper finds it
  * still running when it stops it, so the application's own exit record is removed as a requested stop. */
-const SLOW_TO_STOP = `trap 'sleep 0.3; exit 0' TERM; while :; do sleep 0.05; done`;
+const SLOW_TO_STOP = `trap 'sleep 0.3; exit 0' TERM; : > trapping; while :; do sleep 0.05; done`;
+
+/** Waits until the SLOW_TO_STOP application running in `root` has set its trap: a SIGTERM before then ends it at once. */
+async function trapping(root: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (await Bun.file(join(root, "trapping")).exists()) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("the application never set its SIGTERM trap");
+}
 
 /** The application pid a capture wrapper last published for its request at `requestPath`. */
 async function applicationPid(requestPath: string): Promise<number> {
@@ -93,12 +102,33 @@ async function applicationPid(requestPath: string): Promise<number> {
 }
 const digest = (key: string) => createHash("sha256").update(key).digest("hex");
 
-/** The real capture wrapper as a script the supervisors can run. */
-async function wrapperScript(root: string): Promise<string> {
+/** The real capture wrapper as a script the supervisors can run. While the file `armed` exists, the wrapper is killed by
+ * SIGKILL at its first identity read of another process, the moment it has spawned its application and not yet leased it;
+ * it removes the file first, so only one start is hit, and writes the pid it was asked about to `armed.pid`. */
+async function wrapperScript(root: string, armed?: string): Promise<string> {
   const path = join(root, "capture.ts");
+  const module = (name: string) =>
+    JSON.stringify(resolve("src/providers", name));
   await writeFile(
     path,
-    `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))}; process.exitCode=await runCapturedProcess(process.argv[2]!);`,
+    armed
+      ? `import {runCapturedProcess} from ${module("captured-process.ts")};
+import {createProcessInspection, platformKill} from ${module("process-inspection.ts")};
+import {runCommand} from ${module("command-runner.ts")};
+import {existsSync, rmSync, writeFileSync} from "node:fs";
+const platform = createProcessInspection({ run: runCommand, kill: platformKill });
+const armed = ${JSON.stringify(armed)};
+process.exitCode = await runCapturedProcess(process.argv[2]!, { processInspection: { ...platform, identity: async (pid) => {
+  if (pid !== process.pid && existsSync(armed)) {
+    rmSync(armed);
+    // Read while the gated process is known to wait at its gate, so the test can end it without ever signalling a reused pid.
+    writeFileSync(armed + ".pid", JSON.stringify({ pid, identity: await platform.identity(pid) }));
+    process.kill(process.pid, "SIGKILL");
+    await new Promise(() => {});
+  }
+  return platform.identity(pid);
+} } });`
+      : `import {runCapturedProcess} from ${module("captured-process.ts")}; process.exitCode=await runCapturedProcess(process.argv[2]!);`,
   );
   return path;
 }
@@ -138,24 +168,46 @@ function alive(pid: number): boolean {
 }
 
 const roots: string[] = [];
-const pids: number[] = [];
+const identityOf = createProcessIdentityReader(runCommand);
+/** Processes a test started that may still run. Each is recorded with its birth identity as it is pushed, and cleanup
+ * signals it only while that identity still matches: a pid seen gone may belong to another process by then. */
+const tracked: Promise<{ pid: number; identity: string } | undefined>[] = [];
+const pids = {
+  /** Records `pid` with the birth identity read now; for a process the test knows is running. */
+  push(pid: number): void {
+    tracked.push(
+      identityOf(pid).then(
+        (identity) => (identity ? { pid, identity } : undefined),
+        () => undefined,
+      ),
+    );
+  },
+  /** Records `pid` with a birth identity read while it was known to run. */
+  known(pid: number, identity: string | undefined): void {
+    if (identity) tracked.push(Promise.resolve({ pid, identity }));
+  },
+};
 afterEach(async () => {
-  for (const pid of pids.splice(0))
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
+  for (const entry of await Promise.all(tracked.splice(0)))
+    if (entry && (await identityOf(entry.pid)) === entry.identity)
+      try {
+        process.kill(entry.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
 
 /** The launchd supervisor over the real capture wrapper; only launchctl is scripted, and it reports the wrapper's real end
  * in the format real launchd prints (see the fixtures). */
-async function launchdWorld() {
+async function launchdWorld(options: { armed?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "rig-unknown-exit-launchd-"));
   roots.push(root);
-  const wrapper = await wrapperScript(root);
+  const wrapper = await wrapperScript(
+    root,
+    options.armed ? join(root, "armed") : undefined,
+  );
   const template = await fixture("never-exited.txt");
   let job: ReturnType<typeof Bun.spawn> | undefined;
   const run: CommandRunner = async ({ command }) => {
@@ -231,10 +283,13 @@ async function launchdWorld() {
 }
 
 /** The rigd supervisor over the real capture wrapper, holding the wrapper as its child. */
-async function rigdWorld() {
+async function rigdWorld(options: { armed?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "rig-unknown-exit-rigd-"));
   roots.push(root);
-  const wrapper = await wrapperScript(root);
+  const wrapper = await wrapperScript(
+    root,
+    options.armed ? join(root, "armed") : undefined,
+  );
   const supervisors: Supervisor[] = [];
   let wrapperPid = 0;
   const supervisor = () => {
@@ -290,7 +345,48 @@ for (const [name, witness] of [
   ["rigd", "rigd"],
 ] as const)
   describe(`${name} supervisor: a capture wrapper killed together with its application`, () => {
-    const world = () => (name === "launchd" ? launchdWorld() : rigdWorld());
+    const world = (options: { armed?: boolean } = {}) =>
+      name === "launchd" ? launchdWorld(options) : rigdWorld(options);
+
+    test("a wrapper killed between spawning its application and leasing it leaves no application behind, and the retry starts exactly one", async () => {
+      const w = await world({ armed: true });
+      const armed = join(w.root, "armed");
+      await writeFile(armed, "");
+      const supervisor = w.supervisor();
+      const starts = join(w.root, "starts");
+      try {
+        const req = {
+          ...request(w.root, "start-1"),
+          command: ["/bin/sh", "-c", `echo $$ >> ${starts}; ${SLOW_TO_STOP}`],
+        };
+        // The wrapper never reports its start: the start fails once its wait is over.
+        await expect(supervisor.ensureRunning(req)).rejects.toMatchObject({
+          code: "PROCESS_START_TIMEOUT",
+        });
+        const gated: { pid: number; identity?: string } = JSON.parse(
+          await readFile(`${armed}.pid`, "utf8"),
+        );
+        const spawned = gated.pid;
+        pids.known(spawned, gated.identity);
+        // What the wrapper spawned was never released to become the application, and ended with its wrapper.
+        for (let i = 0; i < 100 && alive(spawned); i++) await Bun.sleep(10);
+        expect(alive(spawned)).toBe(false);
+        expect(await readFile(starts, "utf8").catch(() => "")).toBe("");
+        // So the retry is the one and only application.
+        await supervisor.ensureRunning({ ...req, incarnation: "start-2" });
+        const application = await w.applicationPid(req.key);
+        pids.push(application);
+        expect((await readFile(starts, "utf8")).trim().split("\n")).toEqual([
+          String(application),
+        ]);
+        expect(await supervisor.stop(req.key, { graceMs: 1500 })).toEqual({
+          outcome: "stopped",
+        });
+        expect(alive(application)).toBe(false);
+      } finally {
+        if ("cleanup" in w) await w.cleanup();
+      }
+    }, 20_000);
 
     test(`an external SIGTERM to the wrapper and its application leaves no application record, and ${witness}'s record of the wrapper names the signal and the start`, async () => {
       const w = await world();
@@ -300,6 +396,7 @@ for (const [name, witness] of [
         await supervisor.ensureRunning(request(w.root, "start-1"));
         const application = await w.applicationPid(key);
         pids.push(application);
+        await trapping(w.root);
         // One SIGTERM reaches both process groups at once, as when every process of the user is ended. (The scripted
         // launchd runs its wrapper inside this test's own group, which only the wrapper itself may be signalled in.)
         process.kill(

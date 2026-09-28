@@ -133,9 +133,7 @@ test("a source entrypoint without a runnable bun fails as BUN_NOT_FOUND before b
   const directory = join(root, "directory-bun");
   await mkdir(directory);
   await expect(
-    createArtifactInstaller({ run, bunExecutable: directory }).install(
-      request,
-    ),
+    createArtifactInstaller({ run, bunExecutable: directory }).install(request),
   ).rejects.toMatchObject({
     code: "BUN_NOT_FOUND",
     message: expect.stringContaining(directory),

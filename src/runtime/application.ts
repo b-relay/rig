@@ -1074,18 +1074,26 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         ...extra,
       };
     }
-    /** Stops `stopped` as `rig down` and `rig restart` do. A stop that fails part-way still saves which Services it had to
-     * SIGKILL, so status says so while they stay stopped; a stop that succeeds leaves that to its caller. */
+    /** Stops `stopped` as `rig down` and `rig restart` do, and saves which Services it had to SIGKILL on the saved record as
+     * soon as the stop is over, whether it succeeded or failed part-way, so status says so while they stay stopped: after
+     * a down, or a restart that fails before it starts them again. The next start clears it. */
     async function stopKeepingKills(stopped: TargetRecord) {
+      const view = operations.get(operationId)!.view;
+      const keep = () =>
+        killedMessage(view) === undefined
+          ? Promise.resolve()
+          : deps.store
+              .update((state) => {
+                const saved = state.targets.find((t) => t.id === stopped.id);
+                if (saved) recordStopKills(saved, view);
+              })
+              .catch(() => {});
       try {
-        return await stopRecordedTarget(stopped, deps.lifecycle);
+        const result = await stopRecordedTarget(stopped, deps.lifecycle);
+        await keep();
+        return result;
       } catch (error) {
-        await deps.store
-          .update((state) => {
-            const saved = state.targets.find((t) => t.id === stopped.id);
-            if (saved) recordStopKills(saved, operations.get(operationId)!.view);
-          })
-          .catch(() => {});
+        await keep();
         throw error;
       }
     }

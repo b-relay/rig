@@ -424,6 +424,36 @@ test("a rig down or rig restart that fails part-way still records the SIGKILL of
   }
 });
 
+test("a rig restart that stopped a Service with SIGKILL and then failed before starting it again still says so in status", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "local" });
+  w.hold();
+  const release = w.holdPreparation();
+  w.failing.add("web");
+  const restart = w.command({
+    action: "restart",
+    target: "local",
+    operationId: "restart-3",
+  });
+  const worker = await w.stopOf("worker");
+  w.advance(25 * 60_000);
+  worker.exit("timeout");
+  (await w.stopOf("web")).exit();
+  release();
+  await expect(restart).rejects.toBeDefined();
+  const after = await w.runtime.status({
+    project: "fletcher",
+    target: "local",
+  });
+  expect(
+    after.targets[0]!.components.find((c) => c.name === "worker"),
+  ).toMatchObject({
+    state: "stopped",
+    reason:
+      "Stopped after timeout (SIGKILL): it did not exit within its stop_timeout.",
+  });
+});
+
 test("rig restart waits for the stop_timeout before it starts the Services again", async () => {
   const w = await registered();
   await w.command({ action: "up", target: "local" });

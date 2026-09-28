@@ -671,10 +671,6 @@ test("a first pass that could not act on the restart for every Target leaves it 
   f.host.hold = undefined;
   f.reopen();
   await f.reconcile();
-  console.error(
-    JSON.stringify((await f.store.read()).activity.slice(before), null, 1),
-  );
-  console.error(JSON.stringify(await f.status("live"), null, 1));
   expect(await f.running("live")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
@@ -1189,10 +1185,6 @@ test("a pending restart finished by a daemon that could not read the login keeps
   f.restartHost({ ...REBOOTED, login: "100019" });
   f.reopen();
   await f.reconcile();
-  console.error(
-    JSON.stringify((await f.store.read()).activity.slice(before), null, 1),
-  );
-  console.error(JSON.stringify(await f.status("live"), null, 1));
   expect(await f.running("live")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",

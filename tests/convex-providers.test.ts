@@ -260,6 +260,7 @@ test("releases: a download that breaks while its body is read is a tagged downlo
   ).toEqual([]);
 });
 
+// It starts a real bun, which takes seconds when the whole suite runs in parallel: hence its own timeout.
 test("the rigd launcher runs the installed rigd with its arguments, quoted, and from source keeps the workspace's .env files out", async () => {
   expect(rigdLauncher(["/Applications/Rig's Tools/rigd"])).toContain(
     `exec '/Applications/Rig'\\''s Tools/rigd' "$@"`,
@@ -293,7 +294,7 @@ test("the rigd launcher runs the installed rigd with its arguments, quoted, and 
     "exec '/usr/local/bin/rigd' \"$@\"",
   );
   expect(await readdir(join(root, "rig root", "daemon"))).toEqual(["rigd"]);
-});
+}, 30_000);
 
 test("a launcher that cannot be written is a tagged error naming the directory", async () => {
   const root = await temporary();

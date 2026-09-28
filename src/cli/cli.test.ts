@@ -1,6 +1,7 @@
 import type { ProjectStatusReport } from "../domain/project-status";
 import { expect, test } from "bun:test";
 import { runRigCli } from "./rig";
+import { formatClock } from "./stop-display";
 import { RigError } from "../domain/errors";
 
 test("bare help exits successfully without contacting the daemon", async () => {
@@ -927,10 +928,11 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
   await new Promise((resolve) => setTimeout(resolve, 20));
   // Polling goes on while the command runs, and stops once rigd has nothing to say about it.
   expect(asked).toEqual(["up", "queue", "queue", "queue", "queue", "queue"]);
-  // One plain appended line per change of what it waits for; no cursor movement.
+  // One plain appended line per change of what it waits for, with its start in local time; no cursor movement.
+  const startedAt = formatClock(new Date("2026-09-14T10:00:00.000Z"), true);
   expect(text).toBe(
-    "Waiting: beta live is stopping (operation slow-down, started 2026-09-14T10:00:00.000Z); 1 more ahead of this command.\n" +
-      "Waiting: beta live is starting (operation next-up, started 2026-09-14T10:00:00.000Z).\n",
+    `Waiting: beta live is stopping (operation slow-down, started ${startedAt}); 1 more ahead of this command\n` +
+      `Waiting: beta live is starting (operation next-up, started ${startedAt})\n`,
   );
   finish({
     project: "beta",

@@ -19,9 +19,25 @@ import { RigError, failureReason } from "../domain/errors";
 import type {
   ManagedProcess,
   ProcessObservation,
+  StopKill,
+  StopRequest,
+  StopResult,
   Supervisor,
   TargetLogEntry,
 } from "./contracts";
+import {
+  CAPTURE_KILL_SIGNAL,
+  readCaptureStop,
+  removeCaptureStop,
+} from "./capture-stop";
+import { readCaptureRequest } from "./capture-request";
+import {
+  PLATFORM_STOP_TIMINGS,
+  serviceGraceMs,
+  stopBudget,
+  stopDetached,
+  type StopTimings,
+} from "../domain/stop-budget";
 import {
   exitEvidence,
   readExitRecord,
@@ -38,15 +54,8 @@ import {
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
 import { appendTargetLog } from "./target-log";
-/** SIGTERM grace before SIGKILL when no stopTimeoutMs is configured. */
-const DEFAULT_STOP_TIMEOUT_MS = 1500;
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
-/** How long a killed process group may take to disappear when no killWaitMs is configured. */
-const DEFAULT_KILL_WAIT_MS = 1500;
-/** Worst-case shutdown of a supervisor with default timing, as the launchd capture wrapper runs it. */
-export const DEFAULT_SHUTDOWN_BUDGET_MS =
-  DEFAULT_STOP_TIMEOUT_MS + DEFAULT_KILL_WAIT_MS;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
 function recordLine(logRoot: string, entry: TargetLogEntry): Promise<void> {
   return appendTargetLog(logRoot, JSON.stringify(entry) + "\n");
@@ -58,6 +67,8 @@ interface OwnedProcess {
   identity?: string;
   child?: ChildProcess;
   incarnation?: string;
+  /** The grace its start asked for, which `shutdown` gives it; absent for a process recovered from its lease. */
+  graceMs?: number;
   /** Settles once the child's exit is on disk, or could not be put there. */
   exitRecorded?: Promise<void>;
   drains: Promise<void>[];
@@ -67,10 +78,8 @@ interface OwnedProcess {
 }
 export interface ChildSupervisorOptions {
   readonly stateRoot: string;
-  /** SIGTERM grace before SIGKILL; 1500 ms, or 4000 ms under a capture wrapper. */
-  readonly stopTimeoutMs?: number;
-  /** How long a killed group may take to disappear before stop fails as STOP_TIMEOUT; 1500 ms. */
-  readonly killWaitMs?: number;
+  /** The kill wait and wrapper headroom every stop budget adds to its grace; `PLATFORM_STOP_TIMINGS` when absent. */
+  readonly stopTimings?: StopTimings;
   /** Clock and timers; `createProcessTiming()` on the platform, scripted in tests. */
   readonly timing: ProcessTiming;
   /** Process identity, group presence, and signals; the owner passes the platform's or a scripted one. */
@@ -84,6 +93,8 @@ export function createChildSupervisor(
   options: ChildSupervisorOptions,
 ): Supervisor {
   const processes = new Map<string, OwnedProcess>();
+  /** Aborted by `detach`: the stops this supervisor makes on its own stop waiting, as the runtime's do on shutdown. */
+  const detaching = new AbortController();
   const operations = new Map<string, Promise<unknown>>();
   const timing = options.timing;
   const now = timing.now;
@@ -235,9 +246,80 @@ export function createChildSupervisor(
       };
     }
   }
-  async function stop(
+  /** SIGTERM to the owned group, then SIGKILL once its wait is over, then the kill wait. The wait is the grace for a plain
+   * process, and for a capture wrapper the wrapper's whole budget, since the wrapper holds its application's grace itself:
+   * it is never killed before that grace and the application's kill wait can finish. A kill cuts the wait short: a plain
+   * process is killed after the kill wait, a wrapper that understands it is told to kill its application now. Returns
+   * how the group ended; fails STOP_DETACHED as soon as `detach` aborts, leaving the group owned and stopping. */
+  async function signalUntilGone(
     key: string,
-  ): Promise<{ outcome: "stopped" | "unchanged" }> {
+    pid: number,
+    request: StopRequest,
+  ): Promise<StopKill | undefined> {
+    if (request.detach?.aborted) throw stopDetached({ key });
+    // A wrapper holds the grace its start was given, which may be longer than the one asked for now (a plan changed in
+    // between): it is never cut off before that grace can finish.
+    const captured = options.captureCommand
+      ? await readCaptureRequest(capturePath(key)).catch(() => undefined)
+      : undefined;
+    const budget = stopBudget(
+      Math.max(request.graceMs, captured?.stopGraceMs ?? 0),
+      options.stopTimings ?? PLATFORM_STOP_TIMINGS,
+    );
+    const started = now().getTime();
+    const graceEnd =
+      started + (options.captureCommand ? budget.wrapperMs : budget.graceMs);
+    const afterKill = options.captureCommand
+      ? budget.killedWrapperMs
+      : budget.killWaitMs;
+    let killAskedAt: number | undefined;
+    const deadline = () =>
+      killAskedAt === undefined
+        ? graceEnd
+        : Math.min(graceEnd, killAskedAt + afterKill);
+    await inspection.signalGroup(pid, "SIGTERM");
+    while (
+      (await inspection.groupExists(pid)) &&
+      now().getTime() < deadline()
+    ) {
+      if (request.detach?.aborted) throw stopDetached({ key });
+      // A wrapper written by an older rigd cannot be told to kill; it is left to its own short grace instead.
+      if (
+        request.kill?.aborted &&
+        killAskedAt === undefined &&
+        (!options.captureCommand || captured?.stopGraceMs !== undefined)
+      ) {
+        killAskedAt = now().getTime();
+        // The wrapper alone: its group also holds the inspection helpers it runs.
+        if (options.captureCommand)
+          await inspection.signalProcess(pid, CAPTURE_KILL_SIGNAL);
+      }
+      await timing.wait(STOP_POLL_MS);
+    }
+    let killed: StopKill | undefined;
+    if (await inspection.groupExists(pid)) {
+      await inspection.signalGroup(pid, "SIGKILL");
+      killed =
+        killAskedAt !== undefined && killAskedAt + afterKill <= graceEnd
+          ? "request"
+          : "timeout";
+    }
+    const killDeadline = now().getTime() + budget.killWaitMs;
+    while (
+      (await inspection.groupExists(pid)) &&
+      now().getTime() < killDeadline
+    )
+      await timing.wait(STOP_POLL_MS);
+    if (await inspection.groupExists(pid))
+      throw new RigError(
+        "STOP_TIMEOUT",
+        "The process group did not stop.",
+        "Inspect the Target process before retrying.",
+        { key },
+      );
+    return killed;
+  }
+  async function stop(key: string, request: StopRequest): Promise<StopResult> {
     const owned = await recover(key);
     if (!owned) return { outcome: "unchanged" };
     // An application that outlived its wrapper is not this stop's to end: the stop releases only what it owns.
@@ -265,43 +347,25 @@ export function createChildSupervisor(
         : currentIdentity === owned.identity ||
           (currentIdentity === undefined &&
             (await inspection.groupExists(owned.pid))));
-    if (verified) {
-      await inspection.signalGroup(owned.pid, "SIGTERM");
-      const deadline =
-        now().getTime() +
-        (options.stopTimeoutMs ??
-          (options.captureCommand ? 4000 : DEFAULT_STOP_TIMEOUT_MS));
-      while (
-        (await inspection.groupExists(owned.pid)) &&
-        now().getTime() < deadline
-      )
-        await timing.wait(STOP_POLL_MS);
-      if (await inspection.groupExists(owned.pid))
-        await inspection.signalGroup(owned.pid, "SIGKILL");
-      const killDeadline =
-        now().getTime() + (options.killWaitMs ?? DEFAULT_KILL_WAIT_MS);
-      while (
-        (await inspection.groupExists(owned.pid)) &&
-        now().getTime() < killDeadline
-      )
-        await timing.wait(STOP_POLL_MS);
-      if (await inspection.groupExists(owned.pid))
-        throw new RigError(
-          "STOP_TIMEOUT",
-          "The process group did not stop.",
-          "Inspect the Target process before retrying.",
-          { key },
-        );
-    }
+    let killed = verified
+      ? await signalUntilGone(key, owned.pid, request)
+      : undefined;
     await Promise.all(owned.drains);
     await owned.writes;
     await owned.exitRecorded;
     await rm(leasePath(key), { force: true });
-    if (options.captureCommand) await rm(capturePath(key), { force: true });
+    if (options.captureCommand) {
+      // A wrapper that had to kill its application said so before it ended.
+      killed ??= await readCaptureStop(capturePath(key));
+      await removeCaptureStop(capturePath(key));
+      await rm(capturePath(key), { force: true });
+    }
     // Ending a running process was a request, not an exit to explain; an exit that came first stays on record,
     // which is how the capture wrapper's own cleanup leaves its application's exit readable.
     if (before.state === "running") await removeExitRecords(key);
-    return { outcome: before.state === "running" ? "stopped" : "unchanged" };
+    return before.state === "running"
+      ? { outcome: "stopped", ...(killed ? { killed } : {}) }
+      : { outcome: "unchanged" };
   }
   /** Waits for in-flight operations so ownership can be handed over or ended. */
   async function quiesce(): Promise<void> {
@@ -322,7 +386,11 @@ export function createChildSupervisor(
         "Resolve process ownership before starting it.",
         { key: request.key },
       );
-    if (processes.has(request.key)) await stop(request.key);
+    if (processes.has(request.key))
+      await stop(request.key, {
+        graceMs: graceOf(request),
+        detach: detaching.signal,
+      });
     if (!request.command.length)
       throw new RigError(
         "COMMAND_EMPTY",
@@ -370,6 +438,7 @@ export function createChildSupervisor(
       pid: 0,
       child,
       incarnation: request.incarnation,
+      graceMs: graceOf(request),
       drains: [],
       writes: Promise.resolve(),
     };
@@ -441,7 +510,10 @@ export function createChildSupervisor(
           wait: (ms) => timing.wait(ms),
         });
     } catch (error) {
-      await stop(request.key);
+      await stop(request.key, {
+        graceMs: graceOf(request),
+        detach: detaching.signal,
+      });
       throw error;
     }
     return { outcome: "started", pid: child.pid };
@@ -450,12 +522,17 @@ export function createChildSupervisor(
     ensureRunning: (request) =>
       serialized(request.key, () => ensureRunning(request)),
     observe,
-    stop: (key) => serialized(key, () => stop(key)),
+    stop: (key, request) => serialized(key, () => stop(key, request)),
     async shutdown() {
       await quiesce();
-      await Promise.all([...processes.keys()].map(stop));
+      await Promise.all(
+        [...processes].map(([key, owned]) =>
+          stop(key, { graceMs: owned.graceMs ?? serviceGraceMs(undefined) }),
+        ),
+      );
     },
     async detach() {
+      detaching.abort();
       await quiesce();
       for (const owned of processes.values()) {
         owned.child?.removeAllListeners("exit");
@@ -464,6 +541,10 @@ export function createChildSupervisor(
       processes.clear();
     },
   };
+}
+/** The grace a start asked for, or the default for a request that names none. */
+function graceOf(request: ManagedProcess): number {
+  return request.stopGraceMs ?? serviceGraceMs(undefined);
 }
 function captureOutput(
   owned: OwnedProcess,

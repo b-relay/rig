@@ -71,6 +71,9 @@ export const commandSchema = z
     productionBranch: z.string().optional(),
     force: z.boolean().optional(),
     noUp: z.boolean().optional(),
+    /** Skip each Service's stop_timeout: SIGTERM, then SIGKILL after the kill wait; a stop already running on the Target is
+     * cut short too. */
+    kill: z.boolean().optional(),
     lines: z.number().int().min(1).max(10000).optional(),
     /** An Operation id (or unambiguous prefix) that activity narrows to; the id a failed command prints. */
     operation: z.string().min(1).optional(),
@@ -143,6 +146,19 @@ export const activityResultSchema = z
     operation: z.string().optional(),
   })
   .passthrough();
+/** One Service a running Operation asked to stop. */
+export const serviceStopSchema = z
+  .object({
+    service: z.string(),
+    target: z.string(),
+    state: z.enum(["stopping", "stopped", "failed"]),
+    since: z.string(),
+    killAt: z.string(),
+    endedAt: z.string().optional(),
+    killed: z.enum(["timeout", "request"]).optional(),
+  })
+  .passthrough();
+export type ServiceStop = z.infer<typeof serviceStopSchema>;
 const operationViewSchema = z
   .object({
     operationId: z.string(),
@@ -151,6 +167,7 @@ const operationViewSchema = z
     target: z.string().optional(),
     phase: z.string(),
     startedAt: z.string(),
+    stops: z.array(serviceStopSchema).optional(),
   })
   .passthrough();
 /** The part of the `queue` read a waiting command renders: where its own Operation stands. */
@@ -159,7 +176,13 @@ export const queueResultSchema = z
     operation: z
       .discriminatedUnion("state", [
         z
-          .object({ state: z.literal("running"), phase: z.string() })
+          .object({
+            state: z.literal("running"),
+            phase: z.string(),
+            project: z.string().optional(),
+            target: z.string().optional(),
+            stops: z.array(serviceStopSchema).optional(),
+          })
           .passthrough(),
         z
           .object({

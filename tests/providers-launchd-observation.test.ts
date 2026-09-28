@@ -160,7 +160,7 @@ test("launchd reports the running application, then its recorded exit and the st
       incarnation: "start-1",
     });
   } finally {
-    await supervisor.stop(request.key);
+    await supervisor.stop(request.key, { graceMs: 1500 });
     await rm(root, { recursive: true, force: true });
   }
 }, 15000);

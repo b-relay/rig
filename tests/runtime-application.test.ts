@@ -1989,7 +1989,7 @@ test("one runtime Status report reaches localhost human output and the Target pi
       expect(report.targets.find((t) => t.name === "live")?.state).toBe(
         "configured",
       );
-      const text = renderStatus(report);
+      const text = renderStatus(report, new Date());
       const prepared = await prepareInteractiveRequest(
         { action: "down", project: "demo" },
         {

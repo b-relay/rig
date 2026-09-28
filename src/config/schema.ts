@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ConfigError } from "./errors";
 import { referenceResolver } from "./references";
+import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 const text = z.string().min(1);
 const name = text
   .regex(
@@ -113,6 +114,15 @@ const duration = text.refine((value) => {
   const seconds = durationSeconds(value);
   return seconds >= 1 && seconds <= 86400;
 }, "must be a positive duration of at most one day, such as 30s, 10m or 1h");
+/** A Service's stop grace: at least one second, at most one hour. */
+const stopTimeout = text
+  .refine((value) => {
+    const seconds = durationSeconds(value);
+    return seconds >= 1 && seconds <= MAX_STOP_TIMEOUT_SECONDS;
+  }, "must be a duration from 1s to 1h, such as 10s, 2m or 1h")
+  .describe(
+    "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it.",
+  );
 const supervisor = z
   .enum(["rigd", "launchd"])
   .describe(
@@ -209,6 +219,7 @@ const serviceFields = {
   ready_timeout: duration
     .optional()
     .describe("Startup readiness budget such as 30s (the default)."),
+  stop_timeout: stopTimeout.optional(),
   depends_on: z
     .array(entryName)
     .optional()

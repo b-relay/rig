@@ -1,5 +1,6 @@
 import { recordActivity } from "../domain/activity";
 import { diagnosticErrorCode, recoveredByDownFirst } from "../domain/errors";
+import { isStopDetached } from "../domain/stop-budget";
 import {
   hostRestartBetween,
   hostRestartText,
@@ -221,8 +222,9 @@ export async function saveHostSession(
  * dependency order, whatever its restart policy, with full automatic-restart budgets. A Service still running is adopted.
  * Records one Activity entry for the Target. A start that fails leaves every Service not running recorded as not started
  * (never retried automatically) and the Target meant to run, which status reports as failed until `rig up`; the failure is
- * recorded, never raised. Returns whether the Target is settled: false when a Service could not be recorded as not
- * started, so the restart is acted on again. */
+ * recorded, never raised. A start whose clean-up stop rigd's shutdown detached records nothing, as after a crash: the
+ * restart stays pending for the Target, and the next daemon starts it again. Returns whether the Target is settled: false
+ * when a Service could not be recorded as not started, or the start was detached, so the restart is acted on again. */
 export async function startAfterHostRestart(
   target: TargetRecord,
   mark: RestartMark,
@@ -247,6 +249,7 @@ export async function startAfterHostRestart(
   try {
     outcome = (await deps.lifecycle.up(target, undefined, journal)).outcome;
   } catch (error) {
+    if (isStopDetached(error)) return false;
     await journal.failed(error).catch(() => {});
     const settled = await recordFailedStart(target, error, deps);
     const errorCode = diagnosticErrorCode(error);

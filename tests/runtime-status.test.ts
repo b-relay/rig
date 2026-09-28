@@ -540,9 +540,9 @@ test("a running component keeps the reason its provider attached, and the render
       reason: "Target output is not being recorded in /logs/live.",
     }),
   ]);
-  expect(renderStatus({ project: "demo", targets: result })).toContain(
-    "    Target output is not being recorded in /logs/live.",
-  );
+  expect(
+    renderStatus({ project: "demo", targets: result }, new Date()),
+  ).toContain("    Target output is not being recorded in /logs/live.");
 });
 
 test("the Target aggregate counts every Component: missing storage beside a healthy process is degraded, and a running process that fails its check is unhealthy, not failed", async () => {

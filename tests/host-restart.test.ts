@@ -15,6 +15,7 @@ import { UNKNOWN_EXIT_RESTART_BACKOFF_MS } from "../src/runtime/supervision";
 import { evaluateOperatorAlerts } from "../src/runtime/alert-monitor";
 import { ALERT_GRACE_MS } from "../src/runtime/alert-policy";
 import type { OperatorAlert } from "../src/domain/operator-alerts";
+import { stopDetached } from "../src/domain/stop-budget";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { HostSession } from "../src/domain/host-session";
 import type {
@@ -55,6 +56,8 @@ async function fixture() {
   const refusal: { start?: (key: string) => boolean } = {};
   /** Starts that stay in progress until the promise it returns for their key settles. */
   const delay: { start?: (key: string) => Promise<void> | undefined } = {};
+  /** A stop of this key waits until rigd's shutdown detaches it; `hung` says one is waiting. */
+  const stall: { key?: string; hung?: boolean } = {};
   const supervisor: Supervisor = {
     async observe(key) {
       return processes.get(key) ?? { state: "stopped" };
@@ -72,7 +75,15 @@ async function fixture() {
       });
       return { outcome: "started" };
     },
-    async stop(key) {
+    async stop(key, request) {
+      if (key === stall.key) {
+        stall.hung = true;
+        await new Promise<never>((_, reject) =>
+          request.detach?.addEventListener("abort", () =>
+            reject(stopDetached({ key })),
+          ),
+        );
+      }
       const running = processes.get(key)?.state === "running";
       processes.delete(key);
       return { outcome: running ? "stopped" : "unchanged" };
@@ -201,6 +212,7 @@ async function fixture() {
     refusal,
     lifecycle: deps.lifecycle,
     delay,
+    stall,
     store,
     /** What the running daemon shows its operator alert monitor as in flight. */
     mutations: () => runtime.mutations(),
@@ -502,6 +514,48 @@ test("the operator alert monitor holds back judgement of a Stable Target the fir
   expect(await f.evaluateAlerts()).toEqual([]);
 });
 
+test("a Stable start after a reboot whose clean-up stop rigd's shutdown detaches records no failed start and leaves the restart pending for the next daemon, which acts on it once", async () => {
+  const f = await fixture();
+  await f.startAll();
+  const before = await f.activityCount();
+  f.restartHost(REBOOTED);
+  // worker cannot start, and the stop of api that undoes the start waits until rigd shuts down.
+  const worker = await f.key("live", "worker");
+  const api = await f.key("live", "api");
+  f.refusal.start = (key) => key === worker;
+  f.stall.key = api;
+  f.reopen();
+  const pass = f.reconcile();
+  for (let tries = 0; !f.stall.hung; tries++) {
+    if (tries > 2000) throw new Error("the clean-up stop never began");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  await f.drain();
+  await pass;
+
+  const live = (await f.store.read()).targets.find((t) => t.kind === "live")!;
+  const host = (await f.store.read()).host!;
+  expect(host.boot).toBe("BOOT-1");
+  expect(host.restart).toMatchObject({ kind: "reboot", boot: "BOOT-2" });
+  expect(host.restart!.settled ?? []).not.toContain(live.id);
+  expect(await f.activitySince(before)).toEqual(["host-restart/stopped -"]);
+
+  // api finishes stopping on its own. The next daemon acts on the restart for the Stable Target once, as after a crash
+  // mid-start (the start's unfinished effect transaction is then its outcome), announces it no second time, and records
+  // the session.
+  f.processes.delete(api);
+  f.stall.key = undefined;
+  f.refusal.start = undefined;
+  f.reopen();
+  await f.reconcile();
+  const after = await f.activitySince(before);
+  expect(after).toHaveLength(2);
+  expect(after[0]).toBe("host-restart/stopped -");
+  expect(after[1]).toMatch(/^up\/(started|failed) live$/);
+  expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
+  expect((await f.store.read()).host!.restart).toBeUndefined();
+});
+
 test("a Stable Target meant to be stopped stays stopped after a reboot", async () => {
   const f = await fixture();
   await f.startAll();
@@ -616,6 +670,10 @@ test("a first pass that could not act on the restart for every Target leaves it 
   f.host.hold = undefined;
   f.reopen();
   await f.reconcile();
+  console.error(
+    JSON.stringify((await f.store.read()).activity.slice(before), null, 1),
+  );
+  console.error(JSON.stringify(await f.status("live"), null, 1));
   expect(await f.running("live")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
@@ -882,6 +940,10 @@ test("a pending restart finished by a daemon that could not read the login keeps
   f.restartHost({ ...REBOOTED, login: "100019" });
   f.reopen();
   await f.reconcile();
+  console.error(
+    JSON.stringify((await f.store.read()).activity.slice(before), null, 1),
+  );
+  console.error(JSON.stringify(await f.status("live"), null, 1));
   expect(await f.running("live")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",

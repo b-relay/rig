@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ConfigError } from "./errors";
+import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import {
   DEFAULT_TARGET_NAMES,
   hostConfigSchema,
@@ -29,6 +30,7 @@ const PLANNING_DEFAULTS: readonly (readonly [string[], string])[] = [
   [["supervisor"], "rigd"],
   [["build_timeout"], "10m"],
   [["services", "*", "ready_timeout"], "30s"],
+  [["services", "*", "stop_timeout"], `${DEFAULT_STOP_TIMEOUT_SECONDS}s`],
   [["services", "*", "restart"], "always"],
   [["targets", "working", "name"], DEFAULT_TARGET_NAMES.working],
   [["targets", "stable", "name"], DEFAULT_TARGET_NAMES.stable],

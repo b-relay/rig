@@ -75,6 +75,9 @@ export interface ServiceRun {
   /** The automatic attempts of the budget the latest outcome draws on are used up; only an explicit start or a new Deployment
    * starts the Service again. */
   exhausted?: true;
+  /** The operator's latest stop needed SIGKILL: the stop_timeout ran out (`timeout`), or `--kill` cut it short (`request`).
+   * A new start clears it. */
+  stopKilled?: "timeout" | "request";
 }
 
 export interface TargetRecord {

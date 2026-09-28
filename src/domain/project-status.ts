@@ -14,6 +14,7 @@ const componentReportSchema = z
         "unhealthy",
         "running",
         "starting",
+        "stopping",
         "stopped",
         "failed",
         "installed",
@@ -21,7 +22,7 @@ const componentReportSchema = z
         "ready",
       ])
       .describe(
-        "Observed capability state; configured alone is not runtime evidence.",
+        "Observed capability state; configured alone is not runtime evidence. `stopping` means an Operation is waiting for the Service to exit after its stop signal.",
       ),
     pid: z
       .number()
@@ -52,6 +53,12 @@ const componentReportSchema = z
       .optional()
       .describe(
         "How a stopped Service ended: a clean exit, a failure, a stop an operator requested, or unknown when nothing recorded it. An unknown exit is started again automatically only under restart: always, on a slower budget; one caused by a Host restart (the reason says so) is not, for the Working copy and Previews, until rig up.",
+      ),
+    killAt: z
+      .string()
+      .optional()
+      .describe(
+        "For a stopping Service: when SIGKILL is due (ISO 8601), once its stop_timeout has passed.",
       ),
     reason: z.string().optional().describe("Explanation of the observation."),
   })

@@ -41,6 +41,9 @@ export interface ManagedComponent extends ComponentContext {
   sitePort?: number;
   health?: string;
   readyTimeout: number;
+  /** Seconds the Service may take to exit after SIGTERM before SIGKILL; a plan recorded before stop_timeout existed has
+   * none and gets the 10 s default. */
+  stopTimeout?: number;
   /** When Rig starts the Service again after a known exit; a plan recorded without it means always. */
   restart?: RestartPolicy;
 }

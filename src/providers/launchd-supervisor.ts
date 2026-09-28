@@ -18,9 +18,22 @@ import type {
   CommandRunner,
   ManagedProcess,
   ProcessObservation,
+  StopKill,
+  StopRequest,
   Supervisor,
 } from "./contracts";
-import { DEFAULT_SHUTDOWN_BUDGET_MS } from "./child-supervisor";
+import {
+  CAPTURE_KILL_SIGNAL,
+  readCaptureStop,
+  removeCaptureStop,
+} from "./capture-stop";
+import {
+  PLATFORM_STOP_TIMINGS,
+  serviceGraceMs,
+  stopBudget,
+  stopDetached,
+  type StopTimings,
+} from "../domain/stop-budget";
 import {
   exitEvidence,
   readExitRecord,
@@ -51,19 +64,18 @@ export interface LaunchdTiming {
   wait(ms: number): Promise<void>;
   /** How long a launchd application may take to appear after bootstrap or after its advertised restart. */
   readonly applicationStartMs: number;
-  /** How long a booted-out job may take to leave launchd before stop fails as LAUNCHD_STOP. */
-  readonly unloadBudgetMs: number;
+  /** The kill wait and headroom each stop budget adds to a Service's grace: they size the plist's ExitTimeOut and how long
+   * a booted-out job may take to leave launchd before stop fails as LAUNCHD_STOP. */
+  readonly stopTimings: StopTimings;
 }
 /** Application start budget on the platform. */
 export const DEFAULT_APPLICATION_START_MS = 3000;
-/** The wrapper's own SIGTERM then SIGKILL shutdown, plus headroom for output drains and launchctl latency. */
-export const DEFAULT_UNLOAD_BUDGET_MS = DEFAULT_SHUTDOWN_BUDGET_MS + 2000;
 export function createLaunchdTiming(): LaunchdTiming {
   return {
     now: Date.now,
     wait: (ms) => Bun.sleep(ms),
     applicationStartMs: DEFAULT_APPLICATION_START_MS,
-    unloadBudgetMs: DEFAULT_UNLOAD_BUDGET_MS,
+    stopTimings: PLATFORM_STOP_TIMINGS,
   };
 }
 /** Polling cadence for the application start and unload waits. */
@@ -72,7 +84,7 @@ const POLL_MS = 100;
  * starts again is the runtime's decision. Explicit up preserves already running jobs. */
 export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
   const { run, inspect, groupExists } = options;
-  const { now, wait, applicationStartMs, unloadBudgetMs } = options.timing;
+  const { now, wait, applicationStartMs, stopTimings } = options.timing;
   const label = (key: string) =>
     `${options.labelPrefix}.${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
   const service = (key: string) => `${options.domain}/${label(key)}`;
@@ -100,6 +112,7 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
     const survivor =
       options.captureCommand &&
       (await survivingApplication({ requestPath, key, inspect, groupExists }));
+    await removeCaptureStop(requestPath);
     for (const file of [
       join(options.root, `${label(key)}.plist`),
       requestPath,
@@ -191,6 +204,93 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       },
     );
   };
+  /** Polls until the booted-out job has left launchd: within the unload budget of its grace, or of its kill once one is
+   * asked. A kill asks the capture wrapper to cut its application's grace short, or without a wrapper SIGKILLs the job after
+   * the kill wait. Returns why the application needed SIGKILL, as its wrapper recorded it; fails STOP_DETACHED as soon as
+   * `detach` aborts and LAUNCHD_STOP when the budget runs out. */
+  const awaitUnload = async (
+    key: string,
+    request: StopRequest,
+  ): Promise<StopKill | undefined> => {
+    const requestPath = join(options.root, `${label(key)}.json`);
+    // The job's ExitTimeOut and its wrapper's grace were set from the grace its start was given, which may be longer than
+    // the one asked for now: the wait covers it.
+    const startedGrace = options.captureCommand
+      ? (await readCaptureRequest(requestPath).catch(() => undefined))
+          ?.stopGraceMs
+      : undefined;
+    const budget = stopBudget(
+      Math.max(request.graceMs, startedGrace ?? 0),
+      stopTimings,
+    );
+    const started = now();
+    let deadline = started + budget.unloadMs;
+    let killAskedAt: number | undefined;
+    let killSent = false;
+    do {
+      if (request.detach?.aborted) throw stopDetached({ key });
+      // A wrapper written by an older rigd cannot be told to kill; it is left to its own short grace instead.
+      if (
+        request.kill?.aborted &&
+        killAskedAt === undefined &&
+        (!options.captureCommand || startedGrace !== undefined)
+      ) {
+        killAskedAt = now();
+        if (!options.captureCommand)
+          deadline = Math.min(
+            deadline,
+            killAskedAt + budget.killedWrapperMs + budget.killWaitMs,
+          );
+      }
+      // The wrapper cuts its application's grace short only once it has the signal: until launchctl delivered it the
+      // original deadline stands, and each poll asks again.
+      if (options.captureCommand && killAskedAt !== undefined && !killSent) {
+        const sent = await run({
+          command: ["launchctl", "kill", CAPTURE_KILL_SIGNAL, service(key)],
+          timeoutMs: 2000,
+        });
+        if (sent.exitCode === 0 && !sent.timedOut) {
+          killSent = true;
+          deadline = Math.min(
+            deadline,
+            now() + budget.killedWrapperMs + budget.killWaitMs,
+          );
+        }
+      }
+      if (
+        !killSent &&
+        !options.captureCommand &&
+        killAskedAt !== undefined &&
+        now() >= killAskedAt + budget.killWaitMs
+      ) {
+        await run({
+          command: ["launchctl", "kill", "SIGKILL", service(key)],
+          timeoutMs: 2000,
+        });
+        killSent = true;
+      }
+      const result = await run({
+        command: ["launchctl", "print", service(key)],
+        timeoutMs: 2000,
+      });
+      if (unloaded(result))
+        return options.captureCommand
+          ? await readCaptureStop(requestPath)
+          : killSent
+            ? "request"
+            : // Without a wrapper, a job still there at its ExitTimeOut was SIGKILLed by launchd.
+              now() - started >= budget.exitTimeOutSeconds * 1000
+              ? "timeout"
+              : undefined;
+      await wait(POLL_MS);
+    } while (now() < deadline);
+    throw new RigError(
+      "LAUNCHD_STOP",
+      `The managed job ${label(key)} did not unload within ${Math.round((deadline - started) / 100) / 10} s.`,
+      "Inspect launchd state, then run the stop again once the job is gone.",
+      { key, label: label(key) },
+    );
+  };
   return {
     observe,
     async ensureRunning(request) {
@@ -230,9 +330,17 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         command = [...options.captureCommand, requestPath];
       }
       const plist = join(options.root, `${jobLabel}.plist`);
-      await writeFile(plist, launchdPlist({ ...request, command }, jobLabel), {
-        mode: 0o600,
-      });
+      // launchd waits ExitTimeOut after its SIGTERM before it kills the job: long enough for the wrapper to give its
+      // application the whole grace and still end on its own.
+      const exitTimeOut = stopBudget(
+        request.stopGraceMs ?? serviceGraceMs(undefined),
+        stopTimings,
+      ).exitTimeOutSeconds;
+      await writeFile(
+        plist,
+        launchdPlist({ ...request, command }, jobLabel, exitTimeOut),
+        { mode: 0o600 },
+      );
       try {
         await checked(["bootstrap", options.domain, plist], request.key);
       } catch (error) {
@@ -254,7 +362,8 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       }
       return { outcome: "started", pid: await waitForApplication(request.key) };
     },
-    async stop(key) {
+    async stop(key, request) {
+      if (request.detach?.aborted) throw stopDetached({ key });
       const existing = await run({
         command: ["launchctl", "print", service(key)],
         timeoutMs: 2000,
@@ -271,25 +380,39 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
           { key },
         );
       }
-      await checked(["bootout", service(key)], key);
-      const deadline = now() + unloadBudgetMs;
-      do {
-        const result = await run({
+      // launchd sends SIGTERM and returns at once; a job already booted out gets SIGTERM again, which its wrapper ignores.
+      // A bootout that fails or hangs while the job is still there (one a previous daemon began booting out) is waited
+      // on like any other: the unload wait, its kill and its detach decide what happens next. A kill or a detach asked
+      // while bootout has not returned goes on at once rather than after launchctl's own timeout.
+      const bootout = await untilAborted(
+        run({
+          command: ["launchctl", "bootout", service(key)],
+          timeoutMs: 10_000,
+        }),
+        [request.kill, request.detach],
+      );
+      if (request.detach?.aborted) throw stopDetached({ key });
+      if (bootout && bootout.exitCode !== 0) {
+        const still = await run({
           command: ["launchctl", "print", service(key)],
           timeoutMs: 2000,
         });
-        if (unloaded(result)) {
-          await removeJobFiles(key);
-          return { outcome: "stopped" };
-        }
-        await wait(POLL_MS);
-      } while (now() < deadline);
-      throw new RigError(
-        "LAUNCHD_STOP",
-        `The managed job ${label(key)} did not unload within ${unloadBudgetMs / 1000} s.`,
-        "Inspect launchd state, then run the stop again once the job is gone.",
-        { key, label: label(key) },
-      );
+        if (still.exitCode !== 0 && !unloaded(still))
+          throw new RigError(
+            "LAUNCHD_FAILED",
+            `launchd could not bootout job ${label(key)}.`,
+            "Check daemon diagnostics and the Target logs.",
+            {
+              action: "bootout",
+              label: label(key),
+              exitCode: bootout.exitCode,
+              stderr: bootout.stderr,
+            },
+          );
+      }
+      const killed = await awaitUnload(key, request);
+      await removeJobFiles(key);
+      return { outcome: "stopped", ...(killed ? { killed } : {}) };
     },
     async shutdown() {
       /* Persistent jobs remain owned by launchd when the daemon exits. */
@@ -331,7 +454,12 @@ function xml(text: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 }
-function launchdPlist(request: ManagedProcess, label: string): string {
+/** The job's plist. `exitTimeOut` is how many seconds launchd waits after its SIGTERM before SIGKILL. */
+function launchdPlist(
+  request: ManagedProcess,
+  label: string,
+  exitTimeOut: number,
+): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(label)}</string>\n<key>ProgramArguments</key><array>${request.command.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>\n<key>WorkingDirectory</key><string>${xml(request.cwd)}</string>\n<key>EnvironmentVariables</key><dict>${Object.entries(
     request.env,
   )
@@ -340,5 +468,32 @@ function launchdPlist(request: ManagedProcess, label: string): string {
     )
     .join(
       "",
-    )}</dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><false/>\n<key>StandardOutPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stdout.log`))}</string>\n<key>StandardErrorPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stderr.log`))}</string>\n</dict></plist>\n`;
+    )}</dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><false/>\n<key>ExitTimeOut</key><integer>${exitTimeOut}</integer>\n<key>StandardOutPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stdout.log`))}</string>\n<key>StandardErrorPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stderr.log`))}</string>\n</dict></plist>\n`;
+}
+
+/** `work`'s result, or undefined as soon as one of `signals` aborts first; `work` itself carries on unobserved. */
+async function untilAborted<T>(
+  work: Promise<T>,
+  signals: readonly (AbortSignal | undefined)[],
+): Promise<T | undefined> {
+  const present = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  );
+  if (present.some((signal) => signal.aborted)) {
+    void work.catch(() => {});
+    return undefined;
+  }
+  if (!present.length) return await work;
+  const any = AbortSignal.any(present);
+  let onAbort!: () => void;
+  const aborted = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    any.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    any.removeEventListener("abort", onAbort);
+    void work.catch(() => {});
+  }
 }

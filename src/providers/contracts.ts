@@ -9,7 +9,28 @@ export interface ManagedProcess {
   readonly logRoot: string;
   /** The caller's name for this one process; every observation of it, running or exited, carries it back. */
   readonly incarnation: string;
+  /** How long the process may take to exit after SIGTERM before SIGKILL, in milliseconds: its Service's stop_timeout. It is
+   * written into the capture request and the launchd plist, so the capture wrapper and launchd hold the same grace as the
+   * stop. Absent: the 10 s default. */
+  readonly stopGraceMs?: number;
 }
+/** How one stop waits. */
+export interface StopRequest {
+  /** How long the process may take to exit after SIGTERM before SIGKILL, in milliseconds: its Service's stop_timeout. */
+  readonly graceMs: number;
+  /** Aborted before or during the stop, it cuts what is left of the grace to the kill wait: SIGKILL follows then. */
+  readonly kill?: AbortSignal;
+  /** Aborted, it ends the wait at once: the stop fails STOP_DETACHED and the process finishes stopping on its own, still
+   * owned, for the next stop to find. rigd's shutdown uses it so it never waits out a long grace. */
+  readonly detach?: AbortSignal;
+}
+/** How a stop ended. `killed` says the process needed SIGKILL: because its grace ran out (`timeout`), or because a kill cut
+ * the grace short (`request`). Absent when it exited within its grace or was not running. */
+export interface StopResult {
+  readonly outcome: "stopped" | "unchanged";
+  readonly killed?: StopKill;
+}
+export type StopKill = "timeout" | "request";
 /** A supervisor starts a process once and never starts it again on its own: whether an exit is retried is the runtime's decision.
  * `stopped` means no process of the start runs any more: under a capture wrapper, neither the wrapper nor the application it
  * last reported; one that may still run is `unknown`. A stopped observation with `exitCode` or `signal` is recorded evidence of
@@ -37,7 +58,9 @@ export interface Supervisor {
   ensureRunning(
     request: ManagedProcess,
   ): Promise<{ outcome: "started" | "unchanged"; pid?: number }>;
-  stop(key: string): Promise<{ outcome: "stopped" | "unchanged" }>;
+  /** SIGTERM, then SIGKILL once the request's grace has passed (sooner after a kill: once the kill wait has). Fails
+   * STOP_DETACHED when `detach` aborts first. */
+  stop(key: string, request: StopRequest): Promise<StopResult>;
   observe(key: string, signal?: AbortSignal): Promise<ProcessObservation>;
   /** Stops every owned process; used when the Host must end with nothing running. */
   shutdown(): Promise<void>;

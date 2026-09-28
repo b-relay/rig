@@ -28,6 +28,12 @@ export interface CliDependencies {
   detach?: AbortSignal;
   /** Resolves after the poll delay or cancellation; must release its wait resources. */
   wait: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+  /** The local clock countdowns and deadlines are shown by; the platform clock when absent. */
+  now?: () => Date;
+  /** stderr is a terminal: progress is redrawn in place there. Without one, it is plain appended lines. */
+  liveOutput?: boolean;
+  /** The terminal's width, to which live progress lines are cut; 80 when absent. */
+  terminalColumns?: number;
 }
 export interface DaemonAdmin {
   install(operationId?: string): Promise<unknown>;

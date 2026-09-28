@@ -11,6 +11,8 @@ const captureRequestSchema = z.object({
   env: z.record(z.string(), z.string()),
   logRoot: z.string().min(1),
   incarnation: z.string().min(1),
+  /** The application's grace after SIGTERM, from its Service's stop_timeout; a request written by an older rigd has none. */
+  stopGraceMs: z.number().int().nonnegative().optional(),
 });
 export type CaptureRequest = z.infer<typeof captureRequestSchema>;
 /** The wrapper reads the request on its own schedule, so it is replaced whole: a reader sees the previous or the new document, never a partial one. */

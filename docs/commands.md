@@ -40,6 +40,8 @@ rig
 ├─ down    [target] [branch]
 │    --project <name>   --deployment <name>   --json
 │    --destroy                      down only: delete a Preview and its own data
+│    --kill                         down and restart: skip stop_timeout (SIGTERM, SIGKILL after 1.5 s),
+│                                   and cut short a stop already running on the Target
 │
 ├─ logs [target] [branch]
 │    --project <name>   --deployment <name>

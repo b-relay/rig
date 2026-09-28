@@ -6,6 +6,15 @@ import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
 import { renderResult, renderStatus, object, renderLogs } from "./output";
 import { waitStatus } from "./wait-notice";
 import {
+  liveDisplay,
+  plainDisplay,
+  type ProgressDisplay,
+} from "./progress-display";
+import { formatClock } from "./stop-display";
+import { serviceStopSchema, type ServiceStop } from "../daemon/protocol";
+import { PREVIEW_SELECTOR } from "../config/schema";
+import { z } from "zod";
+import {
   isHelp,
   recordDiagnostic,
   reportDetached,
@@ -15,37 +24,74 @@ import {
 /** Parse and render one invocation; the injected client owns runtime effects. */
 /** How long a command may go unanswered before the user is told what rigd is doing instead. */
 const NOTICE_AFTER_MS = 2000;
-/** Sends the command and, when rigd has not answered in time, names the
- * operation it is running and how many wait ahead, so a hang has a cause.
- * A cancellation after submission is acknowledged but not honoured, since rigd
- * finishes the mutation either way; only detachment abandons the wait. */
+/** How often a waiting command asks rigd again where it stands, and redraws a countdown on a terminal. */
+const PROGRESS_TICK_MS = 1000;
+/** Sends the command and, when rigd has not answered in time, shows what it waits for and the Services it waits on to
+ * stop, so a long wait has a cause and a deadline. A cancellation after submission is acknowledged but not honoured, since
+ * rigd finishes the mutation either way; only detachment abandons the wait. While a stop is shown, the first Ctrl-C
+ * detaches at once and says how to end the stop now. */
 async function awaitMutation(
   request: RuntimeCommand,
   dependencies: Pick<
     CliDependencies,
-    "client" | "output" | "wait" | "signal" | "detach"
+    | "client"
+    | "output"
+    | "wait"
+    | "signal"
+    | "detach"
+    | "now"
+    | "liveOutput"
+    | "terminalColumns"
   >,
   operationId: string,
 ): Promise<unknown> {
+  const now = dependencies.now ?? (() => new Date());
+  const display = dependencies.liveOutput
+    ? liveDisplay(dependencies.output, dependencies.terminalColumns)
+    : plainDisplay(dependencies.output);
+  // Leaving a stop to rigd: detaches like a second Ctrl-C, with the stop named.
+  const leave = new AbortController();
+  let left: RigError | undefined;
   let settled = false;
-  const acknowledge = () => {
-    if (!settled)
-      dependencies.output.error(
-        `rigd is still running ${request.action} (operation ${operationId}); it finishes in the background. Press Ctrl-C again to detach.\n`,
-      );
-  };
-  dependencies.signal?.addEventListener("abort", acknowledge, { once: true });
-  const pending = dependencies.client
-    .command(request, dependencies.detach)
-    .finally(() => {
-      settled = true;
-    });
-  try {
-    void reportWaiting(dependencies, operationId, pending, () => settled).catch(
-      () => {},
+  const interrupted = () => {
+    if (settled) return;
+    const stopping = display.stopping(now());
+    if (stopping.length) {
+      left = leftStopping(request, operationId, stopping);
+      leave.abort(left);
+      return;
+    }
+    display.note(
+      `rigd is still running ${request.action} (operation ${operationId}); it finishes in the background. Press Ctrl-C again to detach.\n`,
     );
-    return await Promise.race([pending, untilDetached(dependencies.detach)]);
+  };
+  dependencies.signal?.addEventListener("abort", interrupted, { once: true });
+  const detach = dependencies.detach
+    ? AbortSignal.any([dependencies.detach, leave.signal])
+    : leave.signal;
+  const pending = dependencies.client.command(request, detach).finally(() => {
+    settled = true;
+  });
+  try {
+    void reportProgress(
+      { ...dependencies, detach },
+      display,
+      now,
+      operationId,
+      pending,
+      () => settled,
+    ).catch(() => {});
+    const result = await Promise.race([pending, untilDetached(detach)]);
+    display.finish(stopsOf(result), now());
+    return result;
   } catch (error) {
+    const detached = Boolean(left) || dependencies.detach?.aborted === true;
+    // A second Ctrl-C while a stop is shown leaves it the way the first one would have.
+    const stopping = display.stopping(now());
+    display.abandon(now(), detached);
+    if (left) throw left;
+    if (dependencies.detach?.aborted && stopping.length)
+      throw leftStopping(request, operationId, stopping);
     if (dependencies.detach?.aborted)
       throw new RigError(
         "DETACHED",
@@ -55,8 +101,41 @@ async function awaitMutation(
       );
     throw error;
   } finally {
-    dependencies.signal?.removeEventListener("abort", acknowledge);
+    dependencies.signal?.removeEventListener("abort", interrupted);
   }
+}
+/** The detachment a Ctrl-C during a shown stop makes: `Left <service> stopping in the background (killing at 04:31). Run
+ * rig down <target> --kill to stop it now.` */
+function leftStopping(
+  request: RuntimeCommand,
+  operationId: string,
+  stopping: readonly ServiceStop[],
+): RigError {
+  const services = stopping.map((stop) => stop.service);
+  const names =
+    services.length > 1
+      ? `${services.slice(0, -1).join(", ")} and ${services.at(-1)}`
+      : services[0]!;
+  const killAt = Math.min(...stopping.map((stop) => Date.parse(stop.killAt)));
+  const target = stopping[0]!.target;
+  const selector =
+    request.target === PREVIEW_SELECTOR
+      ? `preview --deployment ${target}`
+      : target;
+  const project = request.project ? ` --project ${request.project}` : "";
+  return new RigError(
+    "DETACHED",
+    `Left ${names} stopping in the background (killing at ${formatClock(new Date(killAt), false)}).`,
+    `Run rig down ${selector}${project} --kill to stop it now.`,
+    { operationId, oneLine: true },
+  );
+}
+/** The stops a mutation's result reports, when it has any. */
+function stopsOf(result: unknown): ServiceStop[] | undefined {
+  const parsed = z
+    .object({ stops: z.array(serviceStopSchema) })
+    .safeParse(result);
+  return parsed.success ? parsed.data.stops : undefined;
 }
 /** Never settles unless the signal aborts; one command holds at most one such listener. */
 function untilDetached(signal: AbortSignal | undefined): Promise<never> {
@@ -69,14 +148,14 @@ function untilDetached(signal: AbortSignal | undefined): Promise<never> {
       });
   });
 }
-/** How often a waiting command asks rigd again what it is waiting for. */
-const WAIT_POLL_MS = 2000;
-/** Once the command has gone NOTICE_AFTER_MS without an answer, asks rigd every WAIT_POLL_MS where it
- * stands until it settles or is cancelled. Whenever rigd holds it behind another Operation on the same
- * Target or Project, prints what it waits for on stderr: one plain line when a wait starts and one
- * whenever what it waits for changes, never a cursor movement. Stops when rigd cannot say. */
-async function reportWaiting(
-  dependencies: Pick<CliDependencies, "client" | "output" | "wait" | "signal">,
+/** Once the command has gone NOTICE_AFTER_MS without an answer, asks rigd every PROGRESS_TICK_MS where it stands until it
+ * settles or is detached, and shows it: what it waits for while rigd holds it behind another Operation on the same
+ * Target or Project, and the Services it waits on to stop while it runs. A first Ctrl-C does not end it, since the
+ * command keeps waiting. Stops when rigd cannot say. */
+async function reportProgress(
+  dependencies: Pick<CliDependencies, "client" | "wait" | "detach">,
+  display: ProgressDisplay,
+  now: () => Date,
   operationId: string,
   pending: Promise<unknown>,
   settled: () => boolean,
@@ -87,26 +166,19 @@ async function reportWaiting(
     () => done.abort(),
     () => done.abort(),
   );
-  const signal = dependencies.signal
-    ? AbortSignal.any([dependencies.signal, done.signal])
+  const signal = dependencies.detach
+    ? AbortSignal.any([dependencies.detach, done.signal])
     : done.signal;
   const pause = (ms: number) => dependencies.wait(ms, signal);
-  let shown: string | undefined;
   await pause(NOTICE_AFTER_MS);
-  while (!settled() && !dependencies.signal?.aborted) {
-    const status = waitStatus(
-      await dependencies.client
-        .command({ action: "queue", operation: operationId })
-        .catch(() => undefined),
-    );
+  while (!settled() && !signal.aborted) {
+    const reply = await dependencies.client
+      .command({ action: "queue", operation: operationId })
+      .catch(() => undefined);
+    const status = waitStatus(reply, now());
     if (status === undefined || settled()) return;
-    // A command running now shows nothing of its own yet; a later wait is announced again.
-    if (status.state === "running") shown = undefined;
-    else if (status.notice !== shown) {
-      dependencies.output.error(`${status.notice}\n`);
-      shown = status.notice;
-    }
-    await pause(WAIT_POLL_MS);
+    display.show(status, now());
+    await pause(PROGRESS_TICK_MS);
   }
 }
 export async function runRigCli(
@@ -143,7 +215,7 @@ export async function runRigCli(
       json
         ? `${JSON.stringify(result)}\n`
         : status
-          ? renderStatus(status)
+          ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
           : renderResult(request.action, result),
     );
     const evidence = await recordDiagnostic(dependencies.diagnostics, {
@@ -176,6 +248,9 @@ export async function runRigCli(
         diagnostics: dependencies.diagnostics,
         output: dependencies.output,
         json,
+        ...(error.details.oneLine
+          ? { left: { message: error.message, hint: error.hint } }
+          : {}),
       });
     if (
       dependencies.signal?.aborted &&

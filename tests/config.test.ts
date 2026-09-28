@@ -1126,6 +1126,40 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
   expect(budgets("live")).toMatchObject({ ctl: 1800 });
 });
 
+test("stop_timeout is a duration from 1s to 1h, defaults to 10s, is patchable per role and reaches the plan in seconds", () => {
+  for (const stop_timeout of ["0s", "3601s", "2h", "1.5m", "10"])
+    expect(hintOf({ name: "app", services: web({ stop_timeout }) })).toBe(
+      "Fix services.web.stop_timeout: must be a duration from 1s to 1h, such as 10s, 2m or 1h.",
+    );
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { preview: { services: { web: { stop_timeout: "90m" } } } },
+    }),
+  ).toContain("targets.preview.services.web.stop_timeout");
+  const config = parseProjectConfig({
+    name: "app",
+    services: {
+      ...web({ stop_timeout: "2m" }),
+      api: { run: "api", ports: { http: 3001 } },
+      worker: { run: "work", stop_timeout: "1h" },
+    },
+    targets: { stable: { services: { web: { stop_timeout: "25m" } } } },
+  });
+  const graces = (target: "local" | "live") =>
+    Object.fromEntries(
+      resolveTargetPlan({ config, target, ...roots_ }).components.map(
+        (component) => [
+          component.name,
+          component.kind === "managed" ? component.stopTimeout : undefined,
+        ],
+      ),
+    );
+  expect(graces("local")).toEqual({ web: 120, api: 10, worker: 3600 });
+  expect(graces("live")).toEqual({ web: 1500, api: 10, worker: 3600 });
+});
+
 test("validation hints describe the rule in plain words, never Zod's pattern or key text", () => {
   expect(hintOf({ name: "-bad", services: web() })).toBe(
     "Fix name: must start with a letter or digit and contain only letters, digits, '_' or '-'.",
@@ -1330,6 +1364,8 @@ test("Target resolution provides forward port references, environment inheritanc
     port: 8081,
     ports: { http: 8081 },
     readyTimeout: 30,
+    // No stop_timeout: the 10 s default is recorded in the plan.
+    stopTimeout: 10,
     restart: "always",
     dependsOn: [],
     env: {

@@ -1,5 +1,6 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { ConfigError } from "./errors";
+import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import {
   durationSeconds,
   parseProjectConfig,
@@ -192,6 +193,9 @@ export function resolveTargetPlan(
         command: run.value,
         ...declaredPorts(name, service, ports),
         readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
+        stopTimeout: durationSeconds(
+          service.stop_timeout ?? `${DEFAULT_STOP_TIMEOUT_SECONDS}s`,
+        ),
         restart: service.restart ?? "always",
         ...(ready !== undefined ? { health: ready.value } : {}),
       };

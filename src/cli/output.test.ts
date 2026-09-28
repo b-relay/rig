@@ -21,7 +21,7 @@ test("status, result and log text drop bidi overrides, zero-width and C1 control
     warnings: [hostile],
   };
   const rendered = [
-    renderStatus(report),
+    renderStatus(report, new Date()),
     renderResult("list", {
       projects: [{ name: hostile, repoPath: hostile, targetCount: 1 }],
     }),

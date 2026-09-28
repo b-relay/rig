@@ -111,13 +111,16 @@ new connections, then lets the commands already running finish and answer
 their callers, and only then closes what is still open, such as a log follow.
 A command sent after the stop began, or one still waiting behind another
 operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
-A stop signal lets a stop that is already running finish, like any other
-running command. A daemon killed while an operation waits for a Service to exit
-leaves that Service stopping on its own. For `rig down` and `rig restart` the
-Target was recorded as meant to be stopped before its stop began, so the next
-daemon's startup pass stops it again; an interrupted Preview destroy or a
-`down` that was resolving an unfinished deploy is left for you to run again,
-and `rig status` says so.
+A stop signal never waits out a Service's `stop_timeout`, which may be an hour:
+a command waiting for a Service to exit stops waiting and fails `STOP_DETACHED`,
+and the Service keeps stopping on its own (its capture wrapper, or launchd,
+still enforces the grace and the SIGKILL after it). A daemon killed while an
+operation waits for a Service to exit leaves that Service stopping the same way.
+For `rig down` and `rig restart` the Target was recorded as meant to be stopped
+before its stop began, so the next daemon's startup pass stops it again (a
+`restart` cut short this way leaves the Target stopped; run `rig up`). An
+interrupted deploy, Preview destroy or a `down` that was resolving an
+unfinished deploy is left for you to run again, and `rig status` says so.
 `rigd uninstall` is the exception: it refuses while any Target is running.
 When the daemon is not reachable at all, `rigd uninstall` still removes the
 launchd job and installation record and warns that Targets were left as they
@@ -791,7 +794,8 @@ The state file carries a format version (currently 4). A file written by a
 newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
 rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
-newer version's fields survive a temporary downgrade.
+newer version's fields survive a temporary downgrade. Services that take
+longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
@@ -822,14 +826,53 @@ to replace, so that Preview's own commands wait until it is gone. See
 [ADR 0007](adr/0007-per-target-operation-queue.md).
 
 When a lifecycle or deploy command has gone two seconds without an answer and
-`rigd` is holding it behind another operation, `rig` prints on stderr what it
-is waiting for, for example
-`Waiting: fletcher local is stopping (operation <id>, started <time>).`, and how
-many more operations are ahead of it. It checks again every two seconds and
-prints a new line only when what it waits for changes, such as a `restart`
-moving from stopping to starting. The lines are plain appended text in a
-terminal, a pipe or a log alike; nothing is redrawn. The command then keeps
-waiting for its own result.
+`rigd` is holding it behind another operation on its Target, `rig` prints on
+stderr what it is waiting for, and how many more operations are ahead of it.
+Behind a stop it names the Service and when it is killed, as time left and local
+time:
+
+```text
+Waiting: fletcher local is stopping (google-scheduler, killing in 18m at 04:31)
+```
+
+Behind anything else it names the operation and the local time it started. When
+the command's own operation waits for a Service to exit for longer than about
+two seconds (`rig down`, `rig restart`, a deploy replacing or rolling back the
+Target, a Preview destroy), `rig` shows each Service it has stopped and the
+countdown to the one it waits on. Every deadline is shown as local time as well
+as time left, so a log read later still makes sense.
+
+- On a terminal the lines update in place:
+
+  ```text
+  Stopping fletcher local
+    web                 stopped
+    google-scheduler    stopping · killing in 18m 42s (04:31:07)
+    (Ctrl-C to leave it stopping in the background)
+  ```
+
+- Without a terminal (a pipe, CI, an agent) nothing is redrawn and there are no
+  carriage returns. `rig` appends plain lines: one when the wait starts, one every
+  five minutes, one when a minute is left, and one when it ends. The `Waiting:`
+  line follows the same rule, plus a line whenever what it waits for changes.
+
+  ```text
+  google-scheduler stopping, killing in 25m (04:31:07)
+  google-scheduler stopping, killing in 20m (04:31:07)
+  google-scheduler stopped after 6m 18s
+  ```
+
+The command then keeps waiting for its own result.
+
+While `rig` shows a Service stopping, Ctrl-C detaches at once: the stop carries
+on in `rigd`, and `rig` exits 130 with
+`Left google-scheduler stopping in the background (killing at 04:31). Run rig down local --kill to stop it now.`
+`rig down --kill` and `rig restart --kill` skip each Service's `stop_timeout`:
+SIGTERM, then SIGKILL after the 1.5 s kill wait. A `--kill` also cuts short a
+stop already running on that Target, whichever command started it (including
+one left in the background, or one the next `rigd` resumed at startup), and
+any stop another command makes on that Target while the `--kill` command runs;
+then it does its own stop. There is no `--force` alias.
 
 Ctrl-C (or SIGTERM) before a lifecycle or deploy command is submitted cancels
 it: `rig` exits 0 and no runtime change was requested. Ctrl-C during a read
@@ -863,9 +906,15 @@ at least one fails its health check is unhealthy, which is distinct from failed
 (a process that exited or was never found). Processes decide whether a Target
 is live at all: a Target whose processes are all stopped is stopped whatever
 the state of its data. While an operation is waiting for a Target's Services to
-exit (`rig down`, the stop half of `rig restart`, a Preview destroy, or the
-daemon re-stopping it at startup), the Target is `stopping`, whatever its
-processes show at that moment. A deployed Target's line shows the
+exit (`rig down`, the stop half of `rig restart`, a deploy replacing or rolling
+back the Target, the stop of a failed start, a Preview destroy, or the daemon
+re-stopping it at startup), the Target is `stopping`, whatever its processes
+show at that moment, and the Service being waited on reads
+`stopping · killing in 18m (04:31)`. A Service that needed SIGKILL to stop
+reads `stopped` with `Stopped after timeout (SIGKILL): it did not exit within its
+stop_timeout.` (or `Killed by --kill (SIGKILL)`) until it starts again, and the
+operation's Activity record says the same, so you can tell the grace was too
+short. A deployed Target's line shows the
 Branch and the short Commit it serves (`live  healthy  main@abc1234`); the
 Working copy shows `working copy` there instead. Recorded routes stay
 visible when stopped, and show `unpublished` when no Host Caddyfile loads Rig's
@@ -1030,6 +1079,28 @@ A Service is a long-running process Rig starts and supervises. Its fields:
   chosen ports, so a pin applies to the Working copy and Stable Target only.
 - `ready`: a localhost HTTP URL or a shell command that reports readiness, and
   `ready_timeout` (default `30s`).
+- `stop_timeout`: how long the Service may take to exit after its stop signal
+  (SIGTERM) before Rig ends it with SIGKILL, from `1s` to `1h` (default `10s`).
+  It is the time after the signal, not a total. Every stop honours it: `rig
+down`, `rig restart`, a deploy that replaces or rolls back the Target, a
+  Preview destroy, the stop of a failed start, and `rigd` re-stopping a Target
+  at startup. A role patch may set it (`targets.stable.services.worker.stop_timeout`).
+  Rig waits for SIGKILL's kill wait (1.5 s) on top. A Service that exits within
+  its grace is a requested stop; one that needs SIGKILL is recorded as
+  `stopped after timeout (SIGKILL)`. `rig down --kill` skips the grace.
+
+  **Changed default.** Until this setting existed every Service had 1.5 s. It is
+  now 10 s, so a Service that ignores SIGTERM takes about 10 s to `rig down`
+  instead of about 1.5 s. Set `stop_timeout: 2s` to keep a short stop.
+
+  **Downgrading.** Under `supervisor: rigd`, a `rigd` from before
+  `stop_timeout` kills a Service's capture wrapper about 4 s after its stop
+  signal, whatever grace the wrapper was started with, and does not signal the
+  application behind it. An application still inside a longer grace then keeps
+  running, and holding its ports, after its wrapper is gone. Run `rig down` on
+  Targets whose Services take longer than about 4 s to stop before a temporary
+  downgrade, or end such a process by hand afterwards.
+
 - `depends_on`: Services that must be running and ready before this one
   starts. Unknown names and cycles are rejected when the config is parsed.
 - `env` and `env_file`: see below.
@@ -1127,9 +1198,14 @@ or a port pinned twice is reported under `targets.<role>`.
 patch; a single Service cannot choose its own. Any other name is rejected when the config is parsed, so a typo can
 never be recorded in a Target plan. Neither supervisor starts a Service again
 by itself (launchd jobs are written with `KeepAlive` false); see "Automatic
-restart". Stopping a launchd Service
-waits for the wrapper's full shutdown budget (SIGTERM, then SIGKILL, plus
-headroom) before reporting `LAUNCHD_STOP`, and every stop that finds the job
+restart". Both supervisors take every wait of a stop from the Service's
+`stop_timeout`, so no outer layer kills the capture wrapper before its
+application's grace can finish. The wrapper gives the application its grace,
+then SIGKILL and a 1.5 s kill wait. `rigd` waits for the wrapper that long plus
+2 s headroom before it would kill the wrapper. A launchd job's plist carries an
+`ExitTimeOut` of the same budget rounded up to whole seconds (launchd's own
+default is 5 s). Stopping a launchd Service waits for that `ExitTimeOut`, the
+kill wait and headroom before reporting `LAUNCHD_STOP`, and every stop that finds the job
 gone, including one after a logout that already unloaded it, removes the
 job's plist, request, and evidence files from `$RIG_ROOT/launchd`; a failed
 bootstrap removes them too.
@@ -1510,8 +1586,9 @@ current file.
    stop its dependents.
 3. Routing.
 
-`rig down` stops each running Service. A start that fails rolls back the
-processes that command started.
+`rig down` stops each running Service, dependents first, each within its
+`stop_timeout`. A start that fails rolls back the processes that command
+started, within the same grace.
 
 Rig has no hooks and no plugins. Run a database as an ordinary Service whose `run` command
 starts it, and put preparation steps in a `build` or in the script `run`

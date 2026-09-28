@@ -8,6 +8,7 @@ import {
   type FailureCauses,
 } from "../domain/errors";
 import { within } from "../domain/paths";
+import { isStopDetached } from "../domain/stop-budget";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
 import { uncertainAttempt } from "./lifecycle";
@@ -93,6 +94,8 @@ export async function activateDeployment(
         {},
         failureCauses(error),
       );
+    // rigd is shutting down mid-stop: the transition stays pending, as after a crash, and rig down finishes it.
+    if (isStopDetached(error)) throw error;
     try {
       // A failed preparation changed nothing: the previous Deployment, whose process keys the candidate shares, keeps running.
       if (transitioned) {

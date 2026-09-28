@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 const text = z.string().min(1);
 /** Registered paths are stored absolute, so comparing two of them never depends on rigd's working directory. */
 const absolutePath = text.refine(isAbsolute, {
@@ -28,6 +29,12 @@ const component = z.discriminatedUnion("kind", [
     sitePort: z.number().int().min(1).max(65535).optional(),
     health: text.optional(),
     readyTimeout: z.number().positive(),
+    stopTimeout: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_STOP_TIMEOUT_SECONDS)
+      .optional(),
     restart: z.enum(["always", "on-failure", "no"]).optional(),
   }),
   z.object({
@@ -228,6 +235,12 @@ const services = z
         .optional()
         .describe(
           "The automatic attempts are used up until an explicit start or a new Deployment.",
+        ),
+      stopKilled: z
+        .enum(["timeout", "request"])
+        .optional()
+        .describe(
+          "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
         ),
     }),
   )

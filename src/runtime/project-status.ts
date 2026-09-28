@@ -3,6 +3,7 @@ import type {
   StatusSelection,
 } from "../domain/project-status";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
+import type { ServiceStopView } from "../domain/operation-progress";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import { asRigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
@@ -55,6 +56,8 @@ export async function projectStatus(
     inProgress(operationId: string): boolean;
     /** Whether an Operation is waiting for this Target's Services to exit right now. */
     stopping?(targetId: string): boolean;
+    /** The Services of this Target an Operation is waiting on right now, with when each is killed. */
+    serviceStops?(targetId: string): ServiceStopView[];
   },
 ): Promise<ProjectStatusReport> {
   let configWarning: string | undefined;
@@ -117,7 +120,17 @@ export async function projectStatus(
       const report = reports.find(
         (r) => r.kind === target.kind && r.name === target.name,
       );
-      if (report) report.state = "stopping";
+      if (!report) continue;
+      report.state = "stopping";
+      for (const stop of deps.serviceStops?.(target.id) ?? []) {
+        const component = report.components.find(
+          (c) => c.name === stop.service,
+        );
+        if (component) {
+          component.state = "stopping";
+          component.killAt = stop.killAt;
+        }
+      }
     }
   for (const target of selected)
     if (transitionInProgress(target, deps.inProgress))

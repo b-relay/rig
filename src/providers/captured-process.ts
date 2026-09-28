@@ -9,13 +9,16 @@ import type { Supervisor } from "./contracts";
 import { dirname } from "node:path";
 import { RigError } from "../domain/errors";
 import { readCaptureRequest } from "./capture-request";
+import { CAPTURE_KILL_SIGNAL, writeCaptureStop } from "./capture-stop";
+import { serviceGraceMs } from "../domain/stop-budget";
 import { createChildSupervisor } from "./child-supervisor";
 import { runCommand } from "./command-runner";
 import { createProcessInspection, platformKill } from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
 /** Unchanged evidence is rewritten this often; the reader trusts evidence younger than one second. */
 const OBSERVATION_HEARTBEAT_MS = 250;
-/** Signals that ask the wrapper to stop its application; the wrapper then ends by the same signal. */
+/** Signals that ask the wrapper to stop its application within its grace; the wrapper then ends by the same signal.
+ * CAPTURE_KILL_SIGNAL asks it to stop the application and cut the grace to the kill wait. */
 const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
 /** Private rigd entrypoint used by launchd and rigd; owns signal handlers and the captured child lifetime.
  * Runs the requested application until it stops or the wrapper is asked to stop, and returns the wrapper's exit code: the
@@ -54,17 +57,43 @@ async function runUntilStopped(
   });
   let stopping: Promise<unknown> | undefined;
   let received: NodeJS.Signals | undefined;
+  // The grace is the one the request carries, which the supervisor outside waits out before it would end this wrapper.
+  const kill = new AbortController();
   const stop = () => {
-    stopping ??= supervisor.stop(request.key);
+    stopping ??= supervisor
+      .stop(request.key, {
+        graceMs: request.stopGraceMs ?? serviceGraceMs(undefined),
+        kill: kill.signal,
+      })
+      .then(async (result) => {
+        // Said before the wrapper ends, so whoever stopped it can tell the application needed SIGKILL.
+        if (result.killed)
+          await writeCaptureStop(requestPath, {
+            incarnation: request.incarnation,
+            killed: result.killed,
+          }).catch(() => {});
+      });
   };
-  const handlers = STOP_SIGNALS.map((signal) => {
-    const handler = () => {
-      received ??= signal;
-      stop();
-    };
-    process.on(signal, handler);
-    return [signal, handler] as const;
-  });
+  const handlers = [
+    ...STOP_SIGNALS.map((signal) => {
+      const handler = () => {
+        received ??= signal;
+        stop();
+      };
+      process.on(signal, handler);
+      return [signal, handler] as const;
+    }),
+    // A kill is a stop that skips the grace: it ends the wrapper as a SIGTERM stop does.
+    (() => {
+      const handler = () => {
+        received ??= "SIGTERM";
+        kill.abort();
+        stop();
+      };
+      process.on(CAPTURE_KILL_SIGNAL, handler);
+      return [CAPTURE_KILL_SIGNAL, handler] as const;
+    })(),
+  ];
   const ended = (exitCode: number) =>
     received ? { exitCode, signal: received } : { exitCode };
   const inspect = dependencies.inspect ?? processInspection.identity;
@@ -129,11 +158,16 @@ async function runUntilStopped(
       });
     return ended(1);
   } finally {
+    // A kill that arrives after the stop must not end the wrapper by its own signal: it ends by the one that stopped it.
+    if (!process.listeners(CAPTURE_KILL_SIGNAL).includes(ignoreLateKill))
+      process.on(CAPTURE_KILL_SIGNAL, ignoreLateKill);
     for (const [signal, handler] of handlers)
       process.removeListener(signal, handler);
     await supervisor.shutdown();
   }
 }
+/** Stays installed once the wrapper's stop is over, until it exits. */
+function ignoreLateKill(): void {}
 /** Publishes fresh application evidence until the application stops or a stop was requested; returns the exit code. */
 async function observeUntilStopped(input: {
   supervisor: Pick<Supervisor, "observe">;

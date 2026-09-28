@@ -68,7 +68,7 @@ test("launchd up does not restart a running job, never asks launchd to respawn i
   const plist = await readFile(bootstrap[3]!, "utf8");
   expect(plist).toContain("&lt;&amp;");
   expect(plist).toContain("<key>KeepAlive</key><false/>");
-  await supervisor.stop(request.key);
+  await supervisor.stop(request.key, { graceMs: 1500 });
   expect((await supervisor.observe(request.key)).state).toBe("stopped");
 });
 test("real launchd capture stops its managed child and retains stdout and stderr logs", async () => {
@@ -132,7 +132,7 @@ test("real launchd capture stops its managed child and retains stdout and stderr
     }
     expect(appPid).toBeGreaterThan(0);
     expect((await supervisor.ensureRunning(request)).pid).toBe(started.pid);
-    await supervisor.stop(request.key);
+    await supervisor.stop(request.key, { graceMs: 1500 });
     for (let i = 0; i < 50; i++) {
       try {
         process.kill(appPid, 0);
@@ -144,7 +144,7 @@ test("real launchd capture stops its managed child and retains stdout and stderr
     expect(() => process.kill(appPid, 0)).toThrow();
     expect((await supervisor.observe(request.key)).state).toBe("stopped");
   } finally {
-    await supervisor.stop(request.key);
+    await supervisor.stop(request.key, { graceMs: 1500 });
   }
 }, 15000);
 
@@ -215,7 +215,7 @@ test("real launchd capture records its application's exit against the start it b
     );
     expect(await until("running")).toMatchObject({ incarnation: "start-2" });
   } finally {
-    await supervisor.stop("recovered-job");
+    await supervisor.stop("recovered-job", { graceMs: 1500 });
   }
 }, 20000);
 
@@ -400,12 +400,16 @@ test("launchd stop and a failed bootstrap remove every job file, a vanished job 
     `${jobLabel}.plist`,
   ]);
   // The wrapper needs 40 polls (about 4 s) to finish its SIGTERM then SIGKILL shutdown; the unload wait must cover it.
-  expect(await supervisor.stop(key)).toEqual({ outcome: "stopped" });
+  expect(await supervisor.stop(key, { graceMs: 1500 })).toEqual({
+    outcome: "stopped",
+  });
   expect(await files()).toEqual([]);
 
   expect((await supervisor.ensureRunning(request)).outcome).toBe("started");
   loaded = false; // logout: jobs bootstrapped from a private plist are gone
-  expect(await supervisor.stop(key)).toEqual({ outcome: "unchanged" });
+  expect(await supervisor.stop(key, { graceMs: 1500 })).toEqual({
+    outcome: "unchanged",
+  });
   expect(await files()).toEqual([]);
 
   bootstrapExit = 5;

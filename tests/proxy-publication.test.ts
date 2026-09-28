@@ -223,13 +223,15 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
     route: "app.example.test",
     routePublished: false,
   });
-  expect(renderStatus(inert)).toContain("app.example.test  unpublished");
+  expect(renderStatus(inert, new Date())).toContain(
+    "app.example.test  unpublished",
+  );
   expect(inert.warnings).toContain(
     `Routes are unpublished: /etc/caddy/Caddyfile does not import ${proxyFile}. Run rig doctor.`,
   );
   const published = await status("imported");
   expect(published.targets[0]?.routePublished).toBeUndefined();
-  expect(renderStatus(published)).not.toContain("unpublished");
+  expect(renderStatus(published, new Date())).not.toContain("unpublished");
 });
 
 test("rig doctor names the caddy executable as a provider capability", async () => {

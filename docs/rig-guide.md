@@ -794,7 +794,8 @@ The state file carries a format version (currently 4). A file written by a
 newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
 rather than loaded with fields dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
-newer version's fields survive a temporary downgrade.
+newer version's fields survive a temporary downgrade. Services that take
+longer than about 4 s to stop need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, `ready_timeout`, each
@@ -1091,6 +1092,14 @@ down`, `rig restart`, a deploy that replaces or rolls back the Target, a
   **Changed default.** Until this setting existed every Service had 1.5 s. It is
   now 10 s, so a Service that ignores SIGTERM takes about 10 s to `rig down`
   instead of about 1.5 s. Set `stop_timeout: 2s` to keep a short stop.
+
+  **Downgrading.** Under `supervisor: rigd`, a `rigd` from before
+  `stop_timeout` kills a Service's capture wrapper about 4 s after its stop
+  signal, whatever grace the wrapper was started with, and does not signal the
+  application behind it. An application still inside a longer grace then keeps
+  running, and holding its ports, after its wrapper is gone. Run `rig down` on
+  Targets whose Services take longer than about 4 s to stop before a temporary
+  downgrade, or end such a process by hand afterwards.
 
 - `depends_on`: Services that must be running and ready before this one
   starts. Unknown names and cycles are rejected when the config is parsed.

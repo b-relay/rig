@@ -236,16 +236,25 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
         (!options.captureCommand || startedGrace !== undefined)
       ) {
         killAskedAt = now();
-        deadline = Math.min(
-          deadline,
-          killAskedAt + budget.killedWrapperMs + budget.killWaitMs,
-        );
-        if (options.captureCommand) {
-          await run({
-            command: ["launchctl", "kill", CAPTURE_KILL_SIGNAL, service(key)],
-            timeoutMs: 2000,
-          });
+        if (!options.captureCommand)
+          deadline = Math.min(
+            deadline,
+            killAskedAt + budget.killedWrapperMs + budget.killWaitMs,
+          );
+      }
+      // The wrapper cuts its application's grace short only once it has the signal: until launchctl delivered it the
+      // original deadline stands, and each poll asks again.
+      if (options.captureCommand && killAskedAt !== undefined && !killSent) {
+        const sent = await run({
+          command: ["launchctl", "kill", CAPTURE_KILL_SIGNAL, service(key)],
+          timeoutMs: 2000,
+        });
+        if (sent.exitCode === 0 && !sent.timedOut) {
           killSent = true;
+          deadline = Math.min(
+            deadline,
+            now() + budget.killedWrapperMs + budget.killWaitMs,
+          );
         }
       }
       if (
@@ -373,12 +382,17 @@ export function createLaunchdSupervisor(options: LaunchdOptions): Supervisor {
       }
       // launchd sends SIGTERM and returns at once; a job already booted out gets SIGTERM again, which its wrapper ignores.
       // A bootout that fails or hangs while the job is still there (one a previous daemon began booting out) is waited
-      // on like any other: the unload wait, its kill and its detach decide what happens next.
-      const bootout = await run({
-        command: ["launchctl", "bootout", service(key)],
-        timeoutMs: 10_000,
-      });
-      if (bootout.exitCode !== 0) {
+      // on like any other: the unload wait, its kill and its detach decide what happens next. A kill or a detach asked
+      // while bootout has not returned goes on at once rather than after launchctl's own timeout.
+      const bootout = await untilAborted(
+        run({
+          command: ["launchctl", "bootout", service(key)],
+          timeoutMs: 10_000,
+        }),
+        [request.kill, request.detach],
+      );
+      if (request.detach?.aborted) throw stopDetached({ key });
+      if (bootout && bootout.exitCode !== 0) {
         const still = await run({
           command: ["launchctl", "print", service(key)],
           timeoutMs: 2000,
@@ -455,4 +469,31 @@ function launchdPlist(
     .join(
       "",
     )}</dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><false/>\n<key>ExitTimeOut</key><integer>${exitTimeOut}</integer>\n<key>StandardOutPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stdout.log`))}</string>\n<key>StandardErrorPath</key><string>${xml(join(request.logRoot, `${request.componentName}.stderr.log`))}</string>\n</dict></plist>\n`;
+}
+
+/** `work`'s result, or undefined as soon as one of `signals` aborts first; `work` itself carries on unobserved. */
+async function untilAborted<T>(
+  work: Promise<T>,
+  signals: readonly (AbortSignal | undefined)[],
+): Promise<T | undefined> {
+  const present = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  );
+  if (present.some((signal) => signal.aborted)) {
+    void work.catch(() => {});
+    return undefined;
+  }
+  if (!present.length) return await work;
+  const any = AbortSignal.any(present);
+  let onAbort!: () => void;
+  const aborted = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    any.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    any.removeEventListener("abort", onAbort);
+    void work.catch(() => {});
+  }
 }

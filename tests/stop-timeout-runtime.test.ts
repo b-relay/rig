@@ -23,6 +23,8 @@ interface HeldStop {
   key: string;
   request: StopRequest;
   exit(killed?: StopKill): void;
+  /** The stop fails, as a supervisor that cannot reach the process does. */
+  fail(error: Error): void;
 }
 
 /** rigd's runtime over the real lifecycle, with a scripted supervisor: a stop waits until the test ends it, so each path is
@@ -89,6 +91,7 @@ function world() {
               running.delete(key);
               resolve({ outcome: "stopped", ...(killed ? { killed } : {}) });
             },
+            fail: reject,
           });
         });
       },
@@ -385,6 +388,38 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
   expect(
     after.targets[0]!.components.find((c) => c.name === "web")!.reason,
   ).toBeUndefined();
+});
+
+test("a rig down that fails part-way still records the SIGKILL of a Service it stopped before, in status and Activity", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "local" });
+  w.hold();
+  const down = w.command({
+    action: "down",
+    target: "local",
+    operationId: "down-2",
+  });
+  const worker = await w.stopOf("worker");
+  w.advance(25 * 60_000);
+  worker.exit("timeout");
+  const web = await w.stopOf("web");
+  web.fail(new Error("the supervisor lost the process"));
+  await expect(down).rejects.toMatchObject({ code: "STOP_INCOMPLETE" });
+  expect(w.state.activity.at(-1)).toMatchObject({
+    action: "down",
+    outcome: "failed",
+    message: "STOP_INCOMPLETE: worker stopped after timeout (SIGKILL)",
+  });
+  const after = await w.runtime.status({
+    project: "fletcher",
+    target: "local",
+  });
+  expect(
+    after.targets[0]!.components.find((c) => c.name === "worker"),
+  ).toMatchObject({
+    reason:
+      "Stopped after timeout (SIGKILL): it did not exit within its stop_timeout.",
+  });
 });
 
 test("rig restart waits for the stop_timeout before it starts the Services again", async () => {

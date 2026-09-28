@@ -937,7 +937,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target.updatedAt = deps.now();
         await persistTarget(target, deps.store);
         admission.phase("stopping", target);
-        outcome = (await stopRecordedTarget(target, deps.lifecycle)).outcome;
+        try {
+          outcome = (await stopRecordedTarget(target, deps.lifecycle)).outcome;
+        } catch (error) {
+          // A stop that failed part-way still says which Services it had to SIGKILL.
+          const stopped = target;
+          await deps.store
+            .update((state) => {
+              const saved = state.targets.find((t) => t.id === stopped.id);
+              if (saved)
+                recordStopKills(saved, operations.get(operationId)!.view);
+            })
+            .catch(() => {});
+          throw error;
+        }
         recordStopKills(target, operations.get(operationId)!.view);
       } else {
         if (command.action === "restart") {
@@ -1035,7 +1048,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           outcome,
           occurredAt: deps.now(),
           ...((message) => (message ? { message } : {}))(
-            errorCode ?? killedMessage(operations.get(operationId)!.view),
+            [errorCode, killedMessage(operations.get(operationId)!.view)]
+              .filter((part) => part !== undefined)
+              .join(": "),
           ),
         });
       });

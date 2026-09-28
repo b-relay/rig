@@ -72,6 +72,10 @@ export async function readFamilyTail(
   const unreadableCounts =
     unreadableKept && filter.since === undefined && filter.until === undefined;
   let bytesPastFullPage = 0;
+  /** Bytes of records before the since bound read in a row. A record can be appended after newer ones when its writer was
+   * held up between timing it and writing it (as across a sleep), so one such record does not end the walk: it ends after
+   * a window's worth of them in a row, or at the end of the file that holds them. */
+  let bytesPastSince = 0;
   let done = false;
   for (const member of [...family.members].reverse()) {
     if (done && member.generation > 0) break;
@@ -114,9 +118,13 @@ export async function readFamilyTail(
         }
         settle(parsed.timestamp);
         if (precedesLogWindow(parsed, stopBefore)) {
-          done = true;
-          break;
+          if ((bytesPastSince += line.size + 1) > LOG_WINDOW_BYTES) {
+            done = true;
+            break;
+          }
+          continue;
         }
+        bytesPastSince = 0;
         keep(parsed);
         if (kept.length >= limit) {
           done = true;
@@ -126,6 +134,8 @@ export async function readFamilyTail(
     } finally {
       await log.handle.close();
     }
+    // Past the bound at the start of this file: an older generation holds nothing inside the window.
+    if (bytesPastSince > 0) done = true;
   }
   settle(undefined);
   return { entries: kept.slice(0, limit).reverse(), positions };

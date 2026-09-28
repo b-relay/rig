@@ -163,8 +163,9 @@ export async function dropCurrentFile(
       await rename(aside, `${file}.1`);
       return;
     }
-    // Not left under a name reads ignore: it goes back where it was (nothing is there, or link would have said so).
-    await rename(aside, file).catch(() => {});
+    // Not left under a name reads ignore. Renamed back over `file` it could replace one another writer has started since,
+    // so it goes where the EEXIST case puts it, which reads find.
+    await rename(aside, `${file}.1`).catch(() => {});
     throw error;
   }
   await rm(aside, { force: true });

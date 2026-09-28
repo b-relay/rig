@@ -539,6 +539,28 @@ test("a read that reaches its since bound does not open older generations", asyn
     await chmod(`${path}.2`, 0o600);
   }
 });
+test("a record appended after newer ones, its writer held up across a sleep, does not end a since read early", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(
+    path,
+    record("web", "before the window", "2026-09-28T10:00:00Z") +
+      record("web", "after wake 1", "2026-09-28T11:30:00Z") +
+      record("web", "after wake 2", "2026-09-28T11:31:00Z") +
+      // Timed before the Mac slept, written after it woke.
+      record("worker", "timed before sleep", "2026-09-28T09:00:00Z") +
+      record("web", "after wake 3", "2026-09-28T11:32:00Z"),
+  );
+  const result = await files.logs(target, undefined, 50, {
+    since: "2026-09-28T11:00:00Z",
+  });
+  expect(result.entries.map((entry) => entry.line)).toEqual([
+    "after wake 1",
+    "after wake 2",
+    "after wake 3",
+  ]);
+});
 test("a filtered follow returns only matching new entries and still advances past the rest", async () => {
   const target = await fixture(),
     files = createRuntimeFiles(),

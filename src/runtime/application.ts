@@ -1541,7 +1541,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (action === "reconcile") {
         entry.view.phase = "stopping";
-        await lifecycle.down(target);
+        // A stop that fails part-way still records the SIGKILL of a Service it stopped before.
+        try {
+          await lifecycle.down(target);
+        } catch (error) {
+          if (recordStopKills(target, entry.view))
+            await persistTarget(target, deps.store).catch(() => {});
+          throw error;
+        }
         if (recordStopKills(target, entry.view))
           await persistTarget(target, deps.store);
       }

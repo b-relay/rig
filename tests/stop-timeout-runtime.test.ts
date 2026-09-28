@@ -427,6 +427,29 @@ test("a rig down or rig restart that fails part-way still records the SIGKILL of
   }
 });
 
+test("the first pass's stop of a Target meant to be stopped that fails part-way still records the SIGKILL of a Service it stopped before", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "local" });
+  w.state.targets[0]!.desired = "stopped";
+  w.hold();
+  const pass = w.runtime.reconcile();
+  const worker = await w.stopOf("worker");
+  w.advance(25 * 60_000);
+  worker.exit("timeout");
+  (await w.stopOf("web")).fail(new Error("the supervisor lost the process"));
+  await pass;
+  const after = await w.runtime.status({
+    project: "fletcher",
+    target: "local",
+  });
+  expect(
+    after.targets[0]!.components.find((c) => c.name === "worker"),
+  ).toMatchObject({
+    reason:
+      "Stopped after timeout (SIGKILL): it did not exit within its stop_timeout.",
+  });
+});
+
 test("a rig restart that stopped a Service with SIGKILL and then failed before starting it again still says so in status", async () => {
   const w = await registered();
   await w.command({ action: "up", target: "local" });

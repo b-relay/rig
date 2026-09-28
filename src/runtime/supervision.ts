@@ -365,8 +365,9 @@ export async function recordStoppedByHostRestart(
 }
 
 /** Records, after an explicit start of `target` failed, that each Service not seen running was not started, unless the
- * start's journal already said so or an operator stopped it: nothing retries it automatically before the next explicit
- * start, and status reports it failed. Returns whether every Service was settled. */
+ * start's journal already said so (with the same error) or an operator stopped it: nothing retries it automatically before
+ * the next explicit start, and status reports it failed. An earlier start's failure is replaced, so status names what the
+ * Target needs now. Returns whether every Service was settled. */
 export async function recordFailedStart(
   target: TargetRecord,
   error: unknown,
@@ -374,7 +375,9 @@ export async function recordFailedStart(
 ): Promise<boolean> {
   const errorCode = diagnosticErrorCode(error);
   return await settleStopped(target, deps, (_component, run) =>
-    run?.intent === "stopped" || run?.outcome?.kind === "start-failed"
+    run?.intent === "stopped" ||
+    (run?.outcome?.kind === "start-failed" &&
+      run.outcome.errorCode === errorCode)
       ? undefined
       : { kind: "start-failed", errorCode, at: deps.now() },
   );

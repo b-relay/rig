@@ -556,7 +556,19 @@ test("a Stable Target whose start after a reboot finds an unfinished effect tran
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
-  // A crash mid-start left the Stable Target's effect transaction unfinished.
+  // An earlier start of api had failed its readiness check; then a crash mid-start left the Stable Target's effect
+  // transaction unfinished.
+  await f.store.update((state) => {
+    const saved = state.targets.find((t) => t.kind === "live")!;
+    saved.services!.api = {
+      ...saved.services!.api!,
+      outcome: {
+        kind: "start-failed",
+        errorCode: "HEALTH_FAILED",
+        at: "2026-09-27T07:00:00.000Z",
+      },
+    };
+  });
   const live = (await f.store.read()).targets.find((t) => t.kind === "live")!;
   await f.lifecycle.checkpoint(live);
   f.reopen();

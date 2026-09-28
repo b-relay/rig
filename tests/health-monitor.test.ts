@@ -100,7 +100,9 @@ function fixture(
   /** Observations that name no process, as leases from before incarnations did. */
   let anonymous = false;
   /** Whether the process is running, as observed. */
-  let processState: "running" | "stopped" = "running";
+  let processState: "running" | "stopped" | "unknown" = "running";
+  /** Runs while an observation is out, before it answers. */
+  let duringObservation: (() => void) | undefined;
   const dependencies: HealthMonitorDependencies = {
     store: {
       async read() {
@@ -112,16 +114,16 @@ function fixture(
     },
     observations: {
       async process(_target, component) {
-        if (processState === "stopped") return { state: "stopped" };
+        const answering = incarnations.get(component.name);
+        duringObservation?.();
+        if (processState !== "running") return { state: processState };
         return {
           state: "running",
           pid: 42,
           ...(anonymous
             ? {}
             : {
-                incarnation:
-                  staleProcess ??
-                  `${component.name}-${incarnations.get(component.name)}`,
+                incarnation: staleProcess ?? `${component.name}-${answering}`,
               }),
         };
       },
@@ -208,8 +210,11 @@ function fixture(
     set anonymous(value: boolean) {
       anonymous = value;
     },
-    set processState(value: "running" | "stopped") {
+    set processState(value: "running" | "stopped" | "unknown") {
       processState = value;
+    },
+    set duringObservation(value: (() => void) | undefined) {
+      duringObservation = value;
     },
     /** An operator's explicit restart: a new process, with a record that carries no unhealthy stretch. */
     replace(service: string) {
@@ -670,4 +675,64 @@ test("an answer from a process that ended during the check is dropped, and its r
   await f.monitor.idle();
   expect(f.activity()).not.toContain("web passes its health check again.");
   expect(f.state.targets[0]!.services!.web!.healthRestarts).toEqual(stretch);
+});
+
+test("an answer is dropped when an explicit restart completes while the observation after the check is out", async () => {
+  const f = fixture({ interval: 5, failures: 1 });
+  let answer!: (passed: boolean) => void;
+  f.answer = () => new Promise<boolean>((resolve) => (answer = resolve));
+  await f.runUntil(6 * SECOND);
+  // The observation after the check answers with the old process, but the restart was recorded while it was out.
+  f.duringObservation = () => {
+    f.duringObservation = undefined;
+    f.replace("web");
+  };
+  answer(false);
+  await f.monitor.idle();
+  expect(f.monitor.results({ id: "t1" }, "web")).not.toMatchObject({
+    status: "unhealthy",
+  });
+  expect(f.activity()).toEqual([]);
+});
+
+test("an observation that cannot tell whether the process runs keeps the count of failed checks", async () => {
+  const f = fixture({ interval: 5, failures: 3 });
+  f.answer = () => false;
+  await f.runUntil(11 * SECOND);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({ failures: 2 });
+  f.processState = "unknown";
+  await f.runUntil(14 * SECOND);
+  f.processState = "running";
+  await f.runUntil(16 * SECOND);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    failures: 3,
+    marked: true,
+  });
+});
+
+test("a process nothing identifies is reported but never restarted, and a give-up about it is still recorded", async () => {
+  const f = fixture({
+    interval: 5,
+    failures: 1,
+    onFailure: "restart",
+    retryFor: 600,
+  });
+  // Adopted from a rigd that kept no incarnations: neither the record nor the observation names it.
+  delete f.state.targets[0]!.services!.web!.incarnation;
+  f.anonymous = true;
+  f.answer = () => false;
+  await f.runUntil(700 * SECOND);
+  expect(f.restarts).toEqual([]);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    marked: true,
+    gaveUp: true,
+  });
+  expect(f.state.targets[0]!.services!.web!.healthRestarts).toMatchObject({
+    gaveUp: 606 * SECOND,
+  });
+  f.restartDaemon();
+  await f.runUntil(800 * SECOND);
+  expect(f.monitor.results({ id: "t1" }, "web")).toMatchObject({
+    gaveUp: true,
+  });
 });

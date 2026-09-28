@@ -1448,6 +1448,10 @@ services:
   Rig gave up. `rig restart` or any explicit start clears that. A new `rigd`
   continues the back-off and `retry_for` of a Service a health restart
   started.
+- A health restart acts only on the process the checks judged, which Rig knows
+  by the identity it records for every start. A process that a `rigd` too old
+  to record one started, and that is still running, is checked and reported
+  but not restarted for its checks; `rig restart` it once.
 
 `rig status` shows the result of the last check without running one:
 

@@ -11,6 +11,7 @@ import type {
 } from "./health-monitor";
 import {
   activationJournal,
+  currentRun,
   recordFailedAttempt,
   recordHealthStretch,
 } from "./supervision";
@@ -55,9 +56,13 @@ export async function restartForHealth(
   // Nothing established about the process: try again later, as if nothing had happened.
   if (seen?.kind !== "completed") return { outcome: "deferred" };
   const observed = seen.value;
+  // Only the process the checks judged, which the run record names (every start records it before it spawns); a request
+  // that names none is never acted on.
   if (
+    request.incarnation === undefined ||
+    currentRun(target, request.service)?.incarnation !== request.incarnation ||
     observed.state !== "running" ||
-    (request.incarnation !== undefined &&
+    (observed.incarnation !== undefined &&
       observed.incarnation !== request.incarnation)
   )
     return { outcome: "skipped" };

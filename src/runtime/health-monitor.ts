@@ -291,20 +291,27 @@ export function createHealthMonitor(
     component: ManagedComponent,
     timeoutMs: number,
   ): Promise<{ identity: string | undefined } | "stopped" | undefined> {
-    const saved = (await deps.store.read()).targets.find(
-      (t) => t.id === target.id,
-    );
-    const recorded = saved && currentRun(saved, component.name)?.incarnation;
+    const recordedNow = async () => {
+      const saved = (await deps.store.read()).targets.find(
+        (t) => t.id === target.id,
+      );
+      return saved && currentRun(saved, component.name)?.incarnation;
+    };
+    const recorded = await recordedNow();
     const observed = await withinTimeout(
       (signal) => deps.observations.process(target, component, signal),
       timeoutMs,
     );
     if (observed === undefined || "ready" in observed) return undefined;
-    if (observed.state !== "running") return "stopped";
+    // Only a stopped process is stopped: an unknown one decides nothing, and its count stays.
+    if (observed.state === "stopped") return "stopped";
+    if (observed.state !== "running") return undefined;
+    // The record must name the same process on both sides of the observation, which may be an old snapshot.
     if (
-      recorded !== undefined &&
-      observed.incarnation !== undefined &&
-      observed.incarnation !== recorded
+      (await recordedNow()) !== recorded ||
+      (recorded !== undefined &&
+        observed.incarnation !== undefined &&
+        observed.incarnation !== recorded)
     )
       return undefined;
     // A record from before incarnations were kept leaves the observation to say which process it is.
@@ -427,6 +434,9 @@ export function createHealthMonitor(
       });
       return;
     }
+    // A process nothing identifies (adopted from a rigd older than incarnations) is never restarted for its checks: a
+    // restart could stop another process started meanwhile. It is reported, and rig restart gives it an identity.
+    if (state.incarnation === undefined) return;
     const result = await deps.restart({
       targetId: target.id,
       service: component.name,
@@ -498,7 +508,8 @@ export function createHealthMonitor(
         run &&
         (judged.incarnation !== undefined
           ? run.incarnation === judged.incarnation
-          : run.healthRestarts?.since === episode.since)
+          : run.healthRestarts?.since === episode.since ||
+            run.incarnation === undefined)
       )
         run.healthRestarts = {
           since: episode.since,

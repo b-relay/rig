@@ -944,6 +944,7 @@ test("a health restart stops the Service within its stop_timeout under its Targe
   const restart = w.runtime.restartUnhealthy({
     targetId: local().id,
     service: "web",
+    incarnation: before.incarnation!,
     attempt: 2,
     failures: 3,
     output: "HTTP 503",
@@ -992,6 +993,21 @@ test("a health restart stops the Service within its stop_timeout under its Targe
       "web was restarted because it failed 3 health checks in a row (last output: HTTP 503) (health restart 2).",
   });
   expect(w.runtime.targetBusy(local())).toBe(false);
+  // A request that names no process, or another one than the record does, is never acted on.
+  for (const incarnation of [undefined, "some-other-process"])
+    expect(
+      await w.runtime.restartUnhealthy({
+        targetId: local().id,
+        service: "web",
+        ...(incarnation ? { incarnation } : {}),
+        attempt: 3,
+        failures: 3,
+        since: 0,
+        restarts: [],
+      }),
+    ).toEqual({ outcome: "skipped" });
+  // Still only the one stop the health restart made.
+  expect(w.stops.filter((stop) => stop.key.endsWith(":web"))).toHaveLength(1);
   // An explicit restart ends the stretch.
   await w.command({ action: "restart", target: "local" });
   expect(local().services!.web!.healthRestarts).toBeUndefined();

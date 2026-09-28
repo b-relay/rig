@@ -637,11 +637,14 @@ captured it is refused as `EFFECTS_CHANGED`.
 
 Installed executables share one bin directory, so while a Target's checkpoint
 is unfinished, no other Target may install at a path it covers: that install is
-refused as `ARTIFACT_CONFLICT`, naming the Target to run `rig down` for. This
-holds across a rigd restart, because rigd reads the unfinished journals left
-on disk before it starts any change. If another Target nevertheless owns an
-executable the interrupted change was writing, recovery refuses as
-`EFFECTS_CHANGED` and removes nothing.
+refused as `ARTIFACT_CONFLICT`, naming the Project and Target to run
+`rig down` for. This holds across a rigd restart, because rigd reads the
+unfinished journals left on disk before it starts any change. If another
+Target nevertheless owns an executable the interrupted change was writing
+(an older rigd could let it install there), recovery refuses as
+`EFFECTS_CHANGED`, removes nothing and keeps the checkpoint. Give that other
+Component a different `installName` and deploy it again, or remove its Target;
+then run `rig down` for the first Target again.
 
 Each journal carries a format version (currently 1). A journal written by a
 newer rigd whose version this one does not read is refused as

@@ -171,7 +171,11 @@ test("after rigd restarts, another Target cannot install where a crashed Target'
   const restarted = daemon(f.root);
   await expect(restarted.up(f.b)).rejects.toMatchObject({
     code: "ARTIFACT_CONFLICT",
-    details: { destination: f.executable, owner: f.a.id },
+    message: `The executable ${f.executable} belongs to an unfinished change of Project 'a' Target 'live'.`,
+    details: {
+      destination: f.executable,
+      owner: { targetId: f.a.id, project: "a", target: "live" },
+    },
   });
   expect(await Bun.file(f.executable).exists()).toBe(false);
   // rig down for the crashed Target finishes its change and hands the path back.
@@ -188,9 +192,11 @@ test("after rigd restarts, another Target cannot install where a crashed Target'
 test("a crashed Target's recovery refuses to remove an executable another Target has since installed at the path it was writing", async () => {
   const f = await fixture();
   await crashWhileInstalling(f.root, f.a);
-  // A publication that no checkpoint claimed, as a rigd without the claims on disk could have made.
-  const restarted = effects(f.root);
-  expect(await restarted.install(tool, f.b)).toEqual({ outcome: "installed" });
+  // A publication that no checkpoint claimed, as a rigd that did not read the claims on disk could have made.
+  expect(await effects(f.root).install(tool, f.b)).toEqual({
+    outcome: "installed",
+  });
+  const restarted = daemon(f.root);
   const error = await restarted.restoreEffects(f.a).then(
     () => undefined,
     (error: unknown) => error,
@@ -205,9 +211,10 @@ test("a crashed Target's recovery refuses to remove an executable another Target
   expect((error as { hint: string }).hint).toContain("Nothing was removed");
   expect(await readFile(f.executable, "utf8")).toBe("#!/bin/sh\necho b\n");
   expect(await f.owner(f.executable)).toMatchObject({ targetId: f.b.id });
-  // The checkpoint stays, so the change can still be recovered once the path is free again.
+  // The checkpoint stays, and the other Target can still free the path through its own change, as the hint says.
   expect(await readdir(join(f.root, "effect-checkpoints"))).toHaveLength(2);
-  await restarted.retireArtifacts(f.b);
+  await restarted.retire(f.b);
+  expect(await Bun.file(f.executable).exists()).toBe(false);
   await restarted.restoreEffects(f.a);
   expect(await readdir(join(f.root, "effect-checkpoints"))).toEqual([]);
 });

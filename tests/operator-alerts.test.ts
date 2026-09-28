@@ -542,6 +542,43 @@ test("an operator's rig down ends a down period with a message saying so", async
   });
 });
 
+test("an operator's rig down that begins and ends while the monitor observes the Target sends no down alert for it", async () => {
+  const rig = await fixture();
+  const pantry = await rig.addTarget("pantry", "live", "live");
+  await rig.crash(pantry, "web");
+  rig.at(ALERT_GRACE_MS);
+  let downDone = false;
+  await rig.evaluate({
+    observations: {
+      async health() {
+        return { ready: true };
+      },
+      async artifact() {
+        return "installed";
+      },
+      async persistent() {
+        return true;
+      },
+      async listening() {
+        return [];
+      },
+      async process() {
+        // rig down runs to its end between the monitor's read of state and the end of its observation.
+        if (!downDone) {
+          downDone = true;
+          await rig.change(pantry, (saved) => {
+            saved.desired = "stopped";
+          });
+        }
+        return { state: "stopped" };
+      },
+    },
+  });
+  expect(rig.channel.sent).toEqual([]);
+  await rig.evaluate();
+  expect(rig.channel.sent).toEqual([]);
+});
+
 test("a delivery failure is recorded in Activity and diagnostics, retried later, and changes no Target", async () => {
   const rig = await fixture();
   const pantry = await rig.addTarget("pantry", "live", "live");

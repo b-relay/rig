@@ -29,6 +29,7 @@ import { deliveryFailureActivity, sentActivity } from "./alert-messages";
 import type { ObservationDeadline } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
 import { observeTargets, type ObservationEffects } from "./status";
+import type { HealthResults } from "./health-monitor";
 
 /** How often rigd evaluates operator alerts. */
 export const ALERT_EVALUATION_INTERVAL_MS = 30_000;
@@ -50,6 +51,8 @@ export interface AlertMonitorDependencies {
   /** Every mutation rigd is executing or holding now; operations on different Targets run at once. A Stable Target any of
    * them may be changing is not judged. None when absent. */
   mutations?(): readonly MutationInFlight[];
+  /** The health monitor's cached results: a Service with health.interval is judged by them, never by a check run here. */
+  healthResults?: HealthResults;
 }
 
 type Activity = Pick<OperationRecord, "action" | "outcome" | "message">;
@@ -146,6 +149,7 @@ async function observeStableTargets(
       ),
       deps.observationBudgetMs,
       deps.observationDeadline,
+      deps.healthResults,
     ),
     observed.some((target) => target.plan.domain)
       ? routePublication(deps)

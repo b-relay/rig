@@ -79,6 +79,9 @@ export interface ServiceRun {
   /** The operator's latest stop needed SIGKILL: the stop_timeout ran out (`timeout`), or `--kill` cut it short (`request`).
    * A new start clears it. */
   stopKilled?: "timeout" | "request";
+  /** The unhealthy stretch a health restart started this process in: when it began and each restart (Unix milliseconds).
+   * Automatic starts carry it on; an explicit start clears it. */
+  healthRestarts?: { since: number; at: number[]; gaveUp?: number };
 }
 
 export interface TargetRecord {

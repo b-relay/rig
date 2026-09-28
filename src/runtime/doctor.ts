@@ -188,6 +188,7 @@ export async function doctor(
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
+    deps.healthResults,
   );
   for (const report of reports)
     for (const component of report.components)

@@ -135,6 +135,17 @@ const DOWN_STATES = new Set<ComponentReport["state"]>([
   "unhealthy",
 ]);
 
+/** An unhealthy Service whose ongoing checks have not marked it unhealthy: they failed fewer times in a row than its
+ * health.failures, so it does not keep its Target down. A marked one stays marked through a health restart until a check
+ * passes. A check status ran itself has no count and always does. */
+function belowThreshold(component: ComponentReport): boolean {
+  return (
+    component.state === "unhealthy" &&
+    component.health !== undefined &&
+    component.health.marked !== true
+  );
+}
+
 /** Whether the host Caddy loads Rig's routes, as far as the last inspection could tell. */
 export type RoutePublication = "published" | "unpublished" | "unknown";
 
@@ -195,7 +206,7 @@ export function stableTargetCondition(input: {
   );
   const down = managed.filter(
     (component) =>
-      DOWN_STATES.has(component.state) ||
+      (DOWN_STATES.has(component.state) && !belowThreshold(component)) ||
       (component.state === "stopped" &&
         currentRun(target, component.name)?.exhausted === true),
   );
@@ -239,7 +250,10 @@ export function stableTargetCondition(input: {
 
 /** The reason a Service keeps its Target down, in a few words, from what Rig recorded about its latest process. */
 function briefReason(component: ComponentReport, run?: ServiceRun): string {
-  if (component.state === "unhealthy") return "failing its readiness check";
+  if (component.state === "unhealthy")
+    return component.health
+      ? "failing its health checks"
+      : "failing its readiness check";
   const outcome = run?.outcome;
   if (component.state === "starting") {
     if (run?.waitingFor)

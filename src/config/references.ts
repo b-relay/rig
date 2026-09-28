@@ -22,7 +22,7 @@ export interface GeneratedValues {
   data(service: string): string;
   /** The concrete number of a declared port. */
   port(service: string, port: string): number;
-  /** The rigd executable a Service's command can run a Service helper with; absent where no Service runs. */
+  /** The launcher of the rigd that runs the Target, for a Service's command to run a Service helper with; absent where no Service runs. */
   rigd?: string;
 }
 export interface ReferenceResolver {
@@ -95,7 +95,7 @@ export function referenceResolver(
               `\${rig.rigd} in ${at} names the rigd that runs the Target, and this plan is not made by one.`,
               "invalid_context",
               { key, path: at },
-              "Plan and run the Target through rigd (rig up, rig deploy), which knows its own executable.",
+              "Plan and run the Target through rigd (rig up, rig deploy), which writes the launcher it names.",
             );
           return plain(generated.rigd);
         case "rig.data":

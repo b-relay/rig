@@ -1471,7 +1471,7 @@ services:
 `convex dev --local` cannot run under Rig: it always starts its backend on
 `0.0.0.0`, which the loopback check refuses (`LISTENER_NONLOCAL`), so
 `convex@1`, which ran it, never starts. `convex@2` runs `rigd convex`, a
-Service helper bundled in `rigd` (`${rig.rigd}` is the `rigd` executable, see
+Service helper bundled in `rigd` (`${rig.rigd}` runs the installed `rigd`, see
 [References](#references)). It runs as the Service's own process and:
 
 - keeps the deployment in `--state-dir`, the Service's persistent data, in the
@@ -1480,30 +1480,41 @@ Service helper bundled in `rigd` (`${rig.rigd}` is the `rigd` executable, see
   storage). A deployed Target's fresh checkout keeps its data, and each Target
   has a deployment of its own. The first start makes a new, empty deployment,
   or copies one that `convex dev --local` left in the workspace's
-  `.convex/local/default` (the original stays in place);
+  `.convex/local/default` (the copy is made beside the state directory and
+  moved in whole; the original stays in place). A deployment an older Convex
+  CLI made without an instance secret of its own gets a new secret and admin
+  key, as `convex dev` does. A state directory that holds files but no
+  `config.json` is refused (`CONVEX_STATE_INCOMPLETE`) rather than replaced;
 - runs the backend release Convex recommends (asked of `version.convex.dev`),
   moving an existing deployment to it as `convex dev` does, and takes the
   binary from Convex's own cache, `~/.cache/convex/binaries`, which
   `convex dev` shares. A release missing from the cache is downloaded from
   GitHub, which needs the network and `unzip`. Offline, an existing deployment
   stays on its release if it is cached, and a new one starts on the newest
-  cached release. `--backend-version <release>` pins a release;
+  cached release. When a newer release cannot be downloaded (a download gives
+  up after 2 minutes), the deployment stays on its own.
+  `--backend-version <release>` pins a release;
 - starts the backend with `--interface 127.0.0.1`, without `TZ` (the backend
   refuses to start with it set), and writes `CONVEX_SELF_HOSTED_URL` and
   `CONVEX_SELF_HOSTED_ADMIN_KEY` for it into the workspace's `.env.local`,
-  keeping the file's other lines and removing a `CONVEX_DEPLOYMENT` line that
-  would conflict. Keep `.env.local` out of Git: it holds the admin key. Other
+  keeping the file's other lines. A `CONVEX_DEPLOYMENT` line, which the Convex
+  CLI refuses beside the self-hosted pair, is commented out, not deleted. Keep
+  `.env.local` out of Git: it holds the admin key. Other
   `bunx convex` commands (`run`, `data`, `export`) in the workspace then reach
   the backend while it runs;
 - runs `bunx convex dev` (arguments after `--` go to it) and supervises both.
-  When either ends by itself, the other is stopped and the Service ends with a
-  failure. A stop (SIGTERM, within the Service's `stop_timeout`) is passed to
-  both, and the helper exits once they have.
+  When either ends by itself, the other is stopped (and killed if it has not
+  ended 10 s later) and the Service ends with a failure. A stop (SIGTERM,
+  within the Service's `stop_timeout`) is passed to both, and the helper exits
+  once they have.
 
 The Target log shows the helper's lines, the backend's warnings and
 `convex dev`'s function logs. The first start may download the backend, hence
 the 3 minute `ready_timeout`. Other Services reach the backend at
-`http://127.0.0.1:${services.convex.ports.cloud}`.
+`http://127.0.0.1:${services.convex.ports.cloud}`. The Service is ready when
+the backend answers, which is before `convex dev` has pushed the functions: a
+Service that depends on it may start a moment before the functions exist, as
+it could with `convex@1`.
 
 To move a Service from `convex@1`, or from a hand-written script that ran the
 backend binary itself, generate `convex@2` with the Service's name and replace
@@ -1708,10 +1719,12 @@ applied), or one of the `rig.*` values Rig generates:
 - `${rig.url}`: `https://<hostname>` when the Target has a route;
   `http://127.0.0.1:<port>` of the `/` upstream when it has a `proxy` but no
   hostname; empty without a `proxy`.
-- `${rig.rigd}`: the `rigd` executable that runs the Target, so a Service's
-  command can start a Service helper such as `rigd convex` whether or not
-  `rigd` is on the Service's `PATH`. It is the compiled `rigd`, or `src/rigd.ts`
-  when `rigd` runs from source, which then needs `bun` on the `PATH`.
+- `${rig.rigd}`: `<RIG_ROOT>/daemon/rigd`, a small launcher `rigd` rewrites
+  each time it starts, which runs that `rigd` (compiled, or from source with
+  its `bun`). A Service's command starts a Service helper through it, such as
+  `rigd convex`, whether or not `rigd` is on the Service's `PATH`. The path
+  stays the same when `rigd` is reinstalled or moved, so a recorded plan keeps
+  working and shows no drift.
 
 References are checked when the config is parsed, for the base config and for
 each role's patched settings, so a typo never reaches a shell. Each rejection

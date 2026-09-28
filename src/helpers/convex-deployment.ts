@@ -11,14 +11,34 @@ export const backendRelease = z
     "must be a Convex backend release name such as precompiled-2026-09-21-0cf49cb",
   );
 /** A deployment's `config.json`, in the form `convex dev --local` writes to `.convex/local/default/config.json`. Fields
- * Rig does not use, such as `ports` and `cloudProjectId`, are kept when the file is written back. */
+ * Rig does not use, such as `ports` and `cloudProjectId`, are kept when the file is written back. An older Convex CLI
+ * wrote no instance secret (the backend then used a fixed legacy one), and so possibly no admin key either. */
 export const deploymentConfig = z.looseObject({
   deploymentName: z.string().min(1),
   backendVersion: backendRelease,
-  adminKey: z.string().min(1),
-  instanceSecret: z.string().min(1),
+  adminKey: z.string().min(1).optional(),
+  instanceSecret: z.string().min(1).optional(),
 });
 export type DeploymentConfig = z.infer<typeof deploymentConfig>;
+/** A deployment with credentials of its own, which is what the backend is started with. */
+export type Deployment = DeploymentConfig & {
+  adminKey: string;
+  instanceSecret: string;
+};
+/** The instance secret every local backend shared before the Convex CLI made one per deployment. */
+const LEGACY_INSTANCE_SECRET =
+  "4361726e697461732c206c69746572616c6c79206d65616e696e6720226c6974";
+/** Whether the deployment has credentials of its own. One without, or with the legacy secret, gets new ones before it
+ * runs, as `convex dev --local` does; its data does not depend on them. */
+export function hasOwnCredentials(
+  config: DeploymentConfig,
+): config is Deployment {
+  return (
+    config.adminKey !== undefined &&
+    config.instanceSecret !== undefined &&
+    config.instanceSecret !== LEGACY_INSTANCE_SECRET
+  );
+}
 
 /** The files of one deployment directory. The layout is the one `convex dev --local` uses, so a directory it made can be
  * run here and the other way round. */
@@ -56,7 +76,7 @@ export function backendUrl(cloudPort: number): string {
 /** Pure: the backend's arguments, bound to loopback. The deployment's secret is an argument because the backend reads it
  * from nowhere else; `convex dev --local` passes it the same way. */
 export function backendArguments(input: {
-  deployment: DeploymentConfig;
+  deployment: Deployment;
   stateDir: string;
   cloudPort: number;
   sitePort: number;
@@ -112,13 +132,16 @@ export function nextRelease(
     : { release: current };
 }
 
-/** Lines of `.env.local` that point `bunx convex` at a deployment: this helper's, a hand-written script's, and the
- * `CONVEX_DEPLOYMENT` that `convex dev --local` writes, which the Convex CLI refuses beside the self-hosted pair. */
+/** Lines of `.env.local` that point `bunx convex` at a self-hosted backend: this helper's, or a hand-written script's. */
 const MANAGED_LINE =
-  /^(?:CONVEX_DEPLOYMENT|CONVEX_SELF_HOSTED_URL|CONVEX_SELF_HOSTED_ADMIN_KEY)=|^# Deployment used by `npx convex dev`|^# Convex backend run by /;
+  /^(?:CONVEX_SELF_HOSTED_URL|CONVEX_SELF_HOSTED_ADMIN_KEY)=|^# Convex backend run by /;
+/** The deployment `convex dev` would otherwise use, which the Convex CLI refuses beside the self-hosted pair. */
+const OTHER_DEPLOYMENT = /^CONVEX_DEPLOYMENT=/;
 const HEADER = "# Convex backend run by rigd convex (the convex recipe)";
-/** Pure: `.env.local` with the self-hosted pair pointing at this backend. Every other line is kept, in order; the
- * pair and its comment go last. */
+const SET_ASIDE = "  # set aside by rigd convex";
+/** Pure: `.env.local` with the self-hosted pair pointing at this backend. A `CONVEX_DEPLOYMENT` line is commented out
+ * rather than removed, so a cloud deployment it named is not lost; every other line is kept, in order. The pair and its
+ * comment go last. */
 export function selfHostedEnvFile(
   existing: string | undefined,
   input: { url: string; adminKey: string },
@@ -126,6 +149,9 @@ export function selfHostedEnvFile(
   const kept = (existing ?? "")
     .split("\n")
     .filter((line) => !MANAGED_LINE.test(line))
+    .map((line) =>
+      OTHER_DEPLOYMENT.test(line) ? `# ${line}${SET_ASIDE}` : line,
+    )
     .join("\n")
     .trim();
   const pair = [

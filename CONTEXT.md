@@ -272,6 +272,10 @@ _Relationship_: A Service helper reads and writes no Rig state and needs no
 `RIG_ROOT`. What it keeps belongs to the Service, usually in `${rig.data}`.
 It reports on stdout and stderr, which the Target log records.
 
+_Relationship_: `${rig.rigd}` is `<RIG_ROOT>/daemon/rigd`, a launcher each
+starting `rigd` rewrites to run itself, so recorded plans stay valid across a
+reinstall.
+
 ### Recipe
 
 A versioned, bundled template that prints an ordinary Service block for the user

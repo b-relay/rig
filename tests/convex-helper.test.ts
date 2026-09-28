@@ -9,13 +9,11 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  runConvexCli,
-  type ConvexCommandOptions,
-} from "../src/cli/convex-command";
+import { runConvexCli } from "../src/cli/convex-command";
 import { RigError } from "../src/domain/errors";
 import type {
   ChildExit,
+  ConvexCommandOptions,
   ConvexHelperDependencies,
   RunningChild,
 } from "../src/helpers/convex-contracts";
@@ -44,6 +42,7 @@ interface FakeChild extends RunningChild {
   readonly env: Readonly<Record<string, string>>;
   readonly cwd: string;
   stopped: boolean;
+  killed?: boolean;
   end(exit: ChildExit): void;
 }
 /** Fakes for the download, the children and the clock, over real files in a temporary workspace and state directory. */
@@ -60,6 +59,10 @@ async function harness(
     backendEnds?: ChildExit;
     /** A stop arrives while keygen runs, which then fails as a cancelled command does. */
     stopDuringKeygen?: boolean;
+    /** Releases whose download breaks with an error that is not a RigError. */
+    broken?: string[];
+    /** The backend ignores SIGTERM; only a kill ends it. */
+    backendIgnoresStop?: boolean;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-convex-helper-"));
@@ -82,6 +85,8 @@ async function harness(
       },
       async binary(release) {
         events.push(`binary ${release}`);
+        if (options.broken?.includes(release))
+          throw new Error("ECONNRESET while reading the body");
         if (options.unavailable?.includes(release))
           throw new RigError(
             "CONVEX_BACKEND_DOWNLOAD",
@@ -110,7 +115,12 @@ async function harness(
           stop() {
             if (ended) return;
             child.stopped = true;
-            child.end({ signal: "SIGTERM" });
+            if (!(options.backendIgnoresStop && child === children[0]))
+              child.end({ signal: "SIGTERM" });
+          },
+          kill() {
+            child.killed = true;
+            child.end({ signal: "SIGKILL" });
           },
         };
         children.push(child);
@@ -206,7 +216,7 @@ test("a first start creates the deployment in the state directory, points .env.l
   const h = await harness({ recommended: NEW });
   await writeFile(
     join(h.workspace, ".env.local"),
-    "# Deployment used by `npx convex dev`\nCONVEX_DEPLOYMENT=anonymous:anonymous-app # team: x\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\nAPP_KEY=keep\n",
+    "# Deployment used by `npx convex dev`\nCONVEX_DEPLOYMENT=dev:cloud-app # team: x\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\nAPP_KEY=keep\n",
   );
   expect(await h.start()).toBe(0);
 
@@ -267,7 +277,7 @@ test("a first start creates the deployment in the state directory, points .env.l
   expect(dev!.env.CONVEX_DEPLOYMENT).toBeUndefined();
   expect(backend!.stopped && dev!.stopped).toBe(true);
   expect(await readFile(join(h.workspace, ".env.local"), "utf8")).toBe(
-    "VITE_CONVEX_URL=http://127.0.0.1:3210\nAPP_KEY=keep\n\n# Convex backend run by rigd convex (the convex recipe)\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:47001\nCONVEX_SELF_HOSTED_ADMIN_KEY=convex-self-hosted|admin-key\n",
+    "# Deployment used by `npx convex dev`\n# CONVEX_DEPLOYMENT=dev:cloud-app # team: x  # set aside by rigd convex\n\nVITE_CONVEX_URL=http://127.0.0.1:3210\nAPP_KEY=keep\n\n# Convex backend run by rigd convex (the convex recipe)\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:47001\nCONVEX_SELF_HOSTED_ADMIN_KEY=convex-self-hosted|admin-key\n",
   );
   expect(h.output().out).toContain(
     `Created Convex deployment convex-self-hosted (backend ${NEW}) in ${h.stateDir}`,
@@ -304,7 +314,8 @@ test("an existing deployment moves to a newer recommended release once its backe
     `Moved the Convex deployment from backend ${OLD} to ${NEW}`,
   );
 
-  const offline = await harness({ recommended: NEW, unavailable: [NEW] });
+  // Any failure to get the newer release falls back, not only a tagged one.
+  const offline = await harness({ recommended: NEW, broken: [NEW] });
   await mkdir(offline.stateDir, { recursive: true });
   await writeFile(
     join(offline.stateDir, "config.json"),
@@ -315,7 +326,7 @@ test("an existing deployment moves to a newer recommended release once its backe
     `/cache/${OLD}/convex-local-backend`,
   );
   expect(offline.output().err).toContain(
-    `Staying on Convex backend ${OLD}: Convex backend ${NEW} could not be downloaded (offline).`,
+    `Staying on Convex backend ${OLD}: ECONNRESET while reading the body`,
   );
   expect(
     JSON.parse(await readFile(join(offline.stateDir, "config.json"), "utf8"))
@@ -615,4 +626,73 @@ test("rigd convex checks its options before running anything, passes operands to
   });
   expect(failing).toBe(1);
   expect(err).toBe("rigd convex: No key. (CONVEX_KEYGEN)\nCheck the binary.\n");
+});
+
+test("a deployment an older Convex CLI made without credentials of its own gets new ones before its backend runs", async () => {
+  const h = await harness({ recommended: NEW });
+  await mkdir(h.stateDir, { recursive: true });
+  await writeFile(
+    join(h.stateDir, "config.json"),
+    JSON.stringify({ deploymentName: "anonymous-app", backendVersion: NEW }),
+  );
+  expect(await h.start()).toBe(0);
+  const config = JSON.parse(
+    await readFile(join(h.stateDir, "config.json"), "utf8"),
+  );
+  expect(config).toEqual({
+    deploymentName: "anonymous-app",
+    backendVersion: NEW,
+    instanceSecret: "f".repeat(64),
+    adminKey: "anonymous-app|admin-key",
+  });
+  expect(h.children[0]!.command).toContain("f".repeat(64));
+  expect(h.children[1]!.env.CONVEX_SELF_HOSTED_ADMIN_KEY).toBe(
+    "anonymous-app|admin-key",
+  );
+});
+
+test("a state directory with files but no config.json is refused, an empty one is used, and an interrupted copy leaves nothing half-adopted", async () => {
+  const cluttered = await harness({ recommended: NEW });
+  await mkdir(cluttered.stateDir, { recursive: true });
+  await writeFile(
+    join(cluttered.stateDir, "convex_local_backend.sqlite3"),
+    "rows",
+  );
+  await expect(cluttered.start()).rejects.toMatchObject({
+    code: "CONVEX_STATE_INCOMPLETE",
+    hint: expect.stringContaining("move the directory aside"),
+  });
+  expect(cluttered.children).toEqual([]);
+
+  // An empty state directory (as Rig or an earlier failed start leaves it) takes a copied deployment.
+  const empty = await harness({ recommended: NEW });
+  await mkdir(empty.stateDir, { recursive: true });
+  await mkdir(`${empty.stateDir}.partial`, { recursive: true });
+  await writeFile(join(`${empty.stateDir}.partial`, "config.json"), "{half");
+  const local = join(empty.workspace, ".convex", "local", "default");
+  await mkdir(local, { recursive: true });
+  await writeFile(
+    join(local, "config.json"),
+    JSON.stringify({
+      deploymentName: "anonymous-app",
+      backendVersion: NEW,
+      adminKey: "k",
+      instanceSecret: "s",
+    }),
+  );
+  expect(await empty.start()).toBe(0);
+  expect(
+    JSON.parse(await readFile(join(empty.stateDir, "config.json"), "utf8"))
+      .deploymentName,
+  ).toBe("anonymous-app");
+  await expect(stat(`${empty.stateDir}.partial`)).rejects.toThrow();
+});
+
+test("a child that ignores SIGTERM after the other ended by itself is killed, so the failed Service ends", async () => {
+  const h = await harness({ recommended: NEW, backendIgnoresStop: true });
+  expect(await h.start({}, ({ dev }) => dev.end({ code: 3 }))).toBe(3);
+  expect(h.children[0]!.killed).toBe(true);
+  expect(h.output().err).toContain(
+    "did not stop within 10 s of SIGTERM; killing it.",
+  );
 });

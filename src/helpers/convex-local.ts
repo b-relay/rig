@@ -1,5 +1,10 @@
 import { join } from "node:path";
-import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
+import {
+  RigError,
+  boundedEvidence,
+  errorMessage,
+  lastOutputLine,
+} from "../domain/errors";
 import type {
   ChildExit,
   ConvexHelperDependencies,
@@ -11,11 +16,13 @@ import {
   backendUrl,
   convexDevEnvironment,
   deploymentFiles,
+  hasOwnCredentials,
   newDeploymentRelease,
   nextRelease,
   parseDeploymentConfig,
   releasedBefore,
   selfHostedEnvFile,
+  type Deployment,
   type DeploymentConfig,
 } from "./convex-deployment";
 
@@ -24,6 +31,9 @@ export const BACKEND_START_MS = 120_000;
 const BACKEND_POLL_MS = 250;
 /** A stop of the Service's process group reaches the children and this process at once; a child's exit can be seen first. */
 const STOP_SETTLE_MS = 100;
+/** How long a child may take to end after the helper, not the Service's supervisor, stopped it; then it is killed. A stop
+ * the supervisor asked for is waited out without a limit: the Service's stop_timeout bounds it. */
+export const CHILD_STOP_MS = 10_000;
 /** The command `convex dev` runs as: the Project's own Convex CLI, through bunx, as the version 1 recipe ran it. */
 const CONVEX_DEV = ["bunx", "convex", "dev"] as const;
 
@@ -81,15 +91,19 @@ async function runUntilEnd(
     ...(pinned ? { pinned } : {}),
     ...(recommended ? { recommended } : {}),
   };
-  const deployment = await openDeployment(request, offer, deps, stop);
+  const opened = await openDeployment(request, offer, deps, stop);
   if (stop.aborted) return 0;
-  const backend = await obtainBackend(
-    deployment.backendVersion,
-    offer,
-    deps,
-    stop,
-  );
+  const backend = await obtainBackend(opened.backendVersion, offer, deps, stop);
   if (stop.aborted) return 0;
+  const deployment = hasOwnCredentials(opened)
+    ? opened
+    : await newCredentials(
+        opened,
+        backend.binary,
+        request.stateDir,
+        deps,
+        stop,
+      );
   const url = backendUrl(request.cloudPort);
   const envFile = join(request.workspace, ".env.local");
   await deps.files.writePrivate(
@@ -144,8 +158,7 @@ async function runUntilEnd(
       ? failed(first.label, first.exit, deps)
       : 0;
   } finally {
-    for (const child of children) child.stop();
-    await Promise.all(children.map((child) => child.exited));
+    await endChildren(children, deps, stop);
   }
 }
 
@@ -159,6 +172,14 @@ async function openDeployment(
   const own = deploymentFiles(request.stateDir).config;
   const kept = await deps.files.read(own);
   if (kept !== undefined) return parseDeploymentConfig(kept, own);
+  // Files without a config could be a database whose secret is lost; a new deployment over them would hide that.
+  if (!(await deps.files.vacant(request.stateDir)))
+    throw new RigError(
+      "CONVEX_STATE_INCOMPLETE",
+      `${request.stateDir} holds files but no config.json, so it is not a Convex deployment Rig can run or replace.`,
+      "Restore its config.json, or move the directory aside to start a new, empty deployment.",
+      { path: request.stateDir },
+    );
   const local = join(request.workspace, ".convex", "local", "default");
   const left = await deps.files.read(deploymentFiles(local).config);
   if (left !== undefined) {
@@ -195,7 +216,7 @@ async function createDeployment(
     );
   const binary = await deps.releases.binary(release, stop);
   const instanceSecret = deps.newInstanceSecret();
-  const deployment: DeploymentConfig = {
+  const deployment: Deployment = {
     deploymentName: request.instanceName,
     backendVersion: release,
     adminKey: await adminKey(
@@ -214,6 +235,36 @@ async function createDeployment(
   );
   deps.output.write(
     `Created Convex deployment ${deployment.deploymentName} (backend ${release}) in ${request.stateDir}\n`,
+  );
+  return deployment;
+}
+
+/** New credentials for a deployment an older Convex CLI made without its own, saved before the backend runs on them. */
+async function newCredentials(
+  config: DeploymentConfig,
+  binary: string,
+  stateDir: string,
+  deps: ConvexHelperDependencies,
+  stop: AbortSignal,
+): Promise<Deployment> {
+  const instanceSecret = deps.newInstanceSecret();
+  const deployment: Deployment = {
+    ...config,
+    instanceSecret,
+    adminKey: await adminKey(
+      binary,
+      config.deploymentName,
+      instanceSecret,
+      deps,
+      stop,
+    ),
+  };
+  await deps.files.writePrivate(
+    deploymentFiles(stateDir).config,
+    `${JSON.stringify(deployment, null, 2)}\n`,
+  );
+  deps.output.write(
+    `Made the Convex deployment ${deployment.deploymentName} an instance secret and admin key of its own, as convex dev does for a deployment an older Convex CLI made.\n`,
   );
   return deployment;
 }
@@ -271,9 +322,9 @@ async function obtainBackend(
   try {
     return { release, binary: await deps.releases.binary(release, stop) };
   } catch (error) {
-    if (!(error instanceof RigError) || stop.aborted) throw error;
+    if (stop.aborted) throw error;
     deps.output.error(
-      `Staying on Convex backend ${fallback}: ${error.message}\n`,
+      `Staying on Convex backend ${fallback}: ${errorMessage(error)}\n`,
     );
     return {
       release: fallback,
@@ -319,7 +370,7 @@ async function backendAnswers(
 /** Records a release the backend has started on, so the next start does not take it for an upgrade again. */
 async function recordRelease(
   stateDir: string,
-  deployment: DeploymentConfig,
+  deployment: Deployment,
   release: string,
   deps: Pick<ConvexHelperDependencies, "files" | "output">,
 ): Promise<void> {
@@ -357,6 +408,31 @@ async function firstEnd(
   }
 }
 
+/** Stops the children and waits for them. When the helper stopped them itself (a child ended, or starting failed), one that
+ * does not end within CHILD_STOP_MS is killed, so a child that ignores SIGTERM cannot keep a failed Service looking alive. */
+async function endChildren(
+  children: readonly RunningChild[],
+  deps: Pick<ConvexHelperDependencies, "wait" | "output">,
+  stop: AbortSignal,
+): Promise<void> {
+  for (const child of children) child.stop();
+  const ended = Promise.all(children.map((child) => child.exited));
+  if (!stop.aborted) {
+    const timer = new AbortController();
+    const inTime = await Promise.race([
+      ended.then(() => true),
+      deps.wait(CHILD_STOP_MS, timer.signal).then(() => false),
+    ]);
+    timer.abort();
+    if (!inTime) {
+      deps.output.error(
+        `A child of the Convex Service did not stop within ${CHILD_STOP_MS / 1000} s of SIGTERM; killing it.\n`,
+      );
+      for (const child of children) child.kill();
+    }
+  }
+  await ended;
+}
 /** Whether a stop arrives within the settle window after a child ended, which makes that end part of the stop. */
 async function stopFollows(
   deps: Pick<ConvexHelperDependencies, "wait">,

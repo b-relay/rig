@@ -1,10 +1,8 @@
-#!/usr/bin/env bun
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { runRigdCli } from "./cli/rigd";
 import {
   daemonCommand,
-  rigdExecutable,
   resolveToolBun,
   reportRootFailure,
   rigRoot,
@@ -20,6 +18,7 @@ import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
 import { runConvexCli } from "./cli/convex-command";
 import { runConvexProcess } from "./helpers/convex-process";
+import { writeRigdLauncher } from "./daemon/rigd-launcher";
 export async function main(args: readonly string[]): Promise<number> {
   // A Service helper runs as a Service's process, whose environment has no RIG_ROOT: it reads and writes no Rig state,
   // so it is dispatched before the root is resolved, and its failures go to stderr (the Target log), not a Rig log.
@@ -57,7 +56,8 @@ export async function main(args: readonly string[]): Promise<number> {
         [...command, "capture"],
         installation?.bun,
         process.env.RIG_DAEMON_MODE === "process" ? "process" : "launchd",
-        rigdExecutable(command),
+        // Plans name the launcher, not this executable, so a reinstalled or moved rigd leaves recorded plans valid.
+        await writeRigdLauncher(root, command),
       );
     } catch (error) {
       // runDaemonHost records its own failures; composition failures need the same record.
@@ -82,6 +82,7 @@ export async function main(args: readonly string[]): Promise<number> {
     output: userOutput(),
     newOperationId: randomUUID,
     capture: runCapturedProcess,
+    // Reached only for `rigd help convex`: a real `rigd convex` was dispatched above, before the root was resolved.
     convex: (options) => runConvexProcess(options, userOutput()),
     diagnostics: createHostDiagnosticLog({
       root,

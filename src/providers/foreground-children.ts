@@ -14,7 +14,7 @@ export function createForegroundChildren(): ChildProcesses {
       });
       let ended = false;
       const exited = new Promise<ChildExit>((resolve) => {
-        child.once("error", (error) => {
+        child.on("error", (error) => {
           // A child that started and then failed to be signalled also emits error; only a failed start ends it here.
           if (child.pid !== undefined) return;
           ended = true;
@@ -25,16 +25,18 @@ export function createForegroundChildren(): ChildProcesses {
           resolve(signal ? { signal } : { code: code ?? 1 });
         });
       });
+      const signal = (name: NodeJS.Signals) => {
+        if (ended) return;
+        try {
+          child.kill(name);
+        } catch {
+          /* It ended between the check and the signal. */
+        }
+      };
       return {
         exited,
-        stop() {
-          if (ended) return;
-          try {
-            child.kill("SIGTERM");
-          } catch {
-            /* It ended between the check and the signal. */
-          }
-        },
+        stop: () => signal("SIGTERM"),
+        kill: () => signal("SIGKILL"),
       };
     },
   };

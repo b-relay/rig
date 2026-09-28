@@ -2,6 +2,7 @@ import { CommanderError, type Command } from "commander";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { RigError, errorMessage } from "../domain/errors";
+import type { ConvexCommandOptions } from "../helpers/convex-contracts";
 import { backendRelease } from "../helpers/convex-deployment";
 import { isHelp } from "./failure";
 import { addHelpCommand, terminalCommand } from "./commands";
@@ -10,17 +11,6 @@ import type { UserOutput } from "./types";
 
 /** The name a new deployment gets when --instance-name is not given; Convex's own self-hosted default. */
 export const DEFAULT_INSTANCE_NAME = "convex-self-hosted";
-/** What `rigd convex` was asked, checked. */
-export interface ConvexCommandOptions {
-  readonly cloudPort: number;
-  readonly sitePort: number;
-  /** Absolute. */
-  readonly stateDir: string;
-  readonly instanceName: string;
-  readonly backendVersion?: string;
-  /** Operands, which go to `convex dev`. */
-  readonly devArguments: readonly string[];
-}
 const PORT = "must be a port number from 1 to 65535";
 const port = z.coerce
   .number({ error: PORT })

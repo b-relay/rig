@@ -56,7 +56,7 @@ import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import type { Supervisor } from "../providers/contracts";
 /** Composition root selects adapters. Runtime and command code see capability Interfaces only.
  * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none.
- * `rigd` is the executable plans name as `${rig.rigd}`, for a Service's command to run a Service helper with. */
+ * `rigd` is the launcher plans name as `${rig.rigd}`, for a Service's command to run a Service helper with. */
 export async function composeDaemon(
   root: string,
   captureCommand: readonly string[],

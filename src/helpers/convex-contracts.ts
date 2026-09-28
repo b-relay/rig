@@ -1,6 +1,18 @@
 import type { UserOutput } from "../cli/types";
 import type { CommandRunner } from "../providers/contracts";
 
+/** What `rigd convex` was asked on its command line, checked. */
+export interface ConvexCommandOptions {
+  readonly cloudPort: number;
+  readonly sitePort: number;
+  /** Absolute. */
+  readonly stateDir: string;
+  readonly instanceName: string;
+  readonly backendVersion?: string;
+  /** Operands, which go to `convex dev`. */
+  readonly devArguments: readonly string[];
+}
+
 /** Convex's backend releases and the binary cache `convex dev` shares (`~/.cache/convex/binaries/<release>`). */
 export interface ConvexBackendReleases {
   /** The release Convex recommends now; undefined when it cannot be asked (offline) or gives no usable answer. */
@@ -22,6 +34,8 @@ export interface RunningChild {
   readonly exited: Promise<ChildExit>;
   /** Asks the child to stop with SIGTERM; nothing once it has ended. */
   stop(): void;
+  /** Ends the child with SIGKILL; nothing once it has ended. */
+  kill(): void;
 }
 /** Starts children that stay in this process's group and write to its stdout and stderr, so their output reaches the
  * Target log and a stop of the Service's process group reaches them too. */
@@ -38,7 +52,10 @@ export interface DeploymentFiles {
   read(path: string): Promise<string | undefined>;
   /** Replaces the file with text only its owner can read (mode 600), creating its directory (mode 700) first. */
   writePrivate(path: string, text: string): Promise<void>;
-  /** Copies a directory tree to `to`, which must not exist yet. */
+  /** Whether the path is missing or an empty directory. */
+  vacant(path: string): Promise<boolean>;
+  /** Copies a directory tree to `to` as a whole: it is copied beside `to` and renamed into place, so `to` never holds
+   * part of it. `to` must be vacant. */
   copyDirectory(from: string, to: string): Promise<void>;
   /** Creates the directory (mode 700) and its parents when missing. */
   ensureDirectory(path: string): Promise<void>;

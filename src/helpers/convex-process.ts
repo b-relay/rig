@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import type { ConvexCommandOptions } from "../cli/convex-command";
+import type { ConvexCommandOptions } from "./convex-contracts";
 import type { UserOutput } from "../cli/types";
 import { runCommand } from "../providers/command-runner";
 import { createConvexReleases } from "../providers/convex-releases";
@@ -50,6 +50,7 @@ export async function runConvexProcess(
         probe: probeText,
         wait: (ms, signal) =>
           new Promise((resolve) => {
+            if (signal.aborted) return resolve();
             const timer = setTimeout(done, ms);
             function done() {
               clearTimeout(timer);

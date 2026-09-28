@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "STAMP=\"$(git describe --always --dirty --abbrev=12 --exclude='*' 2>/dev/null || echo dev)\" && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/index.ts --outfile rig && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/rigd.ts --outfile rigd && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/git/remote-helper.ts --outfile git-remote-rig",
+    "build": "STAMP=\"$(git describe --always --dirty --abbrev=12 --exclude='*' 2>/dev/null || echo dev)\" && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/index.ts --outfile rig && bun build --compile --no-compile-autoload-dotenv --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/rigd.ts --outfile rigd && bun build --compile --define process.env.RIG_BUILD_COMMIT=\"\\\"$STAMP\\\"\" src/git/remote-helper.ts --outfile git-remote-rig",
     "start": "bun run src/index.ts",
     "test:parallel": "\"$npm_execpath\" test --parallel=4 --timings=tests/timings.json",
     "test:fast": "\"$npm_execpath\" test --parallel=4 --timings=tests/timings.json --path-ignore-patterns='**/tests/*e2e.test.ts' --path-ignore-patterns='**/tests/release-matrix.test.ts' --path-ignore-patterns='**/tests/tool-shim-compiled.test.ts' --path-ignore-patterns='**/tests/log-follow-entrypoint.test.ts'",

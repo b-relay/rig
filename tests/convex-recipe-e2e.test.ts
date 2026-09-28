@@ -53,10 +53,10 @@ test("the convex@2 recipe runs through ${rig.rigd} under a real rigd: the backen
   const bunxLog = join(home, "bunx.log");
   await writeFile(join(bin, "bunx"), fakeBunx(bunxLog));
   await chmod(join(bin, "bunx"), 0o755);
-  // src/rigd.ts runs through its #!/usr/bin/env bun line, so the Service's PATH has bun on it, as the recipe's bunx needs.
+  // The fake bunx comes first on the Service's PATH; the launcher reaches bun by its own path.
   const f = await rigFixture({
     HOME: home,
-    PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+    PATH: `${bin}:/usr/bin:/bin`,
   });
   const success = (result: {
     code: number;
@@ -93,6 +93,10 @@ test("the convex@2 recipe runs through ${rig.rigd} under a real rigd: the backen
     await f.commit();
     success(await f.rigd(["install"]));
     success(await f.rig(["init"]));
+    // ${rig.rigd} is the launcher this rigd wrote under its root, which runs it from source here.
+    expect(await readFile(join(f.root, "daemon", "rigd"), "utf8")).toContain(
+      "--no-env-file",
+    );
 
     expect(
       JSON.parse(success(await f.rig(["up", "local", "--json"]))),

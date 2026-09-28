@@ -28,6 +28,8 @@ export const CONVEX_RELEASE_SOURCES = {
 } as const;
 const EXECUTABLE = "convex-local-backend";
 const LOOKUP_MS = 5_000;
+/** How long one backend download may take: well inside the recipe's 3 minute ready_timeout. */
+const DOWNLOAD_MS = 120_000;
 const recommendation = z.object({ version: backendRelease });
 
 /** Convex's releases through the cache `convex dev` uses: `<home>/.cache/convex/binaries/<release>/convex-local-backend`.
@@ -94,15 +96,16 @@ export function createConvexReleases(input: {
           "Start the Service again with a network connection, or pass --backend-version with a release already in that directory.",
           { release, url, evidence: boundedEvidence(reason) },
         );
-      await mkdir(cache, { recursive: true });
-      const staging = await mkdtemp(join(cache, `.rig-${release}-`));
+      let staging: string | undefined;
       try {
-        let response: Response;
-        try {
-          response = await input.fetch(url, { signal });
-        } catch (error) {
-          throw failure(errorMessage(error));
-        }
+        await mkdir(cache, { recursive: true });
+        staging = await mkdtemp(join(cache, `.rig-${release}-`));
+        // A stalled download gives up on its own, in time for the start to fall back to a cached release.
+        const download = AbortSignal.any([
+          signal,
+          AbortSignal.timeout(DOWNLOAD_MS),
+        ]);
+        const response = await input.fetch(url, { signal: download });
         if (!response.ok) throw failure(`HTTP ${response.status} from ${url}`);
         const archive = join(staging, asset);
         await writeFile(archive, new Uint8Array(await response.arrayBuffer()));
@@ -128,8 +131,10 @@ export function createConvexReleases(input: {
         await mkdir(join(cache, release), { recursive: true });
         await rename(staged, binary);
         return binary;
+      } catch (error) {
+        throw error instanceof RigError ? error : failure(errorMessage(error));
       } finally {
-        await rm(staging, { recursive: true, force: true });
+        if (staging) await rm(staging, { recursive: true, force: true });
       }
     },
   };

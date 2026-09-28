@@ -34,7 +34,7 @@ export function createProjectDocuments(
   env: Readonly<Record<string, string>>,
   /** Absolute operator home that `~` in an env_file path means. */
   operatorHome: string,
-  /** The rigd executable `${rig.rigd}` names in a plan; absent for a caller that only discovers and reads config. */
+  /** The rigd launcher `${rig.rigd}` names in a plan; absent for a caller that only discovers and reads config. */
   rigd?: string,
 ): ProjectDocuments {
   const host = {

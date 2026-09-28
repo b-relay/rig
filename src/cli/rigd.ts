@@ -3,7 +3,8 @@ import type { DaemonAdmin, UserOutput } from "./types";
 import { addHelpCommand, commandPath, terminalCommand } from "./commands";
 import { isHelp, recordDiagnostic, reportFailure } from "./failure";
 import { object, renderResult } from "./output";
-import { addConvexCommand, type ConvexCommandOptions } from "./convex-command";
+import { addConvexCommand } from "./convex-command";
+import type { ConvexCommandOptions } from "../helpers/convex-contracts";
 
 export interface RigdCliDependencies {
   admin: DaemonAdmin;

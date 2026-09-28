@@ -16,6 +16,11 @@ import {
 } from "../src/providers/convex-releases";
 import { createDeploymentFiles } from "../src/providers/deployment-files";
 import { createForegroundChildren } from "../src/providers/foreground-children";
+import {
+  rigdLauncher,
+  rigdLauncherPath,
+  writeRigdLauncher,
+} from "../src/daemon/rigd-launcher";
 
 const roots: string[] = [];
 const servers: { stop(force?: boolean): unknown }[] = [];
@@ -209,4 +214,67 @@ test("files: private files are written whole with mode 600, a missing file reads
     files.copyDirectory(join(root, "from"), join(root, "to")),
   ).rejects.toThrow();
   expect(await files.read(join(root, "to", "nested", "blob"))).toBe("data");
+});
+
+test("releases: a download that breaks while its body is read is a tagged download failure and leaves nothing in the cache", async () => {
+  const root = await temporary();
+  const releases = createConvexReleases({
+    home: join(root, "home"),
+    platform: process.platform,
+    arch: process.arch,
+    run: runCommand,
+    PATH: process.env.PATH,
+    fetch: (async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            controller.error(new Error("connection reset"));
+          },
+        }),
+      )) as unknown as typeof fetch,
+  });
+  await expect(
+    releases.binary(RELEASE, new AbortController().signal),
+  ).rejects.toMatchObject({
+    code: "CONVEX_BACKEND_DOWNLOAD",
+    message: expect.stringContaining("connection reset"),
+  });
+  expect(
+    await readdir(join(root, "home", ".cache", "convex", "binaries")),
+  ).toEqual([]);
+});
+
+test("the rigd launcher runs the installed rigd with its arguments, quoted, and from source keeps the workspace's .env files out", async () => {
+  expect(rigdLauncher(["/Applications/Rig's Tools/rigd"])).toContain(
+    `exec '/Applications/Rig'\\''s Tools/rigd' "$@"`,
+  );
+  const root = await temporary();
+  const script = join(root, "fake-rigd.ts");
+  await writeFile(
+    script,
+    "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), dotenv: process.env.FROM_DOTENV ?? null }));\n",
+  );
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  await writeFile(join(workspace, ".env"), "FROM_DOTENV=leaked\n");
+  const launcher = await writeRigdLauncher(join(root, "rig root"), [
+    process.execPath,
+    script,
+  ]);
+  expect(launcher).toBe(rigdLauncherPath(join(root, "rig root")));
+  expect((await Bun.file(launcher).stat()).mode & 0o777).toBe(0o755);
+  const ran = await runCommand({
+    command: [launcher, "convex", "an argument"],
+    cwd: workspace,
+  });
+  expect(JSON.parse(ran.stdout)).toEqual({
+    args: ["convex", "an argument"],
+    dotenv: null,
+  });
+  // Written again by the next rigd, whole.
+  await writeRigdLauncher(join(root, "rig root"), ["/usr/local/bin/rigd"]);
+  expect(await readFile(launcher, "utf8")).toContain(
+    "exec '/usr/local/bin/rigd' \"$@\"",
+  );
+  expect(await readdir(join(root, "rig root", "daemon"))).toEqual(["rigd"]);
 });

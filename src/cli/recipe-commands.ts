@@ -8,8 +8,11 @@ import type { UserOutput } from "./types";
 import {
   CONFIG_FORMATS,
   LATEST_FORMAT,
+  deprecationLine,
   isConfigFormat,
+  isDeprecatedFormat,
   type ConfigFormat,
+  type FoundFormat,
 } from "../config/formats";
 const SERVICE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 /** `list` and `generate` only read the catalog and write text: they need no rigd and no Project, and `generate` reads at
@@ -29,7 +32,7 @@ export function addRecipeCommands(
     recipes: readonly Recipe[];
     execute: ExecuteCommand;
     /** The format of the rig.yaml found from `cwd`, when there is one. */
-    configFormat?: (cwd: string) => Promise<ConfigFormat | undefined>;
+    configFormat?: (cwd: string) => Promise<FoundFormat | undefined>;
     /** The grammar's one check of a --project value. */
     projectScope(options: { project?: string }): { project?: string };
   },
@@ -82,12 +85,20 @@ export function addRecipeCommands(
               : "Run rig recipe list to see the bundled recipes.",
           );
         const service = serviceName(options.name ?? found.defaultName);
+        const project =
+          options.format === undefined
+            ? await configFormat?.(cwd).catch(() => undefined)
+            : undefined;
         const format =
           options.format === undefined
-            ? ((await configFormat?.(cwd).catch(() => undefined)) ??
-              LATEST_FORMAT)
+            ? (project?.format ?? LATEST_FORMAT)
             : requestedFormat(options.format);
         output.write(renderRecipe(found, chosen, service, format));
+        // Like every command run in a Project whose rig.yaml is older, one line says so.
+        if (project && isDeprecatedFormat(project.format))
+          output.error(
+            `Deprecated: ${terminalText(deprecationLine(project.path, project.format))}\n`,
+          );
       },
     );
   recipe

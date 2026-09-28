@@ -30,7 +30,7 @@ import {
   parseProjectConfig,
   parseProjectDocument,
 } from "./schema";
-import { LATEST_FORMAT, type ConfigFormat } from "./formats";
+import { LATEST_FORMAT, type ConfigFormat, type FoundFormat } from "./formats";
 import { upgradeYamlText } from "./upgrade";
 import { unifiedDiff } from "./text-diff";
 import { isDeepStrictEqual } from "node:util";
@@ -220,21 +220,24 @@ export async function discoverProject(
     directory = parent;
   }
 }
-/** The format of the nearest rig.yaml at or above `startPath`, read without validating the rest; undefined when there is
- * none or it cannot be read as YAML. */
+/** The nearest rig.yaml at or above `startPath` and the format it declares, read without validating the rest; undefined
+ * when there is none or it cannot be read as YAML. */
 export async function findDeclaredFormat(
   startPath: string,
-): Promise<ConfigFormat | undefined> {
+): Promise<FoundFormat | undefined> {
   let directory = resolve(startPath);
   for (;;) {
     const path = await locateConfig(directory, "rig").catch(() => undefined);
     if (path) {
       try {
-        return declaredFormat(
-          yamlDocument(await readFile(path, "utf8"), path).toJS({
-            maxAliasCount: 0,
-          }),
-        );
+        return {
+          path,
+          format: declaredFormat(
+            yamlDocument(await readFile(path, "utf8"), path).toJS({
+              maxAliasCount: 0,
+            }),
+          ),
+        };
       } catch {
         return undefined;
       }

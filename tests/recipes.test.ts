@@ -141,7 +141,10 @@ async function rig(
     cwd,
     ...(recipes ? { recipes } : {}),
     // Generated blocks are pasted into APP, which is a rig/v1 file, so generate writes rig/v1.
-    configFormat: async () => "rig/v1" as const,
+    configFormat: async () => ({
+      path: "/workspace/rig.yaml",
+      format: "rig/v1" as const,
+    }),
     client: {
       async status() {
         throw new Error("status is not part of these tests");

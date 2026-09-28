@@ -3,7 +3,7 @@ import type { CliInteraction } from "./interaction";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { DiagnosticLog } from "../diagnostics/types";
 import type { Recipe } from "../recipes/catalog";
-import type { ConfigFormat } from "../config/formats";
+import type { FoundFormat } from "../config/formats";
 
 /** The only terminal effect; tests capture the same text a terminal receives. */
 export interface UserOutput {
@@ -23,9 +23,9 @@ export interface CliDependencies {
   interaction?: CliInteraction;
   /** The recipes `rig recipe list` and `generate` offer; the bundled catalog when absent. */
   recipes?: readonly Recipe[];
-  /** The format of the rig.yaml found from a directory, when there is one; `rig recipe generate` writes in it. Without
-   * it, generate writes the latest format. */
-  configFormat?: (cwd: string) => Promise<ConfigFormat | undefined>;
+  /** The rig.yaml found from a directory and its format, when there is one; `rig recipe generate` writes in that format,
+   * and says so when it is deprecated. Without it, generate writes the latest format. */
+  configFormat?: (cwd: string) => Promise<FoundFormat | undefined>;
   /** Cancellation: honoured before a mutation is submitted and during reads and follows; acknowledged, not honoured, once a mutation is in flight. */
   signal?: AbortSignal;
   /** Detachment: abandons a submitted mutation, which rigd finishes without rig. */

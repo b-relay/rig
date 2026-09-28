@@ -1217,17 +1217,22 @@ line on stderr after its result:
 Deprecated: /path/to/rig.yaml is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.
 ```
 
-A deploy (or `git push rig`) of a Commit whose committed `rig.yaml` is
-`rig/v1` works as before and prints the same line, naming that Commit's copy
-of the file. The dashboard's config editor shows the same notice, and edits a
+A deploy (or `git push rig`, even with `--quiet`) of a Commit whose committed
+`rig.yaml` is `rig/v1` works as before and prints the same line, naming that
+Commit's copy of the file. `rig recipe generate` run beside a `rig/v1` file
+prints its block in `rig/v1` and the same line. The dashboard's config editor shows the same notice, and edits a
 `rig/v1` file in its own spelling.
 
 `rig config upgrade` rewrites the Project's `rig.yaml` into `rig/v2` in place
 and prints each change. It moves the settings above and follows the references
 to them, and leaves every other byte alone: comments (a comment above
 `ready` moves with it), order, quoting, blank lines, flow style and long lines.
-Before writing, it checks that the new file parses to exactly the config the
-old one did; when it would not, nothing is written. The previous text is kept
+A `yaml-language-server` comment that names `rig-v1.schema.json` is pointed at
+`rig.schema.json`. Before writing, it checks that the new file parses to
+exactly the config the old one did; when it would not, nothing is written. A
+comment inside a one-line `{ ... }` Service mapping between the settings it
+moves would be lost, so the upgrade refuses (`upgrade_lossy`) and names the
+setting; move the comment, then run it again. The previous text is kept
 in `rig.yaml.bak`, as with every Rig config edit. `rig config upgrade
 --dry-run` prints a unified diff and writes nothing. It changes only the file
 in the working tree: nothing is committed, planned or restarted, so commit it

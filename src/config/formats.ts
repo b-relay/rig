@@ -32,6 +32,15 @@ export const FORMAT_STEPS: readonly FormatStep[] = [
   },
 ];
 
+/** A rig.yaml found on disk and the format it declares. */
+export interface FoundFormat {
+  path: string;
+  format: ConfigFormat;
+}
+/** The one deprecation line for a rig.yaml in an older format: which file, its format, and the command that rewrites it. */
+export function deprecationLine(path: string, format: ConfigFormat): string {
+  return `${path} is written in rig.yaml format ${format}, which is deprecated. Run rig config upgrade to rewrite it as ${LATEST_FORMAT}, then commit it.`;
+}
 export function isConfigFormat(value: unknown): value is ConfigFormat {
   return (CONFIG_FORMATS as readonly unknown[]).includes(value);
 }

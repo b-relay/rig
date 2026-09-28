@@ -1,4 +1,4 @@
-import { isDeprecatedFormat, LATEST_FORMAT } from "../config/formats";
+import { deprecationLine, isDeprecatedFormat } from "../config/formats";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { ProjectDocuments } from "./contracts";
 
@@ -35,10 +35,6 @@ export function watchConfigFormats(documents: ProjectDocuments): {
     },
     deprecation: () => line,
   };
-}
-/** The deprecation line for one rig.yaml: which file, its format, and the command that rewrites it. */
-export function deprecationLine(path: string, format: string): string {
-  return `${path} is written in rig.yaml format ${format}, which is deprecated. Run rig config upgrade to rewrite it as ${LATEST_FORMAT}, then commit it.`;
 }
 /** A command's reply with the deprecation line added, when there is one and the reply is an object. */
 export function withDeprecation<T>(reply: T, line: string | undefined): T {

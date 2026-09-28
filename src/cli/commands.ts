@@ -12,7 +12,7 @@ import { RIG_BUILD } from "../domain/version";
 import type { UserOutput } from "./types";
 import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
 import { addRecipeCommands } from "./recipe-commands";
-import type { ConfigFormat } from "../config/formats";
+import type { FoundFormat } from "../config/formats";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
@@ -32,7 +32,7 @@ export function createRigCommand(
   output: UserOutput,
   execute: ExecuteCommand,
   recipes: readonly Recipe[] = BUNDLED_RECIPES,
-  configFormat?: (cwd: string) => Promise<ConfigFormat | undefined>,
+  configFormat?: (cwd: string) => Promise<FoundFormat | undefined>,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",

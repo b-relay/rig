@@ -540,7 +540,13 @@ test("rig recipe generate writes the block in the format of the rig.yaml it is r
       () => Promise.reject(new Error("generate needs no rigd")),
       findDeclaredFormat,
     );
-  const latest = (await generate(v2)).out;
+  const current = await generate(v2);
+  expect(current.err).toBe("");
+  const latest = current.out;
+  // Run beside a rig/v1 file, generate says so like every other command there.
+  expect((await generate(v1)).err).toBe(
+    `Deprecated: ${join(v1, "rig.yaml")} is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.\n`,
+  );
   expect(latest).toContain(
     "    health:\n      check: http://127.0.0.1:${services.convex.ports.cloud}/instance_name\n      start_timeout: 60s\n",
   );
@@ -588,4 +594,48 @@ test("rig recipe diff names a changed field the way the Project's format spells 
       update: [],
     });
   }
+});
+
+test("the upgrade keeps trailing comments of flow mappings, quoted keys, block scalars and escaped references, repoints a rig-v1 schema comment, and refuses to drop a comment", async () => {
+  const yaml = [
+    "# yaml-language-server: $schema=https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig-v1.schema.json",
+    "name: edge",
+    "services:",
+    '  web: {run: serve, ready: test, "ready_timeout": 1m} # trailing',
+    "  api:",
+    "    run: serve",
+    "    'ready': |",
+    "      test -f /tmp/ready",
+    "    env:",
+    '      PROBE: "\\u0024{services.web.ready}"',
+    "",
+  ].join("\n");
+  const root = await project(yaml);
+  const before = await readProjectConfig(root);
+  await upgradeProjectConfig({ repoPath: root, dryRun: false });
+  expect(await readFile(join(root, "rig.yaml"), "utf8")).toBe(
+    [
+      "# yaml-language-server: $schema=https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json",
+      "format: rig/v2",
+      "name: edge",
+      "services:",
+      '  web: {run: serve, health: {check: test, "start_timeout": 1m}} # trailing',
+      "  api:",
+      "    run: serve",
+      "    'health':",
+      "      'check': |",
+      "        test -f /tmp/ready",
+      "    env:",
+      '      PROBE: "${services.web.health.check}"',
+      "",
+    ].join("\n"),
+  );
+  expect((await readProjectConfig(root)).config).toEqual(before.config);
+
+  const lossy = await project(
+    "name: edge\nservices:\n  web: {run: serve, ready: test,\n    # why\n    ready_timeout: 1m}\n",
+  );
+  await expect(
+    upgradeProjectConfig({ repoPath: lossy, dryRun: true }),
+  ).rejects.toMatchObject({ code: "upgrade_lossy" });
 });

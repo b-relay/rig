@@ -257,11 +257,12 @@ export async function runRemoteHelper(
                 dependencies.output.error(
                   `${project} ${push.branch} ${result.outcome}${result.target ? ` to ${result.target}` : ""}${result.route ? ` at ${result.route}` : ""} (operation ${operationId})\n`,
                 );
-                if (result.deprecation)
-                  dependencies.output.error(
-                    `Deprecated: ${terminalText(result.deprecation)}\n`,
-                  );
               }
+              // A warning, not progress: --quiet does not hide it.
+              if (result.deprecation)
+                dependencies.output.error(
+                  `Deprecated: ${terminalText(result.deprecation)}\n`,
+                );
             }
             dependencies.output.write(`ok ${push.destination}\n`);
           } catch (error) {

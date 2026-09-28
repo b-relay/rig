@@ -7,13 +7,20 @@ import {
   readFile,
   rename,
   rm,
+  stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
-import { appendTargetLog } from "../src/providers/target-log";
+import {
+  appendTargetLog,
+  DEFAULT_LOG_RETENTION,
+  rotateLogFile,
+} from "../src/providers/target-log";
 import type { TargetRecord } from "../src/domain/runtime";
+import type { LogFilter } from "../src/domain/log-filter";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -29,6 +36,11 @@ async function fixture() {
     plan: { project: "app", components: [] },
   } as unknown as TargetRecord;
 }
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
 const entry = (line: string, timestamp = "2026-09-09T12:00:00Z") =>
   JSON.stringify({ timestamp, component: "web", stream: "stdout", line }) +
   "\n";
@@ -343,12 +355,364 @@ test("the Target log writer rotates at its size limit and keeps one previous gen
   const target = await fixture(),
     path = join(target.logRoot, "target.jsonl");
   const line = (n: number) => `{"n":${n}}\n`;
+  const retention = { maxBytes: 20, generations: 1 };
   // Eight-byte lines against a 20-byte limit: the file rotates once it holds three.
   for (let n = 1; n <= 7; n += 1)
-    await appendTargetLog(target.logRoot, line(n), 20);
+    await appendTargetLog(target.logRoot, line(n), retention);
   expect(await readFile(path, "utf8")).toBe(line(7));
   expect(await readFile(`${path}.1`, "utf8")).toBe(line(4) + line(5) + line(6));
   await rm(target.logRoot, { recursive: true, force: true });
-  await appendTargetLog(target.logRoot, line(8), 20);
+  await appendTargetLog(target.logRoot, line(8), retention);
   expect(await readFile(path, "utf8")).toBe(line(8));
+});
+test("the default retention is today's: 64 MiB and one previous generation", () => {
+  expect(DEFAULT_LOG_RETENTION).toEqual({
+    maxBytes: 64 * 1024 * 1024,
+    generations: 1,
+  });
+});
+test("the writer keeps the configured number of generations, newest as .1, and drops older ones", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  const line = (n: number) => `{"n":${n}}\n`;
+  const retention = { maxBytes: 16, generations: 3 };
+  // Two eight-byte lines fill a file; a stale .4 left by a larger setting is removed at the next rotation.
+  await writeFile(`${path}.4`, "stale\n");
+  for (let n = 1; n <= 11; n += 1)
+    await appendTargetLog(target.logRoot, line(n), retention);
+  expect(await readFile(path, "utf8")).toBe(line(11));
+  expect(await readFile(`${path}.1`, "utf8")).toBe(line(9) + line(10));
+  expect(await readFile(`${path}.2`, "utf8")).toBe(line(7) + line(8));
+  expect(await readFile(`${path}.3`, "utf8")).toBe(line(5) + line(6));
+  expect(await exists(`${path}.4`)).toBe(false);
+  expect(await exists(`${path}.rotating`)).toBe(false);
+});
+test("zero generations starts a fresh file at the limit and keeps no older one", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(`${path}.1`, "stale\n");
+  const retention = { maxBytes: 16, generations: 0 };
+  for (let n = 1; n <= 3; n += 1)
+    await appendTargetLog(target.logRoot, `{"n":${n}}\n`, retention);
+  expect(await readFile(path, "utf8")).toBe(`{"n":3}\n`);
+  expect(await exists(`${path}.1`)).toBe(false);
+});
+test("a rotation already under way elsewhere is not repeated, and a lock left by a crashed writer is reclaimed", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  const retention = { maxBytes: 8, generations: 1 };
+  await writeFile(path, "0123456789\n");
+  await writeFile(`${path}.rotating`, "");
+  await rotateLogFile(path, retention);
+  expect(await readFile(path, "utf8")).toBe("0123456789\n");
+  expect(await exists(`${path}.1`)).toBe(false);
+  const old = new Date(Date.now() - 120_000);
+  await utimes(`${path}.rotating`, old, old);
+  await rotateLogFile(path, retention);
+  expect(await exists(path)).toBe(false);
+  expect(await readFile(`${path}.1`, "utf8")).toBe("0123456789\n");
+  expect(await exists(`${path}.rotating`)).toBe(false);
+  // A missing file or directory is nothing to rotate.
+  await rotateLogFile(join(target.logRoot, "gone", "target.jsonl"), retention);
+});
+const record = (
+  component: string,
+  line: string,
+  timestamp: string,
+  stream: "stdout" | "stderr" = "stdout",
+) => JSON.stringify({ timestamp, component, stream, line }) + "\n";
+test("a filtered read spans every retained generation, oldest first, and keeps only matching entries", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(
+    `${path}.2`,
+    record("scheduler", "too old", "2026-09-28T10:00:00Z") +
+      record("scheduler", "gen2", "2026-09-28T11:10:00Z"),
+  );
+  await writeFile(
+    `${path}.1`,
+    record("web", "web gen1", "2026-09-28T11:20:00Z") +
+      record("scheduler", "gen1 err", "2026-09-28T11:30:00Z", "stderr"),
+  );
+  await writeFile(
+    path,
+    record("scheduler", "current", "2026-09-28T11:40:00Z") +
+      record("web", "web current", "2026-09-28T11:50:00Z"),
+  );
+  await writeFile(join(target.logRoot, "scheduler.stderr.log"), "crash\n");
+  const read = (filter: LogFilter, lines = 50) =>
+    files
+      .logs(target, undefined, lines, filter)
+      .then((result) => result.entries.map((entry) => entry.line));
+  const since = "2026-09-28T11:00:00.000Z";
+  expect(await read({ services: ["scheduler"], since })).toEqual([
+    "gen2",
+    "gen1 err",
+    "current",
+  ]);
+  expect(await read({ services: ["scheduler"], since }, 2)).toEqual([
+    "gen1 err",
+    "current",
+  ]);
+  expect(await read({ stream: "stderr" })).toEqual(["crash", "gen1 err"]);
+  expect(
+    await read({
+      until: "2026-09-28T11:20:00Z",
+      services: ["web", "scheduler"],
+    }),
+  ).toEqual(["too old", "gen2", "web gen1"]);
+  expect(await read({})).toEqual([
+    "crash",
+    "too old",
+    "gen2",
+    "web gen1",
+    "gen1 err",
+    "current",
+    "web current",
+  ]);
+  expect(
+    (await files.logs(target, undefined, 50)).entries.map((e) => e.line),
+  ).toEqual(await read({}));
+});
+test("--lines counts matching entries, so a quiet Service's lines are found under megabytes of another's", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  const chatter = (hour: number) =>
+    record("web", "x".repeat(200), `2026-09-28T${hour}:30:00Z`).repeat(15000);
+  await writeFile(
+    `${path}.1`,
+    record("scheduler", "early", "2026-09-28T10:00:00Z") + chatter(10),
+  );
+  await writeFile(
+    path,
+    chatter(11) +
+      record("scheduler", "late", "2026-09-28T12:00:00Z") +
+      chatter(12),
+  );
+  const result = await files.logs(target, undefined, 5, {
+    services: ["scheduler"],
+  });
+  expect(result.entries.map((entry) => entry.line)).toEqual(["early", "late"]);
+});
+test("a read that reaches its since bound does not open older generations", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(
+    `${path}.2`,
+    record("web", "ancient", "2026-09-27T00:00:00Z"),
+  );
+  await writeFile(
+    `${path}.1`,
+    record("web", "old", "2026-09-28T09:00:00Z") +
+      record("web", "older than since", "2026-09-28T10:00:00Z"),
+  );
+  await writeFile(path, record("web", "recent", "2026-09-28T11:30:00Z"));
+  await chmod(`${path}.2`, 0o000);
+  try {
+    const result = await files.logs(target, undefined, 50, {
+      since: "2026-09-28T11:00:00Z",
+    });
+    expect(result.entries.map((entry) => entry.line)).toEqual(["recent"]);
+    await expect(files.logs(target, undefined, 50)).rejects.toMatchObject({
+      code: "LOG_UNREADABLE",
+    });
+  } finally {
+    await chmod(`${path}.2`, 0o600);
+  }
+});
+test("a filtered follow returns only matching new entries and still advances past the rest", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(path, record("web", "before", "2026-09-28T11:00:00Z"));
+  const filter: LogFilter = { services: ["scheduler"], stream: "stdout" };
+  const first = await files.logs(target, undefined, 10, filter);
+  expect(first.entries).toEqual([]);
+  await appendFile(
+    path,
+    record("web", "web", "2026-09-28T11:00:01Z") +
+      record("scheduler", "tick", "2026-09-28T11:00:02Z") +
+      record("scheduler", "oops", "2026-09-28T11:00:03Z", "stderr"),
+  );
+  await writeFile(join(target.logRoot, "scheduler.stdout.log"), "wrapper\n");
+  const next = await files.logs(target, first.cursor, 10, filter);
+  expect(next.entries.map((entry) => entry.line)).toEqual(["wrapper", "tick"]);
+  expect((await files.logs(target, next.cursor, 10, filter)).entries).toEqual(
+    [],
+  );
+});
+test("a follow continues across a rotation that shifts every generation", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(`${path}.1`, entry("a", "2026-09-09T12:00:00Z"));
+  await writeFile(path, entry("b", "2026-09-09T12:00:01Z"));
+  const first = await files.logs(target, undefined, 10);
+  expect(first.entries.map((row) => row.line)).toEqual(["a", "b"]);
+  await appendFile(path, entry("c", "2026-09-09T12:00:02Z"));
+  await rename(`${path}.1`, `${path}.2`);
+  await rename(path, `${path}.1`);
+  await writeFile(path, entry("d", "2026-09-09T12:00:03Z"));
+  const second = await files.logs(target, first.cursor, 10);
+  expect(second.entries.map((row) => row.line)).toEqual(["c", "d"]);
+  // The oldest generation dropping out of retention is not a cursor problem.
+  await appendFile(path, entry("e", "2026-09-09T12:00:04Z"));
+  await rm(`${path}.2`);
+  await rename(`${path}.1`, `${path}.2`);
+  await rename(path, `${path}.1`);
+  await writeFile(path, entry("f", "2026-09-09T12:00:05Z"));
+  expect(
+    (await files.logs(target, second.cursor, 10)).entries.map(
+      (row) => row.line,
+    ),
+  ).toEqual(["e", "f"]);
+});
+test("a follow continues across a rotated launchd wrapper log", async () => {
+  const target = await fixture(),
+    files = createRuntimeFiles(),
+    path = join(target.logRoot, "web.stderr.log");
+  await writeFile(path, "one\n");
+  const first = await files.logs(target, undefined, 10);
+  await appendFile(path, "two\n");
+  await rename(path, `${path}.1`);
+  await writeFile(path, "three\n");
+  const next = await files.logs(target, first.cursor, 10);
+  expect(next.entries.map((row) => row.line)).toEqual(["two", "three"]);
+  expect(
+    (await files.logs(target, undefined, 10)).entries.map((row) => row.line),
+  ).toEqual(["one", "two", "three"]);
+});
+/** `rig` against these files: the client does what rigd's logs read does with the request it is sent. */
+async function rigLogs(
+  target: TargetRecord,
+  args: readonly string[],
+  options: { now?: Date; wait?: (poll: number) => Promise<void> } = {},
+) {
+  const { runRigCli } = await import("../src/cli/rig");
+  const { commandSchema } = await import("../src/daemon/protocol");
+  const files = createRuntimeFiles();
+  const controller = new AbortController();
+  const requests: unknown[] = [];
+  let out = "",
+    err = "",
+    polls = 0;
+  const code = await runRigCli(["logs", ...args], {
+    root: target.logRoot,
+    cwd: target.logRoot,
+    signal: controller.signal,
+    now: () => options.now ?? new Date(),
+    wait: async () => {
+      polls++;
+      if (options.wait) await options.wait(polls);
+      else controller.abort();
+      if (polls > 1) controller.abort();
+    },
+    client: {
+      async status() {
+        throw new Error("Unexpected status");
+      },
+      async command(raw) {
+        const request = commandSchema.parse(raw);
+        requests.push(request);
+        return {
+          project: "app",
+          target: request.target ?? target.name,
+          ...(await files.logs(
+            target,
+            request.after,
+            request.lines ?? 100,
+            request.logFilter,
+          )),
+          ...(request.logFilter ? { filtered: true } : {}),
+        };
+      },
+    },
+    output: {
+      write(value) {
+        out += value;
+      },
+      error(value) {
+        err += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
+    newOperationId: () => "logs",
+  });
+  return { code, out, err, requests };
+}
+test("rig logs local --service scheduler --since 1h prints only that Service's last hour, reaching into the rotated generation", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(
+    `${path}.1`,
+    record("scheduler", "two hours ago", "2026-09-28T10:00:00Z") +
+      record("scheduler", "rotated tick", "2026-09-28T11:05:00Z") +
+      record("web", "rotated web", "2026-09-28T11:06:00Z"),
+  );
+  await writeFile(
+    path,
+    record("web", "web line", "2026-09-28T11:30:00Z") +
+      record("scheduler", "current tick", "2026-09-28T11:45:00Z", "stderr") +
+      record("worker", "worker line", "2026-09-28T11:50:00Z"),
+  );
+  const result = await rigLogs(
+    target,
+    ["local", "--service", "scheduler", "--since", "1h"],
+    { now: new Date("2026-09-28T12:00:00Z") },
+  );
+  expect(result.err).toBe("");
+  expect(result.code).toBe(0);
+  expect(result.out).toBe(
+    "app local\n\n" +
+      "11:05:00Z  scheduler  > rotated tick\n" +
+      "11:45:00Z  scheduler  ! current tick\n",
+  );
+});
+test("rig logs --follow keeps to --service and --stream", async () => {
+  const target = await fixture(),
+    path = join(target.logRoot, "target.jsonl");
+  await writeFile(
+    path,
+    record("scheduler", "history", "2026-09-28T11:00:00Z") +
+      record("web", "web history", "2026-09-28T11:00:01Z"),
+  );
+  const result = await rigLogs(
+    target,
+    ["local", "--follow", "--service", "scheduler", "--stream", "stdout"],
+    {
+      wait: async (poll) => {
+        if (poll === 1)
+          await appendFile(
+            path,
+            record("web", "web new", "2026-09-28T11:01:00Z") +
+              record("scheduler", "scheduler new", "2026-09-28T11:01:01Z") +
+              record(
+                "scheduler",
+                "scheduler err",
+                "2026-09-28T11:01:02Z",
+                "stderr",
+              ),
+          );
+      },
+    },
+  );
+  expect(result.err).toBe("");
+  expect(result.code).toBe(0);
+  expect(result.out).toBe(
+    "app local\n\n" +
+      "11:00:00Z  scheduler  > history\n" +
+      "11:01:01Z  scheduler  > scheduler new\n",
+  );
+  expect(result.requests).toHaveLength(2);
+  expect(result.requests[1]).toMatchObject({
+    lines: 1000,
+    logFilter: { services: ["scheduler"], stream: "stdout" },
+  });
 });

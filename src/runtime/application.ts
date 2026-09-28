@@ -67,6 +67,7 @@ import {
   registeredDirectoryMissing,
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
+import { assertLogServices } from "./log-services";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
 import { assertSourceBuildsKnown, withStops } from "./lifecycle";
 import {
@@ -804,6 +805,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         );
       if (command.action === "logs") {
         if (!target) throw missingTarget(command, name);
+        assertLogServices(target, command.logFilter);
         return {
           project: project.name,
           target: target.name,
@@ -811,7 +813,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             target,
             command.after,
             command.lines ?? 100,
+            command.logFilter,
           )),
+          ...(command.logFilter ? { filtered: true } : {}),
         } satisfies LogsResult;
       }
       if (command.action === "deploy" || command.action === "git-push") {

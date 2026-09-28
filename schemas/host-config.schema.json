@@ -126,6 +126,28 @@
       },
       "additionalProperties": false
     },
+    "logs": {
+      "description": "Size limits for Target logs: each Target's target.jsonl and the stdout and stderr files launchd writes for a job. A change applies within seconds to the lines Rig records itself, and to each Service the next time it starts.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "max_bytes": {
+          "default": 67108864,
+          "description": "Size in bytes at which a Target log file is rotated: the full file is renamed and writing starts a new one. Default 67108864 (64 MiB); at least 1048576 (1 MiB).",
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 9007199254740991
+        },
+        "generations": {
+          "default": 1,
+          "description": "How many rotated files are kept beside the current one, newest as .1; an older one is deleted. Default 1; 0 keeps none. A Target log uses at most about max_bytes × (generations + 1) per file.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        }
+      },
+      "additionalProperties": false
+    },
     "alerts": {
       "description": "Operator alerts about Stable Targets that stay down. The Working copy and Previews never alert.",
       "default": {},

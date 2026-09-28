@@ -124,3 +124,106 @@ test("recipe diff is one read request naming the Project scope and the optional 
     expect(local.requests).toEqual([]);
   }
 });
+
+const logsReply =
+  (entries: unknown[] = [], filtered?: boolean) =>
+  () => ({
+    project: "demo",
+    target: "local",
+    entries,
+    cursor: "c",
+    ...(filtered === undefined ? {} : { filtered }),
+  });
+test("rig logs without new flags sends today's request and prints today's output", async () => {
+  const h = harness(logsReply());
+  expect(await runRigCli(["logs", "local"], h.deps)).toBe(0);
+  expect(h.requests).toEqual([
+    {
+      action: "logs",
+      repoPath: "/workspace",
+      target: "local",
+      lines: 50,
+      operationId: "op-1",
+    },
+  ]);
+  expect(h.out()).toBe("demo local\n\nNo logs yet.\n");
+});
+test("rig logs sends --service, --stream, --since and --until as one filter, with durations resolved against rig's clock", async () => {
+  const h = harness(logsReply([], true));
+  const deps = { ...h.deps, now: () => new Date("2026-09-28T12:00:00.000Z") };
+  expect(
+    await runRigCli(
+      [
+        "logs",
+        "local",
+        "--service",
+        "scheduler",
+        "--service",
+        "web",
+        "--stream",
+        "stderr",
+        "--since",
+        "1h",
+        "--until",
+        "2026-09-28T11:30:00+00:00",
+        "--lines",
+        "20",
+      ],
+      deps,
+    ),
+  ).toBe(0);
+  expect(h.requests).toEqual([
+    {
+      action: "logs",
+      repoPath: "/workspace",
+      target: "local",
+      lines: 20,
+      logFilter: {
+        services: ["scheduler", "web"],
+        stream: "stderr",
+        since: "2026-09-28T11:00:00.000Z",
+        until: "2026-09-28T11:30:00.000Z",
+      },
+      operationId: "op-1",
+    },
+  ]);
+  expect(h.out()).toBe("demo local\n\nNo matching log lines.\n");
+});
+test("rig logs refuses a malformed time, stream or Service name, and --until with --follow, before asking rigd", async () => {
+  for (const [args, message] of [
+    [["--since", "yesterday"], "--since 'yesterday' is neither a duration"],
+    [["--until", "2026-09-28T03:00:00"], "--until '2026-09-28T03:00:00'"],
+    [["--since", "1h", "--until", "2h"], "is later than --until"],
+    [["--stream", "health"], "Allowed choices are stdout, stderr"],
+    [["--service", "bad name"], "--service 'bad name' is not a Service name"],
+    [["--until", "1h", "--follow"], "--until cannot be combined with --follow"],
+  ] as const) {
+    const h = harness(logsReply());
+    expect(await runRigCli(["logs", "local", ...args], h.deps)).toBe(1);
+    expect(h.requests).toEqual([]);
+    expect(h.err()).toContain(message);
+    expect(h.err()).not.toContain("Operation:");
+  }
+});
+test("rig logs --help documents every filter and the time forms", async () => {
+  for (const flag of ["--help", "-h"]) {
+    const h = harness();
+    expect(await runRigCli(["logs", flag], h.deps)).toBe(0);
+    const text = h.out();
+    for (const expected of [
+      "--service <name>",
+      "repeat",
+      "--stream <stream>",
+      '"stdout", "stderr"',
+      "--since <time>",
+      "--until <time>",
+      "1h",
+      "2026-09-28T03:00:00Z",
+      "--lines <count>",
+      "after filtering",
+      "--follow",
+    ])
+      expect(text).toContain(expected);
+    expect(h.requests).toEqual([]);
+  }
+});

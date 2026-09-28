@@ -12,6 +12,7 @@ import { readCaptureRequest } from "./capture-request";
 import { CAPTURE_KILL_SIGNAL, writeCaptureStop } from "./capture-stop";
 import { serviceGraceMs } from "../domain/stop-budget";
 import { createChildSupervisor } from "./child-supervisor";
+import { DEFAULT_LOG_RETENTION } from "./target-log";
 import { runCommand } from "./command-runner";
 import { createProcessInspection, platformKill } from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
@@ -54,6 +55,7 @@ async function runUntilStopped(
     stateRoot: dirname(requestPath),
     timing: createProcessTiming(),
     processInspection,
+    logRetention: async () => request.logRetention ?? DEFAULT_LOG_RETENTION,
   });
   let stopping: Promise<unknown> | undefined;
   let received: NodeJS.Signals | undefined;

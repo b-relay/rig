@@ -64,3 +64,19 @@ test("a request that is not a capture request is rejected by path", async () => 
     details: { path: requestPath },
   });
 });
+
+test("a capture request carries the log retention its wrapper rotates by; one an older rigd wrote has none", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-request-"));
+  roots.push(root);
+  const requestPath = join(root, "job.json");
+  const logRetention = { maxBytes: 1048576, generations: 3 };
+  await writeCaptureRequest(requestPath, request("kept"), logRetention);
+  expect(await readCaptureRequest(requestPath)).toEqual({
+    ...request("kept"),
+    logRetention,
+  });
+  await writeCaptureRequest(requestPath, request("older"));
+  expect(await readCaptureRequest(requestPath)).not.toHaveProperty(
+    "logRetention",
+  );
+});

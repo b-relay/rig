@@ -55,7 +55,7 @@ import { RigError, failureCauses } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
-import { appendTargetLog } from "../providers/target-log";
+import { appendTargetLog, type LogRetention } from "../providers/target-log";
 export interface TargetAdapterOptions {
   root: string;
   /** Acquires an ISO timestamp per recorded output entry, after buffered execution. */
@@ -68,6 +68,8 @@ export interface TargetAdapterOptions {
   connect: PortProbe;
   listeners: ListenerInspection;
   environment: Readonly<Record<string, string>>;
+  /** Reads how the Target log is rotated each time build, install and health lines are recorded; the default when absent. */
+  logRetention?: () => Promise<LogRetention>;
 }
 export function installedPath(
   root: string,
@@ -240,6 +242,7 @@ export function createTargetEffects(
           }),
         )
         .join("\n") + "\n",
+      await options.logRetention?.(),
     );
   };
   /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. */

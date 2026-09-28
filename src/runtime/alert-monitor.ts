@@ -12,6 +12,7 @@ import type {
   OperationRecord,
   RuntimeState,
   StateStore,
+  TargetRecord,
 } from "../domain/runtime";
 import {
   NO_ALERTS,
@@ -151,6 +152,7 @@ async function observeStableTargets(
       : ("unknown" as const),
   ]);
   const engagedAtEnd = engagedTargets(deps.mutations?.() ?? [], state);
+  const changed = await changedMeanwhile(stable, deps);
   return stable.map((target) =>
     stableTargetCondition({
       target,
@@ -159,8 +161,33 @@ async function observeStableTargets(
           ?.name ?? target.plan.project,
       report: reports[observed.indexOf(target)],
       routes,
-      engaged: engagedAtStart.has(target.id) || engagedAtEnd.has(target.id),
+      engaged:
+        engagedAtStart.has(target.id) ||
+        engagedAtEnd.has(target.id) ||
+        changed.has(target.id),
     }),
+  );
+}
+
+/** The Stable Targets whose intent changed while they were observed: an operation that began and ended in between (a
+ * `rig down`, say) left no mutation in flight at either end, but the state read before it no longer says what the
+ * Target is meant to be. Every Target counts as changed when state cannot be read again. */
+async function changedMeanwhile(
+  stable: readonly TargetRecord[],
+  deps: Pick<AlertMonitorDependencies, "store">,
+): Promise<Set<string>> {
+  const now = await deps.store.read().catch(() => undefined);
+  return new Set(
+    stable
+      .filter((target) => {
+        const saved = now?.targets.find((t) => t.id === target.id);
+        return (
+          !saved ||
+          saved.desired !== target.desired ||
+          (saved.recovery === undefined) !== (target.recovery === undefined)
+        );
+      })
+      .map((target) => target.id),
   );
 }
 

@@ -166,6 +166,23 @@ test("rigd killed between spawning a capture wrapper and leasing it leaves nothi
     [process.execPath, wrapper],
   );
   const ended = await gone(spawned);
+  // A wrapper that ran after all (the regression this test guards against) leases its application, with its pid and birth
+  // identity, before releasing it: wait for that lease so cleanup ends the application however late it starts.
+  const applicationLease = join(
+    root,
+    "capture",
+    "process-leases",
+    `${createHash("sha256").update("window").digest("hex")}.json`,
+  );
+  for (let i = 0; !ended && i < 500; i++) {
+    const lease = await readFile(applicationLease, "utf8").catch(() => "");
+    if (lease) {
+      const { pid, identity } = JSON.parse(lease);
+      groups.push({ pid, identity });
+      break;
+    }
+    await Bun.sleep(10);
+  }
   await Bun.sleep(200);
   const applications = (await readFile(starts, "utf8").catch(() => ""))
     .split("\n")

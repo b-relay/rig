@@ -11,6 +11,13 @@ export function generatedPreviewName(branch: string): string {
       .slice(0, 40) || "branch";
   return `${slug}-${createHash("sha256").update(branch).digest("hex").slice(0, 8)}`;
 }
+/** `word` as one shell word a hint can be copied with: bare when it is plain, otherwise single-quoted, since a Branch may hold
+ * characters the shell would read, such as `(`, `$` or a space. */
+function shellWord(word: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(word)
+    ? word
+    : `'${word.replaceAll("'", "'\\''")}'`;
+}
 /** Whether `preview <branch>` selects this Preview: its name is the one Rig generates for its Branch. */
 const selectedByBranch = (target: Pick<TargetRecord, "name" | "branch">) =>
   target.branch !== undefined &&
@@ -24,7 +31,7 @@ export function targetSelector(
 ): string {
   if (target.kind !== "preview") return target.kind;
   return selectedByBranch(target)
-    ? `preview ${target.branch}`
+    ? `preview ${shellWord(target.branch!)}`
     : `preview --deployment ${target.name}`;
 }
 /** The words that deploy `target` again: `stable`, or for a Preview its Branch, with its explicit name when it has one,
@@ -33,6 +40,6 @@ export function deploySelector(
   target: Pick<TargetRecord, "kind" | "name" | "branch">,
 ): string {
   if (target.kind !== "preview") return target.kind;
-  if (selectedByBranch(target)) return `preview ${target.branch}`;
-  return `preview ${target.branch ? `${target.branch} ` : ""}--deployment ${target.name}`;
+  if (selectedByBranch(target)) return `preview ${shellWord(target.branch!)}`;
+  return `preview ${target.branch ? `${shellWord(target.branch)} ` : ""}--deployment ${target.name}`;
 }

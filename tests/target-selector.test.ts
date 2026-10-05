@@ -24,3 +24,19 @@ test("a printed command always names its Target: the role, the Branch of a gener
     "preview --deployment demo",
   );
 });
+
+test("a Branch the shell would read is quoted, so a copied hint selects exactly that Preview", () => {
+  const preview = (branch: string) => ({
+    kind: "preview" as const,
+    name: generatedPreviewName(branch),
+    branch,
+  });
+  expect(targetSelector(preview("feat/(draft)"))).toBe(
+    "preview 'feat/(draft)'",
+  );
+  expect(deploySelector(preview("fix/$HOME"))).toBe("preview 'fix/$HOME'");
+  expect(targetSelector(preview("it's"))).toBe("preview 'it'\\''s'");
+  expect(deploySelector({ kind: "preview", name: "demo", branch: "a b" })).toBe(
+    "preview 'a b' --deployment demo",
+  );
+});

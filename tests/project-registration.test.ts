@@ -94,7 +94,7 @@ async function fixture() {
     },
   };
 }
-test("duplicate name preflight rejects before creating Git, remote, or config in a second directory", async () => {
+test("duplicate name preflight rejects before creating Git or config in a second directory", async () => {
   const f = await fixture();
   f.state.projects.push({
     id: "existing",
@@ -180,7 +180,7 @@ test("init --path registers the nearest Project config inside the repository, th
   ).toEqual(registered);
 });
 
-test("a registered path conflict preserves its existing config and leaves its remote unconfigured", async () => {
+test("a registered path conflict preserves its existing config and adds no remote", async () => {
   const f = await fixture();
   expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
     0,
@@ -198,12 +198,12 @@ test("a registered path conflict preserves its existing config and leaves its re
     registerProject({ action: "init", repoPath: f.repo }, f.deps),
   ).rejects.toMatchObject({ code: "PROJECT_CONFLICT" });
   expect(await readFile(join(f.repo, "rig.yaml"), "utf8")).toBe(config);
-  expect((await run({ command: ["git", "remote"], cwd: f.repo })).stdout).toBe(
-    "",
-  );
+  const remotes = await run({ command: ["git", "remote"], cwd: f.repo });
+  expect(remotes.exitCode).toBe(0);
+  expect(remotes.stdout).toBe("");
   expect(f.writes()).toBe(0);
 });
-test("config identity mismatch is rejected before creating Git or a Rig remote", async () => {
+test("config identity mismatch is rejected before creating Git", async () => {
   const f = await fixture();
   const config = "name: canonical\ntools:\n  cli:\n    bin: cli\n";
   await writeFile(join(f.repo, "rig.yaml"), config);

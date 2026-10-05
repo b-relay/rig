@@ -21,7 +21,7 @@
       "type": "string"
     },
     "production_branch": {
-      "description": "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.production_branch, then main.",
+      "description": "Branch the Stable Target deploys; defaults to the Host deploy.production_branch, then main.",
       "type": "string",
       "minLength": 1
     },

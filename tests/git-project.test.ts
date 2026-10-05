@@ -192,7 +192,7 @@ test("real unborn, origin default, detached and bare repositories preserve disco
   }
 });
 
-test("explicit setup executes exactly init and missing remote add mutations", async () => {
+test("explicit setup executes exactly the init mutation, and no remote add", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "rig-setup-")));
   const mutations: (readonly string[])[] = [];
   const discovery = createProjectDiscovery(async (input) => {

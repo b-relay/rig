@@ -2066,23 +2066,20 @@ searching upward from the deepest directory the main checkout holds there as
 a plain directory of its own (not a symlink or a separate repository), and the
 main checkout's `rig.yaml` is the one read: an uncommitted or branch-only edit
 to the worktree's copy does not change the Project. `rig deploy preview` without a
-Branch still deploys the worktree's own Branch. A push from a directory that is
-not the registered repository or one of its worktrees fails with
-`PROJECT_PATH_CONFLICT`, naming both paths.
+Branch still deploys the worktree's own Branch.
 
 `rig rename <name>` and `rig repoint <path>` require stopped Targets (none
 running, meant to run, or mid-recovery) and validate registered identity/path
 conflicts. They do not delete Project data. `rig rename <current name>` is
 "unchanged" and leaves the config file alone. `repoint` requires the new
 directory to be a Git working repository (`GIT_REQUIRED` otherwise, since
-deploys and pushes would fail there) and re-plans the Working copy Target from
+deploys would fail there) and re-plans the Working copy Target from
 its config with the same port reservation as `rig up`: a port that another
 Target records is refused with `PORT_RESERVED` and the registration is left
 unchanged.
 
 `rig forget <name>` removes a Project's registration under the same stopped
-requirement. The repository, its `rig.yaml`, and its `rig` remote are not
-touched, and the Project's activity history is kept. A Preview must be
+requirement. The repository and its `rig.yaml` are not touched, and the Project's activity history is kept. A Preview must be
 destroyed first (`rig down preview <branch> --destroy`), because forgetting
 would orphan its data; `forget` refuses with `PROJECT_TARGETS` naming the
 Previews. Stopped `local` and `live` records go with the registration, and a
@@ -2102,7 +2099,7 @@ Project and path, and whether `repoint` or `rename` resolves it.
 Editing `name` in the config by hand is adopted the same way: `rig rename <new
 name> --project <old name>` (or `rig rename <new name>` from the repository)
 accepts a config that already declares the new name and updates the
-registration and Git remote. Until then every command that reads the config
+registration. Until then every command that reads the config
 fails with `PROJECT_IDENTITY`, naming both names and that command, and `rig
 doctor` reports `identity-drift` with the same hint.
 

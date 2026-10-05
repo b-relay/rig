@@ -336,7 +336,7 @@ test("an env file inside the repository must be ignored by Git, and one other us
       api: {
         command: "api",
         ports: { http: "auto" },
-        ready: "true",
+        healthcheck: { test: "true" },
         env_file: ".env",
       },
     },
@@ -431,7 +431,7 @@ test("a readiness URL built from a reference stays an HTTP probe, and only a she
       api: {
         command: "api",
         ports: { http: "auto" },
-        ready: "${environment.HEALTH}",
+        healthcheck: { test: "${environment.HEALTH}" },
       },
     },
   });

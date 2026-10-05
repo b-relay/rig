@@ -8,7 +8,8 @@ services:
     ports: { http: auto }
     environment:
       PORT: ${port}
-    ready: http://127.0.0.1:${port}/healthz
+    healthcheck:
+      test: http://127.0.0.1:${port}/healthz
   worker:
     command: bun worker.ts
     depends_on: [api]

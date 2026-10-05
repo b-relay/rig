@@ -12,7 +12,8 @@ services:
     environment:
       PORT: ${port}
       GREETING: The pantry is stocked.
-    ready: http://127.0.0.1:${port}/healthz
+    healthcheck:
+      test: http://127.0.0.1:${port}/healthz
 
 # The seed deploys the stable Target and a Preview, so both are on.
 targets:

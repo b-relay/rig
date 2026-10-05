@@ -339,7 +339,13 @@ export interface InitializeProjectInput {
   name: string;
   productionBranch?: string;
   domain?: string;
-  service?: { name: string; command: string; port?: number; ready?: string };
+  service?: {
+    name: string;
+    command: string;
+    port?: number;
+    /** The Service's healthcheck test. */
+    healthcheck?: string;
+  };
   tool?: { name: string; bin: string; build?: string };
 }
 /** Pure initial Project policy: one optional Service with one port, which a domain routes at '/' without a proxy, and one
@@ -365,7 +371,9 @@ export function scaffoldProjectConfig(
             [service.name]: {
               command: service.command,
               ports: { http: service.port ?? "auto" },
-              ...(service.ready ? { ready: service.ready } : {}),
+              ...(service.healthcheck
+                ? { healthcheck: { test: service.healthcheck } }
+                : {}),
             },
           },
         }

@@ -204,7 +204,10 @@ test("scaffold writes a Service, a Tool, or both, and refuses a Project with nei
       name: "app",
       productionBranch: "release",
       domain: "app.example.com",
-      service: { ...service, ready: "http://127.0.0.1:3210/health" },
+      service: {
+        ...service,
+        healthcheck: "http://127.0.0.1:3210/health",
+      },
       tool,
     }),
   ).toEqual({
@@ -215,7 +218,7 @@ test("scaffold writes a Service, a Tool, or both, and refuses a Project with nei
       web: {
         command: "serve --host localhost",
         ports: { http: 3210 },
-        ready: "http://127.0.0.1:3210/health",
+        healthcheck: { test: "http://127.0.0.1:3210/health" },
       },
     },
     tools: { ctl: { build: "make ctl", bin: "bin/ctl" } },
@@ -416,12 +419,12 @@ test("structured YAML edits retain comments/order and backups and reject stale o
 test("YAML editing refuses edits that would lose comments: replacing a mapping or removing a commented field", async () => {
   const root = await fixture(),
     raw =
-      "name: app\nservices:\n  # retain me\n  web:\n    command: serve\n    ready: curl localhost # why\n";
+      "name: app\nservices:\n  # retain me\n  web:\n    command: serve\n    build: make web # why\n";
   await writeFile(join(root, "rig.yaml"), raw);
   const document = await readProjectConfig(root);
   for (const edit of [
     { path: ["services"], value: {} },
-    { op: "remove" as const, path: ["services", "web", "ready"] },
+    { op: "remove" as const, path: ["services", "web", "build"] },
   ]) {
     const failure = await editProjectConfig({
       repoPath: root,
@@ -575,6 +578,17 @@ test("the multi example plans its short references, working_dir, named proxy and
       PORT: "4200",
       DATABASE_URL: "postgres://postgres@127.0.0.1:5432/postgres",
     },
+    healthcheck: {
+      interval: 60,
+      timeout: 30,
+      retries: 3,
+      onFailure: "restart",
+    },
+  });
+  expect(stable.components.find((c) => c.name === "db")).toMatchObject({
+    health: "pg_isready -h 127.0.0.1 -p 5432",
+    readyTimeout: 120,
+    healthcheck: { interval: 10, onFailure: "report" },
   });
   expect(stable.proxy).toEqual({
     upstream: "web",
@@ -586,10 +600,15 @@ test("the multi example plans its short references, working_dir, named proxy and
   expect(stable.builds!.map((unit) => unit.id)).toContain("service:web");
   const working = plan("working");
   expect(working.builds!.map((unit) => unit.id)).not.toContain("service:web");
-  expect(working.components.find((c) => c.name === "web")).toMatchObject({
+  const dev = working.components.find((c) => c.name === "web")!;
+  expect(dev).toMatchObject({
     command: "bun run dev --port 4100",
     workingDir: "apps/web",
+    readyTimeout: 30,
   });
+  // healthcheck: { disable: true } drops the inherited check: the dev server is gated by its port alone.
+  expect(dev).not.toHaveProperty("health");
+  expect(dev).not.toHaveProperty("healthcheck");
 });
 
 test("a Project needs a Service or a Tool; a Tool-only Project needs no Service, domain or proxy", () => {
@@ -1056,7 +1075,18 @@ test.each([
     { services: web({ build: 'sh -c "tunnel --listen 0.0.0.0:9000"' }) },
   ],
   ["tools.ctl.build", { tools: { ctl: { bin: "c", build: "x --bind ::" } } }],
-  ["services.web.ready", { services: web({ ready: "probe --host 0.0.0.0" }) }],
+  [
+    "services.web.healthcheck.test",
+    { services: web({ healthcheck: { test: "probe --host 0.0.0.0" } }) },
+  ],
+  [
+    "services.web.healthcheck.test",
+    {
+      services: web({
+        healthcheck: { test: ["CMD", "probe", "--listen", "0.0.0.0:9"] },
+      }),
+    },
+  ],
   [
     "services.web.environment.HOST",
     { services: web({ environment: { HOST: "0.0.0.0" } }) },
@@ -1089,7 +1119,9 @@ test("env values that are not wildcard bindings are accepted, and a wrapped loca
     services: web({
       command:
         'sh -c "node s.js --host 127.0.0.1 --port ${services.web.ports.http}"',
-      ready: "curl -s http://localhost:${services.web.ports.http}/warm",
+      healthcheck: {
+        test: "curl -s http://localhost:${services.web.ports.http}/warm",
+      },
       environment: {
         HOST: "app.example.com",
         HOSTNAME: "mac.local",
@@ -1113,9 +1145,11 @@ test.each([
   "https://127.0.0.1.nip.io/health",
 ])(
   "readiness URLs are parsed whole and case-insensitively, so %s is rejected",
-  (ready) => {
-    expect(hintOf({ name: "app", services: web({ ready }) })).toBe(
-      "Fix services.web.ready: Health checks must address 127.0.0.1 or localhost.",
+  (test) => {
+    expect(
+      hintOf({ name: "app", services: web({ healthcheck: { test } }) }),
+    ).toBe(
+      "Fix services.web.healthcheck.test: Health checks must address 127.0.0.1 or localhost.",
     );
   },
 );
@@ -1124,9 +1158,12 @@ test.each([
   "http://127.0.0.1:4000/?next=http://example.com",
   "HTTP://LOCALHOST:${services.web.ports.http}/health",
   "curl -fsS http://example.com/ping",
-])("readiness value %s is accepted", (ready) => {
-  const config = parseProjectConfig({ name: "app", services: web({ ready }) });
-  expect(config.services!.web).toMatchObject({ ready });
+])("healthcheck test %s is accepted", (test) => {
+  const config = parseProjectConfig({
+    name: "app",
+    services: web({ healthcheck: { test } }),
+  });
+  expect(config.services!.web).toMatchObject({ healthcheck: { test } });
 });
 
 test("the removed supervisor setting is refused with guidance to delete it, at every level that took one, and rigd supervises every plan", () => {
@@ -1259,7 +1296,7 @@ test("${port} and ${ports.<port>} name the ports of the Service whose setting ho
         command: "serve --port ${port}",
         build: "make web-${port}",
         ports: { http: "auto" },
-        ready: "http://127.0.0.1:${port}/health",
+        healthcheck: { test: "http://127.0.0.1:${port}/health" },
         environment: {
           PORT: "${port}",
           SELF: "http://127.0.0.1:${port}",
@@ -1500,9 +1537,9 @@ test("a reference through env names the environment path that replaced it", () =
   );
 });
 
-test("a health block is refused wherever a Service is spelled, naming ready and ready_timeout as its replacement", () => {
+test("a health block is refused wherever a Service is spelled, naming healthcheck as its replacement", () => {
   const removed =
-    "was removed with ongoing health checks; write its check as ready and its start_timeout as ready_timeout";
+    "`health` is now `healthcheck`, in Docker Compose's shape: write check as test, start_timeout as start_period and failures as retries; interval, timeout and on_failure keep their names, and retry_for is gone";
   for (const [path, extra] of [
     [
       "services.web.health",
@@ -1521,22 +1558,26 @@ test("a health block is refused wherever a Service is spelled, naming ready and 
       hint: `Fix ${path}: ${removed}.`,
       context: { issues: [{ path: path.split("."), message: removed }] },
     });
-  // The same settings as ready and ready_timeout plan the start check they named.
+  // The same settings as healthcheck.test and start_period plan the start check they named.
   const config = parseProjectConfig({
     name: "app",
-    services: web({ ready: "true", ready_timeout: "1m" }),
+    services: web({ healthcheck: { test: "true", start_period: "1m" } }),
   });
   expect(
     resolveTargetPlan({ config, target: "working", ...roots_ }).components,
   ).toMatchObject([{ name: "web", health: "true", readyTimeout: 60 }]);
-  // A reference to ready_timeout reads the selected Target's value, its role's patch included.
+  // A reference to start_period reads the selected Target's value, its role's patch included.
   const referenced = parseProjectConfig({
     name: "app",
     services: web({
-      ready_timeout: "1m",
-      environment: { READY_TIMEOUT: "${services.web.ready_timeout}" },
+      healthcheck: { start_period: "1m" },
+      environment: {
+        READY_TIMEOUT: "${services.web.healthcheck.start_period}",
+      },
     }),
-    targets: { stable: { services: { web: { ready_timeout: "5m" } } } },
+    targets: {
+      stable: { services: { web: { healthcheck: { start_period: "5m" } } } },
+    },
   });
   const readyEnv = (target: "working" | "stable") =>
     resolveTargetPlan({ config: referenced, target, ...roots_ }).components[0]!
@@ -1550,7 +1591,10 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
     failureOf({
       name: "app",
       build_timeout: "2d",
-      services: web({ ready_timeout: "86401s", build_timeout: "25h" }),
+      services: web({
+        healthcheck: { start_period: "86401s" },
+        build_timeout: "25h",
+      }),
       tools: { ctl: { bin: "c", build_timeout: "0s" } },
     }),
   ).toMatchObject({
@@ -1559,7 +1603,7 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
       issues: [
         "build_timeout",
         "services.web.build_timeout",
-        "services.web.ready_timeout",
+        "services.web.healthcheck.start_period",
         "tools.ctl.build_timeout",
       ].map((path) => ({
         path: path.split("."),
@@ -1568,18 +1612,23 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
       })),
     },
   });
-  for (const ready_timeout of ["30", "1.5m", "-5s", "10 m", "1d", "01s"])
-    expect(hintOf({ name: "app", services: web({ ready_timeout }) })).toContain(
-      "services.web.ready_timeout: must be a positive duration",
+  for (const start_period of ["30", "1.5m", "-5s", "10 m", "1d", "01s"])
+    expect(
+      hintOf({ name: "app", services: web({ healthcheck: { start_period } }) }),
+    ).toContain(
+      "services.web.healthcheck.start_period: must be a positive duration",
     );
-  expect(hintOf({ name: "app", services: web({ ready_timeout: 30 }) })).toBe(
-    "Fix services.web.ready_timeout: must be a string.",
-  );
+  expect(
+    hintOf({
+      name: "app",
+      services: web({ healthcheck: { start_period: 30 } }),
+    }),
+  ).toBe("Fix services.web.healthcheck.start_period: must be a string.");
   const config = parseProjectConfig({
     name: "app",
     build_timeout: "24h",
     services: {
-      ...web({ ready_timeout: "86400s" }),
+      ...web({ healthcheck: { start_period: "86400s" } }),
       api: { command: "api", ports: { http: 3001 } },
     },
     tools: {
@@ -2117,13 +2166,17 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
       web: {
         command: "serve --port ${services.web.ports.http}",
         ports: { http: 3000 },
-        ready: "http://127.0.0.1:${services.web.ports.http}/health",
+        healthcheck: {
+          test: "http://127.0.0.1:${services.web.ports.http}/health",
+        },
         depends_on: ["db"],
       },
       db: {
         command: "db -p ${services.db.ports.pg}",
         ports: { pg: 5432 },
-        ready: "pg_isready -h 127.0.0.1 -p ${services.db.ports.pg}",
+        healthcheck: {
+          test: "pg_isready -h 127.0.0.1 -p ${services.db.ports.pg}",
+        },
       },
     },
     tools: { tool: { bin: "bin/tool", build: "bun build" } },
@@ -2690,7 +2743,7 @@ test.each([
   expect(plan.components[0]).toMatchObject({ command: expected });
 });
 
-test("Target resolution validates the actual substituted bind values of run and ready", () => {
+test("Target resolution validates the actual substituted bind values of command and healthcheck", () => {
   const resolve = (extra: Record<string, unknown>) =>
     resolveTargetPlan({
       config: parseProjectConfig({
@@ -2714,31 +2767,31 @@ test("Target resolution validates the actual substituted bind values of run and 
     }),
   );
   expect(() =>
-    resolve({ ready: "probe --addr 127.0.0.1:${rig.data}" }),
+    resolve({ healthcheck: { test: "probe --addr 127.0.0.1:${rig.data}" } }),
   ).toThrow(
     expect.objectContaining({
       _tag: "ConfigError",
       code: "invalid_binding",
-      context: { service: "server", field: "ready" },
+      context: { service: "server", field: "healthcheck.test" },
     }),
   );
 });
 
-test("paths substituted into run, ready and build commands are shell-quoted unless the author already quoted them", () => {
+test("paths substituted into command, healthcheck and build commands are shell-quoted unless the author already quoted them", () => {
   const config = parseProjectConfig({
     name: "spaced",
     services: {
       web: {
         command:
           "node ${rig.workspace}/server.js --db ${rig.data}/db.sqlite --port ${services.web.ports.http}",
-        ready: "test -f ${rig.workspace}/ready",
+        healthcheck: { test: "test -f ${rig.workspace}/ready" },
         ports: { http: 4000 },
         environment: { DB: "${rig.data}/db.sqlite" },
       },
       api: {
         command:
           "node '${rig.workspace}/api.js' --log \"${rig.data}/log\" --port ${services.api.ports.http}",
-        ready: "http://127.0.0.1:${services.api.ports.http}/",
+        healthcheck: { test: "http://127.0.0.1:${services.api.ports.http}/" },
         ports: { http: 4001 },
       },
     },

@@ -21,7 +21,8 @@ services:
       RIG_WEB_DASHBOARD_HOST: rig.b-relay.com
       # Browsers beyond this Mac sign in with the key in this file; the Service creates it on first start.
       RIG_WEB_KEY_FILE: ${rig.data}/access.key
-    ready: http://127.0.0.1:${port}/healthz
+    healthcheck:
+      test: http://127.0.0.1:${port}/healthz
 
 targets:
   working: true

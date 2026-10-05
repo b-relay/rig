@@ -77,7 +77,7 @@ export class FileStateStore implements StateStore {
     // wrote survive a round trip through this one, and the next write carries them along.
     const state = parsed as RuntimeState;
     readRetiredSupervisorAsRigd(state);
-    forgetOngoingHealthChecks(state);
+    forgetRetiredHealthMonitor(state);
     forgetOperatorAlerts(state);
     readEnvironmentSources(state);
     return { ...state, version: STATE_VERSION };
@@ -221,10 +221,11 @@ function readRetiredSupervisorAsRigd(state: RuntimeState): void {
       if (plan?.providers.processSupervisor === "launchd")
         plan.providers.processSupervisor = "rigd";
 }
-/** Rig once ran ongoing health checks, and plans recorded then may carry a Service's `healthMonitor` and a run its
- * `healthRestarts`. Only start readiness remains, so both are dropped as the state is read: such a plan equals the plan its
- * config makes today and is not config drift. The next write saves it so. */
-function forgetOngoingHealthChecks(state: RuntimeState): void {
+/** The first ongoing health checks (#317, removed by ADR 0009) recorded a Service's `healthMonitor` in its plan and the
+ * unhealthy stretch as a run's `healthRestarts`. The config that made them is refused now, so both are dropped as the state
+ * is read: such a plan equals the plan its config made without them, and is not config drift. The next write saves it so.
+ * Today's healthcheck (ADR 0012) records other fields, `healthcheck` and `healthStretch`, which this never touches. */
+function forgetRetiredHealthMonitor(state: RuntimeState): void {
   for (const target of state.targets) {
     for (const plan of [target.plan, target.recovery?.plan])
       for (const component of plan?.components ?? [])

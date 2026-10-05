@@ -1,4 +1,4 @@
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { resolve } from "node:path";
 import {
   previewName,
@@ -326,6 +326,8 @@ interface InitOptions extends ScopeOptions {
   service?: string;
   command?: string;
   port?: number;
+  healthcheck?: string;
+  /** Renamed to --healthcheck; refused with that hint. */
   ready?: string;
   tool?: string;
   bin?: string;
@@ -366,15 +368,26 @@ function addInitCommand(
       "Service localhost port (assigned automatically when omitted)",
       positiveInteger,
     )
-    .option("--ready <check>", "Service readiness check", nonEmpty)
+    .option(
+      "--healthcheck <test>",
+      "Service healthcheck test: a shell command, or a local http(s) URL",
+      nonEmpty,
+    )
+    .addOption(new Option("--ready <check>").hideHelp())
     .option("--tool <name>", "Tool name", nonEmpty)
     .option("--bin <path>", "Executable the Tool installs", nonEmpty)
     .option("--tool-build <command>", "Command that builds the Tool", nonEmpty)
     .action(async (options: InitOptions) => execute(initRequest(cwd, options)));
 }
 function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
+  if (options.ready !== undefined)
+    throw new RigError(
+      "USAGE",
+      "--ready is now --healthcheck.",
+      "Run rig init with --healthcheck <test>.",
+    );
   const serviceRequested =
-    options.service || options.command || options.port || options.ready;
+    options.service || options.command || options.port || options.healthcheck;
   const toolRequested = options.tool || options.bin || options.toolBuild;
   if (serviceRequested && (!options.service || !options.command))
     throw new RigError(
@@ -415,7 +428,9 @@ function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
             name: options.service,
             command: options.command,
             ...(options.port ? { port: options.port } : {}),
-            ...(options.ready ? { ready: options.ready } : {}),
+            ...(options.healthcheck
+              ? { healthcheck: options.healthcheck }
+              : {}),
           },
         }
       : {}),

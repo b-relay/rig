@@ -310,12 +310,14 @@ export function createTargetEffects(
     }
     return { ready: true };
   };
-  /** An HTTP answer below 400, a redirect included, means the process is serving; a shell probe passes on exit 0. */
+  /** An HTTP answer below 400, a redirect included, means the process is serving; a shell probe passes on exit 0 within the
+   * healthcheck's timeout, or 2 s for a `ready` check a plan recorded before healthcheck. */
   const probe = async (
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
   ): Promise<HealthCheck> => {
+    const timeoutMs = (component.healthcheck?.timeout ?? 2) * 1000;
     try {
       if (isHealthUrl(component.health!)) {
         const response = await fetch(component.health!, {
@@ -332,13 +334,13 @@ export function createTargetEffects(
         cwd: await runDirectory(target, component),
         env: await environment(target, component),
         signal,
-        timeoutMs: 2000,
+        timeoutMs,
       });
       if (result.exitCode === 0) return { ready: true };
       const detail = lastLine(result.stderr) ?? lastLine(result.stdout);
       return {
         ready: false,
-        reason: `${result.timedOut ? "timed out after 2s" : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
+        reason: `${result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
       };
     } catch (error) {
       if (signal.aborted) throw error;

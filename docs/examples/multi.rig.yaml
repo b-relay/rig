@@ -18,7 +18,8 @@ services:
     environment:
       HOST: 127.0.0.1
       PORT: ${port}
-    ready: http://127.0.0.1:${port}/health
+    healthcheck:
+      test: http://127.0.0.1:${port}/health
     depends_on: [api]
 
   api:
@@ -31,7 +32,11 @@ services:
       DATA_DIR: ${rig.data}
       DATABASE_URL: postgres://postgres@127.0.0.1:${services.db.port}/postgres
     env_file: ~/.rig/env/acme/api-secrets.env
-    ready: http://127.0.0.1:${port}/health
+    # Checked every minute once it runs; three failures in a row restart it.
+    healthcheck:
+      test: http://127.0.0.1:${port}/health
+      interval: 1m
+      on_failure: restart
     depends_on: [db]
 
   db:
@@ -43,7 +48,11 @@ services:
       PGHOST: 127.0.0.1
       PGPORT: ${port}
       PGDATA: ${rig.data}/pg
-    ready: pg_isready -h 127.0.0.1 -p ${port}
+    # Compose's CMD form runs the program without a shell; a first start may take a while to initdb.
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "${port}"]
+      interval: 10s
+      start_period: 2m
 
 tools:
   acmectl:
@@ -65,6 +74,8 @@ targets:
       web:
         build: false
         command: bun run dev --port ${port}
+        # The dev server reloads itself; start waits for its port and nothing checks it afterwards.
+        healthcheck: { disable: true }
   stable: true
   preview:
     domain: ${rig.target}.preview.acme.example.com

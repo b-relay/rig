@@ -95,7 +95,7 @@
           "working_dir": {
             "type": "string",
             "minLength": 1,
-            "description": "Directory the Service's command, its build and a shell ready check run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
+            "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
           },
           "ports": {
             "type": "object",
@@ -120,16 +120,69 @@
             },
             "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
           },
-          "ready": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0 and runs in working_dir. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-          },
-          "ready_timeout": {
-            "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-            "type": "string",
-            "minLength": 1,
-            "default": "30s"
+          "healthcheck": {
+            "type": "object",
+            "properties": {
+              "test": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  }
+                ],
+                "description": "What one check runs: a shell command, a local http(s) URL, or one of Compose's list forms. Without it, a check passes when every declared port accepts a connection."
+              },
+              "interval": {
+                "description": "Time between checks while the Service runs, such as 1m (default 30s, at least 5s).",
+                "type": "string",
+                "minLength": 1,
+                "default": "30s"
+              },
+              "timeout": {
+                "description": "How long one check may take before it counts as failed, such as 5s (default 30s).",
+                "type": "string",
+                "minLength": 1,
+                "default": "30s"
+              },
+              "retries": {
+                "description": "Failed checks in a row before the Service is unhealthy (default 3). One passing check makes it healthy again.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+                "default": 3
+              },
+              "start_period": {
+                "description": "How long a start may take to pass its first check, such as 2m (default 30s; Compose's is 0s). Until then Rig checks every 100 ms, not at interval, and a Service that depends on this one starts only once a check passed.",
+                "type": "string",
+                "minLength": 1,
+                "default": "30s"
+              },
+              "disable": {
+                "description": "true turns the healthcheck off, mainly in a Target patch to drop an inherited one; the Service then behaves as if it had none, start_period included.",
+                "type": "boolean"
+              },
+              "on_failure": {
+                "description": "What Rig does once the Service is unhealthy (Rig's extension; Compose never restarts for health): report (default) shows it in status and records it in Activity; restart also stops it within its stop_timeout and starts it again, at once and then after 1m, 5m, 15m and every hour while it stays unhealthy.",
+                "type": "string",
+                "enum": [
+                  "report",
+                  "restart"
+                ],
+                "default": "report"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Docker Compose's healthcheck. The first passing check is the start gate, and checks repeat at interval while the Service runs. Without a healthcheck, start waits for every declared port to accept a connection and nothing is checked afterwards."
           },
           "stop_timeout": {
             "type": "string",
@@ -138,7 +191,7 @@
             "default": "10s"
           },
           "depends_on": {
-            "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+            "description": "Services that must be running and have passed their start check (their healthcheck, or without one every declared port accepting a connection) before this one starts; a later dependency failure does not restart this Service.",
             "type": "array",
             "items": {
               "type": "string",
@@ -358,7 +411,7 @@
                       "working_dir": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Directory the Service's command, its build and a shell ready check run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
+                        "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
                       },
                       "ports": {
                         "type": "object",
@@ -383,15 +436,64 @@
                         },
                         "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                       },
-                      "ready": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0 and runs in working_dir. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "ready_timeout": {
-                        "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
+                      "healthcheck": {
+                        "type": "object",
+                        "properties": {
+                          "test": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                              },
+                              {
+                                "minItems": 1,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                              }
+                            ],
+                            "description": "What one check runs: a shell command, a local http(s) URL, or one of Compose's list forms. Without it, a check passes when every declared port accepts a connection."
+                          },
+                          "interval": {
+                            "description": "Time between checks while the Service runs, such as 1m (default 30s, at least 5s).",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "timeout": {
+                            "description": "How long one check may take before it counts as failed, such as 5s (default 30s).",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "retries": {
+                            "description": "Failed checks in a row before the Service is unhealthy (default 3). One passing check makes it healthy again.",
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "start_period": {
+                            "description": "How long a start may take to pass its first check, such as 2m (default 30s; Compose's is 0s). Until then Rig checks every 100 ms, not at interval, and a Service that depends on this one starts only once a check passed.",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "disable": {
+                            "description": "true turns the healthcheck off, mainly in a Target patch to drop an inherited one; the Service then behaves as if it had none, start_period included.",
+                            "type": "boolean"
+                          },
+                          "on_failure": {
+                            "description": "What Rig does once the Service is unhealthy (Rig's extension; Compose never restarts for health): report (default) shows it in status and records it in Activity; restart also stops it within its stop_timeout and starts it again, at once and then after 1m, 5m, 15m and every hour while it stays unhealthy.",
+                            "type": "string",
+                            "enum": [
+                              "report",
+                              "restart"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "Docker Compose's healthcheck. The first passing check is the start gate, and checks repeat at interval while the Service runs. Without a healthcheck, start waits for every declared port to accept a connection and nothing is checked afterwards."
                       },
                       "stop_timeout": {
                         "type": "string",
@@ -399,7 +501,7 @@
                         "description": "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it."
                       },
                       "depends_on": {
-                        "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+                        "description": "Services that must be running and have passed their start check (their healthcheck, or without one every declared port accepting a connection) before this one starts; a later dependency failure does not restart this Service.",
                         "type": "array",
                         "items": {
                           "type": "string",
@@ -600,7 +702,7 @@
                       "working_dir": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Directory the Service's command, its build and a shell ready check run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
+                        "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
                       },
                       "ports": {
                         "type": "object",
@@ -625,15 +727,64 @@
                         },
                         "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                       },
-                      "ready": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0 and runs in working_dir. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "ready_timeout": {
-                        "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
+                      "healthcheck": {
+                        "type": "object",
+                        "properties": {
+                          "test": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                              },
+                              {
+                                "minItems": 1,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                              }
+                            ],
+                            "description": "What one check runs: a shell command, a local http(s) URL, or one of Compose's list forms. Without it, a check passes when every declared port accepts a connection."
+                          },
+                          "interval": {
+                            "description": "Time between checks while the Service runs, such as 1m (default 30s, at least 5s).",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "timeout": {
+                            "description": "How long one check may take before it counts as failed, such as 5s (default 30s).",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "retries": {
+                            "description": "Failed checks in a row before the Service is unhealthy (default 3). One passing check makes it healthy again.",
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "start_period": {
+                            "description": "How long a start may take to pass its first check, such as 2m (default 30s; Compose's is 0s). Until then Rig checks every 100 ms, not at interval, and a Service that depends on this one starts only once a check passed.",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "disable": {
+                            "description": "true turns the healthcheck off, mainly in a Target patch to drop an inherited one; the Service then behaves as if it had none, start_period included.",
+                            "type": "boolean"
+                          },
+                          "on_failure": {
+                            "description": "What Rig does once the Service is unhealthy (Rig's extension; Compose never restarts for health): report (default) shows it in status and records it in Activity; restart also stops it within its stop_timeout and starts it again, at once and then after 1m, 5m, 15m and every hour while it stays unhealthy.",
+                            "type": "string",
+                            "enum": [
+                              "report",
+                              "restart"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "Docker Compose's healthcheck. The first passing check is the start gate, and checks repeat at interval while the Service runs. Without a healthcheck, start waits for every declared port to accept a connection and nothing is checked afterwards."
                       },
                       "stop_timeout": {
                         "type": "string",
@@ -641,7 +792,7 @@
                         "description": "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it."
                       },
                       "depends_on": {
-                        "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+                        "description": "Services that must be running and have passed their start check (their healthcheck, or without one every declared port accepting a connection) before this one starts; a later dependency failure does not restart this Service.",
                         "type": "array",
                         "items": {
                           "type": "string",
@@ -842,7 +993,7 @@
                       "working_dir": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Directory the Service's command, its build and a shell ready check run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
+                        "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
                       },
                       "ports": {
                         "type": "object",
@@ -867,15 +1018,64 @@
                         },
                         "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                       },
-                      "ready": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0 and runs in working_dir. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "ready_timeout": {
-                        "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
+                      "healthcheck": {
+                        "type": "object",
+                        "properties": {
+                          "test": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. Referenced values in a shell command are quoted as in command. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                              },
+                              {
+                                "minItems": 1,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                              }
+                            ],
+                            "description": "What one check runs: a shell command, a local http(s) URL, or one of Compose's list forms. Without it, a check passes when every declared port accepts a connection."
+                          },
+                          "interval": {
+                            "description": "Time between checks while the Service runs, such as 1m (default 30s, at least 5s).",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "timeout": {
+                            "description": "How long one check may take before it counts as failed, such as 5s (default 30s).",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "retries": {
+                            "description": "Failed checks in a row before the Service is unhealthy (default 3). One passing check makes it healthy again.",
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "start_period": {
+                            "description": "How long a start may take to pass its first check, such as 2m (default 30s; Compose's is 0s). Until then Rig checks every 100 ms, not at interval, and a Service that depends on this one starts only once a check passed.",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "disable": {
+                            "description": "true turns the healthcheck off, mainly in a Target patch to drop an inherited one; the Service then behaves as if it had none, start_period included.",
+                            "type": "boolean"
+                          },
+                          "on_failure": {
+                            "description": "What Rig does once the Service is unhealthy (Rig's extension; Compose never restarts for health): report (default) shows it in status and records it in Activity; restart also stops it within its stop_timeout and starts it again, at once and then after 1m, 5m, 15m and every hour while it stays unhealthy.",
+                            "type": "string",
+                            "enum": [
+                              "report",
+                              "restart"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "Docker Compose's healthcheck. The first passing check is the start gate, and checks repeat at interval while the Service runs. Without a healthcheck, start waits for every declared port to accept a connection and nothing is checked afterwards."
                       },
                       "stop_timeout": {
                         "type": "string",
@@ -883,7 +1083,7 @@
                         "description": "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it."
                       },
                       "depends_on": {
-                        "description": "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+                        "description": "Services that must be running and have passed their start check (their healthcheck, or without one every declared port accepting a connection) before this one starts; a later dependency failure does not restart this Service.",
                         "type": "array",
                         "items": {
                           "type": "string",

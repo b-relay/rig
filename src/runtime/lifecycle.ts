@@ -843,7 +843,7 @@ async function awaitActivation(
     lastCheck === undefined
       ? `${component.name} did not become ready.`
       : `${component.name} did not become ready (last check: ${lastCheck}).`,
-    "Inspect Target logs and the configured health check.",
+    "Inspect the Target logs and the Service's healthcheck.",
     {
       component: component.name,
       outcome: lastCheck === undefined ? "unanswered" : "unready",

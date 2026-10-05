@@ -33,8 +33,44 @@ const component = z.discriminatedUnion("kind", [
     port: z.number().int().min(1).max(65535).optional(),
     ports: z.record(text, z.number().int().min(1).max(65535)).optional(),
     sitePort: z.number().int().min(1).max(65535).optional(),
-    health: text.optional(),
-    readyTimeout: z.number().positive(),
+    health: text
+      .optional()
+      .describe(
+        "What one check runs, references resolved: a local http(s) URL or a /bin/sh command; absent when the Service is checked by connecting to its declared ports.",
+      ),
+    readyTimeout: z
+      .number()
+      .positive()
+      .describe(
+        "Seconds a start may take to pass its first check: the healthcheck's start_period, else 30.",
+      ),
+    healthcheck: z
+      .object({
+        interval: z
+          .number()
+          .int()
+          .positive()
+          .describe("Seconds between checks while the Service runs."),
+        timeout: z
+          .number()
+          .int()
+          .positive()
+          .describe("Seconds one check may take before it counts as failed."),
+        retries: z
+          .number()
+          .int()
+          .positive()
+          .describe("Failed checks in a row before the Service is unhealthy."),
+        onFailure: z
+          .enum(["report", "restart"])
+          .describe(
+            "Whether Rig only reports an unhealthy Service or also restarts it.",
+          ),
+      })
+      .optional()
+      .describe(
+        "The Service's healthcheck in force, whose checks repeat while it runs; absent when it has none, as in every plan recorded before healthcheck, whose `health` only gates start.",
+      ),
     stopTimeout: z
       .number()
       .int()

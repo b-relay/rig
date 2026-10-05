@@ -32,7 +32,8 @@ const SERVICE = `services:
   web:
     command: "'${process.execPath}' app.ts \${services.web.ports.http} '\${rig.data}/web'"
     ports: { http: auto }
-    ready: http://127.0.0.1:\${services.web.ports.http}
+    healthcheck:
+      test: http://127.0.0.1:\${services.web.ports.http}
     environment: { GREETING: from-config }
 `;
 const TOOLS = `tools:

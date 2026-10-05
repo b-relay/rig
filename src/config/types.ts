@@ -37,13 +37,31 @@ export interface ManagedComponent extends ComponentContext {
   /** Every declared port by name. A plan recorded before named ports carries only `port`. */
   ports?: Record<string, number>;
   sitePort?: number;
+  /** What one check runs, references resolved: a local http(s) URL, or a /bin/sh command (a `CMD` test is quoted into
+   * one). Absent when the Service is checked by connecting to its declared ports. A plan recorded before `healthcheck`
+   * carries its `ready` check here and no `healthcheck`: that check gates start and nothing checks it afterwards. */
   health?: string;
+  /** Seconds a start may take to pass its first check: the healthcheck's start_period, else the 30 s default. */
   readyTimeout: number;
+  /** The Service's healthcheck in force, whose checks repeat while it runs; absent when it has none (or it is disabled), as
+   * in every plan recorded before healthcheck. */
+  healthcheck?: HealthcheckPlan;
   /** Seconds the Service may take to exit after SIGTERM before SIGKILL; a plan recorded before stop_timeout existed has
    * none and gets the 10 s default. */
   stopTimeout?: number;
   /** When Rig starts the Service again after a known exit; a plan recorded without it means always. */
   restart?: RestartPolicy;
+}
+/** A Service's ongoing checks as its plan records them, in seconds. */
+export interface HealthcheckPlan {
+  /** Between checks while the Service runs. */
+  interval: number;
+  /** How long one check may take before it counts as failed. */
+  timeout: number;
+  /** Failed checks in a row before the Service is unhealthy. */
+  retries: number;
+  /** What Rig does once it is unhealthy: report it, or also restart it. */
+  onFailure: "report" | "restart";
 }
 /** One path prefix of a Target's hostname and the declared port behind it. A prefix matches at a slash boundary and the upstream sees the path unchanged. */
 export interface PlanRoute {

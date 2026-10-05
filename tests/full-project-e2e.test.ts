@@ -114,7 +114,8 @@ services:
   web:
     command: "'${process.execPath}' server.ts"
     ports: { http: auto }
-    ready: http://127.0.0.1:\${services.web.ports.http}/health
+    healthcheck:
+      test: http://127.0.0.1:\${services.web.ports.http}/health
     environment:
       PORT: "\${services.web.ports.http}"
       DATABASE: "\${rig.data}/ledger.sqlite"

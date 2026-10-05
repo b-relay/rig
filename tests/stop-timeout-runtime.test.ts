@@ -822,8 +822,10 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
           CONVEX_CLOUD_PORT: "${services.convex.ports.cloud}",
           CONVEX_SITE_PORT: "${services.convex.ports.site}",
         },
-        ready: "http://127.0.0.1:${services.convex.ports.cloud}/instance_name",
-        ready_timeout: "1m",
+        healthcheck: {
+          test: "http://127.0.0.1:${services.convex.ports.cloud}/instance_name",
+          start_period: "1m",
+        },
       },
       web: {
         build:
@@ -836,8 +838,10 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
           APP_ORIGIN: "http://127.0.0.1:${services.web.ports.http}",
           NEXT_TELEMETRY_DISABLED: "1",
         },
-        ready: "http://127.0.0.1:${services.web.ports.http}/api/health",
-        ready_timeout: "2m",
+        healthcheck: {
+          test: "http://127.0.0.1:${services.web.ports.http}/api/health",
+          start_period: "2m",
+        },
         depends_on: ["convex"],
         ...web,
       },
@@ -894,6 +898,18 @@ async function recordedBeforeStopTimeout(): Promise<RuntimeState> {
 async function upgraded(config: ProjectConfig) {
   const w = world(config);
   const recorded = await recordedBeforeStopTimeout();
+  // These Services had `ready`, which rig.yaml now writes as healthcheck. That move starts ongoing checks, so it is drift of
+  // its own (ADR 0012; tests/healthcheck-runtime.test.ts). The recorded plans are given the checks it adds, so what these
+  // tests compare is stop_timeout alone.
+  for (const target of recorded.targets)
+    for (const component of target.plan.components)
+      if (component.kind === "managed")
+        component.healthcheck = {
+          interval: 30,
+          timeout: 30,
+          retries: 3,
+          onFailure: "report",
+        };
   Object.assign(w.state, structuredClone(recorded));
   return { ...w, recorded };
 }

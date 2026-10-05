@@ -4444,8 +4444,10 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
       web: {
         command: "serve --host 127.0.0.1",
         ports: { http: 4567 },
-        ready: "http://127.0.0.1:4567/health",
-        ready_timeout: "1m",
+        healthcheck: {
+          test: "http://127.0.0.1:4567/health",
+          start_period: "1m",
+        },
       },
     },
   });

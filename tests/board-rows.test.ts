@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { boardRows, NOT_STARTED } from "../web/lib/board-rows";
+import { boardRows } from "../web/lib/board-rows";
 import type { ProjectStatusReport, TargetReport } from "../web/lib/types";
 
 const target = (
@@ -27,7 +27,7 @@ const project = (name: string, missing = false) => ({
 });
 
 describe("boardRows", () => {
-  test("orders each Project's Targets Working copy, Stable, then Previews by name", () => {
+  test("orders each Project's Targets working, stable, then Previews by name", () => {
     const { rows, notices } = boardRows([
       {
         project: project("pantry"),
@@ -35,34 +35,22 @@ describe("boardRows", () => {
           ok: true,
           value: report([
             target("preview", "zeta"),
-            target("live", "live"),
+            target("stable", "stable"),
             target("preview", "alpha"),
-            target("local", "local"),
+            target("working", "working"),
           ]),
         },
       },
     ]);
     expect(rows.map((row) => row.name)).toEqual([
-      "local",
-      "live",
+      "working",
+      "stable",
       "alpha",
       "zeta",
     ]);
-    expect(rows[0]?.id).toBe("pantry/local:local");
+    expect(rows[0]?.id).toBe("pantry/working:working");
     expect(rows[0]?.projectHref).toBe("/projects/pantry");
     expect(notices).toEqual([]);
-  });
-
-  test("a Project without a Working copy gets a placeholder row to start it from", () => {
-    const { rows } = boardRows([
-      {
-        project: project("pantry"),
-        status: { ok: true, value: report([target("live", "live")]) },
-      },
-    ]);
-    expect(rows.map((row) => row.name)).toEqual([NOT_STARTED, "live"]);
-    expect(rows[0]?.target).toBeUndefined();
-    expect(rows[0]?.kindLabel).toBe("Working copy");
   });
 
   test("a row carries what the columns show, and the components as filterable text", () => {
@@ -72,7 +60,7 @@ describe("boardRows", () => {
         status: {
           ok: true,
           value: report([
-            target("live", "live", {
+            target("stable", "stable", {
               branch: "main",
               commit: "abcdef1234567890",
               route: "pantry.rig.test",
@@ -86,8 +74,8 @@ describe("boardRows", () => {
         },
       },
     ]);
-    const row = rows.find((each) => each.name === "live");
-    expect(rows.map((each) => each.name)).toEqual([NOT_STARTED, "live"]);
+    const row = rows.find((each) => each.name === "stable");
+    expect(rows.map((each) => each.name)).toEqual(["stable"]);
     expect(row?.branch).toBe("main");
     expect(row?.commit).toBe("abcdef1234567890");
     expect(row?.route).toBe("pantry.rig.test");
@@ -109,7 +97,7 @@ describe("boardRows", () => {
         project: project("noisy"),
         status: {
           ok: true,
-          value: report([target("local", "local")], ["rig.yaml changed."]),
+          value: report([target("working", "working")], ["rig.yaml changed."]),
         },
       },
       { project: project("pending") },

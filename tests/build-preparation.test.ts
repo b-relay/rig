@@ -82,8 +82,8 @@ async function fixture() {
   const previous: TargetRecord = {
     id: "target",
     projectId: "project",
-    name: "live",
-    kind: "live",
+    name: "stable",
+    kind: "stable",
     branch: "main",
     commit: "old",
     desired: "stopped",
@@ -92,12 +92,12 @@ async function fixture() {
     logRoot: join(root, "logs"),
     plan: {
       project: "demo",
-      target: "live",
+      target: "stable",
       workspacePath: join(root, "old"),
       dataRoot: join(root, "data"),
-      deploymentName: "live",
-      branchSlug: "live",
-      subdomain: "live",
+      deploymentName: "stable",
+      branchSlug: "stable",
+      subdomain: "stable",
       providers: { processSupervisor: "child" },
       components: [
         {
@@ -135,7 +135,7 @@ async function fixture() {
   candidate.plan.workspacePath = join(root, "new");
   candidate.plan.domain = "new.test";
   const state: RuntimeState = {
-    version: 4,
+    version: 5,
     projects: [],
     targets: [],
     activity: [],
@@ -244,7 +244,7 @@ test("a failed build leaves the running previous Deployment untouched, keeps the
   await expect(f.lifecycle.up(f.candidate)).rejects.toMatchObject({
     code: "PREPARATION_INCOMPLETE",
     details: { unit: "service:web" },
-    hint: expect.stringContaining("rig deploy live --force"),
+    hint: expect.stringContaining("rig deploy stable --force"),
   });
 });
 
@@ -289,7 +289,7 @@ test("a build whose success could not be recorded is unknown: nothing reruns it,
   await expect(f.lifecycle.up(recorded)).rejects.toMatchObject({
     code: "BUILD_UNKNOWN",
     details: { unit: "service:api" },
-    hint: expect.stringContaining("rig deploy live --force"),
+    hint: expect.stringContaining("rig deploy stable --force"),
   });
   expect(await f.ran()).toEqual(["shared", "service:api"]);
   // A forced deployment of the same Commit is planned into a new workspace, which owes nothing to the old record.
@@ -387,9 +387,9 @@ test("a Working copy up builds the units of stopped Services and every Tool, not
   const f = await fixture();
   const local: TargetRecord = {
     ...structuredClone(f.previous),
-    kind: "local",
-    name: "local",
-    plan: { ...structuredClone(f.previous.plan), target: "local" },
+    kind: "working",
+    name: "working",
+    plan: { ...structuredClone(f.previous.plan), target: "working" },
   };
   expect(await prepareTarget(local, "stopped", f.deps)).toEqual({ built: ALL });
   await f.lifecycle.up(local);

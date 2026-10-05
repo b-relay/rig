@@ -45,7 +45,7 @@ export function seedSteps(
     git("add", "-A"),
     git("commit", "-q", "-m", `feat: start ${project.name}`),
     rig("init", "--path", repository),
-    ...(project.deployStable ? [rig("deploy", "live", ...selector)] : []),
+    ...(project.deployStable ? [rig("deploy", "stable", ...selector)] : []),
     ...(project.previewBranch
       ? [
           git("checkout", "-q", "-b", project.previewBranch),

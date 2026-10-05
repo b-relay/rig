@@ -738,7 +738,7 @@ export function stoppedStanding(
     return {
       state: "stopped",
       exit: "unknown",
-      reason: `It stopped when ${hostRestartText(outcome.hostRestart)}. Only Stable Targets are started again after that; the Working copy and Previews stay stopped. ${again}`,
+      reason: `It stopped when ${hostRestartText(outcome.hostRestart)}. Only stable Targets are started again after that; the working Target and Previews stay stopped. ${again}`,
     };
   const policy = component.restart ?? DEFAULT_RESTART_POLICY;
   const budget = restartBudget(policy, outcome, scope);

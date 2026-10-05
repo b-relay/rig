@@ -14,12 +14,19 @@ import { portOwners, recordedPorts } from "./ports";
 import type { PortOwner } from "./host-reservations";
 import {
   PREVIEW_SELECTOR,
+  WORKING_TOOL_SUFFIX,
   patchedSettings,
-  targetNames,
+  targetOn,
+  type TargetRole,
 } from "../config/schema";
 type TargetKind = TargetRecord["kind"];
-const KIND_OF = { working: "local", stable: "live" } as const;
-const ROLE_OF = { local: "working", live: "stable" } as const;
+/** Names no new Preview may take: the working and stable Targets' names, and `dev`, which the working Target's Tools are
+ * published under (`<tool>-dev`), so a Preview named so would claim the same executables. */
+const RESERVED_PREVIEW_NAMES: readonly string[] = [
+  "working",
+  "stable",
+  WORKING_TOOL_SUFFIX,
+];
 /** The generated name of a Branch's Preview, or the explicit deployment name. */
 export function previewName(
   command: Pick<RuntimeCommand, "deployment" | "branch">,
@@ -39,63 +46,59 @@ export function previewName(
       .slice(0, 40) || "branch";
   return `${slug}-${createHash("sha256").update(command.branch).digest("hex").slice(0, 8)}`;
 }
-/** Which Target a command's selector means. The selector is `preview`, the configured name of the Working copy or
- * Stable Target, or a name one of them is still recorded under, so a Target stays reachable while its config is unreadable
- * or names it differently. No selector means the Working copy. `name` is absent for a Working copy or Stable Target nothing names yet.
- * Rejects TARGET_UNKNOWN for any other selector, TARGET_AMBIGUOUS for a name configured for one Target while the other is still recorded under it, and PREVIEW_NAME for a new Preview named like the Working copy or Stable Target. */
+/** Which Target a command's selector means: `working`, `stable`, or `preview` with a Branch or deployment name. No selector
+ * means the working Target. The working and stable Targets are named by their role, so a recorded one is found by its kind.
+ * Rejects TARGET_UNKNOWN for any other selector, and PREVIEW_NAME for a new Preview that would take a reserved name; a Preview
+ * recorded under such a name before it was reserved stays selectable, so it can still be stopped or destroyed. */
 export function selectTarget(
   command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
-  configured: Readonly<Record<"working" | "stable", string>> | undefined,
   recorded: readonly Pick<TargetRecord, "kind" | "name">[],
-): { kind: TargetKind; name?: string } {
-  const named = (kind: "local" | "live") =>
-    configured?.[ROLE_OF[kind]] ?? recorded.find((t) => t.kind === kind)?.name;
-  const known = (["local", "live"] as const).flatMap((kind) => [
-    ...(configured ? [configured[ROLE_OF[kind]]] : []),
-    ...recorded.filter((t) => t.kind === kind).map((t) => t.name),
-  ]);
+): { kind: TargetKind; name: string } {
   if (command.target === PREVIEW_SELECTOR) {
     const name = previewName(command);
-    // A Preview recorded before the name was taken stays selectable, so it can still be stopped or destroyed.
     if (
-      known.includes(name) &&
+      RESERVED_PREVIEW_NAMES.includes(name) &&
       !recorded.some((t) => t.kind === "preview" && t.name === name)
     )
       throw new RigError(
         "PREVIEW_NAME",
-        `'${name}' names this Project's Working copy or Stable Target.`,
-        "Choose a distinct Preview deployment name.",
+        `'${name}' is reserved: ${name === WORKING_TOOL_SUFFIX ? "the working Target's Tools are published as <tool>-dev" : "it names this Project's working or stable Target"}.`,
+        "Choose another Preview deployment name.",
       );
     return { kind: "preview", name };
   }
-  if (command.target === undefined)
-    return { kind: "local", name: named("local") };
-  const role = (["working", "stable"] as const).find(
-    (role) => configured?.[role] === command.target,
+  if (command.target === undefined) return { kind: "working", name: "working" };
+  if (command.target === "working" || command.target === "stable")
+    return { kind: command.target, name: command.target };
+  throw new RigError(
+    "TARGET_UNKNOWN",
+    `This Project has no Target named '${command.target}'.`,
+    "Target names are fixed: select working, stable, or preview with a Branch.",
   );
-  const holder = recorded.find(
-    (t) => t.kind !== "preview" && t.name === command.target,
-  )?.kind;
-  // Mid-rename a name can be configured for one Target while the other is still recorded under it; guessing could stop the wrong one.
-  if (role && holder && holder !== "preview" && holder !== KIND_OF[role])
-    throw new RigError(
-      "TARGET_AMBIGUOUS",
-      `'${command.target}' is the configured name of one Target and still the recorded name of the other.`,
-      `Select by the other configured name (${configured![ROLE_OF[holder]]}) first; planning that Target again (rig up, or a deploy) records its new name.`,
-    );
-  const kind = role ? KIND_OF[role] : holder;
-  if (!kind || kind === "preview")
-    throw new RigError(
-      "TARGET_UNKNOWN",
-      `This Project has no Target named '${command.target}'.`,
-      `Select ${[...new Set(known)].join(", ") || "a configured Target"} or ${PREVIEW_SELECTOR}.`,
-    );
-  return { kind, name: named(kind) };
+}
+/** Refuses TARGET_OFF when rig.yaml leaves the role off: a command that would select, start, deploy or publish an off Target
+ * does nothing. The hint names the one line that turns it on. */
+export function assertTargetOn(
+  config: Pick<ProjectConfig, "targets">,
+  role: TargetRole,
+): void {
+  if (targetOn(config, role)) return;
+  const label = role === "preview" ? "Previews are" : `The ${role} Target is`;
+  throw new RigError(
+    "TARGET_OFF",
+    `${label} off in rig.yaml.`,
+    config.targets?.[role] === false
+      ? `Change \`${role}: false\` to \`${role}: true\` under targets in rig.yaml.`
+      : config.targets === undefined
+        ? `Add a targets key to rig.yaml with \`${role}: true\` under it, and \`working: true\` beside it to keep the working Target on.`
+        : `Add \`${role}: true\` under targets in rig.yaml.`,
+    { role },
+  );
 }
 export async function planTarget(
   input: {
     command: RuntimeCommand;
-    /** The selected Target's kind; its name comes from the config the plan is made from. */
+    /** The selected Target's kind; the working and stable Targets are named by it. */
     kind: TargetKind;
     project: ProjectRecord;
     document: ConfigDocument<ProjectConfig>;
@@ -123,23 +126,23 @@ export async function planTarget(
     commit: string | undefined,
     branch = command.branch,
     config = document.config;
-  if (kind !== "local") {
+  if (kind !== "working") {
     const host = await deps.documents.host();
     const production =
       document.config.production_branch ?? host.deploy.production_branch;
     branch =
       branch ??
-      (kind === "live"
+      (kind === "stable"
         ? production
         : await deps.sources.currentBranch(project.repoPath));
     if (
-      (kind === "live" && branch !== production) ||
+      (kind === "stable" && branch !== production) ||
       (kind === "preview" && branch === production)
     )
       throw new RigError(
         "BRANCH_POLICY",
         `Branch '${branch}' does not match this Target's deployment policy.`,
-        "Deploy the Production Branch to the Stable Target and other Branches to Previews.",
+        "Deploy the Production Branch to the stable Target and other Branches to Previews.",
       );
     const prepared = await deps.sources.prepare({
       project: project.id,
@@ -152,12 +155,9 @@ export async function planTarget(
     // The deployed revision serves its own committed config; the working copy only identified the Project.
     config = await committedConfig(prepared.workspacePath, project, deps);
   }
-  const name =
-    kind === "preview"
-      ? previewName(command)
-      : targetNames(config)[ROLE_OF[kind]];
+  const name = kind === "preview" ? previewName(command) : kind;
   const targets = (await deps.store.read()).targets;
-  // A Working copy or Stable Target keeps its identity under a new configured name, but never takes another Target's.
+  // A Preview deployed under an explicit name before the working and stable names were fixed may hold one of them.
   const holder =
     kind === "preview"
       ? undefined
@@ -167,12 +167,8 @@ export async function planTarget(
   if (holder)
     throw new RigError(
       "TARGET_NAME",
-      holder.kind === "preview"
-        ? `Target name '${name}' already belongs to a Preview of this Project.`
-        : `Target name '${name}' is still recorded for this Project's other Target.`,
-      holder.kind === "preview"
-        ? `Choose another targets.${ROLE_OF[kind as "local" | "live"]}.name, or destroy that Preview first.`
-        : `Plan the other Target under its new name first (rig up, or a deploy), or choose another targets.${ROLE_OF[kind as "local" | "live"]}.name.`,
+      `Target name '${name}' already belongs to a Preview of this Project.`,
+      `Destroy that Preview first: rig down preview --deployment ${name} --destroy.`,
     );
   const planInput = {
     config,
@@ -183,10 +179,7 @@ export async function planTarget(
     ...(branch ? { branch } : {}),
     ...(commit ? { commit } : {}),
   };
-  const settings = patchedSettings(
-    config,
-    kind === "preview" ? "preview" : ROLE_OF[kind],
-  );
+  const settings = patchedSettings(config, kind);
   const requests = Object.entries(settings.services ?? {}).flatMap(
     ([name, service]) =>
       Object.entries(service.ports ?? {}).map(([port, value], index) => ({
@@ -240,7 +233,7 @@ export async function planTarget(
     createdAt: existing?.createdAt ?? deps.now(),
     updatedAt: deps.now(),
     logRoot: existing?.logRoot ?? join(base, "logs"),
-    ...(kind !== "local"
+    ...(kind !== "working"
       ? { sourceRoot: join(base, "revisions") }
       : {
           configRevision: document.revision,

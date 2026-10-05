@@ -72,7 +72,7 @@ async function project(f: Fixture) {
   );
   await writeFile(
     join(f.repo, "rig.yaml"),
-    "name: compiledtools\ntools:\n  hello-ts:\n    bin: tool.ts\n",
+    "name: compiledtools\ntools:\n  hello-ts:\n    bin: tool.ts\ntargets: { working: true, stable: true }\n",
   );
   await f.commit();
   const install = await f.rigd(["install"]);
@@ -85,9 +85,9 @@ test("with the compiled rigd, a Tool whose bin is a .ts file runs with the bun o
   const f = await compiled(`${bunDirectory}:/usr/bin:/bin`);
   try {
     expect(await project(f)).not.toContain("BUN_NOT_FOUND");
-    expect(await f.rig(["up", "local"])).toMatchObject({ code: 0 });
-    expect(await f.rig(["deploy", "live"])).toMatchObject({ code: 0 });
-    for (const name of ["hello-ts-local", "hello-ts"]) {
+    expect(await f.rig(["up", "working"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["deploy", "stable"])).toMatchObject({ code: 0 });
+    for (const name of ["hello-ts-dev", "hello-ts"]) {
       const published = join(f.root, "bin", name);
       const shim = await readFile(published, "utf8");
       expect(shim).toStartWith(
@@ -100,7 +100,7 @@ test("with the compiled rigd, a Tool whose bin is a .ts file runs with the bun o
         stderr: "",
       });
     }
-    for (const target of ["local", "live"])
+    for (const target of ["working", "stable"])
       expect((await f.rig(["down", target])).code).toBe(0);
   } finally {
     await f.cleanup();
@@ -112,12 +112,12 @@ test("with the compiled rigd and no bun on the installing shell's PATH, installi
   try {
     // The install itself succeeds, since built Tools and Services need no bun, but says what will fail.
     expect(await project(f)).toContain("Warning: rigd install found no bun");
-    const up = await f.rig(["up", "local", "--json"]);
+    const up = await f.rig(["up", "working", "--json"]);
     expect(up.code).toBe(1);
     expect(up.stdout + up.stderr).toContain("BUN_NOT_FOUND");
     expect(up.stdout + up.stderr).toContain("rigd install");
     expect(await readdir(join(f.root, "bin")).catch(() => [])).toEqual([]);
-    await f.rig(["down", "local"]);
+    await f.rig(["down", "working"]);
   } finally {
     await f.cleanup();
   }

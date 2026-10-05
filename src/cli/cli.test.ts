@@ -55,7 +55,7 @@ test("status and scoped structured lifecycle output use one correlated daemon re
         requests.push(request);
         return {
           project: "pantry",
-          target: "live",
+          target: "stable",
           action: "up",
           outcome: "unchanged",
           operationId: "op-42",
@@ -80,7 +80,7 @@ test("status and scoped structured lifecycle output use one correlated daemon re
   };
   expect(
     await runRigCli(
-      ["up", "live", "--project", "pantry", "--json"],
+      ["up", "stable", "--project", "pantry", "--json"],
       dependencies,
     ),
   ).toBe(0);
@@ -88,23 +88,23 @@ test("status and scoped structured lifecycle output use one correlated daemon re
     {
       action: "up",
       repoPath: "/workspace",
-      target: "live",
+      target: "stable",
       project: "pantry",
       operationId: "op-42",
     },
   ]);
   expect(JSON.parse(text)).toEqual({
     project: "pantry",
-    target: "live",
+    target: "stable",
     action: "up",
     outcome: "unchanged",
     operationId: "op-42",
   });
   text = "";
   expect(
-    await runRigCli(["up", "live", "--project", "pantry"], dependencies),
+    await runRigCli(["up", "stable", "--project", "pantry"], dependencies),
   ).toBe(0);
-  expect(text).toBe("pantry live unchanged\n");
+  expect(text).toBe("pantry stable unchanged\n");
 });
 
 test("status renders observed component states and keeps configured routes visible", async () => {
@@ -113,8 +113,8 @@ test("status renders observed component states and keeps configured routes visib
     project: "pantry",
     targets: [
       {
-        name: "live",
-        kind: "live",
+        name: "stable",
+        kind: "stable",
         branch: "main",
         commit: "abc1234def5678",
         state: "degraded",
@@ -161,10 +161,10 @@ test("status renders observed component states and keeps configured routes visib
     newOperationId: () => "op-status",
   });
   expect(exit).toBe(0);
-  expect(text).toContain("live  degraded  main@abc1234");
+  expect(text).toContain("stable  degraded  main@abc1234");
   expect(text).toContain("web  failed  :3070  https://pantry.b-relay.com");
   expect(text).toContain("convex  healthy  :3290");
-  expect(text).toContain("Failures\n  live web: exited with code 1");
+  expect(text).toContain("Failures\n  stable web: exited with code 1");
   expect(text).not.toContain("op-status");
 });
 
@@ -185,7 +185,7 @@ test("usage errors never call runtime or advertise diagnostics; unexpected failu
         throw new RigError(
           "PROVIDER_START",
           "The web process could not start.",
-          "Inspect rig logs live.",
+          "Inspect rig logs stable.",
           { token: "secret" },
         );
       },
@@ -212,9 +212,9 @@ test("usage errors never call runtime or advertise diagnostics; unexpected failu
   expect(text).not.toContain("Details:");
   expect(text).toContain("rig up --help");
   text = "";
-  expect(await runRigCli(["up", "live"], dependencies)).toBe(1);
+  expect(await runRigCli(["up", "stable"], dependencies)).toBe(1);
   expect(text).toContain("The web process could not start.");
-  expect(text).toContain("Inspect rig logs live.");
+  expect(text).toContain("Inspect rig logs stable.");
   expect(text).toContain("Operation: op-failed");
   expect(text).toContain("Details: /isolated/.rig/logs/rig/rig.jsonl");
   expect(text).not.toContain("secret");
@@ -349,7 +349,7 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
             repoPath: "/workspace",
             productionBranch: "main",
             currentBranch: "main",
-            targets: { working: "local", stable: "live" },
+            targets: { working: "working", stable: "stable" },
             selected: "stable",
           };
         return { project: "test", outcome: "unchanged" };
@@ -441,7 +441,9 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     deployment: "example",
   });
   const count = requests.length;
-  expect(await runRigCli(["down", "live", "--destroy"], dependencies)).toBe(1);
+  expect(await runRigCli(["down", "stable", "--destroy"], dependencies)).toBe(
+    1,
+  );
   expect(requests.length).toBe(count);
   expect(error).toContain("Preview");
 });
@@ -489,7 +491,7 @@ test("every command supports both help flags without side effects; removed globa
     ["down"],
     ["restart"],
     ["deploy"],
-    ["deploy", "live"],
+    ["deploy", "stable"],
     ["deploy", "preview"],
     ["logs"],
     ["rename"],
@@ -543,7 +545,7 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
         requests.push(request);
         return {
           project: "pantry",
-          target: "live",
+          target: "stable",
           entries: requests.length === 2 ? [] : [entry],
           cursor: ["cursor-a", "cursor-b", "cursor-c"][requests.length - 1],
         };
@@ -564,12 +566,12 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
     },
     newOperationId: () => "op-logs",
   };
-  expect(await runRigCli(["logs", "live", "--follow"], dependencies)).toBe(0);
+  expect(await runRigCli(["logs", "stable", "--follow"], dependencies)).toBe(0);
   expect(requests).toHaveLength(3);
   expect(requests[1]).toMatchObject({ action: "logs", after: "cursor-a" });
   expect(requests[2]).toMatchObject({ action: "logs", after: "cursor-b" });
   expect(text.match(/same line/g)).toHaveLength(2);
-  expect(text.match(/pantry live/g)).toHaveLength(1);
+  expect(text.match(/pantry stable/g)).toHaveLength(1);
   expect(text).toContain("09:42:11Z  web  > same line");
 });
 
@@ -586,7 +588,7 @@ test("sink failure preserves success and unexpected error while never advertisin
       },
       async command() {
         if (failing) throw new Error("secret provider stack");
-        return { project: "pantry", target: "live", outcome: "started" };
+        return { project: "pantry", target: "stable", outcome: "started" };
       },
     },
     output: {
@@ -605,13 +607,13 @@ test("sink failure preserves success and unexpected error while never advertisin
     wait: async () => {},
     newOperationId: () => "op-no-log",
   };
-  expect(await runRigCli(["up", "live"], dependencies)).toBe(0);
-  expect(output).toContain("pantry live started");
+  expect(await runRigCli(["up", "stable"], dependencies)).toBe(0);
+  expect(output).toContain("pantry stable started");
   expect(error).toContain("Diagnostic evidence could not be recorded.");
   failing = true;
   output = "";
   error = "";
-  expect(await runRigCli(["up", "live"], dependencies)).toBe(1);
+  expect(await runRigCli(["up", "stable"], dependencies)).toBe(1);
   expect(error).toContain("Rig could not complete this operation.");
   expect(error).not.toContain("Details:");
   expect(error).not.toContain("secret provider stack");
@@ -742,7 +744,7 @@ test("scoped JSON also renders usage failures before a daemon request is created
 test("cancellation during diagnostics prevents submission of the prepared mutation", async () => {
   const controller = new AbortController();
   let calls = 0;
-  const code = await runRigCli(["up", "local"], {
+  const code = await runRigCli(["up", "working"], {
     root: "/isolated",
     cwd: "/repo",
     signal: controller.signal,
@@ -773,7 +775,7 @@ test("follow reports daemon failure even when cancellation happens during the fa
   const controller = new AbortController();
   let calls = 0;
   let errors = "";
-  const exit = await runRigCli(["logs", "live", "--follow"], {
+  const exit = await runRigCli(["logs", "stable", "--follow"], {
     root: "/isolated/.rig",
     cwd: "/workspace",
     signal: controller.signal,
@@ -815,7 +817,7 @@ for (const when of ["before start", "during wait", "after page"] as const) {
     if (when === "before start") controller.abort();
     const start = performance.now();
     expect(
-      await runRigCli(["logs", "live", "--follow"], {
+      await runRigCli(["logs", "stable", "--follow"], {
         root: "/isolated/.rig",
         cwd: "/workspace",
         signal: controller.signal,
@@ -865,7 +867,7 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
     operationId: "slow-down",
     action: "down",
     project: "beta",
-    target: "live",
+    target: "stable",
     phase: "stopping",
     startedAt: "2026-09-14T10:00:00.000Z",
   };
@@ -914,7 +916,7 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
     },
     newOperationId: () => "mine",
   };
-  const run = runRigCli(["up", "live", "--project", "beta"], dependencies);
+  const run = runRigCli(["up", "stable", "--project", "beta"], dependencies);
   // Polls until rigd has nothing more to say, however slowly the machine runs.
   for (
     const deadline = Date.now() + 5000;
@@ -927,18 +929,18 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
   // One plain appended line per change of what it waits for, with its start in local time; no cursor movement.
   const startedAt = formatClock(new Date("2026-09-14T10:00:00.000Z"), true);
   expect(text).toBe(
-    `Waiting: beta live is stopping (operation slow-down, started ${startedAt}); 1 more ahead of this command\n` +
-      `Waiting: beta live is starting (operation next-up, started ${startedAt})\n`,
+    `Waiting: beta stable is stopping (operation slow-down, started ${startedAt}); 1 more ahead of this command\n` +
+      `Waiting: beta stable is starting (operation next-up, started ${startedAt})\n`,
   );
   finish({
     project: "beta",
-    target: "live",
+    target: "stable",
     action: "up",
     outcome: "started",
     operationId: "mine",
   });
   expect(await run).toBe(0);
-  expect(text).toContain("beta live started");
+  expect(text).toContain("beta stable started");
 });
 
 test("rig activity shows each record's message and Operation id, and rig activity <id> asks for that operation", async () => {
@@ -949,7 +951,7 @@ test("rig activity shows each record's message and Operation id, and rig activit
       {
         id: "0b1f2c3d-op",
         project: "app",
-        target: "local",
+        target: "working",
         action: "up",
         outcome: "failed",
         occurredAt: "2026-09-10T22:14:03.120Z",
@@ -958,7 +960,7 @@ test("rig activity shows each record's message and Operation id, and rig activit
       {
         id: "crash-1",
         project: "app",
-        target: "local",
+        target: "working",
         action: "crash",
         outcome: "failed",
         occurredAt: "2026-09-10T22:15:11.004Z",
@@ -1003,9 +1005,9 @@ test("rig activity shows each record's message and Operation id, and rig activit
   expect(await runRigCli(["activity"], dependencies)).toBe(0);
   expect(text).toBe(
     [
-      "2026-09-10T22:14:03.120Z  app  local  up  failed  0b1f2c3d-op",
+      "2026-09-10T22:14:03.120Z  app  working  up  failed  0b1f2c3d-op",
       "    PROCESS_START",
-      "2026-09-10T22:15:11.004Z  app  local  crash  failed  crash-1",
+      "2026-09-10T22:15:11.004Z  app  working  crash  failed  crash-1",
       "    web exited with code 137.",
       "2026-09-10T22:16:00.000Z  daemon-install  installed  admin-1",
       "",
@@ -1073,10 +1075,10 @@ test.each([
       wait: async () => {},
       newOperationId: () => "op-correctable",
     };
-    expect(await runRigCli(["up", "live"], dependencies)).toBe(1);
+    expect(await runRigCli(["up", "stable"], dependencies)).toBe(1);
     expect(text).toBe("Something you can fix.\nFix it this way.\n");
     text = "";
-    expect(await runRigCli(["up", "live", "--json"], dependencies)).toBe(1);
+    expect(await runRigCli(["up", "stable", "--json"], dependencies)).toBe(1);
     expect(JSON.parse(text)).toEqual({
       error: {
         code,
@@ -1147,7 +1149,7 @@ test("Ctrl-C after a mutation is submitted is acknowledged, and a second one det
     errors = "";
   const events: { event: string; operationId?: string }[] = [];
   const submitted: (AbortSignal | undefined)[] = [];
-  const exit = await runRigCli(["up", "local"], {
+  const exit = await runRigCli(["up", "working"], {
     root: "/isolated/.rig",
     cwd: "/workspace",
     signal: cancel.signal,
@@ -1201,7 +1203,7 @@ test("a mutation that finishes after the first Ctrl-C still renders its result a
   const cancel = new AbortController();
   let text = "",
     errors = "";
-  const exit = await runRigCli(["up", "live", "--project", "beta"], {
+  const exit = await runRigCli(["up", "stable", "--project", "beta"], {
     root: "/isolated/.rig",
     cwd: "/workspace",
     signal: cancel.signal,
@@ -1217,7 +1219,7 @@ test("a mutation that finishes after the first Ctrl-C still renders its result a
         await new Promise((resolve) => setTimeout(resolve, 5));
         return {
           project: "beta",
-          target: "live",
+          target: "stable",
           action: "up",
           outcome: "started",
           operationId: "mine",
@@ -1241,7 +1243,7 @@ test("a mutation that finishes after the first Ctrl-C still renders its result a
   });
   expect(exit).toBe(0);
   expect(errors).toContain("Press Ctrl-C again to detach.");
-  expect(text).toContain("beta live started");
+  expect(text).toContain("beta stable started");
 });
 
 test("Ctrl-C during a read is passed to the client, and the aborted read exits 0", async () => {
@@ -1345,7 +1347,7 @@ test("a usage error hints the failing subcommand's own help", async () => {
     [["up", "--bogus"], "Run rig up --help."],
     [["deploy", "preview", "--bogus"], "Run rig deploy --help."],
     [
-      ["deploy", "live", "--deployment", "x"],
+      ["deploy", "stable", "--deployment", "x"],
       "rig deploy preview --deployment",
     ],
     [["nonsense"], "Run rig --help."],

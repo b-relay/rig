@@ -24,9 +24,9 @@ or 2026-09-28T05:00:00+02:00. Both bounds are inclusive. Lines launchd wrote
 without a time are left out once --since or --until is set.
 
 Examples:
-  rig logs local --service scheduler --since 1h
-  rig logs live --stream stderr --follow
-  rig logs live --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
+  rig logs --service scheduler --since 1h
+  rig logs stable --stream stderr --follow
+  rig logs stable --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
 `;
 
 /** `rig logs`: the grammar checks every flag, resolves durations against `now`, and sends one request; rigd checks the
@@ -59,7 +59,7 @@ export function addLogsCommand(
     .description("Read recent Target logs, including stopped Targets.")
     .argument(
       "[target]",
-      "Target name (local and live unless rig.yaml renames them) or preview",
+      "working (the default), stable, or preview with a Branch",
     )
     .argument("[branch]", "Preview Branch or name", nonEmpty)
     .option("--project <name>", "Registered Project identity")

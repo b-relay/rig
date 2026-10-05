@@ -68,7 +68,7 @@ export async function forgetProject(
     state.targets = state.targets.filter((t) => t.projectId !== project.id);
   });
   return targets
-    .filter((t) => t.kind === "live")
+    .filter((t) => t.kind === "stable")
     .map(
       (t) =>
         `Target ${t.name} was forgotten, but its workspace at ${t.plan.workspacePath} and data under ${t.plan.dataRoot} were not deleted.`,
@@ -169,13 +169,13 @@ export async function updateRegistration(
     // The same planning as `up`: the moved config's ports are reserved against
     // every other Target, and recorded ports are kept where the config allows.
     const replanned = new Map<string, TargetRecord>();
-    for (const target of targets.filter((t) => t.kind === "local"))
+    for (const target of targets.filter((t) => t.kind === "working"))
       replanned.set(
         target.id,
         await planTarget(
           {
             command,
-            kind: "local",
+            kind: "working",
             project: { ...project, repoPath },
             document,
             existing: target,

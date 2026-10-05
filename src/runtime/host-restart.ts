@@ -30,8 +30,8 @@ type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
 export interface HostSessionFinding {
   restart?: HostRestart;
   announced: boolean;
-  /** The Targets an earlier daemon already settled for this same restart: Stable Targets started again (or whose start
-   * failed), and Working copies and Previews whose stopped Services it recorded as stopped by the restart. */
+  /** The Targets an earlier daemon already settled for this same restart: stable Targets started again (or whose start
+   * failed), and working Targets and Previews whose stopped Services it recorded as stopped by the restart. */
   settled: ReadonlySet<string>;
   /** How the pending restart is identified in state: as an earlier daemon found it, or as found now. */
   mark?: RestartMark;
@@ -206,7 +206,7 @@ function hostRestartEntry(
     action: "host-restart",
     outcome: "stopped",
     occurredAt: deps.now(),
-    message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stops the Services Rig runs. rigd starts the Stable Targets meant to run again; the Working copy's and Previews' Services that stopped stay stopped until rig up.${late}`,
+    message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stops the Services Rig runs. rigd starts the stable Targets meant to run again; the working Target's and Previews' Services that stopped stay stopped until rig up.${late}`,
   };
 }
 

@@ -9,9 +9,9 @@ import {
   targetScope,
 } from "../src/runtime/operation-locks";
 
-const local = targetScope("p1", { kind: "local", name: "dev" });
-const live = targetScope("p1", { kind: "live", name: "prod" });
-const other = targetScope("p2", { kind: "local", name: "dev" });
+const local = targetScope("p1", { kind: "working", name: "dev" });
+const live = targetScope("p1", { kind: "stable", name: "prod" });
+const other = targetScope("p2", { kind: "working", name: "dev" });
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 test("scopes conflict along the Host, Project and Target hierarchy only", () => {
@@ -25,7 +25,9 @@ test("scopes conflict along the Host, Project and Target hierarchy only", () => 
     false,
   );
   // A Target is keyed by role, so its configured name does not change the key.
-  expect(targetScope("p1", { kind: "local", name: "renamed" })).toEqual(local);
+  expect(targetScope("p1", { kind: "working", name: "renamed" })).toEqual(
+    local,
+  );
   expect(
     scopesConflict(
       [targetScope("p1", { kind: "preview", name: "a" })],

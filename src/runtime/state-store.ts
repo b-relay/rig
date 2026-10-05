@@ -9,7 +9,12 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { STATE_VERSION, runtimeStateSchema as schema } from "./state-schema";
+import {
+  MIGRATED_STATE_VERSION,
+  STATE_VERSION,
+  runtimeStateSchema as schema,
+} from "./state-schema";
+import { WORKING_TOOL_SUFFIX } from "../config/schema";
 import { RigError, describeInvalidDocument } from "../domain/errors";
 import type { RuntimeState, StateStore } from "../domain/runtime";
 
@@ -44,6 +49,7 @@ export class FileStateStore implements StateStore {
     try {
       parsed = JSON.parse(raw);
       this.assertSupportedVersion(parsed);
+      readFixedTargetNames(parsed);
       schema.parse(parsed);
     } catch (error) {
       if (error instanceof RigError) throw error;
@@ -81,7 +87,12 @@ export class FileStateStore implements StateStore {
       typeof parsed === "object" && parsed !== null && "version" in parsed
         ? parsed.version
         : undefined;
-    if (typeof version !== "number" || version === STATE_VERSION) return;
+    if (
+      typeof version !== "number" ||
+      version === STATE_VERSION ||
+      version === MIGRATED_STATE_VERSION
+    )
+      return;
     const newer = version > STATE_VERSION;
     throw new RigError(
       "STATE_VERSION",
@@ -115,6 +126,64 @@ export class FileStateStore implements StateStore {
   }
   private get backupPath(): string {
     return `${this.path}.bak`;
+  }
+}
+type Loose = Record<string, unknown>;
+const loose = (value: unknown): value is Loose =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const ROLE_OF_KIND: Readonly<Record<string, "working" | "stable">> = {
+  local: "working",
+  live: "stable",
+};
+/** State version 4 recorded the working and stable Targets with the kinds `local` and `live`, under the names `local` and
+ * `live` or whatever rig.yaml renamed them to (Pantry's working Target was `dev`). Names are fixed now, so such a file is
+ * read with each kind and name made its role, `working` or `stable`, and saved so by the next write. It runs before
+ * validation, on the parsed JSON, and changes nothing it does not recognize, so a malformed file still fails validation.
+ * - A Preview that took the role's name under an explicit --deployment keeps it; the Target keeps its old name then, and is
+ *   still selected by its kind.
+ * - The plans' names follow, but their recorded domains and routes stay as they were served: the route is keyed by the
+ *   Target's id, so the next plan replaces it.
+ * - A working Target's Tool published as `<tool>-<old name>` is recorded as `publishedAs`, so status still finds it and
+ *   planning the Target again retires it instead of leaving it behind beside the new `<tool>-dev`.
+ * Activity keeps the old names as the text it recorded. */
+export function readFixedTargetNames(parsed: unknown): void {
+  if (!loose(parsed) || parsed.version !== MIGRATED_STATE_VERSION) return;
+  parsed.version = STATE_VERSION;
+  const targets = Array.isArray(parsed.targets) ? parsed.targets : [];
+  const previews = new Set(
+    targets
+      .filter((target) => loose(target) && target.kind === "preview")
+      .map(
+        (target) => `${(target as Loose).projectId}:${(target as Loose).name}`,
+      ),
+  );
+  for (const target of targets) {
+    if (!loose(target) || typeof target.kind !== "string") continue;
+    const role = ROLE_OF_KIND[target.kind];
+    if (!role) continue;
+    const old = target.name;
+    target.kind = role;
+    if (!previews.has(`${target.projectId}:${role}`)) target.name = role;
+    const recovery = loose(target.recovery) ? target.recovery : {};
+    for (const plan of [target.plan, recovery.plan]) {
+      if (!loose(plan)) continue;
+      if (plan.target === "local" || plan.target === "live") plan.target = role;
+      for (const field of ["deploymentName", "branchSlug", "subdomain"])
+        if (plan[field] === old) plan[field] = target.name;
+      if (role !== "working" || typeof old !== "string") continue;
+      for (const component of Array.isArray(plan.components)
+        ? plan.components
+        : []) {
+        if (!loose(component) || component.kind !== "installed") continue;
+        const base = component.installName ?? component.name;
+        if (
+          component.publishedAs === undefined &&
+          old !== WORKING_TOOL_SUFFIX &&
+          typeof base === "string"
+        )
+          component.publishedAs = `${base}-${old}`;
+      }
+    }
   }
 }
 /** Rig once offered per-Service launchd supervision, and plans recorded then name `launchd`. rigd supervises every Service

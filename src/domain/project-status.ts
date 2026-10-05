@@ -52,7 +52,7 @@ const componentReportSchema = z
       .enum(["clean", "failed", "requested", "unknown"])
       .optional()
       .describe(
-        "How a stopped Service ended: a clean exit, a failure, a stop an operator requested, or unknown when nothing recorded it. An unknown exit is started again automatically only under restart: always, on a slower budget; one caused by a Host restart (the reason says so) is not, for the Working copy and Previews, until rig up.",
+        "How a stopped Service ended: a clean exit, a failure, a stop an operator requested, or unknown when nothing recorded it. An unknown exit is started again automatically only under restart: always, on a slower budget; one caused by a Host restart (the reason says so) is not, for the working Target and Previews, until rig up.",
       ),
     killAt: z
       .string()
@@ -67,8 +67,8 @@ const targetReportSchema = z
   .object({
     name: z.string().describe("Target identity used for selection."),
     kind: z
-      .enum(["local", "live", "preview"])
-      .describe("Working copy, Stable, or Preview Target."),
+      .enum(["working", "stable", "preview"])
+      .describe("The Target role: working, stable or preview."),
     state: z
       .enum([
         "configured",
@@ -138,7 +138,7 @@ export type ProjectStatusReport = z.infer<typeof projectStatusSchema>;
 export interface StatusSelection {
   project?: string;
   repoPath?: string;
-  /** `preview`, or a Working copy or Stable Target name. */
+  /** `working`, `stable` or `preview`; none selects every Target. */
   target?: string;
   deployment?: string;
   branch?: string;

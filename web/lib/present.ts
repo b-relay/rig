@@ -21,8 +21,8 @@ const TONES: Record<string, Tone> = {
 };
 export const toneOf = (word: string): Tone => TONES[word] ?? "idle";
 export const KIND_LABEL = {
-  local: "Working copy",
-  live: "Stable",
+  working: "Working",
+  stable: "Stable",
   preview: "Preview",
 } as const;
 /** Pure: the first ten characters, enough to name a Commit on one Mac. */

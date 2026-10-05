@@ -14,6 +14,7 @@ test("real Branch deployment preserves policy, persistent data, no-op stops, and
     await writeFile(
       join(f.repo, "rig.yaml"),
       `name: demo
+targets: { working: true, stable: true }
 services:
   web:
     run: "'${process.execPath}' server.ts"
@@ -25,7 +26,7 @@ services:
     let commit = await f.commit();
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["init"])).toMatchObject({ code: 0 });
-    const deployed = await f.rig(["deploy", "live", "--json"]);
+    const deployed = await f.rig(["deploy", "stable", "--json"]);
     expect(deployed).toMatchObject({ code: 0 });
     expect(JSON.parse(deployed.stdout)).toMatchObject({
       outcome: "deployed",
@@ -48,7 +49,7 @@ services:
       `Bun.serve({hostname:'127.0.0.1',port:Number(process.env.PORT),fetch:()=>new Response('second')});`,
     );
     commit = await f.commit();
-    const replacement = await f.rig(["deploy", "live", "--json"]);
+    const replacement = await f.rig(["deploy", "stable", "--json"]);
     expect(replacement).toMatchObject({ code: 0 });
     const replaced = JSON.parse(
       await readFile(join(f.root, "runtime", "state.json"), "utf8"),
@@ -56,35 +57,38 @@ services:
     expect(
       replaced.plan.components.find((c: any) => c.name === "web").port,
     ).toBe(target.plan.components.find((c: any) => c.name === "web").port);
-    expect(await f.rig(["down", "live", "--json"])).toMatchObject({ code: 0 });
-    const noop = await f.rig(["deploy", "live", "--json"]);
+    expect(await f.rig(["down", "stable", "--json"])).toMatchObject({
+      code: 0,
+    });
+    const noop = await f.rig(["deploy", "stable", "--json"]);
     expect(JSON.parse(noop.stdout).outcome).toBe("unchanged");
     const status = JSON.parse((await f.rig(["status", "--json"])).stdout);
-    expect(status.targets.find((t: any) => t.name === "live").state).toBe(
+    expect(status.targets.find((t: any) => t.name === "stable").state).toBe(
       "stopped",
     );
     // Uncommitted working-copy policy never reaches the Stable Target: it restarts from its recorded plan.
     await writeFile(
       join(f.repo, "rig.yaml"),
       `name: demo
+targets: { working: true, stable: true }
 services:
   bad:
     run: exit 99
     ports: { http: 19999 }
 `,
     );
-    expect(await f.rig(["up", "live", "--json"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["up", "stable", "--json"])).toMatchObject({ code: 0 });
     const after = JSON.parse(
       (await f.rig(["status", "--json"])).stdout,
-    ).targets.find((t: any) => t.name === "live");
+    ).targets.find((t: any) => t.name === "stable");
     expect(after).toMatchObject({ branch: "main", commit, state: "healthy" });
     expect(await readFile(persistent, "utf8")).toBe("precious database bytes");
     await rename(f.repo, `${f.repo}-moved`);
     expect(
-      await f.rig(["down", "live", "--project", "demo", "--json"], f.base),
+      await f.rig(["down", "stable", "--project", "demo", "--json"], f.base),
     ).toMatchObject({ code: 0 });
     expect(
-      await f.rig(["up", "live", "--project", "demo", "--json"], f.base),
+      await f.rig(["up", "stable", "--project", "demo", "--json"], f.base),
     ).toMatchObject({ code: 0 });
     const verified = await f.run(
       ["git", "fsck", "--full"],
@@ -96,7 +100,7 @@ services:
       basename(replaced.plan.workspacePath),
     ]);
     expect(
-      await f.rig(["down", "live", "--project", "demo"], f.base),
+      await f.rig(["down", "stable", "--project", "demo"], f.base),
     ).toMatchObject({ code: 0 });
     await rename(`${f.repo}-moved`, f.repo);
   } finally {

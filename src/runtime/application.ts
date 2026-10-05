@@ -63,10 +63,15 @@ import {
   assertIdentity,
   registeredDirectoryMissing,
 } from "./projects";
-import { persistTarget, planTarget, selectTarget } from "./targets";
+import {
+  assertTargetOn,
+  persistTarget,
+  planTarget,
+  selectTarget,
+} from "./targets";
 import { configDigest } from "../config/config-digest";
 import { assertLogServices } from "./log-services";
-import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
+import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
 import {
   assertSourceBuildsKnown,
   type TargetLifecycle,
@@ -224,10 +229,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       detach: detaching.signal,
       observer: stopObserver(entry, deps.now),
     });
-  /** Working copies and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
+  /** working Targets and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
    * by Target id, with that restart as the first pass identified it; each pass tries again. */
   const unmarked = new Map<string, RestartMark>();
-  /** Stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
+  /** stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
    * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
   const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
   /** Records the failed start after a Host restart that this daemon could not record yet for `target`, if there is one,
@@ -607,7 +612,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             throw error;
           currentBranch = null;
         }
-        const names = targetNames(selection.document!.config);
+        // The role the selector means under the daemon's own rule; an off one is refused before anything is asked of the user.
+        const selected =
+          command.target === undefined
+            ? undefined
+            : command.target === PREVIEW_SELECTOR
+              ? "preview"
+              : selectTarget(command, targets).kind;
+        if (selected) assertTargetOn(selection.document!.config, selected);
         return {
           project: project.name,
           repoPath: project.repoPath,
@@ -615,18 +627,14 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             selection.document!.config.production_branch ??
             (await deps.documents.host()).deploy.production_branch,
           currentBranch,
-          targets: names,
-          // The role the selector means under the daemon's own rule, so a recorded name is confirmed like the configured one.
-          ...(command.target === undefined
-            ? {}
-            : {
-                selected:
-                  command.target === PREVIEW_SELECTOR
-                    ? "preview"
-                    : selectTarget(command, names, targets).kind === "live"
-                      ? "stable"
-                      : "working",
-              }),
+          // Which Targets rig.yaml turns on, so a deploy form offers only those.
+          on: Object.fromEntries(
+            TARGET_ROLES.map((role) => [
+              role,
+              targetOn(selection.document!.config, role),
+            ]),
+          ),
+          ...(selected ? { selected } : {}),
         };
       }
       if (command.action === "config")
@@ -667,7 +675,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           ...command,
           branch: await deps.sources.currentBranch(selection.checkout),
         };
-      // One document snapshot serves the whole action: the names that select the Target and the plan made from it.
+      // One document snapshot serves the whole action: whether the Target is on, and the plan made from it.
       const configured = await checkoutConfig(
         selection.document,
         project,
@@ -677,30 +685,22 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         if (!configured.document) throw configured.failure;
         return configured.document;
       };
-      const selected = ((): ReturnType<typeof selectTarget> => {
-        try {
-          return selectTarget(
-            command,
-            configured.document && targetNames(configured.document.config),
-            targets,
-          );
-        } catch (error) {
-          // A name only the unreadable config could define is that config's failure, not an unknown Target.
-          throw error instanceof RigError &&
-            error.code === "TARGET_UNKNOWN" &&
-            configured.failure
-            ? configured.failure
-            : error;
-        }
-      })();
-      const kind = selected.kind;
-      const name = selected.name ?? command.target ?? "the Working copy";
+      const { kind, name } = selectTarget(command, targets);
       aimed = name;
       const find = (recorded: readonly TargetRecord[]) =>
         kind === "preview"
           ? recorded.find((t) => t.name === name)
           : recorded.find((t) => t.kind === kind);
       target = find(targets);
+      // An off Target is never started, deployed or published, and a never-run one has no logs to read. One still recorded
+      // can always be stopped, destroyed and read, so a config change never strands a running process. An unreadable
+      // config cannot say, and leaves a recorded Target to its record as before.
+      if (
+        configured.document &&
+        (["up", "restart", "deploy"].includes(command.action) ||
+          (command.action === "logs" && !target))
+      )
+        assertTargetOn(configured.document.config, kind);
       if (!reads.has(command.action)) {
         // A new Preview over the limit also takes the Previews it will replace; the choice is made
         // again once they are held, and refused there when it must be.
@@ -784,16 +784,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         } satisfies LogsResult;
       }
       if (command.action === "deploy") {
-        if (kind === "local")
+        if (kind === "working")
           throw new RigError(
             "DEPLOY_TARGET",
-            "Deploy needs the Stable Target or a Preview.",
-            "Use rig up for the Working copy Target.",
+            "Deploy needs the stable Target or a Preview.",
+            "Use rig up for the working Target.",
           );
         const document = selection.document!;
         const branch =
           command.branch ??
-          (kind === "live"
+          (kind === "stable"
             ? (document.config.production_branch ??
               (await deps.documents.host()).deploy.production_branch)
             : await deps.sources.currentBranch(selection.checkout));
@@ -891,7 +891,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           throw new RigError(
             "DESTROY_TARGET",
             "Only Previews can be destroyed.",
-            "Use down to stop the Working copy or Stable Target.",
+            "Use down to stop the working or stable Target.",
           );
         if (!target) throw missingTarget(command, name);
         attempted = true;
@@ -900,7 +900,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await destroyPreview(target, deps, admission.phase);
         return await finish("stopped");
       }
-      if (!target && (command.action !== "up" || kind !== "local"))
+      if (!target && (command.action !== "up" || kind !== "working"))
         throw missingTarget(command, name);
       attempted = true;
       if (!target) {
@@ -916,7 +916,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         await persistTarget(target, deps.store);
       } else if (
         command.action === "up" &&
-        target.kind === "local" &&
+        target.kind === "working" &&
         target.desired === "stopped" &&
         // An unresolved transition is settled by down before anything plans over it.
         !target.recovery
@@ -957,7 +957,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           admission.phase("stopping", target);
           await stopKeepingKills(target);
           admission.phase("starting", target);
-          if (target.kind === "local")
+          if (target.kind === "working")
             target = await replanWorkingCopy(
               target,
               command,
@@ -967,7 +967,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             );
         }
         // Only the Working copy builds here, from current source; a deployed Target starts from its deployment's preparation.
-        if (target.kind === "local")
+        if (target.kind === "working")
           await prepareTarget(
             target,
             command.action === "restart" ? "all" : "stopped",
@@ -977,7 +977,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         // a comment or layout edit is none; a Target planned by a rigd that recorded no digest is compared by text alone.
         const current = configured.document;
         const drift =
-          target.kind === "local" &&
+          target.kind === "working" &&
           target.configRevision !== undefined &&
           current !== undefined &&
           current.revision !== target.configRevision &&
@@ -1424,8 +1424,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     action: "reconcile" | "supervise",
     failed: (error: unknown, target?: string) => Promise<void>,
     settled?: Set<string>,
-    /** Targets an earlier daemon already settled for this same restart: Stable Targets started again (or failed to), and
-     * Working copies and Previews whose stopped Services it recorded as stopped by the restart. */
+    /** Targets an earlier daemon already settled for this same restart: stable Targets started again (or failed to), and
+     * working Targets and Previews whose stopped Services it recorded as stopped by the restart. */
     startedBefore?: ReadonlySet<string>,
     /** The Host restart the first pass found, as it is identified in state; a later pass has none. */
     mark?: RestartMark,
@@ -1479,7 +1479,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           await recordUnrecorded(target);
           return undefined;
         }
-        if (mark && target.kind === "live" && !startedBefore?.has(targetId)) {
+        if (mark && target.kind === "stable" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
           const started = await startAfterHostRestart(target, mark, {
             ...deps,
@@ -1495,7 +1495,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         // recorded is not recorded again: an explicit start since then has ended the restart's hold on it.
         // A later pass has no restart of its own, so it records the one the first pass kept, as that pass would have.
         const stoppedBy =
-          target.kind === "live" || startedBefore?.has(targetId)
+          target.kind === "stable" || startedBefore?.has(targetId)
             ? undefined
             : (mark ?? unmarked.get(targetId));
         if (stoppedBy) {
@@ -1599,7 +1599,7 @@ function missingTarget(
   return new RigError(
     "TARGET_MISSING",
     `${label} has no recorded deployment.`,
-    "Use rig up for the Working copy, or deploy this Target first.",
+    "Use rig up for the working Target, or deploy this Target first.",
   );
 }
 /** A --no-up deploy leaves nothing serving; the warning carries the exact command that starts the new deployment. */
@@ -1615,7 +1615,7 @@ function preparedWarning(
     ? `${target.name} was running and is now stopped on the new deployment. Run ${up} to start it.`
     : `${target.name} is deployed but stopped. Run ${up} to start it.`;
 }
-/** A stopped Working copy Target is re-planned from the current rig.yaml before it starts, keeping its id, data root, and recorded ports. */
+/** A stopped working Target is re-planned from the current rig.yaml before it starts, keeping its id, data root, and recorded ports. */
 async function replanWorkingCopy(
   target: TargetRecord,
   command: RuntimeCommand,
@@ -1624,7 +1624,7 @@ async function replanWorkingCopy(
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
   const replanned = await planTarget(
-    { command, kind: "local", project, document, existing: target },
+    { command, kind: "working", project, document, existing: target },
     deps,
   );
   // A Service a failed down left running is adopted by the next up, not started; its record is what explains its later exit.

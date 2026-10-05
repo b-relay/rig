@@ -41,7 +41,7 @@ async function selected(
       },
     },
   },
-  target: "local" | "live" = "local",
+  target: "working" | "stable" = "working",
 ) {
   const base = await mkdtemp(join(tmpdir(), "rig-inputs-"));
   roots.push(base);
@@ -219,8 +219,8 @@ const LAYERS = {
   },
   tools: { ctl: { bin: "ctl" } },
 };
-async function layered(target: "local" | "live" = "local") {
-  const role = target === "local" ? "working" : "stable";
+async function layered(target: "working" | "stable" = "working") {
+  const role = target === "working" ? "working" : "stable";
   const s = await selected("G=project-role\n", LAYERS, target);
   const write = async (path: string, text: string) => {
     await mkdir(join(path, ".."), { recursive: true });
@@ -296,7 +296,7 @@ test("each invocation composes its own scope, lowest to highest: Project env, Se
 });
 
 test("role files follow the Target's role, not its display name, and a fresh file is read on the next invocation without touching the plan", async () => {
-  const { adapter, record, api, root, plan } = await layered("live");
+  const { adapter, record, api, root, plan } = await layered("stable");
   expect((await adapter.environment(record, api)).I).toBe("api-role");
   const before = JSON.stringify(plan);
   await writeFile(

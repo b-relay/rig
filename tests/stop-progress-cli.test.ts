@@ -37,7 +37,7 @@ test("durations read as people say them, and deadlines as local wall-clock time"
 function stopsAt(ms: number): ServiceStop[] {
   const scheduler: ServiceStop = {
     service: "google-scheduler",
-    target: "local",
+    target: "working",
     state: "stopping",
     since: iso(500),
     killAt: iso(500 + 25 * MINUTE),
@@ -45,7 +45,7 @@ function stopsAt(ms: number): ServiceStop[] {
   return [
     {
       service: "web",
-      target: "local",
+      target: "working",
       state: "stopped",
       since: iso(0),
       killAt: iso(10_000),
@@ -81,7 +81,7 @@ test("without a terminal, a stop gets one more line when a minute is left, then 
   const printed = new Map<string, PlainStopState>();
   const stop: ServiceStop = {
     service: "worker",
-    target: "live",
+    target: "stable",
     state: "stopping",
     since: iso(0),
     killAt: iso(3 * MINUTE),
@@ -121,7 +121,7 @@ test("without a terminal, a stop begun again between two polls (a rollback stopp
   const printed = new Map<string, PlainStopState>();
   const first: ServiceStop = {
     service: "worker",
-    target: "live",
+    target: "stable",
     state: "stopping",
     since: iso(0),
     killAt: iso(25 * MINUTE),
@@ -144,7 +144,7 @@ test("the terminal board lists each Service under its Target, with a countdown w
   const stops: ServiceStop[] = [
     {
       service: "web",
-      target: "local",
+      target: "working",
       state: "stopped",
       since: iso(0),
       killAt: iso(10_000),
@@ -152,14 +152,14 @@ test("the terminal board lists each Service under its Target, with a countdown w
     },
     {
       service: "google-scheduler",
-      target: "local",
+      target: "working",
       state: "stopping",
       since: iso(3000),
       killAt: iso(25 * MINUTE),
     },
   ];
   expect(stopBoard("fletcher", stops, at(6 * MINUTE + 18_000))).toEqual([
-    "Stopping fletcher local",
+    "Stopping fletcher working",
     "  web                 stopped",
     "  google-scheduler    stopping · killing in 18m 42s (04:31:07)",
     "  (Ctrl-C to leave it stopping in the background)",
@@ -174,8 +174,8 @@ test("rig status shows a stopping Service with its kill deadline, and the Target
       project: "fletcher",
       targets: [
         {
-          name: "local",
-          kind: "local",
+          name: "working",
+          kind: "working",
           state: "stopping",
           components: [
             { name: "web", kind: "managed", state: "stopped" },
@@ -191,7 +191,7 @@ test("rig status shows a stopping Service with its kill deadline, and the Target
     },
     at(7 * MINUTE),
   );
-  expect(text).toContain("local  stopping  working copy");
+  expect(text).toContain("working  stopping  working copy");
   expect(text).toContain(
     "  google-scheduler  stopping · killing in 18m (04:31)",
   );
@@ -209,7 +209,7 @@ function scripted(options: { live: boolean; interruptAt?: number }) {
   const detach = new AbortController();
   const result = (ms: number) => ({
     project: "fletcher",
-    target: "local",
+    target: "working",
     action: "down",
     outcome: "stopped",
     operationId: "down-1",
@@ -245,7 +245,7 @@ function scripted(options: { live: boolean; interruptAt?: number }) {
               state: "running",
               phase: "stopping",
               project: "fletcher",
-              target: "local",
+              target: "working",
               stops: stopsAt(ms),
             },
           });
@@ -279,7 +279,7 @@ function scripted(options: { live: boolean; interruptAt?: number }) {
 
 test("rig down without a terminal prints plain appended lines once the stop has waited about 2 s, and never moves the cursor", async () => {
   const cli = scripted({ live: false });
-  expect(await cli.run(["down", "local"])).toBe(0);
+  expect(await cli.run(["down", "working"])).toBe(0);
   expect(cli.errors()).toBe(
     [
       "google-scheduler stopping, killing in 25m (04:31:07)",
@@ -290,23 +290,23 @@ test("rig down without a terminal prints plain appended lines once the stop has 
   );
   expect(cli.errors()).not.toContain("\x1b");
   expect(cli.errors()).not.toContain("\r");
-  expect(cli.text()).toContain("fletcher local stopped");
+  expect(cli.text()).toContain("fletcher working stopped");
 });
 
 test("rig down on a terminal redraws one board in place with a countdown, and leaves the final states", async () => {
   const cli = scripted({ live: true });
-  expect(await cli.run(["down", "local"])).toBe(0);
+  expect(await cli.run(["down", "working"])).toBe(0);
   const errors = cli.errors();
   // The first frame, once the slow stop has waited 2 s, lists web, which stopped at once, beside it; each later frame first
   // moves up over the previous one and clears it.
   expect(errors).toStartWith(
-    "Stopping fletcher local\n  web                 stopped\n  google-scheduler    stopping · killing in 24m 58s (04:31:07)\n  (Ctrl-C to leave it stopping in the background)\n",
+    "Stopping fletcher working\n  web                 stopped\n  google-scheduler    stopping · killing in 24m 58s (04:31:07)\n  (Ctrl-C to leave it stopping in the background)\n",
   );
   expect(errors).toContain(
-    "\x1b[4A\r\x1b[JStopping fletcher local\n  web                 stopped\n  google-scheduler    stopping · killing in 24m 57s (04:31:07)\n",
+    "\x1b[4A\r\x1b[JStopping fletcher working\n  web                 stopped\n  google-scheduler    stopping · killing in 24m 57s (04:31:07)\n",
   );
   expect(errors).toEndWith(
-    "\x1b[4A\r\x1b[JStopping fletcher local\n  web                 stopped\n  google-scheduler    stopped\n",
+    "\x1b[4A\r\x1b[JStopping fletcher working\n  web                 stopped\n  google-scheduler    stopped\n",
   );
 });
 
@@ -317,12 +317,12 @@ test("a terminal line wider than the terminal is cut, so a redraw moves up exact
     state: "waiting" as const,
     subject: "a",
     notice:
-      "Waiting: fletcher local is deploying (operation 0b1f2c3d-aaaa-bbbb-cccc-000000000000, started 04:00:00)",
+      "Waiting: fletcher working is deploying (operation 0b1f2c3d-aaaa-bbbb-cccc-000000000000, started 04:00:00)",
   };
   display.show(status, at(0));
   display.show({ ...status, subject: "b", notice: "Waiting: short" }, at(1000));
   expect(text).toBe(
-    "Waiting: fletcher local is deploying (…\n\x1b[1A\r\x1b[JWaiting: short\n",
+    "Waiting: fletcher working is deploying…\n\x1b[1A\r\x1b[JWaiting: short\n",
   );
 });
 
@@ -341,7 +341,7 @@ test("a command that fails while a Service is still stopping leaves it shown as 
   onTerminal.abandon(at(61_000), false);
   inPipe.abandon(at(61_000), false);
   expect(live).toEndWith(
-    "\x1b[4A\r\x1b[JStopping fletcher local\n  web                 stopped\n  google-scheduler    still stopping in rigd (killing at 04:31:07)\n",
+    "\x1b[4A\r\x1b[JStopping fletcher working\n  web                 stopped\n  google-scheduler    still stopping in rigd (killing at 04:31:07)\n",
   );
   expect(plain).toBe(
     "google-scheduler stopping, killing in 24m (04:31:07)\ngoogle-scheduler still stopping in rigd (killing at 04:31:07)\n",
@@ -350,10 +350,10 @@ test("a command that fails while a Service is still stopping leaves it shown as 
 
 test("Ctrl-C while a stop is shown leaves it stopping in rigd, says when it is killed, and how to kill it now", async () => {
   const cli = scripted({ live: false, interruptAt: 60_000 });
-  expect(await cli.run(["down", "local"])).toBe(130);
+  expect(await cli.run(["down", "working"])).toBe(130);
   expect(cli.errors()).toEndWith(
     "google-scheduler stopping, killing in 25m (04:31:07)\n" +
-      "Left google-scheduler stopping in the background (killing at 04:31). Run rig down local --kill to stop it now.\n",
+      "Left google-scheduler stopping in the background (killing at 04:31). Run rig down working --kill to stop it now.\n",
   );
   // The command was not cancelled in rigd: nothing but the down and its progress reads was sent.
   expect(new Set(cli.requests.map((request) => request.action))).toEqual(
@@ -364,17 +364,17 @@ test("Ctrl-C while a stop is shown leaves it stopping in rigd, says when it is k
 test("--kill is sent by rig down and rig restart, and rig up has no such option", async () => {
   for (const action of ["down", "restart"]) {
     const cli = scripted({ live: false });
-    const run = cli.run([action, "local", "--kill"]);
+    const run = cli.run([action, "working", "--kill"]);
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(cli.requests[0]).toMatchObject({
       action,
-      target: "local",
+      target: "working",
       kill: true,
     });
     void run;
   }
   const cli = scripted({ live: false });
-  expect(await cli.run(["up", "local", "--kill"])).toBe(1);
+  expect(await cli.run(["up", "working", "--kill"])).toBe(1);
   expect(cli.errors()).toContain("unknown option '--kill'");
 });
 
@@ -388,13 +388,13 @@ test("a command waiting behind a stop updates its one line in place on a termina
           operationId: "down-1",
           action: "down",
           project: "fletcher",
-          target: "local",
+          target: "working",
           phase: "stopping",
           startedAt: iso(0),
           stops: [
             {
               service: "google-scheduler",
-              target: "local",
+              target: "working",
               state: "stopping",
               since: iso(0),
               killAt: iso(25 * MINUTE),
@@ -406,7 +406,8 @@ test("a command waiting behind a stop updates its one line in place on a termina
   };
   let live = "";
   let plain = "";
-  const onTerminal = liveDisplay({ error: (value) => (live += value) });
+  // Wide enough that the line is never cut.
+  const onTerminal = liveDisplay({ error: (value) => (live += value) }, 100);
   const inPipe = plainDisplay({ error: (value) => (plain += value) });
   for (let ms = 7 * MINUTE; ms < 25 * MINUTE; ms += 1000) {
     const status = waitStatus(reply, at(ms))!;
@@ -414,14 +415,14 @@ test("a command waiting behind a stop updates its one line in place on a termina
     inPipe.show(status, at(ms));
   }
   expect(live).toStartWith(
-    "Waiting: fletcher local is stopping (google-scheduler, killing in 18m at 04:31)\n\x1b[1A\r\x1b[JWaiting:",
+    "Waiting: fletcher working is stopping (google-scheduler, killing in 18m at 04:31)\n\x1b[1A\r\x1b[JWaiting:",
   );
   expect(plain.split("\n")).toEqual([
-    "Waiting: fletcher local is stopping (google-scheduler, killing in 18m at 04:31)",
-    "Waiting: fletcher local is stopping (google-scheduler, killing in 13m at 04:31)",
-    "Waiting: fletcher local is stopping (google-scheduler, killing in 8m at 04:31)",
-    "Waiting: fletcher local is stopping (google-scheduler, killing in 3m at 04:31)",
-    "Waiting: fletcher local is stopping (google-scheduler, killing in 1m at 04:31)",
+    "Waiting: fletcher working is stopping (google-scheduler, killing in 18m at 04:31)",
+    "Waiting: fletcher working is stopping (google-scheduler, killing in 13m at 04:31)",
+    "Waiting: fletcher working is stopping (google-scheduler, killing in 8m at 04:31)",
+    "Waiting: fletcher working is stopping (google-scheduler, killing in 3m at 04:31)",
+    "Waiting: fletcher working is stopping (google-scheduler, killing in 1m at 04:31)",
     "",
   ]);
 });

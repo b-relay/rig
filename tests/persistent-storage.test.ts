@@ -40,17 +40,21 @@ const config = parseProjectConfig({
     },
   },
   targets: {
+    working: true,
+    stable: true,
     preview: {
       services: { api: { env: { DATA_DIR: "${rig.data}/preview" } } },
     },
   },
 });
-const api = (target: "local" | "live" | "preview", revision: string) =>
+const api = (target: "working" | "stable" | "preview", revision: string) =>
   resolveTargetPlan({
     config,
     target,
     workspacePath:
-      target === "local" ? "/repo" : `/root/targets/p/t/revisions/${revision}`,
+      target === "working"
+        ? "/repo"
+        : `/root/targets/p/t/revisions/${revision}`,
     dataRoot: "/root/targets/p/t/data",
     branch: "feature",
     assignedPorts: { api: 3210 },
@@ -58,7 +62,7 @@ const api = (target: "local" | "live" | "preview", revision: string) =>
 
 // `uses: sqlite|convex` plugins are retired: a Service reaches Persistent storage only through ${rig.data}.
 test("every Target's plan resolves ${rig.data} to the Service's directory under the Target's persistent storage, unchanged across revisions", () => {
-  for (const target of ["local", "live", "preview"] as const) {
+  for (const target of ["working", "stable", "preview"] as const) {
     const first = api(target, "r1"),
       second = api(target, "r2");
     expect(first).toMatchObject({
@@ -101,20 +105,20 @@ function record(
   return {
     id: "t",
     projectId: "p",
-    name: "live",
-    kind: "live",
+    name: "stable",
+    kind: "stable",
     desired: "running",
     createdAt: "now",
     updatedAt: "now",
     logRoot: join(root, "logs"),
     plan: {
       project: "demo",
-      target: "live",
+      target: "stable",
       workspacePath,
       dataRoot: join(root, "data"),
-      deploymentName: "live",
+      deploymentName: "stable",
       branchSlug: "main",
-      subdomain: "live",
+      subdomain: "stable",
       providers: { processSupervisor: "child" },
       components: [],
       preparedComponents: [{ name: "api", uses: "convex", stateDir }],
@@ -186,8 +190,8 @@ test("prepare leaves a local Target's in-workspace Convex state alone", async ()
   );
   roots.push(root);
   const stateDir = join(root, ".convex", "local", "default");
-  const local = { ...record(root, root, stateDir), kind: "local" as const };
-  local.plan = { ...local.plan, target: "local", dataRoot: root };
+  const local = { ...record(root, root, stateDir), kind: "working" as const };
+  local.plan = { ...local.plan, target: "working", dataRoot: root };
   await effects(root).prepare(local);
   expect((await stat(stateDir)).isDirectory()).toBe(true);
   expect((await stat(stateDir)).isSymbolicLink()).toBe(false);

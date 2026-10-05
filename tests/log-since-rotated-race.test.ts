@@ -50,7 +50,7 @@ test("a line appended to the generation rotated last between its time check and 
       run: () =>
         appendFile(`${path}.1`, record("raced", new Date(now - 30_000))),
     };
-    const target = { id: "t", name: "local", logRoot } as never;
+    const target = { id: "t", name: "working", logRoot } as never;
     const result = await createRuntimeFiles().logs(target, undefined, 50, {
       since: new Date(now - 3600_000).toISOString(),
     });

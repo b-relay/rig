@@ -11,7 +11,7 @@ import { superviseTarget } from "../src/runtime/supervision";
 const target = {
   id: "t",
   projectId: "p",
-  name: "live",
+  name: "stable",
   desired: "running",
   updatedAt: "2026-09-09T10:00:00Z",
   plan: {
@@ -30,7 +30,7 @@ const target = {
 /** One supervision pass over the recorded Target with a scripted observation; the `no` policy keeps the lifecycle out of it. */
 function fixture() {
   const state: RuntimeState = {
-    version: 4,
+    version: 5,
     projects: [
       {
         id: "p",
@@ -89,7 +89,7 @@ test("a recorded exit becomes Activity once, however many passes see it, and nam
   expect(state.activity).toHaveLength(1);
   expect(state.activity[0]).toMatchObject({
     project: "app",
-    target: "live",
+    target: "stable",
     action: "crash",
     outcome: "failed",
     message: "web exited with code 7.",

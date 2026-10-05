@@ -22,11 +22,7 @@ import { ConfigError } from "./errors";
 import { PROJECT_SCHEMA_COMMENT } from "./json-schema";
 import { applyYamlEdits, type ConfigEdit } from "./editor";
 export type { ConfigEdit } from "./editor";
-import {
-  DEFAULT_TARGET_NAMES,
-  parseHostConfig,
-  parseProjectConfig,
-} from "./schema";
+import { parseHostConfig, parseProjectConfig } from "./schema";
 import type { ConfigDocument, HostConfig, ProjectConfig } from "./types";
 const revisionOf = (text: string) =>
   createHash("sha256").update(text).digest("hex");
@@ -386,9 +382,7 @@ export function scaffoldProjectConfig(
     ...(service && input.domain
       ? { proxy: { "/": `\${services.${service.name}.ports.http}` } }
       : {}),
-    targets: {
-      working: { name: DEFAULT_TARGET_NAMES.working },
-      stable: { name: DEFAULT_TARGET_NAMES.stable },
-    },
+    // Every switch is written out, so turning the stable Target or Previews on is one word in the file.
+    targets: { working: true, stable: false, preview: false },
   });
 }

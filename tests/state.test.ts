@@ -30,7 +30,7 @@ test("registration survives reopening and serialized concurrent updates preserve
     expect(
       JSON.parse(await readFile(join(root, "runtime", "state.json"), "utf8"))
         .version,
-    ).toBe(4);
+    ).toBe(5);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -60,7 +60,7 @@ test("valid JSON with an incomplete saved Target plan fails closed", async () =>
   try {
     await mkdir(join(root, "runtime"), { recursive: true });
     const content = JSON.stringify({
-      version: 4,
+      version: 5,
       projects: [
         {
           id: "p",
@@ -74,8 +74,8 @@ test("valid JSON with an incomplete saved Target plan fails closed", async () =>
         {
           id: "t",
           projectId: "p",
-          name: "local",
-          kind: "local",
+          name: "working",
+          kind: "working",
           desired: "running",
           createdAt: "now",
           updatedAt: "now",
@@ -107,7 +107,7 @@ test("a state file with a relative repository path is refused as corrupt and nam
   try {
     await mkdir(join(root, "runtime"), { recursive: true });
     const content = JSON.stringify({
-      version: 4,
+      version: 5,
       projects: [
         {
           id: "p",
@@ -140,7 +140,7 @@ test.each([
   ["", "is not valid JSON"],
   ["null", "at the top level"],
   [
-    '{"version":4,"projects":[],"targets":[{"id":"t","projectId":"p","name":"local","kind":"local","desired":"running","createdAt":"now","updatedAt":"now","logRoot":"/tmp/logs","plan":{"project":"demo","workspacePath":"/tmp/demo","dataRoot":"/tmp/data","components":[{"kind":"managed","name":"web"}]}}],"activity":[]}',
+    '{"version":5,"projects":[],"targets":[{"id":"t","projectId":"p","name":"working","kind":"working","desired":"running","createdAt":"now","updatedAt":"now","logRoot":"/tmp/logs","plan":{"project":"demo","workspacePath":"/tmp/demo","dataRoot":"/tmp/data","components":[{"kind":"managed","name":"web"}]}}],"activity":[]}',
     "at targets.0.plan.",
   ],
 ])(
@@ -219,8 +219,8 @@ const inventory = {
     {
       id: "t",
       projectId: "p",
-      name: "local",
-      kind: "local",
+      name: "working",
+      kind: "working",
       desired: "stopped",
       createdAt: "now",
       updatedAt: "now",
@@ -228,12 +228,12 @@ const inventory = {
       futureTargetField: { nested: true },
       plan: {
         project: "demo",
-        target: "local",
+        target: "working",
         workspacePath: "/tmp/demo",
         dataRoot: "/tmp/data",
-        deploymentName: "local",
-        branchSlug: "local",
-        subdomain: "local",
+        deploymentName: "working",
+        branchSlug: "working",
+        subdomain: "working",
         providers: { processSupervisor: "child" },
         components: [],
         preparedComponents: [],
@@ -250,7 +250,7 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
     const path = join(root, "runtime", "state.json");
     await writeFile(
       path,
-      JSON.stringify({ version: 4, futureTopLevel: [1], ...inventory }),
+      JSON.stringify({ version: 5, futureTopLevel: [1], ...inventory }),
     );
     const store = new FileStateStore(root);
     expect(await store.read()).toMatchObject({ futureTopLevel: [1] });
@@ -259,7 +259,7 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
     });
     const written = JSON.parse(await readFile(path, "utf8"));
     expect(written).toMatchObject({
-      version: 4,
+      version: 5,
       futureTopLevel: [1],
       projects: [{ futureProjectField: "kept" }],
       targets: [{ desired: "running", futureTargetField: { nested: true } }],
@@ -275,20 +275,20 @@ test("a state file written by a newer or an older rigd is refused unread with bo
     await mkdir(join(root, "runtime"));
     const path = join(root, "runtime", "state.json");
     const store = new FileStateStore(root);
-    await writeFile(path, JSON.stringify({ version: 5, ...inventory }));
+    await writeFile(path, JSON.stringify({ version: 6, ...inventory }));
     await expect(store.read()).rejects.toMatchObject({
       code: "STATE_VERSION",
-      hint: expect.stringMatching(/version 5.*version 4/s),
-      details: { path, version: 5, supported: 4 },
+      hint: expect.stringMatching(/version 6.*version 5/s),
+      details: { path, version: 6, supported: 5 },
     });
-    expect(await readFile(path, "utf8")).toContain('"version":5');
+    expect(await readFile(path, "utf8")).toContain('"version":6');
     for (const version of [1, 2, 3]) {
       const old = JSON.stringify({ version, ...inventory });
       await writeFile(path, old);
       await expect(store.read()).rejects.toMatchObject({
         code: "STATE_VERSION",
         message: expect.stringContaining("an older rigd"),
-        details: { path, version, supported: 4 },
+        details: { path, version, supported: 5 },
       });
       await expect(store.update(() => {})).rejects.toMatchObject({
         code: "STATE_VERSION",
@@ -328,7 +328,7 @@ test("a plan an older Rig recorded under launchd supervision is read as rigd's a
         },
       },
     });
-    await writeFile(path, JSON.stringify({ version: 4, ...recorded }));
+    await writeFile(path, JSON.stringify({ version: 5, ...recorded }));
     const store = new FileStateStore(root);
     const read = (await store.read()).targets[0]!;
     expect(read.plan.providers.processSupervisor).toBe("rigd");
@@ -384,7 +384,7 @@ test("a plan an older Rig recorded with ongoing health checks is read without th
         },
       },
     });
-    await writeFile(path, JSON.stringify({ version: 4, ...recorded }));
+    await writeFile(path, JSON.stringify({ version: 5, ...recorded }));
     const store = new FileStateStore(root);
     const read = (await store.read()).targets[0]!;
     for (const plan of [read.plan, read.recovery!.plan])
@@ -413,7 +413,7 @@ test("state an older Rig wrote with operator alert records loads without them an
     await writeFile(
       path,
       JSON.stringify({
-        version: 4,
+        version: 5,
         ...recorded,
         // As the rigd that sent operator alerts last saved them.
         alerts: {
@@ -421,7 +421,7 @@ test("state an older Rig wrote with operator alert records loads without them an
             {
               targetId: recorded.targets[0]!.id,
               project: "demo",
-              target: "live",
+              target: "stable",
               since: "2026-09-27T04:00:00.000Z",
               services: [
                 {
@@ -430,7 +430,7 @@ test("state an older Rig wrote with operator alert records loads without them an
                   brief: "exit 1",
                 },
               ],
-              recover: "rig up live --project demo",
+              recover: "rig up stable --project demo",
               alertedAt: "2026-09-27T04:05:00.000Z",
             },
           ],
@@ -442,11 +442,225 @@ test("state an older Rig wrote with operator alert records loads without them an
     const store = new FileStateStore(root);
     const read = await store.read();
     // Everything else is read as written.
-    expect(read as unknown).toEqual({ version: 4, ...recorded });
+    expect(read as unknown).toEqual({ version: 5, ...recorded });
     await store.update(() => {});
     expect(JSON.parse(await readFile(path, "utf8"))).not.toHaveProperty(
       "alerts",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** A Target as state version 4 recorded it: the working and stable Targets had the kinds local and live, under the names
+ * local and live or whatever rig.yaml renamed them to. */
+function version4Target(
+  id: string,
+  kind: "local" | "live" | "preview",
+  name: string,
+  plan: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    projectId: "p",
+    name,
+    kind,
+    desired: "running",
+    createdAt: "now",
+    updatedAt: "now",
+    logRoot: `/tmp/logs/${id}`,
+    plan: {
+      project: "demo",
+      target: kind,
+      workspacePath: "/tmp/demo",
+      dataRoot: `/tmp/data/${id}`,
+      deploymentName: name,
+      branchSlug: name,
+      subdomain: name,
+      providers: { processSupervisor: "rigd" },
+      components: [
+        {
+          name: "tool",
+          kind: "installed",
+          env: {},
+          dependsOn: [],
+          entrypoint: "/tmp/demo/bin/tool",
+        },
+      ],
+      preparedComponents: [],
+      ...plan,
+    },
+  };
+}
+const version4Project = {
+  id: "p",
+  name: "demo",
+  repoPath: "/tmp/demo",
+  configPath: "/tmp/demo/rig.yaml",
+  createdAt: "now",
+};
+
+test("state version 4 is read with the working and stable Targets named by their role, and the next write saves version 5", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-fixed-names-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const routed = {
+      domain: "dev.demo.test",
+      proxy: {
+        upstream: "web",
+        routes: [{ prefix: "/", service: "web", port: 4100 }],
+      },
+    };
+    const working = version4Target("w", "local", "dev", routed);
+    // A transition left open by the old rigd carries its own plan under the old name too.
+    Object.assign(working, {
+      recovery: {
+        plan: structuredClone(working.plan),
+        desired: "running",
+        stage: "pending",
+      },
+    });
+    const activity = [
+      {
+        id: "op",
+        projectId: "p",
+        project: "demo",
+        target: "dev",
+        action: "up",
+        outcome: "started",
+        occurredAt: "now",
+      },
+    ];
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 4,
+        projects: [version4Project],
+        targets: [
+          working,
+          version4Target("s", "live", "live"),
+          version4Target("v", "preview", "feat-x-1a2b3c4d"),
+        ],
+        activity,
+      }),
+    );
+    const store = new FileStateStore(root);
+    const state = await store.read();
+    expect(state.version).toBe(5);
+    const [w, s, v] = state.targets;
+    for (const [target, role] of [
+      [w!, "working"],
+      [s!, "stable"],
+    ] as const) {
+      expect(target).toMatchObject({ kind: role, name: role });
+      for (const plan of [target.plan, target.recovery?.plan].filter(Boolean))
+        expect(plan).toMatchObject({
+          target: role,
+          deploymentName: role,
+          branchSlug: role,
+          subdomain: role,
+        });
+    }
+    // The recorded hostname and routes are what Caddy serves under the Target's id; the next plan replaces them.
+    expect(w!.plan).toMatchObject(routed);
+    expect(w!.recovery!.plan).toMatchObject(routed);
+    // A Tool published as tool-dev already has the name the working Target publishes now.
+    expect(w!.plan.components[0]).not.toHaveProperty("publishedAs");
+    expect(v).toMatchObject({
+      kind: "preview",
+      name: "feat-x-1a2b3c4d",
+      plan: { target: "preview", deploymentName: "feat-x-1a2b3c4d" },
+    });
+    // Activity keeps the names it recorded.
+    expect(state.activity as unknown).toEqual(activity);
+    await store.update(() => {});
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    expect(saved.version).toBe(5);
+    expect(
+      saved.targets.map((t: { kind: string; name: string }) => [
+        t.kind,
+        t.name,
+      ]),
+    ).toEqual([
+      ["working", "working"],
+      ["stable", "stable"],
+      ["preview", "feat-x-1a2b3c4d"],
+    ]);
+    // Read again as version 5, nothing changes further.
+    expect(await new FileStateStore(root).read()).toEqual(state);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a version 4 working Target named local keeps its Tools' published name, so the next plan can retire them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-published-as-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const working = version4Target("w", "local", "local");
+    working.plan.components.push({
+      name: "other",
+      kind: "installed",
+      env: {},
+      dependsOn: [],
+      entrypoint: "/tmp/demo/bin/other",
+      installName: "renamed",
+    } as (typeof working.plan.components)[number]);
+    Object.assign(working, {
+      recovery: {
+        plan: structuredClone(working.plan),
+        desired: "stopped",
+        stage: "committing",
+      },
+    });
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 4,
+        projects: [version4Project],
+        targets: [working, version4Target("s", "live", "live")],
+        activity: [],
+      }),
+    );
+    const [w, s] = (await new FileStateStore(root).read()).targets;
+    for (const plan of [w!.plan, w!.recovery!.plan])
+      expect(plan.components).toMatchObject([
+        { name: "tool", publishedAs: "tool-local" },
+        { name: "other", installName: "renamed", publishedAs: "renamed-local" },
+      ]);
+    // The stable Target always published the plain name, which it still does.
+    expect(s!.plan.components[0]).not.toHaveProperty("publishedAs");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a version 4 Target whose role name a Preview already holds keeps its old name and is still its role", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-name-held-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 4,
+        projects: [version4Project],
+        targets: [
+          version4Target("s", "live", "live"),
+          version4Target("v", "preview", "stable"),
+        ],
+        activity: [],
+      }),
+    );
+    const [s, v] = (await new FileStateStore(root).read()).targets;
+    expect(s).toMatchObject({
+      kind: "stable",
+      name: "live",
+      plan: { target: "stable", deploymentName: "live" },
+    });
+    expect(v).toMatchObject({ kind: "preview", name: "stable" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

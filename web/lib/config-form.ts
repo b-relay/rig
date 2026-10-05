@@ -141,3 +141,33 @@ export const showLines = (value: unknown): string =>
     : typeof value === "string"
       ? value
       : "";
+export type TargetRole = "working" | "stable" | "preview";
+/** Whether rig.yaml turns a role on: its key under targets is true or a settings map. With no targets key at all, only
+ * working is on. rigd applies the same rule. */
+export function roleOn(tree: Tree, role: TargetRole): boolean {
+  if (tree.targets === undefined) return role === "working";
+  const value = getAt(tree.targets, [role]);
+  return value === true || isTree(value);
+}
+/** `tree` with one role switched on or off. Off is `false`, which carries no settings. Turning another role on in a file
+ * without a targets key writes `working: true` beside it, so the working Target stays on as it was. */
+export function switchRole(tree: Tree, role: TargetRole, on: boolean): Tree {
+  if (roleOn(tree, role) === on) return tree;
+  const base =
+    tree.targets === undefined && role !== "working"
+      ? setAt(tree, ["targets", "working"], true)
+      : tree;
+  return setAt(base, ["targets", role], on);
+}
+/** `tree` without `path`, where removing a role's last setting leaves the role on as `true` instead of removing its key,
+ * which would turn it off. */
+export function removeRoleSetting(
+  tree: Tree,
+  role: TargetRole,
+  path: readonly string[],
+): Tree {
+  const next = removeAt(tree, path);
+  return roleOn(tree, role) && !roleOn(next, role)
+    ? setAt(next, ["targets", role], true)
+    : next;
+}

@@ -10,7 +10,7 @@ const view = {
   operationId: "op-1",
   action: "down",
   project: "fletcher",
-  target: "local",
+  target: "working",
   phase: "stopping",
   startedAt: started.toISOString(),
 };
@@ -23,7 +23,7 @@ const waitingOn = (
 
 test("the wait line names the Target, what is happening to it, when it started in local time, and how many more are ahead", () => {
   expect(waitNotice(waitingOn([view]), now)).toBe(
-    "Waiting: fletcher local is stopping (operation op-1, started 04:00:00)",
+    "Waiting: fletcher working is stopping (operation op-1, started 04:00:00)",
   );
   expect(
     waitNotice(
@@ -50,7 +50,7 @@ test("the wait line names the Target, what is happening to it, when it started i
   // A phase this rig does not know yet still reads as the action.
   expect(
     waitNotice(waitingOn([{ ...view, phase: "draining" }]), now),
-  ).toStartWith("Waiting: fletcher local is running down (");
+  ).toStartWith("Waiting: fletcher working is running down (");
   expect(waitNotice(waitingOn([], 1), now)).toBe(
     "Waiting: 1 operation ahead of this command",
   );
@@ -63,7 +63,7 @@ test("a wait on a stop names the Service being stopped and when it is killed, as
     stops: [
       {
         service: "web",
-        target: "local",
+        target: "working",
         state: "stopped",
         since: started.toISOString(),
         killAt: started.toISOString(),
@@ -71,7 +71,7 @@ test("a wait on a stop names the Service being stopped and when it is killed, as
       },
       {
         service: "google-scheduler",
-        target: "local",
+        target: "working",
         state: "stopping",
         since: started.toISOString(),
         killAt: killAt.toISOString(),
@@ -81,14 +81,14 @@ test("a wait on a stop names the Service being stopped and when it is killed, as
   const status = waitStatus(waitingOn([stopping]), now);
   expect(status).toEqual({
     state: "waiting",
-    subject: "op-1|stopping|local|google-scheduler",
+    subject: "op-1|stopping|working|google-scheduler",
     killAt: killAt.toISOString(),
     notice:
-      "Waiting: fletcher local is stopping (google-scheduler, killing in 19m at 04:31)",
+      "Waiting: fletcher working is stopping (google-scheduler, killing in 19m at 04:31)",
   });
   expect(formatClock(killAt, false)).toBe("04:31");
   expect(waitNotice(waitingOn([stopping]), new Date(2026, 8, 27, 4, 40))).toBe(
-    "Waiting: fletcher local is stopping (google-scheduler, killing now)",
+    "Waiting: fletcher working is stopping (google-scheduler, killing now)",
   );
 });
 
@@ -103,7 +103,7 @@ test("a running Operation reports the Services it is stopping; an unreadable rep
           state: "running",
           phase: "stopping",
           project: "fletcher",
-          target: "local",
+          target: "working",
           stops: view.phase ? [] : [],
         },
       },
@@ -112,7 +112,7 @@ test("a running Operation reports the Services it is stopping; an unreadable rep
   ).toEqual({
     state: "running",
     project: "fletcher",
-    target: "local",
+    target: "working",
     stops: [],
   });
   expect(waitStatus({ operation: { state: "unknown" } }, now)).toBeUndefined();
@@ -132,7 +132,7 @@ test("port claims are made one at a time, visible to the next claimant, and end 
       await new Promise((resolve) => setTimeout(resolve, 2));
       return { "web.http": port };
     };
-  const owner = { project: "alpha", target: "local" };
+  const owner = { project: "alpha", target: "working" };
   await Promise.all([
     reservations.ports("a").reserve(owner, choose(5000)),
     reservations.ports("b").reserve(owner, choose(5001)),

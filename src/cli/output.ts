@@ -145,7 +145,7 @@ function deployedFrom(
   const branch = word(target.branch);
   if (branch && commit) return `${branch}@${commit}`;
   if (branch || commit) return branch || commit;
-  return target.kind === "local" ? "working copy" : "";
+  return target.kind === "working" ? "working copy" : "";
 }
 function renderDoctor(report: Record<string, unknown>): string {
   const failures = rows(report.checks).filter((check) => check.ok !== true);

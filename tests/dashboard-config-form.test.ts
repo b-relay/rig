@@ -11,7 +11,10 @@ import {
   parseList,
   parsePort,
   removeAt,
+  removeRoleSetting,
+  roleOn,
   setAt,
+  switchRole,
   type Tree,
 } from "../web/lib/config-form";
 
@@ -21,7 +24,7 @@ const pantry = {
   services: {
     web: { run: "bun server.ts", ports: { http: 4310 }, env: { PORT: "1" } },
   },
-  targets: { working: { name: "local" } },
+  targets: { working: { domain: "pantry.test" } },
 };
 
 test("an unchanged draft yields no edits", () => {
@@ -79,20 +82,51 @@ test("removing the last key of a nested record prunes the emptied parents but ne
   expect(removeAt(tree, ["missing", "key"])).toBe(tree);
 });
 
+test("the editor reads and switches Targets as rigd does: without a targets key only working is on, and clearing a role's last setting keeps it on", () => {
+  const bare: Tree = { name: "x" };
+  expect(roleOn(bare, "working")).toBe(true);
+  expect(roleOn(bare, "stable")).toBe(false);
+  // Turning stable on in a file without targets keeps working on beside it.
+  const stable = switchRole(bare, "stable", true);
+  expect(stable).toEqual({
+    name: "x",
+    targets: { working: true, stable: true },
+  });
+  expect(switchRole(stable, "working", false)).toEqual({
+    name: "x",
+    targets: { working: false, stable: true },
+  });
+  expect(switchRole(stable, "stable", true)).toBe(stable);
+  const patched: Tree = {
+    name: "x",
+    targets: { stable: { domain: "app.test" } },
+  };
+  expect(
+    removeRoleSetting(patched, "stable", ["targets", "stable", "domain"]),
+  ).toEqual({ name: "x", targets: { stable: true } });
+  expect(
+    removeRoleSetting(
+      { name: "x", targets: { stable: { domain: "a", env: { A: "1" } } } },
+      "stable",
+      ["targets", "stable", "domain"],
+    ),
+  ).toEqual({ name: "x", targets: { stable: { env: { A: "1" } } } });
+});
+
 test("field help matches record keys against wildcards, preferring the exact path", () => {
   const fields = [
     { path: "services.*.env.*", description: "Service env", valueShape: "s" },
     { path: "env.*", description: "Project env", valueShape: "s" },
-    { path: "targets.working.name", description: "Working", valueShape: "s" },
-    { path: "targets.*.name", description: "Any", valueShape: "s" },
+    { path: "targets.working.domain", description: "Working", valueShape: "s" },
+    { path: "targets.*.domain", description: "Any", valueShape: "s" },
   ];
   expect(
     fieldFor(fields, ["services", "web", "env", "PORT"])?.description,
   ).toBe("Service env");
-  expect(fieldFor(fields, ["targets", "working", "name"])?.description).toBe(
+  expect(fieldFor(fields, ["targets", "working", "domain"])?.description).toBe(
     "Working",
   );
-  expect(fieldFor(fields, ["targets", "stable", "name"])?.description).toBe(
+  expect(fieldFor(fields, ["targets", "stable", "domain"])?.description).toBe(
     "Any",
   );
   expect(fieldFor(fields, ["services", "web"])).toBeUndefined();

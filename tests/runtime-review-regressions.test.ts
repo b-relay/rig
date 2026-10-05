@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 function fixture() {
   const state: RuntimeState = {
-    version: 4,
+    version: 5,
     projects: [],
     targets: [],
     activity: [],
@@ -37,6 +37,7 @@ function fixture() {
   const config = parseProjectConfig({
     name: "demo",
     tools: { cli: { bin: "cli" } },
+    targets: { working: true, stable: true, preview: true },
   });
   const deps = {
     async inspectHost() {
@@ -127,15 +128,15 @@ test("doctor reports blocked deployment recovery instead of healthy matching con
   });
   const plan = resolveTargetPlan({
     config,
-    target: "local",
+    target: "working",
     workspacePath: "/project",
     dataRoot: "/data",
   });
   state.targets.push({
     id: "t",
     projectId: "p",
-    name: "local",
-    kind: "local",
+    name: "working",
+    kind: "working",
     plan,
     desired: "running",
     createdAt: deps.now(),
@@ -148,7 +149,7 @@ test("doctor reports blocked deployment recovery instead of healthy matching con
   ).toMatchObject({
     ok: false,
     checks: expect.arrayContaining([
-      expect.objectContaining({ name: "local/recovery", ok: false }),
+      expect.objectContaining({ name: "working/recovery", ok: false }),
     ]),
   });
 });

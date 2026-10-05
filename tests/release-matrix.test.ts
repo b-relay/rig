@@ -4,8 +4,8 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { rigFixture } from "./support/rig-fixture";
 
-// The release matrix: the three Project shapes of docs/examples, under default and
-// renamed Target names, through the public CLI and a real rigd under a temporary RIG_ROOT.
+// The release matrix: the three Project shapes of docs/examples, under the fixed Target names,
+// through the public CLI and a real rigd under a temporary RIG_ROOT.
 
 type Fixture = Awaited<ReturnType<typeof rigFixture>>;
 interface AppReport {
@@ -39,9 +39,11 @@ const TOOLS = `tools:
   hello:
     bin: hello.ts
 `;
-const RENAMED = `targets:
-  working: { name: devbox }
-  stable: { name: prod }
+/** Every Target on; without a targets key only the working Target is. */
+const ON = `targets:
+  working: true
+  stable: true
+  preview: true
 `;
 
 async function project(f: Fixture, config: string): Promise<string> {
@@ -95,36 +97,38 @@ const closed = (at: number) =>
 const tool = async (f: Fixture, name: string) =>
   await f.run([join(f.root, "bin", name), "there"], f.base);
 
-test("one Service under the default names: config, Doctor, no-up deploy, up, restart, logs, down twice, and a generated Preview whose down keeps its data and whose destroy removes only its own", async () => {
+test("one Service with every Target on: config, Doctor, no-up deploy, up, restart, logs, down twice, and a generated Preview whose down keeps its data and whose destroy removes only its own", async () => {
   const f = await rigFixture();
   try {
-    const commit = await project(f, SERVICE);
+    const commit = await project(f, ON + SERVICE);
     expect(await text(f, ["config"])).toContain('"run":');
     expect(await text(f, ["doctor", "--project", "demo"])).toContain(
       "No problems found.",
     );
 
-    expect(await ok(f, ["deploy", "live", "--no-up"])).toMatchObject({
+    expect(await ok(f, ["deploy", "stable", "--no-up"])).toMatchObject({
       outcome: "deployed",
-      target: "live",
+      target: "stable",
       commit,
     });
     expect(
-      (await targets(f)).find((entry) => entry.name === "live"),
-    ).toMatchObject({ kind: "live", state: "stopped" });
-    expect(await ok(f, ["up", "live"])).toMatchObject({ outcome: "started" });
-    const live = await port(f, "live");
+      (await targets(f)).find((entry) => entry.name === "stable"),
+    ).toMatchObject({ kind: "stable", state: "stopped" });
+    expect(await ok(f, ["up", "stable"])).toMatchObject({ outcome: "started" });
+    const live = await port(f, "stable");
     expect(await app(live, "stable-record")).toMatchObject({
       greeting: "from-config",
       stored: "stable-record",
     });
-    expect(await ok(f, ["restart", "live"])).toMatchObject({
+    expect(await ok(f, ["restart", "stable"])).toMatchObject({
       outcome: "started",
     });
-    expect((await app(await port(f, "live"))).stored).toBe("stable-record");
-    expect(await ok(f, ["up", "local"])).toMatchObject({ outcome: "started" });
+    expect((await app(await port(f, "stable"))).stored).toBe("stable-record");
+    expect(await ok(f, ["up", "working"])).toMatchObject({
+      outcome: "started",
+    });
     // Another client finds the daemon's process already running, and rigd will not leave it unowned.
-    expect(await ok(f, ["up", "local"])).toMatchObject({
+    expect(await ok(f, ["up", "working"])).toMatchObject({
       outcome: "unchanged",
     });
     expect((await f.rigd(["uninstall"])).code).toBe(1);
@@ -140,19 +144,23 @@ test("one Service under the default names: config, Doctor, no-up deploy, up, res
     expect(
       new Set([
         preview.data,
-        (await app(await port(f, "live"))).data,
-        (await app(await port(f, "local"))).data,
+        (await app(await port(f, "stable"))).data,
+        (await app(await port(f, "working"))).data,
       ]).size,
     ).toBe(3);
 
-    // Working copy and Stable cannot be destroyed, whatever they are called.
-    for (const name of ["local", "live"])
+    // The working and stable Targets cannot be destroyed.
+    for (const name of ["working", "stable"])
       expect(await refused(f, ["down", name, "--destroy"])).toContain(
         "Only a Preview can be destroyed.",
       );
     // Outside the repository a Target is selected only with its Project.
-    expect((await f.rig(["down", "local"], f.base)).code).toBe(1);
-    for (const selector of [["local"], ["live"], ["preview", "feature/x"]]) {
+    expect((await f.rig(["down", "working"], f.base)).code).toBe(1);
+    for (const selector of [
+      ["working"],
+      ["stable"],
+      ["preview", "feature/x"],
+    ]) {
       expect(await ok(f, ["down", ...selector])).toMatchObject({
         outcome: "stopped",
       });
@@ -182,51 +190,53 @@ test("one Service under the default names: config, Doctor, no-up deploy, up, res
     ).toMatchObject({ action: "destroy" });
     await expect(readdir(preview.data)).rejects.toThrow();
     expect((await targets(f)).map((entry) => entry.name).sort()).toEqual([
-      "live",
-      "local",
+      "stable",
+      "working",
     ]);
     expect(await refused(f, ["logs", "preview", "feature/x"])).toContain(
       "feature",
     );
-    expect(await ok(f, ["up", "live"])).toMatchObject({ outcome: "started" });
-    expect((await app(await port(f, "live"))).stored).toBe("stable-record");
-    expect(await ok(f, ["down", "live"])).toMatchObject({ outcome: "stopped" });
+    expect(await ok(f, ["up", "stable"])).toMatchObject({ outcome: "started" });
+    expect((await app(await port(f, "stable"))).stored).toBe("stable-record");
+    expect(await ok(f, ["down", "stable"])).toMatchObject({
+      outcome: "stopped",
+    });
     // With every Target stopped rigd uninstalls, and the Targets it recorded stay for the next install.
     expect((await f.rigd(["uninstall"])).code).toBe(0);
     expect(
       JSON.parse(await readFile(join(f.root, "runtime", "state.json"), "utf8"))
         .targets.map((entry: { name: string }) => entry.name)
         .sort(),
-    ).toEqual(["live", "local"]);
+    ).toEqual(["stable", "working"]);
   } finally {
     await f.cleanup();
   }
 }, 120000);
 
-test("a Tool-only Project under renamed Targets: the Stable Target publishes the plain command, the Working copy and a generated Preview their own names, and destroying the Preview removes only its command", async () => {
+test("a Tool-only Project: the stable Target publishes the plain command, the working Target <tool>-dev and a generated Preview its own name, and destroying the Preview removes only its command", async () => {
   const f = await rigFixture();
   try {
-    await project(f, RENAMED + TOOLS);
+    await project(f, ON + TOOLS);
     expect(await text(f, ["doctor", "--project", "demo"])).toContain(
       "No problems found.",
     );
-    expect(await ok(f, ["deploy", "prod"])).toMatchObject({
+    expect(await ok(f, ["deploy", "stable"])).toMatchObject({
       outcome: "deployed",
-      target: "prod",
+      target: "stable",
     });
-    expect(await ok(f, ["up", "devbox"])).toMatchObject({ target: "devbox" });
+    expect(await ok(f, ["up", "working"])).toMatchObject({ target: "working" });
     const preview = (await ok(f, ["deploy", "preview", "feature/x"]))
       .target as string;
     expect(preview).toMatch(/^feature-x-[a-f0-9]{8}$/);
-    for (const name of ["hello", "hello-devbox", `hello-${preview}`])
+    for (const name of ["hello", "hello-dev", `hello-${preview}`])
       expect(await tool(f, name)).toMatchObject({
         code: 0,
         stdout: "hello there\n",
       });
-    // The default names are no longer selectors, and the role still protects a renamed Target.
-    for (const name of ["local", "live"])
+    // The names of older Rig versions select nothing.
+    for (const name of ["local", "live", "devbox"])
       expect((await f.rig(["up", name])).code).toBe(1);
-    for (const name of ["devbox", "prod"])
+    for (const name of ["working", "stable"])
       expect(await refused(f, ["down", name, "--destroy"])).toContain(
         "Only a Preview can be destroyed.",
       );
@@ -235,9 +245,9 @@ test("a Tool-only Project under renamed Targets: the Stable Target publishes the
     ).toMatchObject({ action: "destroy" });
     expect((await readdir(join(f.root, "bin"))).sort()).toEqual([
       "hello",
-      "hello-devbox",
+      "hello-dev",
     ]);
-    for (const name of ["devbox", "prod"]) {
+    for (const name of ["working", "stable"]) {
       expect((await f.rig(["down", name])).code).toBe(0);
       expect((await f.rig(["down", name])).code).toBe(0);
     }
@@ -246,24 +256,28 @@ test("a Tool-only Project under renamed Targets: the Stable Target publishes the
   }
 }, 120000);
 
-test("Services and Tools under renamed Targets: a deployed Production Branch reaches the renamed Stable Target, and fixture cleanup stops a renamed Target and a generated Preview it was never told about", async () => {
+test("Services and Tools: a deployed Production Branch reaches the stable Target, and fixture cleanup stops the working Target and a generated Preview it was never told about", async () => {
   const f = await rigFixture();
   try {
-    await project(f, RENAMED + SERVICE + TOOLS);
-    expect(await ok(f, ["deploy", "prod"])).toMatchObject({
+    await project(f, ON + SERVICE + TOOLS);
+    expect(await ok(f, ["deploy", "stable"])).toMatchObject({
       outcome: "deployed",
     });
-    expect((await app(await port(f, "prod"))).greeting).toBe("from-config");
+    expect((await app(await port(f, "stable"))).greeting).toBe("from-config");
     expect(await tool(f, "hello")).toMatchObject({ code: 0 });
-    expect(await text(f, ["logs", "prod"])).toContain("app ready");
-    expect(await ok(f, ["down", "prod"])).toMatchObject({ outcome: "stopped" });
+    expect(await text(f, ["logs", "stable"])).toContain("app ready");
+    expect(await ok(f, ["down", "stable"])).toMatchObject({
+      outcome: "stopped",
+    });
 
-    expect(await ok(f, ["up", "devbox"])).toMatchObject({ outcome: "started" });
+    expect(await ok(f, ["up", "working"])).toMatchObject({
+      outcome: "started",
+    });
     const preview = (await ok(f, ["deploy", "preview", "feature/x"]))
       .target as string;
-    expect(await tool(f, "hello-devbox")).toMatchObject({ code: 0 });
+    expect(await tool(f, "hello-dev")).toMatchObject({ code: 0 });
     expect(await tool(f, `hello-${preview}`)).toMatchObject({ code: 0 });
-    const listening = [await port(f, "devbox"), await port(f, preview)];
+    const listening = [await port(f, "working"), await port(f, preview)];
     for (const at of listening) expect((await app(at)).greeting).toBeDefined();
 
     // Both are left running, as a failed assertion would leave them.
@@ -288,8 +302,10 @@ test("the same application runs unchanged by hand: equivalent arguments and envi
   let manual: ReturnType<typeof Bun.spawn> | undefined;
   try {
     await project(f, SERVICE);
-    expect(await ok(f, ["up", "local"])).toMatchObject({ outcome: "started" });
-    const managed = await app(await port(f, "local"), "same-record");
+    expect(await ok(f, ["up", "working"])).toMatchObject({
+      outcome: "started",
+    });
+    const managed = await app(await port(f, "working"), "same-record");
 
     const at = await free(),
       data = await mkdtemp(join(f.base, "by-hand-"));
@@ -312,7 +328,7 @@ test("the same application runs unchanged by hand: equivalent arguments and envi
     expect({ ...byHand, data: "" }).toEqual({ ...managed, data: "" });
     expect(byHand.data).toBe(data);
     expect(managed.data).toStartWith(f.root.replace(/^\/private/, ""));
-    expect(await ok(f, ["down", "local"])).toMatchObject({
+    expect(await ok(f, ["down", "working"])).toMatchObject({
       outcome: "stopped",
     });
   } finally {

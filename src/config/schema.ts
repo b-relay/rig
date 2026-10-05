@@ -231,7 +231,7 @@ const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   bin: text.describe(
-    `Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the Stable Target and <tool>-<target> elsewhere. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname "$0" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. ${referencesIn("project")}`,
+    `Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target and <tool>-<target> elsewhere. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname "$0" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. ${referencesIn("project")}`,
   ),
 };
 const tool = z.strictObject(toolFields);
@@ -281,63 +281,42 @@ const patchFields = {
       "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
     ),
 };
+/** The selector of every Preview; it is also the preview role's key under targets. */
 export const PREVIEW_SELECTOR = "preview";
-/** Generated Preview names end in a dash and eight hex digits of the Branch hash. */
-const GENERATED_PREVIEW_NAME = /-[0-9a-f]{8}$/;
-const targetName = text
-  .max(63)
-  .regex(
-    /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/,
-    "must start with a letter or digit and contain only letters, digits, '_' or '-'",
-  )
-  .refine(
-    (value) => value !== PREVIEW_SELECTOR,
-    "cannot be 'preview', which always selects Previews",
-  )
-  .refine(
-    (value) => value !== "help",
-    "cannot be 'help', which every command reads as a request for help",
-  )
-  .refine(
-    (value) => !GENERATED_PREVIEW_NAME.test(value),
-    "cannot end like a generated Preview name (a dash and eight hex digits)",
-  );
-const targets = z.strictObject({
-  working: z
-    .strictObject({
-      name: targetName
-        .optional()
-        .describe(
-          "Name that selects and displays the Working copy Target (default local). Renaming keeps its identity and stored data.",
-        ),
-      ...patchFields,
-    })
-    .optional()
-    .describe("Working copy Target name and settings patch."),
-  stable: z
-    .strictObject({
-      name: targetName
-        .optional()
-        .describe(
-          "Name that selects and displays the Stable Target (default live). Renaming keeps its identity and stored data.",
-        ),
-      ...patchFields,
-    })
-    .optional()
-    .describe("Stable Target name and settings patch."),
-  preview: z
-    .strictObject(patchFields)
-    .optional()
-    .describe(
-      "Settings patch for every generated Preview; Preview names come from their Branch.",
-    ),
-});
+/** The three Target roles. `working` and `stable` are also the fixed names of the one Target each role has. */
 export const TARGET_ROLES = ["working", "stable", "preview"] as const;
 export type TargetRole = (typeof TARGET_ROLES)[number];
-export const DEFAULT_TARGET_NAMES = {
-  working: "local",
-  stable: "live",
-} as const;
+/** The suffix the working Target's Tools are published under, `<tool>-dev`: "working" is too long to type every time. */
+export const WORKING_TOOL_SUFFIX = "dev";
+const ROLE_SWITCH_SHAPES = "must be true, false or a map of settings";
+/** One role's switch: true or a settings patch turns it on; false, or leaving the key out, keeps it off. */
+const roleSwitch = (description: string) =>
+  z
+    .union([z.boolean(), z.strictObject(patchFields)], {
+      error: ROLE_SWITCH_SHAPES,
+    })
+    .optional()
+    .describe(description);
+const targets = z.strictObject({
+  working: roleSwitch(
+    "The working Target, which runs this checkout as it is: true or a settings patch turns it on, false turns it off. Its Tools are published as <tool>-dev. When rig.yaml has no targets key at all, working is the one Target that is on.",
+  ),
+  stable: roleSwitch(
+    "The stable Target, which serves the Production branch: true or a settings patch turns it on; false or leaving it out keeps it off. Its Tools are published under their plain names.",
+  ),
+  preview: roleSwitch(
+    "Previews of other Branches: true or a settings patch applied to every Preview turns them on; false or leaving it out keeps them off. Preview names come from their Branch.",
+  ),
+});
+/** Whether a role is on: its key under targets is true or a settings map. With no targets key at all, only working is on. */
+export function targetOn(
+  config: { targets?: Readonly<Partial<Record<TargetRole, unknown>>> },
+  role: TargetRole,
+): boolean {
+  if (config.targets === undefined) return role === "working";
+  const value = config.targets[role];
+  return value === true || isRecord(value);
+}
 type Fields = Readonly<Record<string, unknown>>;
 const isRecord = (value: unknown): value is Fields =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -371,7 +350,7 @@ type GraphSettings = {
   proxy?: Readonly<Record<string, string>>;
 };
 type GraphConfig = GraphSettings & {
-  targets?: Partial<Record<TargetRole, GraphSettings & { name?: string }>>;
+  targets?: Partial<Record<TargetRole, GraphSettings | boolean>>;
 };
 export const projectConfigSchema = z
   .strictObject({
@@ -380,12 +359,12 @@ export const projectConfigSchema = z
     production_branch: text
       .optional()
       .describe(
-        "Branch the Stable Target deploys; defaults to the Host deploy.production_branch, then main.",
+        "Branch the stable Target deploys; defaults to the Host deploy.production_branch, then main.",
       ),
     domain: domain
       .optional()
       .describe(
-        `Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
+        `Hostname of the stable Target. A Preview defaults to this domain with a dash and its name after the first label, so app.example.com gives app-<preview-name>.example.com; the working Target has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
       ),
     build: build
       .optional()
@@ -411,7 +390,7 @@ export const projectConfigSchema = z
     targets: targets
       .optional()
       .describe(
-        "Role-keyed Target names and settings patches: working, stable and the preview template.",
+        "Which Targets are on, keyed by their fixed names working, stable and preview, each true, false or a settings patch. Without this key only working is on; with it, only the Targets it turns on are.",
       ),
   })
   .superRefine((parsed, ctx) => {
@@ -431,17 +410,6 @@ export const projectConfigSchema = z
           path: ["tools", name],
           message: "A Tool cannot share its name with a Service.",
         });
-    const names = targetNames(config);
-    if (names.working === names.stable)
-      ctx.addIssue({
-        code: "custom",
-        path: [
-          "targets",
-          config.targets?.stable?.name ? "stable" : "working",
-          "name",
-        ],
-        message: `The Working copy and Stable Target cannot both be named '${names.working}'.`,
-      });
     const reported = new Set<string>();
     const report = (path: PropertyKey[], message: string) => {
       if (reported.has(message)) return;
@@ -452,7 +420,8 @@ export const projectConfigSchema = z
     validateGraph(config, [], report);
     for (const role of TARGET_ROLES) {
       const patch = config.targets?.[role];
-      if (!patch) continue;
+      // A switch without settings patches nothing: its graph is the base graph, already checked.
+      if (!isRecord(patch)) continue;
       const at = ["targets", role];
       for (const kind of ["services", "tools"] as const)
         for (const key of Object.keys(patch[kind] ?? {}))
@@ -467,13 +436,13 @@ export const projectConfigSchema = z
             if (value !== "auto")
               report(
                 [...at, "services", key, "ports", port],
-                "Previews always use chosen ports; only the Working copy and Stable Target can pin one.",
+                "Previews always use chosen ports; only the working and stable Targets can pin one.",
               );
       validateGraph(patchSettings(config, role) as GraphSettings, at, report);
     }
   });
 type ParsedProject = z.infer<typeof projectConfigSchema>;
-/** Project settings with one role's patch applied; Target name metadata never merges into them. */
+/** Project settings with one role's patch applied; the Target switches never merge into them. */
 export type ProjectSettings = Omit<ParsedProject, "targets">;
 export function patchedSettings(
   config: ParsedProject,
@@ -481,13 +450,22 @@ export function patchedSettings(
 ): ProjectSettings {
   return patchSettings(config, role) as ProjectSettings;
 }
-/** The patch rule: the base settings, without Target metadata, merged with one role's patch. */
+/** The settings one role may patch. */
+export type RolePatch = Exclude<
+  NonNullable<ParsedProject["targets"]>[TargetRole],
+  boolean | undefined
+>;
+/** One role's settings patch: its map, or nothing when the role is only switched on or off. */
+export function rolePatch(config: ParsedProject, role: TargetRole): RolePatch {
+  const patch = config.targets?.[role];
+  return isRecord(patch) ? patch : {};
+}
+/** The patch rule: the base settings, without the Target switches, merged with one role's patch. */
 function patchSettings(config: Fields, role: TargetRole): Fields {
   const { targets, ...base } = config;
   const patch: Record<string, unknown> = {
     ...(isRecord(targets) && isRecord(targets[role]) ? targets[role] : {}),
   };
-  delete patch.name;
   // A patch naming an unknown entry is reported by validation; merging would otherwise invent a partial entry.
   for (const kind of ["services", "tools"] as const)
     if (isRecord(patch[kind]))
@@ -497,18 +475,6 @@ function patchSettings(config: Fields, role: TargetRole): Fields {
         ),
       );
   return mergeSettings(base, patch);
-}
-/** The names that select and display the Working copy and Stable Target. */
-export function targetNames(config: {
-  targets?: {
-    working?: { name?: string } | undefined;
-    stable?: { name?: string } | undefined;
-  };
-}): Record<"working" | "stable", string> {
-  return {
-    working: config.targets?.working?.name ?? DEFAULT_TARGET_NAMES.working,
-    stable: config.targets?.stable?.name ?? DEFAULT_TARGET_NAMES.stable,
-  };
 }
 const PORT_REFERENCE = /^\$\{services\.([^.}]+)\.ports\.([^.}]+)\}$/;
 /** The Service and port a proxy value names. */
@@ -638,6 +604,8 @@ const PATCH_IDENTITY_KEYS: Readonly<Record<string, string>> = {
   description: "The Project description is not a Target setting.",
   targets: "A Target patch cannot contain targets.",
   role: "A Target's role is its fixed key (working, stable or preview) and cannot change.",
+  // Rig once let rig.yaml rename the working and stable Targets (ADR 0006); ADR 0010 fixed their names.
+  name: "Target names are fixed (working, stable, preview); delete this line.",
 };
 /** `supervisor` chose between rigd and per-Service launchd agents until launchd supervision was removed; rigd now supervises
  * every Service, so a file that still sets it is told to delete the line rather than that the field is unknown. */
@@ -689,12 +657,6 @@ function refuseUnsupportedShapes(value: unknown): void {
     for (const [key, message] of Object.entries(PATCH_IDENTITY_KEYS))
       if (Object.hasOwn(patch, key))
         issues.push({ path: ["targets", role, key], message });
-    if (role === "preview" && Object.hasOwn(patch, "name"))
-      issues.push({
-        path: ["targets", role, "name"],
-        message:
-          "Preview names are generated from their Branch; only working and stable take a name.",
-      });
     for (const kind of ["services", "tools"])
       if (isRecord(patch[kind]))
         for (const [key, entry] of Object.entries(patch[kind]))
@@ -891,6 +853,18 @@ function explainIssue(issue: z.core.$ZodIssue): {
 } {
   if (issue.code === "invalid_union" && issue.errors.length) {
     const branches = issue.errors.filter((branch) => branch.length);
+    // A Target switch that is neither a boolean nor a map is explained by its own message, which names both shapes.
+    if (
+      issue.message === ROLE_SWITCH_SHAPES &&
+      branches.length &&
+      branches.every(
+        (branch) =>
+          branch.length === 1 &&
+          branch[0]!.code === "invalid_type" &&
+          branch[0]!.path.length === 0,
+      )
+    )
+      return { path: [...issue.path], message: issue.message };
     const discriminators = branches.map((branch) =>
       branch[0]!.code === "invalid_value" ? branch[0] : undefined,
     );

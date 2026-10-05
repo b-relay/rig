@@ -10,13 +10,14 @@ import {
   toneOf,
 } from "../web/lib/present";
 
-test("a Preview is selected by its deployment name, other Targets by their own", () => {
+test("a Preview is selected by its deployment name, the working and stable Targets by their role", () => {
   expect(targetSelector({ kind: "preview", name: "feature-x" })).toEqual({
     target: "preview",
     deployment: "feature-x",
   });
-  expect(targetSelector({ kind: "live", name: "prod" })).toEqual({
-    target: "prod",
+  // A record kept under an old name still selects by its role.
+  expect(targetSelector({ kind: "stable", name: "prod" })).toEqual({
+    target: "stable",
   });
   expect(targetKey({ kind: "preview", name: "feature-x" })).toBe(
     "preview:feature-x",
@@ -120,8 +121,8 @@ test("presentation helpers shorten a Commit, date an instant coarsely, and word 
   expect(ago(at(172800), now)).toBe("2 d ago");
   expect(ago("never", now)).toBe("never");
   const base = {
-    name: "live",
-    kind: "live" as const,
+    name: "stable",
+    kind: "stable" as const,
     state: "healthy" as const,
     components: [],
   };
@@ -139,8 +140,8 @@ test("presentation helpers shorten a Commit, date an instant coarsely, and word 
 
 describe("returnPath", () => {
   test("follows a path on this site and nothing else", () => {
-    expect(returnPath("/projects/app/logs?target=live")).toBe(
-      "/projects/app/logs?target=live",
+    expect(returnPath("/projects/app/logs?target=stable")).toBe(
+      "/projects/app/logs?target=stable",
     );
     expect(returnPath(null)).toBe("/");
     expect(returnPath("")).toBe("/");

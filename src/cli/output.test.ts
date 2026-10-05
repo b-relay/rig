@@ -71,7 +71,7 @@ test("logs print the UTC clock with its zone marker so it cannot pass for local 
     renderLogs(
       {
         project: "app",
-        target: "live",
+        target: "stable",
         entries: [
           {
             timestamp: "2026-09-14T23:30:00.000Z",

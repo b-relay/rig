@@ -156,10 +156,10 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
   });
   const plan = resolveTargetPlan({
     config,
-    target: "live",
+    target: "stable",
     workspacePath: "/w",
     dataRoot: "/d",
-    deploymentName: "live",
+    deploymentName: "stable",
     branchSlug: "main",
     branch: "main",
     assignedPorts: { web: 4000 },
@@ -167,8 +167,8 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
   const target: TargetRecord = {
     id: "t",
     projectId: "p",
-    name: "live",
-    kind: "live",
+    name: "stable",
+    kind: "stable",
     branch: "main",
     plan,
     desired: "running",
@@ -197,7 +197,7 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
     projectStatus(
       { name: "app", repoPath: "/repo" },
       [target],
-      { target: "live" },
+      { target: "stable" },
       {
         inProgress: () => false,
         observations,

@@ -15,6 +15,7 @@ import type {
 } from "../src/providers/contracts";
 import { stopDetached } from "../src/domain/stop-budget";
 import { runtimeStateSchema } from "../src/runtime/state-schema";
+import { readFixedTargetNames } from "../src/runtime/state-store";
 import {
   parseHostConfig,
   parseProjectConfig,
@@ -41,11 +42,12 @@ function world(
       web: { run: "serve", ports: { http: 4567 }, stop_timeout: "2m" },
       worker: { run: "work", depends_on: ["web"], stop_timeout: "25m" },
     },
+    targets: { working: true, stable: true, preview: true },
   }),
 ) {
   let clock = Date.parse("2026-09-27T04:00:00.000Z");
   const state: RuntimeState = {
-    version: 4,
+    version: 5,
     projects: [],
     targets: [],
     activity: [],
@@ -348,11 +350,11 @@ async function registered() {
 
 test("rig down waits for each Service's stop_timeout, shows it on the Operation and in status, and records a SIGKILL in Activity and status", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "up", target: "working" });
   w.hold();
   const down = w.command({
     action: "down",
-    target: "local",
+    target: "working",
     operationId: "down-1",
   });
   // Reverse dependency order: worker (25m) first.
@@ -363,11 +365,11 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
     state: "running",
     phase: "stopping",
     project: "fletcher",
-    target: "local",
+    target: "working",
     stops: [
       {
         service: "worker",
-        target: "local",
+        target: "working",
         state: "stopping",
         since: "2026-09-27T04:00:00.000Z",
         killAt: "2026-09-27T04:25:00.000Z",
@@ -376,7 +378,7 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
   });
   const status = await w.runtime.status({
     project: "fletcher",
-    target: "local",
+    target: "working",
   });
   expect(status.targets[0]).toMatchObject({ state: "stopping" });
   expect(
@@ -393,7 +395,7 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
   expect(result.stops).toEqual([
     {
       service: "worker",
-      target: "local",
+      target: "working",
       state: "stopped",
       since: "2026-09-27T04:00:00.000Z",
       killAt: "2026-09-27T04:25:00.000Z",
@@ -402,7 +404,7 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
     },
     {
       service: "web",
-      target: "local",
+      target: "working",
       state: "stopped",
       since: "2026-09-27T04:25:00.000Z",
       killAt: "2026-09-27T04:27:00.000Z",
@@ -416,7 +418,7 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
   });
   const after = await w.runtime.status({
     project: "fletcher",
-    target: "local",
+    target: "working",
   });
   expect(
     after.targets[0]!.components.find((c) => c.name === "worker"),
@@ -438,11 +440,11 @@ test("rig down waits for each Service's stop_timeout, shows it on the Operation 
 test("a rig down or rig restart that fails part-way still records the SIGKILL of a Service it stopped before, in status and Activity", async () => {
   for (const action of ["down", "restart"] as const) {
     const w = await registered();
-    await w.command({ action: "up", target: "local" });
+    await w.command({ action: "up", target: "working" });
     w.hold();
     const stopping = w.command({
       action,
-      target: "local",
+      target: "working",
       operationId: `${action}-2`,
     });
     const worker = await w.stopOf("worker");
@@ -458,7 +460,7 @@ test("a rig down or rig restart that fails part-way still records the SIGKILL of
     });
     const after = await w.runtime.status({
       project: "fletcher",
-      target: "local",
+      target: "working",
     });
     expect(
       after.targets[0]!.components.find((c) => c.name === "worker"),
@@ -471,7 +473,7 @@ test("a rig down or rig restart that fails part-way still records the SIGKILL of
 
 test("the first pass's stop of a Target meant to be stopped that fails part-way still records the SIGKILL of a Service it stopped before", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "up", target: "working" });
   w.state.targets[0]!.desired = "stopped";
   w.hold();
   const pass = w.runtime.reconcile();
@@ -482,7 +484,7 @@ test("the first pass's stop of a Target meant to be stopped that fails part-way 
   await pass;
   const after = await w.runtime.status({
     project: "fletcher",
-    target: "local",
+    target: "working",
   });
   expect(
     after.targets[0]!.components.find((c) => c.name === "worker"),
@@ -494,13 +496,13 @@ test("the first pass's stop of a Target meant to be stopped that fails part-way 
 
 test("a rig restart that stopped a Service with SIGKILL and then failed before starting it again still says so in status", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "up", target: "working" });
   w.hold();
   const release = w.holdPreparation();
   w.failing.add("web");
   const restart = w.command({
     action: "restart",
-    target: "local",
+    target: "working",
     operationId: "restart-3",
   });
   const worker = await w.stopOf("worker");
@@ -511,7 +513,7 @@ test("a rig restart that stopped a Service with SIGKILL and then failed before s
   await expect(restart).rejects.toBeDefined();
   const after = await w.runtime.status({
     project: "fletcher",
-    target: "local",
+    target: "working",
   });
   expect(
     after.targets[0]!.components.find((c) => c.name === "worker"),
@@ -524,11 +526,11 @@ test("a rig restart that stopped a Service with SIGKILL and then failed before s
 
 test("rig restart waits for the stop_timeout before it starts the Services again", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "up", target: "working" });
   w.hold();
   const restart = w.command({
     action: "restart",
-    target: "local",
+    target: "working",
     operationId: "restart-1",
   });
   const worker = await w.stopOf("worker");
@@ -548,11 +550,11 @@ test("rig restart waits for the stop_timeout before it starts the Services again
 
 test("a deploy that replaces the Stable Target waits for the previous release's stop_timeout, marked stopping, then goes on deploying", async () => {
   const w = await registered();
-  await w.command({ action: "deploy", target: "live", branch: "main" });
+  await w.command({ action: "deploy", target: "stable", branch: "main" });
   w.hold();
   const deploy = w.command({
     action: "deploy",
-    target: "live",
+    target: "stable",
     branch: "main",
     commit: "c2",
     operationId: "deploy-2",
@@ -565,7 +567,7 @@ test("a deploy that replaces the Stable Target waits for the previous release's 
   });
   const status = await w.runtime.status({
     project: "fletcher",
-    target: "live",
+    target: "stable",
   });
   expect(status.targets[0]!.state).toBe("stopping");
   worker.exit();
@@ -577,12 +579,12 @@ test("a deploy that replaces the Stable Target waits for the previous release's 
 
 test("a deploy rollback and the failed start before it each stop within the Services' stop_timeout", async () => {
   const w = await registered();
-  await w.command({ action: "deploy", target: "live", branch: "main" });
+  await w.command({ action: "deploy", target: "stable", branch: "main" });
   w.failing.add("worker");
   w.hold();
   const deploy = w.command({
     action: "deploy",
-    target: "live",
+    target: "stable",
     branch: "main",
     commit: "c2",
     operationId: "deploy-2",
@@ -611,7 +613,11 @@ test("a deploy rollback and the failed start before it each stop within the Serv
 test("a start that never confirmed it started is stopped within the Service's stop_timeout, shown stopping on the Operation, and rig down --kill cuts it short", async () => {
   const w = await registered();
   w.unconfirmed.add("worker");
-  const up = w.command({ action: "up", target: "local", operationId: "up-1" });
+  const up = w.command({
+    action: "up",
+    target: "working",
+    operationId: "up-1",
+  });
   const worker = await w.stopOf("worker");
   expect(worker.request.graceMs).toBe(25 * 60_000);
   expect(worker.request.kill?.aborted).toBe(false);
@@ -620,7 +626,7 @@ test("a start that never confirmed it started is stopped within the Service's st
     stops: [
       {
         service: "worker",
-        target: "local",
+        target: "working",
         state: "stopping",
         killAt: "2026-09-27T04:25:00.000Z",
       },
@@ -628,7 +634,7 @@ test("a start that never confirmed it started is stopped within the Service's st
   });
   const kill = w.command({
     action: "down",
-    target: "local",
+    target: "working",
     kill: true,
     operationId: "down-kill",
   });
@@ -649,11 +655,11 @@ test("a start that never confirmed it started is stopped within the Service's st
 
 test("a rig up whose start rigd's shutdown detached records none of its Services as not started: they are left as a crash leaves them", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
-  await w.command({ action: "down", target: "local" });
+  await w.command({ action: "up", target: "working" });
+  await w.command({ action: "down", target: "working" });
   w.detachedStarts.add("worker");
   await expect(
-    w.command({ action: "up", target: "local" }),
+    w.command({ action: "up", target: "working" }),
   ).rejects.toMatchObject({ code: "STOP_DETACHED" });
   // web started and keeps its restart policy; nothing marks it start-failed.
   const services = w.state.targets[0]!.services ?? {};
@@ -695,11 +701,11 @@ test("a Preview destroy waits for the Preview's stop_timeout before its storage 
 
 test("rig down --kill cuts a stop already running on the Target short, then runs its own", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "up", target: "working" });
   w.hold();
   const down = w.command({
     action: "down",
-    target: "local",
+    target: "working",
     operationId: "down-1",
   });
   const worker = await w.stopOf("worker");
@@ -707,7 +713,7 @@ test("rig down --kill cuts a stop already running on the Target short, then runs
   w.advance(60_000);
   const kill = w.command({
     action: "down",
-    target: "local",
+    target: "working",
     kill: true,
     operationId: "down-kill",
   });
@@ -732,16 +738,16 @@ test("rig down --kill cuts a stop already running on the Target short, then runs
 
 test("rig down --kill on a running Target stops every Service with its kill already asked", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
-  await w.command({ action: "down", target: "local", kill: true });
+  await w.command({ action: "up", target: "working" });
+  await w.command({ action: "down", target: "working", kill: true });
   expect(w.stops.map((stop) => stop.kill)).toEqual([true, true]);
 });
 
 test("rigd's drain does not wait out a long grace: the stop detaches and the command fails STOP_DETACHED", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "up", target: "working" });
   w.hold();
-  const down = w.command({ action: "down", target: "local" });
+  const down = w.command({ action: "down", target: "working" });
   await w.stopOf("worker");
   const drained = w.runtime.drain();
   await expect(down).rejects.toMatchObject({ code: "STOP_DETACHED" });
@@ -752,7 +758,7 @@ test("rigd's drain does not wait out a long grace: the stop detaches and the com
 
 test("the next daemon's first pass stops a Target meant to be stopped within its stop_timeout, marked stopping", async () => {
   const w = await registered();
-  await w.command({ action: "up", target: "local" });
+  await w.command({ action: "up", target: "working" });
   w.state.targets[0]!.desired = "stopped";
   w.hold();
   const pass = w.runtime.reconcile();
@@ -760,7 +766,7 @@ test("the next daemon's first pass stops a Target meant to be stopped within its
   expect(worker.request.graceMs).toBe(25 * 60_000);
   const status = await w.runtime.status({
     project: "fletcher",
-    target: "local",
+    target: "working",
   });
   expect(
     status.targets[0]!.components.find((c) => c.name === "worker"),
@@ -772,17 +778,17 @@ test("the next daemon's first pass stops a Target meant to be stopped within its
 
 test("rig down --kill sent while a deploy is still building cuts the grace of the stop that deploy makes later", async () => {
   const w = await registered();
-  await w.command({ action: "deploy", target: "live", branch: "main" });
+  await w.command({ action: "deploy", target: "stable", branch: "main" });
   const release = w.holdPreparation();
   const deploy = w.command({
     action: "deploy",
-    target: "live",
+    target: "stable",
     branch: "main",
     commit: "c2",
     operationId: "deploy-2",
   });
   await new Promise((resolve) => setTimeout(resolve, 5));
-  const kill = w.command({ action: "down", target: "live", kill: true });
+  const kill = w.command({ action: "down", target: "stable", kill: true });
   await new Promise((resolve) => setTimeout(resolve, 5));
   release();
   await deploy;
@@ -790,15 +796,15 @@ test("rig down --kill sent while a deploy is still building cuts the grace of th
   // The deploy's stop of the previous release, then the kill's own stop of the new one: all without the grace.
   expect(w.stops.map((stop) => stop.kill)).toEqual([true, true, true, true]);
   // Once the kill is over, stops wait out their grace again.
-  await w.command({ action: "up", target: "live" });
-  await w.command({ action: "down", target: "live" });
+  await w.command({ action: "up", target: "stable" });
+  await w.command({ action: "down", target: "stable" });
   expect(w.stops.slice(4).map((stop) => stop.kill)).toEqual([false, false]);
 });
 
 test("a kill is refused on commands other than down and restart", async () => {
   const w = await registered();
   await expect(
-    w.command({ action: "up", target: "local", kill: true }),
+    w.command({ action: "up", target: "working", kill: true }),
   ).rejects.toMatchObject({ code: "USAGE" });
 });
 
@@ -838,12 +844,10 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
     proxy: { "/": "${services.web.ports.http}" },
     targets: {
       working: {
-        name: "local",
         domain: "dev.design.example.test",
         services: { web: { env: { STUDIO_ENV: "development" } } },
       },
       stable: {
-        name: "live",
         domain: "design.example.test",
         services: {
           convex: { env: { CONVEX_STATE_DIR: "${rig.data}" } },
@@ -870,17 +874,18 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
     },
   });
 }
-/** A Working copy, Stable Target and Preview of that Project exactly as the rigd before #298 (issue #278, stop_timeout)
- * recorded them, with paths and domain replaced: no Service's plan has a stopTimeout. */
+/** A working, stable and Preview Target of that Project exactly as the rigd before #298 (issue #278, stop_timeout)
+ * recorded them, with paths and domain replaced: no Service's plan has a stopTimeout. They are state version 4, named
+ * local and live, so they are read as the state store reads such a file. */
 async function recordedBeforeStopTimeout(): Promise<RuntimeState> {
-  return runtimeStateSchema.parse(
-    JSON.parse(
-      await readFile(
-        join(import.meta.dir, "fixtures/pre-278-state.json"),
-        "utf8",
-      ),
+  const recorded: unknown = JSON.parse(
+    await readFile(
+      join(import.meta.dir, "fixtures/pre-278-state.json"),
+      "utf8",
     ),
-  ) as RuntimeState;
+  );
+  readFixedTargetNames(recorded);
+  return runtimeStateSchema.parse(recorded) as RuntimeState;
 }
 /** A world whose state holds the Targets recorded before #298, reading `config` as every rig.yaml. */
 async function upgraded(config: ProjectConfig) {
@@ -917,7 +922,7 @@ test("after an upgrade, Targets recorded before stop_timeout existed show no con
   ).toEqual([]);
   expect(await configChecks(w)).toEqual([
     {
-      name: "local/config",
+      name: "working/config",
       ok: true,
       message: "Recorded Target policy matches current configuration.",
     },
@@ -928,7 +933,7 @@ test("after an upgrade, Targets recorded before stop_timeout existed show no con
         "Recorded Target policy matches the deployed revision's configuration.",
     },
     {
-      name: "live/config",
+      name: "stable/config",
       ok: true,
       message:
         "Recorded Target policy matches the deployed revision's configuration.",
@@ -936,16 +941,16 @@ test("after an upgrade, Targets recorded before stop_timeout existed show no con
   ]);
   const status = await w.runtime.status({ project: "design" });
   expect(status.targets.map((target) => target.name).sort()).toEqual([
-    "live",
-    "local",
     "migrate-next-rig-agent-sdk-28897383",
+    "stable",
+    "working",
   ]);
   // A same-Commit deploy is still a no-op.
   expect(
     await w.runtime.command({
       action: "deploy",
       project: "design",
-      target: "live",
+      target: "stable",
       branch: "main",
       commit: "ad56f0fe0d19674716e9d40fb0529fd19c0f2e45",
     }),
@@ -967,11 +972,11 @@ test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan
   const w = await upgraded(designConfig({ stop_timeout: "30s" }));
   expect(await configChecks(w)).toEqual([
     {
-      name: "local/config",
+      name: "working/config",
       ok: false,
       message: "Current configuration differs from the recorded Target policy.",
       reason: "config-drift",
-      hint: "Run rig restart local (or rig down local, then rig up) to apply the current configuration.",
+      hint: "Run rig restart working (or rig down working, then rig up) to apply the current configuration.",
     },
     {
       name: "migrate-next-rig-agent-sdk-28897383/config",
@@ -982,26 +987,26 @@ test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan
       hint: "Run rig deploy preview studio-feedback --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
     },
     {
-      name: "live/config",
+      name: "stable/config",
       ok: false,
       message:
         "The deployed revision's configuration differs from the recorded Target policy.",
       reason: "config-drift",
-      hint: "Run rig deploy live --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
+      hint: "Run rig deploy stable --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
     },
   ]);
 });
 
 test("a Service whose plan was recorded before stop_timeout existed is stopped with the 10 s default grace", async () => {
   const w = await upgraded(designConfig());
-  const local = w.state.targets.find((target) => target.kind === "local")!;
+  const local = w.state.targets.find((target) => target.kind === "working")!;
   for (const service of ["convex", "web"])
     w.running.add(`${local.id}:${service}`);
   w.hold();
   const down = w.runtime.command({
     action: "down",
     project: "design",
-    target: "local",
+    target: "working",
     operationId: "down-old-plan",
   });
   // Reverse dependency order: web first.

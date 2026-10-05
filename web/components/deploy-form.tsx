@@ -20,13 +20,16 @@ export function DeployForm({
   context: DeploymentContext;
 }) {
   const act = useRun();
-  const [mode, setMode] = useState<Mode>("stable");
+  // Only the Targets rig.yaml turns on are offered; rigd refuses an off one anyway.
+  const modes = (["stable", "preview"] as const).filter(
+    (each) => context.on[each],
+  );
+  const [mode, setMode] = useState<Mode>(modes[0] ?? "stable");
   const [branch, setBranch] = useState("");
   const [commit, setCommit] = useState("");
   const [deployment, setDeployment] = useState("");
   const [force, setForce] = useState(false);
   const [noUp, setNoUp] = useState(false);
-  const stable = context.targets.stable;
   const submit = () => {
     const source = {
       ...(branch ? { branch } : {}),
@@ -36,12 +39,20 @@ export function DeployForm({
     void act.run({
       action: "deploy",
       project,
-      target: mode === "stable" ? stable : "preview",
+      target: mode,
       ...(mode === "preview" && deployment ? { deployment } : {}),
       ...source,
       ...options,
     });
   };
+  if (!modes.length)
+    return (
+      <p className="text-sm text-muted-foreground">
+        Neither the stable Target nor Previews are on. Add{" "}
+        <code>stable: true</code> or <code>preview: true</code> under{" "}
+        <code>targets</code> in rig.yaml to deploy.
+      </p>
+    );
   return (
     <div className="flex flex-col gap-5">
       <Facts
@@ -59,8 +70,11 @@ export function DeployForm({
       <Tabs value={mode} onValueChange={(next) => setMode(next as Mode)}>
         <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
           <TabsList className="w-max">
-            <TabsTrigger value="stable">Stable ({stable})</TabsTrigger>
-            <TabsTrigger value="preview">Preview</TabsTrigger>
+            {modes.map((each) => (
+              <TabsTrigger key={each} value={each}>
+                {each}
+              </TabsTrigger>
+            ))}
           </TabsList>
         </div>
       </Tabs>

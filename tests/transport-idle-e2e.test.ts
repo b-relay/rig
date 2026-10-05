@@ -23,7 +23,7 @@ test("a mutation that outlives Bun's default 10 s idle timeout still returns its
       await client.command({
         action: "up",
         project: "demo",
-        target: "local",
+        target: "working",
       }),
     ).toEqual({ outcome: "started" });
   } finally {

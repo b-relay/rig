@@ -664,8 +664,8 @@ function unitLabel(unit: Pick<BuildUnit, "component">): string {
 }
 /** Only a forced deployment gives an incomplete or uncertain preparation a fresh scope. */
 function forceHint(target: Pick<TargetRecord, "kind" | "name">): string {
-  if (target.kind === "local")
-    return "Run rig restart for the Working copy to build it again.";
+  if (target.kind === "working")
+    return "Run rig restart for the working Target to build it again.";
   const selector =
     target.kind === "preview"
       ? `preview --deployment ${target.name}`
@@ -733,7 +733,7 @@ export function uncertainAttempt(
 }
 /** A deployed Target starts only from a preparation whose every unit is recorded as succeeded for this workspace. */
 function assertPrepared(target: TargetRecord): void {
-  if (target.kind === "local") return;
+  if (target.kind === "working") return;
   assertBuildsKnown(target);
   const recorded = recordedUnits(target);
   for (const unit of target.plan.builds ?? []) {

@@ -1,7 +1,7 @@
 name: rig
 description: Rig project config for the CLI and daemon binaries and the Rig dashboard site.
 production_branch: main
-# The Stable Target serves the website here; each Preview gets <preview>.rig.b-relay.com.
+# The stable Target serves the website here; each Preview gets rig-<preview>.b-relay.com.
 domain: rig.b-relay.com
 
 services:
@@ -27,6 +27,8 @@ proxy:
   /: ${services.web.ports.http}
 
 targets:
+  working: true
+  stable: true
   preview:
     services:
       web:

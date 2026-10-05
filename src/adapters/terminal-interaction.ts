@@ -70,15 +70,5 @@ export function createTerminalInteraction(
         (await question(`${terminalText(message)} [y/N]: `)).trim(),
       );
     },
-    async select(message, choices) {
-      if (signal.aborted) throw cancelled();
-      output.write(
-        `${terminalText(message)}\n${choices.map((choice, index) => `  ${index + 1}. ${terminalText(choice.label)}`).join("\n")}\n`,
-      );
-      const selected = Number((await question("Number: ")).trim());
-      return Number.isInteger(selected)
-        ? (choices[selected - 1]?.value ?? "")
-        : "";
-    },
   };
 }

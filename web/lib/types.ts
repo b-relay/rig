@@ -62,7 +62,8 @@ export interface DeploymentContext {
   repoPath: string;
   productionBranch: string;
   currentBranch: string | null;
-  targets: { working: string; stable: string };
+  /** Which Targets rig.yaml turns on. */
+  on: { working: boolean; stable: boolean; preview: boolean };
 }
 export interface ConfigReport {
   project: string;

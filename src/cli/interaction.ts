@@ -3,12 +3,7 @@ import { terminalText } from "./terminal-text";
 import { RigError, cancelled } from "../domain/errors";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
-import { PREVIEW_SELECTOR } from "../config/schema";
 export interface CliInteraction {
-  select(
-    message: string,
-    choices: readonly { value: string; label: string }[],
-  ): Promise<string>;
   text(message: string, defaultValue: string): Promise<string>;
   confirm(message: string): Promise<boolean>;
 }
@@ -24,12 +19,11 @@ const deployment = z.object({
   repoPath: z.string(),
   productionBranch: z.string(),
   currentBranch: z.string().nullable(),
-  /** The names this Project gives its Working copy and Stable Target. */
-  targets: z.object({ working: z.string(), stable: z.string() }),
-  // Required: a reply without it would let a Stable deploy skip its Production confirmation.
+  // Required: a reply without it would let a stable deploy skip its Production confirmation.
   selected: z.enum(["working", "stable", "preview"]),
 });
-/** Resolve human choices through read-only daemon queries before submitting any mutation. */
+/** Resolve human choices through read-only daemon queries before submitting any mutation. A command that names no Target
+ * has its default from the grammar (working, or stable for a deploy), so no Target is ever chosen here. */
 export async function prepareInteractiveRequest(
   request: RuntimeCommand,
   deps: Pick<CliDependencies, "signal" | "interaction" | "client" | "output">,
@@ -37,49 +31,6 @@ export async function prepareInteractiveRequest(
 ): Promise<RuntimeCommand> {
   assertActive(deps.signal);
   const interaction = deps.interaction;
-  if (
-    ["up", "down", "restart", "logs"].includes(request.action) &&
-    !request.target
-  ) {
-    if (!interaction)
-      throw new RigError(
-        "TARGET_REQUIRED",
-        "Choose a Target explicitly.",
-        "Pass a Target name or preview <branch>; interactive terminals offer a Target picker.",
-      );
-    const report = await deps.client.status({
-      project: request.project,
-      repoPath: request.repoPath,
-    });
-    assertActive(deps.signal);
-    if (!report.targets.length)
-      throw new RigError(
-        "TARGET_REQUIRED",
-        "This Project has no available Targets.",
-        "Run rig up for the Working copy or deploy a Branch first.",
-      );
-    const name = await interaction.select(
-      "Choose a Target",
-      report.targets.map((target) => ({
-        value: target.name,
-        label: `${terminalText(target.name)} (${terminalText(target.state)})`,
-      })),
-    );
-    assertActive(deps.signal);
-    const selected = report.targets.find((target) => target.name === name);
-    if (!selected)
-      throw new RigError(
-        "CANCELLED",
-        "No Target was selected.",
-        "Run the command again when ready.",
-      );
-    return {
-      ...request,
-      ...(selected.kind === "preview"
-        ? { target: PREVIEW_SELECTOR, deployment: selected.name }
-        : { target: selected.name }),
-    };
-  }
   if (request.action === "init" && interaction) {
     const info = readReply(
       initialization,
@@ -147,7 +98,7 @@ export async function prepareInteractiveRequest(
         throw new RigError(
           "PRODUCTION_CONFIRMATION",
           `The current Branch differs from Production '${terminalText(info.productionBranch)}'.`,
-          `Pass the Production Branch explicitly: rig deploy ${terminalText(info.targets.stable)} ${terminalText(info.productionBranch)}.`,
+          `Pass the Production Branch explicitly: rig deploy stable ${terminalText(info.productionBranch)}.`,
         );
       if (
         !(await interaction.confirm(

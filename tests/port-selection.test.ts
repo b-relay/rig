@@ -40,7 +40,9 @@ test("empty, inventory collisions, dynamic preferences, and multiple selections 
     port: 0,
     socket: { data() {} },
   });
-  const occupied = new Map([[held.port, { target: "live", project: "other" }]]);
+  const occupied = new Map([
+    [held.port, { target: "stable", project: "other" }],
+  ]);
   try {
     await expect(
       files.selectPorts({
@@ -50,7 +52,7 @@ test("empty, inventory collisions, dynamic preferences, and multiple selections 
       }),
     ).rejects.toMatchObject({
       code: "PORT_RESERVED",
-      message: `Port ${held.port} pinned for Service 'web' belongs to Target 'live' of Project 'other'.`,
+      message: `Port ${held.port} pinned for Service 'web' belongs to Target 'stable' of Project 'other'.`,
     });
     await expect(
       files.selectPorts({

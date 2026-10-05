@@ -147,7 +147,7 @@ export async function doctor(
       await configCheck(
         project,
         target,
-        target.kind === "local"
+        target.kind === "working"
           ? repository
           : // A deployed Target is planned from the committed config in its checkout; the working copy never reaches it.
             await acquireDocument(
@@ -158,7 +158,7 @@ export async function doctor(
         deps,
       ),
     );
-    if (target.kind === "live" && repository.outcome === "usable")
+    if (target.kind === "stable" && repository.outcome === "usable")
       checks.push(
         productionBranchCheck(
           target,
@@ -294,7 +294,7 @@ async function configCheck(
 ): Promise<DoctorCheck> {
   const name = `${target.name}/config`;
   const label =
-    target.kind === "local"
+    target.kind === "working"
       ? "Current configuration"
       : "The deployed revision's configuration";
   const failing = (
@@ -306,7 +306,7 @@ async function configCheck(
     failing(
       message,
       "config-drift",
-      target.kind === "local"
+      target.kind === "working"
         ? `Run rig restart ${target.name} (or rig down ${target.name}, then rig up) to apply the current configuration.`
         : `Run rig deploy ${deployArguments(target)} --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
     );
@@ -321,7 +321,7 @@ async function configCheck(
       return failing(
         `${label} could not be read. ${source.failure.message}`,
         "config-unreadable",
-        target.kind === "local"
+        target.kind === "working"
           ? UNREADABLE_HINT
           : `Inspect the Target's checkout at ${target.plan.workspacePath}, or run rig deploy ${deployArguments(target)} --force to prepare it again.`,
       );
@@ -349,7 +349,7 @@ async function configCheck(
           name,
           ok: true,
           message:
-            target.kind === "local"
+            target.kind === "working"
               ? "Recorded Target policy matches current configuration."
               : "Recorded Target policy matches the deployed revision's configuration.",
         }
@@ -367,7 +367,7 @@ async function configCheck(
 function deployArguments(
   target: Pick<TargetRecord, "kind" | "name" | "branch">,
 ): string {
-  return target.kind === "live"
+  return target.kind === "stable"
     ? target.name
     : `preview ${target.branch ?? target.name}`;
 }

@@ -59,7 +59,7 @@ test("terminal EOF cancels pending input instead of leaving an unresolved questi
   f.controller.abort();
   expect(outcome).toBe("CANCELLED");
 });
-test("terminal displays defaults and choices without executing terminal control sequences", async () => {
+test("terminal displays defaults without executing terminal control sequences", async () => {
   const f = fixture(),
     question = f.interaction.text(
       "Name\x1b[2J",
@@ -68,12 +68,6 @@ test("terminal displays defaults and choices without executing terminal control 
   f.input.write("\n");
   await question;
   expect(f.text()).toBe("Name [demo forged]: ");
-  const choices = f.interaction.select("Target\rforged", [
-    { value: "live", label: "live\x1b[2J" },
-  ]);
-  f.input.write("1\n");
-  expect(await choices).toBe("live");
-  expect(f.text()).toContain("Target forged\n  1. live\nNumber: ");
   f.input.destroy();
 });
 test("terminal cancellation before a question creates no prompt and returns a cancellation", async () => {
@@ -109,7 +103,7 @@ test("Ctrl-C at a deploy confirmation exits 0 without an error message or a fail
   const controller = new AbortController();
   const events: string[] = [];
   let text = "";
-  const exit = await runRigCli(["deploy", "live"], {
+  const exit = await runRigCli(["deploy", "stable"], {
     root: "/isolated/.rig",
     cwd: "/workspace",
     signal: controller.signal,
@@ -130,7 +124,7 @@ test("Ctrl-C at a deploy confirmation exits 0 without an error message or a fail
           repoPath: "/repo",
           productionBranch: "main",
           currentBranch: "feature/wip",
-          targets: { working: "local", stable: "live" },
+          targets: { working: "working", stable: "stable" },
           selected: "stable",
         };
       },

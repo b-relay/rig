@@ -234,7 +234,7 @@ test("a demo Project is committed, registered, then deployed", () => {
   });
   expect(steps.filter((step) => step.kind === "rig")).toEqual([
     { kind: "rig", args: ["init", "--path", "/data/pantry"] },
-    { kind: "rig", args: ["deploy", "live", "--project", "pantry"] },
+    { kind: "rig", args: ["deploy", "stable", "--project", "pantry"] },
     {
       kind: "rig",
       args: ["deploy", "preview", "feat/x", "--project", "pantry"],
@@ -277,13 +277,13 @@ test("seeding skips Projects already present and reports a failure without stopp
 test("shutdown stops every started Target, naming a Preview by its deployment", () => {
   expect(
     downCommands("pantry", [
-      { name: "live", kind: "live", state: "healthy" },
+      { name: "stable", kind: "stable", state: "healthy" },
       { name: "feat-x-0a1b2c3d", kind: "preview", state: "degraded" },
-      { name: "local", kind: "local", state: "configured" },
+      { name: "working", kind: "working", state: "configured" },
       { name: "old", kind: "preview", state: "stopped" },
     ]),
   ).toEqual([
-    { action: "down", project: "pantry", target: "live" },
+    { action: "down", project: "pantry", target: "stable" },
     {
       action: "down",
       project: "pantry",

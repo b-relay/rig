@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
-import type { InitializationInfo, RuntimeCommand } from "@/lib/types";
+import type { InitializationInfo } from "@/lib/types";
+import { initCommand } from "@/lib/init-command";
 import { Failure, Field, Notice, Section } from "./bits";
 import { useRun } from "./operations";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,7 @@ export function NewProjectForm() {
   const [name, setName] = useState("");
   const [serviceCommand, setServiceCommand] = useState("");
   const [port, setPort] = useState("");
-  const [ready, setReady] = useState("");
+  const [healthcheck, setHealthcheck] = useState("");
   const [bin, setBin] = useState("");
   const [build, setBuild] = useState("");
   const info = inspect.result;
@@ -40,27 +41,20 @@ export function NewProjectForm() {
         setKind(found.existing ? "existing" : "service");
       });
   const register = () => {
-    const command: RuntimeCommand & { action: "init" } = {
-      action: "init",
+    const command = initCommand({
       repoPath,
-      ...(project ? { project } : {}),
-      // An existing rig.yaml already decides these; sending them only earns a "not applied" warning.
-      ...(productionBranch && kind !== "existing" ? { productionBranch } : {}),
-      ...(domain && kind !== "existing" ? { domain } : {}),
-      ...(createGit ? { createGit } : {}),
-      ...(kind === "service"
-        ? {
-            service: {
-              name,
-              command: serviceCommand,
-              ...(port ? { port: Number(port) } : {}),
-              ...(ready ? { ready } : {}),
-            },
-          }
-        : kind === "tool"
-          ? { tool: { name, bin, ...(build ? { build } : {}) } }
-          : {}),
-    };
+      project,
+      productionBranch,
+      domain,
+      createGit,
+      kind,
+      name,
+      serviceCommand,
+      port,
+      healthcheck,
+      bin,
+      build,
+    });
     void init.run(command).then((result) => {
       if (result?.project)
         router.push(`/projects/${encodeURIComponent(result.project)}`);
@@ -203,15 +197,15 @@ export function NewProjectForm() {
                       />
                     </Field>
                     <Field
-                      label="Readiness check"
-                      htmlFor="ready"
-                      help="Optional: a localhost URL or a shell command."
+                      label="Health check"
+                      htmlFor="healthcheck"
+                      help="Optional: a localhost URL or a shell command, written as healthcheck.test."
                     >
                       <Input
-                        id="ready"
-                        value={ready}
+                        id="healthcheck"
+                        value={healthcheck}
                         className="font-mono text-xs"
-                        onChange={(event) => setReady(event.target.value)}
+                        onChange={(event) => setHealthcheck(event.target.value)}
                       />
                     </Field>
                   </>

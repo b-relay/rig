@@ -911,3 +911,41 @@ test("a restart request names the check that judged the process, and a check the
     check: checkIdentity(component()),
   });
 });
+
+// A check of web makes six reads of state at its pass: the pass itself, the check's read of the plan, then a read before
+// and after each of the two process observations around the probe. A deploy can land after any of them.
+test.each([2, 3, 4, 5, 6])(
+  "a deploy that starts another process after read %i of a failing check's pass never has that failure recorded against it, nor a restart asked",
+  async (reads) => {
+    const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+    const component = () =>
+      f.state.targets[0]!.plan.components[0]! as ManagedComponent & {
+        health?: string;
+      };
+    component().health = "http://127.0.0.1:4000/legacy";
+    await f.runUntil(5 * SECOND);
+    expect(f.checks.map((check) => check.at / SECOND)).toEqual([1]);
+    // The check at 6 s fails. Meanwhile a deploy starts web-2 with the test /new, its start check passes and tells the
+    // monitor, and the Target is free again, all while one of the check's reads is out: that read answers with the state
+    // from before the deploy.
+    f.answer = () => false;
+    f.afterReads(reads, () => {
+      component().health = "http://127.0.0.1:4000/new";
+      f.replace("web");
+      f.monitor.started(structuredClone(f.state.targets[0]!), "web", "web-2");
+    });
+    await f.runUntil(6 * SECOND);
+    await f.monitor.idle();
+    expect(component().health).toBe("http://127.0.0.1:4000/new");
+    // What is known of web is what its own start said: healthy, with no failure of the old test counted against it.
+    expect(f.result()).toEqual({
+      status: "healthy",
+      checkedAt: new Date(6 * SECOND).toISOString(),
+      failures: 0,
+      retries: 1,
+      restarts: 0,
+    });
+    expect(f.restarts).toEqual([]);
+    expect(f.activity()).toEqual([]);
+  },
+);

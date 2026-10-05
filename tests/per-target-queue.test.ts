@@ -166,9 +166,6 @@ async function fixture(host: Record<string, unknown> = {}) {
       async host() {
         return parseHostConfig(host);
       },
-      async upgrade(): Promise<never> {
-        throw new Error("rig config upgrade is not part of these tests");
-      },
     },
     sources: {
       // The Commit is named after its Branch, so a test can hold one Branch's checkout.
@@ -220,9 +217,6 @@ async function fixture(host: Record<string, unknown> = {}) {
         const incarnation = await journal.starting(service);
         processes.set(key(target, service), { state: "running", incarnation });
         return { outcome: "started" };
-      },
-      async stop() {
-        return { outcome: "stopped" as const };
       },
       async down(target) {
         events.push(`stop ${target.plan.project} ${target.name}`);
@@ -657,7 +651,7 @@ test("a slow automatic restart hands its Target over to its lease; the pass retu
   expect(await settled(second)).toBe(false);
   budget.expire();
   expect(await second).toEqual({});
-  // alpha's restart still holds alpha: an operator's down waits behind it and says so.
+  // alpha's restart still holds alpha: an operator's down waits behind it and says it is starting.
   const down = f.runtime.command({
     action: "down",
     project: "alpha",
@@ -669,7 +663,14 @@ test("a slow automatic restart hands its Target over to its lease; the pass retu
   ).toMatchObject({
     operation: {
       state: "waiting",
-      waitingOn: [{ action: "supervise", project: "alpha", target: "local" }],
+      waitingOn: [
+        {
+          action: "supervise",
+          project: "alpha",
+          target: "local",
+          phase: "starting",
+        },
+      ],
     },
   });
   // A later pass skips alpha while its restart runs and is not held up by it.

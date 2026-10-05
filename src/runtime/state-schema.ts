@@ -37,18 +37,6 @@ const component = z.discriminatedUnion("kind", [
       .max(MAX_STOP_TIMEOUT_SECONDS)
       .optional(),
     restart: z.enum(["always", "on-failure", "no"]).optional(),
-    healthMonitor: z
-      .object({
-        interval: z.number().int().positive(),
-        timeout: z.number().int().positive(),
-        failures: z.number().int().positive(),
-        onFailure: z.enum(["report", "restart"]),
-        retryFor: z.number().int().positive().optional(),
-      })
-      .optional()
-      .describe(
-        "Ongoing checks of health while the Service runs, in seconds; absent when it is checked only at start.",
-      ),
   }),
   z.object({
     ...common,
@@ -255,31 +243,6 @@ const services = z
         .describe(
           "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
         ),
-      healthRestarts: z
-        .object({
-          since: z
-            .number()
-            .finite()
-            .describe(
-              "Unix milliseconds when the Service was marked unhealthy in this stretch.",
-            ),
-          at: z
-            .array(z.number().finite())
-            .describe(
-              "Unix milliseconds of each health restart in this stretch.",
-            ),
-          gaveUp: z
-            .number()
-            .finite()
-            .optional()
-            .describe(
-              "Unix milliseconds when Rig stopped restarting it because health.retry_for ran out.",
-            ),
-        })
-        .optional()
-        .describe(
-          "The unhealthy stretch the running process was started in by a health restart, so a new rigd continues its back-off; an explicit start clears it.",
-        ),
     }),
   )
   .optional()
@@ -334,7 +297,7 @@ const target = z.object({
   configDigest: text
     .optional()
     .describe(
-      "Digest of what that rig.yaml said, whatever its format, comments or layout; drift is reported when it changes.",
+      "Digest of what that rig.yaml said, whatever its comments or layout; drift is reported when the file and it both change.",
     ),
   recovery: z
     .object({

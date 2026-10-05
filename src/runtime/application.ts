@@ -66,19 +66,13 @@ import {
 } from "./projects";
 import { persistTarget, planTarget, selectTarget } from "./targets";
 import { configDigest } from "../config/config-digest";
-import { watchConfigFormats, withDeprecation } from "./config-format-notice";
 import { assertLogServices } from "./log-services";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
 import {
   assertSourceBuildsKnown,
-  withStops,
   type TargetLifecycle,
+  withStops,
 } from "./lifecycle";
-import { restartForHealth } from "./health-restart";
-import type {
-  HealthRestartResult,
-  HealthRestartRequest,
-} from "./health-monitor";
 import { isStopDetached } from "../domain/stop-budget";
 import {
   activeStops,
@@ -152,14 +146,6 @@ export interface SupervisionPass {
   nextRetryAt?: number;
 }
 export interface RigRuntime extends ProjectStatusReader {
-  /** Whether an Operation holds or waits for `target`, so one of its Services may be starting or stopping. A supervision
-   * pass that only observes the Target does not count; one that is starting a Service again does. */
-  targetBusy(
-    target: Pick<TargetRecord, "projectId" | "kind" | "name">,
-  ): boolean;
-  /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
-   * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
-  restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
@@ -293,20 +279,17 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
     const command = { ...selection, action: "status" as const };
     const { project } = await selectProject(command, deps, false);
     const state = await deps.store.read();
-    const formats = watchConfigFormats(deps.documents);
-    const report = await projectStatus(
+    return projectStatus(
       project,
       state.targets.filter((target) => target.projectId === project.id),
       selection,
       {
         ...deps,
-        documents: formats.documents,
         inProgress,
         stopping,
         serviceStops: (targetId) => activeStops(operations.values(), targetId),
       },
     );
-    return withDeprecation(report, formats.deprecation());
   };
   /** The Operations running and waiting, and where `operationId` stands when one is named. */
   const queueReport = (operationId?: string): QueueReport => {
@@ -393,22 +376,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       },
     };
   };
-  /** Runs one command and adds the deprecation line when a rig.yaml it read is in an older format; the upgrade itself
-   * reports formats on its own. */
   const execute = async (command: RuntimeCommand): Promise<unknown> => {
-    const formats = watchConfigFormats(deps.documents);
-    const reply = await operate(command, formats.documents);
-    return command.action === "config-upgrade"
-      ? reply
-      : withDeprecation(reply, formats.deprecation());
-  };
-  const operate = async (
-    command: RuntimeCommand,
-    documents: RuntimeDependencies["documents"],
-  ): Promise<unknown> => {
     const operationId = command.operationId ?? deps.id();
     if (reads.has(command.action))
-      return run(command, operationId, UNLOCKED, { ...deps, documents });
+      return run(command, operationId, UNLOCKED, deps);
     // Operations now run side by side, so an id must name one of them at a time.
     if (operations.has(operationId))
       throw new RigError(
@@ -459,7 +430,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         try {
           return await run(command, operationId, held, {
             ...deps,
-            documents,
             ports: reservations.ports(operationId),
             lifecycle: lifecycleOf(entry),
           });
@@ -648,13 +618,9 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       const selection = await selectProject(
         command,
         deps,
-        [
-          "config",
-          "config-upgrade",
-          "deploy",
-          "deployment-context",
-          "rename",
-        ].includes(command.action),
+        ["config", "deploy", "deployment-context", "rename"].includes(
+          command.action,
+        ),
       );
       project = selection.project;
       const state = await deps.store.read();
@@ -692,19 +658,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "config")
         return { project: project.name, ...selection.document };
-      // A config edit: it waits for other edits of the Project's rig.yaml, never for its Targets, and is not Activity.
-      if (command.action === "config-upgrade") {
-        if (!command.dryRun)
-          await admission.admit([configScope(project.id)], {
-            project: project.name,
-          });
-        return {
-          project: project.name,
-          ...(await deps.documents.upgrade(project.repoPath, {
-            dryRun: command.dryRun === true,
-          })),
-        };
-      }
       if (command.action === "activity")
         return selectActivity(
           state.activity.filter((o) => o.projectId === project!.id),
@@ -1051,16 +1004,16 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             command.action === "restart" ? "all" : "stopped",
             deps,
           );
-        // What the file says is compared, so a comment or an upgrade of its format is no drift. A Target planned by a rigd
-        // that recorded no digest is compared by the file's text.
+        // The same text is no drift, whichever rigd parsed it. A changed text is drift only when what it says changed, so
+        // a comment or layout edit is none; a Target planned by a rigd that recorded no digest is compared by text alone.
         const current = configured.document;
         const drift =
           target.kind === "local" &&
           target.configRevision !== undefined &&
           current !== undefined &&
-          (target.configDigest !== undefined
-            ? configDigest(current.config) !== target.configDigest
-            : current.revision !== target.configRevision);
+          current.revision !== target.configRevision &&
+          (target.configDigest === undefined ||
+            configDigest(current.config) !== target.configDigest);
         if (drift)
           warnings.push(
             `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${target.name} to apply the current rig.yaml.`,
@@ -1264,97 +1217,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       return replacements;
     }
   };
-  /** A health restart: an Operation on one Target, listed like a command so status shows its stop and the alert monitor
-   * holds back judgement of a Stable Target while it runs. */
-  const restartUnhealthy = async (
-    request: HealthRestartRequest,
-  ): Promise<HealthRestartResult> => {
-    if (draining) return { outcome: "skipped" };
-    const recorded = (await deps.store.read()).targets.find(
-      (target) => target.id === request.targetId,
-    );
-    if (!recorded) return { outcome: "skipped" };
-    const operationId = `health:${deps.id()}`;
-    const entry: Running = {
-      kills: new Map(),
-      targetId: recorded.id,
-      view: {
-        operationId,
-        action: "health-restart",
-        target: recorded.name,
-        phase: "restarting",
-        startedAt: deps.now(),
-      },
-      mutation: {
-        operationId,
-        action: "health-restart",
-        targetId: recorded.id,
-      },
-    };
-    operations.set(operationId, entry);
-    const running = (async () => {
-      const lease = await locks.acquire(operationId, [
-        targetScope(recorded.projectId, recorded),
-      ]);
-      try {
-        if (draining) return { outcome: "skipped" as const };
-        const state = await deps.store.read();
-        const target = state.targets.find((t) => t.id === request.targetId);
-        if (
-          !target ||
-          target.desired !== "running" ||
-          target.recovery ||
-          target.destructionPending
-        )
-          return { outcome: "skipped" as const };
-        // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the
-        // Target, as a supervision pass and an admitted command do; the monitor asks again and judges what is recorded then.
-        if (unrecorded.has(target.id)) {
-          await recordUnrecorded(target);
-          return { outcome: "deferred" as const };
-        }
-        const project = state.projects.find((p) => p.id === target.projectId);
-        if (project) entry.view.project = project.name;
-        return await restartForHealth(
-          target,
-          request,
-          { ...deps, lifecycle: lifecycleOf(entry) },
-          (phase) => {
-            entry.view.phase = phase;
-          },
-        );
-      } catch (error) {
-        await deps
-          .diagnostic({
-            operationId,
-            action: "health-restart",
-            outcome: "failed",
-            target: recorded.name,
-            errorCode: diagnosticErrorCode(error),
-            ...diagnosticCauses(error),
-          })
-          .catch(() => {});
-        return { outcome: "failed" as const, at: Date.parse(deps.now()) };
-      } finally {
-        lease.release();
-        operations.delete(operationId);
-      }
-    })();
-    executing.add(running);
-    void running.finally(() => executing.delete(running)).catch(() => {});
-    return await running;
-  };
   return {
     status,
-    restartUnhealthy,
-    targetBusy: (target) =>
-      locks.busy(targetScope(target.projectId, target), (id) => {
-        const entry = operations.get(id);
-        return (
-          entry?.view.action === "supervise" &&
-          entry.view.phase === initialPhase("supervise")
-        );
-      }),
     mutations: () =>
       [...operations.values()].flatMap((entry) =>
         entry.mutation ? [{ ...entry.mutation }] : [],
@@ -1639,7 +1503,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
       const observing = lifecycleOf(entry);
-      // While it starts a Service again the pass is starting, not observing: the health monitor pauses the Target's checks.
+      // While it starts a Service again the pass is starting, not observing, so a command queued behind it says so.
       const lifecycle: TargetLifecycle = {
         ...observing,
         async recover(recovering, service, journal, stops) {

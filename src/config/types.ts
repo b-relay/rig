@@ -1,17 +1,13 @@
 import type { z } from "zod";
 import type { hostConfigSchema, ProjectConfig } from "./schema";
-import type { ConfigFormat } from "./formats";
 import type { PublicInput } from "./references";
 
 export type { ProjectConfig } from "./schema";
-export type { ConfigFormat } from "./formats";
 export type HostConfig = z.infer<typeof hostConfigSchema>;
 export interface ConfigDocument<T> {
   path: string;
   revision: string;
   config: T;
-  /** The format a Project document is written in; `config` always has the latest format's shape. Absent for Host config. */
-  format?: ConfigFormat;
 }
 /** One env file an invocation loads; only the reference is recorded, never the contents. */
 export interface EnvFileRef {
@@ -45,21 +41,6 @@ export interface ManagedComponent extends ComponentContext {
   stopTimeout?: number;
   /** When Rig starts the Service again after a known exit; a plan recorded without it means always. */
   restart?: RestartPolicy;
-  /** Ongoing checks of `health` while the Service runs, from health.interval and its companions (seconds); absent when
-   * the check runs only at start. */
-  healthMonitor?: HealthMonitorPlan;
-}
-/** How rigd keeps checking a running Service (#282). */
-export interface HealthMonitorPlan {
-  /** Seconds between checks. */
-  interval: number;
-  /** Seconds one check may take before it counts as failed. */
-  timeout: number;
-  /** Failed checks in a row before Rig acts. */
-  failures: number;
-  onFailure: "report" | "restart";
-  /** Seconds Rig keeps restarting a Service that stays unhealthy; forever when absent. */
-  retryFor?: number;
 }
 /** One path prefix of a Target's hostname and the declared port behind it. A prefix matches at a slash boundary and the upstream sees the path unchanged. */
 export interface PlanRoute {

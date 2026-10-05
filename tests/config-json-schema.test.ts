@@ -37,11 +37,12 @@ test("the Project schema names its draft, identity and the public top-level sett
   expect(Object.keys(project.properties)).toEqual(
     expect.arrayContaining(["services", "tools", "proxy", "targets"]),
   );
-  // A rig.yaml in the current format declares it; one without format is rig/v1 (rig-v1.schema.json).
-  expect(project.required).toEqual(["format", "name"]);
-  expect(project.properties.format.const).toBe("rig/v2");
+  expect(project.required).toEqual(["name"]);
   expect(project.additionalProperties).toBe(false);
+  // Removed settings are not offered: there is one rig.yaml format, and readiness is ready and ready_timeout.
   expect(project.properties.supervisor).toBeUndefined();
+  expect(project.properties.format).toBeUndefined();
+  expect(service.properties.health).toBeUndefined();
   expect(service.properties.restart.enum).toEqual([
     "always",
     "on-failure",
@@ -52,24 +53,6 @@ test("the Project schema names its draft, identity and the public top-level sett
     max: { default: 25 },
     replace_policy: { default: "oldest", enum: ["oldest", "reject"] },
   });
-});
-
-test("the deprecated rig/v1 format keeps a schema of its own, with ready and ready_timeout and the same defaults", () => {
-  const v1 = schemas["rig-v1.schema.json"] as Json;
-  const v1Service = v1.properties.services.additionalProperties as Json;
-  expect(v1.$id).toBe(
-    "https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig-v1.schema.json",
-  );
-  expect(v1.deprecated).toBe(true);
-  expect(v1.required).toEqual(["name"]);
-  expect(v1.properties.format.const).toBe("rig/v1");
-  expect(v1Service.properties.ready_timeout.default).toBe(
-    service.properties.health.properties.start_timeout.default,
-  );
-  expect(v1Service.properties.ready.description).toContain("health.check");
-  expect(v1Service.properties).not.toHaveProperty("health");
-  expect(service.properties).not.toHaveProperty("ready");
-  expect(project.description).toContain("rig-v1.schema.json");
 });
 
 test("env is documented as a map of names to strings, not as an untyped value", () => {
@@ -112,9 +95,7 @@ test("every default the schema shows is the value planning applies when the sett
       ),
   ).toBe(true);
   expect(web).toMatchObject({
-    readyTimeout: seconds(
-      service.properties.health.properties.start_timeout.default,
-    ),
+    readyTimeout: seconds(service.properties.ready_timeout.default),
     restart: service.properties.restart.default,
   });
   const names = project.properties.targets.properties;
@@ -142,7 +123,7 @@ test("each field that takes references lists the references valid there", () => 
   const inService = [
     service.properties.run,
     service.properties.build,
-    service.properties.health.properties.check,
+    service.properties.ready,
     service.properties.env.additionalProperties,
     service.properties.env_file,
   ];

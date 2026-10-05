@@ -21,7 +21,6 @@ export const commandSchema = z
       "status",
       "doctor",
       "config",
-      "config-upgrade",
       "init",
       "up",
       "down",
@@ -67,8 +66,6 @@ export const commandSchema = z
     productionBranch: z.string().optional(),
     force: z.boolean().optional(),
     noUp: z.boolean().optional(),
-    /** config-upgrade: report the changes and the diff without writing rig.yaml. */
-    dryRun: z.boolean().optional(),
     /** Skip each Service's stop_timeout: SIGTERM, then SIGKILL after the kill wait; a stop already running on the Target is
      * cut short too. */
     kill: z.boolean().optional(),

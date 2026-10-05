@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { beyondDeprecation, rigFixture } from "./support/rig-fixture";
+import { rigFixture } from "./support/rig-fixture";
 
 // The release matrix: the three Project shapes of docs/examples, under default and
 // renamed Target names, through the public CLI and a real rigd under a temporary RIG_ROOT.
@@ -57,7 +57,7 @@ async function project(f: Fixture, config: string): Promise<string> {
 }
 const text = async (f: Fixture, args: string[]) => {
   const result = await f.rig(args);
-  expect(beyondDeprecation(result.stderr)).toBe("");
+  expect(result.stderr).toBe("");
   expect(result.code).toBe(0);
   return result.stdout;
 };

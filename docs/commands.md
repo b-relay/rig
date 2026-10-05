@@ -26,9 +26,6 @@ rig
 │    --project <name>
 ├─ config                           show the validated rig.yaml and its path
 │    --project <name>
-│    └─ upgrade                     rewrite rig.yaml in the latest format, keeping comments and layout
-│         --project <name>
-│         --dry-run                 print the diff without writing
 ├─ activity [operation]             the latest 100 actions, or one Operation by id
 │
 ├─ deploy [target] [branch]         target: the Stable Target's name, or "preview"
@@ -112,14 +109,5 @@ environment, and log directory.
   `<RIG_ROOT>/bin`). A source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
   `.cjs`) is published instead as a shim that runs it in place with the bun
   `rigd install` recorded, so its relative imports resolve.
-- `rig init` writes `rig.yaml` in the latest format, `rig/v2`. Every command
-  run in a Project whose `rig.yaml` is the older `rig/v1` (a file without
-  `format`) prints one `Deprecated:` line on stderr naming
-  `rig config upgrade`, as does a deploy of a Commit whose `rig.yaml` is
-  `rig/v1`. `rig config upgrade` changes only the file in the working tree;
-  commit it yourself.
-- `rig status` shows a Service with `health.interval` by its last ongoing
-  check (`healthy · checked 12s ago`, `unhealthy 2/3 · <output>`) without
-  running the check; others are checked when status runs.
 - `RIG_ROOT` is the only environment switch: an absolute path, `~/.rig` by
   default. There are no `--state-root` or `--config` overrides.

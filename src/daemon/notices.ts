@@ -25,12 +25,6 @@ export const ALERT_MONITOR: NoticeChannel = {
     "Stable Target downtime is not counted and no operator alert goes out until an evaluation succeeds; rigd tries again every 30 s.",
   hint: "Inspect the runtime state file under the Rig root, and rig activity.",
 };
-export const HEALTH_MONITOR: NoticeChannel = {
-  name: "health",
-  consequence:
-    "Ongoing health checks (health.interval) are not run, so no Service is marked unhealthy or restarted for it, until a pass succeeds; rigd tries again every second.",
-  hint: "Inspect the runtime state file under the Rig root, and rig activity.",
-};
 /** Bounded in-memory evidence: one entry per channel, a count, and the latest message. Never writes anywhere, so a failing sink cannot recurse. */
 export interface NoticeBoard {
   note(channel: NoticeChannel, message: string): void;

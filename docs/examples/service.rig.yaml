@@ -1,5 +1,4 @@
 # yaml-language-server: $schema=../../schemas/rig.schema.json
-format: rig/v2
 # tests/config-examples-e2e.test.ts validates this file.
 # The example notes application reads HOST, PORT and DATA_DIR itself.
 name: notes
@@ -16,8 +15,7 @@ services:
       PORT: ${services.api.ports.http}
       DATA_DIR: ${rig.data}
       LOG_LEVEL: info
-    health:
-      check: http://127.0.0.1:${services.api.ports.http}/health
+    ready: http://127.0.0.1:${services.api.ports.http}/health
 
 # Requests for the domain go to the api Service's http port. Each key is a
 # URL path prefix; the longest match wins and "/" is required.

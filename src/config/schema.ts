@@ -2,17 +2,6 @@ import { z } from "zod";
 import { ConfigError } from "./errors";
 import { referenceResolver } from "./references";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
-import {
-  CONFIG_FORMATS,
-  LATEST_FORMAT,
-  UNDECLARED_FORMAT,
-  FORMAT_STEPS,
-  isConfigFormat,
-  serviceBlockPaths,
-  stepsFrom,
-  upgradeConfigValue,
-  type ConfigFormat,
-} from "./formats";
 const text = z.string().min(1);
 const name = text
   .regex(
@@ -206,10 +195,7 @@ const restart = z
   .describe(
     "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
   );
-/** A Service's fields, with start readiness spelled the way one format spells it. */
-const serviceFieldsWith = <Readiness extends z.core.$ZodLooseShape>(
-  readiness: Readiness,
-) => ({
+const serviceFields = {
   run: command.describe(
     `Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
   ),
@@ -220,7 +206,16 @@ const serviceFieldsWith = <Readiness extends z.core.$ZodLooseShape>(
     .optional(),
   build_timeout: buildTimeout.optional(),
   ports: ports.optional(),
-  ...readiness,
+  ready: health
+    .describe(
+      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. ${referencesIn("service")}`,
+    )
+    .optional(),
+  ready_timeout: duration
+    .optional()
+    .describe(
+      "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
+    ),
   stop_timeout: stopTimeout.optional(),
   depends_on: z
     .array(entryName)
@@ -231,77 +226,7 @@ const serviceFieldsWith = <Readiness extends z.core.$ZodLooseShape>(
   restart: restart.optional(),
   env: env("service").optional(),
   env_file: envFile("service").optional(),
-});
-const START_TIMEOUT_RULE =
-  "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).";
-const CHECK_RULE = `Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. ${referencesIn("service")}`;
-/** rig/v1 spells start readiness as two Service fields. */
-const v1Readiness = {
-  ready: health
-    .describe(
-      `Local HTTP URL or shell command used to check readiness; referenced values in a shell command are quoted as in run. ${referencesIn("service")} In format rig/v2 this is health.check.`,
-    )
-    .optional(),
-  ready_timeout: duration
-    .optional()
-    .describe(
-      "Startup readiness budget such as 30s (the default). In format rig/v2 this is health.start_timeout.",
-    ),
 };
-/** The health block of a Service or of a role's Service patch; every field is optional so a patch can change one. */
-/** The shortest pause between two ongoing checks of one Service. */
-export const MIN_HEALTH_INTERVAL_SECONDS = 5;
-/** How long Rig may be told to keep restarting an unhealthy Service: 30 days. It is compared with elapsed time, never held
- * by a timer. */
-const MAX_RETRY_FOR_SECONDS = 30 * 86400;
-const healthBlock = z
-  .strictObject({
-    check: health.describe(CHECK_RULE).optional(),
-    start_timeout: duration.optional().describe(START_TIMEOUT_RULE),
-    interval: duration
-      .refine(
-        (value) => durationSeconds(value) >= MIN_HEALTH_INTERVAL_SECONDS,
-        `must be at least ${MIN_HEALTH_INTERVAL_SECONDS}s`,
-      )
-      .optional()
-      .describe(
-        `How often Rig runs health.check while the Service runs, such as 30s (at least ${MIN_HEALTH_INTERVAL_SECONDS}s). Without it the check runs only at start. Checks begin one interval after the start check passed, pause while the Service is starting or stopping, and never overlap.`,
-      ),
-    timeout: duration
-      .optional()
-      .describe(
-        "How long one ongoing check may take before it counts as failed, such as 5s (the default). Needs health.interval; the start check is bounded by start_timeout instead.",
-      ),
-    failures: z
-      .number()
-      .int()
-      .min(1)
-      .max(100)
-      .optional()
-      .describe(
-        "Failed ongoing checks in a row before Rig marks the Service unhealthy and acts, from 1 to 100 (default 3). Needs health.interval.",
-      ),
-    on_failure: z
-      .enum(["report", "restart"])
-      .optional()
-      .describe(
-        "What Rig does once the Service is marked unhealthy: report (the default) shows it unhealthy in status and Activity, and a Stable Target counts as down; restart stops it through the normal stop path, within its stop_timeout, and starts it again, waiting about 1 min, 5 min, 15 min, then an hour between restarts while it stays unhealthy. Health restarts do not use the automatic restart budget. Needs health.interval.",
-      ),
-    retry_for: text
-      .refine((value) => {
-        const seconds = durationSeconds(value);
-        return seconds >= 1 && seconds <= MAX_RETRY_FOR_SECONDS;
-      }, "must be a positive duration of at most 720h (30 days), such as 6h")
-      .optional()
-      .describe(
-        "With on_failure: restart, how long Rig keeps restarting a Service that stays unhealthy, such as 6h. After that Rig leaves it as it is, reports it unhealthy and says in status that it gave up. Omitted, Rig never gives up.",
-      ),
-  })
-  .describe(
-    "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection. With health.interval Rig keeps checking while it runs.",
-  );
-/** rig/v2 groups start readiness in the health block. */
-const v2Readiness = { health: healthBlock.optional() };
 const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
@@ -331,10 +256,8 @@ const proxy = z
   .describe(
     "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required.",
   );
-/** Settings every role may patch, with Service patches in one format's spelling. Maps merge per key; lists and scalars replace. */
-const patchFieldsWith = <Service extends z.core.$ZodLooseShape>(
-  serviceShape: Service,
-) => ({
+/** Settings every role may patch. Maps merge per key; lists and scalars replace. */
+const patchFields = {
   domain: domain
     .optional()
     .describe(
@@ -346,7 +269,7 @@ const patchFieldsWith = <Service extends z.core.$ZodLooseShape>(
   env_file: envFile("project").optional(),
   proxy: proxy.optional(),
   services: z
-    .record(entryName, z.strictObject(serviceShape).partial())
+    .record(entryName, z.strictObject(serviceFields).partial())
     .optional()
     .describe(
       "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -357,7 +280,7 @@ const patchFieldsWith = <Service extends z.core.$ZodLooseShape>(
     .describe(
       "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
     ),
-});
+};
 export const PREVIEW_SELECTOR = "preview";
 /** Generated Preview names end in a dash and eight hex digits of the Branch hash. */
 const GENERATED_PREVIEW_NAME = /-[0-9a-f]{8}$/;
@@ -379,37 +302,36 @@ const targetName = text
     (value) => !GENERATED_PREVIEW_NAME.test(value),
     "cannot end like a generated Preview name (a dash and eight hex digits)",
   );
-const targetsWith = <Patch extends z.core.$ZodLooseShape>(patchFields: Patch) =>
-  z.strictObject({
-    working: z
-      .strictObject({
-        name: targetName
-          .optional()
-          .describe(
-            "Name that selects and displays the Working copy Target (default local). Renaming keeps its identity and stored data.",
-          ),
-        ...patchFields,
-      })
-      .optional()
-      .describe("Working copy Target name and settings patch."),
-    stable: z
-      .strictObject({
-        name: targetName
-          .optional()
-          .describe(
-            "Name that selects and displays the Stable Target (default live). Renaming keeps its identity and stored data.",
-          ),
-        ...patchFields,
-      })
-      .optional()
-      .describe("Stable Target name and settings patch."),
-    preview: z
-      .strictObject(patchFields)
-      .optional()
-      .describe(
-        "Settings patch for every generated Preview; Preview names come from their Branch.",
-      ),
-  });
+const targets = z.strictObject({
+  working: z
+    .strictObject({
+      name: targetName
+        .optional()
+        .describe(
+          "Name that selects and displays the Working copy Target (default local). Renaming keeps its identity and stored data.",
+        ),
+      ...patchFields,
+    })
+    .optional()
+    .describe("Working copy Target name and settings patch."),
+  stable: z
+    .strictObject({
+      name: targetName
+        .optional()
+        .describe(
+          "Name that selects and displays the Stable Target (default live). Renaming keeps its identity and stored data.",
+        ),
+      ...patchFields,
+    })
+    .optional()
+    .describe("Stable Target name and settings patch."),
+  preview: z
+    .strictObject(patchFields)
+    .optional()
+    .describe(
+      "Settings patch for every generated Preview; Preview names come from their Branch.",
+    ),
+});
 export const TARGET_ROLES = ["working", "stable", "preview"] as const;
 export type TargetRole = (typeof TARGET_ROLES)[number];
 export const DEFAULT_TARGET_NAMES = {
@@ -429,16 +351,17 @@ function mergeSettings(base: Fields, patch: Fields): Record<string, unknown> {
         : value;
   return merged;
 }
-/** One Service as the cross-field rules read it, in any format. */
+/** One Service as the cross-field rules read it. */
 type GraphService = Fields & {
   run?: string;
   build?: string;
+  ready?: string;
   depends_on?: readonly string[];
   ports?: Readonly<Record<string, number | "auto">>;
   env?: Readonly<Record<string, string>>;
   env_file?: string | readonly string[];
 };
-/** One settings graph as the cross-field rules read it: every format has this shape apart from where a Service's check sits. */
+/** One settings graph as the cross-field rules read it: the base settings, or the base with one role's patch applied. */
 type GraphSettings = {
   build?: string;
   env?: Readonly<Record<string, string>>;
@@ -450,141 +373,106 @@ type GraphSettings = {
 type GraphConfig = GraphSettings & {
   targets?: Partial<Record<TargetRole, GraphSettings & { name?: string }>>;
 };
-/** The Project schema of one format. `checkAt` is where a Service's check sits in that format. */
-function projectSchemaFor<
-  Format extends z.ZodType,
-  Service extends z.core.$ZodLooseShape,
->(format: Format, serviceShape: Service, checkAt: readonly string[]) {
-  return z
-    .strictObject({
-      format,
-      name,
-      description: z.string().optional().describe("Project description."),
-      production_branch: text
-        .optional()
-        .describe(
-          "Branch the Stable Target deploys; defaults to the Host deploy.production_branch, then main.",
-        ),
-      domain: domain
-        .optional()
-        .describe(
-          `Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
-        ),
-      build: build
-        .optional()
-        .describe(
-          `Shared shell build command, run once in the workspace before any Service or Tool build. ${PROJECT_BUILD_REFERENCES}`,
-        ),
-      build_timeout: buildTimeout
-        .optional()
-        .describe(
-          "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
-        ),
-      env: env("project").optional(),
-      env_file: envFile("project").optional(),
-      services: z
-        .record(entryName, z.strictObject(serviceShape))
-        .optional()
-        .describe("Long-running Services keyed by name."),
-      tools: z
-        .record(entryName, tool)
-        .optional()
-        .describe("Installed command-line Tools keyed by name."),
-      proxy: proxy.optional(),
-      targets: targetsWith(patchFieldsWith(serviceShape))
-        .optional()
-        .describe(
-          "Role-keyed Target names and settings patches: working, stable and the preview template.",
-        ),
-    })
-    .superRefine((parsed, ctx) => {
-      const config = parsed as GraphConfig;
-      const services = Object.keys(config.services ?? {}),
-        tools = Object.keys(config.tools ?? {});
-      if (!services.length && !tools.length)
+export const projectConfigSchema = z
+  .strictObject({
+    name,
+    description: z.string().optional().describe("Project description."),
+    production_branch: text
+      .optional()
+      .describe(
+        "Branch the Stable Target deploys; defaults to the Host deploy.production_branch, then main.",
+      ),
+    domain: domain
+      .optional()
+      .describe(
+        `Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
+      ),
+    build: build
+      .optional()
+      .describe(
+        `Shared shell build command, run once in the workspace before any Service or Tool build. ${PROJECT_BUILD_REFERENCES}`,
+      ),
+    build_timeout: buildTimeout
+      .optional()
+      .describe(
+        "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
+      ),
+    env: env("project").optional(),
+    env_file: envFile("project").optional(),
+    services: z
+      .record(entryName, z.strictObject(serviceFields))
+      .optional()
+      .describe("Long-running Services keyed by name."),
+    tools: z
+      .record(entryName, tool)
+      .optional()
+      .describe("Installed command-line Tools keyed by name."),
+    proxy: proxy.optional(),
+    targets: targets
+      .optional()
+      .describe(
+        "Role-keyed Target names and settings patches: working, stable and the preview template.",
+      ),
+  })
+  .superRefine((parsed, ctx) => {
+    const config = parsed as GraphConfig;
+    const services = Object.keys(config.services ?? {}),
+      tools = Object.keys(config.tools ?? {});
+    if (!services.length && !tools.length)
+      ctx.addIssue({
+        code: "custom",
+        path: ["services"],
+        message: "A Project needs at least one Service or Tool.",
+      });
+    for (const name of services)
+      if (tools.includes(name))
         ctx.addIssue({
           code: "custom",
-          path: ["services"],
-          message: "A Project needs at least one Service or Tool.",
+          path: ["tools", name],
+          message: "A Tool cannot share its name with a Service.",
         });
-      for (const name of services)
-        if (tools.includes(name))
-          ctx.addIssue({
-            code: "custom",
-            path: ["tools", name],
-            message: "A Tool cannot share its name with a Service.",
-          });
-      const names = targetNames(config);
-      if (names.working === names.stable)
-        ctx.addIssue({
-          code: "custom",
-          path: [
-            "targets",
-            config.targets?.stable?.name ? "stable" : "working",
-            "name",
-          ],
-          message: `The Working copy and Stable Target cannot both be named '${names.working}'.`,
-        });
-      const reported = new Set<string>();
-      const report = (path: PropertyKey[], message: string) => {
-        if (reported.has(message)) return;
-        reported.add(message);
-        ctx.addIssue({ code: "custom", path, message });
-      };
-      // The unpatched graph is checked first so a base mistake is reported at its own path, once.
-      validateGraph(config, [], report, checkAt);
-      for (const role of TARGET_ROLES) {
-        const patch = config.targets?.[role];
-        if (!patch) continue;
-        const at = ["targets", role];
-        for (const kind of ["services", "tools"] as const)
-          for (const key of Object.keys(patch[kind] ?? {}))
-            if (!Object.hasOwn(config[kind] ?? {}, key))
+    const names = targetNames(config);
+    if (names.working === names.stable)
+      ctx.addIssue({
+        code: "custom",
+        path: [
+          "targets",
+          config.targets?.stable?.name ? "stable" : "working",
+          "name",
+        ],
+        message: `The Working copy and Stable Target cannot both be named '${names.working}'.`,
+      });
+    const reported = new Set<string>();
+    const report = (path: PropertyKey[], message: string) => {
+      if (reported.has(message)) return;
+      reported.add(message);
+      ctx.addIssue({ code: "custom", path, message });
+    };
+    // The unpatched graph is checked first so a base mistake is reported at its own path, once.
+    validateGraph(config, [], report);
+    for (const role of TARGET_ROLES) {
+      const patch = config.targets?.[role];
+      if (!patch) continue;
+      const at = ["targets", role];
+      for (const kind of ["services", "tools"] as const)
+        for (const key of Object.keys(patch[kind] ?? {}))
+          if (!Object.hasOwn(config[kind] ?? {}, key))
+            report(
+              [...at, kind, key],
+              `A Target patch cannot add the ${kind === "services" ? "Service" : "Tool"} '${key}'; declare it at the top level.`,
+            );
+      if (role === "preview")
+        for (const [key, entry] of Object.entries(patch.services ?? {}))
+          for (const [port, value] of Object.entries(entry.ports ?? {}))
+            if (value !== "auto")
               report(
-                [...at, kind, key],
-                `A Target patch cannot add the ${kind === "services" ? "Service" : "Tool"} '${key}'; declare it at the top level.`,
+                [...at, "services", key, "ports", port],
+                "Previews always use chosen ports; only the Working copy and Stable Target can pin one.",
               );
-        if (role === "preview")
-          for (const [key, entry] of Object.entries(patch.services ?? {}))
-            for (const [port, value] of Object.entries(entry.ports ?? {}))
-              if (value !== "auto")
-                report(
-                  [...at, "services", key, "ports", port],
-                  "Previews always use chosen ports; only the Working copy and Stable Target can pin one.",
-                );
-        validateGraph(
-          patchSettings(config, role) as GraphSettings,
-          at,
-          report,
-          checkAt,
-        );
-      }
-    });
-}
-const FORMAT_RULE = `The rig.yaml format this file is written in. ${LATEST_FORMAT} is the current format. A file without format is ${UNDECLARED_FORMAT}, which Rig still reads and warns about; rig config upgrade rewrites a file to the current format.`;
-/** Format rig/v1: every rig.yaml written before formats existed. It declares no format, or format: rig/v1. */
-const v1ProjectSchema = projectSchemaFor(
-  z
-    .literal(UNDECLARED_FORMAT)
-    .optional()
-    .describe(
-      `${UNDECLARED_FORMAT}, the format of a file without this field. It is deprecated: rig config upgrade rewrites the file to ${LATEST_FORMAT}.`,
-    ),
-  serviceFieldsWith(v1Readiness),
-  ["ready"],
-);
-/** The latest format, which is also the shape of every parsed Project config (without `format`). */
-export const projectConfigSchema = projectSchemaFor(
-  z.literal(LATEST_FORMAT).describe(FORMAT_RULE),
-  serviceFieldsWith(v2Readiness),
-  ["health", "check"],
-);
-/** The Project schema of each format a rig.yaml may declare. */
-export const projectConfigSchemas: Readonly<Record<ConfigFormat, z.ZodType>> = {
-  "rig/v1": v1ProjectSchema,
-  "rig/v2": projectConfigSchema,
-};
-type ParsedProject = Omit<z.infer<typeof projectConfigSchema>, "format">;
+      validateGraph(patchSettings(config, role) as GraphSettings, at, report);
+    }
+  });
+type ParsedProject = z.infer<typeof projectConfigSchema>;
 /** Project settings with one role's patch applied; Target name metadata never merges into them. */
 export type ProjectSettings = Omit<ParsedProject, "targets">;
 export function patchedSettings(
@@ -593,9 +481,9 @@ export function patchedSettings(
 ): ProjectSettings {
   return patchSettings(config, role) as ProjectSettings;
 }
-/** The format-independent patch rule: the base settings, without Target and format metadata, merged with one role's patch. */
+/** The patch rule: the base settings, without Target metadata, merged with one role's patch. */
 function patchSettings(config: Fields, role: TargetRole): Fields {
-  const { targets, format: _format, ...base } = config;
+  const { targets, ...base } = config;
   const patch: Record<string, unknown> = {
     ...(isRecord(targets) && isRecord(targets[role]) ? targets[role] : {}),
   };
@@ -635,7 +523,6 @@ function validateGraph(
   settings: GraphSettings,
   at: readonly PropertyKey[],
   report: (path: PropertyKey[], message: string) => void,
-  checkAt: readonly string[],
 ): void {
   const services = settings.services ?? {};
   const visiting = new Set<string>(),
@@ -659,13 +546,6 @@ function validateGraph(
     done.add(key);
   };
   for (const key of Object.keys(services)) visit(key);
-  for (const [key, entry] of Object.entries(services))
-    validateHealth(
-      entry.health,
-      [...at, "services", key, "health"],
-      key,
-      report,
-    );
   const pinned = new Map<number, string>();
   for (const [key, entry] of Object.entries(services))
     for (const [port, value] of Object.entries(entry.ports ?? {})) {
@@ -678,7 +558,7 @@ function validateGraph(
         );
       else pinned.set(value, `${key}.${port}`);
     }
-  validateReferences(settings, at, report, checkAt);
+  validateReferences(settings, at, report);
   if (!settings.proxy) return;
   if (!Object.hasOwn(settings.proxy, "/"))
     report([...at, "proxy"], "A proxy needs a '/' entry.");
@@ -706,45 +586,12 @@ function validateGraph(
       );
   }
 }
-/** The settings of ongoing checks, in the order a health block lists them; each needs health.interval. */
-const ONGOING_FIELDS = ["timeout", "failures", "on_failure", "retry_for"];
-/** Rules of one Service's health block, after patching: ongoing checks need a check to run and an interval to run it at,
- * and retry_for only bounds restarts. rig/v1 has no health block, so nothing is checked there. */
-function validateHealth(
-  block: unknown,
-  at: readonly PropertyKey[],
-  service: string,
-  report: (path: PropertyKey[], message: string) => void,
-): void {
-  if (!isRecord(block)) return;
-  const set = (field: string) => block[field] !== undefined;
-  if (!set("check"))
-    for (const field of ["interval", ...ONGOING_FIELDS])
-      if (set(field))
-        report(
-          [...at, field],
-          `health.${field} of Service '${service}' needs health.check: ongoing checks run it.`,
-        );
-  if (!set("interval"))
-    for (const field of ONGOING_FIELDS)
-      if (set(field))
-        report(
-          [...at, field],
-          `health.${field} of Service '${service}' needs health.interval; without it the check runs only at start.`,
-        );
-  if (set("retry_for") && block.on_failure !== "restart")
-    report(
-      [...at, "retry_for"],
-      `health.retry_for of Service '${service}' applies only with health.on_failure: restart.`,
-    );
-}
 /** Resolves every reference-bearing string against placeholder generated values, so a missing path, a collection,
  * a cycle, a reference into targets or rig.data outside a Service is reported when the document is read, not at the first deploy. */
 function validateReferences(
   settings: GraphSettings,
   at: readonly PropertyKey[],
   report: (path: PropertyKey[], message: string) => void,
-  checkAt: readonly string[],
 ): void {
   const references = referenceResolver(settings, {
     target: "target",
@@ -765,16 +612,8 @@ function validateReferences(
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];
-    for (const field of ["run", "build"] as const)
+    for (const field of ["run", "build", "ready"] as const)
       fields.push([[...own, field], service[field]]);
-    const check = checkAt.reduce<unknown>(
-      (node, key) => (isRecord(node) ? node[key] : undefined),
-      service,
-    );
-    fields.push([
-      [...own, ...checkAt],
-      typeof check === "string" ? check : undefined,
-    ]);
     for (const [key, value] of Object.entries(service.env ?? {}))
       fields.push([[...own, "env", key], value]);
     for (const value of [service.env_file ?? []].flat())
@@ -804,15 +643,40 @@ const PATCH_IDENTITY_KEYS: Readonly<Record<string, string>> = {
  * every Service, so a file that still sets it is told to delete the line rather than that the field is unknown. */
 const REMOVED_SUPERVISOR =
   "was removed because rigd supervises every Service; delete this line";
+/** `format` named a rig.yaml format until Rig read more than one; there is one format now, so the key is refused with that
+ * instruction rather than as an unknown field. */
+const REMOVED_FORMAT =
+  "was removed because Rig reads one rig.yaml format; delete this line";
+/** A Service's `health` block held its start check and ongoing health checks until both were removed; start readiness is
+ * `ready` and `ready_timeout`, so a file that still has the block is told where its settings go. */
+const REMOVED_HEALTH =
+  "was removed with ongoing health checks; write its check as ready and its start_timeout as ready_timeout";
+/** Every Service mapping of a raw config value with its path: `services.<name>` and `targets.<role>.services.<name>`. */
+function serviceBlockPaths(value: Fields): [string[], Fields][] {
+  const blocks: [string[], Fields][] = [];
+  const collect = (services: unknown, at: string[]) => {
+    if (isRecord(services))
+      for (const [name, service] of Object.entries(services))
+        if (isRecord(service)) blocks.push([[...at, name], service]);
+  };
+  collect(value.services, ["services"]);
+  if (isRecord(value.targets))
+    for (const [role, patch] of Object.entries(value.targets))
+      if (isRecord(patch))
+        collect(patch.services, ["targets", role, "services"]);
+  return blocks;
+}
 /** Refusals that need their own guidance, checked before the schema so they are not reported as generic unknown keys. */
-function refuseUnsupportedShapes(value: unknown, format: ConfigFormat): void {
+function refuseUnsupportedShapes(value: unknown): void {
   if (!isRecord(value)) return;
-  const issues: { path: string[]; message: string }[] = misplacedReadiness(
-    value,
-    format,
-  );
+  const issues: { path: string[]; message: string }[] = [];
+  if (Object.hasOwn(value, "format"))
+    issues.push({ path: ["format"], message: REMOVED_FORMAT });
   if (Object.hasOwn(value, "supervisor"))
     issues.push({ path: ["supervisor"], message: REMOVED_SUPERVISOR });
+  for (const [path, service] of serviceBlockPaths(value))
+    if (Object.hasOwn(service, "health"))
+      issues.push({ path: [...path, "health"], message: REMOVED_HEALTH });
   for (const [role, patch] of Object.entries(
     isRecord(value.targets) ? value.targets : {},
   )) {
@@ -843,95 +707,12 @@ function refuseUnsupportedShapes(value: unknown, format: ConfigFormat): void {
   }
   if (issues.length) throw issuesError("Project", issues);
 }
-/** Service settings spelled the way another format spells them: an older name in a newer file, or a newer block in an older one. */
-function misplacedReadiness(
-  value: unknown,
-  format: ConfigFormat,
-): { path: string[]; message: string }[] {
-  const ahead = stepsFrom(format);
-  const issues: { path: string[]; message: string }[] = [];
-  for (const [path, service] of serviceBlockPaths(value))
-    for (const step of FORMAT_STEPS)
-      for (const move of step.moves) {
-        const [old] = move.from,
-          [block] = move.to;
-        if (!ahead.includes(step) && Object.hasOwn(service, old))
-          issues.push({
-            path: [...path, old],
-            message: `${step.to} moved ${old} to ${move.to.join(".")}`,
-          });
-        else if (
-          ahead.includes(step) &&
-          Object.hasOwn(service, block) &&
-          !issues.some(
-            (issue) => issue.path.join(".") === [...path, block].join("."),
-          )
-        )
-          issues.push({
-            path: [...path, block],
-            message: `${block} needs format: ${step.to}; run rig config upgrade, which sets it and moves ${step.moves.map((each) => each.from[0]).join(" and ")} into ${block}`,
-          });
-      }
-  return issues;
-}
-/** The format a raw Project value declares; a value without `format` is rig/v1. An unknown format is refused. */
-export function declaredFormat(value: unknown): ConfigFormat {
-  if (!isRecord(value) || !Object.hasOwn(value, "format"))
-    return UNDECLARED_FORMAT;
-  if (isConfigFormat(value.format)) return value.format;
-  throw issuesError("Project", [
-    {
-      path: ["format"],
-      message: `must be one of ${CONFIG_FORMATS.map((each) => JSON.stringify(each)).join(", ")}; a newer format needs a newer Rig`,
-    },
-  ]);
-}
-/** Validates one Project document and returns it as the latest format spells it, with the format it was written in. Every
- * format is checked by its own schema, so a mistake is named at the path the author wrote; an older format is then moved to
- * the latest shape, which is checked again. The parsed config never carries `format`. */
-export function parseProjectDocument(value: unknown): {
-  format: ConfigFormat;
-  config: ProjectConfig;
-} {
-  const format = declaredFormat(value);
-  refuseUnsupportedShapes(value, format);
-  const written = parseWith(projectConfigSchemas[format], value);
-  const latest =
-    format === LATEST_FORMAT
-      ? written
-      : parseWith(projectConfigSchema, {
-          format: LATEST_FORMAT,
-          ...upgradeConfigValue(written as Fields, format),
-        });
-  const { format: _format, ...config } = latest as z.infer<
-    typeof projectConfigSchema
-  >;
-  return { format, config };
-}
 export function parseProjectConfig(value: unknown): ProjectConfig {
-  return parseProjectDocument(value).config;
-}
-/** The parsed Project config a value means, for a caller handed either a parsed config or raw config: a value that is already
- * in the latest shape without `format` is checked as it is, and anything else is read the way a rig.yaml document is. */
-export function projectModel(value: unknown): ProjectConfig {
-  if (isRecord(value) && !Object.hasOwn(value, "format")) {
-    const latest = projectConfigSchema.safeParse({
-      format: LATEST_FORMAT,
-      ...value,
-    });
-    if (latest.success) {
-      const { format: _format, ...config } = latest.data;
-      return config;
-    }
-  }
-  return parseProjectConfig(value);
-}
-function parseWith(schema: z.ZodType, value: unknown): unknown {
-  const result = schema.safeParse(value);
+  refuseUnsupportedShapes(value);
+  const result = projectConfigSchema.safeParse(value);
   if (!result.success) throw validationError("Project", result.error.issues);
   return result.data;
 }
-/** The parsed Project config: always the latest format's shape, without `format`. */
 export type ProjectConfig = ParsedProject;
 export const hostConfigSchema = z.strictObject({
   deploy: z

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by [0009](0009-one-project-config-format.md)
 ---
 
 # rig.yaml declares its format, and Rig upgrades older formats in place

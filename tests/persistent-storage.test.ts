@@ -19,6 +19,7 @@ import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
+import { noRoutes } from "./support/router-doubles";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
   resolvePlanWithHost(input, RESOLVE_HOST);
@@ -131,17 +132,7 @@ function effects(root: string) {
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: {
-      async apply() {},
-      async remove() {},
-      async withheld() {
-        return [];
-      },
-      async checkpoint(key) {
-        return { key, value: null };
-      },
-      async restore() {},
-    },
+    router: noRoutes(),
     environment: { PATH: process.env.PATH! },
   });
 }

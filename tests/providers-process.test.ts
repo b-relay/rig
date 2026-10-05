@@ -628,8 +628,9 @@ test("a deleted log directory is recreated on the next line; output that cannot 
       .split("\n")
       .filter(Boolean).length;
   while ((await lines()) < 3) await Bun.sleep(10);
-  // The directory disappears under the running component: the next line brings it back.
-  await rm(logRoot, { recursive: true, force: true });
+  // The directory disappears under the running component: the next line brings it back. A line written mid-delete
+  // leaves it not yet empty (ENOTEMPTY); rm retries that itself.
+  await rm(logRoot, { recursive: true, force: true, maxRetries: 10 });
   for (let i = 0; i < 100 && (await lines()) < 2; i++) await Bun.sleep(10);
   expect(await lines()).toBeGreaterThanOrEqual(2);
   expect(await supervisor.observe(request.key)).toEqual({
@@ -638,8 +639,20 @@ test("a deleted log directory is recreated on the next line; output that cannot 
     incarnation: "start-1",
   });
   // A path that cannot be a directory cannot take output: the observation says so, and recovers once it can.
-  await rm(logRoot, { recursive: true, force: true });
-  await writeFile(logRoot, "not a directory");
+  // The component writes every 10 ms and the supervisor recreates the directory on each line, as asserted above, so it can
+  // win the race between removing the directory and writing the file there; the swap is retried until the file holds.
+  for (let swapped = false, i = 0; !swapped; i++) {
+    // The writer can add a line mid-delete too; rm retries that (ENOTEMPTY) itself.
+    await rm(logRoot, { recursive: true, force: true, maxRetries: 10 });
+    swapped = await writeFile(logRoot, "not a directory", { flag: "wx" }).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (i < 100 && (error.code === "EEXIST" || error.code === "EISDIR"))
+          return false;
+        throw error;
+      },
+    );
+  }
   let observed = await supervisor.observe(request.key);
   for (let i = 0; i < 100 && !observed.reason; i++) {
     await Bun.sleep(10);

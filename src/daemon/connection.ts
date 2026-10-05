@@ -1,4 +1,4 @@
-import { DaemonClient } from "./client";
+import { DaemonClient, type DaemonClientOptions } from "./client";
 import { readDaemonAddress, readDaemonToken } from "./files";
 import { recordedProcess } from "./process-identity";
 import { RigError } from "../domain/errors";
@@ -7,8 +7,11 @@ import type { DaemonAddress } from "./protocol";
 /** Acquire fresh Host discovery and credentials for one transport operation. No probe or retry.
  * The credential is only handed to a port whose recorded owner process still exists;
  * a record left behind by a dead daemon is reported as stale, never contacted. */
-export async function connectDaemon(root: string): Promise<DaemonClient> {
-  return new DaemonClient(await liveDaemonAddress(root));
+export async function connectDaemon(
+  root: string,
+  options: DaemonClientOptions = {},
+): Promise<DaemonClient> {
+  return new DaemonClient(await liveDaemonAddress(root), options);
 }
 /** The port and credential of the daemon whose recorded owner process still exists. */
 export async function liveDaemonAddress(root: string): Promise<DaemonAddress> {

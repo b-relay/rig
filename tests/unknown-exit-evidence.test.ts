@@ -164,6 +164,9 @@ async function rigdWorld(options: { armed?: boolean } = {}) {
     const created = createChildSupervisor({
       stateRoot: root,
       captureCommand: [process.execPath, wrapper],
+      // An armed wrapper dies before its application reports, so the start fails once this wait is over: long enough for
+      // the wrapper to reach its application, not the platform's 5 s.
+      ...(options.armed ? { captureStartMs: 3000 } : {}),
       timing: createProcessTiming(),
       processInspection: createProcessInspection({
         run: runCommand,
@@ -239,7 +242,11 @@ describe("rigd supervisor: a capture wrapper killed together with its applicatio
       await supervisor.ensureRunning({ ...req, incarnation: "start-2" });
       const application = await w.applicationPid(req.key);
       pids.push(application);
-      expect((await readFile(starts, "utf8")).trim().split("\n")).toEqual([
+      // Its pid is known before its shell has written its line; wait for the line.
+      const started = () => readFile(starts, "utf8").catch(() => "");
+      for (let i = 0; i < 200 && !(await started()).trim(); i++)
+        await Bun.sleep(10);
+      expect((await started()).trim().split("\n")).toEqual([
         String(application),
       ]);
       expect(await supervisor.stop(req.key, { graceMs: 1500 })).toEqual({

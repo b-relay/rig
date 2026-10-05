@@ -15,7 +15,6 @@ import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import type { ArtifactInstaller } from "../src/providers/artifact-installer";
-import { createCaddyRouter } from "../src/providers/caddy-router";
 import type { Router } from "../src/providers/caddy-router";
 import type { InstalledComponent } from "../src/config/types";
 import { createTargetLifecycle } from "../src/runtime/lifecycle";
@@ -24,6 +23,7 @@ import type { TargetRecord, RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { Supervisor } from "../src/providers/contracts";
 import { RigError, diagnosticCauses } from "../src/domain/errors";
+import { unreloadedCaddy } from "./support/router-doubles";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -57,10 +57,7 @@ async function fixture() {
     async shutdown() {},
     async detach() {},
   };
-  const router = createCaddyRouter({
-    caddyfile: join(root, "Caddyfile"),
-    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-  });
+  const router = unreloadedCaddy(root);
   const adapters = (
     overrides: { installer?: ArtifactInstaller; router?: Router } = {},
   ) =>

@@ -1,30 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { localActivation } from "./support/activation-doubles";
-import { createTargetEffects } from "../src/adapters/target-effects";
-import { createArtifactInstaller } from "../src/providers/artifact-installer";
-import { runCommand } from "../src/providers/command-runner";
-import { createCaddyRouter } from "../src/providers/caddy-router";
-import { createTargetLifecycle } from "../src/runtime/lifecycle";
-import { createRuntime } from "../src/runtime/application";
-import { FileStateStore } from "../src/runtime/state-store";
-import { timerObservationDeadline } from "../src/runtime/bounded-observations";
+import { runtimeWorld } from "./support/runtime-world";
+import type { FileStateStore } from "../src/runtime/state-store";
 import { UNKNOWN_EXIT_RESTART_BACKOFF_MS } from "../src/runtime/supervision";
 import { stopDetached } from "../src/domain/stop-budget";
-import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { HostSession } from "../src/domain/host-session";
 import type {
   ProcessObservation,
   Supervisor,
 } from "../src/providers/contracts";
-import {
-  parseHostConfig,
-  parseProjectConfig,
-  resolveTargetPlan,
-} from "../src/config";
+import { parseProjectConfig } from "../src/config";
 
 // Every daemon here runs under an isolated RIG_ROOT: a real state file and lifecycle, scripted processes and Host session,
 // no launchd, no sysctl, no Caddy.
@@ -42,12 +29,7 @@ const SERVICES = {
 };
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "rig-host-restart-"));
-  roots.push(root);
-  const repo = join(root, "repo");
-  await mkdir(repo);
   const config = parseProjectConfig({ name: "demo", services: SERVICES });
-  const clock = { ms: Date.parse("2026-09-27T08:00:00.000Z") };
   const processes = new Map<string, ProcessObservation>();
   /** Process keys (`<target id>:<service>`) in the order they were started. */
   const starts: string[] = [];
@@ -89,30 +71,6 @@ async function fixture() {
     async shutdown() {},
     async detach() {},
   };
-  const effects = createTargetEffects({
-    ...localActivation(),
-    recordingTime: () => new Date(clock.ms).toISOString(),
-    root,
-    environment: {},
-    supervisors: new Map([["rigd", supervisor]]),
-    installer: createArtifactInstaller({
-      run: runCommand,
-      bunExecutable: process.execPath,
-    }),
-    router: createCaddyRouter({
-      caddyfile: join(root, "Caddyfile"),
-      run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-    }),
-    run: runCommand,
-  });
-  const timing = {
-    schedule(delayMs: number, fire: () => void) {
-      const timer = setTimeout(fire, delayMs < 1000 ? 0 : 250);
-      return () => clearTimeout(timer);
-    },
-    startGraceMs: 0,
-  };
-  const store = new FileStateStore(root);
   /** What the scripted Host reports as its boot and GUI login; a test changes it to restart the Host. */
   const host: { session: HostSession; hold?: Promise<void> } = {
     session: {
@@ -121,86 +79,41 @@ async function fixture() {
       login: "100002",
     },
   };
-  let id = 0;
-  const deps = {
-    root,
-    async readAdminActivity() {
-      return [];
-    },
-    async inspectHost() {
-      return [];
-    },
-    async inspectProxy() {
-      return {
-        proxyFile: join(root, "Caddyfile"),
-        routes: 0,
-        state: "unpublished" as const,
-      };
-    },
-    store,
-    documents: {
-      async read(path: string) {
-        return { path: `${path}/rig.yaml`, revision: "abc", config };
+  const world = await runtimeWorld({
+    name: "host-restart",
+    config,
+    supervisor: () => supervisor,
+    startsAt: "2026-09-27T08:00:00.000Z",
+    readinessDeadlineMs: 250,
+    dependencies: () => ({
+      sources: {
+        async preflight(input: { branch: string }) {
+          return { commit: `c-${input.branch}`, warnings: [] };
+        },
+        async prepare(request: { destination: string }) {
+          await mkdir(request.destination, { recursive: true });
+          return { workspacePath: request.destination, commit: "c1" };
+        },
+        async resolve() {
+          return "c1";
+        },
+        async currentBranch() {
+          return "feature";
+        },
+        async release() {},
       },
-      async discover(path: string) {
-        return {
-          repoPath: path,
-          document: await this.read(path),
-          gitRequired: false,
-        };
+      hostSession: {
+        async current() {
+          await host.hold;
+          return { ...host.session };
+        },
       },
-      async identifyInitialization(path: string) {
-        return { repoPath: path, name: "demo", configPath: `${path}/rig.yaml` };
-      },
-      async initialize(path: string) {
-        return await this.read(path);
-      },
-      resolve: (input: Parameters<typeof resolveTargetPlan>[0]) =>
-        resolveTargetPlan(input, {
-          operatorHome: "/home/operator",
-          envRoot: join(root, "env"),
-        }),
-      async host() {
-        return parseHostConfig({});
-      },
-    },
-    sources: {
-      async preflight(input: { branch: string }) {
-        return { commit: `c-${input.branch}`, warnings: [] };
-      },
-      async prepare(request: { destination: string }) {
-        await mkdir(request.destination, { recursive: true });
-        return { workspacePath: request.destination, commit: "c1" };
-      },
-      async resolve() {
-        return "c1";
-      },
-      async currentBranch() {
-        return "feature";
-      },
-      async release() {},
-    },
-    lifecycle: createTargetLifecycle(effects, timing),
-    observations: effects.observations,
-    observationBudgetMs: 2000,
-    observationDeadline: timerObservationDeadline,
-    files: {
-      async selectPorts() {
-        return {};
-      },
-    },
-    hostSession: {
-      async current() {
-        await host.hold;
-        return { ...host.session };
-      },
-    },
-    now: () => new Date(clock.ms).toISOString(),
-    id: () => `id${++id}`,
-    async diagnostic() {},
-  } as unknown as RuntimeDependencies;
-  let runtime = createRuntime(deps);
-  await runtime.command({ action: "init", repoPath: repo });
+    }),
+  });
+  roots.push(world.root);
+  const { root, clock, store, deps } = world;
+  let runtime = world.open();
+  await runtime.command({ action: "init", repoPath: world.repo });
   const targetId = async (kind: "local" | "live" | "preview") =>
     (await store.read()).targets.find((t) => t.kind === kind)!.id;
   const f = {
@@ -215,7 +128,7 @@ async function fixture() {
     store,
     /** A new daemon over the same saved state and whatever processes survived. */
     reopen() {
-      runtime = createRuntime(deps);
+      runtime = world.open();
     },
     reconcile: () => runtime.reconcile(),
     drain: () => runtime.drain(),

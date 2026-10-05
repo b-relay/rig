@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
-import { createCaddyRouter } from "../src/providers/caddy-router";
 import {
   assertSourceBuildsKnown,
   createTargetLifecycle,
@@ -17,6 +16,7 @@ import type { BuildUnit } from "../src/config/types";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { Supervisor } from "../src/providers/contracts";
+import { unreloadedCaddy } from "./support/router-doubles";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -67,10 +67,7 @@ async function fixture() {
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: createCaddyRouter({
-      caddyfile: join(root, "Caddyfile"),
-      run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-    }),
+    router: unreloadedCaddy(root),
     run: runCommand,
   });
   const lifecycle = createTargetLifecycle(effects);

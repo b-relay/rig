@@ -1,21 +1,17 @@
 import { localActivation } from "./support/activation-doubles";
+import { runtimeWorld } from "./support/runtime-world";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createTargetEffects } from "../src/adapters/target-effects";
-import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
-import { createCaddyRouter } from "../src/providers/caddy-router";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
 import {
   createProcessInspection,
   platformKill,
 } from "../src/providers/process-inspection";
 import { createProcessTiming } from "../src/providers/process-timing";
-import { createTargetLifecycle } from "../src/runtime/lifecycle";
-import { createRuntime } from "../src/runtime/application";
-import { FileStateStore } from "../src/runtime/state-store";
+import type { FileStateStore } from "../src/runtime/state-store";
 import {
   intendRunning,
   restartBudget,
@@ -24,18 +20,12 @@ import {
   UNKNOWN_EXIT_RESTART_WINDOW_MS,
 } from "../src/runtime/supervision";
 import type { TargetRecord } from "../src/domain/runtime";
-import { timerObservationDeadline } from "../src/runtime/bounded-observations";
-import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type {
   ManagedProcess,
   ProcessObservation,
   Supervisor,
 } from "../src/providers/contracts";
-import {
-  parseHostConfig,
-  parseProjectConfig,
-  resolveTargetPlan,
-} from "../src/config";
+import { parseProjectConfig } from "../src/config";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -64,12 +54,7 @@ async function fixture(
   > = SERVICES,
   real?: (root: string) => Supervisor,
 ) {
-  const root = await mkdtemp(join(tmpdir(), "rig-restart-policy-"));
-  roots.push(root);
-  const repo = join(root, "repo");
-  await mkdir(repo);
   const config = parseProjectConfig({ name: "demo", services });
-  const clock = { ms: Date.parse("2026-09-17T00:00:00.000Z") };
   const processes = new Map<string, ProcessObservation>();
   const starts: string[] = [];
   const refusal: {
@@ -121,119 +106,45 @@ async function fixture(
   };
   /** Ports something outside Rig listens on. */
   const occupied = new Set<number>();
-  const effects = createTargetEffects({
-    ...localActivation(
-      Object.values(services).map((service) => service.ports.http),
-    ),
-    // A port answers while the fake process of the Service that declares it runs, or while something else holds it; a real
-    // supervisor's process answers throughout.
-    connect: async (port) =>
-      real ||
-      occupied.has(port) ||
-      [...processes].some(
-        ([key, observation]) =>
-          observation.state === "running" &&
-          services[key.slice(key.indexOf(":") + 1)]?.ports.http === port,
-      )
-        ? { ready: true }
-        : { ready: false, reason: `port ${port}: ECONNREFUSED` },
-    recordingTime: () => new Date(clock.ms).toISOString(),
-    root,
-    environment: {},
-    supervisors: new Map([["rigd", real?.(root) ?? supervisor]]),
-    installer: createArtifactInstaller({
-      run: runCommand,
-      bunExecutable: process.execPath,
-    }),
-    router: createCaddyRouter({
-      caddyfile: join(root, "Caddyfile"),
-      run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-    }),
-    run: runCommand,
-  });
-  /** A grace above zero makes a start observe its process once before it counts as started. */
-  const timing = {
-    // Polls fire at once; a readiness deadline (seconds) is given long enough for a real health command to answer.
-    schedule(delayMs: number, fire: () => void) {
-      if (delayMs < 1000) {
-        const poll = setTimeout(fire, 0);
-        return () => clearTimeout(poll);
-      }
-      const timer = setTimeout(fire, 250);
-      return () => clearTimeout(timer);
-    },
-    startGraceMs: 0,
-  };
-  const store = new FileStateStore(root);
   const storeFailure: { update?: boolean } = {};
-  let id = 0;
-  const deps = {
-    root,
-    async readAdminActivity() {
-      return [];
+  const world = await runtimeWorld({
+    name: "restart-policy",
+    config,
+    supervisor: (root) => real?.(root) ?? supervisor,
+    startsAt: "2026-09-17T00:00:00.000Z",
+    // A readiness deadline is long enough for a real health command to answer.
+    readinessDeadlineMs: 250,
+    activation: {
+      ...localActivation(
+        Object.values(services).map((service) => service.ports.http),
+      ),
+      // A port answers while the fake process of the Service that declares it runs, or while something else holds it; a
+      // real supervisor's process answers throughout.
+      connect: async (port) =>
+        real ||
+        occupied.has(port) ||
+        [...processes].some(
+          ([key, observation]) =>
+            observation.state === "running" &&
+            services[key.slice(key.indexOf(":") + 1)]?.ports.http === port,
+        )
+          ? { ready: true }
+          : { ready: false, reason: `port ${port}: ECONNREFUSED` },
     },
-    async inspectHost() {
-      return [];
-    },
-    async inspectProxy() {
-      return {
-        proxyFile: join(root, "Caddyfile"),
-        routes: 0,
-        state: "unpublished" as const,
-      };
-    },
-    store: {
-      read: () => store.read(),
-      async update(change: Parameters<FileStateStore["update"]>[0]) {
-        if (storeFailure.update) throw new Error("state is not writable");
-        await store.update(change);
+    dependencies: ({ store }) => ({
+      store: {
+        read: () => store.read(),
+        async update(change: Parameters<FileStateStore["update"]>[0]) {
+          if (storeFailure.update) throw new Error("state is not writable");
+          await store.update(change);
+        },
       },
-    },
-    documents: {
-      async read(path: string) {
-        return { path: `${path}/rig.yaml`, revision: "abc", config };
-      },
-      async discover(path: string) {
-        return {
-          repoPath: path,
-          document: await this.read(path),
-          gitRequired: false,
-        };
-      },
-      async identifyInitialization(path: string) {
-        return { repoPath: path, name: "demo", configPath: `${path}/rig.yaml` };
-      },
-      async initialize(path: string) {
-        return await this.read(path);
-      },
-      resolve: (input: Parameters<typeof resolveTargetPlan>[0]) =>
-        resolveTargetPlan(input, {
-          operatorHome: "/home/operator",
-          envRoot: join(root, "env"),
-        }),
-      async host() {
-        return parseHostConfig({});
-      },
-    },
-    lifecycle: createTargetLifecycle(effects, timing),
-    observations: effects.observations,
-    observationBudgetMs: 2000,
-    observationDeadline: timerObservationDeadline,
-    files: {
-      async selectPorts(input: {
-        requests: { name: string; preferred?: number }[];
-      }) {
-        return Object.fromEntries(
-          input.requests.map((request) => [request.name, request.preferred!]),
-        );
-      },
-    },
-    now: () => new Date(clock.ms).toISOString(),
-    id: () => `id${++id}`,
-    async diagnostic() {},
-  } as unknown as RuntimeDependencies;
-  let runtime = createRuntime(deps);
-  await runtime.command({ action: "init", repoPath: repo });
+    }),
+  });
+  roots.push(world.root);
+  const { clock, timing, store } = world;
+  let runtime = world.open();
+  await runtime.command({ action: "init", repoPath: world.repo });
   const target = async () => (await store.read()).targets[0]!;
   const key = async (service: string) => `${(await target()).id}:${service}`;
   const status = async () => {
@@ -263,7 +174,7 @@ async function fixture(
     reconcile: () => runtime.reconcile(),
     supervise: () => runtime.supervise(),
     reopen() {
-      runtime = createRuntime(deps);
+      runtime = world.open();
     },
     /** The process ends with durable evidence of how. */
     async exit(

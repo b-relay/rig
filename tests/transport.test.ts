@@ -1,6 +1,6 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { startControlPlane } from "../src/daemon/server";
-import { DaemonClient } from "../src/daemon/client";
+import { DaemonClient, DEFAULT_READ_DEADLINE_MS } from "../src/daemon/client";
 
 test("real localhost daemon authenticates clients and rejects foreign browser origins", async () => {
   const received: unknown[] = [];
@@ -52,65 +52,55 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
   }
 });
 
-// These two wait on real time and share nothing, so they run together. The one with a pending `expect(...).rejects` goes
-// second: Bun starts no further concurrent test until such an expectation settles.
-test.concurrent(
-  "a mutation that outlives Bun's default 10 s idle timeout still returns its result",
-  async () => {
-    const server = startControlPlane({
-      port: 0,
-      token: "test-secret",
-      instanceId: "instance-1",
-      handle: async () => {
-        await Bun.sleep(12000);
-        return { outcome: "started" };
-      },
+test("a reply slower than the read deadline is reported as a timeout naming the operation, not as unreachable", async () => {
+  // rigd answers only once the test has seen the deadline expire.
+  const answer = Promise.withResolvers<void>();
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      await answer.promise;
+      return Response.json({ result: [] });
+    },
+  });
+  try {
+    const client = new DaemonClient(
+      { port: server.port!, token: "test" },
+      { readDeadlineMs: 100 },
+    );
+    await expect(
+      client.command({ action: "list", operationId: "op-slow" }),
+    ).rejects.toMatchObject({
+      code: "DAEMON_TIMEOUT",
+      message:
+        "rigd did not answer the list read within 0.1 s; it may be busy (operation op-slow).",
+      hint: expect.stringContaining("rig activity"),
     });
-    try {
-      const client = new DaemonClient({
-        port: server.port!,
-        token: "test-secret",
-      });
-      expect(
-        await client.command({
-          action: "up",
-          project: "demo",
-          target: "local",
-        }),
-      ).toEqual({ outcome: "started" });
-    } finally {
-      await server.stop(true);
-    }
-  },
-  20000,
-);
+  } finally {
+    answer.resolve();
+    await server.stop(true);
+  }
+});
 
-test.concurrent(
-  "a reply slower than the read deadline is reported as a timeout naming the operation, not as unreachable",
-  async () => {
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      async fetch() {
-        await Bun.sleep(5500);
-        return Response.json({ result: [] });
-      },
-    });
-    try {
-      const client = new DaemonClient({ port: server.port!, token: "test" });
-      await expect(
-        client.command({ action: "list", operationId: "op-slow" }),
-      ).rejects.toMatchObject({
-        code: "DAEMON_TIMEOUT",
-        message: expect.stringContaining("op-slow"),
-        hint: expect.stringContaining("rig activity"),
-      });
-    } finally {
-      await server.stop(true);
-    }
-  },
-  10000,
-);
+test("reads wait 5 s for rigd unless the client is told otherwise; mutations carry no deadline", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => Response.json({ result: [] }),
+  });
+  const deadlines = spyOn(AbortSignal, "timeout");
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test" });
+    await client.command({ action: "doctor" });
+    expect(deadlines.mock.calls).toEqual([[DEFAULT_READ_DEADLINE_MS]]);
+    expect(DEFAULT_READ_DEADLINE_MS).toBe(5000);
+    await client.command({ action: "up", project: "demo", target: "local" });
+    expect(deadlines).toHaveBeenCalledTimes(1);
+  } finally {
+    deadlines.mockRestore();
+    await server.stop(true);
+  }
+});
 
 test("client rejects malformed health and command envelopes as protocol failures", async () => {
   const server = Bun.serve({

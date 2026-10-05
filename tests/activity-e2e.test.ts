@@ -5,10 +5,11 @@ import { rigFixture } from "./support/rig-fixture";
 test("daemon records observed terminal crashes once and exposes verified administration activity", async () => {
   const f = await rigFixture();
   try {
-    // It crashes well after the 500 ms start grace, so up counts it started even on a loaded Host.
+    // It crashes only once told to, after up has counted it started, however loaded the Host.
+    const crash = join(f.base, "crash");
     await writeFile(
       join(f.repo, "app.ts"),
-      "process.stdout.write('started\\n');setTimeout(()=>process.exit(7),2000)",
+      `import {existsSync} from "node:fs";process.stdout.write('started\\n');setInterval(()=>{if(existsSync(${JSON.stringify(crash)}))process.exit(7)},20)`,
     );
     await writeFile(
       join(f.repo, "rig.yaml"),
@@ -22,6 +23,7 @@ services:
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["init", "--create-git"])).toMatchObject({ code: 0 });
     expect(await f.rig(["up", "local"])).toMatchObject({ code: 0 });
+    await writeFile(crash, "");
     let activity = "";
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
@@ -37,10 +39,14 @@ services:
         (target: { name: string }) => target.name === "local",
       ),
     ).toMatchObject({ state: "failed", components: [{ state: "failed" }] });
-    await Bun.sleep(5200);
-    expect(
-      (await f.rig(["activity"])).stdout.match(/crash\s+failed/g),
-    ).toHaveLength(1);
+    // rigd's supervision pass, every second, sees the ended process again; the crash stays recorded once. Two passes show it
+    // against the real daemon; activity-crashes.test.ts proves it for any number of passes.
+    for (const settled = Date.now() + 2200; Date.now() < settled;) {
+      expect(
+        (await f.rig(["activity"])).stdout.match(/crash\s+failed/g),
+      ).toHaveLength(1);
+      await Bun.sleep(200);
+    }
     expect(await f.rig(["down", "local"])).toMatchObject({ code: 0 });
     expect(await f.rigd(["uninstall"])).toMatchObject({ code: 0 });
   } finally {

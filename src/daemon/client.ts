@@ -67,7 +67,14 @@ const protocolFailure = () =>
     "Check that rig and rigd use the same version.",
   );
 
-const readDeadlineMs = 5000;
+/** How long a read waits for rigd when the client is not told otherwise. */
+export const DEFAULT_READ_DEADLINE_MS = 5000;
+/** How the client waits on rigd; every field has the platform default when absent. */
+export interface DaemonClientOptions {
+  /** Milliseconds a status, list, or doctor read may go unanswered before it fails as DAEMON_TIMEOUT;
+   * `DEFAULT_READ_DEADLINE_MS` when absent. */
+  readonly readDeadlineMs?: number;
+}
 const abandoned = () =>
   cancelled(
     "rigd keeps running whatever it was asked; run rig activity to see it.",
@@ -95,7 +102,13 @@ function validated(command: RuntimeCommand, result: unknown): unknown {
  * still be running), a failed connection is DAEMON_UNREACHABLE. Replies are
  * untrusted input. */
 export class DaemonClient {
-  constructor(private readonly address: DaemonAddress) {}
+  private readonly readDeadlineMs: number;
+  constructor(
+    private readonly address: DaemonAddress,
+    options: DaemonClientOptions = {},
+  ) {
+    this.readDeadlineMs = options.readDeadlineMs ?? DEFAULT_READ_DEADLINE_MS;
+  }
   async health(): Promise<DaemonHealth> {
     const health = healthSchema.safeParse(
       await this.request("/health", undefined, {
@@ -111,7 +124,7 @@ export class DaemonClient {
       await this.request(
         "/v1/command",
         { ...selection, action: "status" },
-        { ms: readDeadlineMs, subject: "status read" },
+        { ms: this.readDeadlineMs, subject: "status read" },
       ),
     );
     if (!envelope.success) throw protocolFailure();
@@ -135,7 +148,7 @@ export class DaemonClient {
         "/v1/command",
         command,
         ["status", "list", "doctor"].includes(command.action)
-          ? { ms: readDeadlineMs, subject: `${command.action} read` }
+          ? { ms: this.readDeadlineMs, subject: `${command.action} read` }
           : undefined,
         signal,
       ),

@@ -1137,6 +1137,56 @@ test("run and env are refused wherever they are spelled, each naming its Compose
   }
 });
 
+test("working_dir is a directory inside the workspace, recorded normalized and patchable per Target; env_file paths stay workspace-relative", () => {
+  const message =
+    "must be a directory inside the workspace, relative to it, such as apps/web: no absolute path, ~, '..' or reference";
+  for (const value of [
+    "/srv/app",
+    "~/app",
+    "..",
+    "../sibling",
+    "apps/../../x",
+    "${rig.workspace}/apps",
+    "",
+  ])
+    expect(
+      failureOf({ name: "app", services: web({ working_dir: value }) })?.context
+        .issues,
+    ).toEqual([
+      {
+        path: ["services", "web", "working_dir"],
+        message: value === "" ? "must not be empty" : message,
+      },
+    ]);
+  expect(
+    issuePaths({
+      name: "app",
+      services: web(),
+      targets: { stable: { services: { web: { working_dir: "../x" } } } },
+    }),
+  ).toEqual(["targets.stable.services.web.working_dir"]);
+  const config = parseProjectConfig({
+    name: "app",
+    services: web({ working_dir: "./apps/web/", env_file: "apps/web/.env" }),
+    targets: {
+      working: true,
+      stable: { services: { web: { working_dir: "dist/web" } } },
+      preview: { services: { web: { working_dir: "." } } },
+    },
+  });
+  const planned = (target: "working" | "stable" | "preview") =>
+    resolveTargetPlan({ config, target, ...roots_, assignedPorts: { web: 1 } })
+      .components[0]!;
+  expect(planned("working")).toMatchObject({ workingDir: "apps/web" });
+  expect(planned("stable")).toMatchObject({ workingDir: "dist/web" });
+  // The workspace root is the default, so a plan that runs there records nothing, as before working_dir existed.
+  expect(planned("preview")).not.toHaveProperty("workingDir");
+  expect(planned("working").envFiles!.find((file) => file.required)).toEqual({
+    path: "/work/apps/web/.env",
+    required: true,
+  });
+});
+
 test("a reference through env names the environment path that replaced it", () => {
   for (const [reference, replacement] of [
     ["${env.MODE}", "${environment.MODE}"],

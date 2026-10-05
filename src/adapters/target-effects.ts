@@ -18,6 +18,7 @@ import type {
   ManagedComponent,
 } from "../config/types";
 import { WORKING_TOOL_SUFFIX, isHealthUrl } from "../config/schema";
+import { componentDirectory } from "../config/working-dir";
 import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
 import { composeEnvironment } from "../domain/process-environment";
 import type { TargetRecord } from "../domain/runtime";
@@ -162,7 +163,7 @@ export function createTargetEffects(
       await recordLines(target, component?.name ?? "setup", "stderr", fresh);
     return composed.env;
   };
-  /** Runs a shell command in the Target workspace within a budget in seconds and records its output,
+  /** Runs a shell command in the Target workspace, or in `cwd` inside it, within a budget in seconds and records its output,
    * including what a killed command printed before its budget ran out, under the Component name. */
   const runTarget = async (
     command: string,
@@ -170,11 +171,12 @@ export function createTargetEffects(
     env: Record<string, string>,
     timeoutSeconds: number,
     componentName = "setup",
+    cwd = target.plan.workspacePath,
   ) => {
     const live = liveRecorder(target, componentName);
     const result = await options.run({
       command: ["/bin/sh", "-c", command],
-      cwd: target.plan.workspacePath,
+      cwd,
       env,
       timeoutMs: timeoutSeconds * 1000,
       onOutput: live.receive,
@@ -301,7 +303,7 @@ export function createTargetEffects(
       }
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],
-        cwd: target.plan.workspacePath,
+        cwd: componentDirectory(target.plan, component),
         env: await environment(target, component),
         signal,
         timeoutMs: 2000,
@@ -517,6 +519,7 @@ export function createTargetEffects(
         ),
         unit.timeout,
         name,
+        componentDirectory(target.plan, component),
       );
       const label =
         unit.component === undefined ? "shared" : `${unit.component}`;

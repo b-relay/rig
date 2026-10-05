@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
   stat,
@@ -193,6 +194,68 @@ test("a build unit runs its command once, install only publishes, and a failed r
   expect(
     (await runCommand({ command: [join(root, "bin", "tool-dev")] })).stdout,
   ).toBe("ready\n");
+});
+test("a Service's build and shell ready check run in its working_dir; a Tool build and a plan without one run at the workspace root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-working-dir-"));
+  roots.push(root);
+  await mkdir(join(root, "apps", "web"), { recursive: true });
+  const web = {
+    name: "web",
+    kind: "managed" as const,
+    command: "serve",
+    workingDir: "apps/web",
+    readyTimeout: 1,
+    env: {},
+    dependsOn: [],
+    health: "test -f built",
+  };
+  const tool = {
+    name: "ctl",
+    kind: "installed" as const,
+    entrypoint: "ctl",
+    env: {},
+    dependsOn: [],
+  };
+  const record = {
+    ...target(root),
+    plan: { ...target(root).plan, components: [web, tool] },
+  };
+  const adapter = effects(root);
+  const signal = new AbortController().signal;
+  expect(await adapter.observations.health(record, web, signal)).toMatchObject({
+    ready: false,
+  });
+  await adapter.build(
+    {
+      id: "service:web",
+      component: "web",
+      command: "pwd > built",
+      timeout: 10,
+    },
+    record,
+  );
+  await adapter.build(
+    {
+      id: "tool:ctl",
+      component: "ctl",
+      command: "pwd > tool-built",
+      timeout: 10,
+    },
+    record,
+  );
+  const real = await realpath(root);
+  expect(await readFile(join(root, "apps", "web", "built"), "utf8")).toBe(
+    `${join(real, "apps", "web")}\n`,
+  );
+  expect(await readFile(join(root, "tool-built"), "utf8")).toBe(`${real}\n`);
+  expect(await adapter.observations.health(record, web, signal)).toEqual({
+    ready: true,
+  });
+  // The same check without working_dir looks for the file at the root, where there is none.
+  const { workingDir: _root, ...atRoot } = web;
+  expect(
+    await adapter.observations.health(record, atRoot, signal),
+  ).toMatchObject({ ready: false });
 });
 test("cancelling a command health check terminates its probe process group", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-cancel-"));

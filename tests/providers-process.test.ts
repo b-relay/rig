@@ -756,3 +756,29 @@ test("output a rigd-held process writes rotates under the supervisor's log reten
   ).toEqual(["target.jsonl", "target.jsonl.1"]);
   await supervisor.stop(request.key, { graceMs: 1500 });
 });
+
+test("a start whose working directory is missing fails naming the directory, and nothing is spawned", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-process-cwd-"));
+  roots.push(root);
+  const supervisor = createChildSupervisor({ ...platform(), stateRoot: root });
+  supervisors.push(supervisor);
+  const cwd = join(root, "apps", "missing");
+  await expect(
+    supervisor.ensureRunning({
+      key: "target/web",
+      componentName: "web",
+      command: ["/bin/sh", "-c", "sleep 30"],
+      cwd,
+      env: { PATH: process.env.PATH! },
+      logRoot: root,
+      incarnation: "start-1",
+    }),
+  ).rejects.toMatchObject({
+    code: "PROCESS_START",
+    hint: "Create the directory, or correct the Service's working_dir in rig.yaml.",
+    details: { cause: `Its working directory ${cwd} is not a directory.` },
+  });
+  expect(await supervisor.observe("target/web")).toMatchObject({
+    state: "stopped",
+  });
+});

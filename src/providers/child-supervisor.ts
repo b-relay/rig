@@ -11,6 +11,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -443,6 +444,22 @@ export function createChildSupervisor(
     const command = options.captureCommand
       ? [...options.captureCommand, capturePath(request.key)]
       : request.command;
+    // A working directory that is not there fails the spawn; saying which directory is the actionable part.
+    if (
+      !(await stat(request.cwd).then(
+        (info) => info.isDirectory(),
+        () => false,
+      ))
+    )
+      throw new RigError(
+        "PROCESS_START",
+        "The managed component could not start.",
+        "Create the directory, or correct the Service's working_dir in rig.yaml.",
+        {
+          key: request.key,
+          cause: `Its working directory ${request.cwd} is not a directory.`,
+        },
+      );
     // The gate fails only once released, where a spawn failed at once: a program that is not there fails the start now.
     if (
       !findsExecutable(command[0]!, {

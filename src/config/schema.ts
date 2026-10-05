@@ -164,14 +164,14 @@ const envFile = (scope: ReferenceScope) =>
   z
     .union([text, z.array(text).min(1)])
     .describe(
-      `Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in \${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. ${referencesIn(scope)}`,
+      `Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in \${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. ${referencesIn(scope)}`,
     );
-const BUILD_RULE =
-  "run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only.";
+const buildRule = (where: string) =>
+  `run with /bin/sh -c ${where} during preparation, never as a start hook; explicit bindings must be localhost only.`;
 /** A shared or Tool build runs with Project inputs only. */
 const PROJECT_BUILD_REFERENCES = `${referencesIn("project")} A Service's environment is not available here.`;
 const build = command.describe(
-  `Shell build command ${BUILD_RULE} ${PROJECT_BUILD_REFERENCES}`,
+  `Shell build command ${buildRule("in the workspace")} ${PROJECT_BUILD_REFERENCES}`,
 );
 const buildTimeout = duration.describe(
   "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed.",
@@ -195,20 +195,39 @@ const restart = z
   .describe(
     "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
   );
+/** A directory inside the workspace, written relative to it: no absolute path, no ~, no '..' segment and no reference, so
+ * it can never name a directory outside the checkout a Target runs from. */
+export function insideWorkspace(value: string): boolean {
+  return (
+    !value.startsWith("/") &&
+    !value.startsWith("~") &&
+    !value.includes("${") &&
+    !value.split("/").includes("..")
+  );
+}
+const workingDir = text
+  .refine(
+    insideWorkspace,
+    "must be a directory inside the workspace, relative to it, such as apps/web: no absolute path, ~, '..' or reference",
+  )
+  .describe(
+    "Directory the Service's command, its build and a shell ready check run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root.",
+  );
 const serviceFields = {
   command: command.describe(
-    `Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
+    `Foreground shell command run with /bin/sh -c in working_dir (default: the workspace root); explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
   ),
   build: command
     .describe(
-      `Shell build command of this Service, ${BUILD_RULE} ${referencesIn("service")}`,
+      `Shell build command of this Service, ${buildRule("in its working_dir (default: the workspace root)")} ${referencesIn("service")}`,
     )
     .optional(),
   build_timeout: buildTimeout.optional(),
+  working_dir: workingDir.optional(),
   ports: ports.optional(),
   ready: health
     .describe(
-      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. ${referencesIn("service")}`,
+      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0 and runs in working_dir. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. ${referencesIn("service")}`,
     )
     .optional(),
   ready_timeout: duration

@@ -15,6 +15,7 @@ import { isStopDetached, serviceGraceMs } from "../domain/stop-budget";
 import type { ListenerEvidence } from "../providers/listener-inspection";
 import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
 import { declaredPorts, plannedRoutes } from "./ports";
+import { componentDirectory } from "../config/working-dir";
 import { randomUUID } from "node:crypto";
 
 export interface TargetEffectCheckpoint {
@@ -607,7 +608,7 @@ export function createTargetLifecycle(
         key,
         componentName: component.name,
         command: ["/bin/sh", "-c", component.command],
-        cwd: target.plan.workspacePath,
+        cwd: componentDirectory(target.plan, component),
         env,
         logRoot: target.logRoot,
         incarnation,

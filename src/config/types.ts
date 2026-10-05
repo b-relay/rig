@@ -29,6 +29,9 @@ interface ComponentContext {
 export interface ManagedComponent extends ComponentContext {
   kind: "managed";
   command: string;
+  /** The directory its command, build and shell readiness check run in, relative to the plan's workspacePath, such as
+   * apps/web; absent means the workspace root, as for every plan recorded before working_dir. */
+  workingDir?: string;
   /** The first declared port, the one status reports; absent when the Service declares none. */
   port?: number;
   /** Every declared port by name. A plan recorded before named ports carries only `port`. */

@@ -14,6 +14,7 @@ import {
   validHostname,
 } from "./schema";
 import { referenceResolver, type PublicInput } from "./references";
+import { planWorkingDir } from "./working-dir";
 import type {
   BuildUnit,
   EnvFileRef,
@@ -152,6 +153,7 @@ export function resolveTargetPlan(
   const components: PlanComponent[] = [
     ...services.map(([name, service]): PlanComponent => {
       const at = `services.${name}`;
+      const workingDir = planWorkingDir(service.working_dir);
       const run = references.shell(service.command, `${at}.command`);
       if (!localhostCommand(run.value))
         throw new ConfigError(
@@ -204,6 +206,7 @@ export function resolveTargetPlan(
         ],
         ...(inputs.length ? { commandInputs: inputs } : {}),
         command: run.value,
+        ...(workingDir !== undefined ? { workingDir } : {}),
         ...declaredPorts(name, service, ports),
         readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
         stopTimeout: durationSeconds(

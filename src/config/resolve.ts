@@ -7,6 +7,7 @@ import {
   parseProjectConfig,
   patchedSettings,
   proxyUpstream,
+  defaultProxy,
   rolePatch,
   localhostCommand,
   localhostHealth,
@@ -107,7 +108,15 @@ export function resolveTargetPlan(
     );
   const services = Object.entries(settings.services ?? {});
   const ports = resolvePorts(services, input);
-  const routes = settings.proxy ? planRoutes(settings.proxy, ports) : undefined;
+  // A Target with a hostname and no proxy routes '/' to its one Service with one port; validation refused any other.
+  const proxy =
+    settings.proxy ??
+    (resolvedDomain !== undefined
+      ? defaultProxy(settings.services)
+      : undefined);
+  const routes = proxy
+    ? planRoutes(proxy, settings.services ?? {}, ports)
+    : undefined;
   const root = routes?.find((route) => route.prefix === "/");
   const proxied = root?.service;
   const rootPort = root?.port;
@@ -297,11 +306,20 @@ export function resolveTargetPlan(
 /** The route map with concrete ports, longest prefix first so the first match is the most specific one. */
 function planRoutes(
   proxy: Readonly<Record<string, string>>,
+  services: NonNullable<ProjectConfig["services"]>,
   ports: Readonly<Record<string, number>>,
 ): PlanRoute[] {
   return Object.entries(proxy)
     .map(([prefix, reference]) => {
-      const upstream = proxyUpstream(reference)!;
+      const upstream = proxyUpstream(reference, services);
+      // Project validation refuses an upstream that names no declared port.
+      if ("problem" in upstream)
+        throw new ConfigError(
+          `Proxy '${prefix}': ${upstream.problem}.`,
+          "invalid_proxy",
+          { prefix },
+          "Name a Service with one port, or one of its ports, such as ${services.web.ports.http}.",
+        );
       return {
         // '/api/' and '/api' are one prefix: both match '/api' and everything below it.
         prefix: prefix === "/" ? prefix : prefix.replace(/\/+$/, ""),

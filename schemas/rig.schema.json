@@ -235,10 +235,10 @@
       },
       "additionalProperties": {
         "type": "string",
-        "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
-        "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+        "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
+        "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
       },
-      "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+      "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
     },
     "targets": {
       "description": "Which Targets are on, keyed by their fixed names working, stable and preview, each true, false or a settings patch. Without this key only working is on; with it, only the Targets it turns on are.",
@@ -305,10 +305,10 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
-                    "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+                    "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
+                    "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
                   },
-                  "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
                 },
                 "services": {
                   "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -529,10 +529,10 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
-                    "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+                    "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
+                    "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
                   },
-                  "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
                 },
                 "services": {
                   "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -753,10 +753,10 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "pattern": "^\\$\\{services\\.[a-z0-9][a-z0-9-]*\\.ports\\.[a-z0-9][a-z0-9-]*\\}$",
-                    "description": "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed."
+                    "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
+                    "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
                   },
-                  "description": "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required."
+                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
                 },
                 "services": {
                   "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",

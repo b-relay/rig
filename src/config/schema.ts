@@ -256,6 +256,9 @@ const toolFields = {
   ),
 };
 const tool = z.strictObject(toolFields);
+/** A proxy upstream: a Service name, `${services.<name>.port}`, or `${services.<name>.ports.<port>}`. */
+const PROXY_UPSTREAM =
+  /^(?:([a-z0-9][a-z0-9-]*)|\$\{services\.([a-z0-9][a-z0-9-]*)\.(?:port|ports\.([a-z0-9][a-z0-9-]*))\})$/;
 const proxy = z
   .record(
     z
@@ -267,15 +270,15 @@ const proxy = z
     z
       .string()
       .regex(
-        /^\$\{services\.[a-z0-9][a-z0-9-]*\.ports\.[a-z0-9][a-z0-9-]*\}$/,
-        "must be one declared port reference such as ${services.web.ports.http}",
+        PROXY_UPSTREAM,
+        "must name a Service, such as web, or one of its ports, such as ${services.web.ports.http}",
       )
       .describe(
-        "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed.",
+        "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed.",
       ),
   )
   .describe(
-    "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required.",
+    "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
   );
 /** Settings every role may patch. Maps merge per key; lists and scalars replace. */
 const patchFields = {
@@ -363,6 +366,7 @@ type GraphService = Fields & {
 };
 /** One settings graph as the cross-field rules read it: the base settings, or the base with one role's patch applied. */
 type GraphSettings = {
+  domain?: string;
   build?: string;
   environment?: Readonly<Record<string, string>>;
   env_file?: string | readonly string[];
@@ -461,6 +465,22 @@ export const projectConfigSchema = z
               );
       validateGraph(patchSettings(config, role) as GraphSettings, at, report);
     }
+    // A Target with a hostname needs to know which Service serves it: a proxy, or the one Service that has one port.
+    for (const role of TARGET_ROLES) {
+      if (!targetOn(config, role)) continue;
+      const patch = config.targets?.[role];
+      const patched = isRecord(patch) && patch.domain !== undefined;
+      // The working Target has a hostname only when its own patch sets one.
+      if (
+        role === "working" ? !patched : config.domain === undefined && !patched
+      )
+        continue;
+      const problem = missingProxy(
+        patchSettings(config, role) as GraphSettings,
+      );
+      if (problem)
+        report(patched ? ["targets", role, "domain"] : ["domain"], problem);
+    }
   });
 type ParsedProject = z.infer<typeof projectConfigSchema>;
 /** Project settings with one role's patch applied; the Target switches never merge into them. */
@@ -497,13 +517,61 @@ function patchSettings(config: Fields, role: TargetRole): Fields {
       );
   return mergeSettings(base, patch);
 }
-const PORT_REFERENCE = /^\$\{services\.([^.}]+)\.ports\.([^.}]+)\}$/;
-/** The Service and port a proxy value names. */
+/** The Service and port a proxy value names in one settings graph: a Service name or `${services.<name>.port}` means that
+ * Service's only port. A value that names no declared port says why, in words that name the fix. */
 export function proxyUpstream(
-  reference: string,
-): { service: string; port: string } | undefined {
-  const match = PORT_REFERENCE.exec(reference);
-  return match ? { service: match[1]!, port: match[2]! } : undefined;
+  value: string,
+  services: Readonly<
+    Record<string, { ports?: Readonly<Record<string, unknown>> }>
+  >,
+): { service: string; port: string } | { problem: string } {
+  const match = PROXY_UPSTREAM.exec(value);
+  if (!match) return { problem: `'${value}' names no Service or port` };
+  const service = match[1] ?? match[2]!,
+    named = match[3];
+  if (!Object.hasOwn(services, service))
+    return { problem: `'${service}' is not a declared Service` };
+  const ports = Object.keys(services[service]!.ports ?? {});
+  if (named !== undefined)
+    return ports.includes(named)
+      ? { service, port: named }
+      : {
+          problem: `'${service}.${named}' is not a declared Service port`,
+        };
+  if (ports.length === 1) return { service, port: ports[0]! };
+  return {
+    problem: ports.length
+      ? `'${service}' has ${ports.length} ports (${ports.join(", ")}); name one, such as \${services.${service}.ports.${ports[0]}}`
+      : `'${service}' declares no port to route to`,
+  };
+}
+/** The proxy a Target with a hostname but no proxy gets: '/' to the one Service that declares ports, when it declares
+ * exactly one. Undefined when no Service or several declare ports, or that Service declares several. */
+export function defaultProxy(
+  services: Readonly<
+    Record<string, { ports?: Readonly<Record<string, unknown>> }>
+  > = {},
+): Record<string, string> | undefined {
+  const serving = Object.entries(services).filter(
+    ([, service]) => Object.keys(service.ports ?? {}).length > 0,
+  );
+  return serving.length === 1 &&
+    Object.keys(serving[0]![1].ports ?? {}).length === 1
+    ? { "/": serving[0]![0] }
+    : undefined;
+}
+/** Why a Target that has a hostname has no route, naming what to add; undefined when a proxy, given or default, routes it. */
+function missingProxy(settings: GraphSettings): string | undefined {
+  if (settings.proxy || defaultProxy(settings.services)) return undefined;
+  const serving = Object.entries(settings.services ?? {}).filter(
+    ([, service]) => Object.keys(service.ports ?? {}).length > 0,
+  );
+  if (!serving.length)
+    return "No Service declares a port to serve this hostname; declare one, such as ports: { http: auto }, or remove the domain.";
+  const [name, service] = serving[0]!;
+  return serving.length > 1
+    ? `Several Services declare ports, so name the one that serves this hostname: add proxy: { /: ${name} }.`
+    : `Service '${name}' has several ports, so name the one that serves this hostname: add proxy: { /: \${services.${name}.ports.${Object.keys(service.ports!)[0]}} }.`;
 }
 /** Structural rules of one settings graph: dependency references and cycles, pinned ports, and proxy references. */
 function validateGraph(
@@ -562,14 +630,11 @@ function validateGraph(
         `Proxy '${prefix}' and '${twin}' are the same path.`,
       );
     else paths.set(path, prefix);
-    const upstream = proxyUpstream(reference);
-    if (
-      upstream &&
-      !Object.hasOwn(services[upstream.service]?.ports ?? {}, upstream.port)
-    )
+    const upstream = proxyUpstream(reference, services);
+    if ("problem" in upstream)
       report(
         [...at, "proxy", prefix],
-        `Proxy '${prefix}' references '${upstream.service}.${upstream.port}', which is not a declared Service port.`,
+        `Proxy '${prefix}': ${upstream.problem}.`,
       );
   }
 }

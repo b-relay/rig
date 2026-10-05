@@ -219,7 +219,7 @@ test("scaffold writes a Service, a Tool, or both, and refuses a Project with nei
       },
     },
     tools: { ctl: { build: "make ctl", bin: "bin/ctl" } },
-    proxy: { "/": "${services.web.ports.http}" },
+    // The one Service with one port serves the domain without a proxy.
     targets: names,
   });
   // Without a domain there is nothing to route; without a port Rig chooses one.
@@ -816,7 +816,9 @@ test("the patched model is validated, so a patch that breaks the graph is report
         preview: { proxy: { "/": "${services.b.ports.grpc}" } },
       },
     }),
-  ).toContain("targets.preview.proxy./: Proxy '/' references 'b.grpc'");
+  ).toContain(
+    "targets.preview.proxy./: Proxy '/': 'b.grpc' is not a declared Service port",
+  );
 });
 
 test("a proxy must include '/' and reference declared Service ports", () => {
@@ -843,16 +845,33 @@ test("a proxy must include '/' and reference declared Service ports", () => {
     "Fix proxy: A proxy needs a '/' entry.",
   );
   expect(hint({ "/": "${services.web.ports.grpc}" })).toContain(
-    "proxy./: Proxy '/' references 'web.grpc', which is not a declared Service port.",
+    "proxy./: Proxy '/': 'web.grpc' is not a declared Service port.",
   );
   expect(hint({ "/": "${services.missing.ports.http}" })).toContain(
-    "proxy./: Proxy '/' references 'missing.http'",
+    "proxy./: Proxy '/': 'missing' is not a declared Service",
   );
   expect(hint({ "/": "${services.constructor.ports.http}" })).toContain(
-    "'constructor.http', which is not a declared Service port",
+    "proxy./: Proxy '/': 'constructor' is not a declared Service",
   );
   expect(hint({ "/": "http://127.0.0.1:3000" })).toContain(
-    "proxy./: must be one declared port reference",
+    "proxy./: must name a Service, such as web, or one of its ports, such as ${services.web.ports.http}",
+  );
+  // A Service name, or ${services.<name>.port}, means that Service's only port.
+  expect(hint({ "/": "missing" })).toBe(
+    "Fix proxy./: Proxy '/': 'missing' is not a declared Service.",
+  );
+  expect(
+    hintOf({
+      name: "app",
+      services: {
+        ...services,
+        multi: { command: "m", ports: { http: "auto", admin: "auto" } },
+        worker: { command: "w" },
+      },
+      proxy: { "/": "multi", "/w": "worker", "/m": "${services.multi.port}" },
+    }),
+  ).toBe(
+    "Fix proxy./: Proxy '/': 'multi' has 2 ports (http, admin); name one, such as ${services.multi.ports.http}; proxy./w: Proxy '/w': 'worker' declares no port to route to; proxy./m: Proxy '/m': 'multi' has 2 ports (http, admin); name one, such as ${services.multi.ports.http}.",
   );
   expect(
     hint({
@@ -1754,7 +1773,144 @@ test("Target resolution provides forward port references, environment inheritanc
   });
 });
 
-test("rig.host and rig.url name the routed hostname, and are empty without a proxy", () => {
+test("proxy may name a Service for its only port, and a Target with a hostname and no proxy routes '/' to the one Service with one port", () => {
+  const services = {
+    web: { command: "web", ports: { http: "auto" } },
+    api: { command: "api", ports: { http: "auto", admin: "auto" } },
+    worker: { command: "worker" },
+  };
+  const routesOf = (config: Record<string, unknown>, target = "stable") =>
+    resolveTargetPlan({
+      config: parseProjectConfig({ name: "app", ...config }),
+      target: target as "working" | "stable" | "preview",
+      ...roots_,
+      assignedPorts: { "web.http": 4100, "api.http": 4200, "api.admin": 4201 },
+    }).proxy;
+  const long = routesOf({
+    domain: "app.test",
+    services,
+    proxy: {
+      "/": "${services.web.ports.http}",
+      "/api": "${services.api.ports.admin}",
+    },
+    targets: { stable: true },
+  });
+  expect(long).toEqual({
+    upstream: "web",
+    routes: [
+      { prefix: "/api", service: "api", port: 4201 },
+      { prefix: "/", service: "web", port: 4100 },
+    ],
+  });
+  expect(
+    routesOf({
+      domain: "app.test",
+      services,
+      proxy: { "/": "web", "/api": "${services.api.ports.admin}" },
+      targets: { stable: true },
+    }),
+  ).toEqual(long);
+  expect(
+    routesOf({
+      domain: "app.test",
+      services,
+      proxy: {
+        "/": "${services.web.port}",
+        "/api": "${services.api.ports.admin}",
+      },
+      targets: { stable: true },
+    }),
+  ).toEqual(long);
+  // The default: the one Service that declares ports, when it declares one.
+  const single = { web: services.web, worker: services.worker };
+  expect(
+    routesOf({
+      domain: "app.test",
+      services: single,
+      targets: { stable: true },
+    }),
+  ).toEqual({
+    upstream: "web",
+    routes: [{ prefix: "/", service: "web", port: 4100 }],
+  });
+  // A Target with no hostname gets no default route.
+  expect(
+    routesOf({ domain: "app.test", services: single }, "working"),
+  ).toBeUndefined();
+  // A patch may name the Service too.
+  expect(
+    routesOf(
+      {
+        services: single,
+        targets: { working: { domain: "dev.test", proxy: { "/": "web" } } },
+      },
+      "working",
+    ),
+  ).toEqual({
+    upstream: "web",
+    routes: [{ prefix: "/", service: "web", port: 4100 }],
+  });
+});
+
+test("a Target that is on and has a hostname but no usable proxy is refused with what to add", () => {
+  const issues = (config: Record<string, unknown>) =>
+    failureOf({ name: "app", ...config })?.context.issues;
+  const two = {
+    web: { command: "web", ports: { http: "auto" } },
+    api: { command: "api", ports: { http: "auto" } },
+  };
+  expect(
+    issues({ domain: "app.test", services: two, targets: { stable: true } }),
+  ).toEqual([
+    {
+      path: ["domain"],
+      message:
+        "Several Services declare ports, so name the one that serves this hostname: add proxy: { /: web }.",
+    },
+  ]);
+  expect(
+    issues({
+      domain: "app.test",
+      services: {
+        web: { command: "web", ports: { http: "auto", admin: 3000 } },
+      },
+      targets: { preview: true },
+    }),
+  ).toEqual([
+    {
+      path: ["domain"],
+      message:
+        "Service 'web' has several ports, so name the one that serves this hostname: add proxy: { /: ${services.web.ports.http} }.",
+    },
+  ]);
+  expect(
+    issues({
+      services: { worker: { command: "worker" } },
+      targets: { working: { domain: "dev.test" } },
+    }),
+  ).toEqual([
+    {
+      path: ["targets", "working", "domain"],
+      message:
+        "No Service declares a port to serve this hostname; declare one, such as ports: { http: auto }, or remove the domain.",
+    },
+  ]);
+  // A Target that is off, or has no hostname, needs no proxy: without targets only working is on, and it has no hostname.
+  expect(issues({ domain: "app.test", services: two })).toBeUndefined();
+  expect(
+    issues({ domain: "app.test", services: two, targets: { working: true } }),
+  ).toBeUndefined();
+  // A proxy in the role's patch is enough.
+  expect(
+    issues({
+      domain: "app.test",
+      services: two,
+      targets: { stable: { proxy: { "/": "api" } } },
+    }),
+  ).toBeUndefined();
+});
+
+test("rig.host and rig.url name the routed hostname, and are empty without a route", () => {
   const services = web({
     environment: { HOSTED: "${rig.host}", URL: "${rig.url}" },
   });
@@ -1772,10 +1928,12 @@ test("rig.host and rig.url name the routed hostname, and are empty without a pro
       proxy: { "/": "${services.web.ports.http}" },
     }),
   ).toEqual({ HOSTED: "app.test", URL: "https://app.test" });
+  // Without a proxy, the hostname routes '/' to the one Service with one port.
   expect(envOf({ name: "app", domain: "app.test", services })).toEqual({
-    HOSTED: "",
-    URL: "",
+    HOSTED: "app.test",
+    URL: "https://app.test",
   });
+  expect(envOf({ name: "app", services })).toEqual({ HOSTED: "", URL: "" });
 });
 
 test("Preview plans use assigned ports and ignore pins, keep Branch identity, and refuse missing or colliding ports", () => {

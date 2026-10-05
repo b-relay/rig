@@ -894,9 +894,20 @@ function EntryCard({
 function ProxySection({ path }: { path: string[] }) {
   const draft = useDraft();
   const services = getAt(draft.tree, ["services"]);
-  const first = isTree(services) ? Object.keys(services)[0] : undefined;
+  // A Service name means its only port; a Service with several ports needs one named.
+  const first = isTree(services)
+    ? Object.keys(services).find((name) => {
+        const ports = getAt(services, [name, "ports"]);
+        return isTree(ports) && Object.keys(ports).length > 0;
+      })
+    : undefined;
   const ports = first ? getAt(services, [first, "ports"]) : undefined;
-  const port = isTree(ports) ? Object.keys(ports)[0] : undefined;
+  const names = isTree(ports) ? Object.keys(ports) : [];
+  const upstream = !first
+    ? ""
+    : names.length === 1
+      ? first
+      : `\${services.${first}.ports.${names[0]}}`;
   return (
     <div className="max-w-xl">
       <Records
@@ -906,8 +917,8 @@ function ProxySection({ path }: { path: string[] }) {
         keyPattern={PROXY_PREFIX}
         keyPlaceholder="/api"
         valueKind="text"
-        valuePlaceholder="${services.web.ports.http}"
-        initial={first && port ? `\${services.${first}.ports.${port}}` : ""}
+        valuePlaceholder="web"
+        initial={upstream}
       />
     </div>
   );

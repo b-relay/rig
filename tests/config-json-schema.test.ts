@@ -164,8 +164,7 @@ test("each field that takes references lists the references valid there", () => 
     expect(domain.description).not.toContain("${rig.url}");
   }
   const upstream = project.properties.proxy.additionalProperties;
-  expect(upstream.description).toContain(
-    "exactly one ${services.<service>.ports.<port>}",
-  );
+  expect(upstream.description).toContain("a Service name such as web");
+  expect(upstream.description).toContain("${services.web.ports.http}");
   expect(upstream.pattern).toBeString();
 });

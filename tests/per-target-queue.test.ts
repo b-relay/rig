@@ -651,7 +651,7 @@ test("a slow automatic restart hands its Target over to its lease; the pass retu
   expect(await settled(second)).toBe(false);
   budget.expire();
   expect(await second).toEqual({});
-  // alpha's restart still holds alpha: an operator's down waits behind it and says so.
+  // alpha's restart still holds alpha: an operator's down waits behind it and says it is starting.
   const down = f.runtime.command({
     action: "down",
     project: "alpha",
@@ -663,7 +663,14 @@ test("a slow automatic restart hands its Target over to its lease; the pass retu
   ).toMatchObject({
     operation: {
       state: "waiting",
-      waitingOn: [{ action: "supervise", project: "alpha", target: "local" }],
+      waitingOn: [
+        {
+          action: "supervise",
+          project: "alpha",
+          target: "local",
+          phase: "starting",
+        },
+      ],
     },
   });
   // A later pass skips alpha while its restart runs and is not held up by it.

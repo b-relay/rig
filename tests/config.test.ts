@@ -1127,6 +1127,20 @@ test("a health block is refused wherever a Service is spelled, naming ready and 
   expect(
     resolveTargetPlan({ config, target: "local", ...roots_ }).components,
   ).toMatchObject([{ name: "web", health: "true", readyTimeout: 60 }]);
+  // A reference to ready_timeout reads the selected Target's value, its role's patch included.
+  const referenced = parseProjectConfig({
+    name: "app",
+    services: web({
+      ready_timeout: "1m",
+      env: { READY_TIMEOUT: "${services.web.ready_timeout}" },
+    }),
+    targets: { stable: { services: { web: { ready_timeout: "5m" } } } },
+  });
+  const readyEnv = (target: "local" | "live") =>
+    resolveTargetPlan({ config: referenced, target, ...roots_ }).components[0]!
+      .env;
+  expect(readyEnv("local")).toMatchObject({ READY_TIMEOUT: "1m" });
+  expect(readyEnv("live")).toMatchObject({ READY_TIMEOUT: "5m" });
 });
 
 test("durations are written like 30s, 10m or 1h, bounded to one day, and reach the plan in seconds", () => {

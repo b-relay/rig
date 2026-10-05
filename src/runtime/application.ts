@@ -68,7 +68,11 @@ import { persistTarget, planTarget, selectTarget } from "./targets";
 import { configDigest } from "../config/config-digest";
 import { assertLogServices } from "./log-services";
 import { PREVIEW_SELECTOR, targetNames } from "../config/schema";
-import { assertSourceBuildsKnown, withStops } from "./lifecycle";
+import {
+  assertSourceBuildsKnown,
+  type TargetLifecycle,
+  withStops,
+} from "./lifecycle";
 import { isStopDetached } from "../domain/stop-budget";
 import {
   activeStops,
@@ -1498,7 +1502,19 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       entry.view.target = target.name;
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
-      const lifecycle = lifecycleOf(entry);
+      const observing = lifecycleOf(entry);
+      // While it starts a Service again the pass is starting, not observing, so a command queued behind it says so.
+      const lifecycle: TargetLifecycle = {
+        ...observing,
+        async recover(recovering, service, journal, stops) {
+          entry.view.phase = "starting";
+          try {
+            return await observing.recover(recovering, service, journal, stops);
+          } finally {
+            entry.view.phase = initialPhase(action);
+          }
+        },
+      };
       if (target.desired === "running") {
         // A Stable Target whose failed start after a Host restart could not be recorded has it recorded by each later pass
         // of this daemon until that succeeds, and nothing of it is started or supervised until then.

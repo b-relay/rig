@@ -616,6 +616,54 @@ test("a health URL with an uppercase scheme is probed over HTTP rather than run 
   }
 });
 
+test("a healthcheck's timeout bounds each HTTP check, so a late or stalled answer fails within it instead of passing or holding the start gate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-http-timeout-"));
+  roots.push(root);
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      // /late answers after 1.5 s; /stalled never does.
+      if (new URL(request.url).pathname === "/late") {
+        await Bun.sleep(1500);
+        return new Response("ok");
+      }
+      return await new Promise<Response>(() => {});
+    },
+  });
+  try {
+    for (const path of ["/late", "/stalled"]) {
+      const component = {
+        name: "web",
+        kind: "managed" as const,
+        command: "serve",
+        port: server.port!,
+        readyTimeout: 30,
+        env: {},
+        dependsOn: [],
+        health: `http://127.0.0.1:${server.port}${path}`,
+        healthcheck: {
+          interval: 30,
+          timeout: 1,
+          retries: 3,
+          onFailure: "report" as const,
+        },
+      };
+      const started = Date.now();
+      await expect(
+        effects(root).observations.health(
+          target(root),
+          component,
+          new AbortController().signal,
+        ),
+      ).resolves.toEqual({ ready: false, reason: "timed out after 1s" });
+      expect(Date.now() - started).toBeLessThan(1400);
+    }
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("an installation receipt survives a change in the daemon's inherited environment or an env file's contents but not in the Project's declared env", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-install-receipt-env-"));
   const operator = await mkdtemp(join(tmpdir(), "rig-install-operator-"));

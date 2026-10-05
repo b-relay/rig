@@ -320,14 +320,28 @@ export function createTargetEffects(
     const timeoutMs = (component.healthcheck?.timeout ?? 2) * 1000;
     try {
       if (isHealthUrl(component.health!)) {
-        const response = await fetch(component.health!, {
-          signal,
-          redirect: "manual",
-        });
-        await response.body?.cancel();
-        return response.status < 400
-          ? { ready: true }
-          : { ready: false, reason: `HTTP ${response.status}` };
+        // A healthcheck's timeout bounds each request, at start and while it runs; a `ready` URL a plan recorded before
+        // healthcheck is bounded by its start budget alone, as it was.
+        const late = component.healthcheck
+          ? AbortSignal.timeout(timeoutMs)
+          : undefined;
+        try {
+          const response = await fetch(component.health!, {
+            signal: late ? AbortSignal.any([signal, late]) : signal,
+            redirect: "manual",
+          });
+          await response.body?.cancel();
+          return response.status < 400
+            ? { ready: true }
+            : { ready: false, reason: `HTTP ${response.status}` };
+        } catch (error) {
+          if (!signal.aborted && late?.aborted)
+            return {
+              ready: false,
+              reason: `timed out after ${timeoutMs / 1000}s`,
+            };
+          throw error;
+        }
       }
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],

@@ -380,7 +380,6 @@ const SECTION_ROOTS: Record<Section, readonly string[]> = {
     "description",
     "production_branch",
     "domain",
-    "supervisor",
     "build",
     "build_timeout",
   ],
@@ -701,12 +700,6 @@ function ProjectSection() {
         label="Domain"
         placeholder={`${typeof name === "string" ? name : "app"}.example.com`}
       />
-      <Choice
-        path={["supervisor"]}
-        label="Supervisor"
-        defaultOption="rigd"
-        options={["rigd", "launchd"]}
-      />
       <Text path={["build"]} label="Build command" mono />
       <Text
         path={["build_timeout"]}
@@ -974,12 +967,6 @@ function TargetsSection() {
           placeholder={
             role === "preview" ? "${rig.target}.preview.app.test" : undefined
           }
-        />
-        <Choice
-          path={[...path, "supervisor"]}
-          label="Supervisor"
-          unsetLabel="As the Project"
-          options={["rigd", "launchd"]}
         />
         <div className="grid gap-4 sm:grid-cols-2">
           <Text path={[...path, "build"]} label="Build command" mono />

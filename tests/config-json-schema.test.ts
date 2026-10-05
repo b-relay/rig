@@ -41,7 +41,7 @@ test("the Project schema names its draft, identity and the public top-level sett
   expect(project.required).toEqual(["format", "name"]);
   expect(project.properties.format.const).toBe("rig/v2");
   expect(project.additionalProperties).toBe(false);
-  expect(project.properties.supervisor.enum).toEqual(["rigd", "launchd"]);
+  expect(project.properties.supervisor).toBeUndefined();
   expect(service.properties.restart.enum).toEqual([
     "always",
     "on-failure",
@@ -103,9 +103,6 @@ test("every default the schema shows is the value planning applies when the sett
     const [, amount, unit] = /^(\d+)(s|m|h)$/.exec(duration)!;
     return Number(amount) * { s: 1, m: 60, h: 3600 }[unit as "s" | "m" | "h"];
   };
-  expect(project.properties.supervisor.default).toBe(
-    plan.providers.processSupervisor,
-  );
   expect(
     plan
       .builds!.map((unit) => unit.timeout)

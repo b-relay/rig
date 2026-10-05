@@ -681,7 +681,6 @@ test("a Target name that merely resembles a Preview name is accepted", () => {
 test("settings patches merge maps and replace lists and scalars, without leaking the Target name or changing the base", () => {
   const config = parseProjectConfig({
     name: "app",
-    supervisor: "rigd",
     env: { A: "base", B: "base" },
     env_file: ["one.env", "two.env"],
     services: {
@@ -698,7 +697,6 @@ test("settings patches merge maps and replace lists and scalars, without leaking
     targets: {
       working: {
         name: "dev",
-        supervisor: "launchd",
         env: { B: "patched", C: "patched" },
         env_file: ["dev.env"],
         services: {
@@ -717,7 +715,6 @@ test("settings patches merge maps and replace lists and scalars, without leaking
   const working = patchedSettings(config, "working");
   expect(working).toEqual({
     name: "app",
-    supervisor: "launchd",
     env: { A: "base", B: "patched", C: "patched" },
     env_file: ["dev.env"],
     services: {
@@ -1074,31 +1071,28 @@ test.each([
   expect(config.services!.web).toMatchObject({ health: { check: ready } });
 });
 
-test("an unknown supervisor is rejected with the valid choices, at every level that takes one", () => {
+test("the removed supervisor setting is refused with guidance to delete it, at every level that took one, and rigd supervises every plan", () => {
   for (const [path, extra] of [
-    ["supervisor", { supervisor: "launchdd" }],
+    ["supervisor", { supervisor: "launchd" }],
+    ["supervisor", { format: "rig/v2", supervisor: "rigd" }],
     [
       "targets.stable.supervisor",
-      { targets: { stable: { supervisor: "systemd" } } },
+      { targets: { stable: { supervisor: "launchd" } } },
     ],
   ] as const)
     expect(failureOf({ name: "app", services: web(), ...extra })).toMatchObject(
       {
         code: "invalid_config",
-        hint: `Fix ${path}: must be one of "rigd", "launchd".`,
+        hint: `Fix ${path}: was removed because rigd supervises every Service; delete this line.`,
       },
     );
-  const config = parseProjectConfig({
-    name: "app",
-    services: web(),
-    targets: { stable: { supervisor: "launchd" } },
-  });
+  const config = parseProjectConfig({ name: "app", services: web() });
   const supervisorOf = (target: "local" | "live") =>
     resolveTargetPlan({ config, target, ...roots_ }).providers
       .processSupervisor;
   expect([supervisorOf("local"), supervisorOf("live")]).toEqual([
     "rigd",
-    "launchd",
+    "rigd",
   ]);
 });
 
@@ -1472,7 +1466,6 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
   const config = parseProjectConfig({
     name: "app",
     domain: "example.com",
-    supervisor: "launchd",
     services: {
       web: {
         run: "serve --port ${services.web.ports.http}",
@@ -1506,7 +1499,7 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
     domain: "feature-test-0a1b2c3d.example.com",
     branch: "feature/test",
     commit: "abc",
-    providers: { processSupervisor: "launchd" },
+    providers: { processSupervisor: "rigd" },
     proxy: { upstream: "web" },
   });
   expect(plan.components).toMatchObject([

@@ -913,13 +913,14 @@ function waitingText(
     : `waiting for port ${first}, which still accepts connections, to be free`;
 }
 
-/** Who recorded an end the application's own record does not describe. */
+/** Who recorded an end the application's own record does not describe. `launchd` appears only in outcomes recorded by Rig
+ * versions that offered launchd supervision. */
 const WITNESSES = {
   launchd: "from launchd's record of its job",
   rigd: "from rigd's record of its capture wrapper",
 } as const;
 
-/** "exited with code 3", "was ended by SIGKILL", "was ended by SIGTERM (from launchd's record of its job)". */
+/** "exited with code 3", "was ended by SIGKILL", "was ended by SIGTERM (from rigd's record of its capture wrapper)". */
 export function describeExit(
   outcome: Extract<ServiceOutcome, { kind: "exited" }>,
 ): string {

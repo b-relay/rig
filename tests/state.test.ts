@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileStateStore } from "../src/runtime/state-store";
+import { describeExit } from "../src/runtime/supervision";
 
 test("registration survives reopening and serialized concurrent updates preserve both projects", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-"));
@@ -294,6 +295,53 @@ test("a state file written by a newer or an older rigd is refused unread with bo
       });
       expect(await readFile(path, "utf8")).toBe(old);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a plan an older Rig recorded under launchd supervision is read as rigd's and saved so, and an exit launchd witnessed is still read and described", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-launchd-plan-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const recorded = structuredClone(inventory);
+    const target = recorded.targets[0]!;
+    target.plan.providers.processSupervisor = "launchd";
+    Object.assign(target, {
+      recovery: {
+        plan: structuredClone(target.plan),
+        desired: "stopped",
+        stage: "pending",
+      },
+      services: {
+        web: {
+          deployment: "/tmp/demo",
+          intent: "stopped",
+          attempts: [],
+          outcome: {
+            kind: "exited",
+            signal: "SIGTERM",
+            recordedBy: "launchd",
+            at: "2026-09-27T04:00:00.000Z",
+          },
+        },
+      },
+    });
+    await writeFile(path, JSON.stringify({ version: 4, ...recorded }));
+    const store = new FileStateStore(root);
+    const read = (await store.read()).targets[0]!;
+    expect(read.plan.providers.processSupervisor).toBe("rigd");
+    expect(read.recovery!.plan.providers.processSupervisor).toBe("rigd");
+    const outcome = read.services!.web!.outcome!;
+    expect(outcome).toMatchObject({ kind: "exited", recordedBy: "launchd" });
+    expect(describeExit(outcome as Parameters<typeof describeExit>[0])).toBe(
+      "was ended by SIGTERM (from launchd's record of its job)",
+    );
+    await store.update(() => {});
+    expect(
+      JSON.parse(await readFile(path, "utf8")).targets[0].plan.providers,
+    ).toEqual({ processSupervisor: "rigd" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -45,7 +45,6 @@ export interface ConfigJsonSchemas {
 const planningDefaults = (
   format: ConfigFormat,
 ): readonly (readonly [readonly string[], string | number])[] => [
-  [["supervisor"], "rigd"],
   [["build_timeout"], "10m"],
   [
     ["services", "*", ...servicePathIn(format, ["health", "start_timeout"])],

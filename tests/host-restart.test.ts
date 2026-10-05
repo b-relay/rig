@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { localActivation } from "./support/activation-doubles";
@@ -207,6 +207,7 @@ async function fixture() {
   const targetId = async (kind: "local" | "live" | "preview") =>
     (await store.read()).targets.find((t) => t.kind === kind)!.id;
   const f = {
+    root,
     clock,
     host,
     processes,
@@ -342,6 +343,58 @@ test("the first daemon to record a Host session detects nothing and records the 
     login: "100002",
   });
   expect(await f.activitySince(0)).toEqual(["init/registered -"]);
+});
+
+test("after an upgrade, a stopped Stable Target whose plan names the removed launchd supervisor starts, restarts and stops under rigd", async () => {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "demo", target: "live" });
+  await f.command({ action: "down", project: "demo", target: "live" });
+  // What a Rig that offered launchd supervision left: the same plan, naming launchd. This daemon has only rigd's supervisor.
+  const path = join(f.root, "runtime", "state.json");
+  const recorded = JSON.parse(await readFile(path, "utf8"));
+  recorded.targets.find(
+    (target: { kind: string }) => target.kind === "live",
+  ).plan.providers.processSupervisor = "launchd";
+  await writeFile(path, JSON.stringify(recorded));
+  f.reopen();
+  await f.reconcile();
+  const plan = async () =>
+    (await f.store.read()).targets.find((target) => target.kind === "live")!
+      .plan;
+  expect((await plan()).providers.processSupervisor).toBe("rigd");
+  // Not config drift: the recorded plan is what rig.yaml plans now.
+  const doctor = (await f.command({ action: "doctor", project: "demo" })) as {
+    checks: { name: string; ok: boolean }[];
+  };
+  expect(
+    doctor.checks.find((check) => check.name === "live/config"),
+  ).toMatchObject({ ok: true });
+
+  const live = { project: "demo", target: "live" } as const;
+  expect(await f.command({ action: "up", ...live })).toMatchObject({
+    outcome: "started",
+  });
+  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  const startsBefore = f.starts.length;
+  expect(await f.command({ action: "restart", ...live })).toMatchObject({
+    action: "restart",
+    outcome: "started",
+  });
+  expect(await f.startedSince("live", startsBefore)).toEqual([
+    "db",
+    "api",
+    "worker",
+  ]);
+  expect(await f.command({ action: "down", ...live })).toMatchObject({
+    outcome: "stopped",
+  });
+  expect(await f.running("live")).toEqual([]);
+  // The state file now says what this rigd read.
+  expect(
+    JSON.parse(await readFile(path, "utf8")).targets.find(
+      (target: { kind: string }) => target.kind === "live",
+    ).plan.providers,
+  ).toEqual({ processSupervisor: "rigd" });
 });
 
 test("after a reboot every Stable Target meant to run comes back in dependency order, with one Host-restarted event and one start per Target, while the Working copy and Previews stay stopped", async () => {

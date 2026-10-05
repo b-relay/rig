@@ -74,12 +74,13 @@ rigd
 └─ capture <request-file>           internal; see below
 ```
 
-`rigd capture` is not a user command. Under the `launchd` supervisor, launchd
-runs `rigd capture <request-file>` for each Service instead of the Service's
-own command. The wrapper starts the Service as its child, writes its output to
-the Target logs, and records its status and exit, which launchd alone would
-not give Rig. The request file is a small JSON document `rigd` writes for that
-Service: its command, working directory, environment, and log directory.
+`rigd capture` is not a user command. `rigd`'s child supervisor runs
+`rigd capture <request-file>` for each Service instead of the Service's own
+command. The wrapper starts the Service as its child, writes its output to the
+Target logs, and records its status and exit, so how the Service ended is
+known even when `rigd` was not there to see it. The request file is a small
+JSON document `rigd` writes for that Service: its command, working directory,
+environment, and log directory.
 
 ## Behavior The Tree Does Not Show
 
@@ -98,9 +99,9 @@ Service: its command, working directory, environment, and log directory.
 - `logs --service` takes a Service or Tool name from `rig.yaml`, or `setup`
   for dependency installation; an unknown name fails as `USAGE` and lists the
   Target's names. `--since` and `--until` are inclusive, and leave out lines
-  with no recorded time (the files launchd writes for a job). A time is a
-  duration back from now (`90s`, `15m`, `1h`, `2d`, `1w`, or combined as
-  `1h30m`) or an ISO time with a zone (`2026-09-28T03:00:00Z`,
+  with no recorded time (the files launchd wrote for a job under an older
+  Rig). A time is a duration back from now (`90s`, `15m`, `1h`, `2d`, `1w`, or
+  combined as `1h30m`) or an ISO time with a zone (`2026-09-28T03:00:00Z`,
   `2026-09-28T05:00:00+02:00`). How much history exists to filter depends on
   the Host `logs` settings (see the guide's Logs section).
 - `init` writes one Service (`--service` with `--run`) or one Tool (`--tool`

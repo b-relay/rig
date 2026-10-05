@@ -876,7 +876,7 @@ the Project, the Target role and name, the workspace path, the Persistent
 storage root, Branch and Commit, the process supervisor, env and env files,
 builds, the hostname with its proxy routes, and the components. Each component
 carries its command, ports, health check, ready timeout, restart policy, and
-dependencies. The process supervisor is the single provider selection.
+dependencies. The process supervisor is always `rigd`.
 
 _Relationship_: Runtime plans are resolved by `rigd`, not by provider
 adapters. Providers receive resolved context and capabilities rather than
@@ -906,9 +906,9 @@ _Relationship_: Project config can be valid Project policy even on a Host that
 cannot currently satisfy it. `rig doctor` reports missing
 Host capabilities rather than treating portable Project config as invalid.
 
-_Relationship_: The one provider choice in Project config is `supervisor`:
-`rigd` or `launchd`, set for the whole Project or per role under
-`targets.<role>.supervisor`. A Service has no `supervisor` setting of its own.
+_Relationship_: Project config chooses no provider. `rigd` supervises every
+Service; the `supervisor` setting that once chose per-Service launchd agents is
+refused, and a plan recorded with `launchd` is read as `rigd`'s.
 
 _Relationship_: Test doubles for providers live in tests. They do not appear in
 config, help, or provider choices.
@@ -916,7 +916,7 @@ config, help, or provider choices.
 ### Provider adapter
 
 A focused concrete implementation of one provider contract, such as rigd
-process supervision, launchd process supervision, Caddy proxy routing, Git
-source materialization, or Tool artifact installation. Each provider adapter
+process supervision, Caddy proxy routing, Git source materialization, or Tool
+artifact installation. Each provider adapter
 lives in its own focused module rather than inside the provider contract
 module.

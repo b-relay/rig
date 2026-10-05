@@ -179,7 +179,7 @@ const services = z
               .enum(["launchd", "rigd"])
               .optional()
               .describe(
-                "Who saw the end when the application's own exit record was missing: launchd's record of its capture wrapper's job, or rigd's record of the wrapper it spawned.",
+                "Who saw the end when the application's own exit record was missing: rigd's record of the wrapper it spawned, or launchd's record of its capture wrapper's job (recorded by Rig versions that offered launchd supervision).",
               ),
             at,
           }),

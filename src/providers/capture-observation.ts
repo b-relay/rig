@@ -73,51 +73,6 @@ export async function writeCaptureObservation(
   }
 }
 
-/** Evidence older than this at read time no longer describes the application; the wrapper republishes at least every 250 ms. */
-const FRESHNESS_MS = 1000;
-/** Only fresh evidence from the current launchd wrapper can describe its application. */
-export async function readCaptureObservation(request: {
-  requestPath: string;
-  wrapperPid: number;
-  inspect: ProcessIdentityReader;
-  now: () => number;
-  signal?: AbortSignal;
-}): Promise<ProcessObservation> {
-  const unknown: ProcessObservation = {
-    state: "unknown",
-    reason: "Current application ownership and state could not be verified.",
-  };
-  try {
-    if (request.signal?.aborted) return unknown;
-    const evidence = observationSchema.parse(
-      JSON.parse(
-        await readFile(`${request.requestPath}.observation.json`, "utf8"),
-      ),
-    );
-    // Freshness is judged at read time; identity inspections that follow may be slow on a loaded Host.
-    const age = request.now() - evidence.observedAt;
-    if (age < 0 || age > FRESHNESS_MS) return unknown;
-    if (
-      evidence.wrapperPid !== request.wrapperPid ||
-      (await request.inspect(request.wrapperPid)) !== evidence.wrapperIdentity
-    )
-      return unknown;
-    const observation = evidence.observation;
-    if (
-      observation.state === "running" &&
-      (!observation.pid ||
-        !evidence.applicationIdentity ||
-        (await request.inspect(observation.pid)) !==
-          evidence.applicationIdentity)
-    )
-      return unknown;
-    if (request.signal?.aborted) return unknown;
-    return observation;
-  } catch {
-    return unknown;
-  }
-}
-
 /** What a supervisor reports about the application of a capture wrapper that is gone: nothing when that application is gone
  * too (or none was ever recorded), and an `unknown` observation when it may still run. The application is known from the
  * wrapper's last observation and from the lease the wrapper's own supervisor writes, beside the request, as soon as it spawns

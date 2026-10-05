@@ -1,8 +1,8 @@
 import { RigError } from "./errors";
 
 /** How long a Service may take to stop, and every wait on the stop path derived from it. A Service's `stop_timeout` is the one
- * source: the capture wrapper's grace for its application, rigd's wait for the wrapper, launchd's ExitTimeOut and the
- * launchd unload wait all follow from it, so no outer layer kills the wrapper before the application's grace can finish. */
+ * source: the capture wrapper's grace for its application and rigd's wait for the wrapper both follow from it, so rigd never
+ * kills the wrapper before the application's grace can finish. */
 
 /** The grace a Service gets when its config sets no `stop_timeout`: 10 s. */
 export const DEFAULT_STOP_TIMEOUT_SECONDS = 10;
@@ -21,7 +21,7 @@ export const PLATFORM_STOP_TIMINGS: StopTimings = {
   killWaitMs: 1500,
   headroomMs: 2000,
 };
-/** Every wait of one stop, in milliseconds except `exitTimeOutSeconds`. */
+/** Every wait of one stop, in milliseconds. */
 export interface StopBudget {
   /** The application's grace after SIGTERM before SIGKILL: its `stop_timeout`. */
   readonly graceMs: number;
@@ -32,28 +32,17 @@ export interface StopBudget {
   /** How long a supervisor waits for a capture wrapper after it asked for a kill: the wrapper's own kill wait, the
    * application's kill wait, and headroom. */
   readonly killedWrapperMs: number;
-  /** The launchd plist's ExitTimeOut: launchd's wait for the wrapper after SIGTERM, in whole seconds, never less than
-   * `wrapperMs`, and at least 1 (launchd reads 0 as forever). */
-  readonly exitTimeOutSeconds: number;
-  /** How long the launchd supervisor waits for a booted-out job to leave: launchd's ExitTimeOut, then its SIGKILL's
-   * kill wait, and headroom for launchctl. */
-  readonly unloadMs: number;
 }
 /** The budget of a stop whose application has `graceMs` to exit after SIGTERM. */
 export function stopBudget(
   graceMs: number,
   timings: StopTimings = PLATFORM_STOP_TIMINGS,
 ): StopBudget {
-  const wrapperMs = graceMs + timings.killWaitMs + timings.headroomMs;
-  const exitTimeOutSeconds = Math.max(1, Math.ceil(wrapperMs / 1000));
   return {
     graceMs,
     killWaitMs: timings.killWaitMs,
-    wrapperMs,
+    wrapperMs: graceMs + timings.killWaitMs + timings.headroomMs,
     killedWrapperMs: 2 * timings.killWaitMs + timings.headroomMs,
-    exitTimeOutSeconds,
-    unloadMs:
-      exitTimeOutSeconds * 1000 + timings.killWaitMs + timings.headroomMs,
   };
 }
 /** A Service's grace in milliseconds from the seconds its recorded plan holds; a plan recorded before `stop_timeout`

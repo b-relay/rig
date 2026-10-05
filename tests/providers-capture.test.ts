@@ -10,7 +10,7 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-test("the launchd capture entrypoint preserves the real app exit code and stream identity", async () => {
+test("the capture entrypoint preserves the real app exit code and stream identity", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-"));
   roots.push(root);
   const requestPath = join(root, "request.json");

@@ -141,7 +141,6 @@ export function resolveTargetPlan(
     );
   const projectEnv = publicEnv(settings.env ?? {}, "env");
   const projectFiles = envFiles(settings.env_file, "env_file", []);
-  const projectSupervisor = settings.supervisor ?? "rigd";
   const buildTimeout = (override: string | undefined) =>
     durationSeconds(override ?? settings.build_timeout ?? "10m");
   const builds: BuildUnit[] = [];
@@ -287,7 +286,7 @@ export function resolveTargetPlan(
     subdomain: deploymentName,
     ...(input.branch ? { branch: input.branch } : {}),
     ...(input.commit ? { commit: input.commit } : {}),
-    providers: { processSupervisor: projectSupervisor },
+    providers: { processSupervisor: "rigd" },
     env: projectEnv,
     envFiles: projectFiles,
     components: ordered,

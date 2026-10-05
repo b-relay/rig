@@ -141,7 +141,7 @@ export function NewProjectForm() {
                 <Field
                   label="Domain"
                   htmlFor="domain"
-                  help="Optional. The stable Target serves it; a Preview gets the first label, a dash and its name, as in app-feature-1a2b3c4d.example.com."
+                  help="Optional, and only with a Service. The stable Target serves it once turned on; a Preview gets the first label, a dash and its name, as in app-feature-1a2b3c4d.example.com."
                 >
                   <Input
                     id="domain"

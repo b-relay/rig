@@ -318,6 +318,41 @@ test("a scaffolded domain gives the Stable Target the hostname, every Preview it
 // Editing
 // ---------------------------------------------------------------------------
 
+test("a rig-recipe comment left by an older Rig is only a comment: the config reads and plans as before, and an edit keeps it", async () => {
+  const root = await fixture(),
+    path = join(root, "rig.yaml"),
+    original = [
+      "name: pantry",
+      "services:",
+      "  # rig-recipe: postgres@1 name=db",
+      "  db:",
+      "    run: postgres",
+      "    ports: { pg: auto }",
+      "  # rig-recipe: not a form any Rig wrote",
+      "  web:",
+      "    run: serve",
+      "",
+    ].join("\n");
+  await writeFile(path, original);
+  const before = await readProjectConfig(root);
+  expect(Object.keys(before.config.services ?? {})).toEqual(["db", "web"]);
+  const plan = resolveTargetPlan({
+    config: before.config,
+    target: "local",
+    ...roots_,
+    assignedPorts: { db: 5544 },
+  });
+  expect(JSON.stringify(plan)).not.toContain("rig-recipe");
+  await editProjectConfig({
+    repoPath: root,
+    expectedRevision: before.revision,
+    edits: [{ path: ["services", "web", "run"], value: "serve --port 1" }],
+  });
+  expect(await readFile(path, "utf8")).toBe(
+    original.replace("run: serve\n", "run: serve --port 1\n"),
+  );
+});
+
 test("structured YAML edits retain comments/order and backups and reject stale or invalid updates", async () => {
   const root = await fixture(),
     path = join(root, "rig.yaml"),

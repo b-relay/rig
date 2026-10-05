@@ -25,11 +25,10 @@ export type { ConfigEdit } from "./editor";
 import {
   DEFAULT_TARGET_NAMES,
   parseHostConfig,
-  declaredFormat,
   parseProjectConfig,
   parseProjectDocument,
 } from "./schema";
-import { LATEST_FORMAT, type ConfigFormat, type FoundFormat } from "./formats";
+import { LATEST_FORMAT, type ConfigFormat } from "./formats";
 import { upgradeYamlText } from "./upgrade";
 import { unifiedDiff } from "./text-diff";
 import { isDeepStrictEqual } from "node:util";
@@ -211,33 +210,6 @@ export async function discoverProject(
         { startPath },
         "Run rig init in a repository, or select a registered Project.",
       );
-    directory = parent;
-  }
-}
-/** The nearest rig.yaml at or above `startPath` and the format it declares, read without validating the rest; undefined
- * when there is none or it cannot be read as YAML. */
-export async function findDeclaredFormat(
-  startPath: string,
-): Promise<FoundFormat | undefined> {
-  let directory = resolve(startPath);
-  for (;;) {
-    const path = await locateConfig(directory, "rig").catch(() => undefined);
-    if (path) {
-      try {
-        return {
-          path,
-          format: declaredFormat(
-            yamlDocument(await readFile(path, "utf8"), path).toJS({
-              maxAliasCount: 0,
-            }),
-          ),
-        };
-      } catch {
-        return undefined;
-      }
-    }
-    const parent = dirname(directory);
-    if (parent === directory) return undefined;
     directory = parent;
   }
 }

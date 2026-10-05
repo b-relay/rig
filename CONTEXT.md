@@ -223,13 +223,6 @@ _Relationship_: `healthy` means a configured health check passed. A managed
 component without a configured health check may be `running`, but should not be
 reported as `healthy` without evidence.
 
-_Relationship_: A Service with `health.interval` has **ongoing checks**: `rigd`
-keeps running its health check while it runs, and status shows the last
-result instead of checking. `health.failures` failed checks in a row mark it
-**unhealthy**; `health.on_failure` decides whether Rig only reports that or
-also makes a **health restart**, which is separate from an automatic restart
-and its budget.
-
 _Relationship_: A Target may be running while its components have different
 states. `rig status` should show the Target state first and component states
 underneath it.
@@ -452,14 +445,11 @@ _Relationship_: There is no blanket `--json` flag; `--json` is per command
 `rigd` control-plane API or the config files.
 
 _Relationship_: There is no `rig config set` or `rig config get`. Project
-config is created by `rig init`, changed by direct file edits (or moved to a
-newer Config format by `rig config upgrade`), and validated by `rig doctor` and
-whenever a Target is planned.
+config is created by `rig init`, changed by direct file edits, and validated by
+`rig doctor` and whenever a Target is planned.
 
 _Relationship_: `rig config` prints the Project name, the source path, and the
-validated Project config as pretty JSON, in the current format's shape whatever
-the file's Config format. Its one subcommand, `rig config upgrade`, rewrites
-`rig.yaml` into the current Config format.
+validated Project config as pretty JSON. It has no subcommands.
 
 _Relationship_: Revision metadata and structured config editing belong to the
 `rigd` control-plane API rather than the terminal response.
@@ -635,23 +625,6 @@ _Relationship_: A deploy records the policy of the `rig.yaml` committed on the
 deployed Commit; uncommitted edits never reach a Stable or Preview plan. The
 working-copy config only identifies the Project, names its Targets, and
 supplies the Production branch.
-
-_Relationship_: Project config is written in a Config format.
-
-### Config format
-
-The spelling of one `rig.yaml`, declared by its top-level `format`: `rig/v2`
-is current, and a file without `format` is `rig/v1`. Rig reads every format it
-knows into one parsed Project config with the current format's shape, so
-nothing past the parser, and no recorded plan, depends on a file's format
-([ADR 0008](docs/adr/0008-versioned-project-config-formats.md)).
-_Avoid_: config version, schema version, Rig version
-
-_Relationship_: `rig init` writes the current format. A command run in a
-Project whose `rig.yaml` is an older format, or a deploy of a Commit whose
-`rig.yaml` is, prints one deprecation line naming `rig config upgrade`, which
-rewrites the file in place, keeping comments and layout, and changes nothing
-else. Upgrading a file is never config drift.
 
 ### Deployment record
 

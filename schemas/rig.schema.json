@@ -2,14 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json",
   "title": "Rig Project config (rig.yaml)",
-  "description": "Committed Project intent: identity, Services, Tools, routes and Target patches, in format rig/v2. A rig.yaml without format is rig/v1, described by rig-v1.schema.json; rig config upgrade rewrites it to rig/v2.",
+  "description": "Committed Project intent: identity, Services, Tools, routes and Target patches.",
   "type": "object",
   "properties": {
-    "format": {
-      "type": "string",
-      "const": "rig/v2",
-      "description": "The rig.yaml format this file is written in. rig/v2 is the current format. A file without format is rig/v1, which Rig still reads and warns about; rig config upgrade rewrites a file to the current format."
-    },
     "name": {
       "type": "string",
       "minLength": 1,
@@ -120,55 +115,16 @@
             },
             "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
           },
-          "health": {
-            "type": "object",
-            "properties": {
-              "check": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-              },
-              "start_timeout": {
-                "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                "type": "string",
-                "minLength": 1,
-                "default": "30s"
-              },
-              "interval": {
-                "description": "How often Rig runs health.check while the Service runs, such as 30s (at least 5s). Without it the check runs only at start. Checks begin one interval after the start check passed, pause while the Service is starting or stopping, and never overlap.",
-                "type": "string",
-                "minLength": 1
-              },
-              "timeout": {
-                "description": "How long one ongoing check may take before it counts as failed, such as 5s (the default). Needs health.interval; the start check is bounded by start_timeout instead.",
-                "type": "string",
-                "minLength": 1,
-                "default": "5s"
-              },
-              "failures": {
-                "description": "Failed ongoing checks in a row before Rig marks the Service unhealthy and acts, from 1 to 100 (default 3). Needs health.interval.",
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 3
-              },
-              "on_failure": {
-                "description": "What Rig does once the Service is marked unhealthy: report (the default) shows it unhealthy in status and Activity, and a Stable Target counts as down; restart stops it through the normal stop path, within its stop_timeout, and starts it again, waiting about 1 min, 5 min, 15 min, then an hour between restarts while it stays unhealthy. Health restarts do not use the automatic restart budget. Needs health.interval.",
-                "type": "string",
-                "enum": [
-                  "report",
-                  "restart"
-                ],
-                "default": "report"
-              },
-              "retry_for": {
-                "description": "With on_failure: restart, how long Rig keeps restarting a Service that stays unhealthy, such as 6h. After that Rig leaves it as it is, reports it unhealthy and says in status that it gave up. Omitted, Rig never gives up.",
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "additionalProperties": false,
-            "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection. With health.interval Rig keeps checking while it runs."
+          "ready": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+          },
+          "ready_timeout": {
+            "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
+            "type": "string",
+            "minLength": 1,
+            "default": "30s"
           },
           "stop_timeout": {
             "type": "string",
@@ -402,51 +358,15 @@
                     },
                     "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                   },
-                  "health": {
-                    "type": "object",
-                    "properties": {
-                      "check": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "start_timeout": {
-                        "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "interval": {
-                        "description": "How often Rig runs health.check while the Service runs, such as 30s (at least 5s). Without it the check runs only at start. Checks begin one interval after the start check passed, pause while the Service is starting or stopping, and never overlap.",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "timeout": {
-                        "description": "How long one ongoing check may take before it counts as failed, such as 5s (the default). Needs health.interval; the start check is bounded by start_timeout instead.",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "failures": {
-                        "description": "Failed ongoing checks in a row before Rig marks the Service unhealthy and acts, from 1 to 100 (default 3). Needs health.interval.",
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 100
-                      },
-                      "on_failure": {
-                        "description": "What Rig does once the Service is marked unhealthy: report (the default) shows it unhealthy in status and Activity, and a Stable Target counts as down; restart stops it through the normal stop path, within its stop_timeout, and starts it again, waiting about 1 min, 5 min, 15 min, then an hour between restarts while it stays unhealthy. Health restarts do not use the automatic restart budget. Needs health.interval.",
-                        "type": "string",
-                        "enum": [
-                          "report",
-                          "restart"
-                        ]
-                      },
-                      "retry_for": {
-                        "description": "With on_failure: restart, how long Rig keeps restarting a Service that stays unhealthy, such as 6h. After that Rig leaves it as it is, reports it unhealthy and says in status that it gave up. Omitted, Rig never gives up.",
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection. With health.interval Rig keeps checking while it runs."
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "ready_timeout": {
+                    "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
+                    "type": "string",
+                    "minLength": 1
                   },
                   "stop_timeout": {
                     "type": "string",
@@ -658,51 +578,15 @@
                     },
                     "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                   },
-                  "health": {
-                    "type": "object",
-                    "properties": {
-                      "check": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "start_timeout": {
-                        "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "interval": {
-                        "description": "How often Rig runs health.check while the Service runs, such as 30s (at least 5s). Without it the check runs only at start. Checks begin one interval after the start check passed, pause while the Service is starting or stopping, and never overlap.",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "timeout": {
-                        "description": "How long one ongoing check may take before it counts as failed, such as 5s (the default). Needs health.interval; the start check is bounded by start_timeout instead.",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "failures": {
-                        "description": "Failed ongoing checks in a row before Rig marks the Service unhealthy and acts, from 1 to 100 (default 3). Needs health.interval.",
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 100
-                      },
-                      "on_failure": {
-                        "description": "What Rig does once the Service is marked unhealthy: report (the default) shows it unhealthy in status and Activity, and a Stable Target counts as down; restart stops it through the normal stop path, within its stop_timeout, and starts it again, waiting about 1 min, 5 min, 15 min, then an hour between restarts while it stays unhealthy. Health restarts do not use the automatic restart budget. Needs health.interval.",
-                        "type": "string",
-                        "enum": [
-                          "report",
-                          "restart"
-                        ]
-                      },
-                      "retry_for": {
-                        "description": "With on_failure: restart, how long Rig keeps restarting a Service that stays unhealthy, such as 6h. After that Rig leaves it as it is, reports it unhealthy and says in status that it gave up. Omitted, Rig never gives up.",
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection. With health.interval Rig keeps checking while it runs."
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "ready_timeout": {
+                    "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
+                    "type": "string",
+                    "minLength": 1
                   },
                   "stop_timeout": {
                     "type": "string",
@@ -906,51 +790,15 @@
                     },
                     "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                   },
-                  "health": {
-                    "type": "object",
-                    "properties": {
-                      "check": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Local HTTP URL or shell command that passes when the Service is healthy: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
-                      },
-                      "start_timeout": {
-                        "description": "How long the Service may take to pass its check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "interval": {
-                        "description": "How often Rig runs health.check while the Service runs, such as 30s (at least 5s). Without it the check runs only at start. Checks begin one interval after the start check passed, pause while the Service is starting or stopping, and never overlap.",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "timeout": {
-                        "description": "How long one ongoing check may take before it counts as failed, such as 5s (the default). Needs health.interval; the start check is bounded by start_timeout instead.",
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "failures": {
-                        "description": "Failed ongoing checks in a row before Rig marks the Service unhealthy and acts, from 1 to 100 (default 3). Needs health.interval.",
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 100
-                      },
-                      "on_failure": {
-                        "description": "What Rig does once the Service is marked unhealthy: report (the default) shows it unhealthy in status and Activity, and a Stable Target counts as down; restart stops it through the normal stop path, within its stop_timeout, and starts it again, waiting about 1 min, 5 min, 15 min, then an hour between restarts while it stays unhealthy. Health restarts do not use the automatic restart budget. Needs health.interval.",
-                        "type": "string",
-                        "enum": [
-                          "report",
-                          "restart"
-                        ]
-                      },
-                      "retry_for": {
-                        "description": "With on_failure: restart, how long Rig keeps restarting a Service that stays unhealthy, such as 6h. After that Rig leaves it as it is, reports it unhealthy and says in status that it gave up. Omitted, Rig never gives up.",
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "additionalProperties": false,
-                    "description": "How Rig checks this Service. health.check must pass before the Service counts as started and before a Service that depends on it starts. Without a check Rig waits for every declared port to accept a connection. With health.interval Rig keeps checking while it runs."
+                  "ready": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                  },
+                  "ready_timeout": {
+                    "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
+                    "type": "string",
+                    "minLength": 1
                   },
                   "stop_timeout": {
                     "type": "string",
@@ -1048,7 +896,6 @@
     }
   },
   "required": [
-    "format",
     "name"
   ],
   "additionalProperties": false

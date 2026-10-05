@@ -8,7 +8,6 @@ import type {
   TargetPlan,
 } from "../config/types";
 import type { RuntimeCommand } from "../daemon/protocol";
-import type { ConfigUpgrade } from "../config/documents";
 import type {
   OperationRecord,
   ProjectRecord,
@@ -22,7 +21,6 @@ import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
 import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
-import type { HealthResults } from "./health-monitor";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
@@ -61,12 +59,6 @@ export interface ProjectDocuments {
   ): Promise<ConfigDocument<ProjectConfig>>;
   resolve(input: ResolveTargetPlanInput): TargetPlan;
   host(): Promise<HostConfig>;
-  /** Rewrites the Project's rig.yaml into the latest format in place, keeping comments and layout, or with `dryRun` only
-   * reports what would change. Never changes what the file means. */
-  upgrade(
-    repoPath: string,
-    options: { dryRun: boolean },
-  ): Promise<ConfigUpgrade>;
 }
 export interface DeploymentSources {
   prepare(request: {
@@ -181,9 +173,6 @@ export interface RuntimeDependencies {
       evidence?: string;
     },
   ): Promise<void>;
-  /** The health monitor's cached results of ongoing checks, which status reads instead of running them; absent where no
-   * monitor runs. */
-  healthResults?: HealthResults;
 }
 
 /** Borrowed inventory snapshot under the runtime mutation queue. */

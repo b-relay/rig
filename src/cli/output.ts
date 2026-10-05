@@ -8,7 +8,6 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "doctor") return renderDoctor(report);
   if (action === "config")
     return `${word(report.project)}\n${word(report.path)}\n\n${JSON.stringify(report.config, null, 2)}\n`;
-  if (action === "config-upgrade") return renderConfigUpgrade(report);
   if (action === "logs") return renderLogs(report, true);
   if (action === "activity") return renderActivity(report);
   if (action === "daemon-status")
@@ -55,28 +54,6 @@ export function renderResult(action: string, value: unknown): string {
     )
     .join("");
   return `${retired}${subject} ${outcome}${upgrade}${revision}${path}\n${warnings}`;
-}
-/** What rig config upgrade did or, on a dry run, would do: the changes in words, and on a dry run the diff. */
-function renderConfigUpgrade(report: Record<string, unknown>): string {
-  const path = word(report.path);
-  const lines = (value: unknown) =>
-    (Array.isArray(value) ? value : []).map(word).filter(Boolean);
-  const changes = lines(report.changes);
-  if (!changes.length)
-    return `${path} is already written in rig.yaml format ${word(report.to)}; nothing to change.\n`;
-  const listed = changes.map((change) => `  ${change}\n`).join("");
-  if (report.written !== true)
-    return `${lines(typeof report.diff === "string" ? report.diff.split("\n") : []).join("\n")}\n\nDry run: ${path} was not changed. It would move from ${word(report.from)} to ${word(report.to)}:\n${listed}Run rig config upgrade to write it.\n`;
-  return `${path} upgraded from ${word(report.from)} to ${word(report.to)}:\n${listed}${
-    report.backupPath
-      ? `The previous text is in ${word(report.backupPath)}. `
-      : ""
-  }Commit rig.yaml: deployed Targets read the committed file.\n`;
-}
-/** The deprecation line a reply carries, as one terminal-safe line, or nothing. */
-export function renderDeprecation(value: unknown): string {
-  const line = word(object(value).deprecation);
-  return line ? `Deprecated: ${line}\n` : "";
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);
@@ -135,7 +112,7 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
       const state =
         component.state === "stopping" && typeof component.killAt === "string"
           ? `stopping · ${killingText(component.killAt, now, "minutes", false)}`
-          : healthText(component, now) || word(component.state);
+          : word(component.state);
       lines.push(
         `  ${[word(component.name), state, port, route].filter(Boolean).join("  ")}`,
       );
@@ -165,42 +142,6 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
   for (const warning of report.warnings ?? [])
     lines.push(`Warning: ${word(warning)}`);
   return `${lines.join("\n")}\n`;
-}
-/** The state of a Service judged by its ongoing checks, as the cached result says: `healthy · checked 12s ago`,
- * `unhealthy 2/3 · HTTP 503`, with `· gave up restarting` once Rig stopped restarting it. Empty for any other. */
-function healthText(
-  component: ProjectStatusReport["targets"][number]["components"][number],
-  now: Date,
-): string {
-  const health = component.health;
-  if (!health || !["healthy", "unhealthy"].includes(component.state)) return "";
-  if (component.state === "healthy")
-    return health.checkedAt
-      ? `healthy · checked ${ago(health.checkedAt, now)}`
-      : "healthy";
-  return [
-    health.marked
-      ? "unhealthy"
-      : `unhealthy ${health.failures}/${health.threshold}`,
-    word(health.output),
-    health.restarts
-      ? `restarted ${health.restarts} ${health.restarts === 1 ? "time" : "times"}`
-      : "",
-    health.gaveUp ? "gave up restarting" : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-/** "12s ago", "3m ago", "2h ago". */
-function ago(at: string, now: Date): string {
-  const seconds = Math.max(
-    0,
-    Math.round((now.getTime() - Date.parse(at)) / 1000),
-  );
-  if (!Number.isFinite(seconds)) return "at an unknown time";
-  if (seconds < 120) return `${seconds}s ago`;
-  if (seconds < 7200) return `${Math.round(seconds / 60)}m ago`;
-  return `${Math.round(seconds / 3600)}h ago`;
 }
 /** A deployed Target shows the Branch and Commit it serves; the Working copy shows neither. */
 function deployedFrom(

@@ -12,20 +12,16 @@ import type {
 import type { TargetRecord } from "../domain/runtime";
 import { runningNote, stoppedStanding, supervisionScope } from "./supervision";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
-import type { ServiceHealth } from "../domain/project-status";
-import type { HealthResults } from "./health-monitor";
 export interface ObservationEffects {
   process(
     target: TargetRecord,
     component: ManagedComponent,
     signal: AbortSignal,
   ): Promise<ProcessObservation>;
-  /** Runs the Service's check once; a shell check is cut off after `timeoutMs` (2 s when absent). */
   health(
     target: TargetRecord,
     component: ManagedComponent,
     signal: AbortSignal,
-    timeoutMs?: number,
   ): Promise<HealthCheck>;
   artifact(
     target: TargetRecord,
@@ -52,9 +48,6 @@ export async function observeTargets(
   effects: ObservationEffects,
   budgetMs: number,
   deadline: ObservationDeadline,
-  /** The health monitor's cached results. A running Service with health.interval is judged by them and its check is not
-   * run; without them it is checked here as one without an interval is. */
-  health?: HealthResults,
 ): Promise<TargetReport[]> {
   const entries = targets.flatMap((target) =>
     target.plan.components.map((component) => ({
@@ -119,24 +112,16 @@ export async function observeTargets(
           ]
             .filter(Boolean)
             .join(" ");
-          const cached =
-            component.healthMonitor && health
-              ? monitoredHealth(target, component, health)
-              : undefined;
-          const reason = [said, cached?.reason].filter(Boolean).join(" ");
           return {
             ...base,
             port: component.port,
             pid: observed.pid,
-            state: cached
-              ? cached.state
-              : component.health
-                ? (await effects.health(target, component, signal)).ready
-                  ? "healthy"
-                  : "unhealthy"
-                : "running",
-            ...(cached ? { health: cached.health } : {}),
-            ...(reason ? { reason } : {}),
+            state: component.health
+              ? (await effects.health(target, component, signal)).ready
+                ? "healthy"
+                : "unhealthy"
+              : "running",
+            ...(said ? { reason: said } : {}),
           };
         },
     ),
@@ -170,47 +155,10 @@ export async function observeTargets(
     };
   });
 }
-/** How a running Service with health.interval stands by its cached checks: running until one answered, then healthy or
- * unhealthy by the last one, with why and what Rig does about it. */
-function monitoredHealth(
-  target: Pick<TargetRecord, "id" | "name">,
-  component: ManagedComponent,
-  results: HealthResults,
-): Pick<ComponentReport, "state" | "reason"> & { health: ServiceHealth } {
-  const policy = component.healthMonitor!;
-  const health: ServiceHealth = results(target, component.name) ?? {
-    status: "pending",
-    failures: 0,
-    threshold: policy.failures,
-    restarts: 0,
-  };
-  if (health.status === "pending")
-    return {
-      state: "running",
-      health,
-      reason: "Its ongoing health check has not answered since it started.",
-    };
-  if (health.status === "healthy") return { state: "healthy", health };
-  const failed = health.marked
-    ? `It was marked unhealthy after ${health.threshold} failed health ${health.threshold === 1 ? "check" : "checks"} in a row${health.output ? ` (last: ${health.output})` : ""}, and none has passed since`
-    : `${health.failures} health ${health.failures === 1 ? "check" : "checks"} in a row failed${health.output ? ` (${health.output})` : ""}`;
-  const acting = health.marked === true;
-  return {
-    state: "unhealthy",
-    health,
-    reason: !acting
-      ? `${failed}; Rig acts after ${health.threshold}.`
-      : health.gaveUp
-        ? `${failed}. It stayed unhealthy longer than its health.retry_for, so Rig gave up restarting it and leaves it as it is. Run rig restart ${target.name} once the cause is fixed.`
-        : policy.onFailure === "restart"
-          ? `${failed}. Rig restarts it${health.restarts ? ` (${health.restarts} health ${health.restarts === 1 ? "restart" : "restarts"} so far)` : ""}.`
-          : `${failed}. health.on_failure is report, so Rig reports it and does not restart it.`,
-  };
-}
 /** The reason a component report carries when the shared status deadline expired before its observation finished. */
 export const OBSERVATION_EXPIRED =
   "Observation did not complete before the status deadline.";
-/** Whether the recorded Commit is a completed deployment; callers must not treat an incomplete one as deployed. */
+/** Whether the recorded Commit is a completed deployment; callers such as git push must not treat an incomplete one as deployed. */
 export function deploymentFlags(
   target: Pick<
     TargetRecord,

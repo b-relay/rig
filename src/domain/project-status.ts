@@ -1,46 +1,4 @@
 import { z } from "zod";
-/** The cached result of a Service's ongoing checks (health.interval), as rigd last saw it; status never runs one for it. */
-export const serviceHealthSchema = z
-  .object({
-    status: z
-      .enum(["pending", "healthy", "unhealthy"])
-      .describe(
-        "pending until the first ongoing check of the running process answered; then whether the last one passed.",
-      ),
-    checkedAt: z
-      .string()
-      .optional()
-      .describe("When the last check answered (ISO 8601)."),
-    failures: z.number().int().describe("Failed checks in a row."),
-    threshold: z
-      .number()
-      .int()
-      .describe(
-        "Failed checks in a row before Rig acts: the Service's health.failures.",
-      ),
-    output: z
-      .string()
-      .optional()
-      .describe("The last failed check's output, one bounded line."),
-    marked: z
-      .literal(true)
-      .optional()
-      .describe(
-        "Marked unhealthy: failed checks in a row reached threshold and none has passed since, restarts included. A marked Service keeps a Stable Target down.",
-      ),
-    restarts: z
-      .number()
-      .int()
-      .describe("Health restarts made while it has been unhealthy this time."),
-    gaveUp: z
-      .literal(true)
-      .optional()
-      .describe(
-        "Rig stopped restarting it because it stayed unhealthy for health.retry_for.",
-      ),
-  })
-  .passthrough();
-export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
 
 const componentReportSchema = z
   .object({
@@ -103,11 +61,6 @@ const componentReportSchema = z
         "For a stopping Service: when SIGKILL is due (ISO 8601), once its stop_timeout has passed.",
       ),
     reason: z.string().optional().describe("Explanation of the observation."),
-    health: serviceHealthSchema
-      .optional()
-      .describe(
-        "For a running Service with health.interval: its ongoing checks' cached result, which decides healthy or unhealthy.",
-      ),
   })
   .passthrough();
 const targetReportSchema = z

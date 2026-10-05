@@ -71,6 +71,7 @@ export class FileStateStore implements StateStore {
     // wrote survive a round trip through this one, and the next write carries them along.
     const state = parsed as RuntimeState;
     readRetiredSupervisorAsRigd(state);
+    forgetOngoingHealthChecks(state);
     return { ...state, version: STATE_VERSION };
   }
   /** A file from a different rigd is refused by version before its shape is judged. */
@@ -123,6 +124,18 @@ function readRetiredSupervisorAsRigd(state: RuntimeState): void {
     for (const plan of [target.plan, target.recovery?.plan])
       if (plan?.providers.processSupervisor === "launchd")
         plan.providers.processSupervisor = "rigd";
+}
+/** Rig once ran ongoing health checks, and plans recorded then may carry a Service's `healthMonitor` and a run its
+ * `healthRestarts`. Only start readiness remains, so both are dropped as the state is read: such a plan equals the plan its
+ * config makes today and is not config drift. The next write saves it so. */
+function forgetOngoingHealthChecks(state: RuntimeState): void {
+  for (const target of state.targets) {
+    for (const plan of [target.plan, target.recovery?.plan])
+      for (const component of plan?.components ?? [])
+        delete (component as { healthMonitor?: unknown }).healthMonitor;
+    for (const run of Object.values(target.services ?? {}))
+      delete (run as { healthRestarts?: unknown }).healthRestarts;
+  }
 }
 async function writeDurably(path: string, content: string): Promise<void> {
   const file = await open(path, "w", 0o600);

@@ -75,16 +75,11 @@ export interface ConfigField {
   description: string;
   valueShape: string;
 }
-/** The rig.yaml format rigd writes; a file in an older one is shown with an upgrade notice. */
-export const LATEST_FORMAT = "rig/v2";
 export interface ConfigRead {
   project: string;
   configPath: string;
   revision: string;
   raw: string;
-  /** The format the file is written in; `config`, `fields` and edit paths use its spelling. Absent from an older rigd. */
-  format?: string;
-  /** The file's settings as written. */
   config: unknown;
   fields: ConfigField[];
 }

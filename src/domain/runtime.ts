@@ -80,9 +80,6 @@ export interface ServiceRun {
   /** The operator's latest stop needed SIGKILL: the stop_timeout ran out (`timeout`), or `--kill` cut it short (`request`).
    * A new start clears it. */
   stopKilled?: "timeout" | "request";
-  /** The unhealthy stretch a health restart started this process in: when it began and each restart (Unix milliseconds).
-   * Automatic starts carry it on; an explicit start clears it. */
-  healthRestarts?: { since: number; at: number[]; gaveUp?: number };
 }
 
 export interface TargetRecord {
@@ -110,7 +107,7 @@ export interface TargetRecord {
   uncertainBuild?: { branch?: string; commit?: string; unit: string };
   /** Revision of the rig.yaml a Working copy plan was made from. */
   configRevision?: string;
-  /** Digest of what that rig.yaml said, whatever its format, comments or layout; absent on a Target an older rigd planned. */
+  /** Digest of what that rig.yaml said, whatever its comments or layout; absent on a Target an older rigd planned. */
   configDigest?: string;
   recovery?: {
     plan: TargetPlan;

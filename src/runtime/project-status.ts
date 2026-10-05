@@ -7,7 +7,6 @@ import type { ServiceStopView } from "../domain/operation-progress";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import { asRigError } from "../domain/errors";
 import type { RuntimeDependencies } from "./contracts";
-import type { HealthResults } from "./health-monitor";
 import {
   observeTargets,
   type ComponentReport,
@@ -59,8 +58,6 @@ export async function projectStatus(
     stopping?(targetId: string): boolean;
     /** The Services of this Target an Operation is waiting on right now, with when each is killed. */
     serviceStops?(targetId: string): ServiceStopView[];
-    /** The health monitor's cached results, which status shows instead of running a Service's ongoing check. */
-    healthResults?: HealthResults;
   },
 ): Promise<ProjectStatusReport> {
   let configWarning: string | undefined;
@@ -89,7 +86,6 @@ export async function projectStatus(
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
-    deps.healthResults,
   );
   if (configWarning) warnings.push(configWarning);
   if (document) {

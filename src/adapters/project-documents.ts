@@ -9,7 +9,6 @@ import {
   readProjectConfig,
   resolveTargetPlan,
   scaffoldProjectConfig,
-  upgradeProjectConfig,
 } from "../config";
 import type { ProjectDocuments } from "../runtime/contracts";
 import type {
@@ -66,8 +65,6 @@ export function createProjectDocuments(
     },
     read: readProjectConfig,
     resolve: (input) => resolveTargetPlan(input, host),
-    upgrade: (repoPath, options) =>
-      upgradeProjectConfig({ repoPath, ...options }),
     host: () => readHostConfig(root),
     async initializationInfo(path) {
       const info = await inspectInitialization(

@@ -251,10 +251,6 @@ async function fixture() {
     supervise: () => runtime.supervise(),
     command: (command: Parameters<typeof runtime.command>[0]) =>
       runtime.command(command),
-    restartUnhealthy: (
-      request: Parameters<typeof runtime.restartUnhealthy>[0],
-    ) => runtime.restartUnhealthy(request),
-    targetId,
     /** The Working copy, the Stable Target and a Preview, all running. */
     async startAll() {
       await runtime.command({ action: "up", project: "demo" });
@@ -1022,47 +1018,6 @@ test("an Operation on a Stable Target whose failed start after a restart is stil
   expect((await f.store.read()).host!.restart).toBeUndefined();
   await f.command({ action: "up", project: "demo", target: "live" });
   expect(await f.running("live")).toEqual(["api", "db", "worker"]);
-});
-
-test("a health restart on a Stable Target whose failed start after a restart is still unrecorded records that failure first and restarts nothing", async () => {
-  const f = await fixture();
-  await f.startAll();
-  const before = await f.activityCount();
-  f.restartHost(REBOOTED);
-  const db = await f.key("live", "db");
-  f.refusal.start = (key) => key === db;
-  const failing = failWrites(f.store, (state) =>
-    state.activity
-      .slice(before)
-      .some((entry) => entry.action === "up" && entry.outcome === "failed"),
-  );
-  f.reopen();
-  await f.reconcile();
-  f.refusal.start = undefined;
-  const request = {
-    targetId: await f.targetId("live"),
-    service: "api",
-    attempt: 1,
-    failures: 3,
-    since: f.clock.ms,
-    restarts: [],
-  };
-  // While the write still fails, the restart acts on nothing and is asked again.
-  expect(await f.restartUnhealthy(request)).toEqual({ outcome: "deferred" });
-  expect(await f.running("live")).toEqual([]);
-  expect(await f.activitySince(before)).not.toContain("up/failed live");
-
-  // Once writes work, the restart records the failure, still acts on nothing, and the next daemon starts nothing.
-  failing.left = 0;
-  expect(await f.restartUnhealthy(request)).toEqual({ outcome: "deferred" });
-  expect(await f.running("live")).toEqual([]);
-  expect(await f.activitySince(before)).toEqual([
-    "host-restart/stopped -",
-    "up/failed live",
-  ]);
-  f.reopen();
-  await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
 });
 
 test("a write reported failed after it was saved is not repeated: one Host entry and one failed start", async () => {

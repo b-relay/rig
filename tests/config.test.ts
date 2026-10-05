@@ -213,7 +213,7 @@ test("scaffold writes a Service, a Tool, or both, and refuses a Project with nei
       web: {
         run: "serve --host localhost",
         ports: { http: 3210 },
-        health: { check: "http://127.0.0.1:3210/health" },
+        ready: "http://127.0.0.1:3210/health",
       },
     },
     tools: { ctl: { build: "make ctl", bin: "bin/ctl" } },
@@ -270,9 +270,7 @@ test("Project init writes the scaffold as YAML once and leaves an existing docum
   expect(raw.split("\n")[0]).toBe(
     "# yaml-language-server: $schema=https://raw.githubusercontent.com/b-relay/rig/main/schemas/rig.schema.json",
   );
-  // rig init writes the latest format.
-  expect(parse(raw)).toEqual({ format: "rig/v2", ...config });
-  expect(document.format).toBe("rig/v2");
+  expect(parse(raw)).toEqual(config);
   expect(await readProjectConfig(root)).toEqual(document);
   await expect(
     initializeProjectConfig(
@@ -543,12 +541,9 @@ test.each(["service", "tool", "multi"])(
     );
     const root = await fixture();
     await writeFile(join(root, "rig.yaml"), raw);
-    const { config, format } = await readProjectConfig(root);
-    // The examples are written in the latest format, so nothing is defaulted, dropped or rewritten on the way in.
-    const { format: declared, ...written } = parse(raw);
-    expect(declared).toBe("rig/v2");
-    expect(format).toBe("rig/v2");
-    expect(config).toEqual(written);
+    const { config } = await readProjectConfig(root);
+    // Nothing is defaulted, dropped or rewritten on the way in.
+    expect(config).toEqual(parse(raw));
   },
 );
 
@@ -1067,14 +1062,13 @@ test.each([
   "curl -fsS http://example.com/ping",
 ])("readiness value %s is accepted", (ready) => {
   const config = parseProjectConfig({ name: "app", services: web({ ready }) });
-  // The parsed config has the latest format's shape: a rig/v1 `ready` is its health.check.
-  expect(config.services!.web).toMatchObject({ health: { check: ready } });
+  expect(config.services!.web).toMatchObject({ ready });
 });
 
 test("the removed supervisor setting is refused with guidance to delete it, at every level that took one, and rigd supervises every plan", () => {
   for (const [path, extra] of [
     ["supervisor", { supervisor: "launchd" }],
-    ["supervisor", { format: "rig/v2", supervisor: "rigd" }],
+    ["supervisor", { supervisor: "rigd" }],
     [
       "targets.stable.supervisor",
       { targets: { stable: { supervisor: "launchd" } } },
@@ -1094,6 +1088,45 @@ test("the removed supervisor setting is refused with guidance to delete it, at e
     "rigd",
     "rigd",
   ]);
+});
+
+test("a format line is refused with guidance to delete it, whatever format it names", () => {
+  for (const format of ["rig/v1", "rig/v2", "rig/v3"])
+    expect(failureOf({ format, name: "app", services: web() })).toMatchObject({
+      code: "invalid_config",
+      hint: "Fix format: was removed because Rig reads one rig.yaml format; delete this line.",
+    });
+});
+
+test("a health block is refused wherever a Service is spelled, naming ready and ready_timeout as its replacement", () => {
+  const removed =
+    "was removed with ongoing health checks; write its check as ready and its start_timeout as ready_timeout";
+  for (const [path, extra] of [
+    [
+      "services.web.health",
+      { services: web({ health: { check: "true", start_timeout: "1m" } }) },
+    ],
+    [
+      "targets.preview.services.web.health",
+      {
+        services: web(),
+        targets: { preview: { services: { web: { health: {} } } } },
+      },
+    ],
+  ] as const)
+    expect(failureOf({ name: "app", ...extra })).toMatchObject({
+      code: "invalid_config",
+      hint: `Fix ${path}: ${removed}.`,
+      context: { issues: [{ path: path.split("."), message: removed }] },
+    });
+  // The same settings as ready and ready_timeout plan the start check they named.
+  const config = parseProjectConfig({
+    name: "app",
+    services: web({ ready: "true", ready_timeout: "1m" }),
+  });
+  expect(
+    resolveTargetPlan({ config, target: "local", ...roots_ }).components,
+  ).toMatchObject([{ name: "web", health: "true", readyTimeout: 60 }]);
 });
 
 test("durations are written like 30s, 10m or 1h, bounded to one day, and reach the plan in seconds", () => {

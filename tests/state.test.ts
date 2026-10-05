@@ -346,3 +346,60 @@ test("a plan an older Rig recorded under launchd supervision is read as rigd's a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a plan an older Rig recorded with ongoing health checks is read without them and saved so", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-health-plan-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const recorded = structuredClone(inventory);
+    const target = recorded.targets[0]!;
+    (target.plan.components as unknown[]).push({
+      name: "web",
+      kind: "managed",
+      env: {},
+      dependsOn: [],
+      command: "serve",
+      health: "http://127.0.0.1:3000/health",
+      readyTimeout: 30,
+      healthMonitor: {
+        interval: 30,
+        timeout: 5,
+        failures: 3,
+        onFailure: "restart",
+      },
+    });
+    Object.assign(target, {
+      recovery: {
+        plan: structuredClone(target.plan),
+        desired: "stopped",
+        stage: "pending",
+      },
+      services: {
+        web: {
+          deployment: "/tmp/demo",
+          intent: "running",
+          attempts: [],
+          healthRestarts: { since: 1, at: [2] },
+        },
+      },
+    });
+    await writeFile(path, JSON.stringify({ version: 4, ...recorded }));
+    const store = new FileStateStore(root);
+    const read = (await store.read()).targets[0]!;
+    for (const plan of [read.plan, read.recovery!.plan])
+      for (const component of plan.components)
+        expect(component).not.toHaveProperty("healthMonitor");
+    expect(read.plan.components[0]).toMatchObject({
+      health: "http://127.0.0.1:3000/health",
+      readyTimeout: 30,
+    });
+    expect(read.services!.web).not.toHaveProperty("healthRestarts");
+    await store.update(() => {});
+    const saved = await readFile(path, "utf8");
+    expect(saved).not.toContain("healthMonitor");
+    expect(saved).not.toContain("healthRestarts");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

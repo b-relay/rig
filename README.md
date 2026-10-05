@@ -25,7 +25,7 @@ The `working` Target runs the working copy; `stable` runs the configured
 Production branch; Previews run other Branches. Those names are fixed. A Target
 runs only when `targets` in `rig.yaml` turns it on, so a file without `targets`
 runs nothing; `rig init` writes `working: true`, `preview: true` and
-`stable: false`. Without a Target, `up`, `down` and `logs` mean `working` and
+`stable: false`. Without a Target, `up`, `down`, `restart` and `logs` mean `working` and
 `deploy` means `stable`. Lifecycle commands reuse recorded deployment policy.
 
 Configuration is YAML: `rig.yaml` for a Project and `<RIG_ROOT>/config.yaml`

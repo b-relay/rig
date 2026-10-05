@@ -880,7 +880,7 @@ test("a renamed Component takes over its own Target's installed executable, whil
   await expect(adapter.install(cli, other)).rejects.toMatchObject({
     code: "ARTIFACT_CONFLICT",
     message: `Project 'demo' Target 'working' Component 'launcher' owns the installed executable ${join(root, "bin", "tool-dev")}.`,
-    hint: "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
+    hint: "Rename one of the Tools in its rig.yaml; installed executables share one bin directory across Projects and Targets.",
     details: {
       destination: join(root, "bin", "tool-dev"),
       owner: {

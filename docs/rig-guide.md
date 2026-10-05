@@ -867,9 +867,11 @@ malformed record rather than resolved against the daemon's working directory,
 and a command that sends a relative path is refused as an invalid request
 (`rig` resolves paths against your directory before sending).
 
-The state file carries a format version (currently 4). A file written by a
-newer or an older `rigd` is refused as `STATE_VERSION`, naming both versions,
-rather than loaded with fields dropped or misread.
+The state file carries a format version (currently 5). This `rigd` also reads
+version 4, the format before fixed Target names, and saves it as version 5 on its
+next write. A file written by a newer `rigd`, or by one older than version 4, is
+refused as `STATE_VERSION`, naming both versions, rather than loaded with fields
+dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
 newer version's fields survive a temporary downgrade. A new value in a known
 field does not: a `rigd` from before `rig forget` was recorded in Activity

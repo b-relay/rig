@@ -275,7 +275,7 @@ export function createEffectTransactions(options: {
             ? `Project '${holder.project}' Target '${holder.target}'`
             : "another Target"
         }.`,
-        "If that Target's command is still running, retry once it ends; if it failed, run rig down for that Target to finish its change. To install both, give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
+        "If that Target's command is still running, retry once it ends; if it failed, run rig down for that Target to finish its change. To install both, rename one of the Tools in its rig.yaml; installed executables share one bin directory across Projects and Targets.",
         { destination: taken, owner: holder },
       );
     }
@@ -525,7 +525,7 @@ export function createEffectTransactions(options: {
       throw new RigError(
         "EFFECTS_CHANGED",
         `${describeOwner(takenOver.owner)} installed the executable ${takenOver.path} after this Target's change to it was interrupted.`,
-        "Nothing was removed, and the checkpoint is kept. Free the path first: give that Component a different installName and deploy it again, or remove its Target. Then run rig down for this Target again.",
+        "Nothing was removed, and the checkpoint is kept. Free the path first: rename that Tool in its rig.yaml and deploy it again, or remove its Target. Then run rig down for this Target again.",
         { path: takenOver.path, owner: ownerDetails(takenOver.owner) },
       );
     // Any other write this transaction began but never captured is its own work:
@@ -573,7 +573,7 @@ export function createEffectTransactions(options: {
           throw new RigError(
             "ARTIFACT_CONFLICT",
             `Components '${first}' and '${artifact.componentName}' both install to ${artifact.destination}.`,
-            "Give each Component a distinct installName.",
+            "Give each Tool a distinct name in rig.yaml.",
             { destination: artifact.destination },
           );
         destinations.set(artifact.destination, artifact.componentName);

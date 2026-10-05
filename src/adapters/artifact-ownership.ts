@@ -83,7 +83,7 @@ export function createArtifactOwnership(
       throw new RigError(
         "ARTIFACT_CONFLICT",
         `${describeOwner(saved)} owns the installed executable ${identity.destination}.`,
-        "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
+        "Rename one of the Tools in its rig.yaml; installed executables share one bin directory across Projects and Targets.",
         { destination: identity.destination, owner: ownerDetails(saved) },
       );
     if (!saved && current !== undefined)

@@ -47,7 +47,7 @@ function projectActive(): RigError {
     "Stop all Targets and retry.",
   );
 }
-/** Removes the registration and its stopped local/live records; Previews own data and must be destroyed first.
+/** Removes the registration and its stopped working and stable records; Previews own data and must be destroyed first.
  * Returns a warning for every live workspace and data root left on disk. */
 export async function forgetProject(
   project: ProjectRecord,

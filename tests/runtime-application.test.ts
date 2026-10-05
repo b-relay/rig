@@ -191,7 +191,7 @@ test("init config name is authoritative; local up uses the actual repo and appli
   expect(plans[0].plan.workspacePath).toBe("/tmp/developer");
   const id = state.targets[0]!.id;
   config.services!.web = { run: "changed", ports: { http: 9999 } };
-  // A running Working copy Target keeps the plan its processes were started from.
+  // A running working Target keeps the plan its processes were started from.
   await runtime.command({ action: "up", project: "demo" });
   expect(plans[1].plan.components[0].command).toBe("serve --host 127.0.0.1");
   await runtime.command({ action: "down", project: "demo" });
@@ -1252,7 +1252,7 @@ test("doctor on a Project without Targets reports the config and Host checks onl
   );
   expect(report.checks.some((c) => c.name.includes("/"))).toBe(false);
 });
-test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
+test("doctor reports drift on a running working Target and names restart as the fix", async () => {
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
@@ -1381,7 +1381,7 @@ test("a stopped working Target frees its old port for a stable deploy once rig c
         throw new RigError(
           "PORT_RESERVED",
           `Port ${request.preferred} is reserved by another Target.`,
-          "Configure a distinct working/live port.",
+          "Configure a distinct working/stable port.",
         );
     return Object.fromEntries(
       requests.map((request) => [request.name, request.preferred ?? 5000]),

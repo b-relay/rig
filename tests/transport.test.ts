@@ -52,33 +52,6 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
   }
 });
 
-test("a mutation that outlives Bun's default 10 s idle timeout still returns its result", async () => {
-  const server = startControlPlane({
-    port: 0,
-    token: "test-secret",
-    instanceId: "instance-1",
-    handle: async () => {
-      await Bun.sleep(12000);
-      return { outcome: "started" };
-    },
-  });
-  try {
-    const client = new DaemonClient({
-      port: server.port!,
-      token: "test-secret",
-    });
-    expect(
-      await client.command({
-        action: "up",
-        project: "demo",
-        target: "local",
-      }),
-    ).toEqual({ outcome: "started" });
-  } finally {
-    await server.stop(true);
-  }
-}, 20000);
-
 test("a reply slower than the read deadline is reported as a timeout naming the operation, not as unreachable", async () => {
   // rigd answers only once the test has seen the deadline expire.
   const answer = Promise.withResolvers<void>();

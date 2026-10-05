@@ -218,10 +218,6 @@ const UNLOCKED: Admission = {
 export function createRuntime(input: RuntimeDependencies): RigRuntime {
   // Every write the runtime makes reports its lifecycle transitions to the health monitor as it is applied, while the
   // Operation making it still holds its Target (the epoch rule in health-monitor.ts).
-  // The Host session this rigd runs in, read by its first pass: a reboot or logout ends rigd, so it holds while rigd runs.
-  // It is installed on the dependencies themselves, which callers (and tests) may still change after this call.
-  let session: { boot?: string; login?: string } | undefined;
-  input.hostSessionNow = () => session;
   const deps: RuntimeDependencies = input.healthTransitions
     ? {
         ...input,
@@ -784,9 +780,20 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             "rigd could not write its state under RIG_ROOT/runtime; rig doctor and the rigd diagnostic log show why. Free disk space or fix the permissions, then retry.",
             { target: target.name },
           );
-        // So is a stop by a Host restart, so an explicit start after it supersedes it. When it still cannot be recorded the
-        // command goes on: the restart's stop only ever applies to runs started before it, never to one started since.
-        if (target) await recordUnmarked(target);
+        // So is a stop by a Host restart, so an explicit start after it supersedes it. Nothing starts on the Target while it
+        // cannot be recorded: the restart's stop applies to the runs started before the restart was recorded, so a start
+        // made before then would be taken for one the restart stopped. Stops and down go on.
+        if (
+          target &&
+          !(await recordUnmarked(target)) &&
+          ["up", "restart", "deploy"].includes(command.action)
+        )
+          throw new RigError(
+            "STATE_WRITE",
+            `Rig could not record that the Mac restarted for ${target.name}, so nothing was started.`,
+            `Fix the state directory under RIG_ROOT/runtime (rig doctor and the rigd diagnostic log show why; free disk space or fix the permissions), then retry rig ${command.action}. rig down ${targetSelector(target)} still works.`,
+            { target: target.name },
+          );
         // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
         if (
           command.action !== "down" &&
@@ -1426,14 +1433,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       if (action === "reconcile") {
         await pruneCheckpoints(state, deps);
         const current = await hostSession;
-        if (current) {
-          finding = findHostRestart(state, current);
-          if (current.boot !== undefined || current.login !== undefined)
-            session = {
-              ...(current.boot !== undefined ? { boot: current.boot } : {}),
-              ...(current.login !== undefined ? { login: current.login } : {}),
-            };
-        }
+        if (current) finding = findHostRestart(state, current);
         if (finding?.restart && !finding.announced) {
           const found = finding;
           await recordHostRestart(

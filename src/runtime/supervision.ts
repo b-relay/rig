@@ -266,8 +266,7 @@ async function saveRuns(
 export function activationJournal(
   target: TargetRecord,
   mode: "explicit" | RestartBudget | "health",
-  deps: Pick<Deps, "store" | "now" | "id"> &
-    Partial<Pick<RuntimeDependencies, "hostSessionNow">>,
+  deps: Pick<Deps, "store" | "now" | "id">,
   options: {
     afterHostRestart?: HostRestart;
     healthStretch?: NonNullable<ServiceRun["healthStretch"]>;
@@ -278,20 +277,16 @@ export function activationJournal(
     async starting(service) {
       const incarnation = deps.id();
       const current = currentRun(target, service);
-      const startedIn = deps.hostSessionNow?.();
       const fresh: ServiceRun = {
         deployment: target.plan.workspacePath,
         intent: "running",
         incarnation,
         attempts: [],
-        ...(startedIn ? { startedIn } : {}),
         ...(mode === "explicit" && options.afterHostRestart
           ? { startedAfterHostRestart: options.afterHostRestart }
           : {}),
       };
-      await saveRun(
-        target,
-        service,
+      const run: ServiceRun =
         mode === "explicit"
           ? fresh
           : mode === "health"
@@ -301,9 +296,14 @@ export function activationJournal(
                   ? { healthStretch: options.healthStretch }
                   : {}),
               }
-            : automaticStart(fresh, current, mode, Date.parse(deps.now())),
-        deps,
-      );
+            : automaticStart(fresh, current, mode, Date.parse(deps.now()));
+      // In the same write, the start takes the next value of the state's startSeq, which orders it after every Host
+      // restart recorded before it: such a restart's stop never applies to this run.
+      await saveRuns(target, { [service]: run }, deps, (state) => {
+        const next = (state.startSeq ?? 0) + 1;
+        state.startSeq = next;
+        run.startSeq = next;
+      });
       begun.push(service);
       return incarnation;
     },

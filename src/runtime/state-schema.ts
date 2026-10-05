@@ -289,22 +289,13 @@ const services = z
         .describe(
           "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
         ),
-      startedIn: z
-        .object({
-          boot: z
-            .string()
-            .optional()
-            .describe(
-              "The Host boot (kern.bootsessionuuid) it was started in.",
-            ),
-          login: z
-            .string()
-            .optional()
-            .describe("The GUI login session it was started in."),
-        })
+      startSeq: z
+        .number()
+        .int()
+        .nonnegative()
         .optional()
         .describe(
-          "The Host boot and login the process was started in. A stop by a Host restart is recorded only for a run started before that restart; a run without this field was started by an older rigd and counts as before.",
+          "Where this start falls in the order of starts and Host restarts (the state's startSeq). A stop by a Host restart is recorded only for a run started before the restart was recorded; a run without this field was started by an older rigd and counts as before.",
         ),
       healthStretch: z
         .object({
@@ -429,6 +420,14 @@ export const runtimeStateSchema = z
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),
+    startSeq: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "The last value handed out to order starts and Host restarts: each journalled start takes the next one, and a recorded Host restart notes the value it found. It only grows.",
+      ),
     host: z
       .object({
         boot: text
@@ -459,6 +458,14 @@ export const runtimeStateSchema = z
               .optional()
               .describe(
                 "The login session rigd found when it detected the restart.",
+              ),
+            seq: z
+              .number()
+              .int()
+              .nonnegative()
+              .optional()
+              .describe(
+                "The state's startSeq when the restart was recorded: a run with a higher startSeq was started after it, and the restart's stop never applies to it. Absent on a restart an older rigd recorded.",
               ),
             settled: z
               .array(text)

@@ -182,9 +182,6 @@ export interface RuntimeDependencies {
    * removed Target, a Service's new process) is reported to the health monitor, as it is applied; absent where no monitor
    * runs. */
   healthTransitions?: HealthTransitions;
-  /** The Host boot and login this rigd runs in, as its first pass read them; stamped on every run it journals. Undefined
-   * before that pass, or when nothing could be read. */
-  hostSessionNow?(): { boot?: string; login?: string } | undefined;
 }
 
 /** Borrowed inventory snapshot under the runtime mutation queue. */

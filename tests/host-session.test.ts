@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  bootOnly,
   hostRestartBetween,
   identified,
   mayReplace,
@@ -238,4 +239,19 @@ test("the probe reads each part on its own, leaves out what fails, and never rej
   };
   answers["kern.bootsessionuuid"] = new Error("spawn failed");
   expect(await probe.current()).toEqual({});
+});
+
+test("a rigd run as a process under RIG_ROOT reads only the boot, so a new login is never a Host restart for it and a reboot still is", async () => {
+  let session = {
+    boot: "B1",
+    bootedAt: "2026-10-05T07:00:00.000Z",
+    login: "100002",
+  };
+  const probe = bootOnly({ current: async () => ({ ...session }) });
+  const before = await probe.current();
+  expect(before).toEqual({ boot: "B1", bootedAt: "2026-10-05T07:00:00.000Z" });
+  session = { ...session, login: "100003" };
+  expect(hostRestartBetween(before, await probe.current())).toBeUndefined();
+  session = { ...session, boot: "B2" };
+  expect(hostRestartBetween(before, await probe.current())).toBe("reboot");
 });

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProjectConfig } from "../src/config";
-import type { HostSession } from "../src/domain/host-session";
+import { bootOnly, type HostSession } from "../src/domain/host-session";
 import { healthSummary } from "../src/domain/project-status";
 import type {
   ProcessObservation,
@@ -35,6 +35,8 @@ async function world(
   targets: { working: true; stable?: true } = { working: true },
   /** Without it, web is a plain Service: no healthcheck, its ports-less start gate the survival grace. */
   checked = true,
+  /** rigd runs as a detached process under RIG_ROOT, not in the user's GUI login: only a boot change is a Host restart. */
+  processMode = false,
 ) {
   const scratch = await mkdtemp(join(tmpdir(), "rig-health-restart-it-"));
   roots.push(scratch);
@@ -162,11 +164,14 @@ async function world(
         },
         async release() {},
       },
-      hostSession: {
-        async current() {
-          return { ...host.session };
-        },
-      },
+      hostSession: (() => {
+        const probe = {
+          async current() {
+            return { ...host.session };
+          },
+        };
+        return processMode ? bootOnly(probe) : probe;
+      })(),
     }),
   });
   roots.push(w.root);
@@ -242,6 +247,10 @@ async function world(
           refusing.on = false;
         },
       };
+    },
+    /** What the Host session probe reads from now on. */
+    setSession(session: HostSession) {
+      host.session = session;
     },
     /** rigd restarts in the same Host session: the processes survive, and a new rigd reconciles what it finds. */
     async reopen() {
@@ -538,47 +547,34 @@ test("while a Host restart's stop of a working Target cannot be recorded, nothin
   expect(await w.running()).toBe(true);
 }, 30_000);
 
-for (const checked of [true, false])
-  test(`${checked ? "with" : "without"} a healthcheck, rig up after a Host restart whose stop could not be recorded supersedes it: a crash of the new process is restarted by restart: always`, async () => {
-    const w = await world("always", { working: true }, checked);
-    await w.runtime.command({
-      action: "up",
-      project: "demo",
-      target: "working",
-    });
-    if (checked) {
-      // Waiting for its next health restart when the Host restarts.
-      await rm(w.ready);
-      await w.advance(6);
-      expect(await w.run()).toMatchObject({
-        healthStretch: { pendingStart: expect.any(Number) },
-      });
-      await writeFile(w.ready, "");
-    }
-    w.refuseRebootMarker();
-    await w.reboot();
-    expect(await w.running()).toBe(false);
-    // rig up starts web although the restart's stop is still not recorded, and the new process crashes before the next
-    // supervision pass.
-    await w.runtime.command({
-      action: "up",
-      project: "demo",
-      target: "working",
-    });
-    expect(await w.running()).toBe(true);
-    const started = await w.run();
-    await w.crash();
-    await w.advance(5);
-    // The restart's mark never reaches the new process: its exit is a crash, and restart: always starts it again.
-    expect(await w.running()).toBe(true);
-    const restarted = await w.run();
-    expect(restarted.incarnation).not.toBe(started.incarnation);
-    expect(restarted.outcome).toBeUndefined();
-    expect(restarted.attempts).toHaveLength(1);
-  }, 30_000);
+/** rig up, refused: the stop by the Host restart could not be recorded yet. */
+async function upRefused(w: Awaited<ReturnType<typeof world>>) {
+  await expect(
+    w.runtime.command({ action: "up", project: "demo", target: "working" }),
+  ).rejects.toMatchObject({
+    code: "STATE_WRITE",
+    message:
+      "Rig could not record that the Mac restarted for working, so nothing was started.",
+    hint: expect.stringContaining(
+      "Fix the state directory under RIG_ROOT/runtime",
+    ),
+  });
+}
+/** web's process crashes, and restart: always starts it again: nothing holds it stopped. */
+async function crashIsRestarted(w: Awaited<ReturnType<typeof world>>) {
+  const started = await w.run();
+  expect(started.startSeq).toEqual(expect.any(Number));
+  await w.crash();
+  await w.advance(5);
+  expect(await w.running()).toBe(true);
+  const restarted = await w.run();
+  expect(restarted.incarnation).not.toBe(started.incarnation);
+  expect(restarted.outcome).toBeUndefined();
+  expect(restarted.attempts).toHaveLength(started.attempts.length + 1);
+}
 
 for (const checked of [true, false])
-  test(`${checked ? "with" : "without"} a healthcheck, a Host restart's unrecorded stop never reaches a process started after it, even once rigd restarts`, async () => {
+  test(`${checked ? "with" : "without"} a healthcheck, nothing starts on a Target while a Host restart's stop of it cannot be recorded; once it is, rig up starts it and a crash is restarted`, async () => {
     const w = await world("always", { working: true }, checked);
     await w.runtime.command({
       action: "up",
@@ -587,36 +583,104 @@ for (const checked of [true, false])
     });
     const marker = w.refuseRebootMarker();
     await w.reboot();
+    await upRefused(w);
+    // A stop still works.
+    await w.runtime.command({
+      action: "down",
+      project: "demo",
+      target: "working",
+    });
+    marker.allow();
     await w.runtime.command({
       action: "up",
       project: "demo",
       target: "working",
     });
-    const started = await w.run();
-    // Stamped with the boot it started in.
-    expect(started.startedIn).toEqual({ boot: "BOOT-2", login: "100002" });
-    await w.crash();
-    // rigd restarts before another supervision pass, and the restart's stop can be recorded now. The new daemon has
-    // nothing in memory about it; what the run says decides.
-    marker.allow();
-    await w.reopen();
-    await w.advance(5);
     expect(await w.running()).toBe(true);
-    const restarted = await w.run();
-    expect(restarted.incarnation).not.toBe(started.incarnation);
-    expect(restarted.outcome).toBeUndefined();
-    expect(restarted.attempts).toHaveLength(1);
+    await crashIsRestarted(w);
   }, 30_000);
 
-test("a run an older rigd recorded, with no boot it started in, is still recorded as stopped by a Host restart", async () => {
+for (const checked of [true, false])
+  test(`${checked ? "with" : "without"} a healthcheck, a Host restart's stop recorded by a later rigd never reaches a process started after it`, async () => {
+    const w = await world("always", { working: true }, checked);
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    const marker = w.refuseRebootMarker();
+    await w.reboot();
+    await upRefused(w);
+    // rigd restarts; the new one records the restart's stop at its first pass, and rig up follows it.
+    marker.allow();
+    await w.reopen();
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    await crashIsRestarted(w);
+    // And once more across a rigd restart: the restart is settled, and nothing marks the new process.
+    await w.reopen();
+    await crashIsRestarted(w);
+  }, 30_000);
+
+for (const read of [{}, { login: "100002" }] as HostSession[])
+  for (const checked of [true, false])
+    test(`${checked ? "with" : "without"} a healthcheck, when a later rigd cannot read the boot (${JSON.stringify(read)}) a run it starts still comes after the pending Host restart`, async () => {
+      const w = await world("always", { working: true }, checked);
+      await w.runtime.command({
+        action: "up",
+        project: "demo",
+        target: "working",
+      });
+      const marker = w.refuseRebootMarker();
+      await w.reboot();
+      await upRefused(w);
+      // The next rigd's first read gets no boot; the pending restart is still the one to act on.
+      w.setSession(read);
+      await w.reopen();
+      await upRefused(w);
+      marker.allow();
+      await w.runtime.command({
+        action: "up",
+        project: "demo",
+        target: "working",
+      });
+      await crashIsRestarted(w);
+    }, 30_000);
+
+test("a rigd run as a process under RIG_ROOT takes no login change for a Host restart: its Services keep running and are supervised as before", async () => {
+  const w = await world("always", { working: true }, true, true);
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  // The user logs out and in again; a detached rigd and its children live on, and rigd itself restarts too.
+  w.setSession({
+    boot: "BOOT-1",
+    bootedAt: "2026-10-05T07:00:00.000Z",
+    login: "100003",
+  });
+  await w.reopen();
+  expect(await w.running()).toBe(true);
+  expect((await w.store.read()).host?.restart).toBeUndefined();
+  expect(
+    (await w.store.read()).activity.filter(
+      (entry) => entry.action === "host-restart",
+    ),
+  ).toEqual([]);
+  await crashIsRestarted(w);
+  // A reboot still is one.
+  await w.reboot();
+  expect(await w.run()).toMatchObject({
+    outcome: { kind: "unknown", hostRestart: "reboot" },
+  });
+}, 30_000);
+
+test("a run an older rigd recorded, with no startSeq, is still recorded as stopped by a Host restart, and so is any run under a restart recorded without seq", async () => {
   const w = await world("always", { working: true }, false);
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
-  expect((await w.run()).startedIn).toEqual({
-    boot: "BOOT-1",
-    login: "100002",
-  });
+  expect((await w.run()).startSeq).toEqual(expect.any(Number));
   await w.store.update((state) => {
-    delete state.targets[0]!.services!.web!.startedIn;
+    delete state.targets[0]!.services!.web!.startSeq;
   });
   await w.reboot();
   await w.advance(5);

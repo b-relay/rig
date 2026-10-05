@@ -43,6 +43,7 @@ import { runCommand } from "../providers/command-runner";
 import { createListenerInspection } from "../providers/listener-inspection";
 import { probeLocalPort } from "../providers/port-probe";
 import { createHostSessionProbe } from "../providers/host-session";
+import { bootOnly } from "../domain/host-session";
 import { createProjectDocuments } from "../adapters/project-documents";
 import { createDeploymentSources } from "../adapters/deployment-sources";
 import { createRuntimeFiles } from "../adapters/runtime-files";
@@ -59,6 +60,8 @@ export async function composeDaemon(
   root: string,
   captureCommand: readonly string[],
   toolBun: string | undefined,
+  /** How rigd was started (its installation record): a launchd job in the user's GUI login, or a detached process. */
+  mode: "process" | "launchd" = "launchd",
 ): Promise<Omit<DaemonHostOptions, "root" | "port">> {
   const host = await readHostConfig(root);
   const diagnostic = createFileDiagnosticLog({
@@ -175,7 +178,11 @@ export async function composeDaemon(
     },
     files: createRuntimeFiles(),
     // The boot and GUI login rigd's first pass compares with the last recorded, to start Stable Targets after a restart.
-    hostSession: createHostSessionProbe({ run: runCommand, uid }),
+    // A detached process outlives a logout and login, so only a reboot is a Host restart for it.
+    hostSession:
+      mode === "process"
+        ? bootOnly(createHostSessionProbe({ run: runCommand, uid }))
+        : createHostSessionProbe({ run: runCommand, uid }),
     now: () => new Date().toISOString(),
     id: randomUUID,
     diagnostic: recordingDiagnostic(diagnostic, notices),

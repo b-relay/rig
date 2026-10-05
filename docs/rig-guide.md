@@ -1453,7 +1453,9 @@ ones it recorded last time:
 - Targets meant to be stopped stay stopped.
 
 A plain `rigd` restart in the same boot and login session detects nothing and
-follows the rules above. So does the first start of a `rigd` that had recorded
+follows the rules above. A `rigd` run as a detached process under `RIG_ROOT`
+(not as a launchd job in your login) and its Services outlive a logout and
+login, so for it only a new boot is a Host restart; a new login is not. So does the first start of a `rigd` that had recorded
 no session yet. A new boot is detected only when both boots could be read, and
 a new login only when both login sessions could be (there is none to read
 without a GUI login, over SSH only, say). A start that finds no restart but
@@ -1485,12 +1487,15 @@ boot, so the next start sees one restart and writes one entry.
 
 When the working Target's or a Preview's stop by the restart cannot be
 recorded, each later pass tries again, a command you run on the Target records
-it first, and health restarts wait for it. A command goes on even while it
-cannot be recorded: every process records the boot and login it was started
-in, and the restart's stop only ever applies to processes started before it,
-whichever `rigd` records it. So `rig up` starts the Services as usual, and a
-process started since is supervised under its restart policy like any other. A
-process an older `rigd` started records no boot, and counts as started before.
+it first, and health restarts wait for it. While it cannot be recorded,
+`rig up`, `rig restart` and a deploy of that Target are refused with
+`STATE_WRITE` and a hint to fix the state directory; `rig down` still works. That refusal is
+what makes the restart's stop safe: every start takes the next value of a
+counter in the state, a Host restart notes the counter's value when it is
+recorded, and its stop applies only to runs started before it, whichever
+`rigd` records it. A start made before the restart's record would look like
+one it stopped, so none is made. A run an older `rigd` started has no place in
+that order and counts as started before.
 
 ### Health checks
 

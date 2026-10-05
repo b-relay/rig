@@ -135,54 +135,79 @@ const ROLE_OF_KIND: Readonly<Record<string, "working" | "stable">> = {
   local: "working",
   live: "stable",
 };
+/** Names a Preview may no longer have: the working and stable Targets' names, and the working Target's Tool suffix. */
+const RESERVED_NAMES: readonly string[] = [
+  "working",
+  "stable",
+  WORKING_TOOL_SUFFIX,
+];
 /** State version 4 recorded the working and stable Targets with the kinds `local` and `live`, under the names `local` and
  * `live` or whatever rig.yaml renamed them to (Pantry's working Target was `dev`). Names are fixed now, so such a file is
  * read with each kind and name made its role, `working` or `stable`, and saved so by the next write. It runs before
  * validation, on the parsed JSON, and changes nothing it does not recognize, so a malformed file still fails validation.
- * - A Preview that took the role's name under an explicit --deployment keeps it; the Target keeps its old name then, and is
- *   still selected by its kind.
+ * - The working and stable Targets always take their role's name. A Preview an explicit --deployment named `working`,
+ *   `stable` or `dev` is renamed `<name>-preview` (with `-2`, `-3`, ... if that is taken too), so no two Targets of a
+ *   Project share a name.
  * - The plans' names follow, but their recorded domains and routes stay as they were served: the route is keyed by the
  *   Target's id, so the next plan replaces it.
- * - A working Target's Tool published as `<tool>-<old name>` is recorded as `publishedAs`, so status still finds it and
- *   planning the Target again retires it instead of leaving it behind beside the new `<tool>-dev`.
+ * - A Tool a renamed Target published under its old name (`<tool>-<old name>`; the stable Target's plain name never
+ *   changes) is recorded as `publishedAs`, so status still finds it and planning the Target again retires it instead of
+ *   leaving it behind.
  * Activity keeps the old names as the text it recorded. */
 export function readFixedTargetNames(parsed: unknown): void {
   if (!loose(parsed) || parsed.version !== MIGRATED_STATE_VERSION) return;
   parsed.version = STATE_VERSION;
-  const targets = Array.isArray(parsed.targets) ? parsed.targets : [];
-  const previews = new Set(
-    targets
-      .filter((target) => loose(target) && target.kind === "preview")
-      .map(
-        (target) => `${(target as Loose).projectId}:${(target as Loose).name}`,
-      ),
+  const targets = (Array.isArray(parsed.targets) ? parsed.targets : []).filter(
+    loose,
+  );
+  const taken = new Set(
+    targets.map((target) => `${target.projectId}:${target.name}`),
   );
   for (const target of targets) {
-    if (!loose(target) || typeof target.kind !== "string") continue;
-    const role = ROLE_OF_KIND[target.kind];
-    if (!role) continue;
-    const old = target.name;
-    target.kind = role;
-    if (!previews.has(`${target.projectId}:${role}`)) target.name = role;
-    const recovery = loose(target.recovery) ? target.recovery : {};
-    for (const plan of [target.plan, recovery.plan]) {
-      if (!loose(plan)) continue;
-      if (plan.target === "local" || plan.target === "live") plan.target = role;
-      for (const field of ["deploymentName", "branchSlug", "subdomain"])
-        if (plan[field] === old) plan[field] = target.name;
-      if (role !== "working" || typeof old !== "string") continue;
-      for (const component of Array.isArray(plan.components)
-        ? plan.components
-        : []) {
-        if (!loose(component) || component.kind !== "installed") continue;
-        const base = component.installName ?? component.name;
-        if (
-          component.publishedAs === undefined &&
-          old !== WORKING_TOOL_SUFFIX &&
-          typeof base === "string"
-        )
-          component.publishedAs = `${base}-${old}`;
-      }
+    const role = ROLE_OF_KIND[String(target.kind)];
+    if (role) {
+      renameTarget(target, role, role);
+      taken.add(`${target.projectId}:${role}`);
+    } else if (
+      target.kind === "preview" &&
+      typeof target.name === "string" &&
+      RESERVED_NAMES.includes(target.name)
+    ) {
+      let name = `${target.name}-preview`;
+      for (let n = 2; taken.has(`${target.projectId}:${name}`); n++)
+        name = `${target.name}-preview-${n}`;
+      taken.add(`${target.projectId}:${name}`);
+      renameTarget(target, "preview", name);
+    }
+  }
+}
+/** One record of state version 4 under its new kind and name: its plans' names follow, and a Tool it published under its old
+ * name keeps that file name as `publishedAs`. */
+function renameTarget(
+  target: Loose,
+  kind: "working" | "stable" | "preview",
+  name: string,
+): void {
+  const old = target.name;
+  target.kind = kind;
+  target.name = name;
+  const recovery = loose(target.recovery) ? target.recovery : {};
+  for (const plan of [target.plan, recovery.plan]) {
+    if (!loose(plan)) continue;
+    if (plan.target === "local" || plan.target === "live") plan.target = kind;
+    for (const field of ["deploymentName", "branchSlug", "subdomain"])
+      if (plan[field] === old) plan[field] = name;
+    // The stable Target published the plain name before and still does; the others carried their old name.
+    if (kind === "stable" || typeof old !== "string") continue;
+    const suffix = kind === "working" ? WORKING_TOOL_SUFFIX : name;
+    if (old === suffix) continue;
+    for (const component of Array.isArray(plan.components)
+      ? plan.components
+      : []) {
+      if (!loose(component) || component.kind !== "installed") continue;
+      const base = component.installName ?? component.name;
+      if (component.publishedAs === undefined && typeof base === "string")
+        component.publishedAs = `${base}-${old}`;
     }
   }
 }

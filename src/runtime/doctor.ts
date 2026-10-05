@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
+import { deploySelector, targetSelector } from "../domain/target-selector";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { RuntimeDependencies } from "./contracts";
 import { RigError } from "../domain/errors";
@@ -176,7 +177,7 @@ export async function doctor(
   );
   for (const report of reports)
     for (const component of report.components)
-      checks.push(componentCheck(report.name, component));
+      checks.push(componentCheck(report, component));
   return {
     ok: checks.every((c) => c.ok),
     checks,
@@ -185,7 +186,7 @@ export async function doctor(
 }
 /** The Stable Target serves whatever Branch it was deployed from; a Production setting changed since then is drift the operator acts on. */
 function productionBranchCheck(
-  target: Pick<TargetRecord, "name" | "branch">,
+  target: Pick<TargetRecord, "kind" | "name" | "branch">,
   production: string,
 ): DoctorCheck {
   const name = `${target.name}/branch`;
@@ -206,7 +207,7 @@ function productionBranchCheck(
     ok: false,
     message: `${target.name} was deployed from '${target.branch}', but Production is now '${production}'.`,
     reason: "production-branch-drift",
-    hint: `Run rig deploy ${target.name} to deploy '${production}', or set production_branch back to '${target.branch}'.`,
+    hint: `Run rig deploy ${deploySelector(target)} to deploy '${production}', or set production_branch back to '${target.branch}'.`,
   };
 }
 /** One read of a config document, kept apart by why it cannot serve a comparison. */
@@ -307,8 +308,8 @@ async function configCheck(
       message,
       "config-drift",
       target.kind === "working"
-        ? `Run rig restart ${target.name} (or rig down ${target.name}, then rig up) to apply the current configuration.`
-        : `Run rig deploy ${deployArguments(target)} --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
+        ? "Run rig restart working (or rig down working, then rig up working) to apply the current configuration."
+        : `Run rig deploy ${deploySelector(target)} --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
     );
   const invalid = (failure: ConfigError) =>
     failing(
@@ -323,7 +324,7 @@ async function configCheck(
         "config-unreadable",
         target.kind === "working"
           ? UNREADABLE_HINT
-          : `Inspect the Target's checkout at ${target.plan.workspacePath}, or run rig deploy ${deployArguments(target)} --force to prepare it again.`,
+          : `Inspect the Target's checkout at ${target.plan.workspacePath}, or run rig deploy ${deploySelector(target)} --force to prepare it again.`,
       );
     case "invalid":
       return invalid(source.failure);
@@ -363,14 +364,6 @@ async function configCheck(
       : invalid(error);
   }
 }
-/** The deploy arguments that select this deployed Target again. */
-function deployArguments(
-  target: Pick<TargetRecord, "kind" | "name" | "branch">,
-): string {
-  return target.kind === "stable"
-    ? target.name
-    : `preview ${target.branch ?? target.name}`;
-}
 const HEALTHY_STATES = new Set([
   "running",
   "healthy",
@@ -380,10 +373,10 @@ const HEALTHY_STATES = new Set([
 ]);
 /** A failing component's check keeps the observation's own reason and exit code; the hint follows what was observed. */
 export function componentCheck(
-  targetName: string,
+  target: Pick<TargetRecord, "kind" | "name" | "branch">,
   component: ComponentReport,
 ): DoctorCheck {
-  const name = `${targetName}/${component.name}`;
+  const name = `${target.name}/${component.name}`;
   if (HEALTHY_STATES.has(component.state))
     return { name, ok: true, message: `Component is ${component.state}.` };
   const reason =
@@ -396,19 +389,19 @@ export function componentCheck(
     ok: false,
     message: `Component is ${component.state}.${reason ? ` ${reason}` : ""}`,
     reason: component.state,
-    hint: componentHint(targetName, component),
+    hint: componentHint(targetSelector(target), component),
   };
 }
-function componentHint(targetName: string, component: ComponentReport): string {
+function componentHint(selector: string, component: ComponentReport): string {
   if (component.reason === OBSERVATION_EXPIRED)
     return "Run doctor again; the observation did not finish within the status budget.";
   if (component.state === "unknown")
     return "Inspect daemon state (rig activity, rigd status) before acting on this component.";
   if (component.state === "failed" || component.exitCode !== undefined)
-    return `Inspect the Target logs (rig logs ${targetName}) for why it exited.`;
+    return `Inspect the Target logs (rig logs ${selector}) for why it exited.`;
   if (component.state === "unhealthy")
-    return `The health check failed; inspect the Target logs (rig logs ${targetName}) and the health URL.`;
+    return `The health check failed; inspect the Target logs (rig logs ${selector}) and the health URL.`;
   if (component.state === "missing")
-    return "The installed artifact or storage is absent; run up or redeploy this Target.";
+    return `The installed artifact or storage is absent; run rig up ${selector} or redeploy this Target.`;
   return "Inspect Target logs and provider configuration.";
 }

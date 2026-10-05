@@ -297,7 +297,7 @@ test("seeding skips Projects already present and reports a failure without stopp
 test("shutdown stops every started Target, naming a Preview by its deployment and the others by their role", () => {
   expect(
     downCommands("pantry", [
-      // Recorded under an old name a Preview already held when names were fixed.
+      // Selected by its role, whatever name the report carries.
       { name: "live", kind: "stable", state: "healthy" },
       { name: "feat-x-0a1b2c3d", kind: "preview", state: "degraded" },
       { name: "working", kind: "working", state: "configured" },

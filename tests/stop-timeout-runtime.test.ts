@@ -976,7 +976,7 @@ test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan
       ok: false,
       message: "Current configuration differs from the recorded Target policy.",
       reason: "config-drift",
-      hint: "Run rig restart working (or rig down working, then rig up) to apply the current configuration.",
+      hint: "Run rig restart working (or rig down working, then rig up working) to apply the current configuration.",
     },
     {
       name: "migrate-next-rig-agent-sdk-28897383/config",
@@ -984,7 +984,7 @@ test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan
       message:
         "The deployed revision's configuration differs from the recorded Target policy.",
       reason: "config-drift",
-      hint: "Run rig deploy preview studio-feedback --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
+      hint: "Run rig deploy preview studio-feedback --deployment migrate-next-rig-agent-sdk-28897383 --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
     },
     {
       name: "stable/config",

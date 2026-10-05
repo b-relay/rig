@@ -1,6 +1,7 @@
 import { recordActivity } from "../domain/activity";
 import { diagnosticErrorCode, recoveredByDownFirst } from "../domain/errors";
 import { isStopDetached } from "../domain/stop-budget";
+import { targetSelector } from "../domain/target-selector";
 import {
   hostRestartBetween,
   hostRestartText,
@@ -206,7 +207,7 @@ function hostRestartEntry(
     action: "host-restart",
     outcome: "stopped",
     occurredAt: deps.now(),
-    message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stops the Services Rig runs. rigd starts the stable Targets meant to run again; the working Target's and Previews' Services that stopped stay stopped until rig up.${late}`,
+    message: `${what[0]!.toUpperCase()}${what.slice(1)}${booted}, which stops the Services Rig runs. rigd starts the stable Targets meant to run again; the working Target's and Previews' Services that stopped stay stopped until rig up starts their Target.${late}`,
   };
 }
 
@@ -346,8 +347,8 @@ export async function recordFailedAfterHostRestart(
       occurredAt: deps.now(),
       message: `${target.name} could not be started again after ${after} (${errorCode}). ${
         recoveredByDownFirst(errorCode)
-          ? `Run rig down ${target.name}, then rig up ${target.name}.`
-          : `Run rig up ${target.name} once the cause is fixed.`
+          ? `Run rig down ${targetSelector(target)}, then rig up ${targetSelector(target)}.`
+          : `Run rig up ${targetSelector(target)} once the cause is fixed.`
       }`,
     });
   });

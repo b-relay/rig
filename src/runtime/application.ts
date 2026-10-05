@@ -1,3 +1,4 @@
+import { targetSelector } from "../domain/target-selector";
 import type {
   ProjectStatusReader,
   ProjectStatusReport,
@@ -463,7 +464,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           throw new RigError(
             "DEPLOY_RECOVERY",
             "Cannot uninstall rigd while Targets have unresolved recovery or destruction.",
-            "Finish recovery with rig down, or retry Preview --destroy when deletion is pending, then retry uninstall.",
+            "Finish recovery with rig down <target> for each such Target (rig status names them), or retry rig down preview --deployment <name> --destroy when deletion is pending, then retry uninstall.",
           );
         const reports = await observeTargets(
           state.targets,
@@ -618,7 +619,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             ? undefined
             : command.target === PREVIEW_SELECTOR
               ? "preview"
-              : selectTarget(command, targets).kind;
+              : selectTarget(command).kind;
         // Refused here as the deploy itself refuses it, so nothing announces a deploy that cannot happen.
         if (selected === "working") throw deployTargetError();
         if (selected) assertTargetOn(selection.document!.config, selected);
@@ -687,7 +688,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         if (!configured.document) throw configured.failure;
         return configured.document;
       };
-      const { kind, name } = selectTarget(command, targets);
+      const { kind, name } = selectTarget(command);
       aimed = name;
       const find = (recorded: readonly TargetRecord[]) =>
         kind === "preview"
@@ -982,7 +983,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             configDigest(current.config) !== target.configDigest);
         if (drift)
           warnings.push(
-            `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${target.name} to apply the current rig.yaml.`,
+            `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${targetSelector(target)} to apply the current rig.yaml.`,
           );
         const journal = activationJournal(target, "explicit", deps);
         try {
@@ -1589,7 +1590,7 @@ function deployTargetError(): RigError {
   return new RigError(
     "DEPLOY_TARGET",
     "Deploy needs the stable Target or a Preview.",
-    "Use rig up for the working Target.",
+    "Use rig up working for the working Target.",
   );
 }
 /** Names the Preview by the Branch or deployment the user typed; the hashed slug stays internal. */
@@ -1604,7 +1605,7 @@ function missingTarget(
   return new RigError(
     "TARGET_MISSING",
     `${label} has no recorded deployment.`,
-    "Use rig up for the working Target, or deploy this Target first.",
+    "Use rig up working for the working Target, or deploy this Target first (rig deploy stable, or rig deploy preview <branch>).",
   );
 }
 /** A --no-up deploy leaves nothing serving; the warning carries the exact command that starts the new deployment. */
@@ -1612,10 +1613,7 @@ function preparedWarning(
   target: Pick<TargetRecord, "name" | "kind">,
   wasRunning: boolean,
 ): string {
-  const up =
-    target.kind === "preview"
-      ? `rig up preview --deployment ${target.name}`
-      : `rig up ${target.name}`;
+  const up = `rig up ${targetSelector(target)}`;
   return wasRunning
     ? `${target.name} was running and is now stopped on the new deployment. Run ${up} to start it.`
     : `${target.name} is deployed but stopped. Run ${up} to start it.`;
@@ -1666,7 +1664,7 @@ async function replanWorkingCopy(
     throw new RigError(
       "REPLAN_COMMIT_PENDING",
       `The new plan of ${replanned.name} was saved, but its commit finalization is incomplete.`,
-      `Run rig down ${replanned.name} to finish the recorded commit, then run the command again.`,
+      `Run rig down ${targetSelector(replanned)} to finish the recorded commit, then run the command again.`,
       {},
       failureCauses(error),
     );
@@ -1792,11 +1790,8 @@ async function destroyReplacedPreviews(
       });
     } catch (error) {
       const failure = failureReason(error);
-      const selector = replacement.branch
-        ? `preview ${replacement.branch}`
-        : `preview --deployment ${replacement.name}`;
       warnings.push(
-        `Preview ${replacement.branch ?? replacement.name} was not removed: ${failure} Run rig down ${selector} --destroy to finish; the Project is over its Preview limit until then.`,
+        `Preview ${replacement.branch ?? replacement.name} was not removed: ${failure} Run rig down ${targetSelector(replacement)} --destroy to finish; the Project is over its Preview limit until then.`,
       );
     }
   }

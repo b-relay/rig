@@ -119,7 +119,7 @@ export function createTargetEffects(
       throw new RigError(
         "PROVIDER_MISSING",
         `Process supervisor '${target.plan.providers.processSupervisor}' is unavailable.`,
-        `This rigd supervises with ${[...options.supervisors.keys()].join(", ")}. Deploy the Target again (rig up for the working Target) so it is planned with rigd.`,
+        `This rigd supervises with ${[...options.supervisors.keys()].join(", ")}. Deploy the Target again (rig up working for the working Target) so it is planned with rigd.`,
       );
     return provider;
   };

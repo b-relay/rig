@@ -207,7 +207,7 @@ export async function stopForRecovery(
   return previous;
 }
 
-/** The checkout a deployed Target owns under its revisions directory; local Targets have none. */
+/** The checkout a deployed Target owns under its revisions directory; the working Target has none. */
 export function ownedRevision(record: TargetRecord): string | undefined {
   return record.sourceRoot &&
     within(record.sourceRoot, record.plan.workspacePath)

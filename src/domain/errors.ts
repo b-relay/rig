@@ -25,7 +25,6 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "PRODUCTION_CONFIRMATION",
   "TARGET_OFF",
   "TARGET_UNKNOWN",
-  "TARGET_NAME",
   "TARGET_MISSING",
   "TARGETS_RUNNING",
   "PROJECT_REQUIRED",

@@ -1002,7 +1002,7 @@ test("doctor reports drift, not an invalid config, when a valid config adds a Se
     message:
       "Current configuration adds Services the recorded Target policy does not have (worker).",
     reason: "config-drift",
-    hint: "Run rig restart working (or rig down working, then rig up) to apply the current configuration.",
+    hint: "Run rig restart working (or rig down working, then rig up working) to apply the current configuration.",
   });
 });
 
@@ -1385,7 +1385,7 @@ test("doctor carries each failing component's observation reason and exit code a
     name: "working/web",
     ok: false,
     message:
-      "Component is failed. The process exited with code 137 after 5 automatic restarts within 60 s, so it stays stopped. Run rig up to start it again.",
+      "Component is failed. The process exited with code 137 after 5 automatic restarts within 60 s, so it stays stopped. Run rig up working to start it again.",
     reason: "failed",
     hint: "Inspect the Target logs (rig logs working) for why it exited.",
   });
@@ -3058,7 +3058,7 @@ test("status and doctor name a Preview whose destruction is pending instead of c
       state: "stopped",
     });
     expect(status.warnings).toEqual([
-      `${f.target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run down preview review --destroy to finish cleanup.`,
+      `${f.target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run rig down preview --deployment review --destroy to finish cleanup.`,
     ]);
     const report = (await f.runtime.command({
       action: "doctor",
@@ -4151,70 +4151,6 @@ test("a Target turned off while it runs stays listed, readable and stoppable, an
     project: "demo",
   })) as { targets: { name: string }[] };
   expect(empty.targets.map((t) => t.name)).toEqual(["working"]);
-});
-
-test("a Preview recorded under a role's name before names were fixed blocks planning that Target until it is destroyed", async () => {
-  const { runtime, state } = fixture();
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({
-    action: "deploy",
-    project: "demo",
-    target: "preview",
-    branch: "feature",
-  });
-  // As state from before fixed names may hold it: a Preview deployed under an explicit name that is now the stable one.
-  const preview = state.targets[0]!;
-  preview.name = preview.plan.deploymentName = "stable";
-  const before = structuredClone(state.targets);
-  await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
-  ).rejects.toMatchObject({
-    code: "TARGET_NAME",
-    message:
-      "Target name 'stable' already belongs to a Preview of this Project.",
-    hint: "Destroy that Preview first: rig down preview --deployment stable --destroy.",
-  });
-  expect(state.targets).toEqual(before);
-  expect(
-    await runtime.command({
-      action: "destroy",
-      project: "demo",
-      target: "preview",
-      deployment: "stable",
-    }),
-  ).toMatchObject({ action: "destroy", target: "stable" });
-  expect(
-    await runtime.command({
-      action: "deploy",
-      project: "demo",
-      target: "stable",
-    }),
-  ).toMatchObject({ outcome: "deployed", target: "stable" });
-});
-
-test("a Preview named dev from before the name was reserved blocks planning a working Target with Tools, whose <tool>-dev it holds", async () => {
-  const { runtime, state, config } = fixture();
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({
-    action: "deploy",
-    project: "demo",
-    target: "preview",
-    branch: "feature",
-  });
-  const preview = state.targets[0]!;
-  preview.name = preview.plan.deploymentName = "dev";
-  // Without Tools nothing collides.
-  expect(
-    await runtime.command({ action: "up", project: "demo" }),
-  ).toMatchObject({ outcome: "started", target: "working" });
-  await runtime.command({ action: "down", project: "demo" });
-  config.tools = { cli: { bin: "cli.ts" } };
-  await expect(
-    runtime.command({ action: "up", project: "demo" }),
-  ).rejects.toMatchObject({
-    code: "TARGET_NAME",
-    hint: "Destroy that Preview first: rig down preview --deployment dev --destroy.",
-  });
 });
 
 test("an action checks and plans the working Target from one read of the checkout config", async () => {

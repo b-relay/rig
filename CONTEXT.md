@@ -591,9 +591,11 @@ names a Preview that has not been deployed yet, Rig fails and tells the
 user to deploy it first.
 
 _Relationship_: `down` stops a Target but does not remove it from inventory. A
-stopped Preview still appears in interactive lifecycle selection until it is
+stopped Preview stays listed and selectable with `preview <Branch>` until it is
 destroyed (`rig down preview <Branch> --destroy`) or replaced at the Preview
-limit.
+limit. A bare lifecycle command never selects a Preview: without a Target,
+`up`, `down`, `restart` and `logs` mean the working Target and `deploy` the
+stable Target.
 
 _Relationship_: `rig down preview <Branch> --destroy` removes a Preview from
 inventory with its owned route, and deletes its own data, logs, and source
@@ -636,8 +638,9 @@ may remain JSON or JSONL.
 
 _Relationship_: A deploy records the policy of the `rig.yaml` committed on the
 deployed Commit; uncommitted edits never reach a stable or Preview plan. The
-working-copy config only identifies the Project, names its Targets, and
-supplies the Production branch.
+working-copy config only identifies the Project, says which Targets are on,
+and supplies the Production branch. Target names are fixed (`working`,
+`stable`, and a Preview's name); no config renames them.
 
 ### Deployment record
 
@@ -807,7 +810,10 @@ The machine-owned record `rigd` keeps at `<RIG_ROOT>/runtime/state.json`:
 registered Projects, Targets with their Deployment records and port
 selections, and the Activity log. Only `rigd` writes it, one durable replace
 at a time with the previous generation kept beside it. A file written by a
-different state version is refused unread. CLI and future UI views are derived
+newer state version, or by a version older than 4, is refused unread. Version
+4, written before Target names were fixed, is read and migrated to version 5:
+the working and stable Targets take their role's name, a Preview holding a
+reserved name is renamed, and the next write saves version 5. CLI and future UI views are derived
 from it through `rigd`, so they agree. Daemon administration activity is
 journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
 
@@ -852,7 +858,7 @@ directly.
 _Relationship_: Project config and Host config never own the same
 field. Project config owns Project intent that should travel with the repo:
 commands, ports, readiness checks, builds, environment, routes, Production
-branch, and Target names. Host config owns machine capability: the default
+branch, and which Targets are on. Host config owns machine capability: the default
 Production branch, the Preview limit, the Caddy provider settings, and
 diagnostics. `rigd` combines both into the runtime plan before calling
 providers.

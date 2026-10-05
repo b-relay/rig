@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { generatedPreviewName } from "../domain/target-selector";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type {
   ProjectRecord,
@@ -38,28 +38,18 @@ export function previewName(
       "Select a Preview Branch or deployment name.",
       "Pass a Branch or --deployment.",
     );
-  const slug =
-    command.branch
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 40) || "branch";
-  return `${slug}-${createHash("sha256").update(command.branch).digest("hex").slice(0, 8)}`;
+  return generatedPreviewName(command.branch);
 }
 /** Which Target a command's selector means: `working`, `stable`, or `preview` with a Branch or deployment name. No selector
  * means the working Target. The working and stable Targets are named by their role, so a recorded one is found by its kind.
- * Rejects TARGET_UNKNOWN for any other selector, and PREVIEW_NAME for a new Preview that would take a reserved name; a Preview
- * recorded under such a name before it was reserved stays selectable, so it can still be stopped or destroyed. */
+ * Rejects TARGET_UNKNOWN for any other selector, and PREVIEW_NAME for a Preview named by a reserved name, which no Preview has:
+ * state from before names were fixed is read with such a Preview renamed (see state-store). */
 export function selectTarget(
   command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
-  recorded: readonly Pick<TargetRecord, "kind" | "name">[],
 ): { kind: TargetKind; name: string } {
   if (command.target === PREVIEW_SELECTOR) {
     const name = previewName(command);
-    if (
-      RESERVED_PREVIEW_NAMES.includes(name) &&
-      !recorded.some((t) => t.kind === "preview" && t.name === name)
-    )
+    if (RESERVED_PREVIEW_NAMES.includes(name))
       throw new RigError(
         "PREVIEW_NAME",
         `'${name}' is reserved: ${name === WORKING_TOOL_SUFFIX ? "the working Target's Tools are published as <tool>-dev" : "it names this Project's working or stable Target"}.`,
@@ -156,36 +146,6 @@ export async function planTarget(
     config = await committedConfig(prepared.workspacePath, project, deps);
   }
   const name = kind === "preview" ? previewName(command) : kind;
-  const targets = (await deps.store.read()).targets;
-  // A Preview deployed under an explicit name before the working and stable names were fixed may hold one of them.
-  const holder =
-    kind === "preview"
-      ? undefined
-      : targets.find(
-          (t) => t.projectId === project.id && t.id !== id && t.name === name,
-        );
-  if (holder)
-    throw new RigError(
-      "TARGET_NAME",
-      `Target name '${name}' already belongs to a Preview of this Project.`,
-      `Destroy that Preview first: rig down preview --deployment ${name} --destroy.`,
-    );
-  // The working Target publishes its Tools as <tool>-dev, which a Preview named dev from before that name was reserved owns.
-  if (
-    kind === "working" &&
-    Object.keys(patchedSettings(config, kind).tools ?? {}).length &&
-    targets.some(
-      (t) =>
-        t.projectId === project.id &&
-        t.kind === "preview" &&
-        t.name === WORKING_TOOL_SUFFIX,
-    )
-  )
-    throw new RigError(
-      "TARGET_NAME",
-      `A Preview of this Project is named '${WORKING_TOOL_SUFFIX}', and its Tools hold the <tool>-${WORKING_TOOL_SUFFIX} names the working Target publishes its Tools under.`,
-      `Destroy that Preview first: rig down preview --deployment ${WORKING_TOOL_SUFFIX} --destroy.`,
-    );
   const planInput = {
     config,
     target: kind,

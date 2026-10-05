@@ -506,7 +506,7 @@ test("a Stable Target that fails to come back after a reboot keeps a failed stat
   expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
 });
 
-test("a Stable Target whose start after a reboot finds an unfinished effect transaction names rig down, then rig up, as its recovery", async () => {
+test("a Stable Target whose start after a reboot finds an unfinished effect transaction names rig down stable, then rig up stable, as its recovery", async () => {
   const f = await fixture();
   await f.startAll();
   const before = await f.activityCount();
@@ -538,7 +538,7 @@ test("a Stable Target whose start after a reboot finds an unfinished effect tran
   const status = await f.status("stable");
   for (const service of ["api", "db", "worker"])
     expect(String(status[service]!.reason)).toContain(
-      "Run rig down, then rig up to start it again.",
+      "Run rig down stable, then rig up stable to start it again.",
     );
   await f.command({ action: "down", project: "demo", target: "stable" });
   await f.command({ action: "up", project: "demo", target: "stable" });

@@ -637,7 +637,7 @@ test("a version 4 working Target named local keeps its Tools' published name, so
   }
 });
 
-test("a version 4 Target whose role name a Preview already holds keeps its old name and is still its role", async () => {
+test("version 4 names that would collide are made unique: role Targets take their role's name, and a Preview holding one is renamed", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-name-held-"));
   try {
     await mkdir(join(root, "runtime"));
@@ -648,19 +648,82 @@ test("a version 4 Target whose role name a Preview already holds keeps its old n
         version: 4,
         projects: [version4Project],
         targets: [
+          // The working Target was renamed to the name the stable Target has now.
+          version4Target("w", "local", "stable"),
           version4Target("s", "live", "live"),
-          version4Target("v", "preview", "stable"),
+          version4Target("v", "preview", "working"),
         ],
         activity: [],
       }),
     );
-    const [s, v] = (await new FileStateStore(root).read()).targets;
+    const store = new FileStateStore(root);
+    const [w, s, v] = (await store.read()).targets;
+    expect(w).toMatchObject({
+      kind: "working",
+      name: "working",
+      plan: { target: "working", deploymentName: "working" },
+    });
+    // Its Tool kept the file it was published as.
+    expect(w!.plan.components[0]).toMatchObject({ publishedAs: "tool-stable" });
     expect(s).toMatchObject({
       kind: "stable",
-      name: "live",
-      plan: { target: "stable", deploymentName: "live" },
+      name: "stable",
+      plan: { target: "stable", deploymentName: "stable" },
     });
-    expect(v).toMatchObject({ kind: "preview", name: "stable" });
+    expect(v).toMatchObject({
+      kind: "preview",
+      name: "working-preview",
+      plan: {
+        target: "preview",
+        deploymentName: "working-preview",
+        branchSlug: "working-preview",
+        subdomain: "working-preview",
+      },
+    });
+    expect(v!.plan.components[0]).toMatchObject({
+      publishedAs: "tool-working",
+    });
+    // The state is valid as read, and saves so.
+    await store.update(() => {});
+    expect(
+      JSON.parse(await readFile(path, "utf8")).targets.map(
+        (t: { name: string }) => t.name,
+      ),
+    ).toEqual(["working", "stable", "working-preview"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a version 4 Preview named dev is renamed, with a number when that name is taken too, and keeps its <tool>-dev file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-preview-dev-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 4,
+        projects: [version4Project],
+        targets: [
+          version4Target("w", "local", "local"),
+          version4Target("v", "preview", "dev"),
+          version4Target("t", "preview", "dev-preview"),
+        ],
+        activity: [],
+      }),
+    );
+    const [w, v, t] = (await new FileStateStore(root).read()).targets;
+    expect(w).toMatchObject({ kind: "working", name: "working" });
+    expect(v).toMatchObject({
+      kind: "preview",
+      name: "dev-preview-2",
+      plan: { deploymentName: "dev-preview-2" },
+    });
+    expect(v!.plan.components[0]).toMatchObject({ publishedAs: "tool-dev" });
+    // A Preview whose name was never reserved is left as it was.
+    expect(t).toMatchObject({ name: "dev-preview" });
+    expect(t!.plan.components[0]).not.toHaveProperty("publishedAs");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

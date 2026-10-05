@@ -15,7 +15,7 @@ test("a Preview is selected by its deployment name, the working and stable Targe
     target: "preview",
     deployment: "feature-x",
   });
-  // A record kept under an old name still selects by its role.
+  // The working and stable Targets are selected by their role, whatever name the report carries.
   expect(targetSelector({ kind: "stable", name: "prod" })).toEqual({
     target: "stable",
   });

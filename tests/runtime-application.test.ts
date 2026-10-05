@@ -4268,6 +4268,74 @@ test("a Target turned off while it runs stays listed, readable and stoppable, an
   expect(empty.targets.map((t) => t.name)).toEqual(["working"]);
 });
 
+test("a working Target started when a rig.yaml without targets still turned it on is not stranded, and doctor names the line that turns it on", async () => {
+  const { runtime, state, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  config.targets = { working: true };
+  await runtime.command({ action: "up", project: "demo" });
+  // The Project's rig.yaml never had a targets key: under the old rule its working Target was on, under the one rule it is off.
+  delete config.targets;
+  const status = (await runtime.command({
+    action: "status",
+    project: "demo",
+  })) as { targets: { name: string; state: string }[] };
+  // Still listed, and still meant to run.
+  expect(status.targets.map((t) => t.name)).toEqual(["working"]);
+  expect(state.targets[0]).toMatchObject({
+    kind: "working",
+    desired: "running",
+  });
+  const doctor = async () =>
+    (await runtime.command({ action: "doctor", project: "demo" })) as {
+      ok: boolean;
+      checks: Record<string, unknown>[];
+    };
+  const running = await doctor();
+  expect(running.ok).toBe(false);
+  expect(running.checks).toContainEqual({
+    name: "working/switch",
+    ok: false,
+    message:
+      "The working Target is off in rig.yaml, but working is recorded running: it keeps running, and up, restart and deploy refuse it.",
+    reason: "target-off",
+    hint: "Add `working: true` under targets in rig.yaml to keep it, or run rig down working to stop it.",
+  });
+  for (const action of ["up", "restart"] as const)
+    await expect(
+      runtime.command({ action, project: "demo" }),
+    ).rejects.toMatchObject({
+      code: "TARGET_OFF",
+      hint: "Add `working: true` under targets in rig.yaml.",
+    });
+  expect(
+    await runtime.command({ action: "logs", project: "demo" }),
+  ).toMatchObject({ target: "working" });
+  expect(
+    await runtime.command({ action: "down", project: "demo" }),
+  ).toMatchObject({ outcome: "stopped", target: "working" });
+  expect(state.targets[0]).toMatchObject({
+    kind: "working",
+    desired: "stopped",
+  });
+  // Stopped, it is only kept: doctor passes it, and status still lists it.
+  const stopped = await doctor();
+  expect(stopped.checks).toContainEqual({
+    name: "working/switch",
+    ok: true,
+    message:
+      "The working Target is off in rig.yaml; working is stopped and stays recorded.",
+  });
+  expect(stopped.checks.filter((check) => !check.ok)).toEqual([]);
+  // Adding the line doctor names turns it on again, with no check left about it.
+  config.targets = { working: true };
+  expect(
+    await runtime.command({ action: "up", project: "demo" }),
+  ).toMatchObject({ outcome: "started", target: "working" });
+  expect(
+    (await doctor()).checks.some((check) => check.name === "working/switch"),
+  ).toBe(false);
+});
+
 test("an action checks and plans the working Target from one read of the checkout config", async () => {
   const { runtime, state, deps, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

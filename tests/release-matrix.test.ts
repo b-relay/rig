@@ -123,6 +123,11 @@ test("one Service under the default names: config, Doctor, no-up deploy, up, res
     });
     expect((await app(await port(f, "live"))).stored).toBe("stable-record");
     expect(await ok(f, ["up", "local"])).toMatchObject({ outcome: "started" });
+    // Another client finds the daemon's process already running, and rigd will not leave it unowned.
+    expect(await ok(f, ["up", "local"])).toMatchObject({
+      outcome: "unchanged",
+    });
+    expect((await f.rigd(["uninstall"])).code).toBe(1);
 
     // A Branch alone names the Preview; Rig generates the Target name.
     const deployed = await ok(f, ["deploy", "preview", "feature/x"]);
@@ -145,13 +150,17 @@ test("one Service under the default names: config, Doctor, no-up deploy, up, res
       expect(await refused(f, ["down", name, "--destroy"])).toContain(
         "Only a Preview can be destroyed.",
       );
+    // Outside the repository a Target is selected only with its Project.
+    expect((await f.rig(["down", "local"], f.base)).code).toBe(1);
     for (const selector of [["local"], ["live"], ["preview", "feature/x"]]) {
       expect(await ok(f, ["down", ...selector])).toMatchObject({
         outcome: "stopped",
       });
       // Down again is a completed no-op, and a stopped Target still has its logs.
       expect((await f.rig(["down", ...selector])).code).toBe(0);
-      expect(await text(f, ["logs", ...selector])).toContain("app ready");
+      expect(await text(f, ["logs", ...selector])).toMatch(
+        /\d{2}:\d{2}:\d{2}Z  web  > app ready/,
+      );
     }
     await closed(live);
     expect((await targets(f)).map((entry) => entry.state)).toEqual([

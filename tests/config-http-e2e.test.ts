@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { copyFile, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { rigFixture } from "./support/rig-fixture";
@@ -9,6 +9,7 @@ const sourceSchema = z.object({
     project: z.string(),
     revision: z.string(),
     raw: z.string(),
+    config: z.record(z.string(), z.unknown()),
     fields: z.array(z.object({ path: z.string() })),
   }),
 });
@@ -64,6 +65,8 @@ function configHttp(root: string) {
   };
 }
 
+const example = (name: string) =>
+  join(import.meta.dir, "..", "docs", "examples", `${name}.rig.yaml`);
 const original =
   "# Project commentary\nname: demo\ndescription: original\nservices:\n  web:\n    run: serve # preserve command note\n    ports: { http: auto }\n";
 
@@ -173,6 +176,56 @@ test("real config HTTP rejects unauthorized, cross-origin, identity and unknown-
     });
     expect(await readFile(path, "utf8")).toBe(original);
     expect((await readdir(f.repo)).sort()).toEqual(filesBefore);
+  } finally {
+    await f.cleanup();
+  }
+}, 20000);
+
+test("the single-Service example initializes with working/stable role keys, and a Target name and a Target's Service setting are edited through them", async () => {
+  const f = await rigFixture(),
+    path = join(f.repo, "rig.yaml"),
+    http = configHttp(f.root);
+  try {
+    await copyFile(example("service"), path);
+    const original = await readFile(path, "utf8");
+    expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["init", "--create-git"])).toMatchObject({ code: 0 });
+    const read = await http({ action: "read", project: "notes" });
+    expect(read.status).toBe(200);
+    const source = sourceSchema.parse(read.body).result;
+    expect(source.raw).toBe(original);
+    expect(source.config).toMatchObject({
+      name: "notes",
+      targets: { working: { name: "local" }, stable: { name: "live" } },
+    });
+    const request = {
+      project: "notes",
+      expectedRevision: source.revision,
+      patch: [
+        { op: "set", path: ["targets", "working", "name"], value: "dev" },
+        {
+          op: "set",
+          path: ["targets", "working", "services", "api", "env", "LOG_LEVEL"],
+          value: "trace",
+        },
+      ],
+    };
+    const previewed = await http({ action: "preview", ...request });
+    expect(previewed.status).toBe(200);
+    const preview = previewSchema.parse(previewed.body).result;
+    // The YAML editor keeps comments, order and scalars; it pads the braces of inline maps it re-emits.
+    expect(preview.raw).toBe(
+      original
+        .replace("name: local", "name: dev")
+        .replace("LOG_LEVEL: debug", "LOG_LEVEL: trace")
+        .replace(/(?<!\$)\{(\w[^{}]*)\}/g, "{ $1 }"),
+    );
+    expect(await readFile(path, "utf8")).toBe(original);
+    const applied = appliedSchema.parse(
+      (await http({ action: "apply", ...request })).body,
+    ).result;
+    expect(await readFile(path, "utf8")).toBe(preview.raw);
+    expect(await readFile(applied.backupPath, "utf8")).toBe(original);
   } finally {
     await f.cleanup();
   }

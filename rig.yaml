@@ -1,7 +1,7 @@
 name: rig
 description: Rig project config for the CLI and daemon binaries and the Rig dashboard site.
-production_branch: main
-# The stable Target serves the website here; each Preview gets rig-<preview>.b-relay.com.
+# The stable Target serves the website here; each Preview gets rig-<preview>.b-relay.com. web is the one
+# Service with a port, so the hostname routes to it without a proxy.
 domain: rig.b-relay.com
 
 services:
@@ -10,10 +10,10 @@ services:
   # browser never holds them.
   web:
     build: bun install --frozen-lockfile && bun --bun next build web
-    command: bun --bun next start web -H 127.0.0.1 -p ${services.web.ports.http}
+    command: bun --bun next start web -H 127.0.0.1 -p ${port}
     ports: { http: auto }
     environment:
-      PORT: ${services.web.ports.http}
+      PORT: ${port}
       # The site owns SIGTERM so a stop can take the sandbox rigd of a Preview down with it.
       NEXT_MANUAL_SIG_HANDLE: "true"
       # The name this Target is published under; empty for the working Target, which is loopback only.
@@ -21,10 +21,7 @@ services:
       RIG_WEB_DASHBOARD_HOST: rig.b-relay.com
       # Browsers beyond this Mac sign in with the key in this file; the Service creates it on first start.
       RIG_WEB_KEY_FILE: ${rig.data}/access.key
-    ready: http://127.0.0.1:${services.web.ports.http}/healthz
-
-proxy:
-  /: ${services.web.ports.http}
+    ready: http://127.0.0.1:${port}/healthz
 
 targets:
   working: true

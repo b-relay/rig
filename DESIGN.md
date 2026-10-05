@@ -137,8 +137,17 @@ Project config owns:
 - Project identity
 - Production branch
 - Target names
-- Services and Tools: commands, ports, readiness checks, builds, environment
-- the hostname and the `proxy` routes
+- Services and Tools: commands, working directories, ports, readiness checks,
+  builds, environment
+- the hostname and the `proxy` routes, or the default route to the one Service
+  with one port
+
+A Project's keys use Docker Compose's names where the meaning matches
+(`command`, `environment`, `env_file`, `working_dir`, `depends_on`, `ports`,
+`restart`, `build`), so a `rig.yaml` reads like a Compose file and moves to one
+easily ([ADR 0011](docs/adr/0011-compose-key-names.md)). Short references such
+as `${port}` are still explicit mappings to the application's own inputs
+([ADR 0005](docs/adr/0005-services-use-platform-independent-inputs.md)).
 
 Host config (`<RIG_ROOT>/config.yaml`) owns:
 

@@ -16,7 +16,7 @@ rig
 │    --production-branch <branch>
 │    --create-git                   run git init when the directory is not a repository
 │    --domain <domain>              stable Target domain; Previews get <first label>-<name>
-│    --service <name>  --run <command>  --port <port>  --ready <check>
+│    --service <name>  --command <command>  --port <port>  --ready <check>
 │    --tool <name>     --bin <path>     --tool-build <command>
 │
 ├─ list                             all Projects on this Host
@@ -105,8 +105,9 @@ status` takes no Target.
   combined as `1h30m`) or an ISO time with a zone (`2026-09-28T03:00:00Z`,
   `2026-09-28T05:00:00+02:00`). How much history exists to filter depends on
   the Host `logs` settings (see the guide's Logs section).
-- `init` writes one Service (`--service` with `--run`) or one Tool (`--tool`
-  with `--bin`). A Tool's `bin` is the executable's path inside the
+- `init` writes one Service (`--service` with `--command`) or one Tool (`--tool`
+  with `--bin`). The Service gets one port, `http`, so a `--domain` routes to it
+  without a `proxy` line. A Tool's `bin` is the executable's path inside the
   repository; Rig copies it into `<RIG_ROOT>/bin` as `<tool>` for the stable
   Target, `<tool>-dev` for the working Target and `<tool>-<preview name>` for a
   Preview, so it must be

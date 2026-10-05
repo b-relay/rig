@@ -2,7 +2,6 @@
 # tests/config-examples-e2e.test.ts validates this file.
 # These example programs use ordinary application-defined environment inputs.
 name: acme
-production_branch: main
 domain: acme.example.com
 build: bun install --frozen-lockfile
 
@@ -11,13 +10,15 @@ environment:
 
 services:
   web:
-    build: bun run build:web
-    command: bun apps/web/dist/server.js
+    # The web app lives in apps/web: its build and command run there.
+    working_dir: apps/web
+    build: bun run build
+    command: bun dist/server.js
     ports: { http: auto }
     environment:
       HOST: 127.0.0.1
-      PORT: ${services.web.ports.http}
-    ready: http://127.0.0.1:${services.web.ports.http}/health
+      PORT: ${port}
+    ready: http://127.0.0.1:${port}/health
     depends_on: [api]
 
   api:
@@ -26,11 +27,11 @@ services:
     ports: { http: auto }
     environment:
       HOST: 127.0.0.1
-      PORT: ${services.api.ports.http}
+      PORT: ${port}
       DATA_DIR: ${rig.data}
-      DATABASE_URL: postgres://postgres@127.0.0.1:${services.db.ports.pg}/postgres
+      DATABASE_URL: postgres://postgres@127.0.0.1:${services.db.port}/postgres
     env_file: ~/.rig/env/acme/api-secrets.env
-    ready: http://127.0.0.1:${services.api.ports.http}/health
+    ready: http://127.0.0.1:${port}/health
     depends_on: [db]
 
   db:
@@ -40,25 +41,30 @@ services:
     ports: { pg: auto }
     environment:
       PGHOST: 127.0.0.1
-      PGPORT: ${services.db.ports.pg}
+      PGPORT: ${port}
       PGDATA: ${rig.data}/pg
-    ready: pg_isready -h ${services.db.environment.PGHOST} -p ${services.db.ports.pg}
+    ready: pg_isready -h 127.0.0.1 -p ${port}
 
 tools:
   acmectl:
     build: go build -o .rig-build/acmectl ./cmd/acmectl
     bin: .rig-build/acmectl
 
+# Two Services declare ports, so the proxy names which one serves each path.
 proxy:
-  /api: ${services.api.ports.http}
-  /: ${services.web.ports.http}
+  /api: api
+  /: web
 
 targets:
   working:
+    environment: { LOG_FORMAT: pretty }
     services:
       api:
         ports: { http: 8787 }
-    environment: { LOG_FORMAT: pretty }
+      # The working Target runs the dev server instead of a build.
+      web:
+        build: false
+        command: bun run dev --port ${port}
   stable: true
   preview:
     domain: ${rig.target}.preview.acme.example.com

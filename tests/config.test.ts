@@ -549,6 +549,49 @@ test.each(["service", "tool", "multi"])(
   },
 );
 
+test("the multi example plans its short references, working_dir, named proxy and the working Target's build: false", async () => {
+  const raw = await readFile(
+    join(import.meta.dir, "../docs/examples/multi.rig.yaml"),
+    "utf8",
+  );
+  const config = parseProjectConfig(parse(raw));
+  const plan = (target: "working" | "stable") =>
+    resolveTargetPlan({
+      config,
+      target,
+      ...roots_,
+      assignedPorts: { "web.http": 4100, "api.http": 4200, "db.pg": 5432 },
+    });
+  const stable = plan("stable");
+  const web = stable.components.find((c) => c.name === "web")!;
+  expect(web).toMatchObject({
+    command: "bun dist/server.js",
+    workingDir: "apps/web",
+    health: "http://127.0.0.1:4100/health",
+    env: { PORT: "4100" },
+  });
+  expect(stable.components.find((c) => c.name === "api")).toMatchObject({
+    env: {
+      PORT: "4200",
+      DATABASE_URL: "postgres://postgres@127.0.0.1:5432/postgres",
+    },
+  });
+  expect(stable.proxy).toEqual({
+    upstream: "web",
+    routes: [
+      { prefix: "/api", service: "api", port: 4200 },
+      { prefix: "/", service: "web", port: 4100 },
+    ],
+  });
+  expect(stable.builds!.map((unit) => unit.id)).toContain("service:web");
+  const working = plan("working");
+  expect(working.builds!.map((unit) => unit.id)).not.toContain("service:web");
+  expect(working.components.find((c) => c.name === "web")).toMatchObject({
+    command: "bun run dev --port 4100",
+    workingDir: "apps/web",
+  });
+});
+
 test("a Project needs a Service or a Tool; a Tool-only Project needs no Service, domain or proxy", () => {
   for (const empty of [
     { name: "app" },

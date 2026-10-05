@@ -1,6 +1,5 @@
 name: pantry
 description: Demo Project. A household inventory site with one web Service.
-production_branch: main
 domain: pantry.test
 
 environment:
@@ -11,12 +10,9 @@ services:
     command: bun server.ts
     ports: { http: auto }
     environment:
-      PORT: ${services.web.ports.http}
+      PORT: ${port}
       GREETING: The pantry is stocked.
-    ready: http://127.0.0.1:${services.web.ports.http}/healthz
-
-proxy:
-  /: ${services.web.ports.http}
+    ready: http://127.0.0.1:${port}/healthz
 
 # The seed deploys the stable Target and a Preview, so both are on.
 targets:

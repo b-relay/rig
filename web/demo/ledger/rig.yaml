@@ -1,6 +1,5 @@
 name: ledger
 description: Demo Project. An API with a background worker that waits for it.
-production_branch: main
 domain: ledger.test
 
 services:
@@ -8,16 +7,13 @@ services:
     command: bun api.ts
     ports: { http: auto }
     environment:
-      PORT: ${services.api.ports.http}
-    ready: http://127.0.0.1:${services.api.ports.http}/healthz
+      PORT: ${port}
+    ready: http://127.0.0.1:${port}/healthz
   worker:
     command: bun worker.ts
     depends_on: [api]
     environment:
-      API_URL: http://127.0.0.1:${services.api.ports.http}
-
-proxy:
-  /: ${services.api.ports.http}
+      API_URL: http://127.0.0.1:${services.api.port}
 
 # The seed deploys the stable Target, so it is on.
 targets:

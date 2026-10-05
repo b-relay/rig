@@ -18,11 +18,11 @@ export interface EnvFileRef {
 }
 interface ComponentContext {
   name: string;
-  /** Public values only: Project env, then this Service's env. */
+  /** Public values only: the Project's `environment`, then this Service's. */
   env: Record<string, string>;
   /** Lowest to highest precedence; every file beats `env`. */
   envFiles?: EnvFileRef[];
-  /** Public env leaves the run, build and shell readiness commands were built from; a file may not change them. */
+  /** Public environment leaves the command, build and shell readiness check were built from; a file may not change them. */
   commandInputs?: PublicInput[];
   dependsOn: string[];
 }

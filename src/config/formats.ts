@@ -4,7 +4,7 @@ import { rewriteReferences } from "./references";
 
 export const CONFIG_FORMATS = ["rig/v1", "rig/v2"] as const;
 export type ConfigFormat = (typeof CONFIG_FORMATS)[number];
-/** The format `rig init`, `rig config upgrade` and recipes write, and the shape every parsed Project config has. */
+/** The format `rig init` and `rig config upgrade` write, and the shape every parsed Project config has. */
 export const LATEST_FORMAT = "rig/v2" as const satisfies ConfigFormat;
 /** The format of a rig.yaml that declares none: every file written before formats existed. */
 export const UNDECLARED_FORMAT = "rig/v1" as const satisfies ConfigFormat;
@@ -164,48 +164,4 @@ export function servicePathIn(
     if (move) spelled = [...move.from, ...spelled.slice(move.to.length)];
   }
   return spelled;
-}
-/** Pure: a Service as the latest format spells it, written the way `format` spells it; the inverse of the moves. Used to
- * print a bundled recipe into a Project that has not been upgraded yet. A block that keeps settings the older format has
- * no place for stays as it is, so validation names them. */
-export function serviceIn(format: ConfigFormat, service: Fields): Fields {
-  let current: Fields = structuredClone(service);
-  for (const step of [...stepsFrom(format)].reverse()) {
-    current = rewriteStrings(current, (text) =>
-      rewriteReferences(text, (key) => {
-        const match = /^services\.([^.]+)\.(.+)$/.exec(key);
-        const move = match
-          ? step.moves.find((each) => each.to.join(".") === match[2])
-          : undefined;
-        return move && `services.${match![1]}.${move.from.join(".")}`;
-      }),
-    ) as Fields;
-    const entries: [string, unknown][] = [];
-    for (const [key, item] of Object.entries(current)) {
-      const moves = step.moves.filter((each) => each.to[0] === key);
-      if (!moves.length || !isRecord(item)) {
-        entries.push([key, item]);
-        continue;
-      }
-      const kept: Fields = { ...item };
-      for (const move of moves)
-        if (Object.hasOwn(kept, move.to[1])) {
-          entries.push([move.from[0], kept[move.to[1]]]);
-          delete kept[move.to[1]];
-        }
-      if (Object.keys(kept).length) entries.push([key, kept]);
-    }
-    replaceEntries(current, entries);
-  }
-  return current;
-}
-/** Pure: a Service as `format` spells it, written the way the latest format spells it. */
-export function serviceFromFormat(
-  format: ConfigFormat,
-  service: Fields,
-): Fields {
-  return (
-    upgradeConfigValue({ services: { entry: service } }, format)
-      .services as Record<string, Fields>
-  ).entry!;
 }

@@ -194,7 +194,6 @@ test("a Tool-only Project under renamed Targets: the Stable Target publishes the
     expect(await text(f, ["doctor", "--project", "demo"])).toContain(
       "No problems found.",
     );
-    expect(await text(f, ["recipe", "diff"])).not.toContain("differs");
     expect(await ok(f, ["deploy", "prod"])).toMatchObject({
       outcome: "deployed",
       target: "prod",

@@ -1,4 +1,3 @@
-import type { Recipe } from "../recipes/catalog";
 import type { ProxyPublication } from "../domain/proxy-publication";
 import type { FailureCauses } from "../domain/errors";
 import type {
@@ -62,10 +61,6 @@ export interface ProjectDocuments {
   ): Promise<ConfigDocument<ProjectConfig>>;
   resolve(input: ResolveTargetPlanInput): TargetPlan;
   host(): Promise<HostConfig>;
-  /** The text of the Project's file at `path` (relative, `/`-separated) under the Project directory `directory`;
-   * undefined when there is no such file. Fails RECIPE_FILE_PATH for a path that leaves the directory, and
-   * PROJECT_FILE_UNREADABLE for one that cannot be read. */
-  readProjectFile(directory: string, path: string): Promise<string | undefined>;
   /** Rewrites the Project's rig.yaml into the latest format in place, keeping comments and layout, or with `dryRun` only
    * reports what would change. Never changes what the file means. */
   upgrade(
@@ -136,8 +131,6 @@ export interface RuntimeDependencies {
   root: string;
   /** Background failures the daemon has noted since it started; doctor reports each one. */
   notices?(): RuntimeNotice[];
-  /** The recipes that recipe comparisons are made against; the bundled catalog when absent. */
-  recipes?: readonly Recipe[];
   readAdminActivity(): Promise<OperationRecord[]>;
   inspectHost(): Promise<
     {

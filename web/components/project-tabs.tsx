@@ -10,7 +10,6 @@ const TABS = [
   ["logs", "Logs"],
   ["activity", "Activity"],
   ["config", "Config"],
-  ["recipes", "Recipes"],
   ["doctor", "Doctor"],
   ["settings", "Settings"],
 ] as const;

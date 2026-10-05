@@ -163,9 +163,6 @@ async function fixture(host: Record<string, unknown> = {}) {
           operatorHome: "/home/operator",
           envRoot: join(root, "env"),
         }),
-      async readProjectFile() {
-        return undefined;
-      },
       async host() {
         return parseHostConfig(host);
       },

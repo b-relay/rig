@@ -21,7 +21,6 @@ import { acquireProcessLock, type LockHeld } from "../adapters/process-lock";
 import { ConfigError } from "./errors";
 import { PROJECT_SCHEMA_COMMENT } from "./json-schema";
 import { applyYamlEdits, type ConfigEdit } from "./editor";
-import { recipeMarkers, type RecipeMarker } from "./recipe-markers";
 export type { ConfigEdit } from "./editor";
 import {
   DEFAULT_TARGET_NAMES,
@@ -113,11 +112,8 @@ function decodeDocument<T>(
   validate: Validate<T>,
 ): ConfigDocument<T> {
   let value: unknown;
-  let markers: RecipeMarker[];
   try {
-    const document = yamlDocument(raw, path);
-    value = document.toJS({ maxAliasCount: 0 });
-    markers = recipeMarkers(document, raw);
+    value = yamlDocument(raw, path).toJS({ maxAliasCount: 0 });
   } catch (error) {
     if (error instanceof ConfigError) throw error;
     throw new ConfigError(
@@ -132,8 +128,6 @@ function decodeDocument<T>(
     revision: revisionOf(raw),
     config,
     ...(format ? { format } : {}),
-    // Only a Project document has Services; a Host document never carries the field.
-    ...(markers.length ? { recipeMarkers: markers } : {}),
   };
 }
 async function readDocument<T>(

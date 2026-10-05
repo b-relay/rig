@@ -1,6 +1,3 @@
-import { recipeNotices, recipeReport } from "./recipes";
-import { BUNDLED_RECIPES } from "../recipes/catalog";
-import { compareRecipes } from "../recipes/compare";
 import type {
   ProjectStatusReader,
   ProjectStatusReport,
@@ -40,7 +37,7 @@ import {
   retainFailureCauses,
   failureCauses,
 } from "../domain/errors";
-import { dirname, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import {
   activationJournal,
   intendRunning,
@@ -601,13 +598,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         const initialized = await registerProject(command, identity, deps);
         project = initialized.project;
         const kept = identity.configPath ? unappliedInitFlags(command) : [];
-        // A kept config may hold Services generated from an older recipe; init says so as doctor would.
-        const notices = recipeNotices(
-          compareRecipes(initialized.document, deps.recipes ?? BUNDLED_RECIPES),
-        );
         return await finish("registered", {
           path: project.configPath,
-          ...(notices.length ? { notices } : {}),
           ...(kept.length
             ? {
                 warnings: [
@@ -659,7 +651,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         [
           "config",
           "config-upgrade",
-          "recipe-diff",
           "deploy",
           "deployment-context",
           "rename",
@@ -714,18 +705,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           })),
         };
       }
-      if (command.action === "recipe-diff")
-        return await recipeReport(
-          project.name,
-          selection.document!,
-          command,
-          (path) =>
-            deps.documents.readProjectFile(
-              dirname(selection.document!.path),
-              path,
-            ),
-          deps.recipes,
-        );
       if (command.action === "activity")
         return selectActivity(
           state.activity.filter((o) => o.projectId === project!.id),

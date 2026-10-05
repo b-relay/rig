@@ -12,7 +12,6 @@
     "web:build": "bun --bun next build web",
     "web:start": "bun --bun next start web -H 127.0.0.1",
     "schema": "bun run scripts/generate-schema.ts",
-    "recipe-files": "bun run scripts/generate-recipe-files.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web"

@@ -1557,9 +1557,11 @@ read. A Target patch merges into the inherited healthcheck key by key, as any
 map does, and a list `test` replaces the inherited one.
 
 Once a Service has started, `rigd` checks it whenever its Target is meant to
-run, as Compose does; there is no separate switch. The first check comes as
-soon as `rigd` sees the process running with its Target free, then one every
-`interval`. Checks pause while an Operation (an `up`, `down`, `restart`,
+run, as Compose does; there is no separate switch. The start check that
+passed is its first passing check, so `rig status` shows it healthy at once,
+and the next check comes one `interval` later. A process `rigd` started
+without seeing it pass (one that survived a `rigd` restart, say) is checked as
+soon as `rigd` sees it running with its Target free, then every `interval`. Checks pause while an Operation (an `up`, `down`, `restart`,
 deploy, or a restart Rig makes itself) holds or waits for the Target, never
 overlap for one Service, and at most four run at once on the Host. A check that
 does not answer within its `timeout` failed.

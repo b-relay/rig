@@ -254,9 +254,14 @@ export function withStops(
   };
 }
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
+/** Told when a Service this lifecycle started passed its start check: its healthcheck's first passing check. */
+export interface ActivationObserver {
+  activated(target: TargetRecord, service: string, incarnation: string): void;
+}
 export function createTargetLifecycle(
   effects: TargetEffects,
   timing: ReadinessTiming = readinessTiming,
+  observer?: ActivationObserver,
 ): TargetLifecycle {
   const lifecycle: TargetLifecycle = {
     pruneCheckpoints: (live) => effects.pruneCheckpoints(live),
@@ -659,6 +664,7 @@ export function createTargetLifecycle(
     if (!hasReadiness(component))
       await awaitSurvival(component, timing, process);
     await awaitActivation(component, target, effects, timing, process);
+    observer?.activated(target, component.name, incarnation);
     await journal?.activated(component.name, incarnation);
   }
   return lifecycle;

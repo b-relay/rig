@@ -154,7 +154,11 @@ export async function composeDaemon(
       createGitSourceStore({ root: join(root, "sources"), run: runCommand }),
       runCommand,
     ),
-    lifecycle: createTargetLifecycle(effects),
+    // A start check that passed is the healthcheck's first passing check, so status shows it at once.
+    lifecycle: createTargetLifecycle(effects, undefined, {
+      activated: (target, service, incarnation) =>
+        health?.started(target, service, incarnation),
+    }),
     observations: effects.observations,
     observationBudgetMs: OBSERVATION_BUDGET_MS,
     observationDeadline: timerObservationDeadline,

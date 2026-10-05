@@ -673,3 +673,30 @@ test("a Target that is not meant to run, or a Service whose healthcheck is gone,
   expect(f.checks).toHaveLength(1);
   expect(f.result()).toBeUndefined();
 });
+
+test("a passing start check is the first passing check: the Service is healthy at once and next checked an interval later", async () => {
+  const f = fixture({ interval: 30 });
+  f.monitor.started(f.state.targets[0]!, "web", "web-1");
+  expect(f.result()).toEqual({
+    status: "healthy",
+    checkedAt: new Date(0).toISOString(),
+    failures: 0,
+    retries: 3,
+    restarts: 0,
+  });
+  await f.runUntil(40 * SECOND);
+  expect(f.checks.map((check) => check.at / SECOND)).toEqual([30]);
+});
+
+test("a process a health restart started stays unhealthy after its start check, until an ongoing check passes", async () => {
+  const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+  f.answer = () => false;
+  await f.runUntil(1 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  // The restart's start check passed; the stretch it continues is on the new process's record.
+  f.monitor.started(f.state.targets[0]!, "web", "web-2");
+  expect(f.result()).toMatchObject({ status: "unhealthy", restarts: 1 });
+  // A Service without a healthcheck is not seeded at all.
+  f.monitor.started(f.state.targets[0]!, "api", "api-1");
+  expect(f.monitor.results({ id: "t1" }, "api")).toBeUndefined();
+});

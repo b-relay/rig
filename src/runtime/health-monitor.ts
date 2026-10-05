@@ -74,6 +74,10 @@ export interface HealthMonitor {
   pass(): Promise<void>;
   /** Resolves once every check and restart started so far has settled. */
   idle(): Promise<void>;
+  /** A start of the Service passed its start check, the healthcheck's first passing check: it is healthy as of now, and
+   * its next check is one interval away. A process started inside an unhealthy stretch stays unhealthy until an ongoing
+   * check passes, so its back-off holds. */
+  started(target: TargetRecord, service: string, incarnation: string): void;
   results: HealthResults;
 }
 
@@ -163,6 +167,22 @@ export function createHealthMonitor(
     },
     async idle() {
       while (work.size) await Promise.allSettled([...work]);
+    },
+    started(target, service, incarnation) {
+      const component = target.plan.components.find(
+        (candidate): candidate is ManagedComponent =>
+          candidate.kind === "managed" && candidate.name === service,
+      );
+      const policy = component && healthPolicy(component);
+      if (!policy || seeded(target, service).stretch) return;
+      const key = `${target.id}:${service}`;
+      policies.set(key, policy);
+      states.set(key, {
+        ...NEW_HEALTH,
+        incarnation,
+        checkedAt: deps.now(),
+        passed: true,
+      });
     },
     async pass() {
       const recorded = await deps.store.read();

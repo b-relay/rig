@@ -185,11 +185,13 @@ test("Doctor on a daemon that is alive but slow reports a read timeout, never th
   const { createCliClient } = await import("../src/index");
   const directory = await mkdtemp(join(tmpdir(), "rig-doctor-slow-"));
   const root = join(directory, ".rig");
+  // rigd answers only once the test has seen the read deadline expire.
+  const answer = Promise.withResolvers<void>();
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch() {
-      await Bun.sleep(5500);
+      await answer.promise;
       return Response.json({ result: { ok: true, checks: [] } });
     },
   });
@@ -205,18 +207,19 @@ test("Doctor on a daemon that is alive but slow reports a read timeout, never th
       }),
     );
     await writeFile(join(root, "auth/control-plane.token"), "test-token");
-    const client = createCliClient(root, directory);
+    const client = createCliClient(root, directory, { readDeadlineMs: 100 });
     await expect(client.command({ action: "doctor" })).rejects.toMatchObject({
       code: "DAEMON_TIMEOUT",
       message:
-        "rigd did not answer the doctor read within 5 s; it may be busy.",
+        "rigd did not answer the doctor read within 0.1 s; it may be busy.",
       hint: "Run rig activity to see what rigd is doing, then retry; reads are answered without queueing.",
     });
   } finally {
+    answer.resolve();
     await server.stop(true);
     await rm(directory, { recursive: true, force: true });
   }
-}, 10000);
+});
 
 test("an empty or unreadable credential is reported by its path, never as a missing installation", async () => {
   const { isDaemonUnavailable } = await import("../src/daemon/connection");

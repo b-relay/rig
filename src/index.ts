@@ -12,6 +12,7 @@ import {
 import { createHostDiagnosticLog } from "./diagnostics/host-log";
 import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
+import type { DaemonClientOptions } from "./daemon/client";
 import { inspectOfflineHost } from "./daemon/offline-doctor";
 import { inspectHost } from "./adapters/host-inspection";
 import { createProjectDocuments } from "./adapters/project-documents";
@@ -67,18 +68,22 @@ export async function main(args: readonly string[]): Promise<number> {
     process.removeListener("SIGTERM", interrupts.interrupt);
   }
 }
-/** CLI policy: only Doctor continues with read-only Host inspection when unavailable. */
+/** CLI policy: only Doctor continues with read-only Host inspection when unavailable. `connection` is how each request
+ * waits on rigd; the platform defaults when absent. */
 export function createCliClient(
   root: string,
   cwd: string,
+  connection: DaemonClientOptions = {},
 ): CliDependencies["client"] {
   return {
     async status(selection) {
-      return (await connectDaemon(root)).status(selection);
+      return (await connectDaemon(root, connection)).status(selection);
     },
     async command(request, signal) {
       try {
-        return await (await connectDaemon(root)).command(request, signal);
+        return await (
+          await connectDaemon(root, connection)
+        ).command(request, signal);
       } catch (error) {
         if (request.action === "doctor" && isDaemonUnavailable(error)) {
           // The discovery rigd runs, so a linked worktree is checked against its main checkout's config.

@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=../../schemas/rig.schema.json
-# tests/config-examples-e2e.test.ts validates this file.
+# tests/config-http-e2e.test.ts validates this file.
 # The example notes application reads HOST, PORT and DATA_DIR itself.
 name: notes
 production_branch: main

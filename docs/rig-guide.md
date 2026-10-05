@@ -1591,7 +1591,12 @@ whatever its `restart` policy and without spending the automatic-restart
 budget, until a start passes; it never gives up. `rig status` shows
 `unhealthy · restart failed its start check · next attempt in 5m`, Activity
 records each attempt, and `rig doctor` reports it. `rig restart` starts it at
-once, and `rig down` stops the attempts.
+once, and `rig down` stops the attempts. After a Host restart such a Service
+of the working Target or a Preview stays stopped until `rig up`, as every
+Service of theirs does; the stable Target is started by `rigd` as after any
+Host restart, which ends the stretch. A replacement that could not be confirmed
+stopped after its failed start check is treated as the running process: its
+ongoing checks judge it, and the back-off goes on.
 
 **Moving from `ready`.** Earlier Rig spelled the start check `ready` and its
 budget `ready_timeout`; both are refused now with where they moved. Write

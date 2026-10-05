@@ -402,9 +402,12 @@ export async function recordStoppedByHostRestart(
     (component, run) => {
       if (run?.intent === "stopped" || run?.exhausted) return undefined;
       const outcome = run?.outcome;
+      // A Service waiting for its next health restart would be started by the health monitor whatever its restart
+      // policy, so it is marked stopped by the Host restart too: only rig up starts it again.
       if (
         outcome &&
         outcome.kind !== "unknown" &&
+        run?.healthStretch?.failedStart === undefined &&
         restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
           undefined
       )
@@ -735,14 +738,17 @@ export async function recordHealthStretch(
       deps,
     );
 }
-/** Records how a health restart's start failed: the outcome, as a failed automatic attempt's is recorded, and the unhealthy
- * stretch with `failedStart`, so the health monitor, not automatic restart, starts it again at the next step of its
- * back-off. No scheduled retry is kept. */
+/** Records how a health restart's start failed. When nothing of it runs (`stopped`), the outcome, as a failed automatic
+ * attempt's is recorded, and the unhealthy stretch with `failedStart`, so the health monitor, not automatic restart,
+ * starts it again at the next step of its back-off; no scheduled retry is kept. When the replacement could not be
+ * confirmed stopped (its rollback failed, or it could not be observed), it is the running process as far as Rig knows:
+ * only the stretch is kept, without `failedStart`, so ongoing checks judge it and the back-off goes on. */
 export async function recordFailedHealthStart(
   target: TargetRecord,
   service: string,
   error: unknown,
   stretch: NonNullable<ServiceRun["healthStretch"]>,
+  stopped: boolean,
   deps: Pick<Deps, "store" | "now" | "id">,
 ): Promise<void> {
   const current = currentRun(target, service);
@@ -751,11 +757,13 @@ export async function recordFailedHealthStart(
   await saveRun(
     target,
     service,
-    {
-      ...rest,
-      outcome: failedAttemptOutcome(error, deps.now()),
-      healthStretch: { ...stretch, failedStart: Date.parse(deps.now()) },
-    },
+    stopped
+      ? {
+          ...rest,
+          outcome: failedAttemptOutcome(error, deps.now()),
+          healthStretch: { ...stretch, failedStart: Date.parse(deps.now()) },
+        }
+      : { ...rest, healthStretch: stretch },
     deps,
   );
 }

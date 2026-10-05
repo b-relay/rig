@@ -51,6 +51,8 @@ export interface RuntimeWorldOptions {
   readonly startsAt: string;
   /** Real milliseconds a readiness deadline lasts; see `promptReadiness`. */
   readonly readinessDeadlineMs: number;
+  /** Replaces `promptReadiness`: when a start check's deadline fires, decided by the test. */
+  readonly timing?: ReadinessTiming & { startGraceMs: number };
   /** Port and listener evidence; when absent every port answers and the owned process listens on nothing. */
   readonly activation?: Pick<TargetAdapterOptions, "connect" | "listeners">;
   /** Publishes routes; `unreloadedCaddy` when absent. */
@@ -86,7 +88,7 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
     router: options.router ?? unreloadedCaddy(root),
     run: runCommand,
   });
-  const timing = promptReadiness(options.readinessDeadlineMs);
+  const timing = options.timing ?? promptReadiness(options.readinessDeadlineMs);
   const store = new FileStateStore(root);
   const planConfig = options.planConfig ?? ((config) => config);
   let id = 0;

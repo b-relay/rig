@@ -362,11 +362,7 @@ export function createHealthMonitor(
           const run = currentRun(target, component.name);
           if (healthStartPending(run) && policy.onFailure === "restart") {
             write(target.id, component.name, since, state);
-            if (
-              deps.busy(target) ||
-              deps.now() < healthRestartDueAt(run.healthStretch)
-            )
-              continue;
+            if (deps.busy(target)) continue;
             inFlight.add(key);
             const verdict: Verdict = {
               action: {
@@ -378,7 +374,23 @@ export function createHealthMonitor(
               incarnation: run.incarnation,
               start: true,
             };
-            const job = act(target.id, component.name, verdict)
+            const due = healthRestartDueAt(run.healthStretch);
+            const job = (async () => {
+              // Await: whether anything runs. A process the record says should be stopped but runs after all (a rollback
+              // that could not stop it) is judged by its ongoing checks, as any running process; only a stopped one waits
+              // for its next health restart.
+              const seen = await withinTimeout(
+                (signal) =>
+                  deps.observations.process(target, component, signal),
+                policy.timeoutMs,
+              );
+              if (seen !== undefined && "state" in seen) {
+                if (seen.state === "running")
+                  await checkTurn(target, component);
+                else if (seen.state === "stopped" && deps.now() >= due)
+                  await act(target.id, component.name, verdict);
+              }
+            })()
               .catch(async (error: unknown) => {
                 await deps
                   .diagnostic({
@@ -409,7 +421,7 @@ export function createHealthMonitor(
           const job = (async () => {
             try {
               // A restart due now is about this read of the process and check this state judged.
-              let next: Verdict | undefined = isDue(action)
+              const next: Verdict | undefined = isDue(action)
                 ? {
                     action,
                     since,
@@ -417,27 +429,8 @@ export function createHealthMonitor(
                     incarnation: state.incarnation,
                   }
                 : undefined;
-              if (!next) {
-                await slot();
-                try {
-                  // The check's own read, with the slot held: a deploy or restart while it waited is judged by what is
-                  // recorded now, under the policy it has now.
-                  const checkSince = clock;
-                  const now = await checked(target.id, component.name);
-                  if (now && current(target.id, component.name, checkSince)) {
-                    policies.set(key, now.policy);
-                    next = await check(
-                      now.target,
-                      now.component,
-                      now.policy,
-                      checkSince,
-                    );
-                  }
-                } finally {
-                  release();
-                }
-              }
               if (next) await act(target.id, component.name, next);
+              else await checkTurn(target, component);
             } catch (error) {
               await deps
                 .diagnostic({
@@ -503,11 +496,15 @@ export function createHealthMonitor(
     )
       return seeded(target, component.name);
     const record = run?.healthStretch;
-    return known.stretch &&
-      record &&
-      run?.incarnation === known.incarnation &&
+    if (!record || run?.incarnation !== known.incarnation) return known;
+    // The record counted an attempt the cache could not (its restart was itself a transition); or it says this process's
+    // health start failed although it was seen running, a stretch its checks must end before anything forgets it.
+    const longer =
+      known.stretch &&
       record.since === known.stretch.since &&
-      record.restarts.length > known.stretch.restarts.length
+      record.restarts.length > known.stretch.restarts.length;
+    const unseen = !known.stretch && record.failedStart !== undefined;
+    return longer || unseen
       ? {
           ...known,
           stretch: { since: record.since, restarts: [...record.restarts] },
@@ -515,6 +512,26 @@ export function createHealthMonitor(
       : known;
   }
 
+  /** One check of the Service with a probe slot held, and the restart it calls for. The check's own read comes with the
+   * slot held: a deploy or restart while it waited is judged by what is recorded now, under the policy it has now. */
+  async function checkTurn(
+    target: TargetRecord,
+    component: ManagedComponent,
+  ): Promise<void> {
+    let next: Verdict | undefined;
+    await slot();
+    try {
+      const since = clock;
+      const now = await checked(target.id, component.name);
+      if (now && current(target.id, component.name, since)) {
+        policies.set(keyOf(target.id, component.name), now.policy);
+        next = await check(now.target, now.component, now.policy, since);
+      }
+    } finally {
+      release();
+    }
+    if (next) await act(target.id, component.name, next);
+  }
   /** The Service's Target, plan entry and policy as recorded now; undefined when the Target is no longer meant to run, the
    * Service is gone, or it has no healthcheck any more, so nothing of it is checked or restarted. */
   async function checked(

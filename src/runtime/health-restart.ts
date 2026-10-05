@@ -119,13 +119,30 @@ export async function restartForHealth(
   try {
     await deps.lifecycle.recover(target, request.service, journal);
   } catch (error) {
+    // Only a replacement confirmed stopped waits for the next health restart; one whose rollback failed, or that cannot be
+    // observed, may still run, and is left to ongoing checks.
+    const [after] = await boundedObservations(
+      [(signal) => deps.observations.process(target, component, signal)],
+      deps.observationBudgetMs,
+      deps.observationDeadline,
+    );
+    const stopped =
+      after?.kind === "completed" && after.value.state === "stopped";
     await recordFailedHealthStart(
       target,
       request.service,
       error,
       stretch,
+      stopped,
       deps,
     ).catch(() => {});
+    if (!stopped) {
+      await activity(
+        "failed",
+        `${request.service} was ${request.start ? "to be started" : "stopped"} because ${why}, and its start failed its start check (${diagnosticErrorCode(error)}), but what it started could not be confirmed stopped. Rig keeps checking it; run rig doctor, then rig restart ${targetSelector(target)}.`,
+      ).catch(() => {});
+      return { outcome: "failed", at };
+    }
     const next = Math.round((healthRestartDueAt(stretch) - at) / 60_000);
     await activity(
       "failed",

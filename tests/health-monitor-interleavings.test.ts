@@ -26,7 +26,8 @@ type Event =
   | "explicit start clearing a stretch"
   | "stop"
   | "destroy"
-  | "turn the Target off";
+  | "turn the Target off"
+  | "Host restart";
 const EVENTS: readonly Event[] = [
   "deploy",
   "automatic restart with a stretch",
@@ -34,6 +35,7 @@ const EVENTS: readonly Event[] = [
   "stop",
   "destroy",
   "turn the Target off",
+  "Host restart",
 ];
 /** warm: rigd has checked web for a while. cold: a new rigd's first pass, over a record that carries an unhealthy stretch. */
 type Scenario = "warm" | "cold";
@@ -51,7 +53,12 @@ const NEW = "http://127.0.0.1:4000/new";
 
 /** What a health restart does: `deferred` asks again without acting; `start fails` stops the process and its start fails
  * the start check, as when readiness is gone, so the Service waits, stopped, for the next health restart. */
-type Restarts = "deferred" | "start fails";
+type Restarts =
+  | "deferred"
+  | "start fails"
+  | "start fails, replacement survives"
+  /** A record an earlier rigd left: failedStart, though the replacement runs. */
+  | "start fails, replacement survives, record says failed";
 function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
   let now = 0;
   const timers: { at: number; fire: () => void }[] = [];
@@ -144,7 +151,7 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
   /** Transitions made so far; a probe counts after a transition when it began after it. */
   let transitions = 0;
   /** What the last transition said status should show until a probe of the current pair answers. */
-  let expected: "healthy" | "unhealthy" | "nothing" | undefined;
+  let expected: "healthy" | "unhealthy" | "nothing" | "stopped" | undefined;
   const violations: string[] = [];
   const restarts: HealthRestartRequest[] = [];
 
@@ -218,140 +225,174 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
       case "turn the Target off":
         // ADR 0010: a Target turned off in rig.yaml keeps running until rig down, so nothing changes for its checks.
         return;
+      case "Host restart":
+        // The Host restarts: rigd and everything it ran end, and the rigd that comes back up records the Target's Services
+        // as stopped by the restart, as it does a working Target's or a Preview's, so only an explicit start runs them
+        // again. Its health monitor is a new one.
+        void monitor.stop(0);
+        monitor = daemon();
+        processRunning = false;
+        if (t.services?.web)
+          t.services.web = {
+            ...t.services.web,
+            outcome: { kind: "unknown", hostRestart: "reboot", at: "" },
+          };
+        transitions++;
+        expected = "stopped";
+        return;
     }
   };
 
-  monitor = createHealthMonitor({
-    store: {
-      async read() {
-        const snapshot = structuredClone(state);
-        point();
-        return snapshot;
-      },
-      async update(change) {
-        point();
-        const before = state.activity.length;
-        const current = pair();
-        await change(state);
-        for (const entry of state.activity.slice(before)) {
-          const message = entry.message ?? "";
-          const passed = message.includes("healthy again");
-          const justified =
-            current !== undefined &&
-            probes.some(
-              (p) =>
-                p.check === current.check &&
-                p.incarnation === current.incarnation &&
-                p.passed === passed &&
-                p.after === transitions,
-            );
-          if (!justified)
-            violations.push(`stale Activity at point ${points}: ${message}`);
-        }
-      },
-    },
-    observations: {
-      async process() {
-        point();
-        return processRunning
-          ? {
-              state: "running",
-              pid: 7,
-              incarnation: target()?.services?.web?.incarnation,
-            }
-          : { state: "stopped" };
-      },
-      async health(_target, probed) {
-        const began = pair();
-        const after = transitions;
-        const isOld = after === 0;
-        // Before the schedule is armed (the warm scenario's first check) every probe passes.
-        const passed =
-          !scheduled || answer.includes(isOld ? "old passes" : "new passes");
-        point();
-        const ended = pair();
-        if (
-          began &&
-          ended &&
-          began.check === ended.check &&
-          began.incarnation === ended.incarnation &&
-          checkIdentity(probed) === began.check
-        )
-          probes.push({
-            check: began.check,
-            ...(began.incarnation ? { incarnation: began.incarnation } : {}),
-            passed,
-            after,
-          });
-        return passed
-          ? { ready: true }
-          : {
-              ready: false,
-              reason: `fail ${probed.health}@${began?.incarnation ?? "?"}`,
-            };
-      },
-    },
-    now: () => now,
-    id: () => `id${Math.random()}`,
-    busy: () => false,
-    async restart(request) {
-      // Judged as it is asked; a transition from here on is the runtime's to refuse under the Target's lock.
-      restarts.push(request);
-      const current = pair();
-      const run = target()?.services?.web;
-      // A start is asked for the process whose health start failed, while it is still the one recorded; a restart for the
-      // process and check a failed probe judged since the last transition.
-      const justified =
-        current !== undefined &&
-        request.check === current.check &&
-        request.incarnation === current.incarnation &&
-        (request.start
-          ? run?.healthStretch?.failedStart !== undefined && !processRunning
-          : probes.some(
-              (p) =>
-                p.check === request.check &&
-                p.incarnation === request.incarnation &&
-                !p.passed &&
-                p.after === transitions,
-            ));
-      if (!justified)
-        violations.push(
-          `stale restart at point ${points} of ${request.incarnation}`,
-        );
-      point();
-      if (restartsDo === "deferred" || !justified)
-        return { outcome: "deferred" };
-      // As the runtime runs it under the Target's lock: the stop and start begin (each a transition), the start is
-      // journalled, and its start check fails, so the record says the next health restart is the monitor's.
-      const t = target()!;
-      if (!request.start) monitor.invalidate("t1", "web");
-      monitor.invalidate("t1", "web");
-      failedStarts++;
-      t.services!.web = {
-        deployment: "/work",
-        intent: "running",
-        incarnation: `web-f${failedStarts}`,
-        attempts: [],
-        outcome: { kind: "start-failed", errorCode: "HEALTH_FAILED", at: "" },
-        healthStretch: {
-          since: request.since,
-          restarts: [...request.restarts, now],
-          failedStart: now,
+  /** A daemon's health monitor; a Host restart replaces it, as the rigd that comes back up has a new one. */
+  const daemon = () =>
+    createHealthMonitor({
+      store: {
+        async read() {
+          const snapshot = structuredClone(state);
+          point();
+          return snapshot;
         },
-      };
-      monitor.invalidate("t1", "web"); // the store: another process recorded
-      processRunning = false;
-      transitions++;
-      expected = "unhealthy";
-      return { outcome: "failed", at: now };
-    },
-    schedule(delayMs, fire) {
-      const timer = { at: now + delayMs, fire };
-      timers.push(timer);
-      return () => timers.splice(timers.indexOf(timer), 1);
-    },
-    async diagnostic() {},
-  });
+        async update(change) {
+          point();
+          const before = state.activity.length;
+          const current = pair();
+          await change(state);
+          for (const entry of state.activity.slice(before)) {
+            const message = entry.message ?? "";
+            const passed = message.includes("healthy again");
+            const justified =
+              current !== undefined &&
+              probes.some(
+                (p) =>
+                  p.check === current.check &&
+                  p.incarnation === current.incarnation &&
+                  p.passed === passed &&
+                  p.after === transitions,
+              );
+            if (!justified)
+              violations.push(`stale Activity at point ${points}: ${message}`);
+          }
+        },
+      },
+      observations: {
+        async process() {
+          point();
+          return processRunning
+            ? {
+                state: "running",
+                pid: 7,
+                incarnation: target()?.services?.web?.incarnation,
+              }
+            : { state: "stopped" };
+        },
+        async health(_target, probed) {
+          const began = pair();
+          const after = transitions;
+          const isOld = after === 0;
+          // Before the schedule is armed (the warm scenario's first check) every probe passes.
+          const passed =
+            !scheduled || answer.includes(isOld ? "old passes" : "new passes");
+          point();
+          const ended = pair();
+          if (
+            began &&
+            ended &&
+            began.check === ended.check &&
+            began.incarnation === ended.incarnation &&
+            checkIdentity(probed) === began.check
+          )
+            probes.push({
+              check: began.check,
+              ...(began.incarnation ? { incarnation: began.incarnation } : {}),
+              passed,
+              after,
+            });
+          return passed
+            ? { ready: true }
+            : {
+                ready: false,
+                reason: `fail ${probed.health}@${began?.incarnation ?? "?"}`,
+              };
+        },
+      },
+      now: () => now,
+      id: () => `id${Math.random()}`,
+      busy: () => false,
+      async restart(request) {
+        // Judged as it is asked; a transition from here on is the runtime's to refuse under the Target's lock.
+        restarts.push(request);
+        const current = pair();
+        const run = target()?.services?.web;
+        // A start is asked for the process whose health start failed, while it is still the one recorded; a restart for the
+        // process and check a failed probe judged since the last transition.
+        const justified =
+          current !== undefined &&
+          request.check === current.check &&
+          request.incarnation === current.incarnation &&
+          (request.start
+            ? run?.healthStretch?.failedStart !== undefined &&
+              !processRunning &&
+              !(run.outcome?.kind === "unknown" && run.outcome.hostRestart)
+            : probes.some(
+                (p) =>
+                  p.check === request.check &&
+                  p.incarnation === request.incarnation &&
+                  !p.passed &&
+                  p.after === transitions,
+              ));
+        if (!justified)
+          violations.push(
+            `stale restart at point ${points} of ${request.incarnation}`,
+          );
+        point();
+        if (restartsDo === "deferred" || !justified)
+          return { outcome: "deferred" };
+        // As the runtime runs it under the Target's lock: the stop and start begin (each a transition), the start is
+        // journalled, and its start check fails, so the record says the next health restart is the monitor's.
+        const t = target()!;
+        if (!request.start) monitor.invalidate("t1", "web");
+        monitor.invalidate("t1", "web");
+        failedStarts++;
+        // Its rollback stops the replacement, or, when that fails, the replacement runs on and is the recorded process.
+        const survives = restartsDo.startsWith(
+          "start fails, replacement survives",
+        );
+        const saysFailed =
+          !survives || restartsDo.endsWith("record says failed");
+        t.services!.web = {
+          deployment: "/work",
+          intent: "running",
+          incarnation: `web-f${failedStarts}`,
+          attempts: [],
+          ...(survives
+            ? {}
+            : {
+                outcome: {
+                  kind: "start-failed" as const,
+                  errorCode: "HEALTH_FAILED",
+                  at: "",
+                },
+              }),
+          healthStretch: {
+            since: request.since,
+            restarts: [...request.restarts, now],
+            ...(saysFailed ? { failedStart: now } : {}),
+          },
+        };
+        monitor.invalidate("t1", "web"); // the store: another process recorded
+        processRunning = survives;
+        transitions++;
+        expected = "unhealthy";
+        return { outcome: "failed", at: now };
+      },
+      schedule(delayMs, fire) {
+        const timer = { at: now + delayMs, fire };
+        timers.push(timer);
+        return () => timers.splice(timers.indexOf(timer), 1);
+      },
+      async diagnostic() {},
+    });
+  monitor = daemon();
   const settle = async () => {
     for (let round = 0; round < 5; round++)
       await new Promise((resolve) => setImmediate(resolve));
@@ -371,12 +412,16 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
   };
   judge = checkCache;
   return {
-    monitor,
+    get monitor() {
+      return monitor;
+    },
     runUntil,
     /** Runs passes for `seconds` more. */
     more: (seconds: number) => runUntil(now + seconds * SECOND),
     violations,
     restarts,
+    /** The incarnations probes asked about, in order. */
+    probed: () => probes.map((p) => p.incarnation),
     /** The event at the `at`-th yield point from now. */
     arm(at: number, event: Event) {
       points = 0;
@@ -393,7 +438,7 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
   function checkCache() {
     const result = monitor.results({ id: "t1" }, "web");
     const current = pair();
-    if (expected === "nothing") return;
+    if (expected === "nothing" || expected === "stopped") return;
     if (
       result?.output &&
       current &&
@@ -428,7 +473,11 @@ test("the interleaving harness: at every yield point of a pass, a check and a re
   const failures: string[] = [];
   for (const scenario of ["warm", "cold"] as const)
     for (const answer of ANSWERS)
-      for (const restartsDo of ["deferred", "start fails"] as const)
+      for (const restartsDo of [
+        "deferred",
+        "start fails",
+        "start fails, replacement survives",
+      ] as const)
         for (const event of EVENTS)
           for (let at = 1; at <= POINTS; at++) {
             const w = world(scenario, answer, restartsDo);
@@ -457,10 +506,11 @@ test("the interleaving harness: at every yield point of a pass, a check and a re
               );
           }
   expect(failures).toEqual([]);
-  // The whole cross product ran: 2 scenarios x 4 ways of answering x 2 kinds of restart x 6 events x 24 yield points,
+  // The whole cross product ran: 2 scenarios x 4 ways of answering x 3 kinds of restart x 7 events x 24 yield points,
   // each event injected.
-  expect(schedules).toBe(2 * ANSWERS.length * 2 * EVENTS.length * POINTS);
-});
+  expect(schedules).toBe(2 * ANSWERS.length * 3 * EVENTS.length * POINTS);
+  // Work, not waiting: the bound only keeps a loaded machine from failing it.
+}, 60_000);
 
 test("a health restart whose start failed is started again by the monitor on the back-off, never given up", async () => {
   for (const scenario of ["warm", "cold"] as const)
@@ -477,4 +527,22 @@ test("a health restart whose start failed is started again by the monitor on the
       ).toBe(true);
       expect(w.violations).toEqual([]);
     }
-});
+}, 60_000);
+
+test("a replacement that survives its failed start is judged by its ongoing checks, even when its record says its start failed", async () => {
+  for (const restartsDo of [
+    "start fails, replacement survives",
+    "start fails, replacement survives, record says failed",
+  ] as const) {
+    const w = world("warm", "old fails, new passes", restartsDo);
+    w.arm(1, "turn the Target off");
+    await w.runUntil(30 * SECOND);
+    // The replacement is checked, passes, and nothing waits for a start that is not needed.
+    expect(w.probed()).toContain("web-f1");
+    expect(w.monitor.results({ id: "t1" }, "web")).toMatchObject({
+      status: "healthy",
+    });
+    expect(w.restarts.filter((request) => request.start)).toEqual([]);
+    expect(w.violations).toEqual([]);
+  }
+}, 60_000);

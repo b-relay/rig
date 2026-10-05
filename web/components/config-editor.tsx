@@ -739,7 +739,12 @@ function ServiceFields({
         mono
       />
       <div className="grid gap-4 sm:grid-cols-2">
-        <Text path={[...path, "build"]} label="Build command" mono />
+        {required ? (
+          <Text path={[...path, "build"]} label="Build command" mono />
+        ) : (
+          <PatchBuild path={[...path, "build"]} />
+        )}
+        <Text path={[...path, "working_dir"]} label="Working directory" mono />
         <Text
           path={[...path, "build_timeout"]}
           label="Build timeout"
@@ -1004,7 +1009,7 @@ function TargetSettings({
           placeholder={preview ? "${rig.target}.preview.app.test" : undefined}
         />
         <div className="grid gap-4 sm:grid-cols-2">
-          <Text path={[...path, "build"]} label="Build command" mono />
+          <PatchBuild path={[...path, "build"]} />
           <Text
             path={[...path, "build_timeout"]}
             label="Build timeout"
@@ -1029,6 +1034,25 @@ function TargetSettings({
         ))}
       </div>
     </>
+  );
+}
+/** A build in a Target patch: a command that replaces the inherited one, or `false`, which turns it off for the role. */
+function PatchBuild({ path }: { path: string[] }) {
+  const draft = useDraft();
+  const off = getAt(draft.tree, path) === false;
+  return (
+    <div className="grid gap-2">
+      <Text path={path} label="Build command" mono disabled={off} />
+      <Label className="gap-2 font-normal">
+        <Switch
+          checked={off}
+          onCheckedChange={(next) =>
+            next ? draft.set(path, false) : draft.remove(path)
+          }
+        />
+        No build for this role
+      </Label>
+    </div>
   );
 }
 function Override({ title, children }: { title: string; children: ReactNode }) {

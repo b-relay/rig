@@ -280,6 +280,14 @@ const proxy = z
   .describe(
     "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
   );
+/** A build in a Target patch: a command, or false to turn the inherited build off for that role. */
+const BUILD_OFF =
+  "false turns the inherited build off for this role's Targets; leaving the key out keeps it.";
+const patchBuild = <T extends z.ZodType>(command: T) =>
+  z
+    .union([command, z.literal(false)])
+    .optional()
+    .describe(`${command.description ?? ""} In a Target patch, ${BUILD_OFF}`);
 /** Settings every role may patch. Maps merge per key; lists and scalars replace. */
 const patchFields = {
   domain: domain
@@ -287,13 +295,19 @@ const patchFields = {
     .describe(
       `Hostname for this role's Targets, such as \${rig.target}.preview.app.test. ${DOMAIN_REFERENCE}`,
     ),
-  build: build.optional(),
+  build: patchBuild(build),
   build_timeout: buildTimeout.optional(),
   environment: env("project").optional(),
   env_file: envFile("project").optional(),
   proxy: proxy.optional(),
   services: z
-    .record(entryName, z.strictObject(serviceFields).partial())
+    .record(
+      entryName,
+      z
+        .strictObject(serviceFields)
+        .partial()
+        .extend({ build: patchBuild(serviceFields.build.unwrap()) }),
+    )
     .optional()
     .describe(
       "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -515,7 +529,16 @@ function patchSettings(config: Fields, role: TargetRole): Fields {
           Object.hasOwn(isRecord(base[kind]) ? base[kind] : {}, key),
         ),
       );
-  return mergeSettings(base, patch);
+  const merged = mergeSettings(base, patch);
+  // `build: false` in a patch turns the inherited build off: the role's settings have none.
+  const unbuilt = (settings: Record<string, unknown>) => {
+    if (settings.build === false) delete settings.build;
+  };
+  unbuilt(merged);
+  if (isRecord(merged.services))
+    for (const service of Object.values(merged.services))
+      if (isRecord(service)) unbuilt(service as Record<string, unknown>);
+  return merged;
 }
 /** The Service and port a proxy value names in one settings graph: a Service name or `${services.<name>.port}` means that
  * Service's only port. A value that names no declared port says why, in words that name the fix. */
@@ -716,6 +739,10 @@ const SERVICE_RENAMES: Readonly<Record<string, string>> = {
 };
 const renamedKey = (from: string, to: string) =>
   `\`${from}\` is now \`${to}\`; rename this key`;
+/** `build: false` only means something against a build a Target patch inherits; at the top level leaving the key out
+ * already means no build. */
+const BASE_BUILD_OFF =
+  "build: false only turns an inherited build off in a Target patch; delete this line for no build";
 /** Every Service mapping of a raw config value with its path: `services.<name>` and `targets.<role>.services.<name>`. */
 function serviceBlockPaths(value: Fields): [string[], Fields][] {
   const blocks: [string[], Fields][] = [];
@@ -749,6 +776,13 @@ function refuseUnsupportedShapes(value: unknown): void {
         issues.push({ path: [...at, from], message: renamedKey(from, to) });
   };
   renames(value, [], SETTINGS_RENAMES);
+  const builds: [string[], unknown][] = [[["build"], value.build]];
+  if (isRecord(value.services))
+    for (const [name, service] of Object.entries(value.services))
+      if (isRecord(service))
+        builds.push([["services", name, "build"], service.build]);
+  for (const [path, build] of builds)
+    if (build === false) issues.push({ path, message: BASE_BUILD_OFF });
   for (const [path, service] of serviceBlockPaths(value)) {
     if (Object.hasOwn(service, "health"))
       issues.push({ path: [...path, "health"], message: REMOVED_HEALTH });
@@ -1003,10 +1037,14 @@ function explainIssue(issue: z.core.$ZodIssue): {
           .join(" or ")}`,
       };
     }
+    // On a tie, the branch whose problem lies deeper is the one the input's own shape chose: a settings map with one bad
+    // field is explained by that field, not by the boolean it is not.
     const nearest = [...branches].sort(
       (a, b) =>
         Number(a[0]!.code === "invalid_value") -
-          Number(b[0]!.code === "invalid_value") || a.length - b.length,
+          Number(b[0]!.code === "invalid_value") ||
+        a.length - b.length ||
+        b[0]!.path.length - a[0]!.path.length,
     )[0];
     if (nearest) {
       const inner = explainIssue(nearest[0]!);

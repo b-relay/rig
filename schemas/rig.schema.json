@@ -259,9 +259,18 @@
                   "minLength": 1
                 },
                 "build": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
+                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here. In a Target patch, false turns the inherited build off for this role's Targets; leaving the key out keeps it.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
+                    },
+                    {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  ]
                 },
                 "build_timeout": {
                   "type": "string",
@@ -328,9 +337,18 @@
                         "description": "Foreground shell command run with /bin/sh -c in working_dir (default: the workspace root); explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}. In a Target patch, false turns the inherited build off for this role's Targets; leaving the key out keeps it.",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          },
+                          {
+                            "type": "boolean",
+                            "const": false
+                          }
+                        ]
                       },
                       "build_timeout": {
                         "type": "string",
@@ -483,9 +501,18 @@
                   "minLength": 1
                 },
                 "build": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
+                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here. In a Target patch, false turns the inherited build off for this role's Targets; leaving the key out keeps it.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
+                    },
+                    {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  ]
                 },
                 "build_timeout": {
                   "type": "string",
@@ -552,9 +579,18 @@
                         "description": "Foreground shell command run with /bin/sh -c in working_dir (default: the workspace root); explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}. In a Target patch, false turns the inherited build off for this role's Targets; leaving the key out keeps it.",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          },
+                          {
+                            "type": "boolean",
+                            "const": false
+                          }
+                        ]
                       },
                       "build_timeout": {
                         "type": "string",
@@ -707,9 +743,18 @@
                   "minLength": 1
                 },
                 "build": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
+                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here. In a Target patch, false turns the inherited build off for this role's Targets; leaving the key out keeps it.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
+                    },
+                    {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  ]
                 },
                 "build_timeout": {
                   "type": "string",
@@ -776,9 +821,18 @@
                         "description": "Foreground shell command run with /bin/sh -c in working_dir (default: the workspace root); explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}. In a Target patch, false turns the inherited build off for this role's Targets; leaving the key out keeps it.",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Shell build command of this Service, run with /bin/sh -c in its working_dir (default: the workspace root) during preparation, never as a start hook; explicit bindings must be localhost only. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          },
+                          {
+                            "type": "boolean",
+                            "const": false
+                          }
+                        ]
                       },
                       "build_timeout": {
                         "type": "string",

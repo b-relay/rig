@@ -1345,6 +1345,53 @@ test("a short port reference that has no Service, or no single port, is refused 
   );
 });
 
+test("build: false in a Target patch turns an inherited Project or Service build off for that role only; at the top level it is refused", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    build: "make all",
+    services: web({ build: "make web" }),
+    tools: { ctl: { bin: "ctl", build: "make ctl" } },
+    targets: {
+      working: { build: false, services: { web: { build: false } } },
+      stable: true,
+      preview: { services: { web: { build: false } } },
+    },
+  });
+  const builds = (target: "working" | "stable" | "preview") =>
+    resolveTargetPlan({
+      config,
+      target,
+      ...roots_,
+      assignedPorts: { web: 1 },
+    }).builds?.map((unit) => unit.id);
+  expect(builds("working")).toEqual(["tool:ctl"]);
+  expect(builds("stable")).toEqual(["shared", "service:web", "tool:ctl"]);
+  expect(builds("preview")).toEqual(["shared", "tool:ctl"]);
+  expect(patchedSettings(config, "working")).not.toHaveProperty("build");
+  expect(patchedSettings(config, "working").services!.web).not.toHaveProperty(
+    "build",
+  );
+  // The patch keeps what the author wrote; only the role's settings lose the build.
+  expect(config.targets!.working).toMatchObject({ build: false });
+  const message =
+    "build: false only turns an inherited build off in a Target patch; delete this line for no build";
+  for (const [path, input] of [
+    ["build", { build: false, services: web() }],
+    ["services.web.build", { services: web({ build: false }) }],
+  ] as const)
+    expect(failureOf({ name: "app", ...input })?.context.issues).toEqual([
+      { path: path.split("."), message },
+    ]);
+  // true is not a build command.
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { stable: { build: true } },
+    }),
+  ).toBe("Fix targets.stable.build: must be a string.");
+});
+
 test("a reference through env names the environment path that replaced it", () => {
   for (const [reference, replacement] of [
     ["${env.MODE}", "${environment.MODE}"],

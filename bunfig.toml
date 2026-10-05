@@ -4,5 +4,5 @@
 concurrentTestGlob = [
   "**/tests/*e2e.test.ts",
   "**/tests/release-matrix.test.ts",
-  "**/tests/tool-shim-compiled.test.ts",
+  "**/tests/compiled-binaries.test.ts",
 ]

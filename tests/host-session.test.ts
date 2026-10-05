@@ -8,6 +8,7 @@ import {
   mayReplace,
 } from "../src/domain/host-session";
 import { findHostRestart } from "../src/runtime/host-restart";
+import { daemonHostSession } from "../src/daemon/composition";
 import {
   createHostSessionProbe,
   parseBootSession,
@@ -254,4 +255,31 @@ test("a rigd run as a process under RIG_ROOT reads only the boot, so a new login
   expect(hostRestartBetween(before, await probe.current())).toBeUndefined();
   session = { ...session, boot: "B2" };
   expect(hostRestartBetween(before, await probe.current())).toBe("reboot");
+});
+
+test("the daemon's probe follows how it was installed: as a process it reads no login, as a launchd job it does", async () => {
+  const gui = await readFile(
+    join(import.meta.dir, "fixtures", "launchctl-print", "gui-domain.txt"),
+    "utf8",
+  );
+  const answers: Record<string, CommandResult> = {
+    "kern.bootsessionuuid": { exitCode: 0, stdout: `${BOOT}\n`, stderr: "" },
+    "kern.boottime": {
+      exitCode: 0,
+      stdout: "{ sec = 1779656276, usec = 781635 } Sun May 24 16:57:56 2026\n",
+      stderr: "",
+    },
+    "gui/501": { exitCode: 0, stdout: gui, stderr: "" },
+  };
+  const run = async (request: CommandRequest): Promise<CommandResult> =>
+    answers[request.command.at(-1)!]!;
+  expect(
+    await daemonHostSession("launchd", { run, uid: 501 }).current(),
+  ).toMatchObject({ boot: BOOT, login: "100007" });
+  const asProcess = await daemonHostSession("process", {
+    run,
+    uid: 501,
+  }).current();
+  expect(asProcess).toMatchObject({ boot: BOOT });
+  expect(asProcess).not.toHaveProperty("login");
 });

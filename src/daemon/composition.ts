@@ -43,7 +43,7 @@ import { runCommand } from "../providers/command-runner";
 import { createListenerInspection } from "../providers/listener-inspection";
 import { probeLocalPort } from "../providers/port-probe";
 import { createHostSessionProbe } from "../providers/host-session";
-import { bootOnly } from "../domain/host-session";
+import { bootOnly, type HostSessionProbe } from "../domain/host-session";
 import { createProjectDocuments } from "../adapters/project-documents";
 import { createDeploymentSources } from "../adapters/deployment-sources";
 import { createRuntimeFiles } from "../adapters/runtime-files";
@@ -54,6 +54,16 @@ import {
   hostLogRetention,
   LOG_RETENTION_REFRESH_MS,
 } from "../domain/log-retention";
+/** The Host session probe a daemon started in `mode` reads with. A detached process (`process`, under RIG_ROOT) outlives a
+ * logout and login, and so do its children, so only a reboot is a Host restart for it: it reads only the boot. A launchd
+ * job in the user's GUI login reads the login too. */
+export function daemonHostSession(
+  mode: "process" | "launchd",
+  options: Parameters<typeof createHostSessionProbe>[0],
+): HostSessionProbe {
+  const probe = createHostSessionProbe(options);
+  return mode === "process" ? bootOnly(probe) : probe;
+}
 /** Composition root selects adapters. Runtime and command code see capability Interfaces only.
  * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none. */
 export async function composeDaemon(
@@ -178,11 +188,7 @@ export async function composeDaemon(
     },
     files: createRuntimeFiles(),
     // The boot and GUI login rigd's first pass compares with the last recorded, to start Stable Targets after a restart.
-    // A detached process outlives a logout and login, so only a reboot is a Host restart for it.
-    hostSession:
-      mode === "process"
-        ? bootOnly(createHostSessionProbe({ run: runCommand, uid }))
-        : createHostSessionProbe({ run: runCommand, uid }),
+    hostSession: daemonHostSession(mode, { run: runCommand, uid }),
     now: () => new Date().toISOString(),
     id: randomUUID,
     diagnostic: recordingDiagnostic(diagnostic, notices),

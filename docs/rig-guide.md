@@ -1485,8 +1485,10 @@ Likewise, if none of the writes that record the restart succeeded before
 nothing records that restart: after a second reboot the Host shows only the new
 boot, so the next start sees one restart and writes one entry.
 
+When the first pass cannot read the state, each later pass is a first pass
+until one can, so nothing is started again before the restart is detected.
 When the working Target's or a Preview's stop by the restart cannot be
-recorded, each later pass tries again, a command you run on the Target records
+recorded (a read or a write fails), each later pass tries again, a command you run on the Target records
 it first, and health restarts wait for it. While it cannot be recorded,
 `rig up`, `rig restart` and a deploy of that Target are refused with
 `STATE_WRITE` and a hint to fix the state directory; `rig down` still works. That refusal is

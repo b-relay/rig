@@ -689,3 +689,62 @@ test("a run an older rigd recorded, with no startSeq, is still recorded as stopp
     outcome: { kind: "unknown", hostRestart: "reboot" },
   });
 }, 30_000);
+
+test("a read that fails while the Host restart's stop is recorded keeps it pending: web stays stopped until it is recorded and rig up starts it", async () => {
+  const w = await world("always", { working: true }, false);
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  const spawned = w.spawns.length;
+  // The state read that orders the restart among starts fails once, during the first pass after the reboot.
+  let failing = true;
+  const read = w.store.read.bind(w.store);
+  w.store.read = async () => {
+    if (
+      failing &&
+      new Error().stack?.includes("recordStoppedAfterHostRestart")
+    ) {
+      failing = false;
+      throw new Error("I/O error");
+    }
+    return await read();
+  };
+  await w.reboot();
+  expect(failing).toBe(false);
+  await w.advance(6);
+  // Nothing started it: the next pass recorded the stop, and it holds web stopped.
+  expect(w.spawns.length).toBe(spawned);
+  expect(await w.running()).toBe(false);
+  expect(await w.run()).toMatchObject({
+    outcome: { kind: "unknown", hostRestart: "reboot" },
+  });
+  expect((await w.store.read()).host?.restart?.settled).toContain(
+    (await w.store.read()).targets[0]!.id,
+  );
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  expect(await w.running()).toBe(true);
+}, 30_000);
+
+test("when the first pass after a reboot cannot read the state, later passes detect the Host restart first: web stays stopped until rig up", async () => {
+  const w = await world("always", { working: true }, false);
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  const spawned = w.spawns.length;
+  // The first state read of the rigd that starts after the reboot fails.
+  let failing = 1;
+  const read = w.store.read.bind(w.store);
+  w.store.read = async () => {
+    if (failing > 0) {
+      failing--;
+      throw new Error("I/O error");
+    }
+    return await read();
+  };
+  await w.reboot();
+  expect(failing).toBe(0);
+  await w.advance(6);
+  expect(w.spawns.length).toBe(spawned);
+  expect(await w.running()).toBe(false);
+  expect(await w.run()).toMatchObject({
+    outcome: { kind: "unknown", hostRestart: "reboot" },
+  });
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  expect(await w.running()).toBe(true);
+}, 30_000);

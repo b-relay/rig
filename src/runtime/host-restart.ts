@@ -286,16 +286,31 @@ export async function recordStoppedAfterHostRestart(
   mark: RestartMark,
   deps: StartDeps,
 ): Promise<boolean> {
-  // The restart as recorded orders it among starts: a run started after it was recorded is not one it stopped.
-  const recorded = (await deps.store.read()).host?.restart;
-  const seq = recorded && sameMark(recorded, mark) ? recorded.seq : undefined;
-  return await recordStoppedByHostRestart(
-    target,
-    mark.kind,
-    deps,
-    (state) => markSettled(state, target.id, mark),
-    (_service, run) => !startedAfter(run, seq),
-  );
+  // One step: whatever fails in it (the read below, an observation, the write) answers false, so the caller keeps the
+  // restart pending and tries again; nothing escapes to skip that.
+  try {
+    // The restart as recorded orders it among starts: a run started after it was recorded is not one it stopped.
+    const recorded = (await deps.store.read()).host?.restart;
+    const seq = recorded && sameMark(recorded, mark) ? recorded.seq : undefined;
+    return await recordStoppedByHostRestart(
+      target,
+      mark.kind,
+      deps,
+      (state) => markSettled(state, target.id, mark),
+      (_service, run) => !startedAfter(run, seq),
+    );
+  } catch (error) {
+    await deps
+      .diagnostic({
+        operationId: deps.id(),
+        action: "reconcile",
+        outcome: "failed",
+        target: target.name,
+        errorCode: diagnosticErrorCode(error),
+      })
+      .catch(() => {});
+    return false;
+  }
 }
 /** Whether `run` was started after the Host restart recorded at `seq` (see `RuntimeState.startSeq`). A run with no
  * `startSeq` (an older rigd's), or a restart recorded without `seq`, counts as before it. */

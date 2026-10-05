@@ -228,6 +228,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   const reservations = createHostReservations();
   let draining = false;
   let passes = 0;
+  /** The daemon's first pass could not read the state, so it could not tell whether the Host restarted: every later pass is
+   * a first pass until one reads it, so a read that failed at startup never lets a later pass restart what a Host restart
+   * stopped. */
+  let reconcilePending = false;
   /** Every Operation this daemon is running or holding, its own supervision work included. */
   const operations = new Map<string, StopTracking>();
   /** Command executions still running, so a drain waits for them to answer. */
@@ -1378,9 +1382,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
    * and the next pass looks again. `reconcile` holds the whole Host while it reclaims checkpoints, then hands each Target its
    * own lease before anything queued behind it runs. */
   async function pass(
-    action: "reconcile" | "supervise",
+    requested: "reconcile" | "supervise",
   ): Promise<SupervisionPass> {
     if (draining) return {};
+    const action = reconcilePending ? "reconcile" : requested;
     // Requested before anything is awaited, so a reconcile called at startup is ahead of every command.
     const hostId = `reconcile:${++passes}`;
     if (action === "reconcile")
@@ -1427,9 +1432,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       } catch (error) {
         lease?.release();
         operations.delete(hostId);
+        if (action === "reconcile") reconcilePending = true;
         await failed(error);
         return {};
       }
+      if (action === "reconcile") reconcilePending = false;
       if (action === "reconcile") {
         await pruneCheckpoints(state, deps);
         const current = await hostSession;
@@ -1467,6 +1474,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           : undefined;
       // A drain may already have begun: a Target skipped for it is not settled, so the restart is found again.
       expected = eligible.map((target) => target.id);
+      // Until its stop by the restart is recorded, each working Target and Preview is held as not yet recorded: a job that
+      // fails before it records it (a read that fails, say) leaves it so, and later passes, Operations and health restarts
+      // keep holding it until it is.
+      if (mark)
+        for (const target of eligible)
+          if (target.kind !== "stable" && !finding?.settled.has(target.id))
+            unmarked.set(target.id, mark);
       jobs = eligible.flatMap((target, index) => {
         const held = leases[index];
         return held
@@ -1588,6 +1602,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         target.desired !== "running"
       )
         settled?.add(targetId);
+      // Gone, or meant to be stopped: nothing of it waits for a restart's stop to be recorded.
+      if (!target || target.desired !== "running") unmarked.delete(targetId);
       if (!target || target.recovery || target.destructionPending)
         return undefined;
       name = target.name;

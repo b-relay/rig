@@ -94,6 +94,9 @@ export interface ChildSupervisorOptions {
   /** Process identity, group presence, and signals; the owner passes the platform's or a scripted one. */
   readonly processInspection: ProcessInspection;
   readonly captureCommand?: readonly string[];
+  /** Milliseconds, on `timing`'s clock, a capture wrapper's application has to confirm its start once released;
+   * `DEFAULT_CAPTURE_START_MS` when absent. */
+  readonly captureStartMs?: number;
   /** Reads how the Target log is rotated, at each line this supervisor records; the default when absent. */
   readonly logRetention?: () => Promise<LogRetention>;
   /** The Rig root whose config.yaml logs settings the capture wrappers this supervisor starts rotate by; absent, they use
@@ -569,7 +572,7 @@ export function createChildSupervisor(
       });
       if (options.captureCommand)
         await waitForCaptureStart(capturePath(request.key), {
-          timeoutMs: DEFAULT_CAPTURE_START_MS,
+          timeoutMs: options.captureStartMs ?? DEFAULT_CAPTURE_START_MS,
           now: () => timing.now().getTime(),
           wait: (ms) => timing.wait(ms),
         });

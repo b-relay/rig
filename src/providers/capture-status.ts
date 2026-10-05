@@ -46,7 +46,7 @@ export async function writeCaptureStatus(
     await rm(temporary, { force: true });
   }
 }
-/** How long a managed app may take to confirm startup once its wrapper exists; the supervisors pass it explicitly. */
+/** How long a managed app may take to confirm startup once its wrapper exists; a supervisor's `captureStartMs` replaces it. */
 export const DEFAULT_CAPTURE_START_MS = 5000;
 /** Poll cadence while the status file is absent. */
 const CAPTURE_START_POLL_MS = 20;

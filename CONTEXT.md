@@ -266,33 +266,6 @@ A named executable a Project makes available for invocation, rather than a
 Service kept running by Rig. A Project can contain Tools, Services, or both.
 _Avoid_: Service, background process
 
-### Recipe
-
-A versioned, bundled template that prints an ordinary Service block for the user
-to paste into Project config and then own. A comment above the Service records
-which recipe version it came from.
-_Avoid_: plugin, provider, managed database
-
-_Relationship_: A generated Service is config like any other. Planning and
-running a Target never read the recipe comment or the recipe catalog; only
-`rig recipe diff` and doctor's notices do.
-
-_Relationship_: Rig never regenerates or rewrites a generated Service. A newer
-recipe version is an informational notice, never a failing check.
-
-_Relationship_: A recipe version may carry a notice saying why a Service
-generated from it should move on (`convex@1` cannot pass the loopback check).
-`rig recipe generate`, `rig recipe diff`, `rig doctor` and `rig init` repeat
-it; it stays information.
-
-_Relationship_: A recipe version may also carry recipe files, such as the
-`scripts/rig-convex.ts` helper the Convex recipe's Service runs. `rig recipe
-generate` writes them into the Project directory, where the Project owns and
-commits them like the Service block, so they deploy with its checkout. Rig
-never overwrites one that differs; `rig recipe diff` compares the Project's
-copy with the bundled version's. `rigd` knows nothing of what a recipe file
-does.
-
 ### Target role
 
 The role of a Target: Working copy, Stable, or Preview. Project config keys

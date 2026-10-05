@@ -27,8 +27,7 @@ Project may rename them under `targets` in `rig.yaml`. Lifecycle commands reuse
 recorded deployment policy.
 
 Configuration is YAML: `rig.yaml` for a Project and `<RIG_ROOT>/config.yaml`
-for the Host. `rig recipe` generates ready-made Service blocks (Postgres,
-Convex) to paste into `rig.yaml`. See the [guide](docs/rig-guide.md) for setup,
+for the Host. See the [guide](docs/rig-guide.md) for setup,
 deploys, configuration, diagnostics, and command behavior, and
 [docs/examples](docs/examples) for complete configs.
 
@@ -81,7 +80,6 @@ They need permission to bind localhost and a local Caddy executable.
 | `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects.          |
 | `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.            |
 | `src/git`                          | Branch preflight and repository registration.                                 |
-| `src/recipes`                      | Bundled recipes and their files, rendering, and comparison with a Project.    |
 | `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.   |
 
 ## Documentation

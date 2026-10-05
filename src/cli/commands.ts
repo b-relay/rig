@@ -9,10 +9,7 @@ import { RigError } from "../domain/errors";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
-import type { UserOutput, ProjectFiles } from "./types";
-import { BUNDLED_RECIPES, type Recipe } from "../recipes/catalog";
-import { addRecipeCommands } from "./recipe-commands";
-import type { FoundFormat } from "../config/formats";
+import type { UserOutput } from "./types";
 import { addLogsCommand } from "./logs-command";
 
 export type ExecuteCommand = (
@@ -32,11 +29,8 @@ export function createRigCommand(
   cwd: string,
   output: UserOutput,
   execute: ExecuteCommand,
-  recipes: readonly Recipe[] = BUNDLED_RECIPES,
-  configFormat?: (cwd: string) => Promise<FoundFormat | undefined>,
   /** The clock relative `rig logs` times count back from. */
   now: () => Date = () => new Date(),
-  projectFiles?: ProjectFiles,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -97,15 +91,6 @@ export function createRigCommand(
       targetRequest("logs", target, branch, cwd, options),
     nonEmpty,
     positiveInteger,
-  });
-  addRecipeCommands(command, {
-    cwd,
-    output,
-    recipes,
-    execute,
-    projectScope,
-    ...(projectFiles ? { projectFiles } : {}),
-    ...(configFormat ? { configFormat } : {}),
   });
   addHelpCommand(command, "rig");
   command

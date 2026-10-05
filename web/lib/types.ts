@@ -1,7 +1,6 @@
 /** The reply shapes of the rigd control plane. Types only: the page is bundled into the
  * rigd that answers it, so the two can never be different versions. */
 import type { RuntimeCommand } from "../../src/daemon/protocol";
-import type { RecipeReport } from "../../src/runtime/recipes";
 import type { DoctorReport } from "../../src/runtime/doctor";
 
 export type {
@@ -16,9 +15,8 @@ export type {
   ProjectStatusReport,
   TargetReport,
 } from "../../src/domain/project-status";
-export type { RecipeFinding, RecipeChange } from "../../src/recipes/compare";
 export type { ConfigEditorRequest } from "../../src/daemon/config-editor";
-export type { DoctorReport, RecipeReport };
+export type { DoctorReport };
 
 import type {
   OperationPosition,
@@ -112,7 +110,6 @@ export interface Replies {
   activity: import("../../src/daemon/protocol").ActivityResult;
   doctor: DoctorReport;
   config: ConfigReport;
-  "recipe-diff": RecipeReport;
   queue: QueueResult;
   "initialization-info": InitializationInfo;
   "deployment-context": DeploymentContext;

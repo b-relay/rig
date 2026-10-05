@@ -37,7 +37,6 @@ services:
       check: http://127.0.0.1:${services.api.ports.http}/health
     depends_on: [db]
 
-  # rig-recipe: postgres@1 name=db
   db:
     run: >-
       test -s "$PGDATA/PG_VERSION" || initdb -D "$PGDATA" -U postgres --auth=trust || exit $?;

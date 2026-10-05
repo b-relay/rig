@@ -1,8 +1,3 @@
-import { BUNDLED_RECIPES } from "../recipes/catalog";
-import { compareRecipes } from "../recipes/compare";
-import { withRecipeFiles } from "../recipes/files";
-import { dirname } from "node:path";
-import { recipeNotices } from "./recipes";
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
@@ -30,8 +25,6 @@ export interface DoctorReport {
   project?: string;
   /** Why Project checks are absent, so a clean Host report is not read as a clean Project. */
   note?: string;
-  /** Things worth knowing that are not problems and do not change `ok`. */
-  notices?: string[];
 }
 /** Host checks and ownership evidence remain available when Project discovery fails;
  * the report says why Project checks were skipped instead of implying they passed. */
@@ -118,25 +111,6 @@ export async function doctor(
     deps.documents,
   );
   checks.push(projectConfigCheck(project, repository));
-  // From the same acquisition: the comparison is of the document this report is about, and needs no second read.
-  const notices =
-    repository.outcome === "usable"
-      ? recipeNotices(
-          await withRecipeFiles(
-            compareRecipes(
-              repository.document,
-              deps.recipes ?? BUNDLED_RECIPES,
-            ),
-            deps.recipes ?? BUNDLED_RECIPES,
-            (path) =>
-              deps.documents.readProjectFile(
-                dirname(repository.document.path),
-                path,
-              ),
-            { diff: false },
-          ),
-        )
-      : [];
   for (const target of targets) {
     if (target.deploymentIncomplete && !target.recovery)
       checks.push({
@@ -211,7 +185,6 @@ export async function doctor(
     ok: checks.every((c) => c.ok),
     checks,
     project: project.name,
-    ...(notices.length ? { notices } : {}),
   };
 }
 /** The Stable Target serves whatever Branch it was deployed from; a Production setting changed since then is drift the operator acts on. */

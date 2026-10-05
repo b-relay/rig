@@ -8,7 +8,6 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "doctor") return renderDoctor(report);
   if (action === "config")
     return `${word(report.project)}\n${word(report.path)}\n\n${JSON.stringify(report.config, null, 2)}\n`;
-  if (action === "recipe-diff") return renderRecipeDiff(report);
   if (action === "config-upgrade") return renderConfigUpgrade(report);
   if (action === "logs") return renderLogs(report, true);
   if (action === "activity") return renderActivity(report);
@@ -42,9 +41,6 @@ export function renderResult(action: string, value: unknown): string {
   const warnings = [
     ...(Array.isArray(report.warnings)
       ? report.warnings.map((value) => `Warning: ${word(value)}\n`)
-      : []),
-    ...(Array.isArray(report.notices)
-      ? report.notices.map((value) => `Notice: ${word(value)}\n`)
       : []),
   ].join("");
   const replaced = object(report.replaced);
@@ -81,97 +77,6 @@ function renderConfigUpgrade(report: Record<string, unknown>): string {
 export function renderDeprecation(value: unknown): string {
   const line = word(object(value).deprecation);
   return line ? `Deprecated: ${line}\n` : "";
-}
-/** Both comparisons of each marked Service, in words that claim nothing about a running Service. */
-function renderRecipeDiff(report: Record<string, unknown>): string {
-  const lines = [`${word(report.project)}  ${word(report.path)}`, ""];
-  const findings = rows(report.findings);
-  if (!findings.length)
-    lines.push(
-      "No Service carries a rig-recipe comment, so there is nothing to compare.",
-    );
-  for (const finding of findings) {
-    const service = word(finding.service);
-    const origin = `${word(finding.recipe)}@${Number(finding.version)}`;
-    if (finding.status === "malformed")
-      lines.push(
-        `${service}: the recipe comment '${word(finding.marker)}' is not in a form Rig writes; nothing was compared.`,
-      );
-    else if (finding.status === "unknown-recipe")
-      lines.push(
-        `${service}: ${origin} is not a recipe bundled with this Rig; nothing was compared.`,
-      );
-    else if (finding.status === "unknown-version")
-      lines.push(
-        `${service}: ${origin} is a version this Rig does not bundle; nothing was compared.`,
-      );
-    else {
-      const bundled = `${word(finding.recipe)}@${Number(finding.bundled)}`;
-      lines.push(
-        origin === bundled
-          ? `${service}: ${origin}, the bundled version`
-          : `${service}: ${origin}, bundled is ${bundled}`,
-      );
-      if (finding.generatedAs)
-        lines.push(
-          `  Generated as '${word(finding.generatedAs)}'; compared as '${service}'.`,
-        );
-      if (finding.notice) lines.push(`  ${word(finding.notice)}`);
-      const update = rows(finding.update);
-      const customized = rows(finding.customized);
-      if (update.length)
-        lines.push(`  Changed in ${bundled}`, ...update.flatMap(changeLines));
-      if (customized.length)
-        lines.push(
-          `  Your changes to ${origin}`,
-          ...customized.flatMap(changeLines),
-        );
-      else lines.push(`  The Service is as ${origin} generated it.`);
-      if (update.length)
-        lines.push(
-          `  Nothing was changed. To see the new block: rig recipe generate ${word(finding.recipe)} --name ${service}`,
-        );
-      for (const file of rows(finding.files))
-        lines.push(...recipeFileLines(file, word(finding.recipe)));
-    }
-  }
-  return `${lines.join("\n")}\n`;
-}
-/** A recipe file of the Project against the bundled recipe's copy; a changed one as unified-diff lines. */
-function recipeFileLines(
-  file: Record<string, unknown>,
-  recipe: string,
-): string[] {
-  const path = word(file.path);
-  const bundled = `${recipe}@${Number(file.bundled)}`;
-  if (file.state === "same") return [`  ${path}: as ${bundled} writes it.`];
-  if (file.state === "missing")
-    return [
-      `  ${path}: not in the Project. rig recipe generate ${recipe} writes ${bundled}'s copy.`,
-    ];
-  const omitted = Number(file.omitted) || 0;
-  if (!Array.isArray(file.diff))
-    return [
-      `  ${path} differs from ${bundled}'s copy; it is too long to show the lines.`,
-      `  Nothing was changed. To take ${bundled}'s copy, move ${path} aside and run rig recipe generate ${recipe}.`,
-    ];
-  return [
-    `  ${path} differs from ${bundled}'s copy (- the Project's, + ${bundled}'s):`,
-    ...(Array.isArray(file.diff) ? file.diff : []).map(
-      (line) => `    ${word(line)}`,
-    ),
-    ...(omitted ? [`    ... ${omitted} more diff lines`] : []),
-    `  Nothing was changed. To take ${bundled}'s copy, move ${path} aside and run rig recipe generate ${recipe}.`,
-  ];
-}
-function changeLines(change: Record<string, unknown>): string[] {
-  const path = word(change.path);
-  if (change.to === undefined) return [`    - ${path}: ${word(change.from)}`];
-  if (change.from === undefined) return [`    + ${path}: ${word(change.to)}`];
-  return [
-    `    ~ ${path}: ${word(change.to)}`,
-    `      was: ${word(change.from)}`,
-  ];
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);
@@ -313,11 +218,8 @@ function deployedFrom(
 function renderDoctor(report: Record<string, unknown>): string {
   const failures = rows(report.checks).filter((check) => check.ok !== true);
   const note = word(report.note);
-  const notices = Array.isArray(report.notices)
-    ? ["Notices", ...report.notices.map((notice) => `  ${word(notice)}`)]
-    : [];
   if (!failures.length && report.ok === true)
-    return `${word(report.project) ? `Host and ${word(report.project)} healthy` : "Host healthy"}\nNo problems found.\n${note ? `${note}\n` : ""}${notices.map((line) => `${line}\n`).join("")}`;
+    return `${word(report.project) ? `Host and ${word(report.project)} healthy` : "Host healthy"}\nNo problems found.\n${note ? `${note}\n` : ""}`;
   const lines = ["Problems found"];
   for (const check of failures) {
     lines.push(
@@ -326,7 +228,6 @@ function renderDoctor(report: Record<string, unknown>): string {
     if (check.hint) lines.push(`    ${word(check.hint)}`);
   }
   if (note) lines.push(note);
-  lines.push(...notices);
   return `${lines.join("\n")}\n`;
 }
 export function renderLogs(value: unknown, heading: boolean): string {

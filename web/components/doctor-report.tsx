@@ -55,13 +55,6 @@ export function DoctorTable({ report }: { report: DoctorReport }) {
           </tbody>
         </table>
       </div>
-      {report.notices?.length ? (
-        <ul className="flex flex-col gap-1 text-sm text-muted-foreground">
-          {report.notices.map((notice) => (
-            <li key={notice}>{notice}</li>
-          ))}
-        </ul>
-      ) : null}
     </div>
   );
 }

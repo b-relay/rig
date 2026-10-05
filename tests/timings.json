@@ -26,7 +26,6 @@
     "tests/git-project.test.ts": 3243,
     "tests/config-control-plane-e2e.test.ts": 3151,
     "tests/entry-environment.test.ts": 2583,
-    "tests/recipes.test.ts": 2378,
     "tests/providers-launchd.test.ts": 2333,
     "tests/runtime-application.test.ts": 2191,
     "tests/per-target-queue.test.ts": 2140,

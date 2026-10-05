@@ -61,16 +61,6 @@ rig
 │    --project <name>
 ├─ forget <name>                    drop a stopped Project's registration
 │
-├─ recipe
-│    ├─ list                        bundled recipes and their versions
-│    ├─ generate <recipe>           name or name@version; prints a Service block,
-│    │                              and writes the recipe's files, if any
-│    │    --name <service>
-│    │    --format <format>         rig/v1 or rig/v2 (default: the nearby rig.yaml's, else rig/v2)
-│    └─ diff [service]              compare generated Services (and recipe files)
-│                                   to their recipes
-│         --project <name>
-│
 └─ help [command...]                for example: rig help deploy preview
 ```
 

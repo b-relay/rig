@@ -35,6 +35,8 @@ test("a Branch the shell would read is quoted, so a copied hint selects exactly 
     "preview 'feat/(draft)'",
   );
   expect(deploySelector(preview("fix/$HOME"))).toBe("preview 'fix/$HOME'");
+  // zsh expands a word starting with = to a command's path.
+  expect(targetSelector(preview("=ls"))).toBe("preview '=ls'");
   expect(targetSelector(preview("it's"))).toBe("preview 'it'\\''s'");
   expect(deploySelector({ kind: "preview", name: "demo", branch: "a b" })).toBe(
     "preview 'a b' --deployment demo",

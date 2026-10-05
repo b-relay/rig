@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { terminalText } from "./terminal-text";
 import { RigError, cancelled } from "../domain/errors";
+import { shellWord } from "../domain/target-selector";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 export interface CliInteraction {
@@ -98,7 +99,7 @@ export async function prepareInteractiveRequest(
         throw new RigError(
           "PRODUCTION_CONFIRMATION",
           `The current Branch differs from Production '${terminalText(info.productionBranch)}'.`,
-          `Pass the Production Branch explicitly: rig deploy stable ${terminalText(info.productionBranch)}.`,
+          `Pass the Production Branch explicitly: rig deploy stable ${shellWord(terminalText(info.productionBranch))}.`,
         );
       if (
         !(await interaction.confirm(

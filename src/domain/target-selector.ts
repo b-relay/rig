@@ -11,10 +11,11 @@ export function generatedPreviewName(branch: string): string {
       .slice(0, 40) || "branch";
   return `${slug}-${createHash("sha256").update(branch).digest("hex").slice(0, 8)}`;
 }
-/** `word` as one shell word a hint can be copied with: bare when it is plain, otherwise single-quoted, since a Branch may hold
- * characters the shell would read, such as `(`, `$` or a space. */
-function shellWord(word: string): string {
-  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(word)
+/** `word` as one shell word a printed command can be copied with: bare when every character is plain, otherwise
+ * single-quoted, since a Branch may hold characters the shell would read, such as `(`, `$`, a space, or a leading `=`,
+ * which zsh expands to a command's path. */
+export function shellWord(word: string): string {
+  return /^[A-Za-z0-9_./:@%+,-]+$/.test(word)
     ? word
     : `'${word.replaceAll("'", "'\\''")}'`;
 }

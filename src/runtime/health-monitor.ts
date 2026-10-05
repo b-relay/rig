@@ -76,7 +76,7 @@ export interface HealthRestartRequest {
   /** The check that judged it (`checkIdentity`); a Service whose recorded plan checks it another way by now is left alone. */
   check: string;
   /** The process is stopped because the last health restart's start failed its start check: start it, there is nothing to
-   * stop. The record must still say so (`healthStretch.failedStart`) and name `incarnation`. */
+   * stop. The record must still say so (`healthStretch.pendingStart`) and name `incarnation`. */
   start?: true;
   /** The restart's number in this unhealthy stretch, from 1. */
   attempt: number;
@@ -150,7 +150,7 @@ export function healthStartPending(
   healthStretch: NonNullable<ServiceRun["healthStretch"]>;
 } {
   return (
-    run?.healthStretch?.failedStart !== undefined &&
+    run?.healthStretch?.pendingStart !== undefined &&
     run.intent === "running" &&
     !(run.outcome?.kind === "unknown" && run.outcome.hostRestart)
   );
@@ -503,7 +503,7 @@ export function createHealthMonitor(
       known.stretch &&
       record.since === known.stretch.since &&
       record.restarts.length > known.stretch.restarts.length;
-    const unseen = !known.stretch && record.failedStart !== undefined;
+    const unseen = !known.stretch && record.pendingStart !== undefined;
     return longer || unseen
       ? {
           ...known,

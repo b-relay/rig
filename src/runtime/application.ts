@@ -1251,6 +1251,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           await recordUnrecorded(target);
           return { outcome: "deferred" as const };
         }
+        // So is a working Target's or Preview's stop by a Host restart: until it is recorded, which holds its Services
+        // stopped until rig up, nothing is restarted or started for health; the next supervision pass records it.
+        if (unmarked.has(target.id)) return { outcome: "deferred" as const };
         const project = state.projects.find((p) => p.id === target.projectId);
         if (project) entry.view.project = project.name;
         return await restartForHealth(

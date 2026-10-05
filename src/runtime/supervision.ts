@@ -407,7 +407,7 @@ export async function recordStoppedByHostRestart(
       if (
         outcome &&
         outcome.kind !== "unknown" &&
-        run?.healthStretch?.failedStart === undefined &&
+        run?.healthStretch?.pendingStart === undefined &&
         restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
           undefined
       )
@@ -556,7 +556,7 @@ async function superviseService(
   // A health restart whose start failed is the health monitor's to try again, on its back-off: neither restart: nor the
   // automatic-restart budget decides it. Without a healthcheck that restarts any more, restart policy takes it back.
   if (
-    run?.healthStretch?.failedStart !== undefined &&
+    run?.healthStretch?.pendingStart !== undefined &&
     !(run.outcome?.kind === "unknown" && run.outcome.hostRestart) &&
     component.healthcheck?.onFailure === "restart"
   )
@@ -737,35 +737,6 @@ export async function recordHealthStretch(
       { ...current, healthStretch: stretch },
       deps,
     );
-}
-/** Records how a health restart's start failed. When nothing of it runs (`stopped`), the outcome, as a failed automatic
- * attempt's is recorded, and the unhealthy stretch with `failedStart`, so the health monitor, not automatic restart,
- * starts it again at the next step of its back-off; no scheduled retry is kept. When the replacement could not be
- * confirmed stopped (its rollback failed, or it could not be observed), it is the running process as far as Rig knows:
- * only the stretch is kept, without `failedStart`, so ongoing checks judge it and the back-off goes on. */
-export async function recordFailedHealthStart(
-  target: TargetRecord,
-  service: string,
-  error: unknown,
-  stretch: NonNullable<ServiceRun["healthStretch"]>,
-  stopped: boolean,
-  deps: Pick<Deps, "store" | "now" | "id">,
-): Promise<void> {
-  const current = currentRun(target, service);
-  if (!current) return;
-  const { retryAt: _retryAt, waitingFor: _waitingFor, ...rest } = current;
-  await saveRun(
-    target,
-    service,
-    stopped
-      ? {
-          ...rest,
-          outcome: failedAttemptOutcome(error, deps.now()),
-          healthStretch: { ...stretch, failedStart: Date.parse(deps.now()) },
-        }
-      : { ...rest, healthStretch: stretch },
-    deps,
-  );
 }
 /** What a failed automatic attempt leaves on record. A start refused before it was journalled, or one Rig itself stopped, is a failure it witnessed. A process that
  * ended on its own before it was ready is judged like any other exit: by its evidence, and `unknown` without any. A rollback

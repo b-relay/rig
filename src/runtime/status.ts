@@ -211,7 +211,7 @@ function healthRestartWaiting(
       restartFailed: true,
       nextRestartAt: new Date(healthRestartDueAt(stretch)).toISOString(),
     },
-    reason: `Its health restart ${stretch.restarts.length} stopped it and its start failed the start check, so it is stopped. Rig starts it again at its next health restart (${new Date(healthRestartDueAt(stretch)).toISOString()}), whatever its restart policy; run rig restart ${targetSelector(target)} to start it now, or rig down ${targetSelector(target)} to stop trying.`,
+    reason: `Its health restart ${stretch.restarts.length} did not leave it running (its start failed the start check, or the restart was cut short), so it is stopped. Rig starts it again at its next health restart (${new Date(healthRestartDueAt(stretch)).toISOString()}), whatever its restart policy; run rig restart ${targetSelector(target)} to start it now, or rig down ${targetSelector(target)} to stop trying.`,
   };
 }
 /** How a running Service with a healthcheck stands by its cached checks: running until one answered, then healthy or

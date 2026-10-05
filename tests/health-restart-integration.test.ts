@@ -58,11 +58,25 @@ async function world(
   const processes = new Map<string, ProcessObservation>();
   const spawns: number[] = [];
   /** Stops of a process that ignore it and keep it running, as a stop that cannot be confirmed. */
-  const stopping: { refuse?: (count: number) => boolean; count: number } = {
+  const stopping: {
+    refuse?: (count: number) => boolean;
+    /** Runs after each stop, with its number. */
+    after?: (count: number) => void;
+    count: number;
+  } = {
     count: 0,
   };
+  /** The next this many observations cannot tell whether anything runs. */
+  const observing = { unknown: 0 };
   const supervisor: Supervisor = {
     async observe(key) {
+      if (observing.unknown > 0) {
+        observing.unknown--;
+        return {
+          state: "unknown",
+          reason: "the capture lease could not be read",
+        };
+      }
       return processes.get(key) ?? { state: "stopped" };
     },
     async ensureRunning(request) {
@@ -82,6 +96,7 @@ async function world(
         throw new Error("the process ignored its stop");
       const running = processes.get(key)?.state === "running";
       processes.delete(key);
+      stopping.after?.(stopping.count);
       return { outcome: running ? "stopped" : "unchanged" };
     },
     async shutdown() {},
@@ -189,6 +204,7 @@ async function world(
     ready,
     spawns,
     stopping,
+    observing,
     status,
     /** The Host restarts: nothing survives, the boot changes, and a new rigd reconciles what it finds. */
     async reboot() {
@@ -253,7 +269,7 @@ for (const restart of ["no", "always"] as const)
       "unhealthy · restart failed its start check · next attempt in 59s",
     );
     expect((await w.activity()).at(-1)).toContain(
-      "its start failed its start check",
+      "its start did not pass its start check",
     );
     // Neither restart: nor the crash budget decides it: nothing starts web until the next health restart, a minute on, and
     // that start fails too.
@@ -334,11 +350,12 @@ test("a health restart whose replacement cannot be confirmed stopped after its f
   await w.advance(6);
   expect(await w.running()).toBe(true);
   const run = await w.run();
-  expect(run.healthStretch).toMatchObject({ restarts: [expect.any(Number)] });
-  expect(run.healthStretch).not.toHaveProperty("failedStart");
-  expect((await w.activity()).at(-1)).toContain(
-    "could not be confirmed stopped",
-  );
+  // Still owned by the health back-off, which checks a process that runs rather than waiting to start one.
+  expect(run.healthStretch).toMatchObject({
+    restarts: [expect.any(Number)],
+    pendingStart: expect.any(Number),
+  });
+  expect((await w.activity()).at(-1)).toContain("did not pass its start check");
   // Readiness comes back: the replacement's ongoing checks pass, and the stretch ends.
   await writeFile(w.ready, "");
   await w.advance(10);
@@ -352,13 +369,13 @@ test("a health restart whose replacement cannot be confirmed stopped after its f
 test("a process running while its record says its health start failed is checked as a running process, not left waiting for a start", async () => {
   const w = await world("no");
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
-  // A record a daemon left behind: failedStart, though the process it names runs.
+  // A record a daemon left behind: pendingStart, though the process it names runs.
   await w.store.update((state) => {
     const web = state.targets[0]!.services!.web!;
     web.healthStretch = {
       since: w.clock.ms,
       restarts: [w.clock.ms],
-      failedStart: w.clock.ms,
+      pendingStart: w.clock.ms,
     };
   });
   const spawned = w.spawns.length;
@@ -375,7 +392,7 @@ test("after a Host restart a working Target waiting for its next health restart 
   await rm(w.ready);
   await w.advance(6);
   expect(await w.run()).toMatchObject({
-    healthStretch: { failedStart: expect.any(Number) },
+    healthStretch: { pendingStart: expect.any(Number) },
   });
   await w.reboot();
   await writeFile(w.ready, "");
@@ -405,7 +422,7 @@ test("after a Host restart a stable Target waiting for its next health restart i
   await w.advance(6);
   expect(await w.running("stable")).toBe(false);
   expect(await w.run("stable")).toMatchObject({
-    healthStretch: { failedStart: expect.any(Number) },
+    healthStretch: { pendingStart: expect.any(Number) },
   });
   await writeFile(w.ready, "");
   const spawned = w.spawns.length;
@@ -416,4 +433,65 @@ test("after a Host restart a stable Target waiting for its next health restart i
   expect(await w.run("stable")).not.toHaveProperty("healthStretch");
   await w.advance(6);
   expect(await w.status("stable")).toMatchObject({ state: "healthy" });
+}, 30_000);
+
+test("a health restart whose rollback stopped the replacement but could not be observed stays owned by the health back-off, and starts web once it can", async () => {
+  const w = await world("no");
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  // Right after the rollback stops the failed replacement, the next observations cannot tell whether anything runs.
+  w.stopping.after = (count) => {
+    if (count === 2) w.observing.unknown = 3;
+  };
+  await rm(w.ready);
+  await w.advance(6);
+  expect(await w.running()).toBe(false);
+  expect(await w.run()).toMatchObject({
+    healthStretch: { pendingStart: expect.any(Number) },
+  });
+  await writeFile(w.ready, "");
+  await w.advance(400);
+  expect(await w.running()).toBe(true);
+  await w.advance(6);
+  expect(await w.status()).toMatchObject({ state: "healthy" });
+}, 30_000);
+
+test("while a Host restart's stop of a working Target cannot be recorded, nothing starts its Services for health, and once it is recorded they stay stopped until rig up", async () => {
+  const w = await world("no");
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  await rm(w.ready);
+  await w.advance(6);
+  expect(await w.run()).toMatchObject({
+    healthStretch: { pendingStart: expect.any(Number) },
+  });
+  // The write that records the Host restart's stop is refused, past the time web's next health restart is due.
+  const failing = { left: Number.POSITIVE_INFINITY };
+  const update = w.store.update.bind(w.store);
+  w.store.update = (change) =>
+    update(async (state) => {
+      await change(state);
+      const web = state.targets[0]?.services?.web;
+      if (
+        failing.left > 0 &&
+        web?.outcome?.kind === "unknown" &&
+        web.outcome.hostRestart
+      ) {
+        failing.left--;
+        throw new Error("disk full");
+      }
+    });
+  await w.reboot();
+  await writeFile(w.ready, "");
+  const spawned = w.spawns.length;
+  await w.advance(120);
+  expect(w.spawns.length).toBe(spawned);
+  expect(await w.running()).toBe(false);
+  // Writes work again: the stop is recorded, and it still holds web stopped until rig up.
+  failing.left = 0;
+  await w.advance(400);
+  expect(w.spawns.length).toBe(spawned);
+  expect(await w.run()).toMatchObject({
+    outcome: { kind: "unknown", hostRestart: "reboot" },
+  });
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  expect(await w.running()).toBe(true);
 }, 30_000);

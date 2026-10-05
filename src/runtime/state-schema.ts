@@ -300,12 +300,12 @@ const services = z
             .describe(
               "Unix milliseconds of each health restart in this stretch.",
             ),
-          failedStart: z
+          pendingStart: z
             .number()
             .finite()
             .optional()
             .describe(
-              "Unix milliseconds when the latest health restart's start failed its start check: the Service is stopped, and the health monitor starts it again at the next step of the back-off, whatever its restart policy.",
+              "Unix milliseconds when the latest health restart began, written before it stopped anything and cleared once its start passed. Until then the health monitor owns the Service: it checks it while a process runs, and starts it at the next step of the back-off while none does, whatever its restart policy.",
             ),
         })
         .optional()

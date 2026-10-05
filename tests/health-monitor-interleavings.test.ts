@@ -57,9 +57,18 @@ type Restarts =
   | "deferred"
   | "start fails"
   | "start fails, replacement survives"
-  /** A record an earlier rigd left: failedStart, though the replacement runs. */
+  /** A record an earlier rigd left: pendingStart, though the replacement runs. */
   | "start fails, replacement survives, record says failed";
-function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
+function world(
+  scenario: Scenario,
+  answer: Answer,
+  restartsDo: Restarts,
+  /** Faults in what the monitor depends on: every third state write is refused, and every fourth process observation
+   * cannot tell whether anything runs. */
+  faults = false,
+) {
+  let writes = 0,
+    observations = 0;
   let now = 0;
   const timers: { at: number; fire: () => void }[] = [];
   const component: ManagedComponent = {
@@ -254,6 +263,7 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
         },
         async update(change) {
           point();
+          if (faults && ++writes % 3 === 0) throw new Error("disk full");
           const before = state.activity.length;
           const current = pair();
           await change(state);
@@ -277,6 +287,8 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
       observations: {
         async process() {
           point();
+          if (faults && ++observations % 4 === 0)
+            return { state: "unknown" as const, reason: "no answer" };
           return processRunning
             ? {
                 state: "running",
@@ -330,7 +342,7 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
           request.check === current.check &&
           request.incarnation === current.incarnation &&
           (request.start
-            ? run?.healthStretch?.failedStart !== undefined &&
+            ? run?.healthStretch?.pendingStart !== undefined &&
               !processRunning &&
               !(run.outcome?.kind === "unknown" && run.outcome.hostRestart)
             : probes.some(
@@ -376,7 +388,7 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
           healthStretch: {
             since: request.since,
             restarts: [...request.restarts, now],
-            ...(saysFailed ? { failedStart: now } : {}),
+            ...(saysFailed ? { pendingStart: now } : {}),
           },
         };
         monitor.invalidate("t1", "web"); // the store: another process recorded
@@ -468,11 +480,16 @@ function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
 /** Yield points of the pass under test and the ones after it that a schedule injects at. */
 const POINTS = 24;
 
-test("the interleaving harness: at every yield point of a pass, a check and a restart, every lifecycle event keeps the epoch rule's invariants", async () => {
+/** Runs every schedule of the cross product given, and says how many ran and what broke an invariant. */
+async function runSchedules(dimensions: {
+  scenarios: readonly Scenario[];
+  answers: readonly Answer[];
+  faults: boolean;
+}): Promise<{ schedules: number; failures: string[] }> {
   let schedules = 0;
   const failures: string[] = [];
-  for (const scenario of ["warm", "cold"] as const)
-    for (const answer of ANSWERS)
+  for (const scenario of dimensions.scenarios)
+    for (const answer of dimensions.answers)
       for (const restartsDo of [
         "deferred",
         "start fails",
@@ -480,7 +497,7 @@ test("the interleaving harness: at every yield point of a pass, a check and a re
       ] as const)
         for (const event of EVENTS)
           for (let at = 1; at <= POINTS; at++) {
-            const w = world(scenario, answer, restartsDo);
+            const w = world(scenario, answer, restartsDo, dimensions.faults);
             // warm: rigd has seen web pass at 1 s; the next check is due at 6 s. cold: the first pass, at 1 s, is the one.
             if (scenario === "warm") await w.runUntil(1 * SECOND);
             w.arm(at, event);
@@ -505,11 +522,33 @@ test("the interleaving harness: at every yield point of a pass, a check and a re
                 `${scenario}, ${answer}, restarts ${restartsDo}, ${event} at point ${at}: ${violation}`,
               );
           }
+  return { schedules, failures };
+}
+
+test("the interleaving harness: at every yield point of a pass, a check and a restart, every lifecycle event keeps the epoch rule's invariants", async () => {
+  const { schedules, failures } = await runSchedules({
+    scenarios: ["warm", "cold"],
+    answers: ANSWERS,
+    faults: false,
+  });
   expect(failures).toEqual([]);
   // The whole cross product ran: 2 scenarios x 4 ways of answering x 3 kinds of restart x 7 events x 24 yield points,
   // each event injected.
   expect(schedules).toBe(2 * ANSWERS.length * 3 * EVENTS.length * POINTS);
   // Work, not waiting: the bound only keeps a loaded machine from failing it.
+}, 60_000);
+
+test("the interleaving harness under faults: with refused writes and unanswered observations, every event at every yield point keeps the invariants", async () => {
+  // A smaller cross product, so the two together stay within a few seconds: the warm scenario, and the two answers in
+  // which the process before the event and the one after it disagree.
+  const answers: Answer[] = ["old passes, new fails", "old fails, new passes"];
+  const { schedules, failures } = await runSchedules({
+    scenarios: ["warm"],
+    answers,
+    faults: true,
+  });
+  expect(failures).toEqual([]);
+  expect(schedules).toBe(answers.length * 3 * EVENTS.length * POINTS);
 }, 60_000);
 
 test("a health restart whose start failed is started again by the monitor on the back-off, never given up", async () => {

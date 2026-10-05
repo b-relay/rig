@@ -321,13 +321,22 @@ export function createTargetEffects(
     try {
       if (isHealthUrl(component.health!)) {
         // A healthcheck's timeout bounds each request, at start and while it runs; a `ready` URL a plan recorded before
-        // healthcheck is bounded by its start budget alone, as it was.
-        const late = component.healthcheck
-          ? AbortSignal.timeout(timeoutMs)
+        // healthcheck is bounded by its start budget alone, as it was. The request has its own signal, aborted by the
+        // caller's or by its timer; both are let go when it ends, so a finished check holds no timer and no listener.
+        const request = new AbortController();
+        let timedOut = false;
+        const forward = () => request.abort(signal.reason);
+        signal.addEventListener("abort", forward, { once: true });
+        const timer = component.healthcheck
+          ? setTimeout(() => {
+              timedOut = true;
+              request.abort();
+            }, timeoutMs)
           : undefined;
         try {
+          if (signal.aborted) forward();
           const response = await fetch(component.health!, {
-            signal: late ? AbortSignal.any([signal, late]) : signal,
+            signal: request.signal,
             redirect: "manual",
           });
           await response.body?.cancel();
@@ -335,12 +344,15 @@ export function createTargetEffects(
             ? { ready: true }
             : { ready: false, reason: `HTTP ${response.status}` };
         } catch (error) {
-          if (!signal.aborted && late?.aborted)
+          if (!signal.aborted && timedOut)
             return {
               ready: false,
               reason: `timed out after ${timeoutMs / 1000}s`,
             };
           throw error;
+        } finally {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", forward);
         }
       }
       const result = await options.run({

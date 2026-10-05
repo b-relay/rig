@@ -616,6 +616,90 @@ test("a health URL with an uppercase scheme is probed over HTTP rather than run 
   }
 });
 
+test("a finished HTTP check lets go of its timeout timer and of the caller's signal, whether it passed, failed or could not connect", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-http-timer-"));
+  roots.push(root);
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) =>
+      new Response("x", {
+        status: new URL(request.url).pathname === "/up" ? 200 : 503,
+      }),
+  });
+  const closed = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(),
+  });
+  const refused = closed.port!;
+  closed.stop(true);
+  // Every timer of an hour (the healthcheck's timeout) that is set, and every one cleared.
+  const set = new Set<unknown>(),
+    cleared = new Set<unknown>();
+  const realSet = globalThis.setTimeout,
+    realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = ((fire: () => void, ms?: number) => {
+    const timer = realSet(fire, ms);
+    if (ms === 3_600_000) set.add(timer);
+    return timer;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((timer: Parameters<typeof clearTimeout>[0]) => {
+    if (set.has(timer)) cleared.add(timer);
+    realClear(timer);
+  }) as typeof clearTimeout;
+  try {
+    const caller = new AbortController();
+    let listeners = 0;
+    const add = caller.signal.addEventListener.bind(caller.signal),
+      remove = caller.signal.removeEventListener.bind(caller.signal);
+    caller.signal.addEventListener = ((...args: Parameters<typeof add>) => {
+      listeners++;
+      add(...args);
+    }) as typeof add;
+    caller.signal.removeEventListener = ((
+      ...args: Parameters<typeof remove>
+    ) => {
+      listeners--;
+      remove(...args);
+    }) as typeof remove;
+    for (const [url, ready] of [
+      [`http://127.0.0.1:${server.port}/up`, true],
+      [`http://127.0.0.1:${server.port}/down`, false],
+      [`http://127.0.0.1:${refused}/`, false],
+    ] as const) {
+      const check = await effects(root).observations.health(
+        target(root),
+        {
+          name: "web",
+          kind: "managed" as const,
+          command: "serve",
+          port: server.port!,
+          readyTimeout: 30,
+          env: {},
+          dependsOn: [],
+          health: url,
+          healthcheck: {
+            interval: 30,
+            timeout: 3600,
+            retries: 3,
+            onFailure: "report" as const,
+          },
+        },
+        caller.signal,
+      );
+      expect(check.ready).toBe(ready);
+    }
+    expect(set.size).toBe(3);
+    expect(cleared).toEqual(set);
+    expect(listeners).toBe(0);
+  } finally {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+    server.stop(true);
+  }
+});
+
 test("a healthcheck's timeout bounds each HTTP check, so a late or stalled answer fails within it instead of passing or holding the start gate", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-http-timeout-"));
   roots.push(root);

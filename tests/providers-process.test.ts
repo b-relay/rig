@@ -638,8 +638,19 @@ test("a deleted log directory is recreated on the next line; output that cannot 
     incarnation: "start-1",
   });
   // A path that cannot be a directory cannot take output: the observation says so, and recovers once it can.
-  await rm(logRoot, { recursive: true, force: true });
-  await writeFile(logRoot, "not a directory");
+  // The component writes every 10 ms and the supervisor recreates the directory on each line, as asserted above, so it can
+  // win the race between removing the directory and writing the file there; the swap is retried until the file holds.
+  for (let swapped = false, i = 0; !swapped; i++) {
+    await rm(logRoot, { recursive: true, force: true });
+    swapped = await writeFile(logRoot, "not a directory", { flag: "wx" }).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (i < 100 && (error.code === "EEXIST" || error.code === "EISDIR"))
+          return false;
+        throw error;
+      },
+    );
+  }
   let observed = await supervisor.observe(request.key);
   for (let i = 0; i < 100 && !observed.reason; i++) {
     await Bun.sleep(10);

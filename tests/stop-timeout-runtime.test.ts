@@ -1016,6 +1016,85 @@ test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan
   ]);
 });
 
+test("a health restart stops the Service within its stop_timeout under its Target's lock, spends no restart budget, records why, and holds up no other Target", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "working" });
+  await w.command({ action: "deploy", target: "stable", branch: "main" });
+  const working = () => w.state.targets.find((t) => t.kind === "working")!;
+  const before = working().services!.web!;
+  w.hold();
+  const restart = w.runtime.restartUnhealthy({
+    targetId: working().id,
+    service: "web",
+    incarnation: before.incarnation!,
+    attempt: 2,
+    failures: 3,
+    output: "HTTP 503",
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    restarts: [Date.parse("2026-09-27T03:50:00.000Z")],
+  });
+  // The normal stop path: web's own stop_timeout, shown as the Target stopping.
+  const stop = await w.stopOf("web");
+  expect(stop.request.graceMs).toBe(2 * 60_000);
+  // Recorded before the stop, so whatever starts web next carries the stretch on.
+  expect(working().services!.web!.healthStretch?.restarts).toHaveLength(2);
+  expect(
+    (await w.runtime.status({ project: "fletcher" })).targets.find(
+      (t) => t.kind === "working",
+    )!.state,
+  ).toBe("stopping");
+  // The working Target is held; the stable Target is not.
+  expect(w.runtime.targetBusy(working())).toBe(true);
+  expect(
+    w.runtime.targetBusy(w.state.targets.find((t) => t.kind === "stable")!),
+  ).toBe(false);
+  expect(await w.command({ action: "up", target: "stable" })).toMatchObject({
+    target: "stable",
+  });
+  w.hold(false);
+  stop.exit();
+  expect(await restart).toEqual({
+    outcome: "restarted",
+    at: Date.parse("2026-09-27T04:00:00.000Z"),
+  });
+  const after = working().services!.web!;
+  expect(after.incarnation).not.toBe(before.incarnation);
+  expect(after.attempts).toEqual([]);
+  expect(after.healthStretch).toEqual({
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    restarts: [
+      Date.parse("2026-09-27T03:50:00.000Z"),
+      Date.parse("2026-09-27T04:00:00.000Z"),
+    ],
+  });
+  expect(w.state.activity.at(-1)).toMatchObject({
+    action: "health-restart",
+    outcome: "started",
+    target: "working",
+    message:
+      "web was restarted because it is unhealthy: 3 health checks in a row failed (last output: HTTP 503) (health restart 2).",
+  });
+  expect(w.runtime.targetBusy(working())).toBe(false);
+  // A request that names no process, or another one than the record does, is never acted on.
+  for (const incarnation of [undefined, "some-other-process"])
+    expect(
+      await w.runtime.restartUnhealthy({
+        targetId: working().id,
+        service: "web",
+        ...(incarnation ? { incarnation } : {}),
+        attempt: 3,
+        failures: 3,
+        since: 0,
+        restarts: [],
+      }),
+    ).toEqual({ outcome: "skipped" });
+  // Still only the one stop the health restart made.
+  expect(w.stops.filter((stop) => stop.key.endsWith(":web"))).toHaveLength(1);
+  // An explicit restart ends the stretch.
+  await w.command({ action: "restart", target: "working" });
+  expect(working().services!.web!.healthStretch).toBeUndefined();
+});
+
 test("a Service whose plan was recorded before stop_timeout existed is stopped with the 10 s default grace", async () => {
   const w = await upgraded(designConfig());
   const local = w.state.targets.find((target) => target.kind === "working")!;

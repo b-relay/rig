@@ -289,6 +289,22 @@ const services = z
         .describe(
           "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
         ),
+      healthStretch: z
+        .object({
+          since: z
+            .number()
+            .finite()
+            .describe("Unix milliseconds when the Service became unhealthy."),
+          restarts: z
+            .array(z.number().finite())
+            .describe(
+              "Unix milliseconds of each health restart in this stretch.",
+            ),
+        })
+        .optional()
+        .describe(
+          "The unhealthy stretch a health restart started the running process in, so a new rigd continues its back-off; an explicit start clears it.",
+        ),
     }),
   )
   .optional()

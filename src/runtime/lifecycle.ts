@@ -160,6 +160,14 @@ export interface TargetLifecycle {
     journal: ActivationJournal,
     stops?: StopControl,
   ): Promise<{ outcome: "started" | "unchanged" }>;
+  /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others and the route as they
+   * are; SERVICE_UNKNOWN when the plan has no such Service. A health restart stops a Service this way before `recover`
+   * starts it again. */
+  stop(
+    target: TargetRecord,
+    service: string,
+    stops?: StopControl,
+  ): Promise<{ outcome: "stopped" | "unchanged" }>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout. Every Service is attempted, and
    * STOP_INCOMPLETE names the failures, except when the stop is detached: STOP_DETACHED ends it at once. */
   down(
@@ -238,6 +246,8 @@ export function withStops(
       lifecycle.up(target, checkpoint, journal, control ?? stops),
     recover: (target, service, journal, control) =>
       lifecycle.recover(target, service, journal, control ?? stops),
+    stop: (target, service, control) =>
+      lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
@@ -537,6 +547,23 @@ export function createTargetLifecycle(
           failureCauses(error),
         );
       }
+    },
+    async stop(target, service, stops) {
+      const component = target.plan.components.find(
+        (candidate): candidate is ManagedComponent =>
+          candidate.kind === "managed" && candidate.name === service,
+      );
+      if (!component)
+        throw new RigError(
+          "SERVICE_UNKNOWN",
+          `${target.name} has no Service named '${service}'.`,
+          "Select a Service of the recorded plan.",
+          { service },
+        );
+      const result = await stopService(target, component, stops);
+      return {
+        outcome: result.outcome === "stopped" ? "stopped" : "unchanged",
+      };
     },
     async down(target, stops) {
       let changed = false;

@@ -21,6 +21,7 @@ import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
 import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
+import type { HealthResults } from "./health-monitor";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
@@ -173,6 +174,9 @@ export interface RuntimeDependencies {
       evidence?: string;
     },
   ): Promise<void>;
+  /** The health monitor's cached results of ongoing checks, which status and doctor read instead of running them; absent
+   * where no monitor runs. */
+  healthResults?: HealthResults;
 }
 
 /** Borrowed inventory snapshot under the runtime mutation queue. */

@@ -1,4 +1,38 @@
 import { z } from "zod";
+/** The cached result of a Service's ongoing checks (its healthcheck), as rigd last saw it; status never runs one for it. */
+export const serviceHealthSchema = z
+  .object({
+    status: z
+      .enum(["starting", "healthy", "unhealthy"])
+      .describe(
+        "starting until a check of the running process answered; unhealthy once `retries` checks in a row failed, until one passes; healthy otherwise.",
+      ),
+    checkedAt: z
+      .string()
+      .optional()
+      .describe("When the last check of this process answered (ISO 8601)."),
+    failures: z.number().int().describe("Failed checks in a row."),
+    retries: z
+      .number()
+      .int()
+      .describe(
+        "Failed checks in a row that make the Service unhealthy: its healthcheck's retries.",
+      ),
+    output: z
+      .string()
+      .optional()
+      .describe(
+        "The last failed check's output as one line of at most 200 characters; absent once a check passed.",
+      ),
+    restarts: z
+      .number()
+      .int()
+      .describe(
+        "Health restarts made since the Service became unhealthy this time (on_failure: restart).",
+      ),
+  })
+  .passthrough();
+export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
 
 const componentReportSchema = z
   .object({
@@ -61,6 +95,11 @@ const componentReportSchema = z
         "For a stopping Service: when SIGKILL is due (ISO 8601), once its stop_timeout has passed.",
       ),
     reason: z.string().optional().describe("Explanation of the observation."),
+    health: serviceHealthSchema
+      .optional()
+      .describe(
+        "For a running Service with a healthcheck: the cached result of its ongoing checks, which decides healthy or unhealthy.",
+      ),
   })
   .passthrough();
 const targetReportSchema = z

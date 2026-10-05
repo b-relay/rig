@@ -80,6 +80,10 @@ export interface ServiceRun {
   /** The operator's latest stop needed SIGKILL: the stop_timeout ran out (`timeout`), or `--kill` cut it short (`request`).
    * A new start clears it. */
   stopKilled?: "timeout" | "request";
+  /** The unhealthy stretch a health restart started this process in: when the Service became unhealthy and each health
+   * restart since (Unix milliseconds), so a new rigd continues the back-off. Automatic starts carry it on; an explicit start
+   * clears it. */
+  healthStretch?: { since: number; restarts: number[] };
 }
 
 export interface TargetRecord {

@@ -221,6 +221,9 @@ async function fixture(host: Record<string, unknown> = {}) {
         processes.set(key(target, service), { state: "running", incarnation });
         return { outcome: "started" };
       },
+      async stop() {
+        return { outcome: "stopped" as const };
+      },
       async down(target) {
         events.push(`stop ${target.plan.project} ${target.name}`);
         await heldStops.get(target.plan.project);

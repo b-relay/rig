@@ -46,7 +46,7 @@ the same files in four worker processes, starting the slowest files first from
 `tests/timings.json`, and is several times faster. `bun run test:fast` does the
 same without the end-to-end and compiled-binary files. `bun test <fragment>`
 runs only the files whose path contains the fragment, for example
-`bun test providers-launchd`. While working, run the typecheck and the focused
+`bun test providers-process`. While working, run the typecheck and the focused
 files for the change (or `test:fast`); run the full suite, the build and the
 format check before merging to main or deploying to live.
 

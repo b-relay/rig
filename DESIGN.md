@@ -60,7 +60,7 @@ capability interfaces without Effect TS. See the
 - `rigd install`
 - `rigd status`
 - `rigd uninstall`
-- `rigd capture`, the log-capture wrapper launchd runs; not a user command
+- `rigd capture`, the log-capture wrapper `rigd` runs for each Service; not a user command
 
 Normal `rig` commands do not install or manually start the daemon. They report
 missing/unreachable daemon state and point to `rigd status` or `rigd install`.
@@ -156,7 +156,7 @@ edit endpoint (`/v1/config`); the CLI does not expose it.
 
 Providers receive what they need from the resolved runtime plan. They do not
 read Host config, Project config, or global paths themselves. The bundled
-providers (process supervisors, Caddy router, Git source store, artifact
+providers (the rigd process supervisor, Caddy router, Git source store, artifact
 installer, command runner) all implement the contracts in
 `src/providers/contracts.ts`.
 

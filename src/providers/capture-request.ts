@@ -20,7 +20,7 @@ const captureRequestSchema = z.object({
 export type CaptureRequest = z.infer<typeof captureRequestSchema>;
 /** The document a capture wrapper reads: the process to run and, when the supervisor has one, the Rig root whose logs
  * settings it rotates by. */
-export function captureDocument(
+function captureDocument(
   request: ManagedProcess,
   configRoot: string | undefined,
 ): CaptureRequest {

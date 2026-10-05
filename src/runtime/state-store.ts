@@ -70,6 +70,7 @@ export class FileStateStore implements StateStore {
     // The validated document is returned as read, not as the schema's stripped copy: keys a newer rigd
     // wrote survive a round trip through this one, and the next write carries them along.
     const state = parsed as RuntimeState;
+    readRetiredSupervisorAsRigd(state);
     return { ...state, version: STATE_VERSION };
   }
   /** A file from a different rigd is refused by version before its shape is judged. */
@@ -113,6 +114,15 @@ export class FileStateStore implements StateStore {
   private get backupPath(): string {
     return `${this.path}.bak`;
   }
+}
+/** Rig once offered per-Service launchd supervision, and plans recorded then name `launchd`. rigd supervises every Service
+ * now, so such a plan is read as rigd's: its stopped Target starts under rigd, and the plan is not config drift. The next
+ * write saves it so. */
+function readRetiredSupervisorAsRigd(state: RuntimeState): void {
+  for (const target of state.targets)
+    for (const plan of [target.plan, target.recovery?.plan])
+      if (plan?.providers.processSupervisor === "launchd")
+        plan.providers.processSupervisor = "rigd";
 }
 async function writeDurably(path: string, content: string): Promise<void> {
   const file = await open(path, "w", 0o600);

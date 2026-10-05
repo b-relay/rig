@@ -30,11 +30,11 @@ const OBSERVATION_HEARTBEAT_MS = 250;
 /** Signals that ask the wrapper to stop its application within its grace; the wrapper then ends by the same signal.
  * CAPTURE_KILL_SIGNAL asks it to stop the application and cut the grace to the kill wait. */
 const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
-/** Private rigd entrypoint used by launchd and rigd; owns signal handlers and the captured child lifetime.
+/** Private rigd entrypoint that rigd's child supervisor spawns; owns signal handlers and the captured child lifetime.
  * Runs the requested application until it stops or the wrapper is asked to stop, and returns the wrapper's exit code: the
  * application's own when it stopped by itself. A wrapper asked to stop by a signal stops its application, then ends by that
- * same signal through `endBy`, so whoever holds the wrapper (launchd's job record, or rigd's child handle) sees a signal
- * rather than a clean exit when the application's own exit record is gone. */
+ * same signal through `endBy`, so rigd's child handle on the wrapper sees a signal rather than a clean exit when the
+ * application's own exit record is gone. */
 export async function runCapturedProcess(
   requestPath: string,
   dependencies: {

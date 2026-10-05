@@ -134,11 +134,6 @@ const stopTimeout = text
   .describe(
     "How long the Service may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 2m (default 10s, at most 1h). Every stop waits for it: rig down, rig restart, a deploy that replaces or rolls back the Target, a Preview destroy, and the stop of a failed start. rig down --kill skips it.",
   );
-const supervisor = z
-  .enum(["rigd", "launchd"])
-  .describe(
-    "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor.",
-  );
 const envName = z
   .string()
   .regex(
@@ -345,7 +340,6 @@ const patchFieldsWith = <Service extends z.core.$ZodLooseShape>(
     .describe(
       `Hostname for this role's Targets, such as \${rig.target}.preview.app.test. ${DOMAIN_REFERENCE}`,
     ),
-  supervisor: supervisor.optional(),
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   env: env("project").optional(),
@@ -476,7 +470,6 @@ function projectSchemaFor<
         .describe(
           `Stable Target hostname. Previews default to <preview-name>.<domain>; the Working copy has no hostname unless its patch sets one. ${DOMAIN_REFERENCE}`,
         ),
-      supervisor: supervisor.optional(),
       build: build
         .optional()
         .describe(
@@ -807,6 +800,10 @@ const PATCH_IDENTITY_KEYS: Readonly<Record<string, string>> = {
   targets: "A Target patch cannot contain targets.",
   role: "A Target's role is its fixed key (working, stable or preview) and cannot change.",
 };
+/** `supervisor` chose between rigd and per-Service launchd agents until launchd supervision was removed; rigd now supervises
+ * every Service, so a file that still sets it is told to delete the line rather than that the field is unknown. */
+const REMOVED_SUPERVISOR =
+  "was removed because rigd supervises every Service; delete this line";
 /** Refusals that need their own guidance, checked before the schema so they are not reported as generic unknown keys. */
 function refuseUnsupportedShapes(value: unknown, format: ConfigFormat): void {
   if (!isRecord(value)) return;
@@ -814,10 +811,17 @@ function refuseUnsupportedShapes(value: unknown, format: ConfigFormat): void {
     value,
     format,
   );
+  if (Object.hasOwn(value, "supervisor"))
+    issues.push({ path: ["supervisor"], message: REMOVED_SUPERVISOR });
   for (const [role, patch] of Object.entries(
     isRecord(value.targets) ? value.targets : {},
   )) {
     if (!isRecord(patch)) continue;
+    if (Object.hasOwn(patch, "supervisor"))
+      issues.push({
+        path: ["targets", role, "supervisor"],
+        message: REMOVED_SUPERVISOR,
+      });
     for (const [key, message] of Object.entries(PATCH_IDENTITY_KEYS))
       if (Object.hasOwn(patch, key))
         issues.push({ path: ["targets", role, key], message });
@@ -1047,7 +1051,7 @@ export const hostConfigSchema = z.strictObject({
     })
     .prefault({})
     .describe(
-      "Size limits for Target logs: each Target's target.jsonl and the stdout and stderr files launchd writes for a job. Every writer reads a change within a few seconds.",
+      "Size limits for Target logs: each Target's target.jsonl. Every writer reads a change within a few seconds.",
     ),
   alerts: z
     .strictObject({

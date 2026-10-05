@@ -51,9 +51,9 @@ rigd status
 and its last line says what to do (`rigd is not installed. Run rigd install.`,
 `rigd is installed but not running. Run rigd install to start it.`, or, for a
 running daemon that does not answer, `Run rig doctor, or rigd uninstall and
-then rigd install.`). `rigd capture <request-file>` is the command launchd
-runs for each Service under the `launchd` supervisor; it is listed in
-`rigd --help` and answers `--help`, but people never run it themselves.
+then rigd install.`). `rigd capture <request-file>` is the capture wrapper
+`rigd` runs for each Service; it is listed in `rigd --help` and answers
+`--help`, but people never run it themselves.
 
 `rigd install` owns daemon setup and creates the local control-plane auth token.
 It issues a fresh token whenever it starts a daemon, so a credential left
@@ -114,8 +114,8 @@ operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
 A stop signal never waits out a Service's `stop_timeout`, which may be an hour:
 a command waiting for a Service to exit (the stop of a start that never
 confirmed it started included) stops waiting and fails `STOP_DETACHED`,
-and the Service keeps stopping on its own (its capture wrapper, or launchd,
-still enforces the grace and the SIGKILL after it). A daemon killed while an
+and the Service keeps stopping on its own (its capture wrapper still enforces
+the grace and the SIGKILL after it). A daemon killed while an
 operation waits for a Service to exit leaves that Service stopping the same way.
 For `rig down` and `rig restart` the Target was recorded as meant to be stopped
 before its stop began, so the next daemon's startup pass stops it again (a
@@ -662,7 +662,8 @@ interleaved, as before:
   `2d`, `1w`, or combined as `1h30m`) or an ISO time with a zone
   (`2026-09-28T03:00:00Z`, `2026-09-28T05:00:00+02:00`); a time without a zone
   is refused rather than guessed. Lines with no recorded time (the files
-  launchd writes for a job, see below) are left out once either is set.
+  launchd wrote for a job under an older Rig, see below) are left out once
+  either is set.
 - `--lines` counts the lines the filters keep, so
   `--service scheduler --lines 20` is the scheduler's last 20 lines however
   much another Service wrote since.
@@ -734,17 +735,16 @@ existed uses the defaults until it restarts.) While `config.yaml` is invalid,
 the last valid settings stay in force, so log output is never lost to a config
 mistake.
 
-The files launchd writes for a job (`<component>.stdout.log` and
-`<component>.stderr.log`, which hold a capture wrapper's own crash output or
-an uncaptured app's output) are shown under their Component with an unknown
-time. They rotate under the same two settings, each file on its own (for
-example `web.stderr.log.1`), when Rig starts the job: launchd holds them open
-while the job runs, so they are never rotated under a running job.
+A Target that an older Rig ran under the removed `launchd` supervisor may
+still hold the files launchd wrote for a job (`<component>.stdout.log` and
+`<component>.stderr.log`, with their rotated generations such as
+`web.stderr.log.1`). They are shown under their Component with an unknown
+time; nothing writes or rotates them any more.
 
 A log file that cannot be opened, or that is not a regular file, fails
 as `LOG_UNREADABLE` naming the file and the reason; `LOG_CURSOR` is reserved
 for a follow whose cursor no longer matches the files. A file `--service`,
-`--stream` or a time bound leaves out entirely (another Service's launchd
+`--stream` or a time bound leaves out entirely (another Service's old launchd
 file) is not opened at all. A read that sees files rotate under it reads again;
 `LOG_BUSY` means they kept rotating, and reading again is all it asks.
 A record that cannot be parsed (for example one cut short by a crash and glued
@@ -752,7 +752,7 @@ onto the next), or a run longer than the reader's 4 MiB window, is shown in
 place as an unknown-stream line "Rig skipped an unreadable log record (N
 bytes)." and reading or following continues past it; Rig never edits the
 retained file. A recent read reports a newest run it only walked partway as
-"(more than N bytes)": a launchd file whose output never ends a line is read
+"(more than N bytes)": an old launchd file whose output never ends a line is read
 a window back, not whole. Rig's own writers record a newline-free run in pieces of at most
 64 Ki characters, so their records never exceed that window.
 A Target log directory removed while a component runs is recreated by the
@@ -1052,7 +1052,7 @@ editor running
 [yaml-language-server](https://github.com/redhat-developer/yaml-language-server)
 (the Red Hat YAML extension in VS Code, or the same server in Neovim, Zed,
 Helix and others) offers field names and the allowed values of settings such
-as `supervisor` and `restart`, flags unknown keys, and shows each field's
+as `restart`, flags unknown keys, and shows each field's
 documentation on hover, including its default and, for a field that takes
 `${...}` references, the references valid there. An editor cannot complete
 inside a string, so the reference list is hover text. The schema covers field
@@ -1114,7 +1114,7 @@ targets:
 
 Top-level fields: `format` (see "Config formats"), `name` (required Project
 identity), `description`,
-`production_branch`, `domain`, `supervisor`, `build`, `build_timeout`, `env`,
+`production_branch`, `domain`, `build`, `build_timeout`, `env`,
 `env_file`, `services`, `tools`, `proxy`, and `targets`. A Project needs at
 least one Service or Tool, and a Tool cannot share a Service's name. Service
 and Tool names use lowercase letters, digits, and `-`. Unknown keys are
@@ -1152,7 +1152,7 @@ down`, `rig restart`, a deploy that replaces or rolls back the Target, a
   now 10 s, so a Service that ignores SIGTERM takes about 10 s to `rig down`
   instead of about 1.5 s. Set `stop_timeout: 2s` to keep a short stop.
 
-  **Downgrading.** Under `supervisor: rigd`, a `rigd` from before
+  **Downgrading.** A `rigd` from before
   `stop_timeout` kills a Service's capture wrapper about 4 s after its stop
   signal, whatever grace the wrapper was started with, and does not signal the
   application behind it. An application still inside a longer grace then keeps
@@ -1309,7 +1309,7 @@ select and display those Targets (defaults `local` and `live`; see Targets).
 Branch.
 
 Everything else under a role is a settings patch applied over the top-level
-settings for Targets of that role. A patch may set `domain`, `supervisor`,
+settings for Targets of that role. A patch may set `domain`,
 `build`, `build_timeout`, `env`, `env_file`, `proxy`, and fields of existing
 entries under `services.<name>` and `tools.<name>`. Maps merge per key: a
 patch that sets `env.LOG_FORMAT` keeps every other shared `env` key, and a
@@ -1321,24 +1321,27 @@ declare, remove or null one out, set `production_branch`, `description` or
 for each role is validated when the config is parsed, so a broken dependency
 or a port pinned twice is reported under `targets.<role>`.
 
-### Supervisors
+### Supervision
 
-`supervisor` selects `rigd` (default; the daemon owns child processes) or
-`launchd` (one launchd agent per Service), at the top level or in a role
-patch; a single Service cannot choose its own. Any other name is rejected when the config is parsed, so a typo can
-never be recorded in a Target plan. Neither supervisor starts a Service again
-by itself (launchd jobs are written with `KeepAlive` false); see "Automatic
-restart". Both supervisors take every wait of a stop from the Service's
-`stop_timeout`, so no outer layer kills the capture wrapper before its
-application's grace can finish. The wrapper gives the application its grace,
-then SIGKILL and a 1.5 s kill wait. `rigd` waits for the wrapper that long plus
-2 s headroom before it would kill the wrapper. A launchd job's plist carries an
-`ExitTimeOut` of the same budget rounded up to whole seconds (launchd's own
-default is 5 s). Stopping a launchd Service waits for that `ExitTimeOut`, the
-kill wait and headroom before reporting `LAUNCHD_STOP`, and every stop that finds the job
-gone, including one after a logout that already unloaded it, removes the
-job's plist, request, and evidence files from `$RIG_ROOT/launchd`; a failed
-bootstrap removes them too.
+`rigd` supervises every Service: it runs each one under its capture wrapper
+as its own child, and never starts a Service again by itself; see "Automatic
+restart". Every wait of a stop follows from the Service's `stop_timeout`, so
+`rigd` never kills the capture wrapper before its application's grace can
+finish. The wrapper gives the application its grace, then SIGKILL and a 1.5 s
+kill wait; `rigd` waits for the wrapper that long plus 2 s headroom before it
+would kill the wrapper.
+
+**Removed `supervisor` setting.** Rig once let a Project choose
+`supervisor: launchd`, one launchd agent per Service. That setting is gone,
+and a `rig.yaml` that still sets `supervisor`, at the top level or in a role
+patch, is refused with a hint to delete the line. The new `rigd` neither sees
+nor stops a Service that launchd runs, so stop each Target running under
+launchd with the old Rig (`rig down <target>`) before you upgrade. After the
+upgrade, delete the `supervisor` line and start the Target again with
+`rig up <target>`. Its recorded plan is read as `rigd`'s, so `rig up`,
+`rig restart` and `rig down` work and the plan is not config drift. For a
+Stable Target or Preview, commit the edited `rig.yaml` and deploy it too:
+`rig doctor` checks the deployed revision's file.
 
 ### Automatic restart
 
@@ -1356,13 +1359,12 @@ Each start is named, and an exit only counts when its record names the start
 Rig last made. Every Service runs under a small capture wrapper (`rigd
 capture`) that records how its process ended. When that record is missing,
 for example because one signal ended the wrapper together with its process,
-Rig reads what the supervisor saw of the wrapper instead: launchd's record of
-the job (`last exit code` or `last terminating signal` in `launchctl print`)
-under `supervisor: launchd`, or the wrapper's own exit as `rigd` saw it under
-`supervisor: rigd`. A wrapper that is asked to stop by a signal stops its
-process first and then ends by that same signal, so a signal found there is
-how the process ended. It counts as a known exit, and Activity names where it
-came from ("web was ended by SIGTERM (from launchd's record of its job)"). A
+Rig reads the wrapper's own exit as `rigd` saw it instead. A wrapper that is
+asked to stop by a signal stops its process first and then ends by that same
+signal, so a signal found there is how the process ended. It counts as a known
+exit, and Activity names where it came from ("web was ended by SIGTERM (from
+rigd's record of its capture wrapper)"; an exit recorded under the removed
+`launchd` supervisor says "from launchd's record of its job"). A
 wrapper's exit code 0 is not counted, because a wrapper from an older `rigd`
 also exits 0 after an outside SIGTERM. If the wrapper is gone but the process
 it ran is still running on its own, the Service is reported `unknown`. Rig
@@ -1372,8 +1374,8 @@ wrapper (or `rigd`) is killed while it is starting a process, that process
 never runs, so the start fails and a retry never runs a second copy beside one
 Rig cannot see.
 
-A Service that is gone with no record anywhere (its launchd job was unloaded
-too, or nothing could be written or read) has `exit: unknown`. Under
+A Service that is gone with no record anywhere (it ended while no `rigd` held
+its wrapper, or nothing could be written or read) has `exit: unknown`. Under
 `on-failure` and `no` it is reported `failed` and is never started again
 automatically: run `rig up`. Under `always` it is started again, but only
 once the supervisor shows that nothing of the old start still runs and none of
@@ -1407,10 +1409,8 @@ or not, reads the env files fresh.
 #### After the Mac restarts or you log in again
 
 A restart of the Mac ends every Service; logging out and in again ends those
-of the old login session. Rig's
-Service launchd jobs live under `$RIG_ROOT/launchd`, not
-`~/Library/LaunchAgents`, so launchd does not load them again at login, but
-`rigd` itself comes back. At each start, `rigd` compares the Host's boot
+of the old login session. Nothing brings a Service back by itself, but
+`rigd` itself comes back as a LaunchAgent. At each start, `rigd` compares the Host's boot
 (`kern.bootsessionuuid`, new at every boot) and your GUI login session (the
 audit session of launchd's `gui/<uid>` domain, new at every login) with the
 ones it recorded last time:
@@ -1954,7 +1954,7 @@ calling providers.
 
 Providers receive everything they need from that plan. They do not read Host
 config, Project config, or global path helpers themselves. The bundled
-providers are the `rigd` and `launchd` process supervisors, the Caddy router,
+providers are the `rigd` process supervisor, the Caddy router,
 the Git source store, the artifact installer for Tools, and the command
 runner; their contracts live in `src/providers/contracts.ts`. Operator alert
 channels implement `OperatorAlerts` (`src/domain/operator-alerts.ts`); the

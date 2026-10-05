@@ -35,8 +35,9 @@ export type ServiceOutcome =
       kind: "exited";
       exitCode?: number;
       signal?: string;
-      /** Who saw the end when the application's own exit record was missing: launchd's record of the job that ran its
-       * capture wrapper, or rigd's record of the wrapper it spawned. Absent when the application's own record said. */
+      /** Who saw the end when the application's own exit record was missing: rigd's record of the wrapper it spawned, or,
+       * in outcomes recorded by Rig versions that offered launchd supervision, launchd's record of the job that ran its
+       * capture wrapper. Absent when the application's own record said. */
       recordedBy?: "launchd" | "rigd";
       at: string;
     }

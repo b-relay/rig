@@ -57,7 +57,7 @@ export async function runRigdCli(
   command
     .command("capture")
     .description(
-      "Run one managed Component from a request file rigd wrote (launchd invokes this; not for direct use).",
+      "Run one managed Component from a request file rigd wrote (rigd's child supervisor invokes this; not for direct use).",
     )
     .argument("<request-file>", "Capture request file written by rigd")
     .action(async (requestFile: string) => {

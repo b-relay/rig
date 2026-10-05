@@ -30,15 +30,6 @@
       "type": "string",
       "minLength": 1
     },
-    "supervisor": {
-      "type": "string",
-      "enum": [
-        "rigd",
-        "launchd"
-      ],
-      "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor.",
-      "default": "rigd"
-    },
     "build": {
       "description": "Shared shell build command, run once in the workspace before any Service or Tool build. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here.",
       "type": "string",
@@ -309,14 +300,6 @@
               "type": "string",
               "minLength": 1
             },
-            "supervisor": {
-              "type": "string",
-              "enum": [
-                "rigd",
-                "launchd"
-              ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
-            },
             "build": {
               "type": "string",
               "minLength": 1,
@@ -573,14 +556,6 @@
               "type": "string",
               "minLength": 1
             },
-            "supervisor": {
-              "type": "string",
-              "enum": [
-                "rigd",
-                "launchd"
-              ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
-            },
             "build": {
               "type": "string",
               "minLength": 1,
@@ -828,14 +803,6 @@
               "description": "Hostname for this role's Targets, such as ${rig.target}.preview.app.test. ${rig.target} is the only reference a hostname may contain.",
               "type": "string",
               "minLength": 1
-            },
-            "supervisor": {
-              "type": "string",
-              "enum": [
-                "rigd",
-                "launchd"
-              ],
-              "description": "Process supervisor: rigd (child processes owned by the daemon) or launchd (per-Service launchd agents). The Project sets it for all its Services. It can also be set per Target role under targets.<role>.supervisor."
             },
             "build": {
               "type": "string",

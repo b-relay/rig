@@ -5,7 +5,6 @@ format: rig/v2
 name: acme
 production_branch: main
 domain: acme.example.com
-supervisor: launchd
 build: bun install --frozen-lockfile
 
 env:

@@ -24,7 +24,7 @@ export async function main(args: readonly string[]): Promise<number> {
   } catch (error) {
     return reportRootFailure(error, userOutput());
   }
-  // launchd's own invocation skips the command line parser and daemon setup below; a person
+  // The child supervisor's own invocation skips the command line parser and daemon setup below; a person
   // typing rigd capture (--help, no file) gets the documented command instead.
   if (args[0] === "capture" && args.length === 2 && !args[1]!.startsWith("-")) {
     try {

@@ -20,7 +20,7 @@ import {
 import type { DaemonHostOptions } from "./host";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { executionBaseline, inheritedEnvironment } from "./environment";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -43,10 +43,6 @@ import {
   platformKill,
 } from "../providers/process-inspection";
 import { createProcessTiming } from "../providers/process-timing";
-import {
-  createLaunchdSupervisor,
-  createLaunchdTiming,
-} from "../providers/launchd-supervisor";
 import { createGitSourceStore } from "../providers/git-source-store";
 import { createArtifactInstaller } from "../providers/artifact-installer";
 import { createCaddyRouter } from "../providers/caddy-router";
@@ -104,23 +100,9 @@ export async function composeDaemon(
     shutdown: shuttingDown.signal,
   });
   const uid = process.getuid?.() ?? 501;
-  const launchd = createLaunchdSupervisor({
-    root: join(root, "launchd"),
-    domain: `gui/${uid}`,
-    labelPrefix: `com.b-relay.rig.${createHash("sha256").update(root).digest("hex").slice(0, 12)}`,
-    captureCommand,
-    logRetention,
-    configRoot: root,
-    run: runCommand,
-    inspect: processInspection.identity,
-    groupExists: processInspection.groupExists,
-    timing: createLaunchdTiming(),
-    shutdown: shuttingDown.signal,
-  });
   const supervisors = new Map<string, Supervisor>([
     ["rigd", child],
     ["child", child],
-    ["launchd", launchd],
   ]);
   const environment = inheritedEnvironment(process.env);
   const effects = createTargetEffects({
@@ -281,7 +263,6 @@ export async function composeDaemon(
       await runtime.drain();
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();
-      await launchd.detach();
     },
   };
 }

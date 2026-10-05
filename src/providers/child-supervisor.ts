@@ -31,7 +31,7 @@ import {
   readCaptureStop,
   removeCaptureStop,
 } from "./capture-stop";
-import { captureDocument, readCaptureRequest } from "./capture-request";
+import { readCaptureRequest, writeCaptureRequest } from "./capture-request";
 import {
   PLATFORM_STOP_TIMINGS,
   serviceGraceMs,
@@ -466,17 +466,11 @@ export function createChildSupervisor(
     if (options.captureCommand) {
       await mkdir(captureRoot, { recursive: true });
       await clearCaptureStatus(capturePath(request.key));
-      const temporary = `${capturePath(request.key)}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(
-          temporary,
-          JSON.stringify(captureDocument(request, options.configRoot)),
-          { mode: 0o600 },
-        );
-        await rename(temporary, capturePath(request.key));
-      } finally {
-        await rm(temporary, { force: true });
-      }
+      await writeCaptureRequest(
+        capturePath(request.key),
+        request,
+        options.configRoot,
+      );
     }
     // The process is spawned behind a gate and released only once its lease is on disk: a supervisor that dies in between
     // leaves no process running that nothing names.

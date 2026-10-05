@@ -10,8 +10,7 @@ export interface ManagedProcess {
   /** The caller's name for this one process; every observation of it, running or exited, carries it back. */
   readonly incarnation: string;
   /** How long the process may take to exit after SIGTERM before SIGKILL, in milliseconds: its Service's stop_timeout. It is
-   * written into the capture request and the launchd plist, so the capture wrapper and launchd hold the same grace as the
-   * stop. Absent: the 10 s default. */
+   * written into the capture request, so the capture wrapper holds the same grace as the stop. Absent: the 10 s default. */
   readonly stopGraceMs?: number;
 }
 /** How one stop waits. */
@@ -56,14 +55,14 @@ export interface ProcessObservation {
   readonly exitCode?: number;
   /** The signal that ended the process when it did not exit by itself. */
   readonly signal?: string;
-  /** Who recorded the exit when the application's own exit record is missing: `launchd` for its record of the job that ran
-   * the capture wrapper, `rigd` for its record of the wrapper it spawned. The wrapper stops its application before it ends and
-   * ends by the signal that stopped it, so its end describes the application's. Absent for the application's own record. */
+  /** Who recorded the exit when the application's own exit record is missing: `rigd` for its record of the capture wrapper
+   * it spawned. The wrapper stops its application before it ends and ends by the signal that stopped it, so its end describes
+   * the application's. Absent for the application's own record. */
   readonly recordedBy?: ExitWitness;
   readonly reason?: string;
 }
 /** Who saw a capture wrapper end when its application's own exit record is missing. */
-export type ExitWitness = "launchd" | "rigd";
+export type ExitWitness = "rigd";
 /** One readiness probe. A failed probe carries what was observed: an HTTP status, a connection error, or a command's exit code and last output line. */
 export type HealthCheck =
   { readonly ready: true } | { readonly ready: false; readonly reason: string };

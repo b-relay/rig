@@ -917,11 +917,11 @@ test("an unknown exit whose port still accepts connections is held back without 
   expect((await f.target()).services!.api!.waitingFor).toBeUndefined();
 });
 
-test("an exit only launchd recorded is a known exit: it follows the normal policy and budget, and Activity names launchd as the witness", async () => {
+test("an exit only rigd's record of the capture wrapper holds is a known exit: it follows the normal policy and budget, and Activity names the witness", async () => {
   const f = await fixture();
   await f.command("up");
   for (const service of ["api", "worker", "job"])
-    await f.exit(service, { signal: "SIGTERM", recordedBy: "launchd" });
+    await f.exit(service, { signal: "SIGTERM", recordedBy: "rigd" });
   expect(await f.supervise()).toEqual({ nextRetryAt: f.clock.ms + 100 });
   f.clock.ms += 100;
   await f.supervise();
@@ -930,7 +930,9 @@ test("an exit only launchd recorded is a known exit: it follows the normal polic
     (await f.store.read()).activity.find(
       (entry) => entry.action === "crash" && entry.message?.startsWith("job"),
     )?.message,
-  ).toBe("job was ended by SIGTERM (from launchd's record of its job).");
+  ).toBe(
+    "job was ended by SIGTERM (from rigd's record of its capture wrapper).",
+  );
   expect((await f.target()).services!.api).toMatchObject({
     attempts: [f.clock.ms],
   });

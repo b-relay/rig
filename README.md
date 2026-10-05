@@ -22,10 +22,11 @@ rig doctor
 Commands discover the Project from the current workspace. Use `--project <name>`
 to select a registered Project elsewhere, and `--help` on any command for options.
 The `working` Target runs the working copy; `stable` runs the configured
-Production branch; Previews run other Branches. Those names are fixed. Only
-`working` is on until `targets` in `rig.yaml` turns `stable` or `preview` on, and
-without a Target `up`, `down` and `logs` mean `working` and `deploy` means
-`stable`. Lifecycle commands reuse recorded deployment policy.
+Production branch; Previews run other Branches. Those names are fixed. A Target
+runs only when `targets` in `rig.yaml` turns it on, so a file without `targets`
+runs nothing; `rig init` writes `working: true`, `preview: true` and
+`stable: false`. Without a Target, `up`, `down`, `restart` and `logs` mean `working` and
+`deploy` means `stable`. Lifecycle commands reuse recorded deployment policy.
 
 Configuration is YAML: `rig.yaml` for a Project and `<RIG_ROOT>/config.yaml`
 for the Host. A Project's keys use Docker Compose's names where the meaning
@@ -46,7 +47,10 @@ targets: { working: true, stable: true }
 ```
 
 `${port}` is the Service's one port, and with one Service that has one port the
-domain routes to it without a `proxy`. The healthcheck gates start and keeps
+domain routes to it without a `proxy`. A Target is off unless `targets` turns
+it on, so this file runs its checkout and deploys the stable Target but makes
+no Previews; `rig init` writes `working` and `preview` on and `stable` off. The
+healthcheck gates start and keeps
 checking the Service while it runs; `rig status` shows its last result. See the [guide](docs/rig-guide.md) for
 setup, deploys, configuration, diagnostics, and command behavior, and
 [docs/examples](docs/examples) for complete configs.

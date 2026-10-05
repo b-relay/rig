@@ -349,7 +349,8 @@ export interface InitializeProjectInput {
   tool?: { name: string; bin: string; build?: string };
 }
 /** Pure initial Project policy: one optional Service with one port, which a domain routes at '/' without a proxy, and one
- * optional Tool. */
+ * optional Tool. The working Target and Previews are on, the stable Target off. Refuses a Project with neither a Service
+ * nor a Tool, and a domain without a Service, which nothing would serve. */
 export function scaffoldProjectConfig(
   input: InitializeProjectInput,
 ): ProjectConfig {
@@ -360,6 +361,14 @@ export function scaffoldProjectConfig(
       "empty_project",
       {},
       "Pass --service <name> --command <command>, or --tool <name> --bin <path>; or write rig.yaml first and run rig init again.",
+    );
+  // Previews are on, and each gets a hostname from the domain, so a domain needs a Service with a port behind it.
+  if (input.domain && !service)
+    throw new ConfigError(
+      "A domain needs a Service to serve it, and this Project has only a Tool.",
+      "domain_without_service",
+      { domain: input.domain },
+      "Leave the domain out for a Tool-only Project, or add a Service with --service <name> --command <command>.",
     );
   return parseProjectConfig({
     name: input.name,
@@ -388,7 +397,8 @@ export function scaffoldProjectConfig(
           },
         }
       : {}),
-    // Every switch is written out, so turning the stable Target or Previews on is one word in the file.
-    targets: { working: true, stable: false, preview: false },
+    // Every switch is written out, so turning the stable Target on is one word in the file. A new Project runs its checkout
+    // and can preview a Branch; it serves its Production branch once stable is turned on.
+    targets: { working: true, stable: false, preview: true },
   });
 }

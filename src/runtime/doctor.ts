@@ -8,7 +8,8 @@ import { observeTargets, OBSERVATION_EXPIRED } from "./status";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
-import { usesRenamedKeys } from "../config/schema";
+import { targetOn, usesRenamedKeys } from "../config/schema";
+import { roleLabel, turnOnInstruction } from "./targets";
 import { withPlanDefaults } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
 import { transitionInProgress } from "./project-status";
@@ -168,6 +169,11 @@ export async function doctor(
             (await deps.documents.host()).deploy.production_branch,
         ),
       );
+    if (
+      repository.outcome === "usable" &&
+      !targetOn(repository.document.config, target.kind)
+    )
+      checks.push(targetOffCheck(target, repository.document.config));
   }
   // A Preview awaiting destruction has already retired its inventory; the destruction check names it, its components are not failures.
   const reports = await observeTargets(
@@ -184,6 +190,30 @@ export async function doctor(
     ok: checks.every((c) => c.ok),
     checks,
     project: project.name,
+  };
+}
+/** A recorded Target whose role the checkout's rig.yaml leaves off, such as the working Target of a Project registered
+ * when a rig.yaml without targets still turned working on. One recorded running is a problem: it keeps running, but up,
+ * restart and deploy refuse it, so the check names the line that turns it on and the command that stops it. One recorded
+ * stopped is only kept, and passes. */
+function targetOffCheck(
+  target: Pick<TargetRecord, "kind" | "name" | "branch" | "desired">,
+  config: Pick<ProjectConfig, "targets">,
+): DoctorCheck {
+  const name = `${target.name}/switch`;
+  const off = `${roleLabel(target.kind)} off in rig.yaml`;
+  if (target.desired !== "running")
+    return {
+      name,
+      ok: true,
+      message: `${off}; ${target.name} is stopped and stays recorded.`,
+    };
+  return {
+    name,
+    ok: false,
+    message: `${off}, but ${target.name} is recorded running: it keeps running, and up, restart and deploy refuse it.`,
+    reason: "target-off",
+    hint: `${turnOnInstruction(config, target.kind)} to keep it, or run rig down ${targetSelector(target)} to stop it.`,
   };
 }
 /** The Stable Target serves whatever Branch it was deployed from; a Production setting changed since then is drift the operator acts on. */

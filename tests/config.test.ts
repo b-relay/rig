@@ -191,14 +191,14 @@ test("Host config reads config.yaml and defaults when absent", async () => {
 // Scaffold and init
 // ---------------------------------------------------------------------------
 
-test("scaffold writes a Service, a Tool, or both, and refuses a Project with neither", () => {
+test("scaffold writes a Service, a Tool, or both, with working and Previews on and stable off, and refuses a Project with neither", () => {
   const service = {
     name: "web",
     command: "serve --host localhost",
     port: 3210,
   };
   const tool = { name: "ctl", bin: "bin/ctl", build: "make ctl" };
-  const names = { working: true, stable: false, preview: false };
+  const names = { working: true, stable: false, preview: true };
   expect(
     scaffoldProjectConfig({
       name: "app",
@@ -237,20 +237,31 @@ test("scaffold writes a Service, a Tool, or both, and refuses a Project with nei
     services: { web: { command: "serve", ports: { http: "auto" } } },
     targets: names,
   });
-  // A Tool-only Project never gets a proxy, even when a domain is given.
+  // A Tool-only Project has no proxy and no domain: Previews are on, and nothing would serve their hostnames.
   expect(
     scaffoldProjectConfig({
       name: "app",
-      domain: "app.test",
       tool: { name: "ctl", bin: "bin/ctl" },
     }),
   ).toEqual({
     name: "app",
     production_branch: "main",
-    domain: "app.test",
     tools: { ctl: { bin: "bin/ctl" } },
     targets: names,
   });
+  expect(() =>
+    scaffoldProjectConfig({
+      name: "app",
+      domain: "app.test",
+      tool: { name: "ctl", bin: "bin/ctl" },
+    }),
+  ).toThrow(
+    expect.objectContaining({
+      _tag: "ConfigError",
+      code: "domain_without_service",
+      hint: "Leave the domain out for a Tool-only Project, or add a Service with --service <name> --command <command>.",
+    }),
+  );
   expect(() => scaffoldProjectConfig({ name: "app" })).toThrow(
     expect.objectContaining({
       _tag: "ConfigError",
@@ -696,7 +707,7 @@ test("the targets rig init used to write, names alone, are refused with how to k
   );
 });
 
-test("a Target is on when its key is true or a settings map; false or a missing key is off, and without targets only working is on", () => {
+test("a Target is on when its key is true or a settings map; false, a missing key, or no targets key at all is off", () => {
   const on = (targets: unknown) => {
     const config = parseProjectConfig({
       name: "app",
@@ -705,8 +716,10 @@ test("a Target is on when its key is true or a settings map; false or a missing 
     });
     return TARGET_ROLES.filter((role) => targetOn(config, role));
   };
-  expect(on(undefined)).toEqual(["working"]);
+  // One rule, no special case: a rig.yaml without targets runs nothing, not even its checkout.
+  expect(on(undefined)).toEqual([]);
   expect(on({})).toEqual([]);
+  expect(on({ working: true })).toEqual(["working"]);
   expect(on({ stable: true })).toEqual(["stable"]);
   expect(on({ working: true, stable: false, preview: {} })).toEqual([
     "working",
@@ -2061,7 +2074,8 @@ test("a Target that is on and has a hostname but no usable proxy is refused with
         "The working Target has a hostname but no Service has a port; declare one, such as ports: { http: auto }, or remove the domain.",
     },
   ]);
-  // A Target that is off, or has no hostname, needs no proxy: without targets only working is on, and it has no hostname.
+  // A Target that is off, or has no hostname, needs no proxy: without targets every Target is off, and working has no
+  // hostname.
   expect(issues({ domain: "app.test", services: two })).toBeUndefined();
   expect(
     issues({ domain: "app.test", services: two, targets: { working: true } }),

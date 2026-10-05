@@ -18,6 +18,8 @@ services:
   worker:
     command: "'${process.execPath}' app.ts"
     restart: "no"
+targets:
+  working: true
 `,
     );
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });

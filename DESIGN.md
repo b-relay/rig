@@ -74,8 +74,9 @@ Rig acts on Targets:
 - Previews of other Branches, selected as `preview <branch>`.
 
 The names are fixed. `rig.yaml` turns each on under `targets` (`true` or a
-settings patch); without a `targets` key only `working` is on, so nothing
-deploys by surprise. A Project has at most one stable Target. See
+settings patch); anything else, including no `targets` key at all, is off, so
+nothing runs or deploys by surprise. `rig init` writes `working` and `preview`
+on and `stable` off. A Project has at most one stable Target. See
 [ADR 0010](docs/adr/0010-fixed-opt-in-targets.md).
 
 ## Deploy

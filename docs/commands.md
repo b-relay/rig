@@ -87,9 +87,10 @@ environment, and log directory.
   `deploy` without one deploys `stable`. A Preview is never a default. `rig
 status` takes no Target.
 - A Target must be on in `rig.yaml` (`targets.<name>: true` or a settings map;
-  without a `targets` key only `working` is on). `up`, `restart`, `deploy`, and
-  `logs` of a never-run Target refuse an off one with `TARGET_OFF`; `down`,
-  `logs` and `status` still reach one that is off but recorded.
+  without a `targets` key every Target is off). `up`, `restart`, `deploy`, and
+  `logs` of a never-run Target refuse an off one with `TARGET_OFF`, naming the
+  line to add; `down`, `logs` and `status` still reach one that is off but
+  recorded, and `doctor` names the line that turns it back on.
 - `deploy` defaults `[branch]` to the Production branch for the stable Target
   and to the current Branch for `preview`. The stable Target accepts only the
   Production branch; `preview` refuses it.

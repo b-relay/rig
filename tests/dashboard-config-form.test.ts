@@ -86,20 +86,24 @@ test("removing the last key of a nested record prunes the emptied parents but ne
   expect(removeAt(tree, ["missing", "key"])).toBe(tree);
 });
 
-test("the editor reads and switches Targets as rigd does: without a targets key only working is on, and clearing a role's last setting keeps it on", () => {
+test("the editor reads and switches Targets as rigd does: without a targets key every Target is off, and clearing a role's last setting keeps it on", () => {
   const bare: Tree = { name: "x" };
-  expect(roleOn(bare, "working")).toBe(true);
-  expect(roleOn(bare, "stable")).toBe(false);
-  // Turning stable on in a file without targets keeps working on beside it.
+  for (const role of ["working", "stable", "preview"] as const)
+    expect(roleOn(bare, role)).toBe(false);
+  // Turning one role on writes that role's key and nothing else.
   const stable = switchRole(bare, "stable", true);
-  expect(stable).toEqual({
+  expect(stable).toEqual({ name: "x", targets: { stable: true } });
+  const both = switchRole(stable, "working", true);
+  expect(both).toEqual({
     name: "x",
-    targets: { working: true, stable: true },
+    targets: { stable: true, working: true },
   });
-  expect(switchRole(stable, "working", false)).toEqual({
+  expect(switchRole(both, "working", false)).toEqual({
     name: "x",
-    targets: { working: false, stable: true },
+    targets: { stable: true, working: false },
   });
+  // Turning off a role that is already off changes nothing.
+  expect(switchRole(bare, "working", false)).toBe(bare);
   expect(switchRole(stable, "stable", true)).toBe(stable);
   const patched: Tree = {
     name: "x",

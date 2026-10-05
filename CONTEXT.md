@@ -214,16 +214,18 @@ line, in status, in the dashboard and in logs. See
 
 A Target role's key under `targets` in `rig.yaml`. `true`, or a map of settings
 that patches the Project for that role, turns the Target on; `false`, or no
-key, leaves it off. A `rig.yaml` without a `targets` key has only the working
-Target on. In a settings patch, `build: false` turns an inherited Project or
-Service build off for that role.
+key, leaves it off. A `rig.yaml` without a `targets` key has every Target off;
+`rig init` writes `working` and `preview` on and `stable` off. In a settings
+patch, `build: false` turns an inherited Project or Service build off for that
+role.
 _Avoid_: enabled flag, Target name
 
 _Relationship_: An off Target is refused (`TARGET_OFF`, with a hint naming the
 line to add) by every command that would select, start, deploy or publish it:
 `up`, `restart`, `deploy`, and `logs` of a Target that never ran. A Target
 that is off but still recorded stays listed by status and the dashboard and can
-always be stopped and destroyed; turning a Target off never stops it.
+always be stopped and destroyed; turning a Target off never stops it, and
+`rig doctor` names the line that turns one recorded running back on.
 
 ### Component
 

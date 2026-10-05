@@ -358,7 +358,7 @@ function addInitCommand(
     )
     .option(
       "--domain <domain>",
-      "Domain the stable Target serves; a Preview gets <first label>-<preview name> in place of its first label",
+      "Domain the stable Target serves, with --service; a Preview gets <first label>-<preview name> in place of its first label",
       nonEmpty,
     )
     .option("--service <name>", "Service name", nonEmpty)

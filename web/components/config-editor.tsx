@@ -1035,9 +1035,9 @@ function TargetsSection() {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
-        A Target runs only when it is on. Without a targets key only working is
-        on. Each role patches the Project settings for its Targets: maps merge
-        per key, lists and scalars replace.
+        A Target runs only when it is on, and a role left out of targets is off.
+        Each role patches the Project settings for its Targets: maps merge per
+        key, lists and scalars replace.
       </p>
       <Tabs value={role} onValueChange={(next) => setRole(next as TargetRole)}>
         <TabsList>

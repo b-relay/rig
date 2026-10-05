@@ -73,17 +73,26 @@ export function assertTargetOn(
   role: TargetRole,
 ): void {
   if (targetOn(config, role)) return;
-  const label = role === "preview" ? "Previews are" : `The ${role} Target is`;
   throw new RigError(
     "TARGET_OFF",
-    `${label} off in rig.yaml.`,
-    config.targets?.[role] === false
-      ? `Change \`${role}: false\` to \`${role}: true\` under targets in rig.yaml.`
-      : config.targets === undefined
-        ? `Add a targets key to rig.yaml with \`${role}: true\` under it, and \`working: true\` beside it to keep the working Target on.`
-        : `Add \`${role}: true\` under targets in rig.yaml.`,
+    `${roleLabel(role)} off in rig.yaml.`,
+    `${turnOnInstruction(config, role)}.`,
     { role },
   );
+}
+/** The role as the subject of a sentence: "Previews are", "The stable Target is". */
+export function roleLabel(role: TargetRole): string {
+  return role === "preview" ? "Previews are" : `The ${role} Target is`;
+}
+/** The one edit to rig.yaml that turns an off role on, without a closing period: change its `false` to `true`, or add the
+ * key, which is the same line whether or not rig.yaml has a targets key yet. */
+export function turnOnInstruction(
+  config: Pick<ProjectConfig, "targets">,
+  role: TargetRole,
+): string {
+  return config.targets?.[role] === false
+    ? `Change \`${role}: false\` to \`${role}: true\` under targets in rig.yaml`
+    : `Add \`${role}: true\` under targets in rig.yaml`;
 }
 export async function planTarget(
   input: {

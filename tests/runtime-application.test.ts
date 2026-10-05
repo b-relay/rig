@@ -4195,16 +4195,26 @@ test("an off Target is refused by up, restart, deploy and a first logs read, eac
       "Change `stable: false` to `stable: true` under targets in rig.yaml.",
     ),
   );
-  // Without a targets key only working is on, so turning stable on means listing working too.
+  // Without a targets key every Target is off, and each refusal names the one line that turns its own role on.
   delete config.targets;
-  await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
-  ).rejects.toEqual(
-    refusal(
-      "stable",
-      "Add a targets key to rig.yaml with `stable: true` under it, and `working: true` beside it to keep the working Target on.",
-    ),
-  );
+  for (const [command, role] of [
+    [{ action: "up" }, "working"],
+    [{ action: "restart", target: "working" }, "working"],
+    [{ action: "logs" }, "working"],
+    [{ action: "deploy", target: "stable" }, "stable"],
+    [{ action: "up", target: "stable" }, "stable"],
+    [{ action: "restart", target: "stable" }, "stable"],
+    [{ action: "logs", target: "stable" }, "stable"],
+    [{ action: "deploy", target: "preview", branch: "feature" }, "preview"],
+    [{ action: "up", target: "preview", branch: "feature" }, "preview"],
+    [{ action: "restart", target: "preview", branch: "feature" }, "preview"],
+    [{ action: "logs", target: "preview", branch: "feature" }, "preview"],
+  ] as const)
+    await expect(
+      runtime.command({ ...command, project: "demo" }),
+    ).rejects.toEqual(
+      refusal(role, `Add \`${role}: true\` under targets in rig.yaml.`),
+    );
   config.targets = { stable: true };
   await expect(
     runtime.command({ action: "up", project: "demo" }),
@@ -4262,6 +4272,74 @@ test("a Target turned off while it runs stays listed, readable and stoppable, an
     project: "demo",
   })) as { targets: { name: string }[] };
   expect(empty.targets.map((t) => t.name)).toEqual(["working"]);
+});
+
+test("a working Target started when a rig.yaml without targets still turned it on is not stranded, and doctor names the line that turns it on", async () => {
+  const { runtime, state, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  config.targets = { working: true };
+  await runtime.command({ action: "up", project: "demo" });
+  // The Project's rig.yaml never had a targets key: under the old rule its working Target was on, under the one rule it is off.
+  delete config.targets;
+  const status = (await runtime.command({
+    action: "status",
+    project: "demo",
+  })) as { targets: { name: string; state: string }[] };
+  // Still listed, and still meant to run.
+  expect(status.targets.map((t) => t.name)).toEqual(["working"]);
+  expect(state.targets[0]).toMatchObject({
+    kind: "working",
+    desired: "running",
+  });
+  const doctor = async () =>
+    (await runtime.command({ action: "doctor", project: "demo" })) as {
+      ok: boolean;
+      checks: Record<string, unknown>[];
+    };
+  const running = await doctor();
+  expect(running.ok).toBe(false);
+  expect(running.checks).toContainEqual({
+    name: "working/switch",
+    ok: false,
+    message:
+      "The working Target is off in rig.yaml, but working is recorded running: it keeps running, and up, restart and deploy refuse it.",
+    reason: "target-off",
+    hint: "Add `working: true` under targets in rig.yaml to keep it, or run rig down working to stop it.",
+  });
+  for (const action of ["up", "restart"] as const)
+    await expect(
+      runtime.command({ action, project: "demo" }),
+    ).rejects.toMatchObject({
+      code: "TARGET_OFF",
+      hint: "Add `working: true` under targets in rig.yaml.",
+    });
+  expect(
+    await runtime.command({ action: "logs", project: "demo" }),
+  ).toMatchObject({ target: "working" });
+  expect(
+    await runtime.command({ action: "down", project: "demo" }),
+  ).toMatchObject({ outcome: "stopped", target: "working" });
+  expect(state.targets[0]).toMatchObject({
+    kind: "working",
+    desired: "stopped",
+  });
+  // Stopped, it is only kept: doctor passes it, and status still lists it.
+  const stopped = await doctor();
+  expect(stopped.checks).toContainEqual({
+    name: "working/switch",
+    ok: true,
+    message:
+      "The working Target is off in rig.yaml; working is stopped and stays recorded.",
+  });
+  expect(stopped.checks.filter((check) => !check.ok)).toEqual([]);
+  // Adding the line doctor names turns it on again, with no check left about it.
+  config.targets = { working: true };
+  expect(
+    await runtime.command({ action: "up", project: "demo" }),
+  ).toMatchObject({ outcome: "started", target: "working" });
+  expect(
+    (await doctor()).checks.some((check) => check.name === "working/switch"),
+  ).toBe(false);
 });
 
 test("an action checks and plans the working Target from one read of the checkout config", async () => {
@@ -4486,6 +4564,7 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
         },
       },
     },
+    targets: { working: true },
   });
   let document = { revision: "planned-text", config };
   deps.documents.read = async (path) => ({
@@ -4530,6 +4609,7 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
           },
         ]),
       ),
+      targets: { working: true },
     });
   await runtime.command({ action: "down", project: "demo" });
   document = { revision: "ab", config: both("alpha", "beta") };

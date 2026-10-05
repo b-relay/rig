@@ -12,6 +12,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createProjectDocuments } from "../src/adapters/project-documents";
+import { TARGET_ROLES, targetOn } from "../src/config/schema";
 import {
   prepareRegistration,
   registerProject as register,
@@ -302,6 +303,34 @@ test("init records the host's Production branch default, never the checked-out b
   expect(await readFile(explicit.configPath, "utf8")).toContain(
     "production_branch: release",
   );
+});
+test("init, from rig init or the dashboard's new-project form, writes working and preview on and stable off", async () => {
+  const f = await fixture();
+  expect(
+    (await run({ command: ["git", "init", "-b", "main"], cwd: f.repo }))
+      .exitCode,
+  ).toBe(0);
+  // The init command the dashboard's form sends, as rig init does.
+  const project = await registerProject(
+    {
+      action: "init",
+      repoPath: f.repo,
+      project: "demo",
+      domain: "demo.test",
+      service: { name: "web", command: "serve", port: 4567 },
+    },
+    f.deps,
+  );
+  const written = await readFile(project.configPath, "utf8");
+  // Every switch is written out, so turning stable on is one word.
+  expect(written).toContain(
+    "targets:\n  working: true\n  stable: false\n  preview: true\n",
+  );
+  const { config } = await f.deps.documents.read(f.repo);
+  expect(TARGET_ROLES.filter((role) => targetOn(config, role))).toEqual([
+    "working",
+    "preview",
+  ]);
 });
 test("discovery stops at the nearest Git toplevel and reports whether the directory is a working repository", async () => {
   const f = await fixture();

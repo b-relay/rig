@@ -293,11 +293,11 @@
       "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
     },
     "targets": {
-      "description": "Which Targets are on, keyed by their fixed names working, stable and preview, each true, false or a settings patch. Without this key only working is on; with it, only the Targets it turns on are.",
+      "description": "Which Targets are on, keyed by their fixed names working, stable and preview, each true, false or a settings patch. Only the Targets it turns on are on; without this key every Target is off.",
       "type": "object",
       "properties": {
         "working": {
-          "description": "The working Target, which runs this checkout as it is: true or a settings patch turns it on, false turns it off. Its Tools are published as <tool>-dev. When rig.yaml has no targets key at all, working is the one Target that is on.",
+          "description": "The working Target, which runs this checkout as it is: true or a settings patch turns it on; false or leaving it out keeps it off. Its Tools are published as <tool>-dev.",
           "anyOf": [
             {
               "type": "boolean"

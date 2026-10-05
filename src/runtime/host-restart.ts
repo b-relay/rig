@@ -279,9 +279,16 @@ export async function recordStoppedAfterHostRestart(
   target: TargetRecord,
   mark: RestartMark,
   deps: StartDeps,
+  /** The processes the restart stopped, by Service, as recorded when it was found: a run that names another process was
+   * started since, and the restart's mark never applies to it. Every run when absent. */
+  stopped?: Readonly<Record<string, string | undefined>>,
 ): Promise<boolean> {
-  return await recordStoppedByHostRestart(target, mark.kind, deps, (state) =>
-    markSettled(state, target.id, mark),
+  return await recordStoppedByHostRestart(
+    target,
+    mark.kind,
+    deps,
+    (state) => markSettled(state, target.id, mark),
+    stopped && ((service, run) => run?.incarnation === stopped[service]),
   );
 }
 

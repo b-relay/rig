@@ -1483,6 +1483,13 @@ Likewise, if none of the writes that record the restart succeeded before
 nothing records that restart: after a second reboot the Host shows only the new
 boot, so the next start sees one restart and writes one entry.
 
+When the working Target's or a Preview's stop by the restart cannot be
+recorded, each later pass tries again, a command you run on the Target records
+it first, and health restarts wait for it. A command goes on even while it
+cannot be recorded: the restart's stop only ever applies to the processes it
+stopped, so `rig up` starts the Services as usual, and a process started since
+is supervised under its restart policy like any other.
+
 ### Health checks
 
 A Service's `healthcheck` is Docker Compose's, with the same keys and

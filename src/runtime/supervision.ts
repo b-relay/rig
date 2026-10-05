@@ -395,11 +395,14 @@ export async function recordStoppedByHostRestart(
   restart: HostRestart,
   deps: Deps,
   alongside?: (state: RuntimeState) => void,
+  /** Which runs the restart stopped; a run started since (another process) is not touched. All when absent. */
+  stoppedBy?: (service: string, run: ServiceRun | undefined) => boolean,
 ): Promise<boolean> {
   return await settleStopped(
     target,
     deps,
     (component, run) => {
+      if (stoppedBy && !stoppedBy(component.name, run)) return undefined;
       if (run?.intent === "stopped" || run?.exhausted) return undefined;
       const outcome = run?.outcome;
       // A Service waiting for its next health restart would be started by the health monitor whatever its restart

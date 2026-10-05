@@ -33,6 +33,8 @@ afterEach(async () => {
 async function world(
   restart: "no" | "always",
   targets: { working: true; stable?: true } = { working: true },
+  /** Without it, web is a plain Service: no healthcheck, its ports-less start gate the survival grace. */
+  checked = true,
 ) {
   const scratch = await mkdtemp(join(tmpdir(), "rig-health-restart-it-"));
   roots.push(scratch);
@@ -44,13 +46,17 @@ async function world(
       web: {
         command: "serve",
         restart,
-        healthcheck: {
-          test: `test -f '${ready}'`,
-          interval: "5s",
-          retries: 1,
-          start_period: "1s",
-          on_failure: "restart",
-        },
+        ...(checked
+          ? {
+              healthcheck: {
+                test: `test -f '${ready}'`,
+                interval: "5s",
+                retries: 1,
+                start_period: "1s",
+                on_failure: "restart",
+              },
+            }
+          : {}),
       },
     },
     targets,
@@ -206,6 +212,37 @@ async function world(
     stopping,
     observing,
     status,
+    /** web of `kind` ends on its own with exit code 1, as a crash. */
+    async crash(kind: "working" | "stable" = "working") {
+      const key = `${(await targetOf(kind)).id}:web`;
+      const running = processes.get(key);
+      processes.set(key, {
+        state: "stopped",
+        exitCode: 1,
+        ...(running?.incarnation ? { incarnation: running.incarnation } : {}),
+      });
+    },
+    /** Refuses every state write that would record web as stopped by a Host restart, until `allow` is called. */
+    refuseRebootMarker() {
+      const refusing = { on: true };
+      const update = w.store.update.bind(w.store);
+      w.store.update = (change) =>
+        update(async (state) => {
+          await change(state);
+          const web = state.targets[0]?.services?.web;
+          if (
+            refusing.on &&
+            web?.outcome?.kind === "unknown" &&
+            web.outcome.hostRestart
+          )
+            throw new Error("disk full");
+        });
+      return {
+        allow() {
+          refusing.on = false;
+        },
+      };
+    },
     /** The Host restarts: nothing survives, the boot changes, and a new rigd reconciles what it finds. */
     async reboot() {
       processes.clear();
@@ -495,3 +532,42 @@ test("while a Host restart's stop of a working Target cannot be recorded, nothin
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
   expect(await w.running()).toBe(true);
 }, 30_000);
+
+for (const checked of [true, false])
+  test(`${checked ? "with" : "without"} a healthcheck, rig up after a Host restart whose stop could not be recorded supersedes it: a crash of the new process is restarted by restart: always`, async () => {
+    const w = await world("always", { working: true }, checked);
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    if (checked) {
+      // Waiting for its next health restart when the Host restarts.
+      await rm(w.ready);
+      await w.advance(6);
+      expect(await w.run()).toMatchObject({
+        healthStretch: { pendingStart: expect.any(Number) },
+      });
+      await writeFile(w.ready, "");
+    }
+    w.refuseRebootMarker();
+    await w.reboot();
+    expect(await w.running()).toBe(false);
+    // rig up starts web although the restart's stop is still not recorded, and the new process crashes before the next
+    // supervision pass.
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    expect(await w.running()).toBe(true);
+    const started = await w.run();
+    await w.crash();
+    await w.advance(5);
+    // The restart's mark never reaches the new process: its exit is a crash, and restart: always starts it again.
+    expect(await w.running()).toBe(true);
+    const restarted = await w.run();
+    expect(restarted.incarnation).not.toBe(started.incarnation);
+    expect(restarted.outcome).toBeUndefined();
+    expect(restarted.attempts).toHaveLength(1);
+  }, 30_000);

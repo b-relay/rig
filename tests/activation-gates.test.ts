@@ -1,27 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { createTargetEffects } from "../src/adapters/target-effects";
-import { createArtifactInstaller } from "../src/providers/artifact-installer";
-import { runCommand } from "../src/providers/command-runner";
+import { rm } from "node:fs/promises";
 import type { RouteRequest, Router } from "../src/providers/caddy-router";
 import type { ListenerEvidence } from "../src/providers/listener-inspection";
-import { createTargetLifecycle } from "../src/runtime/lifecycle";
-import { createRuntime } from "../src/runtime/application";
-import { FileStateStore } from "../src/runtime/state-store";
-import { timerObservationDeadline } from "../src/runtime/bounded-observations";
-import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type {
   HealthCheck,
   ProcessObservation,
   Supervisor,
 } from "../src/providers/contracts";
-import {
-  parseHostConfig,
-  parseProjectConfig,
-  resolveTargetPlan,
-} from "../src/config";
+import { parseProjectConfig } from "../src/config";
+import { runtimeWorld } from "./support/runtime-world";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -49,12 +36,7 @@ type Listening = Record<string, ListenerEvidence | string[]>;
 /** The real runtime, lifecycle and effects over a scripted supervisor, a recording router, and controlled port and listener
  * evidence. `listening[service]` is what that Service's process tree listens on, as `address:port` or a whole answer. */
 async function fixture(project: Record<string, unknown> = PROJECT) {
-  const root = await mkdtemp(join(tmpdir(), "rig-activation-"));
-  roots.push(root);
-  const repo = join(root, "repo");
-  await mkdir(repo);
   const config = parseProjectConfig(project);
-  const clock = { ms: Date.parse("2026-09-17T00:00:00.000Z") };
   const processes = new Map<string, ProcessObservation>();
   const pids = new Map<number, string>();
   const starts: string[] = [];
@@ -119,112 +101,41 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
       else published.delete(saved.key);
     },
   };
-  const effects = createTargetEffects({
-    recordingTime: () => new Date(clock.ms).toISOString(),
-    root,
-    environment: {},
-    supervisors: new Map([["rigd", supervisor]]),
-    installer: createArtifactInstaller({
-      run: runCommand,
-      bunExecutable: process.execPath,
-    }),
+  const world = await runtimeWorld({
+    name: "activation",
+    config,
+    supervisor: () => supervisor,
+    startsAt: "2026-09-17T00:00:00.000Z",
+    // A readiness deadline is long enough for the test to act while a check is held.
+    readinessDeadlineMs: 400,
+    activation: {
+      connect: (port) =>
+        hold.has(port)
+          ? new Promise((resolve) => held.set(port, resolve))
+          : Promise.resolve({ ready: true }),
+      listeners: {
+        async inspect(pid) {
+          const answer = listening[pids.get(pid)!] ?? [];
+          return Array.isArray(answer)
+            ? {
+                state: "observed",
+                listeners: answer.map((listener) => ({
+                  pid,
+                  address: listener.slice(0, listener.lastIndexOf(":")),
+                  port: Number(listener.slice(listener.lastIndexOf(":") + 1)),
+                })),
+              }
+            : answer;
+        },
+      },
+    },
     router,
-    connect: (port) =>
-      hold.has(port)
-        ? new Promise((resolve) => held.set(port, resolve))
-        : Promise.resolve({ ready: true }),
-    listeners: {
-      async inspect(pid) {
-        const answer = listening[pids.get(pid)!] ?? [];
-        return Array.isArray(answer)
-          ? {
-              state: "observed",
-              listeners: answer.map((listener) => ({
-                pid,
-                address: listener.slice(0, listener.lastIndexOf(":")),
-                port: Number(listener.slice(listener.lastIndexOf(":") + 1)),
-              })),
-            }
-          : answer;
-      },
-    },
-    run: runCommand,
+    planConfig: withWorkingDomain,
   });
-  const timing = {
-    // Polls fire at once; a readiness deadline is long enough for the test to act while a check is held.
-    schedule(delayMs: number, fire: () => void) {
-      if (delayMs < 1000) {
-        const poll = setTimeout(fire, 0);
-        return () => clearTimeout(poll);
-      }
-      const timer = setTimeout(fire, 400);
-      return () => clearTimeout(timer);
-    },
-    startGraceMs: 0,
-  };
-  const store = new FileStateStore(root);
-  let id = 0;
-  const deps = {
-    root,
-    async readAdminActivity() {
-      return [];
-    },
-    async inspectHost() {
-      return [];
-    },
-    async inspectProxy() {
-      return {
-        proxyFile: join(root, "Caddyfile"),
-        routes: 0,
-        state: "unpublished" as const,
-      };
-    },
-    store,
-    documents: {
-      async read(path: string) {
-        return { path: `${path}/rig.yaml`, revision: "abc", config };
-      },
-      async discover(path: string) {
-        return {
-          repoPath: path,
-          document: await this.read(path),
-          gitRequired: false,
-        };
-      },
-      async identifyInitialization(path: string) {
-        return { repoPath: path, name: "demo", configPath: `${path}/rig.yaml` };
-      },
-      async initialize(path: string) {
-        return await this.read(path);
-      },
-      resolve: (input: Parameters<typeof resolveTargetPlan>[0]) =>
-        resolveTargetPlan(
-          { ...input, config: withWorkingDomain(input.config) },
-          { operatorHome: "/home/operator", envRoot: join(root, "env") },
-        ),
-      async host() {
-        return parseHostConfig({});
-      },
-    },
-    lifecycle: createTargetLifecycle(effects, timing),
-    observations: effects.observations,
-    observationBudgetMs: 2000,
-    observationDeadline: timerObservationDeadline,
-    files: {
-      async selectPorts(input: {
-        requests: { name: string; preferred?: number }[];
-      }) {
-        return Object.fromEntries(
-          input.requests.map((request) => [request.name, request.preferred!]),
-        );
-      },
-    },
-    now: () => new Date(clock.ms).toISOString(),
-    id: () => `id${++id}`,
-    async diagnostic() {},
-  } as unknown as RuntimeDependencies;
-  const runtime = createRuntime(deps);
-  await runtime.command({ action: "init", repoPath: repo });
+  roots.push(world.root);
+  const { clock, store } = world;
+  const runtime = world.open();
+  await runtime.command({ action: "init", repoPath: world.repo });
   const target = async () => (await store.read()).targets[0]!;
   return {
     clock,

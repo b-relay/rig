@@ -229,9 +229,13 @@ export async function composeDaemon(
       stopped = true;
       stopMonitor?.();
       await stopHealth?.();
+      // The monitor writes nothing from here on; its probes are aborted (a command's process group killed) and waited for
+      // within a bound, beside the drain, which detaches the stop of any health restart in flight.
+      const health = monitor.stop();
       // With the runtime's own stops, which its drain detaches as it begins.
       shuttingDown.abort();
       await runtime.drain();
+      await health;
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();
     },

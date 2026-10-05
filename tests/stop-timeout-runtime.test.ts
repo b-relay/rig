@@ -342,8 +342,8 @@ function world(
   };
 }
 
-async function registered() {
-  const w = world();
+async function registered(config?: ProjectConfig) {
+  const w = world(config);
   await w.runtime.command({ action: "init", repoPath: "/tmp/fletcher" });
   return w;
 }
@@ -1017,7 +1017,21 @@ test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan
 });
 
 test("a health restart stops the Service within its stop_timeout under its Target's lock, spends no restart budget, records why, and holds up no other Target", async () => {
-  const w = await registered();
+  const w = await registered(
+    parseProjectConfig({
+      name: "fletcher",
+      services: {
+        web: {
+          command: "serve",
+          ports: { http: 4567 },
+          stop_timeout: "2m",
+          healthcheck: { on_failure: "restart" },
+        },
+        worker: { command: "work", depends_on: ["web"], stop_timeout: "25m" },
+      },
+      targets: { working: true, stable: true, preview: true },
+    }),
+  );
   await w.command({ action: "up", target: "working" });
   await w.command({ action: "deploy", target: "stable", branch: "main" });
   const working = () => w.state.targets.find((t) => t.kind === "working")!;
@@ -1088,6 +1102,19 @@ test("a health restart stops the Service within its stop_timeout under its Targe
         restarts: [],
       }),
     ).toEqual({ outcome: "skipped" });
+  // Judged again under the lock: a Service whose recorded plan has no healthcheck that restarts is left alone.
+  expect(
+    await w.runtime.restartUnhealthy({
+      targetId: working().id,
+      service: "worker",
+      incarnation: working().services!.worker!.incarnation!,
+      attempt: 1,
+      failures: 3,
+      since: 0,
+      restarts: [],
+    }),
+  ).toEqual({ outcome: "skipped" });
+  expect(w.stops.filter((stop) => stop.key.endsWith(":worker"))).toEqual([]);
   // Still only the one stop the health restart made.
   expect(w.stops.filter((stop) => stop.key.endsWith(":web"))).toHaveLength(1);
   // An explicit restart ends the stretch.

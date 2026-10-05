@@ -87,7 +87,11 @@ function fixture(
     activity: [],
   } as unknown as RuntimeState;
   const incarnations = new Map(services.map((name) => [name, 1]));
-  const checks: { service: string; at: number }[] = [];
+  const checks: { service: string; at: number; test?: string }[] = [];
+  /** Every write the monitor asked of the store, by when it was asked. */
+  const writes: number[] = [];
+  /** The signal of each health probe asked, in order. */
+  const signals: AbortSignal[] = [];
   const restarts: (HealthRestartRequest & { at: number })[] = [];
   let answer: (service: string) => Promise<boolean> | boolean = () => true;
   /** What a failed check says. */
@@ -97,6 +101,8 @@ function fixture(
   let restartOutcome: HealthRestartResult["outcome"] = "restarted";
   /** How long a restart waits for its Target's lock before it is attempted (fake milliseconds). */
   let lockWait = 0;
+  /** The next restarts never end, as one waiting out a long stop_timeout. */
+  let restartHangs = false;
   /** An observation that answers with this process whatever runs: a stale snapshot. */
   let staleProcess: string | undefined;
   /** Observations that name no process, as leases from before incarnations did. */
@@ -111,6 +117,7 @@ function fixture(
         return structuredClone(state);
       },
       async update(change) {
+        writes.push(now);
         await change(state);
       },
     },
@@ -129,8 +136,13 @@ function fixture(
               }),
         };
       },
-      async health(_target, component) {
-        checks.push({ service: component.name, at: now });
+      async health(_target, component, signal) {
+        checks.push({
+          service: component.name,
+          at: now,
+          ...(component.health ? { test: component.health } : {}),
+        });
+        signals.push(signal);
         return (await answer(component.name))
           ? { ready: true }
           : { ready: false, reason };
@@ -141,6 +153,7 @@ function fixture(
     busy: () => busy,
     async restart(request) {
       restarts.push({ ...request, at: now });
+      if (restartHangs) return await new Promise<never>(() => {});
       if (restartOutcome === "skipped" || restartOutcome === "deferred")
         return { outcome: restartOutcome };
       if (restartOutcome === "failed")
@@ -186,6 +199,16 @@ function fixture(
     get monitor() {
       return monitorUnderTest;
     },
+    writes,
+    signals,
+    /** Moves the fake clock without a pass, firing the timers that come due. */
+    tick(ms: number) {
+      now += ms;
+      for (const timer of timers.filter((t) => t.at <= now)) {
+        timers.splice(timers.indexOf(timer), 1);
+        timer.fire();
+      }
+    },
     /** A new rigd: nothing in memory, the same records. */
     restartDaemon() {
       monitorUnderTest = createHealthMonitor(dependencies);
@@ -209,6 +232,9 @@ function fixture(
     },
     set lockWait(value: number) {
       lockWait = value;
+    },
+    set restartHangs(value: boolean) {
+      restartHangs = value;
     },
     set staleProcess(value: string | undefined) {
       staleProcess = value;
@@ -699,4 +725,118 @@ test("a process a health restart started stays unhealthy after its start check, 
   // A Service without a healthcheck is not seeded at all.
   f.monitor.started(f.state.targets[0]!, "api", "api-1");
   expect(f.monitor.results({ id: "t1" }, "api")).toBeUndefined();
+});
+
+test("a check that waited for a slot judges the plan recorded now: a Service deployed without its healthcheck is neither checked nor restarted", async () => {
+  const f = fixture(
+    { interval: 5, retries: 1, onFailure: "restart" },
+    { services: ["api", "web"], concurrency: 1 },
+  );
+  let release!: () => void;
+  f.answer = (service) =>
+    service === "api"
+      ? new Promise<boolean>((resolve) => {
+          release = () => resolve(true);
+        })
+      : false;
+  await f.runUntil(1 * SECOND);
+  // api holds the only slot; web, whose old test would fail, waits for it.
+  expect(f.checks.map((check) => check.service)).toEqual(["api"]);
+  // Meanwhile web is deployed again without a healthcheck: a new plan entry and a new process.
+  const target = f.state.targets[0]!;
+  const web = target.plan.components.find((c) => c.name === "web")!;
+  delete (web as { healthcheck?: unknown }).healthcheck;
+  delete (web as { health?: unknown }).health;
+  f.replace("web");
+  release();
+  await f.monitor.idle();
+  expect(f.checks.map((check) => check.service)).toEqual(["api"]);
+  expect(f.restarts).toEqual([]);
+  f.answer = (service) => service === "api";
+  await f.runUntil(30 * SECOND);
+  expect(f.checks.filter((check) => check.service === "web")).toEqual([]);
+  expect(f.restarts).toEqual([]);
+});
+
+test("a check that waited for a slot runs the test recorded now, against the process recorded now", async () => {
+  const f = fixture(
+    { interval: 5, retries: 1, onFailure: "restart" },
+    { services: ["api", "web"], concurrency: 1 },
+  );
+  let release!: () => void;
+  f.answer = (service) =>
+    service === "api"
+      ? new Promise<boolean>((resolve) => {
+          release = () => resolve(true);
+        })
+      : true;
+  await f.runUntil(1 * SECOND);
+  const web = f.state.targets[0]!.plan.components.find(
+    (c) => c.name === "web",
+  )!;
+  (web as { health?: string }).health = "http://127.0.0.1:4000/new";
+  f.replace("web");
+  release();
+  await f.monitor.idle();
+  expect(f.checks.filter((check) => check.service === "web")).toEqual([
+    { service: "web", at: 1 * SECOND, test: "http://127.0.0.1:4000/new" },
+  ]);
+});
+
+test("a restart is asked only under the policy recorded now: a Service set to report while unhealthy is not restarted", async () => {
+  const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartOutcome = "failed";
+  await f.runUntil(1 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  // Before the back-off allows the next restart, the healthcheck is set to report.
+  const web = f.state.targets[0]!.plan.components[0]! as {
+    healthcheck: { onFailure: string };
+  };
+  web.healthcheck.onFailure = "report";
+  await f.runUntil(200 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  expect(f.result()).toMatchObject({ status: "unhealthy" });
+});
+
+test("stop aborts the probes in flight, waits for them within its bound, and nothing is checked or written after it", async () => {
+  const f = fixture({ interval: 5, retries: 1, timeout: 3600 });
+  // A check that hangs for an hour unless its probe is aborted.
+  f.answer = () =>
+    new Promise<boolean>((resolve) =>
+      f.signals.at(-1)!.addEventListener("abort", () => resolve(false)),
+    );
+  await f.runUntil(1 * SECOND);
+  expect(f.checks).toHaveLength(1);
+  const writesBefore = f.writes.length;
+  await f.monitor.stop();
+  expect(f.signals[0]!.aborted).toBe(true);
+  // The aborted check failed nothing and recorded nothing.
+  expect(f.writes).toHaveLength(writesBefore);
+  expect(f.result()).not.toMatchObject({ status: "unhealthy" });
+  await f.runUntil(60 * SECOND);
+  expect(f.checks).toHaveLength(1);
+  expect(f.writes).toHaveLength(writesBefore);
+});
+
+test("stop does not wait past its bound for a restart that never ends, and asks for no restart after it", async () => {
+  const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartHangs = true;
+  await f.runUntil(1 * SECOND);
+  // The restart was asked and never ends.
+  expect(f.restarts).toHaveLength(1);
+  const asked = f.restarts.length;
+  let stopped = false;
+  const stopping = f.monitor.stop(5 * SECOND).then(() => {
+    stopped = true;
+  });
+  await settle();
+  expect(stopped).toBe(false);
+  f.tick(5 * SECOND);
+  await stopping;
+  expect(stopped).toBe(true);
+  f.restartHangs = false;
+  await f.runUntil(120 * SECOND);
+  expect(f.restarts).toHaveLength(asked);
 });

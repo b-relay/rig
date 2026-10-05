@@ -26,6 +26,8 @@ import { currentRun } from "./supervision";
 export const HEALTH_CHECK_CONCURRENCY = 4;
 /** How often rigd looks for checks that are due; a check runs at most this late. */
 export const HEALTH_MONITOR_TICK_MS = 1000;
+/** How long a stop waits for the checks and restarts in flight to settle once their probes were aborted. */
+export const HEALTH_MONITOR_STOP_MS = 5000;
 
 /** Reads the cached result of a Service's ongoing checks; undefined when rigd has none. */
 export type HealthResults = (
@@ -78,6 +80,10 @@ export interface HealthMonitor {
    * its next check is one interval away. A process started inside an unhealthy stretch stays unhealthy until an ongoing
    * check passes, so its back-off holds. */
   started(target: TargetRecord, service: string, incarnation: string): void;
+  /** Ends the monitor: no pass starts anything after it, every probe in flight is aborted (a command probe's process group
+   * is killed), nothing is written to state any more, and it resolves once the work in flight settled or `boundMs`
+   * (HEALTH_MONITOR_STOP_MS when absent) passed, whichever comes first. */
+  stop(boundMs?: number): Promise<void>;
   results: HealthResults;
 }
 
@@ -127,6 +133,10 @@ export function createHealthMonitor(
 ): HealthMonitor {
   const states = new Map<string, HealthState>();
   const policies = new Map<string, HealthPolicy>();
+  /** Set by `stop`: from then on nothing is observed, started or written. */
+  let stopped = false;
+  /** The probes in flight, aborted by `stop`. */
+  const probes = new Set<AbortController>();
   /** Services with a check or restart in flight, which nothing else of them overlaps. */
   const inFlight = new Set<string>();
   const work = new Set<Promise<void>>();
@@ -136,6 +146,9 @@ export function createHealthMonitor(
   const slot = async () => {
     if (running < limit) running++;
     else await new Promise<void>((resolve) => waiting.push(resolve));
+  };
+  const idle = async () => {
+    while (work.size) await Promise.allSettled([...work]);
   };
   const release = () => {
     const next = waiting.shift();
@@ -165,10 +178,21 @@ export function createHealthMonitor(
         restarts: state.stretch?.restarts.length ?? 0,
       };
     },
-    async idle() {
-      while (work.size) await Promise.allSettled([...work]);
+    idle,
+    async stop(boundMs = HEALTH_MONITOR_STOP_MS) {
+      stopped = true;
+      for (const probe of probes) probe.abort();
+      let cancel = () => {};
+      await Promise.race([
+        idle(),
+        new Promise<void>((resolve) => {
+          cancel = deps.schedule(boundMs, resolve);
+        }),
+      ]);
+      cancel();
     },
     started(target, service, incarnation) {
+      if (stopped) return;
       const component = target.plan.components.find(
         (candidate): candidate is ManagedComponent =>
           candidate.kind === "managed" && candidate.name === service,
@@ -185,7 +209,9 @@ export function createHealthMonitor(
       });
     },
     async pass() {
+      if (stopped) return;
       const recorded = await deps.store.read();
+      if (stopped) return;
       const monitored = new Set<string>();
       for (const target of recorded.targets) {
         if (
@@ -234,12 +260,23 @@ export function createHealthMonitor(
               if (!next) {
                 await slot();
                 try {
-                  next = await check(target, component, policy, key);
+                  // Read again with the slot held: while this waited, a deploy or restart may have replaced the plan, its
+                  // healthcheck or its process, and a check judges only what is recorded now, under the policy it has now.
+                  const now = await checked(target.id, component.name);
+                  if (now) {
+                    policies.set(key, now.policy);
+                    next = await check(
+                      now.target,
+                      now.component,
+                      now.policy,
+                      key,
+                    );
+                  }
                 } finally {
                   release();
                 }
               }
-              if (next) await act(target, component, key, next);
+              if (next) await act(target.id, component.name, key);
             } catch (error) {
               await deps
                 .diagnostic({
@@ -267,6 +304,38 @@ export function createHealthMonitor(
     },
   };
 
+  /** The Service's Target, plan entry and policy as recorded now; undefined when the Target is no longer meant to run, the
+   * Service is gone, or it has no healthcheck any more, so nothing of it is checked or restarted. */
+  async function checked(
+    targetId: string,
+    service: string,
+  ): Promise<
+    | {
+        target: TargetRecord;
+        component: ManagedComponent;
+        policy: HealthPolicy;
+      }
+    | undefined
+  > {
+    if (stopped) return undefined;
+    const target = (await deps.store.read()).targets.find(
+      (candidate) => candidate.id === targetId,
+    );
+    if (
+      stopped ||
+      !target ||
+      target.desired !== "running" ||
+      target.recovery ||
+      target.destructionPending
+    )
+      return undefined;
+    const component = target.plan.components.find(
+      (candidate): candidate is ManagedComponent =>
+        candidate.kind === "managed" && candidate.name === service,
+    );
+    const policy = component && healthPolicy(component);
+    return component && policy ? { target, component, policy } : undefined;
+  }
   /** Whether the Target is busy, in which case the Service's checks pause until it is free again. */
   function paused(target: TargetRecord, key: string): boolean {
     if (!deps.busy(target)) return false;
@@ -378,6 +447,8 @@ export function createHealthMonitor(
       (signal) => deps.observations.health(target, component, signal),
       policy.timeoutMs,
     );
+    // An aborted probe says nothing, and a stopped monitor records nothing.
+    if (stopped) return undefined;
     // The answer speaks only for the process it asked: one an Operation began to stop or replace meanwhile, or that ended
     // on its own before supervision recorded it, is not what runs now.
     if (paused(target, key)) return undefined;
@@ -431,19 +502,26 @@ export function createHealthMonitor(
     return isDue(action) ? action : undefined;
   }
 
-  /** Restarts the Service as `action` says. */
+  /** Restarts the Service when its policy as recorded now still calls for it, and only the process that was checked: a
+   * Service whose healthcheck was removed or set to report, or that runs another process by now, is left alone. */
   async function act(
-    target: TargetRecord,
-    component: ManagedComponent,
+    targetId: string,
+    service: string,
     key: string,
-    action: Due,
   ): Promise<void> {
+    const now = await checked(targetId, service);
     const state = states.get(key) ?? NEW_HEALTH;
     const stretch = state.stretch;
-    if (!stretch) return;
+    if (!now || !stretch || stopped) return;
+    const action = actionFor(state, now.policy, deps.now());
+    if (
+      !isDue(action) ||
+      currentRun(now.target, service)?.incarnation !== state.incarnation
+    )
+      return;
     const result = await deps.restart({
-      targetId: target.id,
-      service: component.name,
+      targetId,
+      service,
       ...(state.incarnation !== undefined
         ? { incarnation: state.incarnation }
         : {}),
@@ -471,7 +549,9 @@ export function createHealthMonitor(
     observe: (signal: AbortSignal) => Promise<T>,
     timeoutMs: number,
   ): Promise<T | { ready: false; reason: string } | undefined> {
+    if (stopped) return undefined;
     const controller = new AbortController();
+    probes.add(controller);
     let cancel = () => {};
     const late = new Promise<undefined>((resolve) => {
       cancel = deps.schedule(timeoutMs, () => {
@@ -487,9 +567,20 @@ export function createHealthMonitor(
             : { ready: false as const, reason: failureReason(error) },
         ),
         late,
+        // A stop aborts the probe and answers at once, whether or not the probe heeds its signal.
+        new Promise<undefined>((resolve) =>
+          controller.signal.addEventListener(
+            "abort",
+            () => resolve(undefined),
+            {
+              once: true,
+            },
+          ),
+        ),
       ]);
     } finally {
       cancel();
+      probes.delete(controller);
     }
   }
 
@@ -499,6 +590,7 @@ export function createHealthMonitor(
     service: string,
     incarnation: string | undefined,
   ): Promise<void> {
+    if (stopped) return;
     await deps.store.update((state) => {
       const run = state.targets.find((t) => t.id === target.id)?.services?.[
         service
@@ -512,6 +604,7 @@ export function createHealthMonitor(
     target: TargetRecord,
     entry: Pick<OperationRecord, "action" | "outcome" | "message">,
   ): Promise<void> {
+    if (stopped) return;
     await deps.store.update((state) =>
       recordActivity(state, {
         id: deps.id(),

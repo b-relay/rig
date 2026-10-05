@@ -44,7 +44,10 @@ export async function restartForHealth(
     (candidate): candidate is ManagedComponent =>
       candidate.kind === "managed" && candidate.name === request.service,
   );
-  if (!component) return { outcome: "skipped" };
+  // Judged again under the Target's lock: a deploy or edit since the check may have removed the healthcheck or set it to
+  // report, and then nothing is restarted for it.
+  if (component?.healthcheck?.onFailure !== "restart")
+    return { outcome: "skipped" };
   // Bounded like every observation made under a Target's lock: one that never answers decides nothing and holds nothing.
   const [seen] = await boundedObservations(
     [(signal) => deps.observations.process(target, component, signal)],

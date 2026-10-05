@@ -51,8 +51,6 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "GIT_DETACHED",
   "GIT_COMMIT",
   "GIT_REF",
-  "GIT_REMOTE_CONFLICT",
-  "GIT_REMOTE_MISSING",
   "GIT_UPSTREAM",
   "INVALID_CONFIG",
   "INVALID_YAML",

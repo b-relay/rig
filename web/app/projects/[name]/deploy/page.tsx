@@ -22,7 +22,6 @@ export default async function DeployPage({
       {context.ok ? (
         <DeployForm
           project={found.name}
-          repoPath={found.repoPath}
           context={context.value as DeploymentContext}
         />
       ) : (

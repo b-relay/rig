@@ -129,8 +129,8 @@ export async function updateRegistration(
       } catch (recoveryError) {
         throw new RigError(
           "RENAME_ROLLBACK",
-          "Project rename could not restore its previous config and remote.",
-          "Inspect the registered name, Project config, and Rig remote before retrying.",
+          "Project rename could not restore its previous config.",
+          "Inspect the registered name and Project config before retrying.",
           {},
           failureCauses(error, recoveryError),
         );

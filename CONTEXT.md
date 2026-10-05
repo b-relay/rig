@@ -401,9 +401,6 @@ are expanded only for problems.
 Registering a Project with Rig and writing the project configuration needed for
 Rig commands to resolve Project policy.
 
-_Relationship_: `rig init` configures the Rig remote when possible
-because `git push rig <Branch>` is a core deploy path.
-
 _Relationship_: `rig init` runs in `rigd`; without a reachable `rigd` it fails
 before writing anything. It does not claim success unless registration
 succeeds.
@@ -545,7 +542,7 @@ The files currently checked out on disk for a project workspace.
 
 ### Branch
 
-A named Git branch that can be pushed to Rig for deployment.
+A named Git branch that Rig deploys to the Stable Target or a Preview.
 _Avoid_: ref in normal user-facing CLI
 
 _Relationship_: Preview commands must allow Branch names containing slashes,
@@ -560,8 +557,7 @@ not remote-tracking names such as `origin/main`.
 
 _Relationship_: CLI deploy requires any named Branch, including an
 explicit Production branch for a Stable Target deploy, to exist locally so Rig
-can resolve it to a Commit. Rig remote pushes are the separate path for
-receiving Branches through Git.
+can resolve it to a Commit.
 
 _Relationship_: CLI Stable Target deploys without an explicit Branch still
 require the configured Production branch to exist locally because Rig must
@@ -581,39 +577,6 @@ fetches from remotes.
 
 _Relationship_: There is no `rig fetch` or `rig sync`. When refs are stale or
 missing, Rig guides users to run normal Git commands such as `git fetch`.
-
-### Rig remote
-
-A Git remote configured for a Project that sends pushed Branches to `rigd` for
-deploy classification.
-
-_Relationship_: The conventional remote name is `rig`.
-
-_Relationship_: Rig remote deploy classification uses the pushed destination
-Branch name: the Production branch deploys the Stable Target, while any other
-destination Branch deploys a Preview.
-
-_Relationship_: Pushing a new Commit to the Production branch through the Rig
-remote is an explicit deploy path. It replaces the Stable Target and
-brings it up without interactive confirmation.
-
-_Relationship_: Rig remote pushes do not support `--no-up`. Use CLI deploy for materializing a Deployment without starting it.
-
-_Relationship_: Pushing a new Commit to a non-Production branch through the Rig
-remote deploys that Branch as a Preview and brings it up by default.
-
-_Relationship_: Pushing the same Commit that is already deployed for a Target
-through the Rig remote is a no-op, matching CLI deploy behavior, and does not
-start a stopped Target.
-
-_Relationship_: Rig remote classification depends on whether the pushed
-destination Branch is the Production branch. A non-Production branch that
-happens to share a name with a Target is still deployed as a Preview, and UI
-output should disambiguate it as a Preview for that Branch.
-
-_Relationship_: Rig remote deploys skip the local upstream/ahead/behind
-preflight checks. Git push sends an exact Commit, and Rig remote deploys that
-Commit according to branch policy.
 
 ### Commit
 

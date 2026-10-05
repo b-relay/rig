@@ -662,7 +662,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           "recipe-diff",
           "deploy",
           "deployment-context",
-          "git-push",
           "rename",
         ].includes(command.action),
       );
@@ -754,29 +753,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         project = updated.project;
         return await finish(updated.outcome, { repoPath: project.repoPath });
       }
-      if (command.action === "git-push") {
-        if (command.repoPath !== project.repoPath)
-          throw pushedFromElsewhere(command.repoPath, project, state.projects);
-        if (!command.branch || !command.commit)
-          throw new RigError(
-            "GIT_PUSH",
-            "A push requires a destination Branch and source Commit.",
-            "Push a local Branch to the rig remote.",
-          );
-        const production =
-          selection.document!.config.production_branch ??
-          (await deps.documents.host()).deploy.production_branch;
-        // A push selects by role: the Production Branch is the Stable Target whatever it is named.
-        command = {
-          ...command,
-          target:
-            command.branch === production
-              ? targetNames(selection.document!.config).stable
-              : PREVIEW_SELECTOR,
-        };
-        // The alert monitor sees the Target the push selected from here on: a Preview push leaves the Stable Target alone.
-        selectedForAlerts(operationId, { target: command.target! });
-      }
       if (
         command.action === "deploy" &&
         command.target === PREVIEW_SELECTOR &&
@@ -828,11 +804,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         // A new Preview over the limit also takes the Previews it will replace; the choice is made
         // again once they are held, and refused there when it must be.
         let replacing: TargetRecord[] = [];
-        if (
-          (command.action === "deploy" || command.action === "git-push") &&
-          kind === "preview" &&
-          !target
-        )
+        if (command.action === "deploy" && kind === "preview" && !target)
           try {
             replacing = previewsToReplace(
               targets,
@@ -910,7 +882,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           ...(command.logFilter ? { filtered: true } : {}),
         } satisfies LogsResult;
       }
-      if (command.action === "deploy" || command.action === "git-push") {
+      if (command.action === "deploy") {
         if (kind === "local")
           throw new RigError(
             "DEPLOY_TARGET",
@@ -925,22 +897,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
               (await deps.documents.host()).deploy.production_branch)
             : await deps.sources.currentBranch(selection.checkout));
         attempted = true;
-        const preflight =
-          command.action === "git-push"
-            ? {
-                commit: await deps.sources.resolve(
-                  project.repoPath,
-                  command.commit!,
-                ),
-                warnings: [],
-              }
-            : await deps.sources.preflight({
-                repoPath: project.repoPath,
-                branch,
-                productionBranch:
-                  document.config.production_branch ??
-                  (await deps.documents.host()).deploy.production_branch,
-              });
+        const preflight = await deps.sources.preflight({
+          repoPath: project.repoPath,
+          branch,
+          productionBranch:
+            document.config.production_branch ??
+            (await deps.documents.host()).deploy.production_branch,
+        });
         const commit = command.commit
           ? await deps.sources.resolve(project.repoPath, command.commit)
           : preflight.commit;
@@ -965,7 +928,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           kind === "preview" && !target ? await claimPreviewSlot(name) : [];
         const candidate = await planTarget(
           {
-            command: { ...command, branch, commit },
+            command: { ...command, branch },
+            commit,
             kind,
             project,
             document,
@@ -1775,32 +1739,6 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       lease.release();
     }
   }
-}
-/** A push whose repository is another registered Project must be told which remote to use; repoint would hijack the named Project. */
-function pushedFromElsewhere(
-  repoPath: string | undefined,
-  named: Pick<ProjectRecord, "name" | "repoPath">,
-  projects: readonly Pick<ProjectRecord, "name" | "repoPath">[],
-): RigError {
-  const pushed = repoPath ?? "(unknown)";
-  const owner = projects.find(
-    (candidate) =>
-      repoPath !== undefined &&
-      resolvePath(candidate.repoPath) === resolvePath(repoPath),
-  );
-  if (owner)
-    return new RigError(
-      "PROJECT_PATH_CONFLICT",
-      `The pushed repository ${pushed} is registered as Project '${owner.name}', but the remote names Project '${named.name}' (registered at ${named.repoPath}).`,
-      `Push to rig://localhost/${owner.name} from ${pushed} (git remote set-url rig rig://localhost/${owner.name}), or push from ${named.repoPath}.`,
-      { registeredPath: named.repoPath, pushedProject: owner.name },
-    );
-  return new RigError(
-    "PROJECT_PATH_CONFLICT",
-    `The pushed repository ${pushed} is not the registered directory of Project '${named.name}' (${named.repoPath}).`,
-    `Push from ${named.repoPath} or one of its linked worktrees, or run rig repoint . in ${pushed} if the Project moved there.`,
-    { registeredPath: named.repoPath },
-  );
 }
 /** Effect checkpoints of Targets no longer in state are reclaimed; each result and any failure is recorded, never raised. */
 async function pruneCheckpoints(

@@ -15,11 +15,11 @@ bun run build
 bun run typecheck
 ```
 
-The build produces `rig`, `rigd`, and `git-remote-rig`. Put all three in the
-chosen executable directory for Git push deployment. Source development and
+The build produces `rig` and `rigd`. Put both in the chosen executable
+directory. Source development and
 tests must set an isolated `RIG_ROOT`; do not install into the real Host to
 try a change. `RIG_ROOT` must be an absolute path: an empty value means the default
-`~/.rig`, and a relative value makes `rig`, `rigd`, and `git-remote-rig` exit
+`~/.rig`, and a relative value makes `rig` and `rigd` exit
 with a usage error before they create or read anything, rather than rooting
 Rig in the current working directory. Every command writes under the root (at
 least its diagnostic log), so a root that is a file, or a directory the user
@@ -67,8 +67,8 @@ installed": `rigd status` reports it as a warning with the daemon unreachable,
 no daemon running `rigd install` simply reissues the credential.
 Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
-`rigd install`. Before sending the token anywhere, `rig`, `git-remote-rig`,
-and `rigd status` check that the process recorded in the daemon's address file
+`rigd install`. Before sending the token anywhere, `rig` and `rigd status`
+check that the process recorded in the daemon's address file
 still exists and is the same process: the daemon records its start time beside
 its pid, so a pid that was reused by an unrelated process after a crash or
 reboot counts as exited. A record left by a daemon that died is reported as
@@ -475,7 +475,7 @@ removal follows the same verified-shutdown, retire, then delete sequence as
 `rig down preview --destroy`, so a replaced Preview's data root and source
 history do not linger on disk. Every removal is announced before the deploy's
 own outcome line (`share feature-b-9876fedc retired feature/b (Preview
-limit)`, or `share feature/b retired (Preview limit)` on a git push) and is
+limit)`) and is
 recorded in `rig activity` as a `destroy` operation with the message
 `Preview limit`. If a removal fails (for example a process that will not stop, or a
 data root that cannot be deleted), the new Preview stays deployed, the old
@@ -504,61 +504,6 @@ not reserve them against other processes on the machine.
 
 CLI deploy uses local Branches only. It should warn, not block, when the Branch
 is ahead or behind its configured upstream. It should not fetch implicitly.
-
-## Git Push Deploy
-
-`rig init` configures the conventional Git remote name:
-
-```bash
-git push rig main
-git push rig feature/login
-git push rig main:preview/main
-```
-
-The remote advertises only completed deployments. A Target whose last deploy
-failed or was interrupted, or whose transition is still unresolved, is
-withheld from `list for-push`, so a repeated `git push rig <branch>` sends the
-push again instead of reporting "Everything up-to-date"; rigd then finishes or
-refuses it with the usual deployment errors. A deployment whose local Branch
-no longer contains the deployed Commit (the Branch was deleted and recreated,
-or rebased) is withheld too, so the push goes through and redeploys instead
-of git rejecting it as non-fast-forward with a `git pull` hint the Rig remote
-cannot serve. A push that fails, for example because the pushed Commit's
-`rig.yaml` is invalid, is recorded in `rig activity` under the Target it aimed
-at with the same code the error carries (`INVALID_YAML`), not as an unexpected
-failure of no Target. Interrupting a push with Ctrl-C
-prints the operation id that rigd may still be running; check `rig activity`
-or `rig status` before pushing again.
-
-Each ref in a push batch is answered on its own: a tag or a Branch deletion is
-reported by git as `[remote rejected]` with Rig's reason, while a Branch in the
-same batch still deploys. A fatal helper error, such as rigd answering `status`
-with an invalid reply, is printed and ends the helper, so git reports the
-failure instead of waiting forever.
-
-Rig remote classification uses the pushed destination Branch:
-
-- Production branch updates the Stable Target and brings it up by default.
-- Any other destination Branch creates or updates a Preview and brings it up by
-  default.
-- Same-Commit pushes are no-ops and should not start a stopped Target.
-- Rig remote pushes do not support `--no-up`.
-
-A successful push prints one line per Branch on stderr naming the Project,
-the Branch, the outcome, the Target it landed on (Preview names are derived,
-such as `feature-login-0d6e4079`), its route, and the operation id, for
-example `demo feature/login deployed to feature-login-0d6e4079 at
-feature-login-0d6e4079.demo.test (operation 3f2c…)`. Two git behaviours are worth
-knowing. `git push --force rig <branch>` with the Commit that is already
-deployed never reaches rigd: git sees the advertised ref and answers
-"Everything up-to-date", so a same-Commit redeploy is `rig deploy <target>
---force`. `git push --all rig` deploys every local Branch as a Preview, one
-after another, and the Preview limit retires the oldest ones as it goes; push
-Branches by name unless that is what you want. Pushing from a directory that
-is registered as a different Project (`git push other main` from the `demo`
-checkout) is refused with `PROJECT_PATH_CONFLICT` naming both Projects and the
-remote URL to use; `rig repoint` is only suggested for a directory no Project
-is registered at.
 
 ## Lifecycle And Logs
 
@@ -1326,7 +1271,7 @@ line on stderr after its result:
 Deprecated: /path/to/rig.yaml is written in rig.yaml format rig/v1, which is deprecated. Run rig config upgrade to rewrite it as rig/v2, then commit it.
 ```
 
-A deploy (or `git push rig`, even with `--quiet`) of a Commit whose committed
+A deploy of a Commit whose committed
 `rig.yaml` is `rig/v1` works as before and prints the same line, naming that
 Commit's copy of the file. `rig recipe generate` run beside a `rig/v1` file
 prints its block in `rig/v1` and the same line. The dashboard's config editor shows the same notice, and edits a
@@ -1883,8 +1828,8 @@ A Service never reads another Service's `env` or files. A Tool build and
 dependency installation get the Project layers only (1, 2, 4, 5). Nothing else
 of the daemon's or the installing shell's environment reaches a Project's
 processes: no `SHELL`, tokens, or Rig's own variables. Declare what a
-process needs in `env` or an env file. Git discovery (`rig init`,
-and `git push rig`) is Rig's own tooling; it runs with the login basics of
+process needs in `env` or an env file. Git discovery (`rig init`) is Rig's
+own tooling; it runs with the login basics of
 that shell and ignores `GIT_DIR` and `GIT_WORK_TREE`, so it always describes
 the directory it was asked about. A build writes its output to the Target's
 logs under the Tool name, and dependency installation under `setup`.
@@ -2109,7 +2054,7 @@ structured edits preserve comments/order or refuse before mutation.
 
 A Project is its Git repository: every command run inside a linked worktree
 (`git worktree add ../wt feature`, or one kept inside the repository such as
-`.worktrees/feature`), and `git push rig` from one, resolves to the main
+`.worktrees/feature`) resolves to the main
 working tree, so the registered path stays the main checkout. The Production
 branch comes from the Project or Host config (at `rig init`, from
 `origin/HEAD`), never from the worktree's checked-out Branch. A directory in

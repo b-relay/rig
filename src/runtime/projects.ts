@@ -161,7 +161,7 @@ export async function registerProject(
     throw new RigError(
       "REGISTRATION_INCOMPLETE",
       "Project files were initialized, but registration could not be completed.",
-      "The Project config and Rig remote were preserved. Resolve the state error or registration conflict, then rerun rig init.",
+      "The Project config was preserved. Resolve the state error or registration conflict, then rerun rig init.",
       { repoPath, configPath: document.path },
       failureCauses(error),
     );

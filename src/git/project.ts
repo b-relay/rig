@@ -2,7 +2,6 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "../providers/contracts";
-import { ensureRigRemote, rigRemoteUrl } from "./remotes";
 
 export interface ProjectGit {
   repoPath: string;
@@ -20,17 +19,14 @@ export interface ProjectLocation extends ProjectGit {
 }
 export interface EnsureProjectGitInput {
   path: string;
-  project: string;
   createGit?: boolean;
 }
 export interface ProjectGitSetup extends ProjectGit {
   createdGit: boolean;
-  remoteConfigured: boolean;
-  remoteUrl: string;
 }
 
-/** Discovery reads canonical filesystem paths and local Git metadata only; no fetch,
- * initialization or remote mutation. Adapters must return absolute canonical paths.
+/** Discovery reads canonical filesystem paths and local Git metadata only; no fetch
+ * or initialization. Adapters must return absolute canonical paths.
  * Failures: GIT_PATH_MISSING, GIT_PATH_UNREADABLE, GIT_REQUIRED, GIT_BARE,
  * GIT_DISCOVERY (command failure or malformed output). No raw output is exposed. */
 export interface ProjectDiscovery {
@@ -40,7 +36,7 @@ export interface ProjectDiscovery {
 
 /** Discovery must resolve the directory it was asked about, so these redirects never reach git. */
 const REDIRECTING_GIT_VARIABLES = ["GIT_DIR", "GIT_WORK_TREE"] as const;
-/** Concrete OS acquisition stays here, shared by initialization and remote discovery.
+/** Concrete OS acquisition stays here, shared by initialization and discovery.
  * `env` is the environment git runs with; the owner chooses it (the daemon's inherited login basics, a test's fixture). */
 export function createProjectDiscovery(
   run: CommandRunner,
@@ -220,12 +216,11 @@ export async function inspectProjectGit(
   return project;
 }
 
-/** Explicit setup changes only Git initialization and a missing conventional remote. */
+/** Explicit setup changes only Git initialization, and only when asked to create it. */
 export async function ensureProjectGit(
   input: EnsureProjectGitInput,
   discovery: ProjectDiscovery,
 ): Promise<ProjectGitSetup> {
-  rigRemoteUrl(input.project); // Validate identity before any authorized Git initialization.
   const location = await inspectProjectLocation(input.path, discovery);
   let createdGit = false;
   let project: ProjectGit;
@@ -249,12 +244,5 @@ export async function ensureProjectGit(
     const { gitRequired, mainTreePath, ...found } = location;
     project = found;
   }
-  return {
-    ...project,
-    createdGit,
-    ...(await ensureRigRemote(
-      { repoPath: project.repoPath, project: input.project },
-      discovery.run,
-    )),
-  };
+  return { ...project, createdGit };
 }

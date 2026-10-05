@@ -6,7 +6,6 @@ out
 dist
 /rig
 /rigd
-/git-remote-rig
 *.tgz
 
 # code coverage

@@ -1,6 +1,6 @@
 # Rig Command Reference
 
-Every command, argument, and flag of `rig`, `rigd`, and `git-remote-rig`. The
+Every command, argument, and flag of `rig` and `rigd`. The
 [guide](rig-guide.md) explains what the commands do; this page is the map.
 
 Every command answers `-h` and `--help`. `rig` and `rigd` also answer `-V` and
@@ -91,14 +91,6 @@ the Target logs, and records its status and exit, which launchd alone would
 not give Rig. The request file is a small JSON document `rigd` writes for that
 Service: its command, working directory, environment, and log directory.
 
-## git-remote-rig
-
-```
-git-remote-rig <remote> [rig://localhost/<project>]
-```
-
-Git runs this helper for `git push rig <branch>`. People never run it.
-
 ## Behavior The Tree Does Not Show
 
 - Target names are `local` (Working copy) and `live` (Stable) unless `rig.yaml`
@@ -109,8 +101,6 @@ Git runs this helper for `git push rig <branch>`. People never run it.
 - `deploy` defaults `[branch]` to the Production branch for the Stable Target
   and to the current Branch for `preview`. The Stable Target accepts only the
   Production branch; `preview` refuses it.
-- `git push rig <production branch>` deploys the Stable Target; any other
-  Branch deploys a Preview. A push has no `--no-up`.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
 - `--json` exists on `status`, `deploy`, `up`, `down`, and `restart` only.

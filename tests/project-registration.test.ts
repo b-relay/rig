@@ -132,11 +132,10 @@ test("nested init uses the Git root and existing config identity, and rerunning 
     configPath: join(f.repo, "rig.yaml"),
   });
   const gitConfig = await readFile(join(f.repo, ".git", "config"), "utf8");
+  // Registration adds no Git remote.
   expect(
-    (
-      await run({ command: ["git", "remote", "get-url", "rig"], cwd: f.repo })
-    ).stdout.trim(),
-  ).toBe("rig://localhost/canonical");
+    (await run({ command: ["git", "remote"], cwd: f.repo })).stdout,
+  ).not.toContain("rig");
   expect(
     await registerProject({ action: "init", repoPath: nested }, f.deps),
   ).toEqual(first);
@@ -171,11 +170,10 @@ test("init --path registers the nearest Project config inside the repository, th
   });
   expect(await readdir(f.repo)).not.toContain("rig.yaml");
   expect(await readFile(join(web, "rig.yaml"), "utf8")).toBe(config);
+  // Registration adds no Git remote.
   expect(
-    (
-      await run({ command: ["git", "remote", "get-url", "rig"], cwd: web })
-    ).stdout.trim(),
-  ).toBe("rig://localhost/web");
+    (await run({ command: ["git", "remote"], cwd: web })).stdout,
+  ).not.toContain("rig");
   expect((await f.deps.documents.discover(web)).repoPath).toBe(web);
   expect(
     await registerProject({ action: "init", repoPath: web }, f.deps),
@@ -235,11 +233,10 @@ test("store failure reports preserved initialization and rerunning completes the
   });
   expect(f.state.projects).toEqual([]);
   const config = await readFile(join(f.repo, "rig.yaml"), "utf8");
+  // Registration adds no Git remote.
   expect(
-    (
-      await run({ command: ["git", "remote", "get-url", "rig"], cwd: f.repo })
-    ).stdout.trim(),
-  ).toBe("rig://localhost/demo");
+    (await run({ command: ["git", "remote"], cwd: f.repo })).stdout,
+  ).not.toContain("rig");
   f.fail(false);
   const project = await registerProject(command, f.deps);
   expect(f.state.projects).toEqual([project]);

@@ -44,6 +44,3 @@ tools:
   rigd:
     build: bun install --frozen-lockfile && bun build --compile --define "process.env.RIG_BUILD_COMMIT=\"$(git describe --always --dirty --abbrev=12 --exclude='*' 2>/dev/null || echo dev)\"" src/rigd.ts --outfile rigd
     bin: rigd
-  git-remote-rig:
-    build: bun install --frozen-lockfile && bun build --compile --define "process.env.RIG_BUILD_COMMIT=\"$(git describe --always --dirty --abbrev=12 --exclude='*' 2>/dev/null || echo dev)\"" src/git/remote-helper.ts --outfile git-remote-rig
-    bin: git-remote-rig

@@ -13,6 +13,7 @@ import {
 import type {
   OperationRecord,
   RuntimeState,
+  ServiceRun,
   TargetRecord,
 } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
@@ -279,16 +280,30 @@ export async function recordStoppedAfterHostRestart(
   target: TargetRecord,
   mark: RestartMark,
   deps: StartDeps,
-  /** The processes the restart stopped, by Service, as recorded when it was found: a run that names another process was
-   * started since, and the restart's mark never applies to it. Every run when absent. */
-  stopped?: Readonly<Record<string, string | undefined>>,
 ): Promise<boolean> {
   return await recordStoppedByHostRestart(
     target,
     mark.kind,
     deps,
     (state) => markSettled(state, target.id, mark),
-    stopped && ((service, run) => run?.incarnation === stopped[service]),
+    (_service, run) => !startedSince(run, mark),
+  );
+}
+/** Whether `run` was started after the restart `mark` identifies, in the boot or login it was found in: such a process
+ * is not one the restart stopped, whichever daemon records the restart. A run with no session (started by an older
+ * rigd), or a restart whose session could not be read, cannot be told apart and counts as before it. */
+export function startedSince(
+  run: Pick<ServiceRun, "startedIn"> | undefined,
+  mark: RestartIdentity,
+): boolean {
+  const at = run?.startedIn;
+  if (!at) return false;
+  if (mark.kind === "reboot")
+    return mark.boot !== undefined && at.boot === mark.boot;
+  return (
+    mark.login !== undefined &&
+    at.login === mark.login &&
+    (mark.boot === undefined || at.boot === undefined || at.boot === mark.boot)
   );
 }
 

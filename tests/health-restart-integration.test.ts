@@ -223,7 +223,7 @@ async function world(
       });
     },
     /** Refuses every state write that would record web as stopped by a Host restart, until `allow` is called. */
-    refuseRebootMarker() {
+    refuseRebootMarker(): { allow(): void } {
       const refusing = { on: true };
       const update = w.store.update.bind(w.store);
       w.store.update = (change) =>
@@ -242,6 +242,11 @@ async function world(
           refusing.on = false;
         },
       };
+    },
+    /** rigd restarts in the same Host session: the processes survive, and a new rigd reconciles what it finds. */
+    async reopen() {
+      open();
+      await runtime.reconcile();
     },
     /** The Host restarts: nothing survives, the boot changes, and a new rigd reconciles what it finds. */
     async reboot() {
@@ -571,3 +576,52 @@ for (const checked of [true, false])
     expect(restarted.outcome).toBeUndefined();
     expect(restarted.attempts).toHaveLength(1);
   }, 30_000);
+
+for (const checked of [true, false])
+  test(`${checked ? "with" : "without"} a healthcheck, a Host restart's unrecorded stop never reaches a process started after it, even once rigd restarts`, async () => {
+    const w = await world("always", { working: true }, checked);
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    const marker = w.refuseRebootMarker();
+    await w.reboot();
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    const started = await w.run();
+    // Stamped with the boot it started in.
+    expect(started.startedIn).toEqual({ boot: "BOOT-2", login: "100002" });
+    await w.crash();
+    // rigd restarts before another supervision pass, and the restart's stop can be recorded now. The new daemon has
+    // nothing in memory about it; what the run says decides.
+    marker.allow();
+    await w.reopen();
+    await w.advance(5);
+    expect(await w.running()).toBe(true);
+    const restarted = await w.run();
+    expect(restarted.incarnation).not.toBe(started.incarnation);
+    expect(restarted.outcome).toBeUndefined();
+    expect(restarted.attempts).toHaveLength(1);
+  }, 30_000);
+
+test("a run an older rigd recorded, with no boot it started in, is still recorded as stopped by a Host restart", async () => {
+  const w = await world("always", { working: true }, false);
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  expect((await w.run()).startedIn).toEqual({
+    boot: "BOOT-1",
+    login: "100002",
+  });
+  await w.store.update((state) => {
+    delete state.targets[0]!.services!.web!.startedIn;
+  });
+  await w.reboot();
+  await w.advance(5);
+  expect(await w.running()).toBe(false);
+  expect(await w.run()).toMatchObject({
+    outcome: { kind: "unknown", hostRestart: "reboot" },
+  });
+}, 30_000);

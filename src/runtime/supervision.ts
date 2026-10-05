@@ -266,7 +266,8 @@ async function saveRuns(
 export function activationJournal(
   target: TargetRecord,
   mode: "explicit" | RestartBudget | "health",
-  deps: Pick<Deps, "store" | "now" | "id">,
+  deps: Pick<Deps, "store" | "now" | "id"> &
+    Partial<Pick<RuntimeDependencies, "hostSessionNow">>,
   options: {
     afterHostRestart?: HostRestart;
     healthStretch?: NonNullable<ServiceRun["healthStretch"]>;
@@ -277,11 +278,13 @@ export function activationJournal(
     async starting(service) {
       const incarnation = deps.id();
       const current = currentRun(target, service);
+      const startedIn = deps.hostSessionNow?.();
       const fresh: ServiceRun = {
         deployment: target.plan.workspacePath,
         intent: "running",
         incarnation,
         attempts: [],
+        ...(startedIn ? { startedIn } : {}),
         ...(mode === "explicit" && options.afterHostRestart
           ? { startedAfterHostRestart: options.afterHostRestart }
           : {}),
@@ -395,7 +398,7 @@ export async function recordStoppedByHostRestart(
   restart: HostRestart,
   deps: Deps,
   alongside?: (state: RuntimeState) => void,
-  /** Which runs the restart stopped; a run started since (another process) is not touched. All when absent. */
+  /** Which runs the restart stopped; a run started since it is not touched. All when absent. */
   stoppedBy?: (service: string, run: ServiceRun | undefined) => boolean,
 ): Promise<boolean> {
   return await settleStopped(

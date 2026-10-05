@@ -289,6 +289,23 @@ const services = z
         .describe(
           "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
         ),
+      startedIn: z
+        .object({
+          boot: z
+            .string()
+            .optional()
+            .describe(
+              "The Host boot (kern.bootsessionuuid) it was started in.",
+            ),
+          login: z
+            .string()
+            .optional()
+            .describe("The GUI login session it was started in."),
+        })
+        .optional()
+        .describe(
+          "The Host boot and login the process was started in. A stop by a Host restart is recorded only for a run started before that restart; a run without this field was started by an older rigd and counts as before.",
+        ),
       healthStretch: z
         .object({
           since: z

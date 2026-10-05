@@ -218,6 +218,10 @@ const UNLOCKED: Admission = {
 export function createRuntime(input: RuntimeDependencies): RigRuntime {
   // Every write the runtime makes reports its lifecycle transitions to the health monitor as it is applied, while the
   // Operation making it still holds its Target (the epoch rule in health-monitor.ts).
+  // The Host session this rigd runs in, read by its first pass: a reboot or logout ends rigd, so it holds while rigd runs.
+  // It is installed on the dependencies themselves, which callers (and tests) may still change after this call.
+  let session: { boot?: string; login?: string } | undefined;
+  input.hostSessionNow = () => session;
   const deps: RuntimeDependencies = input.healthTransitions
     ? {
         ...input,
@@ -253,26 +257,16 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       observer: stopObserver(entry, deps.now),
     });
   /** working Targets and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
-   * by Target id, with that restart as the first pass identified it and the processes it stopped; each pass, and each
-   * Operation admitted on the Target, tries again (see `recordUnmarked`). */
-  const unmarked = new Map<
-    string,
-    { mark: RestartMark; stopped: Record<string, string | undefined> }
-  >();
+   * by Target id, with that restart as the first pass identified it; each pass, and each Operation admitted on the Target,
+   * tries again (see `recordUnmarked`). Only the write is retried: which runs it applies to is in the runs themselves. */
+  const unmarked = new Map<string, RestartMark>();
   /** Records, under the caller's lease of `target`, the stop by a Host restart this daemon could not record yet, if there is
    * one, so an explicit start that follows supersedes it and a later pass never applies it to the new process. Resolves
    * whether none is left unrecorded. */
   const recordUnmarked = async (target: TargetRecord): Promise<boolean> => {
     const pending = unmarked.get(target.id);
     if (!pending) return true;
-    if (
-      !(await recordStoppedAfterHostRestart(
-        target,
-        pending.mark,
-        deps,
-        pending.stopped,
-      ))
-    )
+    if (!(await recordStoppedAfterHostRestart(target, pending, deps)))
       return false;
     unmarked.delete(target.id);
     return true;
@@ -791,7 +785,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             { target: target.name },
           );
         // So is a stop by a Host restart, so an explicit start after it supersedes it. When it still cannot be recorded the
-        // command goes on: the restart's mark only ever applies to the processes it stopped, never to one started since.
+        // command goes on: the restart's stop only ever applies to runs started before it, never to one started since.
         if (target) await recordUnmarked(target);
         // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
         if (
@@ -1432,7 +1426,14 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       if (action === "reconcile") {
         await pruneCheckpoints(state, deps);
         const current = await hostSession;
-        if (current) finding = findHostRestart(state, current);
+        if (current) {
+          finding = findHostRestart(state, current);
+          if (current.boot !== undefined || current.login !== undefined)
+            session = {
+              ...(current.boot !== undefined ? { boot: current.boot } : {}),
+              ...(current.login !== undefined ? { login: current.login } : {}),
+            };
+        }
         if (finding?.restart && !finding.announced) {
           const found = finding;
           await recordHostRestart(
@@ -1628,32 +1629,18 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // again by each pass of this daemon, and nothing of it is supervised until then. One an earlier daemon already
         // recorded is not recorded again: an explicit start since then has ended the restart's hold on it.
         // A later pass has no restart of its own, so it records the one the first pass kept, as that pass would have.
-        const pending = unmarked.get(targetId);
         const stoppedBy =
           target.kind === "stable" || startedBefore?.has(targetId)
             ? undefined
-            : (mark ?? pending?.mark);
+            : (mark ?? unmarked.get(targetId));
         if (stoppedBy) {
           if (
-            !(await recordStoppedAfterHostRestart(
-              target,
-              stoppedBy,
-              { ...deps, lifecycle },
-              pending?.stopped,
-            ))
+            !(await recordStoppedAfterHostRestart(target, stoppedBy, {
+              ...deps,
+              lifecycle,
+            }))
           ) {
-            // The processes the restart stopped are the ones recorded now; a later attempt touches only those.
-            unmarked.set(
-              targetId,
-              pending ?? {
-                mark: stoppedBy,
-                stopped: Object.fromEntries(
-                  Object.entries(target.services ?? {}).map(
-                    ([service, run]) => [service, run.incarnation],
-                  ),
-                ),
-              },
-            );
+            unmarked.set(targetId, stoppedBy);
             return undefined;
           }
           unmarked.delete(targetId);

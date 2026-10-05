@@ -86,6 +86,10 @@ export interface ServiceRun {
    * its start passed: until then the health monitor owns the Service, checking it while a process runs and starting it at
    * the next step of the back-off while none does, not automatic restart. */
   healthStretch?: { since: number; restarts: number[]; pendingStart?: number };
+  /** The Host boot and login the process was started in, as the rigd that started it read them at its first pass. A stop
+   * by a Host restart applies only to a run started before that restart; one without it was started by an older rigd and
+   * counts as before. */
+  startedIn?: { boot?: string; login?: string };
 }
 
 export interface TargetRecord {

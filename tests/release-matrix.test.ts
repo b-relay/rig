@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { rigFixture } from "./support/rig-fixture";
@@ -191,6 +191,13 @@ test("one Service under the default names: config, Doctor, no-up deploy, up, res
     expect(await ok(f, ["up", "live"])).toMatchObject({ outcome: "started" });
     expect((await app(await port(f, "live"))).stored).toBe("stable-record");
     expect(await ok(f, ["down", "live"])).toMatchObject({ outcome: "stopped" });
+    // With every Target stopped rigd uninstalls, and the Targets it recorded stay for the next install.
+    expect((await f.rigd(["uninstall"])).code).toBe(0);
+    expect(
+      JSON.parse(await readFile(join(f.root, "runtime", "state.json"), "utf8"))
+        .targets.map((entry: { name: string }) => entry.name)
+        .sort(),
+    ).toEqual(["live", "local"]);
   } finally {
     await f.cleanup();
   }

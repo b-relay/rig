@@ -628,8 +628,9 @@ test("a deleted log directory is recreated on the next line; output that cannot 
       .split("\n")
       .filter(Boolean).length;
   while ((await lines()) < 3) await Bun.sleep(10);
-  // The directory disappears under the running component: the next line brings it back.
-  await rm(logRoot, { recursive: true, force: true });
+  // The directory disappears under the running component: the next line brings it back. A line written mid-delete
+  // leaves it not yet empty (ENOTEMPTY); rm retries that itself.
+  await rm(logRoot, { recursive: true, force: true, maxRetries: 10 });
   for (let i = 0; i < 100 && (await lines()) < 2; i++) await Bun.sleep(10);
   expect(await lines()).toBeGreaterThanOrEqual(2);
   expect(await supervisor.observe(request.key)).toEqual({

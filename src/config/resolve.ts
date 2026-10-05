@@ -144,7 +144,7 @@ export function resolveTargetPlan(
         references.text(value, `${at}.${key}`).value,
       ]),
     );
-  const projectEnv = publicEnv(settings.env ?? {}, "env");
+  const projectEnv = publicEnv(settings.environment ?? {}, "environment");
   const projectFiles = envFiles(settings.env_file, "env_file", []);
   const buildTimeout = (override: string | undefined) =>
     durationSeconds(override ?? settings.build_timeout ?? "10m");
@@ -152,10 +152,10 @@ export function resolveTargetPlan(
   const components: PlanComponent[] = [
     ...services.map(([name, service]): PlanComponent => {
       const at = `services.${name}`;
-      const run = references.shell(service.run, `${at}.run`);
+      const run = references.shell(service.command, `${at}.command`);
       if (!localhostCommand(run.value))
         throw new ConfigError(
-          "Resolved run command binds outside localhost.",
+          "Resolved command binds outside localhost.",
           "invalid_binding",
           { service: name },
         );
@@ -193,7 +193,10 @@ export function resolveTargetPlan(
       return {
         name,
         kind: "managed",
-        env: { ...projectEnv, ...publicEnv(service.env ?? {}, `${at}.env`) },
+        env: {
+          ...projectEnv,
+          ...publicEnv(service.environment ?? {}, `${at}.environment`),
+        },
         dependsOn: service.depends_on ?? [],
         envFiles: [
           ...projectFiles,

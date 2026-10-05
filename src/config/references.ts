@@ -4,7 +4,7 @@ import { ConfigError } from "./errors";
 export interface PublicInput {
   /** The environment name, such as DATABASE_URL. */
   name: string;
-  /** The config path that declares it, such as services.api.env.DATABASE_URL. */
+  /** The config path that declares it, such as services.api.environment.DATABASE_URL. */
   source: string;
   value: string;
 }
@@ -33,7 +33,9 @@ export interface ReferenceResolver {
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
 const HINT =
-  "A reference names an exact config path such as ${services.web.ports.http} or ${env.NAME}, or a Rig value such as ${rig.target}. Write $${VAR} for a literal shell ${VAR}; $VAR is left to the shell.";
+  "A reference names an exact config path such as ${services.web.ports.http} or ${environment.NAME}, or a Rig value such as ${rig.target}. Write $${VAR} for a literal shell ${VAR}; $VAR is left to the shell.";
+/** A path through a Project's or Service's `env`, which is `environment` now (ADR 0011). */
+const RENAMED_ENV = /^((?:services\.[^.]+\.)?)env\.(.+)$/;
 const PROJECT_BUILD = /^(?:build|tools\.[^.]+\.build)$/;
 const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]+$/;
 /** A value as literal shell data at a position that is bare, inside double quotes, or inside single quotes. */
@@ -45,7 +47,7 @@ function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
 }
 
 /** Pure recursive resolution over one patched settings graph. A reference is an exact path to a scalar in that graph or a rig.* value;
- * `$${` escapes to a literal `${`. Throws ConfigError `unknown_reference`, `reference_not_scalar`, `reference_into_targets`,
+ * `$${` escapes to a literal `${`. Throws ConfigError `renamed_reference` (a path through the old `env`), `unknown_reference`, `reference_not_scalar`, `reference_into_targets`,
  * `invalid_context` (rig.data outside a Service) or `reference_cycle`, each naming the config path that holds the reference. */
 export function referenceResolver(
   settings: Readonly<Record<string, unknown>>,
@@ -58,16 +60,24 @@ export function referenceResolver(
     at: string,
     stack: readonly string[],
   ): ResolvedText => {
+    const renamed = RENAMED_ENV.exec(key);
+    if (renamed)
+      throw new ConfigError(
+        `Reference '\${${key}}' in ${at} names \`env\`, which is now \`environment\`: write \${${renamed[1]}environment.${renamed[2]}}.`,
+        "renamed_reference",
+        { key, path: at },
+        `Write \${${renamed[1]}environment.${renamed[2]}} instead.`,
+      );
     // stack[0] is the field being resolved for an invocation; a Project or Tool build has no Service scope, however the value is reached.
     const consumer = stack[0]!;
     if (
       PROJECT_BUILD.test(consumer) &&
       ((key === "rig.data" && at !== consumer) ||
-        /^services\.[^.]+\.env\./.test(key))
+        /^services\.[^.]+\.environment\./.test(key))
     )
       throw fail(
         "invalid_context",
-        `${consumer} reaches '\${${key}}'${at === consumer ? "" : ` through ${at}`}: a Project or Tool build runs with Project inputs and cannot use a Service's env or data.`,
+        `${consumer} reaches '\${${key}}'${at === consumer ? "" : ` through ${at}`}: a Project or Tool build runs with Project inputs and cannot use a Service's environment or data.`,
         key,
         at,
       );
@@ -151,7 +161,8 @@ export function referenceResolver(
       );
     const resolved = substitute(node, key, [...stack, key], (value) => value);
     const name =
-      /^(?:services\.[^.]+\.)?env\.([^.]+)$/.exec(key)?.[1] ?? undefined;
+      /^(?:services\.[^.]+\.)?environment\.([^.]+)$/.exec(key)?.[1] ??
+      undefined;
     return name === undefined
       ? resolved
       : {

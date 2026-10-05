@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileStateStore } from "../src/runtime/state-store";
 import { describeExit } from "../src/runtime/supervision";
+import { parseProjectConfig, resolveTargetPlan } from "../src/config";
 
 test("registration survives reopening and serialized concurrent updates preserve both projects", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-"));
@@ -399,6 +400,65 @@ test("a plan an older Rig recorded with ongoing health checks is read without th
     const saved = await readFile(path, "utf8");
     expect(saved).not.toContain("healthMonitor");
     expect(saved).not.toContain("healthRestarts");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a plan recorded while environment was called env names its command inputs by the new path when read, so it equals today's plan and is saved so", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-environment-sources-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const config = parseProjectConfig({
+      name: "demo",
+      build: "make ${environment.MODE}",
+      environment: { MODE: "fast" },
+      services: {
+        web: {
+          command: "serve --db ${services.web.environment.DB}",
+          environment: { DB: "db://${environment.MODE}" },
+          ports: { http: 3000 },
+        },
+      },
+    });
+    const plan = resolveTargetPlan(
+      {
+        config,
+        target: "working",
+        workspacePath: "/tmp/demo",
+        dataRoot: "/tmp/data",
+      },
+      { operatorHome: "/home/operator", envRoot: "/rig/env" },
+    );
+    // What a rigd before the rename recorded for the same file, then spelled `env` and `run`.
+    const recordedPlan = JSON.parse(
+      JSON.stringify(plan)
+        .replaceAll('"environment.', '"env.')
+        .replaceAll("services.web.environment.", "services.web.env."),
+    );
+    expect(JSON.stringify(recordedPlan)).toContain('"source":"env.MODE"');
+    expect(JSON.stringify(recordedPlan)).toContain(
+      '"source":"services.web.env.DB"',
+    );
+    const recorded = structuredClone(inventory);
+    Object.assign(recorded.targets[0]!, {
+      plan: recordedPlan,
+      recovery: {
+        plan: structuredClone(recordedPlan),
+        desired: "stopped",
+        stage: "pending",
+      },
+    });
+    await writeFile(path, JSON.stringify({ version: 5, ...recorded }));
+    const store = new FileStateStore(root);
+    const read = (await store.read()).targets[0]!;
+    expect(read.plan).toEqual(plan);
+    expect(read.recovery!.plan).toEqual(plan);
+    await store.update(() => {});
+    const saved = await readFile(path, "utf8");
+    expect(saved).not.toContain('"env.');
+    expect(saved).not.toContain(".env.");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

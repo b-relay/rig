@@ -3,14 +3,14 @@ description: Demo Project. A household inventory site with one web Service.
 production_branch: main
 domain: pantry.test
 
-env:
+environment:
   LOG_LEVEL: info
 
 services:
   web:
-    run: bun server.ts
+    command: bun server.ts
     ports: { http: auto }
-    env:
+    environment:
       PORT: ${services.web.ports.http}
       GREETING: The pantry is stocked.
     ready: http://127.0.0.1:${services.web.ports.http}/healthz

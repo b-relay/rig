@@ -28,7 +28,7 @@ export function setAt(
       : value,
   };
 }
-/** A copy of `tree` without `path`; objects emptied by the removal go too, so a cleared `env` leaves no `env: {}` behind. */
+/** A copy of `tree` without `path`; objects emptied by the removal go too, so a cleared `environment` leaves no `environment: {}` behind. */
 export function removeAt(tree: Tree, path: readonly string[]): Tree {
   const [key, ...rest] = path;
   if (key === undefined || !Object.hasOwn(tree, key)) return tree;

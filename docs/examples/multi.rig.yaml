@@ -6,15 +6,15 @@ production_branch: main
 domain: acme.example.com
 build: bun install --frozen-lockfile
 
-env:
+environment:
   LOG_FORMAT: json
 
 services:
   web:
     build: bun run build:web
-    run: bun apps/web/dist/server.js
+    command: bun apps/web/dist/server.js
     ports: { http: auto }
-    env:
+    environment:
       HOST: 127.0.0.1
       PORT: ${services.web.ports.http}
     ready: http://127.0.0.1:${services.web.ports.http}/health
@@ -22,9 +22,9 @@ services:
 
   api:
     build: go build -o .rig-build/api ./cmd/api
-    run: ./.rig-build/api
+    command: ./.rig-build/api
     ports: { http: auto }
-    env:
+    environment:
       HOST: 127.0.0.1
       PORT: ${services.api.ports.http}
       DATA_DIR: ${rig.data}
@@ -34,15 +34,15 @@ services:
     depends_on: [db]
 
   db:
-    run: >-
+    command: >-
       test -s "$PGDATA/PG_VERSION" || initdb -D "$PGDATA" -U postgres --auth=trust || exit $?;
       exec postgres -D "$PGDATA" -h "$PGHOST" -p "$PGPORT"
     ports: { pg: auto }
-    env:
+    environment:
       PGHOST: 127.0.0.1
       PGPORT: ${services.db.ports.pg}
       PGDATA: ${rig.data}/pg
-    ready: pg_isready -h ${services.db.env.PGHOST} -p ${services.db.ports.pg}
+    ready: pg_isready -h ${services.db.environment.PGHOST} -p ${services.db.ports.pg}
 
 tools:
   acmectl:
@@ -58,7 +58,7 @@ targets:
     services:
       api:
         ports: { http: 8787 }
-    env: { LOG_FORMAT: pretty }
+    environment: { LOG_FORMAT: pretty }
   stable: true
   preview:
     domain: ${rig.target}.preview.acme.example.com

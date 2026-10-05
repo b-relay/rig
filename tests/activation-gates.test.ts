@@ -27,8 +27,8 @@ const PROJECT = {
     "/api": "${services.api.ports.http}",
   },
   services: {
-    web: { run: "web", ports: { http: WEB } },
-    api: { run: "api", ports: { http: API, admin: ADMIN } },
+    web: { command: "web", ports: { http: WEB } },
+    api: { command: "api", ports: { http: API, admin: ADMIN } },
   },
 };
 type Listening = Record<string, ListenerEvidence | string[]>;
@@ -311,9 +311,9 @@ test("readiness that never answers within the budget is reported as unanswered, 
 const DEPENDENT = {
   name: "demo",
   services: {
-    db: { run: "db", restart: "no", ports: { tcp: API } },
-    web: { run: "web", depends_on: ["db"], ports: { http: WEB } },
-    worker: { run: "worker", depends_on: ["db"] },
+    db: { command: "db", restart: "no", ports: { tcp: API } },
+    web: { command: "web", depends_on: ["db"], ports: { http: WEB } },
+    worker: { command: "worker", depends_on: ["db"] },
   },
 };
 

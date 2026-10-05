@@ -55,8 +55,11 @@ test("the Project schema names its draft, identity and the public top-level sett
   });
 });
 
-test("env is documented as a map of names to strings, not as an untyped value", () => {
-  for (const env of [project.properties.env, service.properties.env]) {
+test("environment is documented as a map of names to strings, not as an untyped value", () => {
+  for (const env of [
+    project.properties.environment,
+    service.properties.environment,
+  ]) {
     expect(env).toMatchObject({
       type: "object",
       propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_]*$" },
@@ -72,7 +75,7 @@ test("every default the schema shows is the value planning applies when the sett
       config: {
         name: "app",
         build: "make",
-        services: { web: { run: "serve", build: "make web" } },
+        services: { web: { command: "serve", build: "make web" } },
         tools: { report: { bin: "bin/report", build: "make report" } },
       },
       target: "stable",
@@ -114,7 +117,7 @@ test("every default the schema shows is the value planning applies when the sett
 
 test("each field that takes references lists the references valid there", () => {
   const shared = [
-    "${env.NAME}",
+    "${environment.NAME}",
     "${services.<service>.ports.<port>}",
     "${rig.target}",
     "${rig.workspace}",
@@ -123,15 +126,15 @@ test("each field that takes references lists the references valid there", () => 
     "$${VAR}",
   ];
   const inService = [
-    service.properties.run,
+    service.properties.command,
     service.properties.build,
     service.properties.ready,
-    service.properties.env.additionalProperties,
+    service.properties.environment.additionalProperties,
     service.properties.env_file,
   ];
   const inProject = [
     project.properties.build,
-    project.properties.env.additionalProperties,
+    project.properties.environment.additionalProperties,
     project.properties.env_file,
     tool.properties.build,
     tool.properties.bin,

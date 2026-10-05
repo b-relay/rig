@@ -5,15 +5,15 @@ domain: ledger.test
 
 services:
   api:
-    run: bun api.ts
+    command: bun api.ts
     ports: { http: auto }
-    env:
+    environment:
       PORT: ${services.api.ports.http}
     ready: http://127.0.0.1:${services.api.ports.http}/healthz
   worker:
-    run: bun worker.ts
+    command: bun worker.ts
     depends_on: [api]
-    env:
+    environment:
       API_URL: http://127.0.0.1:${services.api.ports.http}
 
 proxy:

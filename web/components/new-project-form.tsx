@@ -24,7 +24,7 @@ export function NewProjectForm() {
   const [createGit, setCreateGit] = useState(false);
   const [kind, setKind] = useState<Kind>("service");
   const [name, setName] = useState("");
-  const [run, setRun] = useState("");
+  const [serviceCommand, setServiceCommand] = useState("");
   const [port, setPort] = useState("");
   const [ready, setReady] = useState("");
   const [bin, setBin] = useState("");
@@ -52,7 +52,7 @@ export function NewProjectForm() {
         ? {
             service: {
               name,
-              run,
+              command: serviceCommand,
               ...(port ? { port: Number(port) } : {}),
               ...(ready ? { ready } : {}),
             },
@@ -178,13 +178,15 @@ export function NewProjectForm() {
                 </Field>
                 {kind === "service" ? (
                   <>
-                    <Field label="Run command" htmlFor="run">
+                    <Field label="Command" htmlFor="service-command">
                       <Input
-                        id="run"
-                        value={run}
+                        id="service-command"
+                        value={serviceCommand}
                         required
                         className="font-mono text-xs"
-                        onChange={(event) => setRun(event.target.value)}
+                        onChange={(event) =>
+                          setServiceCommand(event.target.value)
+                        }
                       />
                     </Field>
                     <Field

@@ -17,10 +17,10 @@ test("real Branch deployment preserves policy, persistent data, no-op stops, and
 targets: { working: true, stable: true }
 services:
   web:
-    run: "'${process.execPath}' server.ts"
+    command: "'${process.execPath}' server.ts"
     ports: { http: auto }
     ready: http://127.0.0.1:\${services.web.ports.http}
-    env: { PORT: "\${services.web.ports.http}", DATA_DIR: "\${rig.data}" }
+    environment: { PORT: "\${services.web.ports.http}", DATA_DIR: "\${rig.data}" }
 `,
     );
     let commit = await f.commit();
@@ -73,7 +73,7 @@ services:
 targets: { working: true, stable: true }
 services:
   bad:
-    run: exit 99
+    command: exit 99
     ports: { http: 19999 }
 `,
     );

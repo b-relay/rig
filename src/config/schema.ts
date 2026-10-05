@@ -46,7 +46,7 @@ type ReferenceScope = "project" | "service";
 /** The one owner of the reference list an editor shows on hover; the long form is "References" in docs/rig-guide.md.
  * ${rig.data} is one Service's directory, so only a Service's own fields offer it. */
 const referencesIn = (scope: ReferenceScope) =>
-  `References: \${env.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
+  `References: \${environment.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -130,7 +130,7 @@ const envName = z
     "must be an environment variable name: letters, digits and '_', not starting with a digit",
   );
 /** Public inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
-const environment = (scope: ReferenceScope) =>
+const environmentMap = (scope: ReferenceScope) =>
   z
     .unknown()
     // The record parser drops a __proto__ key without a word, so it is refused before it gets there.
@@ -157,7 +157,7 @@ const environment = (scope: ReferenceScope) =>
           });
     });
 const env = (scope: ReferenceScope) =>
-  environment(scope).describe(
+  environmentMap(scope).describe(
     "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
   );
 const envFile = (scope: ReferenceScope) =>
@@ -169,7 +169,7 @@ const envFile = (scope: ReferenceScope) =>
 const BUILD_RULE =
   "run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only.";
 /** A shared or Tool build runs with Project inputs only. */
-const PROJECT_BUILD_REFERENCES = `${referencesIn("project")} A Service's env is not available here.`;
+const PROJECT_BUILD_REFERENCES = `${referencesIn("project")} A Service's environment is not available here.`;
 const build = command.describe(
   `Shell build command ${BUILD_RULE} ${PROJECT_BUILD_REFERENCES}`,
 );
@@ -196,7 +196,7 @@ const restart = z
     "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
   );
 const serviceFields = {
-  run: command.describe(
+  command: command.describe(
     `Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
   ),
   build: command
@@ -208,7 +208,7 @@ const serviceFields = {
   ports: ports.optional(),
   ready: health
     .describe(
-      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. ${referencesIn("service")}`,
+      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. ${referencesIn("service")}`,
     )
     .optional(),
   ready_timeout: duration
@@ -224,7 +224,7 @@ const serviceFields = {
       "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
     ),
   restart: restart.optional(),
-  env: env("service").optional(),
+  environment: env("service").optional(),
   env_file: envFile("service").optional(),
 };
 const toolFields = {
@@ -265,7 +265,7 @@ const patchFields = {
     ),
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
-  env: env("project").optional(),
+  environment: env("project").optional(),
   env_file: envFile("project").optional(),
   proxy: proxy.optional(),
   services: z
@@ -332,18 +332,18 @@ function mergeSettings(base: Fields, patch: Fields): Record<string, unknown> {
 }
 /** One Service as the cross-field rules read it. */
 type GraphService = Fields & {
-  run?: string;
+  command?: string;
   build?: string;
   ready?: string;
   depends_on?: readonly string[];
   ports?: Readonly<Record<string, number | "auto">>;
-  env?: Readonly<Record<string, string>>;
+  environment?: Readonly<Record<string, string>>;
   env_file?: string | readonly string[];
 };
 /** One settings graph as the cross-field rules read it: the base settings, or the base with one role's patch applied. */
 type GraphSettings = {
   build?: string;
-  env?: Readonly<Record<string, string>>;
+  environment?: Readonly<Record<string, string>>;
   env_file?: string | readonly string[];
   services?: Readonly<Record<string, GraphService>>;
   tools?: Readonly<Record<string, { bin?: string; build?: string }>>;
@@ -376,7 +376,7 @@ export const projectConfigSchema = z
       .describe(
         "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
       ),
-    env: env("project").optional(),
+    environment: env("project").optional(),
     env_file: envFile("project").optional(),
     services: z
       .record(entryName, z.strictObject(serviceFields))
@@ -569,8 +569,8 @@ function validateReferences(
   });
   const fields: [string[], string | undefined][] = [
     [["build"], settings.build],
-    ...Object.entries(settings.env ?? {}).map(
-      ([key, value]): [string[], string] => [["env", key], value],
+    ...Object.entries(settings.environment ?? {}).map(
+      ([key, value]): [string[], string] => [["environment", key], value],
     ),
     ...[settings.env_file ?? []]
       .flat()
@@ -578,10 +578,10 @@ function validateReferences(
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];
-    for (const field of ["run", "build", "ready"] as const)
+    for (const field of ["command", "build", "ready"] as const)
       fields.push([[...own, field], service[field]]);
-    for (const [key, value] of Object.entries(service.env ?? {}))
-      fields.push([[...own, "env", key], value]);
+    for (const [key, value] of Object.entries(service.environment ?? {}))
+      fields.push([[...own, "environment", key], value]);
     for (const value of [service.env_file ?? []].flat())
       fields.push([[...own, "env_file"], value]);
   }
@@ -619,6 +619,17 @@ const REMOVED_FORMAT =
  * `ready` and `ready_timeout`, so a file that still has the block is told where its settings go. */
 const REMOVED_HEALTH =
   "was removed with ongoing health checks; write its check as ready and its start_timeout as ready_timeout";
+/** Keys renamed to their Docker Compose names (ADR 0011). A file that still uses the old name is told the new one rather than
+ * that the key is unknown. Project settings and a Target patch had `env`; a Service had `run` and `env`. */
+const SETTINGS_RENAMES: Readonly<Record<string, string>> = {
+  env: "environment",
+};
+const SERVICE_RENAMES: Readonly<Record<string, string>> = {
+  run: "command",
+  ...SETTINGS_RENAMES,
+};
+const renamedKey = (from: string, to: string) =>
+  `\`${from}\` is now \`${to}\`; rename this key`;
 /** Every Service mapping of a raw config value with its path: `services.<name>` and `targets.<role>.services.<name>`. */
 function serviceBlockPaths(value: Fields): [string[], Fields][] {
   const blocks: [string[], Fields][] = [];
@@ -642,13 +653,26 @@ function refuseUnsupportedShapes(value: unknown): void {
     issues.push({ path: ["format"], message: REMOVED_FORMAT });
   if (Object.hasOwn(value, "supervisor"))
     issues.push({ path: ["supervisor"], message: REMOVED_SUPERVISOR });
-  for (const [path, service] of serviceBlockPaths(value))
+  const renames = (
+    block: Fields,
+    at: string[],
+    names: Readonly<Record<string, string>>,
+  ) => {
+    for (const [from, to] of Object.entries(names))
+      if (Object.hasOwn(block, from))
+        issues.push({ path: [...at, from], message: renamedKey(from, to) });
+  };
+  renames(value, [], SETTINGS_RENAMES);
+  for (const [path, service] of serviceBlockPaths(value)) {
     if (Object.hasOwn(service, "health"))
       issues.push({ path: [...path, "health"], message: REMOVED_HEALTH });
+    renames(service, path, SERVICE_RENAMES);
+  }
   for (const [role, patch] of Object.entries(
     isRecord(value.targets) ? value.targets : {},
   )) {
     if (!isRecord(patch)) continue;
+    renames(patch, ["targets", role], SETTINGS_RENAMES);
     if (Object.hasOwn(patch, "supervisor"))
       issues.push({
         path: ["targets", role, "supervisor"],

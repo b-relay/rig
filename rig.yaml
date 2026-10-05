@@ -10,9 +10,9 @@ services:
   # browser never holds them.
   web:
     build: bun install --frozen-lockfile && bun --bun next build web
-    run: bun --bun next start web -H 127.0.0.1 -p ${services.web.ports.http}
+    command: bun --bun next start web -H 127.0.0.1 -p ${services.web.ports.http}
     ports: { http: auto }
-    env:
+    environment:
       PORT: ${services.web.ports.http}
       # The site owns SIGTERM so a stop can take the sandbox rigd of a Preview down with it.
       NEXT_MANUAL_SIG_HANDLE: "true"
@@ -32,7 +32,7 @@ targets:
   preview:
     services:
       web:
-        env:
+        environment:
           # A Preview's dashboard drives a throwaway rigd of its own, kept in the Preview's data
           # directory and destroyed with it, so an unreviewed Branch never holds the Host's rigd.
           RIG_WEB_SANDBOX_ROOT: ${rig.data}/rigd

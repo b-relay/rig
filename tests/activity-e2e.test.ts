@@ -16,7 +16,7 @@ test("daemon records observed terminal crashes once and exposes verified adminis
       `name: demo
 services:
   worker:
-    run: "'${process.execPath}' app.ts"
+    command: "'${process.execPath}' app.ts"
     restart: "no"
 `,
     );

@@ -380,7 +380,7 @@ const SECTION_ROOTS: Record<Section, readonly string[]> = {
     "build",
     "build_timeout",
   ],
-  environment: ["env", "env_file"],
+  environment: ["environment", "env_file"],
   services: ["services"],
   tools: ["tools"],
   proxy: ["proxy"],
@@ -711,7 +711,7 @@ function EnvironmentSection({ path }: { path: string[] }) {
   return (
     <div className="grid max-w-xl gap-6">
       <Records
-        path={[...path, "env"]}
+        path={[...path, "environment"]}
         label="Environment variables"
         keyLabel="variable"
         keyPattern={ENV_NAME}
@@ -733,8 +733,8 @@ function ServiceFields({
   return (
     <div className="grid gap-4">
       <Text
-        path={[...path, "run"]}
-        label="Run command"
+        path={[...path, "command"]}
+        label="Command"
         required={required}
         mono
       />
@@ -800,7 +800,7 @@ const ENTRY = {
   service: {
     root: "services",
     title: "Service",
-    initial: { run: "" },
+    initial: { command: "" },
     Fields: ServiceFields,
   },
   tool: {

@@ -26,7 +26,7 @@
       "minLength": 1
     },
     "build": {
-      "description": "Shared shell build command, run once in the workspace before any Service or Tool build. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here.",
+      "description": "Shared shell build command, run once in the workspace before any Service or Tool build. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here.",
       "type": "string",
       "minLength": 1
     },
@@ -36,7 +36,7 @@
       "minLength": 1,
       "default": "10m"
     },
-    "env": {
+    "environment": {
       "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
       "type": "object",
       "propertyNames": {
@@ -45,7 +45,7 @@
       },
       "additionalProperties": {
         "type": "string",
-        "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+        "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
       }
     },
     "env_file": {
@@ -63,7 +63,7 @@
           }
         }
       ],
-      "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+      "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
     },
     "services": {
       "description": "Long-running Services keyed by name.",
@@ -77,15 +77,15 @@
       "additionalProperties": {
         "type": "object",
         "properties": {
-          "run": {
+          "command": {
             "type": "string",
             "minLength": 1,
-            "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+            "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
           },
           "build": {
             "type": "string",
             "minLength": 1,
-            "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+            "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
           },
           "build_timeout": {
             "type": "string",
@@ -118,7 +118,7 @@
           "ready": {
             "type": "string",
             "minLength": 1,
-            "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+            "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
           },
           "ready_timeout": {
             "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
@@ -152,7 +152,7 @@
             "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
             "default": "always"
           },
-          "env": {
+          "environment": {
             "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
             "type": "object",
             "propertyNames": {
@@ -161,7 +161,7 @@
             },
             "additionalProperties": {
               "type": "string",
-              "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+              "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
             }
           },
           "env_file": {
@@ -179,11 +179,11 @@
                 }
               }
             ],
-            "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+            "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
           }
         },
         "required": [
-          "run"
+          "command"
         ],
         "additionalProperties": false
       }
@@ -203,7 +203,7 @@
           "build": {
             "type": "string",
             "minLength": 1,
-            "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+            "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
           },
           "build_timeout": {
             "type": "string",
@@ -213,7 +213,7 @@
           "bin": {
             "type": "string",
             "minLength": 1,
-            "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+            "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
           }
         },
         "required": [
@@ -256,14 +256,14 @@
                 "build": {
                   "type": "string",
                   "minLength": 1,
-                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
                 },
                 "build_timeout": {
                   "type": "string",
                   "minLength": 1,
                   "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
                 },
-                "env": {
+                "environment": {
                   "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
                   "type": "object",
                   "propertyNames": {
@@ -272,7 +272,7 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                    "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                   }
                 },
                 "env_file": {
@@ -290,7 +290,7 @@
                       }
                     }
                   ],
-                  "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                  "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                 },
                 "proxy": {
                   "type": "object",
@@ -317,15 +317,15 @@
                   "additionalProperties": {
                     "type": "object",
                     "properties": {
-                      "run": {
+                      "command": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build_timeout": {
                         "type": "string",
@@ -358,7 +358,7 @@
                       "ready": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "ready_timeout": {
                         "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
@@ -389,7 +389,7 @@
                         ],
                         "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
                       },
-                      "env": {
+                      "environment": {
                         "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
                         "type": "object",
                         "propertyNames": {
@@ -398,7 +398,7 @@
                         },
                         "additionalProperties": {
                           "type": "string",
-                          "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                         }
                       },
                       "env_file": {
@@ -416,7 +416,7 @@
                             }
                           }
                         ],
-                        "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       }
                     },
                     "additionalProperties": false
@@ -437,7 +437,7 @@
                       "build": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                        "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
                       },
                       "build_timeout": {
                         "type": "string",
@@ -447,7 +447,7 @@
                       "bin": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                        "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                       }
                     },
                     "additionalProperties": false
@@ -475,14 +475,14 @@
                 "build": {
                   "type": "string",
                   "minLength": 1,
-                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
                 },
                 "build_timeout": {
                   "type": "string",
                   "minLength": 1,
                   "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
                 },
-                "env": {
+                "environment": {
                   "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
                   "type": "object",
                   "propertyNames": {
@@ -491,7 +491,7 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                    "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                   }
                 },
                 "env_file": {
@@ -509,7 +509,7 @@
                       }
                     }
                   ],
-                  "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                  "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                 },
                 "proxy": {
                   "type": "object",
@@ -536,15 +536,15 @@
                   "additionalProperties": {
                     "type": "object",
                     "properties": {
-                      "run": {
+                      "command": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build_timeout": {
                         "type": "string",
@@ -577,7 +577,7 @@
                       "ready": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "ready_timeout": {
                         "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
@@ -608,7 +608,7 @@
                         ],
                         "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
                       },
-                      "env": {
+                      "environment": {
                         "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
                         "type": "object",
                         "propertyNames": {
@@ -617,7 +617,7 @@
                         },
                         "additionalProperties": {
                           "type": "string",
-                          "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                         }
                       },
                       "env_file": {
@@ -635,7 +635,7 @@
                             }
                           }
                         ],
-                        "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       }
                     },
                     "additionalProperties": false
@@ -656,7 +656,7 @@
                       "build": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                        "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
                       },
                       "build_timeout": {
                         "type": "string",
@@ -666,7 +666,7 @@
                       "bin": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                        "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                       }
                     },
                     "additionalProperties": false
@@ -694,14 +694,14 @@
                 "build": {
                   "type": "string",
                   "minLength": 1,
-                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                  "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
                 },
                 "build_timeout": {
                   "type": "string",
                   "minLength": 1,
                   "description": "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed."
                 },
-                "env": {
+                "environment": {
                   "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
                   "type": "object",
                   "propertyNames": {
@@ -710,7 +710,7 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                    "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                   }
                 },
                 "env_file": {
@@ -728,7 +728,7 @@
                       }
                     }
                   ],
-                  "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                  "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                 },
                 "proxy": {
                   "type": "object",
@@ -755,15 +755,15 @@
                   "additionalProperties": {
                     "type": "object",
                     "properties": {
-                      "run": {
+                      "command": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Shell build command of this Service, run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "build_timeout": {
                         "type": "string",
@@ -796,7 +796,7 @@
                       "ready": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       },
                       "ready_timeout": {
                         "description": "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
@@ -827,7 +827,7 @@
                         ],
                         "description": "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy."
                       },
-                      "env": {
+                      "environment": {
                         "description": "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
                         "type": "object",
                         "propertyNames": {
@@ -836,7 +836,7 @@
                         },
                         "additionalProperties": {
                           "type": "string",
-                          "description": "Public value. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          "description": "Public value. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                         }
                       },
                       "env_file": {
@@ -854,7 +854,7 @@
                             }
                           }
                         ],
-                        "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                        "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                       }
                     },
                     "additionalProperties": false
@@ -875,7 +875,7 @@
                       "build": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's env is not available here."
+                        "description": "Shell build command run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}. A Service's environment is not available here."
                       },
                       "build_timeout": {
                         "type": "string",
@@ -885,7 +885,7 @@
                       "bin": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${env.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                        "description": "Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname \"$0\" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. References: ${environment.NAME}, ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                       }
                     },
                     "additionalProperties": false

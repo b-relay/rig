@@ -7,6 +7,7 @@ import {
   DIAGNOSTIC_SINK,
 } from "../src/daemon/notices";
 import { test, expect } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -37,7 +38,7 @@ function fixture() {
   const config = parseProjectConfig({
     name: "demo",
     services: {
-      web: { run: "serve --host 127.0.0.1", ports: { http: 4567 } },
+      web: { command: "serve --host 127.0.0.1", ports: { http: 4567 } },
     },
     targets: { working: true, stable: true, preview: true },
   });
@@ -190,7 +191,7 @@ test("init config name is authoritative; local up uses the actual repo and appli
   await runtime.command({ action: "up", project: "demo" });
   expect(plans[0].plan.workspacePath).toBe("/tmp/developer");
   const id = state.targets[0]!.id;
-  config.services!.web = { run: "changed", ports: { http: 9999 } };
+  config.services!.web = { command: "changed", ports: { http: 9999 } };
   // A running working Target keeps the plan its processes were started from.
   await runtime.command({ action: "up", project: "demo" });
   expect(plans[1].plan.components[0].command).toBe("serve --host 127.0.0.1");
@@ -205,7 +206,7 @@ test("init config name is authoritative; local up uses the actual repo and appli
     command: "changed",
     port: 9999,
   });
-  config.services!.web = { run: "restarted", ports: { http: 9999 } };
+  config.services!.web = { command: "restarted", ports: { http: 9999 } };
   await runtime.command({ action: "restart", project: "demo" });
   expect(plans.at(-1).plan.components[0].command).toBe("restarted");
   expect(state.activity.map((a) => a.outcome)).toEqual([
@@ -707,7 +708,7 @@ test("repoint keeps a Tool's name from before Target names were fixed, so the ne
 
 test("repoint uses the new config path and retains assigned ports", async () => {
   const { runtime, state, deps, config } = fixture();
-  config.services!.api = { run: "api", ports: { http: "auto" } };
+  config.services!.api = { command: "api", ports: { http: "auto" } };
   config.tools = { cli: { bin: "cli.ts" } };
   deps.files.selectPorts = async () => ({
     web: 4567,
@@ -901,7 +902,7 @@ test("repoint refuses a config whose port another Target records and leaves the 
   });
   state.targets.push(foreign);
   config.services!.web = {
-    run: "serve --host 127.0.0.1",
+    command: "serve --host 127.0.0.1",
     ports: { http: 4600 },
   };
   await expect(
@@ -921,7 +922,7 @@ test("repoint refuses a config whose port another Target records and leaves the 
   });
   expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4567 });
   config.services!.web = {
-    run: "serve --host 127.0.0.1",
+    command: "serve --host 127.0.0.1",
     ports: { http: 4700 },
   };
   await runtime.command({
@@ -981,7 +982,7 @@ test("doctor reports drift, not an invalid config, when a valid config adds a Se
   await runtime.command({ action: "up", project: "demo" });
   await runtime.command({ action: "down", project: "demo" });
   config.services!.worker = {
-    run: "work --host 127.0.0.1",
+    command: "work --host 127.0.0.1",
     ports: { http: "auto" },
   };
   const report = (await runtime.command({
@@ -1033,14 +1034,14 @@ test("doctor checks a deployed Target against its deployed revision's config, no
         }[];
       }
     ).checks.find((c) => c.name === "stable/config");
-  config.services!.web = { run: "edited", ports: { http: 4567 } };
+  config.services!.web = { command: "edited", ports: { http: 4567 } };
   expect(await check()).toEqual({
     name: "stable/config",
     ok: true,
     message:
       "Recorded Target policy matches the deployed revision's configuration.",
   });
-  committed.services!.web = { run: "changed", ports: { http: 4567 } };
+  committed.services!.web = { command: "changed", ports: { http: 4567 } };
   expect(await check()).toEqual({
     name: "stable/config",
     ok: false,
@@ -1091,7 +1092,7 @@ test("doctor acquires the Project config once per report, so identity and every 
   });
   const original = structuredClone(config);
   const edited = structuredClone(config);
-  edited.services!.web = { run: "edited", ports: { http: 4567 } };
+  edited.services!.web = { command: "edited", ports: { http: 4567 } };
   let repoReads = 0;
   const read = deps.documents.read.bind(deps.documents);
   deps.documents.read = async (path) => ({
@@ -1293,7 +1294,7 @@ test("doctor reports drift on a running working Target and names restart as the 
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
-  config.services!.web = { run: "changed", ports: { http: 4567 } };
+  config.services!.web = { command: "changed", ports: { http: 4567 } };
   expect(
     await runtime.command({ action: "doctor", project: "demo" }),
   ).toMatchObject({
@@ -1464,8 +1465,8 @@ test("deploy plans a Target from the rig config committed on the deployed revisi
   const committed = parseProjectConfig({
     name: "demo",
     services: {
-      web: { run: "serve --host 127.0.0.1", ports: { http: 4567 } },
-      api: { run: "api --host 127.0.0.1", ports: { http: 4600 } },
+      web: { command: "serve --host 127.0.0.1", ports: { http: 4567 } },
+      api: { command: "api --host 127.0.0.1", ports: { http: 4600 } },
     },
   });
   deps.documents.read = async (path) =>
@@ -1502,7 +1503,7 @@ test("deploy refuses a revision whose committed rig config names another Project
   const workingCopy = deps.documents.read.bind(deps.documents);
   const renamed = parseProjectConfig({
     name: "other",
-    services: { web: { run: "serve", ports: { http: 4567 } } },
+    services: { web: { command: "serve", ports: { http: 4567 } } },
   });
   deps.documents.read = async (path) =>
     path === "/tmp/developer"
@@ -2748,7 +2749,7 @@ test("local and Preview planning use real selection with inventory exclusion and
   const { runtime, state, deps, config } = fixture();
   deps.files = createRuntimeFiles();
   config.services!.web = {
-    run: "serve --host 127.0.0.1",
+    command: "serve --host 127.0.0.1",
     ports: { http: "auto" },
   };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
@@ -3823,7 +3824,7 @@ test("init on a registered Project warns about the flags the existing config kep
       action: "init",
       repoPath: "/tmp/developer",
       domain: "app.test",
-      service: { name: "web", run: "serve", port: 4567 },
+      service: { name: "web", command: "serve", port: 4567 },
       tool: { name: "cli", bin: "cli.ts" },
       productionBranch: "release",
     }),
@@ -3842,7 +3843,7 @@ test("init on a registered Project warns about the flags the existing config kep
     revision: "abc",
     config: parseProjectConfig({
       name: "fresh",
-      services: { web: { run: "serve", ports: { http: 4567 } } },
+      services: { web: { command: "serve", ports: { http: 4567 } } },
     }),
   });
   expect(
@@ -4156,7 +4157,7 @@ test("a Target turned off while it runs stays listed, readable and stoppable, an
 test("an action checks and plans the working Target from one read of the checkout config", async () => {
   const { runtime, state, deps, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  config.targets = { working: { env: { FROM: "first" } } };
+  config.targets = { working: { environment: { FROM: "first" } } };
   const read = deps.documents.read.bind(deps.documents);
   let reads = 0;
   deps.documents.read = async (path) => {
@@ -4282,13 +4283,71 @@ test("while the checkout config is unreadable a recorded Target can still be sto
   expect(state.targets[0]!.desired).toBe("stopped");
 });
 
+test("renaming run to command and env to environment in an unchanged rig.yaml is not reported as a change of a Working copy a rigd before the rename planned", async () => {
+  const { runtime, deps, state } = fixture();
+  const config = parseProjectConfig({
+    name: "demo",
+    environment: { MODE: "dev" },
+    services: {
+      web: {
+        command: "serve --host 127.0.0.1 --mode ${environment.MODE}",
+        ports: { http: 4567 },
+        environment: { LABEL: "${environment.MODE}-web" },
+      },
+      api: {
+        command: "api --label ${services.web.environment.LABEL}",
+      },
+    },
+    targets: { working: { environment: { MODE: "local" } } },
+  });
+  let document = { revision: "planned-text", config };
+  deps.documents.read = async (path) => ({
+    path: `${path}/rig.yaml`,
+    ...document,
+  });
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  // The digest a rigd before the rename recorded: the same file parsed under the old names, each in its place.
+  const sha = (value: unknown) =>
+    createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  state.targets[0]!.configDigest = sha({
+    name: "demo",
+    env: { MODE: "dev" },
+    services: {
+      web: {
+        run: "serve --host 127.0.0.1 --mode ${env.MODE}",
+        ports: { http: 4567 },
+        env: { LABEL: "${env.MODE}-web" },
+      },
+      api: { run: "api --label ${services.web.env.LABEL}" },
+    },
+    targets: { working: { env: { MODE: "local" } } },
+  });
+  document = { revision: "renamed-text", config };
+  expect(
+    await runtime.command({ action: "up", project: "demo" }),
+  ).not.toHaveProperty("warnings");
+  // A change of what it says is still a change.
+  document = {
+    revision: "edited-text",
+    config: { ...config, description: "changed" },
+  };
+  expect(
+    (
+      (await runtime.command({ action: "up", project: "demo" })) as {
+        warnings: string[];
+      }
+    ).warnings,
+  ).toEqual([expect.stringContaining("Run rig restart working")]);
+});
+
 test("a Working copy whose rig.yaml text is unchanged, or changed only in comments or layout, is not reported as changed; a change of what it says is", async () => {
   const { runtime, deps, state } = fixture();
   const config = parseProjectConfig({
     name: "demo",
     services: {
       web: {
-        run: "serve --host 127.0.0.1",
+        command: "serve --host 127.0.0.1",
         ports: { http: 4567 },
         ready: "http://127.0.0.1:4567/health",
         ready_timeout: "1m",
@@ -4333,7 +4392,7 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
         [first, second].map((name) => [
           name,
           {
-            run: "serve --host 127.0.0.1",
+            command: "serve --host 127.0.0.1",
             ports: { http: name === "alpha" ? 4567 : 4568 },
           },
         ]),

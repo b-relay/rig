@@ -401,7 +401,7 @@ const roleSwitch = (description: string) =>
     .describe(description);
 const targets = z.strictObject({
   working: roleSwitch(
-    "The working Target, which runs this checkout as it is: true or a settings patch turns it on, false turns it off. Its Tools are published as <tool>-dev. When rig.yaml has no targets key at all, working is the one Target that is on.",
+    "The working Target, which runs this checkout as it is: true or a settings patch turns it on; false or leaving it out keeps it off. Its Tools are published as <tool>-dev.",
   ),
   stable: roleSwitch(
     "The stable Target, which serves the Production branch: true or a settings patch turns it on; false or leaving it out keeps it off. Its Tools are published under their plain names.",
@@ -410,13 +410,13 @@ const targets = z.strictObject({
     "Previews of other Branches: true or a settings patch applied to every Preview turns them on; false or leaving it out keeps them off. Preview names come from their Branch.",
   ),
 });
-/** Whether a role is on: its key under targets is true or a settings map. With no targets key at all, only working is on. */
+/** Whether a role is on: its key under targets is true or a settings map. False, a missing key, or no targets key at all is
+ * off. */
 export function targetOn(
   config: { targets?: Readonly<Partial<Record<TargetRole, unknown>>> },
   role: TargetRole,
 ): boolean {
-  if (config.targets === undefined) return role === "working";
-  const value = config.targets[role];
+  const value = config.targets?.[role];
   return value === true || isRecord(value);
 }
 type Fields = Readonly<Record<string, unknown>>;
@@ -498,7 +498,7 @@ export const projectConfigSchema = z
     targets: targets
       .optional()
       .describe(
-        "Which Targets are on, keyed by their fixed names working, stable and preview, each true, false or a settings patch. Without this key only working is on; with it, only the Targets it turns on are.",
+        "Which Targets are on, keyed by their fixed names working, stable and preview, each true, false or a settings patch. Only the Targets it turns on are on; without this key every Target is off.",
       ),
   })
   .superRefine((parsed, ctx) => {

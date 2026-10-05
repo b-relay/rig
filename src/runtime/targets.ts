@@ -79,9 +79,7 @@ export function assertTargetOn(
     `${label} off in rig.yaml.`,
     config.targets?.[role] === false
       ? `Change \`${role}: false\` to \`${role}: true\` under targets in rig.yaml.`
-      : config.targets === undefined
-        ? `Add a targets key to rig.yaml with \`${role}: true\` under it, and \`working: true\` beside it to keep the working Target on.`
-        : `Add \`${role}: true\` under targets in rig.yaml.`,
+      : `Add \`${role}: true\` under targets in rig.yaml.`,
     { role },
   );
 }

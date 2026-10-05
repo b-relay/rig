@@ -696,7 +696,7 @@ test("the targets rig init used to write, names alone, are refused with how to k
   );
 });
 
-test("a Target is on when its key is true or a settings map; false or a missing key is off, and without targets only working is on", () => {
+test("a Target is on when its key is true or a settings map; false, a missing key, or no targets key at all is off", () => {
   const on = (targets: unknown) => {
     const config = parseProjectConfig({
       name: "app",
@@ -705,8 +705,10 @@ test("a Target is on when its key is true or a settings map; false or a missing 
     });
     return TARGET_ROLES.filter((role) => targetOn(config, role));
   };
-  expect(on(undefined)).toEqual(["working"]);
+  // One rule, no special case: a rig.yaml without targets runs nothing, not even its checkout.
+  expect(on(undefined)).toEqual([]);
   expect(on({})).toEqual([]);
+  expect(on({ working: true })).toEqual(["working"]);
   expect(on({ stable: true })).toEqual(["stable"]);
   expect(on({ working: true, stable: false, preview: {} })).toEqual([
     "working",
@@ -2061,7 +2063,8 @@ test("a Target that is on and has a hostname but no usable proxy is refused with
         "The working Target has a hostname but no Service has a port; declare one, such as ports: { http: auto }, or remove the domain.",
     },
   ]);
-  // A Target that is off, or has no hostname, needs no proxy: without targets only working is on, and it has no hostname.
+  // A Target that is off, or has no hostname, needs no proxy: without targets every Target is off, and working has no
+  // hostname.
   expect(issues({ domain: "app.test", services: two })).toBeUndefined();
   expect(
     issues({ domain: "app.test", services: two, targets: { working: true } }),

@@ -54,7 +54,11 @@ async function fixture(
   > = SERVICES,
   real?: (root: string) => Supervisor,
 ) {
-  const config = parseProjectConfig({ name: "demo", services });
+  const config = parseProjectConfig({
+    name: "demo",
+    services,
+    targets: { working: true },
+  });
   const processes = new Map<string, ProcessObservation>();
   const starts: string[] = [];
   const refusal: {

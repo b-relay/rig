@@ -40,11 +40,15 @@ const TOOLS = `tools:
   hello:
     bin: hello.ts
 `;
-/** Every Target on; without a targets key only the working Target is. */
+/** Every Target on; without a targets key every Target is off. */
 const ON = `targets:
   working: true
   stable: true
   preview: true
+`;
+/** Only the working Target on. */
+const WORKING = `targets:
+  working: true
 `;
 
 async function project(f: Fixture, config: string): Promise<string> {
@@ -302,7 +306,7 @@ test("the same application runs unchanged by hand: equivalent arguments and envi
     });
   let manual: ReturnType<typeof Bun.spawn> | undefined;
   try {
-    await project(f, SERVICE);
+    await project(f, WORKING + SERVICE);
     expect(await ok(f, ["up", "working"])).toMatchObject({
       outcome: "started",
     });

@@ -4,3 +4,7 @@ description: Demo Project. A command-line Tool with no Services.
 tools:
   quill:
     bin: quill
+
+# The seed deploys nothing, so only the working Target is on.
+targets:
+  working: true

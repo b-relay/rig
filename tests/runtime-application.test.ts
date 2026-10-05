@@ -4195,16 +4195,20 @@ test("an off Target is refused by up, restart, deploy and a first logs read, eac
       "Change `stable: false` to `stable: true` under targets in rig.yaml.",
     ),
   );
-  // Without a targets key only working is on, so turning stable on means listing working too.
+  // Without a targets key every Target is off, and each refusal names the one line that turns its own role on.
   delete config.targets;
-  await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
-  ).rejects.toEqual(
-    refusal(
-      "stable",
-      "Add a targets key to rig.yaml with `stable: true` under it, and `working: true` beside it to keep the working Target on.",
-    ),
-  );
+  for (const [command, role] of [
+    [{ action: "up" }, "working"],
+    [{ action: "restart", target: "working" }, "working"],
+    [{ action: "logs" }, "working"],
+    [{ action: "deploy", target: "stable" }, "stable"],
+    [{ action: "deploy", target: "preview", branch: "feature" }, "preview"],
+  ] as const)
+    await expect(
+      runtime.command({ ...command, project: "demo" }),
+    ).rejects.toEqual(
+      refusal(role, `Add \`${role}: true\` under targets in rig.yaml.`),
+    );
   config.targets = { stable: true };
   await expect(
     runtime.command({ action: "up", project: "demo" }),
@@ -4486,6 +4490,7 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
         },
       },
     },
+    targets: { working: true },
   });
   let document = { revision: "planned-text", config };
   deps.documents.read = async (path) => ({
@@ -4530,6 +4535,7 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
           },
         ]),
       ),
+      targets: { working: true },
     });
   await runtime.command({ action: "down", project: "demo" });
   document = { revision: "ab", config: both("alpha", "beta") };

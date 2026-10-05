@@ -22,7 +22,11 @@ async function fixture(
   services: Record<string, unknown>,
   transitions?: string[],
 ) {
-  const config = parseProjectConfig({ name: "demo", services });
+  const config = parseProjectConfig({
+    name: "demo",
+    services,
+    targets: { working: true },
+  });
   const processes = new Map<string, ProcessObservation>();
   const supervisor: Supervisor = {
     async observe(key) {

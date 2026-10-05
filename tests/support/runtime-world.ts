@@ -59,8 +59,6 @@ export interface RuntimeWorldOptions {
   readonly router?: Router;
   /** Told about each start and stop as it begins, and each passed start check, as rigd tells its health monitor. */
   readonly lifecycleObserver?: LifecycleObserver;
-  /** Rewrites the config each Target plan is resolved from. */
-  readonly planConfig?: (config: ProjectConfig) => ProjectConfig;
   /** Dependencies that replace or add to the world's own, given its root and state file. */
   readonly dependencies?: (world: {
     root: string;
@@ -90,7 +88,6 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
   });
   const timing = options.timing ?? promptReadiness(options.readinessDeadlineMs);
   const store = new FileStateStore(root);
-  const planConfig = options.planConfig ?? ((config) => config);
   let id = 0;
   const deps = {
     // Never reconciled before its commands, so nothing waits for a first pass.
@@ -136,10 +133,10 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
         return await this.read(path);
       },
       resolve: (input: Parameters<typeof resolveTargetPlan>[0]) =>
-        resolveTargetPlan(
-          { ...input, config: planConfig(input.config) },
-          { operatorHome: "/home/operator", envRoot: join(root, "env") },
-        ),
+        resolveTargetPlan(input, {
+          operatorHome: "/home/operator",
+          envRoot: join(root, "env"),
+        }),
       async host() {
         return parseHostConfig({});
       },

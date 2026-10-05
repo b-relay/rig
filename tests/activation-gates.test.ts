@@ -36,7 +36,7 @@ type Listening = Record<string, ListenerEvidence | string[]>;
 /** The real runtime, lifecycle and effects over a scripted supervisor, a recording router, and controlled port and listener
  * evidence. `listening[service]` is what that Service's process tree listens on, as `address:port` or a whole answer. */
 async function fixture(project: Record<string, unknown> = PROJECT) {
-  const config = parseProjectConfig(project);
+  const config = parseProjectConfig(withWorkingDomain(project));
   const processes = new Map<string, ProcessObservation>();
   const pids = new Map<number, string>();
   const starts: string[] = [];
@@ -130,7 +130,6 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
       },
     },
     router,
-    planConfig: withWorkingDomain,
   });
   roots.push(world.root);
   const { clock, store } = world;
@@ -182,11 +181,13 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     },
   };
 }
-/** The Working copy is the Target these tests start; it is routed only when its role patch names a hostname. */
+/** The working Target is the one these tests start, so rig.yaml turns it on; it is routed only when its role patch names
+ * a hostname, here the Project's domain. */
 function withWorkingDomain<T extends { domain?: string }>(config: T): T {
-  return config.domain
-    ? ({ ...config, targets: { working: { domain: config.domain } } } as T)
-    : config;
+  return {
+    ...config,
+    targets: { working: config.domain ? { domain: config.domain } : true },
+  } as T;
 }
 /** Records what the pass at the current time sees, then runs the pass at the time the scheduled retry is due. */
 async function retry(f: Awaited<ReturnType<typeof fixture>>) {

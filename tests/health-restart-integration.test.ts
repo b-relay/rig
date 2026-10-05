@@ -748,3 +748,81 @@ test("when the first pass after a reboot cannot read the state, later passes det
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
   expect(await w.running()).toBe(true);
 }, 30_000);
+
+/** Fails every state read rigd's own passes make (never the health monitor's or a command's) until `on` is turned off. */
+function failPassReads(w: Awaited<ReturnType<typeof world>>) {
+  const failing = { on: true, count: 0 };
+  const read = w.store.read.bind(w.store);
+  w.store.read = async () => {
+    if (
+      failing.on &&
+      /at pass \([^)]*application\.ts/.test(new Error().stack ?? "")
+    ) {
+      failing.count++;
+      throw new Error("I/O error");
+    }
+    return await read();
+  };
+  return failing;
+}
+
+test("while rigd cannot read its state after a reboot, a Service waiting for its next health restart is not started for health", async () => {
+  const w = await world("no");
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  await rm(w.ready);
+  await w.advance(6);
+  expect(await w.run()).toMatchObject({
+    healthStretch: { pendingStart: expect.any(Number) },
+  });
+  const failing = failPassReads(w);
+  await w.reboot();
+  await writeFile(w.ready, "");
+  const spawned = w.spawns.length;
+  // Past the back-off's next health restart, with rigd's own passes still unable to read the state.
+  await w.advance(70);
+  expect(failing.count).toBeGreaterThan(1);
+  expect(w.spawns.length).toBe(spawned);
+  expect(await w.running()).toBe(false);
+  // Once it can, the Host restart is found and its stop recorded: web stays stopped until rig up.
+  failing.on = false;
+  await w.advance(70);
+  expect(w.spawns.length).toBe(spawned);
+  expect(await w.run()).toMatchObject({
+    outcome: { kind: "unknown", hostRestart: "reboot" },
+  });
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  expect(await w.running()).toBe(true);
+}, 30_000);
+
+for (const checked of [true, false])
+  test(`${checked ? "with" : "without"} a healthcheck, rig up is refused until rigd has read its state after a reboot, so the Host restart's record comes before every later start`, async () => {
+    const w = await world("always", { working: true }, checked);
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    const failing = failPassReads(w);
+    await w.reboot();
+    await expect(
+      w.runtime.command({ action: "up", project: "demo", target: "working" }),
+    ).rejects.toMatchObject({
+      code: "HOST_STATE_PENDING",
+      hint: expect.stringContaining("rigd is still reading its state"),
+    });
+    // A stop still runs.
+    await w.runtime.command({
+      action: "down",
+      project: "demo",
+      target: "working",
+    });
+    failing.on = false;
+    await w.advance(1);
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    expect(await w.running()).toBe(true);
+    await crashIsRestarted(w);
+  }, 30_000);

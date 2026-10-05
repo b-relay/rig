@@ -228,10 +228,22 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   const reservations = createHostReservations();
   let draining = false;
   let passes = 0;
-  /** The daemon's first pass could not read the state, so it could not tell whether the Host restarted: every later pass is
-   * a first pass until one reads it, so a read that failed at startup never lets a later pass restart what a Host restart
-   * stopped. */
+  /** The daemon-wide gate: nothing starts until rigd has reconciled the Host session. It closes when the daemon's first
+   * pass could not read the state, so it could not tell whether the Host restarted, and opens once a first pass has read
+   * it (and so recorded the restart or held its pending stops). While it is closed every later pass is a first pass, and
+   * nothing starts a Service: no supervision start, no health restart or start, and up, restart and deploy are refused;
+   * down, stops and destroy still run. So no run is ever journalled before a Host restart's record, whose `seq` therefore
+   * comes before every start made after the restart. */
   let reconcilePending = false;
+  /** Refuses a command that would start a Service while the gate above is closed. */
+  const assertReconciled = (action: string) => {
+    if (reconcilePending && ["up", "restart", "deploy"].includes(action))
+      throw new RigError(
+        "HOST_STATE_PENDING",
+        "rigd has not read its state since it started, so it cannot tell whether the Mac restarted, and nothing was started.",
+        `rigd is still reading its state after it started (the Mac may have restarted); retry rig ${action} in a moment. If it keeps failing, the state directory under RIG_ROOT/runtime cannot be read: rig doctor and the rigd diagnostic log show why.`,
+      );
+  };
   /** Every Operation this daemon is running or holding, its own supervision work included. */
   const operations = new Map<string, StopTracking>();
   /** Command executions still running, so a drain waits for them to answer. */
@@ -379,6 +391,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (subject.target) entry.view.target = subject.target;
         lease = await locks.acquire(operationId, scopes);
         if (draining) throw drainingError();
+        // Checked once admitted: a first pass that failed while this waited behind it closes the gate.
+        assertReconciled(entry.view.action);
       },
       holds: (scopes) =>
         scopes.every((scope) =>
@@ -1275,6 +1289,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           target.destructionPending
         )
           return { outcome: "skipped" as const };
+        // Nothing starts until rigd has reconciled the Host session (see `reconcilePending`).
+        if (reconcilePending) return { outcome: "deferred" as const };
         // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the
         // Target, as a supervision pass and an admitted command do; the monitor asks again and judges what is recorded then.
         if (unrecorded.has(target.id)) {

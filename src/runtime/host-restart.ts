@@ -176,7 +176,9 @@ export async function recordHostRestart(
     if (state.host)
       state.host.restart = {
         ...mark,
-        // Where the restart falls among starts: kept from when it was first recorded.
+        // Where the restart falls among starts: kept from when it was first recorded. Nothing has started since the
+        // restart: rigd starts nothing until its first pass has read the state and recorded it (application.ts,
+        // reconcilePending), so every start after the restart takes a higher startSeq than this.
         seq: sameMark(state.host.restart, mark)
           ? (state.host.restart!.seq ?? state.startSeq ?? 0)
           : (state.startSeq ?? 0),
@@ -264,6 +266,7 @@ function markSettled(
     ? state.host.restart!
     : {
         ...found,
+        // As in recordHostRestart: nothing has started since the restart, so this comes before every start after it.
         seq: state.startSeq ?? 0,
         settled: [],
         unannounced: true as const,

@@ -1,6 +1,5 @@
 import type { TargetPlan } from "../config/types";
 import type { HostRestart, HostSession } from "./host-session";
-import type { AlertState } from "./operator-alerts";
 import type { OperationOutcome } from "./activity";
 
 export interface ProjectRecord {
@@ -164,8 +163,6 @@ export interface RuntimeState {
       }[];
     };
   };
-  /** Stable Targets Rig counts as down and what the operator was alerted about; absent until the first alert evaluation. */
-  alerts?: AlertState;
 }
 
 export interface StateStore {

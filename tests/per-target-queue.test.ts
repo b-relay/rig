@@ -7,7 +7,6 @@ import { createRuntime } from "../src/runtime/application";
 import { plannedRoutes } from "../src/runtime/ports";
 import { controlledDeadline } from "./controlled-observation-deadline";
 import { waitNotice } from "../src/cli/wait-notice";
-import { engagedTargets } from "../src/runtime/alert-policy";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { ProcessObservation } from "../src/providers/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
@@ -448,68 +447,6 @@ test("Previews of one Project deploy side by side, and a Target of it that is st
   expect(await settled(down)).toBe(false);
   release();
   await down;
-});
-
-test("the operator alert monitor sees every operation in flight: a Working copy's stop beside another Project's Stable deploy holds back only that Stable Target", async () => {
-  const f = await fixture();
-  await f.register("alpha", "beta");
-  for (const project of ["alpha", "beta"]) {
-    await f.runtime.command({ action: "up", project });
-    await f.runtime.command({ action: "deploy", project, target: "live" });
-  }
-  const state = await f.deps.store.read();
-  const stable = (project: string) =>
-    state.targets.find(
-      (t) =>
-        t.kind === "live" &&
-        state.projects.find((p) => p.id === t.projectId)?.name === project,
-    )!.id;
-  const releaseStop = f.holdStop("alpha");
-  const down = f.runtime.command({
-    action: "down",
-    project: "alpha",
-    operationId: "alpha-down",
-  });
-  await until(() => f.events.includes("stop alpha local"));
-  const releaseCheckout = f.holdCheckout("main");
-  const deploy = f.runtime.command({
-    action: "deploy",
-    project: "beta",
-    target: "live",
-    operationId: "beta-deploy",
-  });
-  await until(() => f.events.at(-1) === "checking out main");
-
-  // Both run at once, and both are listed.
-  expect(f.runtime.mutations()).toEqual([
-    {
-      operationId: "alpha-down",
-      action: "down",
-      project: "alpha",
-      kind: "local",
-    },
-    {
-      operationId: "beta-deploy",
-      action: "deploy",
-      project: "beta",
-      target: "live",
-      kind: "live",
-    },
-  ]);
-  // The deploy holds back beta's Stable Target; the Working copy's stop leaves alpha's to be judged.
-  expect(engagedTargets(f.runtime.mutations(), state)).toEqual(
-    new Set([stable("beta")]),
-  );
-
-  releaseCheckout();
-  expect(await deploy).toMatchObject({ outcome: "deployed" });
-  expect(f.runtime.mutations().map((m) => m.operationId)).toEqual([
-    "alpha-down",
-  ]);
-  expect(engagedTargets(f.runtime.mutations(), state)).toEqual(new Set());
-  releaseStop();
-  await down;
-  expect(f.runtime.mutations()).toEqual([]);
 });
 
 test("two Projects started at once on auto ports get distinct ports and routes", async () => {

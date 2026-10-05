@@ -15,6 +15,15 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
       ok: true,
       message: "Host configuration is valid.",
     });
+    if (host.alerts !== undefined)
+      checks.push({
+        name: "host-config/alerts",
+        ok: false,
+        message:
+          "The Host config has an alerts section, which Rig no longer uses; it is ignored.",
+        reason: "config-retired",
+        hint: "Delete the alerts section from config.yaml under the Rig root; Rig no longer sends alerts.",
+      });
     checks.push(
       await inspectHostProxy(root, host, process.env).then(
         proxyCheck,

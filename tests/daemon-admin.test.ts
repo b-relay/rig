@@ -192,7 +192,6 @@ test("a process-mode install gives rigd the login basics plus its own variables,
     expect(env).toMatchObject({
       RIG_ROOT: root,
       RIG_DAEMON_CHILD: "1",
-      RIG_DAEMON_MODE: "process",
       PATH: process.env.PATH!,
       HOME: process.env.HOME!,
     });

@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseHostConfig, parseProjectConfig } from "../src/config";
+import { inspectHost } from "../src/adapters/host-inspection";
 
 test("an empty Host config resolves every default, in snake_case like rig.yaml", () => {
   expect(parseHostConfig({})).toEqual({
@@ -10,7 +14,6 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     providers: { caddy: { extra_config: [], reload: { mode: "manual" } } },
     diagnostics: { retention_days: 14, level: "info" },
     logs: { max_bytes: 64 * 1024 * 1024, generations: 1 },
-    alerts: { channels: { macos: {} } },
   });
 });
 
@@ -36,14 +39,50 @@ test("Target log retention takes a size of at least 1 MiB and 0 to 20 kept gener
     );
 });
 
-test("the macOS alert channel can be turned off, and an unknown channel is refused", () => {
-  expect(
-    parseHostConfig({ alerts: { channels: { macos: { enabled: false } } } })
-      .alerts,
-  ).toEqual({ channels: { macos: { enabled: false } } });
-  expect(() =>
-    parseHostConfig({ alerts: { channels: { slack: { enabled: true } } } }),
-  ).toThrow("Invalid Host configuration.");
+test("a Host config that still has the retired alerts section is read, and doctor asks for the section to be deleted", async () => {
+  // rigd reads the Host config as it starts, so a section it no longer uses must not keep it from starting.
+  for (const alerts of [
+    { channels: { macos: { enabled: false } } },
+    { channels: { slack: { enabled: true } } },
+    null,
+  ])
+    expect(parseHostConfig({ alerts }).deploy.production_branch).toBe("main");
+  const root = await mkdtemp(join(tmpdir(), "rig-host-alerts-"));
+  try {
+    const checks = async () =>
+      (await inspectHost(root)).filter((check) =>
+        check.name.startsWith("host-config"),
+      );
+    await writeFile(join(root, "config.yaml"), "diagnostics:\n  level: warn\n");
+    expect(await checks()).toEqual([
+      {
+        name: "host-config",
+        ok: true,
+        message: "Host configuration is valid.",
+      },
+    ]);
+    await writeFile(
+      join(root, "config.yaml"),
+      "alerts:\n  channels:\n    macos:\n      enabled: false\n",
+    );
+    expect(await checks()).toEqual([
+      {
+        name: "host-config",
+        ok: true,
+        message: "Host configuration is valid.",
+      },
+      {
+        name: "host-config/alerts",
+        ok: false,
+        message:
+          "The Host config has an alerts section, which Rig no longer uses; it is ignored.",
+        reason: "config-retired",
+        hint: "Delete the alerts section from config.yaml under the Rig root; Rig no longer sends alerts.",
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Host config refuses the settings Rig never read and the old key names", () => {

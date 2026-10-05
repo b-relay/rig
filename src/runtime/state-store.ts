@@ -72,6 +72,7 @@ export class FileStateStore implements StateStore {
     const state = parsed as RuntimeState;
     readRetiredSupervisorAsRigd(state);
     forgetOngoingHealthChecks(state);
+    forgetOperatorAlerts(state);
     return { ...state, version: STATE_VERSION };
   }
   /** A file from a different rigd is refused by version before its shape is judged. */
@@ -136,6 +137,12 @@ function forgetOngoingHealthChecks(state: RuntimeState): void {
     for (const run of Object.values(target.services ?? {}))
       delete (run as { healthRestarts?: unknown }).healthRestarts;
   }
+}
+/** Rig once sent operator alerts about Stable Targets that stayed down, and kept what it had alerted about under
+ * `alerts`. It sends none now, so the key is dropped as the state is read rather than carried along as a newer rigd's
+ * key would be. The next write saves it so. */
+function forgetOperatorAlerts(state: RuntimeState): void {
+  delete (state as { alerts?: unknown }).alerts;
 }
 async function writeDurably(path: string, content: string): Promise<void> {
   const file = await open(path, "w", 0o600);

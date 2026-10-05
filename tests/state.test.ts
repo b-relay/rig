@@ -403,3 +403,51 @@ test("a plan an older Rig recorded with ongoing health checks is read without th
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("state an older Rig wrote with operator alert records loads without them and is saved so", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-alerts-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const recorded = structuredClone(inventory);
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 4,
+        ...recorded,
+        // As the rigd that sent operator alerts last saved them.
+        alerts: {
+          targets: [
+            {
+              targetId: recorded.targets[0]!.id,
+              project: "demo",
+              target: "live",
+              since: "2026-09-27T04:00:00.000Z",
+              services: [
+                {
+                  name: "web",
+                  reason: "exited with code 1",
+                  brief: "exit 1",
+                },
+              ],
+              recover: "rig up live --project demo",
+              alertedAt: "2026-09-27T04:05:00.000Z",
+            },
+          ],
+          notifiedAt: "2026-09-27T04:05:00.000Z",
+          retry: { failures: 1, at: "2026-09-27T04:06:00.000Z" },
+        },
+      }),
+    );
+    const store = new FileStateStore(root);
+    const read = await store.read();
+    // Everything else is read as written.
+    expect(read as unknown).toEqual({ version: 4, ...recorded });
+    await store.update(() => {});
+    expect(JSON.parse(await readFile(path, "utf8"))).not.toHaveProperty(
+      "alerts",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

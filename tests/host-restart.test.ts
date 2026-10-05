@@ -12,9 +12,6 @@ import { createRuntime } from "../src/runtime/application";
 import { FileStateStore } from "../src/runtime/state-store";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { UNKNOWN_EXIT_RESTART_BACKOFF_MS } from "../src/runtime/supervision";
-import { evaluateOperatorAlerts } from "../src/runtime/alert-monitor";
-import { ALERT_GRACE_MS } from "../src/runtime/alert-policy";
-import type { OperatorAlert } from "../src/domain/operator-alerts";
 import { stopDetached } from "../src/domain/stop-budget";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { RuntimeState } from "../src/domain/runtime";
@@ -216,32 +213,6 @@ async function fixture() {
     delay,
     stall,
     store,
-    /** What the running daemon shows its operator alert monitor as in flight. */
-    mutations: () => runtime.mutations(),
-    /** One operator alert evaluation, as the running daemon's alert monitor makes it; returns the alerts sent. */
-    async evaluateAlerts() {
-      const sent: OperatorAlert[] = [];
-      await evaluateOperatorAlerts({
-        store,
-        observations: deps.observations,
-        observationBudgetMs: 2000,
-        observationDeadline: timerObservationDeadline,
-        inspectProxy: deps.inspectProxy,
-        channels: [
-          {
-            channel: "test notification",
-            async send(alert) {
-              sent.push(alert);
-            },
-          },
-        ],
-        now: deps.now,
-        id: deps.id,
-        diagnostic: deps.diagnostic,
-        mutations: () => runtime.mutations(),
-      });
-      return sent;
-    },
     /** A new daemon over the same saved state and whatever processes survived. */
     reopen() {
       runtime = createRuntime(deps);
@@ -527,47 +498,6 @@ test("a new login in the same boot is a Host restart too: Stable Targets come ba
   expect((await f.store.read()).host).toMatchObject({ login: "100019" });
 });
 
-test("the operator alert monitor holds back judgement of a Stable Target the first pass after a reboot is still starting again", async () => {
-  const f = await fixture();
-  await f.startAll();
-  f.restartHost(REBOOTED);
-  // The Mac was off for two hours, and db's start after it hangs.
-  f.clock.ms += 2 * 60 * 60_000;
-  let release!: () => void;
-  const hanging = new Promise<void>((resolve) => (release = resolve));
-  const db = await f.key("live", "db");
-  let hung = false;
-  f.delay.start = (key) => {
-    if (key !== db) return undefined;
-    hung = true;
-    return hanging;
-  };
-  f.reopen();
-  const pass = f.reconcile();
-  const live = (await f.store.read()).targets.find(
-    (t) => t.kind === "live",
-  )!.id;
-  for (let tries = 0; !hung; tries++) {
-    if (tries > 2000) throw new Error("the Stable start never began");
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  expect(f.mutations()).toEqual([
-    { operationId: expect.any(String), action: "reconcile", targetId: live },
-  ]);
-
-  // Evaluations while the start is in progress, well past the grace period, neither alert nor count the Target down.
-  expect(await f.evaluateAlerts()).toEqual([]);
-  f.clock.ms += 2 * ALERT_GRACE_MS;
-  expect(await f.evaluateAlerts()).toEqual([]);
-  expect((await f.store.read()).alerts?.targets ?? []).toEqual([]);
-
-  release();
-  await pass;
-  expect(f.mutations()).toEqual([]);
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
-  expect(await f.evaluateAlerts()).toEqual([]);
-});
-
 test("a Stable start after a reboot whose clean-up stop rigd's shutdown detaches records no failed start and leaves the restart pending for the next daemon, which acts on it once", async () => {
   const f = await fixture();
   await f.startAll();
@@ -693,12 +623,6 @@ test("a Stable Target whose start after a reboot finds an unfinished effect tran
     expect(String(status[service]!.reason)).toContain(
       "Run rig down, then rig up to start it again.",
     );
-  f.clock.ms += ALERT_GRACE_MS + 60_000;
-  const [alert] = await f.evaluateAlerts();
-  expect(JSON.stringify(alert)).toContain(
-    "rig down live --project demo, then rig up live --project demo",
-  );
-
   await f.command({ action: "down", project: "demo", target: "live" });
   await f.command({ action: "up", project: "demo", target: "live" });
   expect(await f.running("live")).toEqual(["api", "db", "worker"]);

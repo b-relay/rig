@@ -3474,17 +3474,6 @@ test("the queue read names the mutation rigd is running and how many wait behind
   expect(
     await runtime.command({ action: "queue", operation: "slow-up" }),
   ).toMatchObject({ operation: { state: "running", phase: "starting" } });
-  // The operator alert monitor sees both mutations, the waiting one too, each with its action and the Target kind it
-  // selected, so an up or down that names no Target reads as the Working copy's.
-  expect(runtime.mutations()).toEqual([
-    { operationId: "slow-up", action: "up", project: "demo", kind: "local" },
-    {
-      operationId: "later-down",
-      action: "down",
-      project: "demo",
-      kind: "local",
-    },
-  ]);
   release();
   await first;
   await second;
@@ -3495,7 +3484,6 @@ test("the queue read names the mutation rigd is running and how many wait behind
   expect(
     await runtime.command({ action: "queue", operation: "slow-up" }),
   ).toMatchObject({ operation: { state: "unknown" } });
-  expect(runtime.mutations()).toEqual([]);
 });
 
 test("usage mistakes that never reached an Operation leave activity untouched; a refused attempt is recorded", async () => {

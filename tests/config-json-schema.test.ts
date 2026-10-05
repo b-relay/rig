@@ -143,8 +143,16 @@ test("each field that takes references lists the references valid there", () => 
   for (const field of [...inService, ...inProject])
     for (const reference of shared)
       expect(field.description).toContain(reference);
-  for (const field of inService)
+  for (const field of [...inService, ...inProject])
+    expect(field.description).toContain("${services.<service>.port}");
+  for (const field of inService) {
     expect(field.description).toContain("${rig.data}");
+    expect(field.description).toContain("${port}");
+    expect(field.description).toContain("${ports.<port>}");
+  }
+  // ${port} belongs to one Service, so a Project-level field must not offer it either.
+  for (const field of inProject)
+    expect(field.description).not.toContain("${port}");
   // rig.data belongs to one Service, so a Project-level field must not offer it as available.
   for (const field of inProject)
     expect(field.description).not.toMatch(/, \$\{rig\.data\}/);

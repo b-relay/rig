@@ -1187,6 +1187,145 @@ test("working_dir is a directory inside the workspace, recorded normalized and p
   });
 });
 
+test("${port} and ${ports.<port>} name the ports of the Service whose setting holds them, and ${services.<service>.port} a Service's only port anywhere", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    build: "make PORT=${services.web.port}",
+    environment: { WEB: "http://127.0.0.1:${services.web.port}" },
+    services: {
+      web: {
+        command: "serve --port ${port}",
+        build: "make web-${port}",
+        ports: { http: "auto" },
+        ready: "http://127.0.0.1:${port}/health",
+        environment: {
+          PORT: "${port}",
+          SELF: "http://127.0.0.1:${port}",
+          API: "http://127.0.0.1:${services.api.ports.http}",
+        },
+        env_file: "env/${port}.env",
+      },
+      api: {
+        command: "api --http ${ports.http} --admin ${ports.admin}",
+        ports: { http: "auto", admin: "auto" },
+        // A value read through another Service's setting keeps that setting's own Service.
+        environment: { WEB: "${services.web.environment.SELF}" },
+      },
+    },
+    tools: { ctl: { bin: "ctl", build: "make ctl-${services.web.port}" } },
+  });
+  const plan = resolveTargetPlan({
+    config,
+    target: "working",
+    ...roots_,
+    assignedPorts: { "web.http": 4100, "api.http": 4200, "api.admin": 4201 },
+  });
+  const component = (name: string) =>
+    plan.components.find((entry) => entry.name === name)!;
+  expect(component("web")).toMatchObject({
+    command: "serve --port 4100",
+    health: "http://127.0.0.1:4100/health",
+    env: {
+      WEB: "http://127.0.0.1:4100",
+      PORT: "4100",
+      API: "http://127.0.0.1:4200",
+    },
+  });
+  expect(component("web").envFiles!.find((file) => file.required)!.path).toBe(
+    "/work/env/4100.env",
+  );
+  expect(component("api")).toMatchObject({
+    command: "api --http 4200 --admin 4201",
+    env: { WEB: "http://127.0.0.1:4100" },
+  });
+  expect(plan.builds!.map((unit) => unit.command)).toEqual([
+    "make PORT=4100",
+    "make web-4100",
+    "make ctl-4100",
+  ]);
+  // The long form still works beside them.
+  expect(
+    failureOf({
+      name: "app",
+      services: web({ command: "serve --port ${services.web.ports.http}" }),
+    }),
+  ).toBeUndefined();
+});
+
+test("a short port reference that has no Service, or no single port, is refused with what to write instead", () => {
+  const two = { http: "auto", admin: "auto" };
+  for (const [input, path, message] of [
+    [
+      { build: "make ${port}", services: web() },
+      "build",
+      "${port} in build has no Service; write ${services.<service>.port} or ${services.<service>.ports.<port>}.",
+    ],
+    [
+      { environment: { P: "${ports.http}" }, services: web() },
+      "environment.P",
+      "${ports.http} in environment.P has no Service; write ${services.<service>.port} or ${services.<service>.ports.<port>}.",
+    ],
+    [
+      {
+        services: web(),
+        tools: { ctl: { bin: "ctl", build: "make ${port}" } },
+      },
+      "tools.ctl.build",
+      "${port} in tools.ctl.build has no Service; write ${services.<service>.port} or ${services.<service>.ports.<port>}.",
+    ],
+    [
+      { services: { web: { command: "serve ${port}" } } },
+      "services.web.command",
+      "${port} in services.web.command needs one port, but 'web' has none; declare one, such as ports: { http: auto }.",
+    ],
+    [
+      { services: web({ command: "serve ${port}", ports: two }) },
+      "services.web.command",
+      "${port} in services.web.command needs one port, but 'web' has 2 (http, admin); name one, such as ${ports.http}.",
+    ],
+    [
+      {
+        environment: { URL: "${services.web.port}" },
+        services: web({ ports: two }),
+      },
+      "environment.URL",
+      "${services.web.port} in environment.URL needs one port, but 'web' has 2 (http, admin); name one, such as ${services.web.ports.http}.",
+    ],
+    [
+      { services: web({ command: "serve ${ports.grpc}" }) },
+      "services.web.command",
+      "Unknown reference '${ports.grpc}' in services.web.command: Service 'web' declares the ports http.",
+    ],
+    [
+      { environment: { URL: "${services.api.port}" }, services: web() },
+      "environment.URL",
+      "Unknown reference '${services.api.port}' in environment.URL: 'api' is not a declared Service.",
+    ],
+  ] as const)
+    expect(failureOf({ name: "app", ...input })?.context.issues).toEqual([
+      { path: path.split("."), message },
+    ]);
+  // At plan time the reference carries a hint naming the fix.
+  expect(() =>
+    referenceResolver(
+      { services: { web: { ports: two } } },
+      {
+        target: "t",
+        workspace: "/w",
+        host: "",
+        url: "",
+        data: () => "/d",
+        port: () => 1,
+      },
+    ).text("${port}", "services.web.command"),
+  ).toThrow(
+    expect.objectContaining({
+      code: "ambiguous_port",
+      hint: "Write ${ports.<port>} with one of http, admin.",
+    }),
+  );
+});
+
 test("a reference through env names the environment path that replaced it", () => {
   for (const [reference, replacement] of [
     ["${env.MODE}", "${environment.MODE}"],

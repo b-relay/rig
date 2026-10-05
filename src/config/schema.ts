@@ -46,7 +46,7 @@ type ReferenceScope = "project" | "service";
 /** The one owner of the reference list an editor shows on hover; the long form is "References" in docs/rig-guide.md.
  * ${rig.data} is one Service's directory, so only a Service's own fields offer it. */
 const referencesIn = (scope: ReferenceScope) =>
-  `References: \${environment.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
+  `References: ${scope === "service" ? "${port} (this Service's only port), ${ports.<port>} (one of its named ports), " : ""}\${environment.NAME}, \${services.<service>.port} (a Service's only port), \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -181,7 +181,9 @@ const portName = text
     /^[a-z0-9][a-z0-9-]*$/,
     "must start with a lowercase letter or digit and contain only lowercase letters, digits or '-'",
   )
-  .describe("Port name used in ${services.<service>.ports.<port>} references.");
+  .describe(
+    "Port name used in ${ports.<port>} and ${services.<service>.ports.<port>} references. A Service with exactly one port can also be referenced as ${port} in its own settings and as ${services.<service>.port} anywhere.",
+  );
 const ports = z
   .record(
     portName,

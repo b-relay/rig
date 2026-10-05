@@ -542,6 +542,13 @@ Deployed Targets (the stable Target and Previews) keep their recorded plan
 until the next deploy. They are planned from the committed config in their
 checkout, so `rig doctor` compares a deployed Target with that revision's
 config, not with the working copy; uncommitted edits are not drift for it.
+A deployed revision whose `rig.yaml` still uses the names from before
+[ADR 0011](adr/0011-compose-key-names.md) (`run`, `env`) cannot be fixed in
+place: `rig doctor` reports it as `config-predates-rename`, says the Target
+still runs its recorded plan, and names the deploy (`rig deploy stable`, or the
+Preview's Branch) of a Commit that uses the new names, which clears it.
+Deploying or rolling back to a Commit whose `rig.yaml` uses the old names is
+refused until that file is updated.
 When the checkout's
 config resolves to a different plan than the recorded one, doctor names `rig
 deploy <target> --force` as the fix, because a same-Commit deploy without
@@ -1686,8 +1693,9 @@ applied), a port, or one of the `rig.*` values Rig generates:
   `proxy`, or with the default route to its one Service with one port),
   otherwise empty.
 - `${rig.url}`: `https://<hostname>` when the Target has a route;
-  `http://127.0.0.1:<port>` of the `/` upstream when it has a `proxy` but no
-  hostname; otherwise empty.
+  `http://127.0.0.1:<port>` of the `/` upstream when it has no hostname, the
+  upstream being the `proxy` entry for `/` or, without `proxy`, the one Service
+  that declares ports when it declares exactly one; otherwise empty.
 
 References are checked when the config is parsed, for the base config and for
 each role's patched settings, so a typo never reaches a shell. Each rejection

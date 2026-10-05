@@ -1070,6 +1070,80 @@ test("doctor checks a deployed Target against its deployed revision's config, no
   ).toMatchObject({ outcome: "deployed" });
   expect((await check())?.ok).toBe(true);
 });
+test("doctor says a deployed revision whose rig.yaml predates the Compose names cannot be fixed in place, and names the deploy that clears it", async () => {
+  const { runtime, config, deps } = fixture();
+  config.targets = { working: true, stable: true, preview: true };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  for (const [target, branch] of [
+    ["stable", "main"],
+    ["preview", "feature/old"],
+  ] as const)
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target,
+      branch,
+    });
+  // What the deployed checkouts hold: a rig.yaml committed before run and env were renamed.
+  const committedFailure = (() => {
+    try {
+      parseProjectConfig({
+        name: "demo",
+        services: {
+          web: { run: "serve", env: { A: "1" }, ports: { http: 4567 } },
+        },
+      });
+    } catch (error) {
+      return error;
+    }
+    throw new Error("the old names were accepted");
+  })();
+  const read = deps.documents.read.bind(deps.documents);
+  deps.documents.read = async (path) => {
+    if (path !== "/tmp/developer") throw committedFailure;
+    return await read(path);
+  };
+  const checks = (
+    (await runtime.command({ action: "doctor", project: "demo" })) as {
+      checks: {
+        name: string;
+        ok: boolean;
+        message: string;
+        hint?: string;
+        reason?: string;
+      }[];
+    }
+  ).checks.filter((check) => check.name.endsWith("/config"));
+  expect(checks).toEqual(
+    expect.arrayContaining([
+      {
+        name: "stable/config",
+        ok: false,
+        message:
+          "The deployed revision's configuration predates the Compose key names of ADR 0011 (run is now command, env is now environment), so its policy was not compared. The Target still runs its recorded plan.",
+        reason: "config-predates-rename",
+        hint: "Commit rig.yaml with the new names, then run rig deploy stable; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.",
+      },
+      expect.objectContaining({
+        ok: false,
+        reason: "config-predates-rename",
+        hint: expect.stringContaining(
+          "then run rig deploy preview feature/old;",
+        ),
+      }),
+    ]),
+  );
+  // The working copy is edited in place, so it keeps the rename hint itself.
+  deps.documents.read = async () => {
+    throw committedFailure;
+  };
+  const working = (
+    (await runtime.command({ action: "doctor", project: "demo" })) as {
+      checks: { name: string; reason?: string; hint?: string }[];
+    }
+  ).checks.find((check) => check.reason === "config-invalid");
+  expect(working?.hint).toContain("`run` is now `command`; rename this key");
+});
 type DoctorReport = {
   ok: boolean;
   checks: {
@@ -4285,20 +4359,31 @@ test("while the checkout config is unreadable a recorded Target can still be sto
 
 test("renaming run to command and env to environment in an unchanged rig.yaml is not reported as a change of a Working copy a rigd before the rename planned", async () => {
   const { runtime, deps, state } = fixture();
+  // Written in an order of the file's own: the parser gives each Service's settings in its one order, as it did then.
   const config = parseProjectConfig({
     name: "demo",
     environment: { MODE: "dev" },
     services: {
       web: {
-        command: "serve --host 127.0.0.1 --mode ${environment.MODE}",
-        ports: { http: 4567 },
         environment: { LABEL: "${environment.MODE}-web" },
+        ports: { http: 4567 },
+        command: "serve --host 127.0.0.1 --mode ${environment.MODE}",
       },
       api: {
         command: "api --label ${services.web.environment.LABEL}",
       },
     },
-    targets: { working: { environment: { MODE: "local" } } },
+    targets: {
+      working: {
+        services: {
+          api: {
+            environment: { EXTRA: "${services.web.environment.LABEL}" },
+            command: "api --verbose --mode ${environment.MODE}",
+          },
+        },
+        environment: { MODE: "local" },
+      },
+    },
   });
   let document = { revision: "planned-text", config };
   deps.documents.read = async (path) => ({
@@ -4321,7 +4406,17 @@ test("renaming run to command and env to environment in an unchanged rig.yaml is
       },
       api: { run: "api --label ${services.web.env.LABEL}" },
     },
-    targets: { working: { env: { MODE: "local" } } },
+    targets: {
+      working: {
+        env: { MODE: "local" },
+        services: {
+          api: {
+            run: "api --verbose --mode ${env.MODE}",
+            env: { EXTRA: "${services.web.env.LABEL}" },
+          },
+        },
+      },
+    },
   });
   document = { revision: "renamed-text", config };
   expect(

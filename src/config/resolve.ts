@@ -108,12 +108,9 @@ export function resolveTargetPlan(
     );
   const services = Object.entries(settings.services ?? {});
   const ports = resolvePorts(services, input);
-  // A Target with a hostname and no proxy routes '/' to its one Service with one port; validation refused any other.
-  const proxy =
-    settings.proxy ??
-    (resolvedDomain !== undefined
-      ? defaultProxy(settings.services)
-      : undefined);
+  // Without a proxy, '/' is the one Service with one port: a hostname routes to it (validation refused a hostname with no
+  // such Service), and without a hostname ${rig.url} still names it, as an explicit proxy would.
+  const proxy = settings.proxy ?? defaultProxy(settings.services);
   const routes = proxy
     ? planRoutes(proxy, settings.services ?? {}, ports)
     : undefined;

@@ -447,22 +447,27 @@ export function createChildSupervisor(
       : request.command;
     if (request.cwdWithin !== undefined)
       await assertContainedDirectory(request.cwd, request.cwdWithin);
-    // A working directory that is not there fails the spawn; saying which directory is the actionable part.
+    // A working directory that is not there fails the spawn; saying which directory is the actionable part. With
+    // `cwdWithin` it is the Service's working_dir; without it, the workspace itself is gone.
     if (
       !(await stat(request.cwd).then(
         (info) => info.isDirectory(),
         () => false,
       ))
     )
-      throw new RigError(
-        "PROCESS_START",
-        "The managed component could not start.",
-        "Create the directory, or correct the Service's working_dir in rig.yaml.",
-        {
-          key: request.key,
-          cause: `Its working directory ${request.cwd} is not a directory.`,
-        },
-      );
+      throw request.cwdWithin !== undefined
+        ? new RigError(
+            "PROCESS_START",
+            `${request.componentName} could not start: its working directory ${request.cwd} is not a directory.`,
+            "Create the directory, or correct the Service's working_dir in rig.yaml.",
+            { key: request.key, directory: request.cwd },
+          )
+        : new RigError(
+            "PROCESS_START",
+            `${request.componentName} could not start: its workspace ${request.cwd} is not a directory.`,
+            "The Target's checkout was removed or moved. Deploy the Target again with --force to prepare a fresh checkout; for the working Target, run rig repoint with the repository's new path.",
+            { key: request.key, directory: request.cwd },
+          );
     // The gate fails only once released, where a spawn failed at once: a program that is not there fails the start now.
     if (
       !findsExecutable(command[0]!, {

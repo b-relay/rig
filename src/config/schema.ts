@@ -199,7 +199,7 @@ const restart = z
   );
 /** A directory inside the workspace, written relative to it: no absolute path, no ~, no '..' segment and no reference, so
  * it can never name a directory outside the checkout a Target runs from. */
-export function insideWorkspace(value: string): boolean {
+function insideWorkspace(value: string): boolean {
   return (
     !value.startsWith("/") &&
     !value.startsWith("~") &&
@@ -283,9 +283,12 @@ const proxy = z
 /** A build in a Target patch: a command, or false to turn the inherited build off for that role. */
 const BUILD_OFF =
   "false turns the inherited build off for this role's Targets; leaving the key out keeps it.";
+/** What a patch build may be, for the value that is neither. */
+const PATCH_BUILD_SHAPES =
+  "must be a command, or false to turn the inherited build off";
 const patchBuild = <T extends z.ZodType>(command: T) =>
   z
-    .union([command, z.literal(false)])
+    .union([command, z.literal(false)], { error: PATCH_BUILD_SHAPES })
     .optional()
     .describe(`${command.description ?? ""} In a Target patch, ${BUILD_OFF}`);
 /** Settings every role may patch. Maps merge per key; lists and scalars replace. */
@@ -356,6 +359,11 @@ export function targetOn(
   return value === true || isRecord(value);
 }
 type Fields = Readonly<Record<string, unknown>>;
+type Report = (
+  path: PropertyKey[],
+  message: string,
+  rule?: typeof RENAMED_RULE,
+) => void;
 const isRecord = (value: unknown): value is Fields =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 /** Settings patch rule: maps merge per key, lists and scalars replace. */
@@ -450,10 +458,15 @@ export const projectConfigSchema = z
           message: "A Tool cannot share its name with a Service.",
         });
     const reported = new Set<string>();
-    const report = (path: PropertyKey[], message: string) => {
+    const report: Report = (path, message, rule) => {
       if (reported.has(message)) return;
       reported.add(message);
-      ctx.addIssue({ code: "custom", path, message });
+      ctx.addIssue({
+        code: "custom",
+        path,
+        message,
+        ...(rule ? { params: { rule } } : {}),
+      });
     };
     // The unpatched graph is checked first so a base mistake is reported at its own path, once.
     validateGraph(config, [], report);
@@ -491,6 +504,8 @@ export const projectConfigSchema = z
         continue;
       const problem = missingProxy(
         patchSettings(config, role) as GraphSettings,
+        role,
+        patched,
       );
       if (problem)
         report(patched ? ["targets", role, "domain"] : ["domain"], problem);
@@ -583,24 +598,38 @@ export function defaultProxy(
     ? { "/": serving[0]![0] }
     : undefined;
 }
-/** Why a Target that has a hostname has no route, naming what to add; undefined when a proxy, given or default, routes it. */
-function missingProxy(settings: GraphSettings): string | undefined {
+/** Why a Target of `role` that has a hostname has no route, naming the role and where to add the proxy; undefined when a
+ * proxy, given or default, routes it. `patched` says the hostname comes from the role's own patch. */
+function missingProxy(
+  settings: GraphSettings,
+  role: TargetRole,
+  patched: boolean,
+): string | undefined {
   if (settings.proxy || defaultProxy(settings.services)) return undefined;
+  const hostname =
+    role === "preview"
+      ? patched
+        ? "Previews have a hostname"
+        : "Previews get a hostname from domain"
+      : patched
+        ? `The ${role} Target has a hostname`
+        : "The stable Target serves domain";
   const serving = Object.entries(settings.services ?? {}).filter(
     ([, service]) => Object.keys(service.ports ?? {}).length > 0,
   );
   if (!serving.length)
-    return "No Service declares a port to serve this hostname; declare one, such as ports: { http: auto }, or remove the domain.";
+    return `${hostname} but no Service has a port; declare one, such as ports: { http: auto }, or remove the domain.`;
   const [name, service] = serving[0]!;
+  const where = `at the top level or under targets.${role}`;
   return serving.length > 1
-    ? `Several Services declare ports, so name the one that serves this hostname: add proxy: { /: ${name} }.`
-    : `Service '${name}' has several ports, so name the one that serves this hostname: add proxy: { /: \${services.${name}.ports.${Object.keys(service.ports!)[0]}} }.`;
+    ? `${hostname} but several Services have ports; add proxy: { /: ${name} } ${where}.`
+    : `${hostname} but '${name}' has several ports; add proxy: { /: \${services.${name}.ports.${Object.keys(service.ports!)[0]}} } ${where}.`;
 }
 /** Structural rules of one settings graph: dependency references and cycles, pinned ports, and proxy references. */
 function validateGraph(
   settings: GraphSettings,
   at: readonly PropertyKey[],
-  report: (path: PropertyKey[], message: string) => void,
+  report: Report,
 ): void {
   const services = settings.services ?? {};
   const visiting = new Set<string>(),
@@ -666,7 +695,7 @@ function validateGraph(
 function validateReferences(
   settings: GraphSettings,
   at: readonly PropertyKey[],
-  report: (path: PropertyKey[], message: string) => void,
+  report: Report,
 ): void {
   const references = referenceResolver(settings, {
     target: "target",
@@ -703,7 +732,11 @@ function validateReferences(
       references.text(value, path.join("."));
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
-      report([...at, ...path], error.message);
+      report(
+        [...at, ...path],
+        error.message,
+        error.code === "renamed_reference" ? RENAMED_RULE : undefined,
+      );
     }
   }
 }
@@ -743,6 +776,9 @@ const renamedKey = (from: string, to: string) =>
  * already means no build. */
 const BASE_BUILD_OFF =
   "build: false only turns an inherited build off in a Target patch; delete this line for no build";
+/** A Tool's build makes its bin, so it cannot be turned off; only the Project build and a Service build can. */
+const TOOL_BUILD_OFF =
+  "build: false is not allowed for a Tool, whose build makes its bin; give another command or leave the key out";
 /** Every Service mapping of a raw config value with its path: `services.<name>` and `targets.<role>.services.<name>`. */
 function serviceBlockPaths(value: Fields): [string[], Fields][] {
   const blocks: [string[], Fields][] = [];
@@ -761,7 +797,7 @@ function serviceBlockPaths(value: Fields): [string[], Fields][] {
 /** Refusals that need their own guidance, checked before the schema so they are not reported as generic unknown keys. */
 function refuseUnsupportedShapes(value: unknown): void {
   if (!isRecord(value)) return;
-  const issues: { path: string[]; message: string }[] = [];
+  const issues: Issue[] = [];
   if (Object.hasOwn(value, "format"))
     issues.push({ path: ["format"], message: REMOVED_FORMAT });
   if (Object.hasOwn(value, "supervisor"))
@@ -773,7 +809,11 @@ function refuseUnsupportedShapes(value: unknown): void {
   ) => {
     for (const [from, to] of Object.entries(names))
       if (Object.hasOwn(block, from))
-        issues.push({ path: [...at, from], message: renamedKey(from, to) });
+        issues.push({
+          path: [...at, from],
+          message: renamedKey(from, to),
+          rule: RENAMED_RULE,
+        });
   };
   renames(value, [], SETTINGS_RENAMES);
   const builds: [string[], unknown][] = [[["build"], value.build]];
@@ -783,6 +823,20 @@ function refuseUnsupportedShapes(value: unknown): void {
         builds.push([["services", name, "build"], service.build]);
   for (const [path, build] of builds)
     if (build === false) issues.push({ path, message: BASE_BUILD_OFF });
+  // A Tool's bin comes from its build, so no role may turn a Tool build off.
+  const toolBlocks: [string[], unknown][] = [[["tools"], value.tools]];
+  if (isRecord(value.targets))
+    for (const [role, patch] of Object.entries(value.targets))
+      if (isRecord(patch))
+        toolBlocks.push([["targets", role, "tools"], patch.tools]);
+  for (const [at, tools] of toolBlocks)
+    if (isRecord(tools))
+      for (const [name, tool] of Object.entries(tools))
+        if (isRecord(tool) && tool.build === false)
+          issues.push({
+            path: [...at, name, "build"],
+            message: TOOL_BUILD_OFF,
+          });
   for (const [path, service] of serviceBlockPaths(value)) {
     if (Object.hasOwn(service, "health"))
       issues.push({ path: [...path, "health"], message: REMOVED_HEALTH });
@@ -969,16 +1023,41 @@ function validationError(
     value.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160);
   return issuesError(
     scope,
-    issues.map(explainIssue).map((issue) => ({
-      path: issue.path.map((part) => safe(String(part))),
-      message: safe(issue.message),
-    })),
+    issues.map((issue) => {
+      const explained = explainIssue(issue);
+      const rule =
+        issue.code === "custom" && issue.params?.rule === RENAMED_RULE
+          ? RENAMED_RULE
+          : undefined;
+      return {
+        path: explained.path.map((part) => safe(String(part))),
+        message: safe(explained.message),
+        ...(rule ? { rule } : {}),
+      };
+    }),
   );
 }
-function issuesError(
-  scope: string,
-  details: readonly { path: string[]; message: string }[],
-): ConfigError {
+/** One reported problem of a config document. `rule` marks a kind of problem a caller treats on its own. */
+interface Issue {
+  path: string[];
+  message: string;
+  rule?: typeof RENAMED_RULE;
+}
+/** A key or reference path written under a name ADR 0011 replaced with its Compose name, such as `run` or `${env.X}`. */
+const RENAMED_RULE = "renamed";
+/** Whether a refused config was refused, at least in part, because it uses names from before ADR 0011: a rig.yaml committed
+ * before the rename, which a deployed revision may still hold. */
+export function usesRenamedKeys(error: ConfigError): boolean {
+  const issues = error.context.issues;
+  return (
+    Array.isArray(issues) &&
+    issues.some(
+      (issue: unknown) =>
+        isRecord(issue) && (issue as Partial<Issue>).rule === RENAMED_RULE,
+    )
+  );
+}
+function issuesError(scope: string, details: readonly Issue[]): ConfigError {
   const hint =
     "Fix " +
     details
@@ -1004,14 +1083,17 @@ function explainIssue(issue: z.core.$ZodIssue): {
 } {
   if (issue.code === "invalid_union" && issue.errors.length) {
     const branches = issue.errors.filter((branch) => branch.length);
-    // A Target switch that is neither a boolean nor a map is explained by its own message, which names both shapes.
+    // A Target switch that is neither a boolean nor a map, or a patch build that is neither a command nor false, is
+    // explained by its own message, which names both shapes.
     if (
-      issue.message === ROLE_SWITCH_SHAPES &&
+      (issue.message === ROLE_SWITCH_SHAPES ||
+        issue.message === PATCH_BUILD_SHAPES) &&
       branches.length &&
       branches.every(
         (branch) =>
           branch.length === 1 &&
-          branch[0]!.code === "invalid_type" &&
+          (branch[0]!.code === "invalid_type" ||
+            branch[0]!.code === "invalid_value") &&
           branch[0]!.path.length === 0,
       )
     )

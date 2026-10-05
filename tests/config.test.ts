@@ -1432,7 +1432,34 @@ test("build: false in a Target patch turns an inherited Project or Service build
       services: web(),
       targets: { stable: { build: true } },
     }),
-  ).toBe("Fix targets.stable.build: must be a string.");
+  ).toBe(
+    "Fix targets.stable.build: must be a command, or false to turn the inherited build off.",
+  );
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { stable: { services: { web: { build: 7 } } } },
+    }),
+  ).toBe(
+    "Fix targets.stable.services.web.build: must be a command, or false to turn the inherited build off.",
+  );
+  // A Tool's bin comes from its build, so no role may turn it off, and neither may its own declaration.
+  const toolOff =
+    "build: false is not allowed for a Tool, whose build makes its bin; give another command or leave the key out";
+  for (const [path, input] of [
+    [
+      "targets.stable.tools.ctl.build",
+      {
+        tools: { ctl: { bin: "ctl", build: "make" } },
+        targets: { stable: { tools: { ctl: { build: false } } } },
+      },
+    ],
+    ["tools.ctl.build", { tools: { ctl: { bin: "ctl", build: false } } }],
+  ] as const)
+    expect(failureOf({ name: "app", ...input })?.context.issues).toEqual([
+      { path: path.split("."), message: toolOff },
+    ]);
 });
 
 test("a reference through env names the environment path that replaced it", () => {
@@ -1955,7 +1982,7 @@ test("a Target that is on and has a hostname but no usable proxy is refused with
     {
       path: ["domain"],
       message:
-        "Several Services declare ports, so name the one that serves this hostname: add proxy: { /: web }.",
+        "The stable Target serves domain but several Services have ports; add proxy: { /: web } at the top level or under targets.stable.",
     },
   ]);
   expect(
@@ -1970,7 +1997,7 @@ test("a Target that is on and has a hostname but no usable proxy is refused with
     {
       path: ["domain"],
       message:
-        "Service 'web' has several ports, so name the one that serves this hostname: add proxy: { /: ${services.web.ports.http} }.",
+        "Previews get a hostname from domain but 'web' has several ports; add proxy: { /: ${services.web.ports.http} } at the top level or under targets.preview.",
     },
   ]);
   expect(
@@ -1982,7 +2009,7 @@ test("a Target that is on and has a hostname but no usable proxy is refused with
     {
       path: ["targets", "working", "domain"],
       message:
-        "No Service declares a port to serve this hostname; declare one, such as ports: { http: auto }, or remove the domain.",
+        "The working Target has a hostname but no Service has a port; declare one, such as ports: { http: auto }, or remove the domain.",
     },
   ]);
   // A Target that is off, or has no hostname, needs no proxy: without targets only working is on, and it has no hostname.
@@ -1990,7 +2017,7 @@ test("a Target that is on and has a hostname but no usable proxy is refused with
   expect(
     issues({ domain: "app.test", services: two, targets: { working: true } }),
   ).toBeUndefined();
-  // A proxy in the role's patch is enough.
+  // A proxy in the role's patch is enough for that role, and the refusal names the role that still has none.
   expect(
     issues({
       domain: "app.test",
@@ -1998,9 +2025,34 @@ test("a Target that is on and has a hostname but no usable proxy is refused with
       targets: { stable: { proxy: { "/": "api" } } },
     }),
   ).toBeUndefined();
+  expect(
+    issues({
+      domain: "app.test",
+      services: two,
+      targets: { stable: { proxy: { "/": "web" } }, preview: true },
+    }),
+  ).toEqual([
+    {
+      path: ["domain"],
+      message:
+        "Previews get a hostname from domain but several Services have ports; add proxy: { /: web } at the top level or under targets.preview.",
+    },
+  ]);
+  expect(
+    issues({
+      services: two,
+      targets: { preview: { domain: "${rig.target}.app.test" } },
+    }),
+  ).toEqual([
+    {
+      path: ["targets", "preview", "domain"],
+      message:
+        "Previews have a hostname but several Services have ports; add proxy: { /: web } at the top level or under targets.preview.",
+    },
+  ]);
 });
 
-test("rig.host and rig.url name the routed hostname, and are empty without a route", () => {
+test("rig.host names the routed hostname, and rig.url the route or the local address of the Service behind '/'", () => {
   const services = web({
     environment: { HOSTED: "${rig.host}", URL: "${rig.url}" },
   });
@@ -2018,12 +2070,43 @@ test("rig.host and rig.url name the routed hostname, and are empty without a rou
       proxy: { "/": "${services.web.ports.http}" },
     }),
   ).toEqual({ HOSTED: "app.test", URL: "https://app.test" });
-  // Without a proxy, the hostname routes '/' to the one Service with one port.
+  // Without a proxy, '/' is the one Service with one port: the hostname routes to it, and without a hostname rig.url is
+  // its local address, as with an explicit proxy.
   expect(envOf({ name: "app", domain: "app.test", services })).toEqual({
     HOSTED: "app.test",
     URL: "https://app.test",
   });
-  expect(envOf({ name: "app", services })).toEqual({ HOSTED: "", URL: "" });
+  expect(
+    envOf({
+      name: "app",
+      services,
+      proxy: { "/": "${services.web.ports.http}" },
+    }),
+  ).toEqual({ HOSTED: "", URL: "http://127.0.0.1:3000" });
+  expect(envOf({ name: "app", services })).toEqual({
+    HOSTED: "",
+    URL: "http://127.0.0.1:3000",
+  });
+  // With no single Service to default to, a Target with neither proxy nor hostname has no URL.
+  const two = {
+    ...services,
+    api: {
+      command: "api",
+      ports: { http: 3001 },
+      environment: { URL: "${rig.url}" },
+    },
+  };
+  expect(envOf({ name: "app", services: two })).toEqual({
+    HOSTED: "",
+    URL: "",
+  });
+  expect(
+    resolveTargetPlan({
+      config: parseProjectConfig({ name: "app", services }),
+      target: "stable",
+      ...roots_,
+    }).proxy,
+  ).toBeUndefined();
 });
 
 test("Preview plans use assigned ports and ignore pins, keep Branch identity, and refuse missing or colliding ports", () => {

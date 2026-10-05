@@ -4202,7 +4202,13 @@ test("an off Target is refused by up, restart, deploy and a first logs read, eac
     [{ action: "restart", target: "working" }, "working"],
     [{ action: "logs" }, "working"],
     [{ action: "deploy", target: "stable" }, "stable"],
+    [{ action: "up", target: "stable" }, "stable"],
+    [{ action: "restart", target: "stable" }, "stable"],
+    [{ action: "logs", target: "stable" }, "stable"],
     [{ action: "deploy", target: "preview", branch: "feature" }, "preview"],
+    [{ action: "up", target: "preview", branch: "feature" }, "preview"],
+    [{ action: "restart", target: "preview", branch: "feature" }, "preview"],
+    [{ action: "logs", target: "preview", branch: "feature" }, "preview"],
   ] as const)
     await expect(
       runtime.command({ ...command, project: "demo" }),

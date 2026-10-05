@@ -134,8 +134,7 @@
                     "minItems": 1,
                     "type": "array",
                     "items": {
-                      "type": "string",
-                      "minLength": 1
+                      "type": "string"
                     },
                     "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                   }
@@ -450,8 +449,7 @@
                                 "minItems": 1,
                                 "type": "array",
                                 "items": {
-                                  "type": "string",
-                                  "minLength": 1
+                                  "type": "string"
                                 },
                                 "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                               }
@@ -741,8 +739,7 @@
                                 "minItems": 1,
                                 "type": "array",
                                 "items": {
-                                  "type": "string",
-                                  "minLength": 1
+                                  "type": "string"
                                 },
                                 "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                               }
@@ -1032,8 +1029,7 @@
                                 "minItems": 1,
                                 "type": "array",
                                 "items": {
-                                  "type": "string",
-                                  "minLength": 1
+                                  "type": "string"
                                 },
                                 "description": "Compose's list forms: [\"CMD-SHELL\", \"<command>\"] runs a shell command; [\"CMD\", \"<program>\", \"<argument>\", ...] runs the program with exactly those arguments, without a shell; [\"NONE\"] turns the healthcheck off. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                               }

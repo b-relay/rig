@@ -586,7 +586,7 @@ test("the multi example plans its short references, working_dir, named proxy and
     },
   });
   expect(stable.components.find((c) => c.name === "db")).toMatchObject({
-    health: "pg_isready -h 127.0.0.1 -p 5432",
+    health: "'pg_isready' '-h' '127.0.0.1' '-p' '5432'",
     readyTimeout: 120,
     healthcheck: { interval: 10, onFailure: "report" },
   });

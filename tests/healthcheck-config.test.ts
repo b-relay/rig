@@ -142,7 +142,7 @@ test("CMD-SHELL runs its command as a string test does; CMD runs the program wit
   });
   // No argument is split, expanded or run as shell code.
   expect(exec.health).toBe(
-    `check --port 4100 'two words' 'it'\\''s up; rm -rf /' '$HOME'`,
+    `'check' '--port' '4100' 'two words' 'it'\\''s up; rm -rf /' '$HOME'`,
   );
   expect(exec.commandInputs).toEqual([
     { name: "NOTE", source: "environment.NOTE", value: "it's up; rm -rf /" },
@@ -156,6 +156,31 @@ test("CMD-SHELL runs its command as a string test does; CMD runs the program wit
       }),
     }).health,
   ).toBe("'http://127.0.0.1:4100/up'");
+});
+
+test("a CMD word is never shell syntax: an assignment, a parenthesis or an empty argument reaches the program as written", async () => {
+  const run = async (test: string[]) => {
+    const command = planned({
+      name: "app",
+      services: web({ healthcheck: { test } }),
+    }).health!;
+    const child = Bun.spawn(["/bin/sh", "-c", command], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return { command, exitCode: await child.exited };
+  };
+  // Unquoted, sh would read this as an assignment, run nothing, and pass.
+  expect(await run(["CMD", "NO_SUCH_PROBE=1"])).toEqual({
+    command: "'NO_SUCH_PROBE=1'",
+    exitCode: 127,
+  });
+  expect((await run(["CMD", "("])).exitCode).toBe(127);
+  // Empty arguments are arguments: test "" = "" is true.
+  expect(await run(["CMD", "/bin/test", "", "=", ""])).toEqual({
+    command: "'/bin/test' '' '=' ''",
+    exitCode: 0,
+  });
 });
 
 test('["NONE"] and disable: true leave the Service as if it had no healthcheck, start_period included', () => {
@@ -194,7 +219,7 @@ test("a Target patch merges into the inherited healthcheck key by key, and disab
     healthcheck: { interval: 10, retries: 2, onFailure: "restart" },
   });
   expect(planned(config, "preview")).toMatchObject({
-    health: "probe",
+    health: "'probe'",
     healthcheck: { interval: 30, retries: 2, onFailure: "report" },
   });
 });
@@ -246,6 +271,14 @@ test.each([
   [
     ["CMD"],
     'CMD needs a program to run, such as ["CMD", "pg_isready", "-h", "127.0.0.1"]',
+  ],
+  [
+    ["CMD", "", "x"],
+    'CMD needs a program to run, such as ["CMD", "pg_isready", "-h", "127.0.0.1"]',
+  ],
+  [
+    ["CMD-SHELL", " "],
+    'CMD-SHELL takes exactly one shell command, such as ["CMD-SHELL", "curl -f http://127.0.0.1:${port}/health"]',
   ],
   [
     ["CMD-SHELL", "a", "b"],

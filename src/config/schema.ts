@@ -224,7 +224,7 @@ const healthcheckTest = z
         `A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. Referenced values in a shell command are quoted as in command. ${referencesIn("service")}`,
       ),
     z
-      .array(text)
+      .array(z.string())
       .min(1)
       .superRefine((test, ctx) => {
         const problem = healthcheckListProblem(test);
@@ -923,10 +923,15 @@ function refuseUnsupportedShapes(value: unknown): void {
           });
   for (const [path, service] of serviceBlockPaths(value)) {
     if (Object.hasOwn(service, "health"))
-      issues.push({ path: [...path, "health"], message: REMOVED_HEALTH });
+      issues.push({
+        path: [...path, "health"],
+        message: REMOVED_HEALTH,
+        rule: RENAMED_RULE,
+      });
+    // Renamed like run and env (ADR 0011), so a deployed revision that still has them is told apart from a broken file.
     for (const [key, message] of Object.entries(SERVICE_MOVES))
       if (Object.hasOwn(service, key))
-        issues.push({ path: [...path, key], message });
+        issues.push({ path: [...path, key], message, rule: RENAMED_RULE });
     renames(service, path, SERVICE_RENAMES);
   }
   for (const [role, patch] of Object.entries(
@@ -1130,10 +1135,11 @@ interface Issue {
   message: string;
   rule?: typeof RENAMED_RULE;
 }
-/** A key or reference path written under a name ADR 0011 replaced with its Compose name, such as `run` or `${env.X}`. */
+/** A key or reference path written under a name ADR 0011 or 0012 replaced with its Compose name, such as `run`,
+ * `${env.X}` or `ready`. */
 const RENAMED_RULE = "renamed";
-/** Whether a refused config was refused, at least in part, because it uses names from before ADR 0011: a rig.yaml committed
- * before the rename, which a deployed revision may still hold. */
+/** Whether a refused config was refused, at least in part, because it uses names from before ADR 0011 or 0012: a rig.yaml
+ * committed before the rename, which a deployed revision may still hold. */
 export function usesRenamedKeys(error: ConfigError): boolean {
   const issues = error.context.issues;
   return (

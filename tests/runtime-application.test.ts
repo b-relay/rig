@@ -1123,7 +1123,7 @@ test("doctor says a deployed revision whose rig.yaml predates the Compose names 
         name: "stable/config",
         ok: false,
         message:
-          "The deployed revision's configuration predates the Compose key names of ADR 0011 (run is now command, env is now environment), so its policy was not compared. The Target still runs its recorded plan.",
+          "The deployed revision's configuration predates the Compose key names of ADR 0011 and 0012 (run is now command, env is now environment, ready is now healthcheck.test, ready_timeout is now healthcheck.start_period), so its policy was not compared. The Target still runs its recorded plan.",
         reason: "config-predates-rename",
         hint: "Commit rig.yaml with the new names, then run rig deploy stable; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.",
       },
@@ -1136,6 +1136,37 @@ test("doctor says a deployed revision whose rig.yaml predates the Compose names 
       }),
     ]),
   );
+  // A revision committed before healthcheck (ADR 0012) is told apart the same way.
+  for (const service of [
+    {
+      command: "serve",
+      ready: "http://127.0.0.1:4567/",
+      ports: { http: 4567 },
+    },
+    { command: "serve", ready_timeout: "1m", ports: { http: 4567 } },
+  ]) {
+    const readyFailure = (() => {
+      try {
+        parseProjectConfig({ name: "demo", services: { web: service } });
+      } catch (error) {
+        return error;
+      }
+      throw new Error("the old readiness keys were accepted");
+    })();
+    deps.documents.read = async (path) => {
+      if (path !== "/tmp/developer") throw readyFailure;
+      return await read(path);
+    };
+    const stable = (
+      (await runtime.command({ action: "doctor", project: "demo" })) as {
+        checks: { name: string; reason?: string; message: string }[];
+      }
+    ).checks.find((check) => check.name === "stable/config");
+    expect(stable).toMatchObject({
+      reason: "config-predates-rename",
+      message: expect.stringContaining("ready is now healthcheck.test"),
+    });
+  }
   // The working copy is edited in place, so it keeps the rename hint itself.
   deps.documents.read = async () => {
     throw committedFailure;

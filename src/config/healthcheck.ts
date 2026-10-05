@@ -64,7 +64,8 @@ export function healthcheckTest(
   return { kind: "exec", argv: test.slice(1) };
 }
 
-/** Why a list-form `test` is not one of Compose's forms; undefined when it is one. */
+/** Why a list-form `test` is not one of Compose's forms; undefined when it is one. A `CMD` argument may be empty, as an
+ * argv entry may; its program and a `CMD-SHELL` command may not. */
 export function healthcheckListProblem(
   test: readonly string[],
 ): string | undefined {
@@ -74,28 +75,22 @@ export function healthcheckListProblem(
       ? '["NONE"] takes nothing after NONE; write test: ["NONE"]'
       : undefined;
   if (form === "CMD-SHELL")
-    return rest.length !== 1
+    return rest.length !== 1 || rest[0]!.trim() === ""
       ? 'CMD-SHELL takes exactly one shell command, such as ["CMD-SHELL", "curl -f http://127.0.0.1:${port}/health"]'
       : isHealthUrl(rest[0]!)
         ? "an HTTP check is written as a plain string, such as test: http://127.0.0.1:${port}/health; CMD-SHELL runs a shell command"
         : undefined;
   if (form === "CMD")
-    return rest.length
+    return rest.length && rest[0] !== ""
       ? undefined
       : 'CMD needs a program to run, such as ["CMD", "pg_isready", "-h", "127.0.0.1"]';
   return 'a list test must start with "CMD", "CMD-SHELL" or "NONE"';
 }
 
-/** A `CMD` program and its arguments as one /bin/sh command that runs it with exactly those arguments: each is literal
- * data, never split, globbed or expanded. A program that reads like a URL is quoted too, so the command is never taken
- * for an HTTP check. */
+/** A `CMD` program and its arguments as one /bin/sh command that runs it with exactly those arguments. Every word is
+ * single-quoted, the program included, so none is ever shell syntax: not split, globbed or expanded, and never read as
+ * an assignment (`A=1`), a reserved word or an operator (`(`). The command starts with a quote, so it is never taken for
+ * an HTTP check either. */
 export function execCommand(argv: readonly string[]): string {
-  return argv
-    .map((value, index) =>
-      /^[A-Za-z0-9_/.:@%+=,-]+$/.test(value) &&
-      !(index === 0 && isHealthUrl(value))
-        ? value
-        : `'${value.replaceAll("'", `'\\''`)}'`,
-    )
-    .join(" ");
+  return argv.map((value) => `'${value.replaceAll("'", `'\\''`)}'`).join(" ");
 }

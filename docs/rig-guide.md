@@ -544,7 +544,9 @@ until the next deploy. They are planned from the committed config in their
 checkout, so `rig doctor` compares a deployed Target with that revision's
 config, not with the working copy; uncommitted edits are not drift for it.
 A deployed revision whose `rig.yaml` still uses the names from before
-[ADR 0011](adr/0011-compose-key-names.md) (`run`, `env`) cannot be fixed in
+[ADR 0011](adr/0011-compose-key-names.md) (`run`, `env`) or
+[ADR 0012](adr/0012-compose-healthcheck.md) (`ready`, `ready_timeout`) cannot
+be fixed in
 place: `rig doctor` reports it as `config-predates-rename`, says the Target
 still runs its recorded plan, and names the deploy (`rig deploy stable`, or the
 Preview's Branch) of a Commit that uses the new names, which clears it.

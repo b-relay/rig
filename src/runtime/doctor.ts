@@ -333,7 +333,7 @@ async function configCheck(
       // a deploy of a Commit that uses them replaces it. Its recorded plan still runs.
       return target.kind !== "working" && usesRenamedKeys(source.failure)
         ? failing(
-            `${label} predates the Compose key names of ADR 0011 (run is now command, env is now environment), so its policy was not compared. The Target still runs its recorded plan.`,
+            `${label} predates the Compose key names of ADR 0011 and 0012 (run is now command, env is now environment, ready is now healthcheck.test, ready_timeout is now healthcheck.start_period), so its policy was not compared. The Target still runs its recorded plan.`,
             "config-predates-rename",
             `Commit rig.yaml with the new names, then run rig deploy ${deploySelector(target)}; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.`,
           )

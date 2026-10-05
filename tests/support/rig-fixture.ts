@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-/** Names come from the root's own record, so renamed Targets and generated Previews are found as well as local and live. */
+/** Targets come from the root's own record, so generated Previews are found as well as the working and stable Targets. */
 async function recordedTargets(root: string) {
   try {
     const state = JSON.parse(
@@ -87,12 +87,12 @@ export async function rigFixture(
     return await git(["rev-parse", "HEAD"]);
   };
   const cleanup = async () => {
-    // Tests stop their own Targets; after a failed assertion, whatever the root records is stopped under its actual name.
+    // Tests stop their own Targets; after a failed assertion, whatever the root records is stopped by its role or Preview name.
     for (const target of await recordedTargets(root))
       await rig(
         target.kind === "preview"
           ? ["down", "preview", "--deployment", target.name, ...target.project]
-          : ["down", target.name, ...target.project],
+          : ["down", target.kind, ...target.project],
         base,
       ).catch(() => {});
     await rigd(["uninstall"]).catch(() => {});

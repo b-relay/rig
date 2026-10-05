@@ -405,7 +405,7 @@ test("pruning removes checkpoints and claims of Targets absent from state, keeps
 test("an installed path is claimed by one Target's checkpoint until it commits or rolls back", async () => {
   const f = await fixture();
   const transactions = f.transactions();
-  const destination = join(f.root, "bin", "cli-local");
+  const destination = join(f.root, "bin", "cli-dev");
   const artifact = (targetId: string) => ({
     targetId,
     componentName: "cli",

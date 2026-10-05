@@ -22,7 +22,7 @@ services:
     );
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["init", "--create-git"])).toMatchObject({ code: 0 });
-    expect(await f.rig(["up", "local"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["up", "working"])).toMatchObject({ code: 0 });
     await writeFile(crash, "");
     let activity = "";
     const deadline = Date.now() + 12000;
@@ -36,7 +36,7 @@ services:
     const status = await f.rig(["status", "--json"]);
     expect(
       JSON.parse(status.stdout).targets.find(
-        (target: { name: string }) => target.name === "local",
+        (target: { name: string }) => target.name === "working",
       ),
     ).toMatchObject({ state: "failed", components: [{ state: "failed" }] });
     // rigd's supervision pass, every second, sees the ended process again; the crash stays recorded once. Two passes show it
@@ -47,7 +47,7 @@ services:
       ).toHaveLength(1);
       await Bun.sleep(200);
     }
-    expect(await f.rig(["down", "local"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["down", "working"])).toMatchObject({ code: 0 });
     expect(await f.rigd(["uninstall"])).toMatchObject({ code: 0 });
   } finally {
     await f.cleanup();

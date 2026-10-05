@@ -3,7 +3,7 @@ import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import { RigError, failureCauses } from "../domain/errors";
 import { observeTargets } from "./status";
-import { planTarget } from "./targets";
+import { keepPublishedNames, planTarget } from "./targets";
 /** A registration changes only while nothing of the Project runs, is meant to run, or is mid-recovery. */
 async function assertTargetsStopped(
   targets: TargetRecord[],
@@ -47,7 +47,7 @@ function projectActive(): RigError {
     "Stop all Targets and retry.",
   );
 }
-/** Removes the registration and its stopped local/live records; Previews own data and must be destroyed first.
+/** Removes the registration and its stopped working and stable records; Previews own data and must be destroyed first.
  * Returns a warning for every live workspace and data root left on disk. */
 export async function forgetProject(
   project: ProjectRecord,
@@ -68,7 +68,7 @@ export async function forgetProject(
     state.targets = state.targets.filter((t) => t.projectId !== project.id);
   });
   return targets
-    .filter((t) => t.kind === "live")
+    .filter((t) => t.kind === "stable")
     .map(
       (t) =>
         `Target ${t.name} was forgotten, but its workspace at ${t.plan.workspacePath} and data under ${t.plan.dataRoot} were not deleted.`,
@@ -169,18 +169,21 @@ export async function updateRegistration(
     // The same planning as `up`: the moved config's ports are reserved against
     // every other Target, and recorded ports are kept where the config allows.
     const replanned = new Map<string, TargetRecord>();
-    for (const target of targets.filter((t) => t.kind === "local"))
+    for (const target of targets.filter((t) => t.kind === "working"))
       replanned.set(
         target.id,
-        await planTarget(
-          {
-            command,
-            kind: "local",
-            project: { ...project, repoPath },
-            document,
-            existing: target,
-          },
-          deps,
+        keepPublishedNames(
+          target,
+          await planTarget(
+            {
+              command,
+              kind: "working",
+              project: { ...project, repoPath },
+              document,
+              existing: target,
+            },
+            deps,
+          ),
         ),
       );
     await deps.store.update((state) => {

@@ -17,7 +17,7 @@ import type {
   InstalledComponent,
   ManagedComponent,
 } from "../config/types";
-import { isHealthUrl } from "../config/schema";
+import { WORKING_TOOL_SUFFIX, isHealthUrl } from "../config/schema";
 import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
 import { composeEnvironment } from "../domain/process-environment";
 import type { TargetRecord } from "../domain/runtime";
@@ -77,12 +77,16 @@ export function installedPath(
   target: TargetRecord,
   component: InstalledComponent,
 ): string {
-  // The Stable Target owns the plain command; every other Target's alias carries its own name.
-  const suffix = target.kind === "live" ? "" : `-${target.name}`;
+  // The stable Target owns the plain command, the working Target <tool>-dev, and a Preview <tool>-<preview name>.
+  const suffix =
+    target.kind === "stable"
+      ? ""
+      : `-${target.kind === "working" ? WORKING_TOOL_SUFFIX : target.name}`;
   return join(
     root,
     "bin",
-    `${component.installName ?? component.name}${suffix}`,
+    component.publishedAs ??
+      `${component.installName ?? component.name}${suffix}`,
   );
 }
 /** Budget in seconds when the Project config declares none. */
@@ -115,7 +119,7 @@ export function createTargetEffects(
       throw new RigError(
         "PROVIDER_MISSING",
         `Process supervisor '${target.plan.providers.processSupervisor}' is unavailable.`,
-        `This rigd supervises with ${[...options.supervisors.keys()].join(", ")}. Deploy the Target again (rig up for the Working copy) so it is planned with rigd.`,
+        `This rigd supervises with ${[...options.supervisors.keys()].join(", ")}. Deploy the Target again (rig up working for the working Target) so it is planned with rigd.`,
       );
     return provider;
   };
@@ -445,7 +449,7 @@ export function createTargetEffects(
             );
         }
       }
-      if (target.kind === "local") return;
+      if (target.kind === "working") return;
       // The marker lives in the immutable workspace, so releasing the revision reclaims it too.
       const marker = join(target.plan.workspacePath, PREPARED_MARKER);
       if (await exists(marker)) return;

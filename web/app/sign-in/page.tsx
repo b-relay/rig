@@ -18,7 +18,7 @@ export default function SignInPage() {
       </Suspense>
       <p className="text-xs text-muted-foreground">
         On that Mac, the web Service's log names the key file:{" "}
-        <code>rig logs live --project rig</code>.
+        <code>rig logs stable --project rig</code>.
       </p>
     </div>
   );

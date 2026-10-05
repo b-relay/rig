@@ -29,7 +29,11 @@ const SERVICES = {
 };
 
 async function fixture() {
-  const config = parseProjectConfig({ name: "demo", services: SERVICES });
+  const config = parseProjectConfig({
+    name: "demo",
+    services: SERVICES,
+    targets: { working: true, stable: true, preview: true },
+  });
   const processes = new Map<string, ProcessObservation>();
   /** Process keys (`<target id>:<service>`) in the order they were started. */
   const starts: string[] = [];
@@ -114,7 +118,7 @@ async function fixture() {
   const { root, clock, store, deps } = world;
   let runtime = world.open();
   await runtime.command({ action: "init", repoPath: world.repo });
-  const targetId = async (kind: "local" | "live" | "preview") =>
+  const targetId = async (kind: "working" | "stable" | "preview") =>
     (await store.read()).targets.find((t) => t.kind === kind)!.id;
   const f = {
     root,
@@ -141,7 +145,7 @@ async function fixture() {
       await runtime.command({
         action: "deploy",
         project: "demo",
-        target: "live",
+        target: "stable",
       });
       await runtime.command({
         action: "deploy",
@@ -156,7 +160,7 @@ async function fixture() {
       host.session = session;
     },
     /** The Services of `kind` that run now. */
-    async running(kind: "local" | "live" | "preview") {
+    async running(kind: "working" | "stable" | "preview") {
       const prefix = `${await targetId(kind)}:`;
       return [...processes]
         .filter(
@@ -166,7 +170,7 @@ async function fixture() {
         .sort();
     },
     /** The Services of `kind` started since `from`, in order. */
-    async startedSince(kind: "local" | "live" | "preview", from: number) {
+    async startedSince(kind: "working" | "stable" | "preview", from: number) {
       const prefix = `${await targetId(kind)}:`;
       return starts
         .slice(from)
@@ -174,10 +178,10 @@ async function fixture() {
         .map((key) => key.slice(prefix.length));
     },
     starts,
-    async key(kind: "local" | "live" | "preview", service: string) {
+    async key(kind: "working" | "stable" | "preview", service: string) {
       return `${await targetId(kind)}:${service}`;
     },
-    async status(kind: "local" | "live" | "preview") {
+    async status(kind: "working" | "stable" | "preview") {
       const name = (await store.read()).targets.find(
         (t) => t.kind === kind,
       )!.name;
@@ -227,19 +231,19 @@ test("the first daemon to record a Host session detects nothing and records the 
 
 test("after an upgrade, a stopped Stable Target whose plan names the removed launchd supervisor starts, restarts and stops under rigd", async () => {
   const f = await fixture();
-  await f.command({ action: "deploy", project: "demo", target: "live" });
-  await f.command({ action: "down", project: "demo", target: "live" });
+  await f.command({ action: "deploy", project: "demo", target: "stable" });
+  await f.command({ action: "down", project: "demo", target: "stable" });
   // What a Rig that offered launchd supervision left: the same plan, naming launchd. This daemon has only rigd's supervisor.
   const path = join(f.root, "runtime", "state.json");
   const recorded = JSON.parse(await readFile(path, "utf8"));
   recorded.targets.find(
-    (target: { kind: string }) => target.kind === "live",
+    (target: { kind: string }) => target.kind === "stable",
   ).plan.providers.processSupervisor = "launchd";
   await writeFile(path, JSON.stringify(recorded));
   f.reopen();
   await f.reconcile();
   const plan = async () =>
-    (await f.store.read()).targets.find((target) => target.kind === "live")!
+    (await f.store.read()).targets.find((target) => target.kind === "stable")!
       .plan;
   expect((await plan()).providers.processSupervisor).toBe("rigd");
   // Not config drift: the recorded plan is what rig.yaml plans now.
@@ -247,20 +251,20 @@ test("after an upgrade, a stopped Stable Target whose plan names the removed lau
     checks: { name: string; ok: boolean }[];
   };
   expect(
-    doctor.checks.find((check) => check.name === "live/config"),
+    doctor.checks.find((check) => check.name === "stable/config"),
   ).toMatchObject({ ok: true });
 
-  const live = { project: "demo", target: "live" } as const;
+  const live = { project: "demo", target: "stable" } as const;
   expect(await f.command({ action: "up", ...live })).toMatchObject({
     outcome: "started",
   });
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   const startsBefore = f.starts.length;
   expect(await f.command({ action: "restart", ...live })).toMatchObject({
     action: "restart",
     outcome: "started",
   });
-  expect(await f.startedSince("live", startsBefore)).toEqual([
+  expect(await f.startedSince("stable", startsBefore)).toEqual([
     "db",
     "api",
     "worker",
@@ -268,11 +272,11 @@ test("after an upgrade, a stopped Stable Target whose plan names the removed lau
   expect(await f.command({ action: "down", ...live })).toMatchObject({
     outcome: "stopped",
   });
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   // The state file now says what this rigd read.
   expect(
     JSON.parse(await readFile(path, "utf8")).targets.find(
-      (target: { kind: string }) => target.kind === "live",
+      (target: { kind: string }) => target.kind === "stable",
     ).plan.providers,
   ).toEqual({ processSupervisor: "rigd" });
 });
@@ -287,26 +291,26 @@ test("after a reboot every Stable Target meant to run comes back in dependency o
   f.reopen();
   expect(await f.reconcile()).toEqual({});
 
-  expect(await f.startedSince("live", startsBefore)).toEqual([
+  expect(await f.startedSince("stable", startsBefore)).toEqual([
     "db",
     "api",
     "worker",
   ]);
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
-  expect(await f.running("local")).toEqual([]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("working")).toEqual([]);
   expect(await f.running("preview")).toEqual([]);
   const activity = await f.activitySince(before);
-  expect(activity).toEqual(["host-restart/stopped -", "up/started live"]);
+  expect(activity).toEqual(["host-restart/stopped -", "up/started stable"]);
   const entries = (await f.store.read()).activity.slice(before);
   expect(entries[0]!.message).toContain("The Mac restarted");
   expect(entries[1]!.message).toContain("restarted after reboot");
   // The session is recorded once rigd has acted on it.
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
 
-  const live = await f.status("live");
+  const live = await f.status("stable");
   expect(live.api).toMatchObject({ state: "running" });
   expect(String(live.api!.reason)).toContain("restarted after reboot");
-  const local = await f.status("local");
+  const local = await f.status("working");
   for (const service of ["api", "db", "worker"]) {
     expect(local[service]).toMatchObject({ state: "stopped", exit: "unknown" });
     expect(String(local[service]!.reason)).toContain(
@@ -325,11 +329,11 @@ test("after a reboot every Stable Target meant to run comes back in dependency o
   f.reopen();
   await f.reconcile();
   await f.supervise();
-  expect(await f.running("local")).toEqual([]);
+  expect(await f.running("working")).toEqual([]);
   expect(await f.running("preview")).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
 });
 
@@ -341,17 +345,17 @@ test("the precedence over unknown-exit retries ends with the next explicit start
   await f.reconcile();
 
   await f.command({ action: "up", project: "demo" });
-  expect(await f.running("local")).toEqual(["api", "db", "worker"]);
-  expect((await f.status("local")).api).toMatchObject({ state: "running" });
+  expect(await f.running("working")).toEqual(["api", "db", "worker"]);
+  expect((await f.status("working")).api).toMatchObject({ state: "running" });
 
   // The Working copy's api vanishes on its own (not a Host restart): #274's slower retry applies again.
-  f.processes.delete(await f.key("local", "api"));
+  f.processes.delete(await f.key("working", "api"));
   const from = f.starts.length;
   const { nextRetryAt } = await f.supervise();
   expect(nextRetryAt).toBe(f.clock.ms + UNKNOWN_EXIT_RESTART_BACKOFF_MS[0]);
   f.clock.ms = nextRetryAt!;
   await f.supervise();
-  expect(await f.startedSince("local", from)).toEqual(["api"]);
+  expect(await f.startedSince("working", from)).toEqual(["api"]);
 });
 
 test("a daemon restart without a Host restart keeps today's behavior: nothing is started as after a reboot, and unknown exits follow each Service's policy", async () => {
@@ -371,7 +375,7 @@ test("a daemon restart without a Host restart keeps today's behavior: nothing is
     [],
   );
   expect(activity.filter((entry) => entry.startsWith("up/"))).toEqual([]);
-  for (const kind of ["local", "live"] as const) {
+  for (const kind of ["working", "stable"] as const) {
     const status = await f.status(kind);
     // Under always the unknown exit is scheduled for the slower retry; under no and on-failure it stays failed.
     expect(status.api).toMatchObject({ state: "starting", exit: "unknown" });
@@ -385,25 +389,25 @@ test("a new login in the same boot is a Host restart too: Stable Targets come ba
   await f.startAll();
   const before = await f.activityCount();
   // A process of the Working copy survived the logout; everything else ended with the login session.
-  const survivor = await f.key("local", "worker");
+  const survivor = await f.key("working", "worker");
   const kept = f.processes.get(survivor)!;
   f.restartHost({ ...f.host.session, login: "100019" });
   f.processes.set(survivor, kept);
   f.reopen();
   await f.reconcile();
 
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
-  expect(await f.running("local")).toEqual(["worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("working")).toEqual(["worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
   const entries = (await f.store.read()).activity.slice(before);
   expect(entries[0]!.message).toContain("You logged out and in again");
-  expect(String((await f.status("live")).api!.reason)).toContain(
+  expect(String((await f.status("stable")).api!.reason)).toContain(
     "restarted after login",
   );
-  const local = await f.status("local");
+  const local = await f.status("working");
   expect(local.worker).toMatchObject({ state: "running" });
   expect(String(local.api!.reason)).toContain(
     "It stopped when you logged out and in again",
@@ -417,8 +421,8 @@ test("a Stable start after a reboot whose clean-up stop rigd's shutdown detaches
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
   // worker cannot start, and the stop of api that undoes the start waits until rigd shuts down.
-  const worker = await f.key("live", "worker");
-  const api = await f.key("live", "api");
+  const worker = await f.key("stable", "worker");
+  const api = await f.key("stable", "api");
   f.refusal.start = (key) => key === worker;
   f.stall.key = api;
   f.reopen();
@@ -430,7 +434,7 @@ test("a Stable start after a reboot whose clean-up stop rigd's shutdown detaches
   await f.drain();
   await pass;
 
-  const live = (await f.store.read()).targets.find((t) => t.kind === "live")!;
+  const live = (await f.store.read()).targets.find((t) => t.kind === "stable")!;
   const host = (await f.store.read()).host!;
   expect(host.boot).toBe("BOOT-1");
   expect(host.restart).toMatchObject({ kind: "reboot", boot: "BOOT-2" });
@@ -448,7 +452,7 @@ test("a Stable start after a reboot whose clean-up stop rigd's shutdown detaches
   const after = await f.activitySince(before);
   expect(after).toHaveLength(2);
   expect(after[0]).toBe("host-restart/stopped -");
-  expect(after[1]).toMatch(/^up\/(started|failed) live$/);
+  expect(after[1]).toMatch(/^up\/(started|failed) stable$/);
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
   expect((await f.store.read()).host!.restart).toBeUndefined();
 });
@@ -456,14 +460,14 @@ test("a Stable start after a reboot whose clean-up stop rigd's shutdown detaches
 test("a Stable Target meant to be stopped stays stopped after a reboot", async () => {
   const f = await fixture();
   await f.startAll();
-  await f.command({ action: "down", project: "demo", target: "live" });
+  await f.command({ action: "down", project: "demo", target: "stable" });
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   expect(await f.activitySince(before)).toEqual(["host-restart/stopped -"]);
-  expect((await f.status("live")).api).toMatchObject({
+  expect((await f.status("stable")).api).toMatchObject({
     state: "stopped",
     exit: "requested",
   });
@@ -474,17 +478,17 @@ test("a Stable Target that fails to come back after a reboot keeps a failed stat
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
-  const db = await f.key("live", "db");
+  const db = await f.key("stable", "db");
   f.refusal.start = (key) => key === db;
   f.reopen();
   await f.reconcile();
 
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/failed live",
+    "up/failed stable",
   ]);
-  const live = (await f.store.read()).targets.find((t) => t.kind === "live")!;
+  const live = (await f.store.read()).targets.find((t) => t.kind === "stable")!;
   expect(live.desired).toBe("running");
   // Every Service the failed start left stopped is failed, not retried: not even api under always once db could start.
   f.refusal.start = undefined;
@@ -492,17 +496,17 @@ test("a Stable Target that fails to come back after a reboot keeps a failed stat
     f.clock.ms += delay;
     await f.supervise();
   }
-  expect(await f.running("live")).toEqual([]);
-  const status = await f.status("live");
+  expect(await f.running("stable")).toEqual([]);
+  const status = await f.status("stable");
   for (const service of ["api", "db", "worker"]) {
     expect(status[service]).toMatchObject({ state: "failed" });
     expect(String(status[service]!.reason)).toContain("The last start failed");
   }
-  await f.command({ action: "up", project: "demo", target: "live" });
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  await f.command({ action: "up", project: "demo", target: "stable" });
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
 });
 
-test("a Stable Target whose start after a reboot finds an unfinished effect transaction names rig down, then rig up, as its recovery", async () => {
+test("a Stable Target whose start after a reboot finds an unfinished effect transaction names rig down stable, then rig up stable, as its recovery", async () => {
   const f = await fixture();
   await f.startAll();
   const before = await f.activityCount();
@@ -510,7 +514,7 @@ test("a Stable Target whose start after a reboot finds an unfinished effect tran
   // An earlier start of api had failed its readiness check; then a crash mid-start left the Stable Target's effect
   // transaction unfinished.
   await f.store.update((state) => {
-    const saved = state.targets.find((t) => t.kind === "live")!;
+    const saved = state.targets.find((t) => t.kind === "stable")!;
     saved.services!.api = {
       ...saved.services!.api!,
       outcome: {
@@ -520,25 +524,25 @@ test("a Stable Target whose start after a reboot finds an unfinished effect tran
       },
     };
   });
-  const live = (await f.store.read()).targets.find((t) => t.kind === "live")!;
+  const live = (await f.store.read()).targets.find((t) => t.kind === "stable")!;
   await f.lifecycle.checkpoint(live);
   f.reopen();
   await f.reconcile();
 
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   const entries = (await f.store.read()).activity.slice(before);
   const failed = entries.find((entry) => entry.action === "up")!;
-  expect(failed).toMatchObject({ outcome: "failed", target: "live" });
+  expect(failed).toMatchObject({ outcome: "failed", target: "stable" });
   expect(failed.message).toContain("EFFECTS_RECOVERY");
-  expect(failed.message).toContain("Run rig down live, then rig up live");
-  const status = await f.status("live");
+  expect(failed.message).toContain("Run rig down stable, then rig up stable");
+  const status = await f.status("stable");
   for (const service of ["api", "db", "worker"])
     expect(String(status[service]!.reason)).toContain(
-      "Run rig down, then rig up to start it again.",
+      "Run rig down stable, then rig up stable to start it again.",
     );
-  await f.command({ action: "down", project: "demo", target: "live" });
-  await f.command({ action: "up", project: "demo", target: "live" });
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  await f.command({ action: "down", project: "demo", target: "stable" });
+  await f.command({ action: "up", project: "demo", target: "stable" });
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
 });
 
 test("a first pass that could not act on the restart for every Target leaves it to the next daemon, which acts on it without recording it twice", async () => {
@@ -555,16 +559,16 @@ test("a first pass that could not act on the restart for every Target leaves it 
   release();
   await reconciling;
   await draining;
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
 
   f.host.hold = undefined;
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
   const host = (await f.store.read()).host!;
   expect(host).toMatchObject({ boot: "BOOT-2" });
@@ -576,15 +580,15 @@ test("a daemon that finishes a restart an earlier one left pending does not mark
   await f.startAll();
   f.restartHost(REBOOTED);
   // The Stable Target's start stays in progress, so the first pass never settles the restart.
-  const db = await f.key("live", "db");
+  const db = await f.key("stable", "db");
   f.delay.start = (key) =>
     key === db ? new Promise<void>(() => {}) : undefined;
   f.reopen();
   void f.reconcile();
-  const localApi = await f.key("local", "api");
+  const localApi = await f.key("working", "api");
   for (let i = 0; i < 200; i++) {
     const local = (await f.store.read()).targets.find(
-      (t) => t.kind === "local",
+      (t) => t.kind === "working",
     )!;
     const outcome = local.services?.api?.outcome;
     if (outcome?.kind === "unknown" && outcome.hostRestart) break;
@@ -592,7 +596,7 @@ test("a daemon that finishes a restart an earlier one left pending does not mark
   }
   // The operator starts the Working copy again; its api then vanishes with nothing recorded, and rigd is replaced.
   await f.command({ action: "up", project: "demo" });
-  expect(await f.running("local")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("working")).toEqual(["api", "db", "worker"]);
   f.processes.delete(localApi);
   f.delay.start = undefined;
   f.reopen();
@@ -600,7 +604,7 @@ test("a daemon that finishes a restart an earlier one left pending does not mark
 
   f.clock.ms += UNKNOWN_EXIT_RESTART_BACKOFF_MS[0]!;
   await f.supervise();
-  expect(await f.running("local")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("working")).toEqual(["api", "db", "worker"]);
 });
 
 /** Makes the state writes that record the Working copy's Services as stopped by the Host restart fail while `failing.on`,
@@ -615,7 +619,7 @@ function failWorkingCopyMarking(store: FileStateStore) {
         failing.on &&
         state.targets.some(
           (t) =>
-            t.kind === "local" &&
+            t.kind === "working" &&
             Object.values(t.services ?? {}).some(
               (run) =>
                 run.outcome?.kind === "unknown" &&
@@ -637,7 +641,7 @@ test("a daemon that finds a restart an earlier one only partly acted on records 
   const failing = failWorkingCopyMarking(f.store);
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
 
   failing.on = false;
@@ -645,15 +649,15 @@ test("a daemon that finds a restart an earlier one only partly acted on records 
   const startsBefore = f.starts.length;
   f.reopen();
   await f.reconcile();
-  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.startedSince("stable", startsBefore)).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
   const host = (await f.store.read()).host!;
   expect(host).toMatchObject({ boot: "BOOT-2", login: "100002" });
   expect(host.restart).toBeUndefined();
-  expect(await f.status("local")).toMatchObject({
+  expect(await f.status("working")).toMatchObject({
     api: { state: "stopped", exit: "unknown" },
   });
 });
@@ -663,21 +667,21 @@ test("a Stable Target whose start failed after a restart is not retried by the d
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
-  const db = await f.key("live", "db");
+  const db = await f.key("stable", "db");
   f.refusal.start = (key) => key === db;
   const failing = failWorkingCopyMarking(f.store);
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
 
   failing.on = false;
   f.refusal.start = undefined;
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/failed live",
+    "up/failed stable",
   ]);
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
 });
@@ -702,14 +706,14 @@ test("a restart whose Activity entry could not be written at first is recorded o
     });
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-2" });
 
   f.reopen();
   await f.reconcile();
   expect((await f.activitySince(before)).sort()).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
 });
 
@@ -731,7 +735,7 @@ test("a daemon that never managed to write a restart's entry leaves its Stable s
     });
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   expect((await f.store.read()).host).toMatchObject({
     boot: "BOOT-1",
     restart: { kind: "reboot", unannounced: true },
@@ -741,9 +745,9 @@ test("a daemon that never managed to write a restart's entry leaves its Stable s
   const startsBefore = f.starts.length;
   f.reopen();
   await f.reconcile();
-  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.startedSince("stable", startsBefore)).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
-    "up/started live",
+    "up/started stable",
     "host-restart/stopped -",
   ]);
   const host = (await f.store.read()).host!;
@@ -777,7 +781,7 @@ test("a failed Stable start after a restart whose record could not be written is
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
-  const db = await f.key("live", "db");
+  const db = await f.key("stable", "db");
   f.refusal.start = (key) => key === db;
   // The write that records the failed start, with its Activity entry, fails twice.
   const failing = failWrites(
@@ -790,7 +794,7 @@ test("a failed Stable start after a restart whose record could not be written is
   );
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
 
   // Nothing of the Target is started while its failure is unrecorded, nor once a later pass has recorded it.
   f.refusal.start = undefined;
@@ -799,23 +803,23 @@ test("a failed Stable start after a restart whose record could not be written is
     await f.supervise();
   }
   expect(failing.left).toBe(0);
-  expect(await f.running("live")).toEqual([]);
-  const status = await f.status("live");
+  expect(await f.running("stable")).toEqual([]);
+  const status = await f.status("stable");
   for (const service of ["api", "db", "worker"])
     expect(status[service]).toMatchObject({ state: "failed" });
 
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/failed live",
+    "up/failed stable",
   ]);
   const host = (await f.store.read()).host!;
   expect(host).toMatchObject({ boot: "BOOT-2" });
   expect(host.restart).toBeUndefined();
-  await f.command({ action: "up", project: "demo", target: "live" });
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  await f.command({ action: "up", project: "demo", target: "stable" });
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
 });
 
 test("an Operation on a Stable Target whose failed start after a restart is still unrecorded records that failure first, and is refused while it cannot", async () => {
@@ -823,7 +827,7 @@ test("an Operation on a Stable Target whose failed start after a restart is stil
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
-  const db = await f.key("live", "db");
+  const db = await f.key("stable", "db");
   f.refusal.start = (key) => key === db;
   const failing = failWrites(f.store, (state) =>
     state.activity
@@ -834,27 +838,27 @@ test("an Operation on a Stable Target whose failed start after a restart is stil
   await f.reconcile();
   f.refusal.start = undefined;
   await expect(
-    f.command({ action: "up", project: "demo", target: "live" }),
+    f.command({ action: "up", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({ code: "STATE_WRITE" });
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
 
   // Even an Operation refused before it acts leaves the failure recorded, in its place ahead of the Operation's own entry.
   failing.left = 0;
   await expect(
-    f.command({ action: "destroy", project: "demo", target: "live" }),
+    f.command({ action: "destroy", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({ code: "DESTROY_TARGET" });
   const activity = await f.activitySince(before);
   expect(activity.slice(0, 2)).toEqual([
     "host-restart/stopped -",
-    "up/failed live",
+    "up/failed stable",
   ]);
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   expect(await f.activitySince(before)).toEqual(activity);
   expect((await f.store.read()).host!.restart).toBeUndefined();
-  await f.command({ action: "up", project: "demo", target: "live" });
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  await f.command({ action: "up", project: "demo", target: "stable" });
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
 });
 
 test("a write reported failed after it was saved is not repeated: one Host entry and one failed start", async () => {
@@ -862,7 +866,7 @@ test("a write reported failed after it was saved is not repeated: one Host entry
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
-  const db = await f.key("live", "db");
+  const db = await f.key("stable", "db");
   f.refusal.start = (key) => key === db;
   // The first write carrying each entry is saved, then reported failed, as a failed directory sync would be.
   const reported = new Set<string>();
@@ -886,9 +890,9 @@ test("a write reported failed after it was saved is not repeated: one Host entry
   await f.supervise();
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/failed live",
+    "up/failed stable",
   ]);
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
 });
 
 test("a login after a reboot whose entry was never written is announced with it by the late write, each in its own words", async () => {
@@ -922,7 +926,7 @@ test("a second reconcile of the same daemon does not start again a Stable Target
   await f.startAll();
   const before = await f.activityCount();
   f.restartHost(REBOOTED);
-  const db = await f.key("live", "db");
+  const db = await f.key("stable", "db");
   f.refusal.start = (key) => key === db;
   const failing = failWrites(f.store, (state) =>
     state.activity
@@ -934,14 +938,14 @@ test("a second reconcile of the same daemon does not start again a Stable Target
   f.refusal.start = undefined;
   const startsBefore = f.starts.length;
   await f.reconcile();
-  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.startedSince("stable", startsBefore)).toEqual([]);
 
   failing.left = 0;
   await f.reconcile();
-  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.startedSince("stable", startsBefore)).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/failed live",
+    "up/failed stable",
   ]);
 });
 
@@ -960,14 +964,14 @@ test("a Working copy's Services are recorded as stopped by a restart only in the
   const saved = await f.store.read();
   expect(saved.host).toMatchObject({ boot: "BOOT-1" });
   expect(saved.host!.restart).toBeUndefined();
-  const local = saved.targets.find((t) => t.kind === "local")!;
+  const local = saved.targets.find((t) => t.kind === "working")!;
   for (const run of Object.values(local.services ?? {}))
     expect(run.outcome).not.toHaveProperty("hostRestart");
 
   failing.left = 0;
   f.reopen();
   await f.reconcile();
-  expect(await f.status("local")).toMatchObject({
+  expect(await f.status("working")).toMatchObject({
     api: { state: "stopped", exit: "unknown" },
   });
   expect(
@@ -993,7 +997,9 @@ test("a later pass that records a Working copy's Services as stopped by the rest
 
   failing.left = 0;
   await f.supervise();
-  const local = (await f.store.read()).targets.find((t) => t.kind === "local")!;
+  const local = (await f.store.read()).targets.find(
+    (t) => t.kind === "working",
+  )!;
   expect((await f.store.read()).host!.restart).toMatchObject({
     kind: "reboot",
     boot: "BOOT-2",
@@ -1035,12 +1041,12 @@ test("a restart whose entry was never written is still announced when the Mac re
   });
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
-    "up/started live",
+    "up/started stable",
     "host-restart/stopped -",
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
   const [first, second] = (await f.store.read()).activity
     .slice(before)
@@ -1083,10 +1089,10 @@ test("restarts whose entries no daemon could write are carried from one pending 
   const startsBefore = f.starts.length;
   f.reopen();
   await f.reconcile();
-  expect(await f.startedSince("live", startsBefore)).toEqual([]);
+  expect(await f.startedSince("stable", startsBefore)).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
-    "up/started live",
-    "up/started live",
+    "up/started stable",
+    "up/started stable",
     "host-restart/stopped -",
     "host-restart/stopped -",
   ]);
@@ -1103,18 +1109,18 @@ test("a logout and login after a reboot the first pass did not finish is a resta
   const failing = failWorkingCopyMarking(f.store);
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
 
   failing.on = false;
   f.restartHost({ ...REBOOTED, login: "100019" });
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
   const host = (await f.store.read()).host!;
   expect(host).toMatchObject({ boot: "BOOT-2", login: "100019" });
@@ -1138,10 +1144,10 @@ test("a daemon that can read nothing of the session still finishes a restart an 
     f.clock.ms += delay;
     await f.supervise();
   }
-  expect(await f.running("local")).toEqual([]);
+  expect(await f.running("working")).toEqual([]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
   // Recorded as it was found, so the next restart can be told.
   expect((await f.store.read()).host).toMatchObject({
@@ -1171,10 +1177,10 @@ test("a pending restart finished by a daemon that could not read the login keeps
   f.restartHost({ ...REBOOTED, login: "100019" });
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
   expect(await f.activitySince(before)).toEqual([
     "host-restart/stopped -",
-    "up/started live",
+    "up/started stable",
   ]);
 });
 
@@ -1183,8 +1189,8 @@ test("after a reboot an outcome that already kept a Working copy Service stopped
   await f.startAll();
   const incarnation = (key: string) => f.processes.get(key)!.incarnation;
   // Before the reboot worker (on-failure) exited cleanly and stays stopped; api (always) crashed, and its retry is due.
-  const worker = await f.key("local", "worker");
-  const api = await f.key("local", "api");
+  const worker = await f.key("working", "worker");
+  const api = await f.key("working", "api");
   f.processes.set(worker, {
     state: "stopped",
     exitCode: 0,
@@ -1201,8 +1207,8 @@ test("after a reboot an outcome that already kept a Working copy Service stopped
   await f.reconcile();
   f.clock.ms += 1000;
   await f.supervise();
-  expect(await f.running("local")).toEqual([]);
-  const local = await f.status("local");
+  expect(await f.running("working")).toEqual([]);
+  const local = await f.status("working");
   expect(local.worker).toMatchObject({ state: "stopped", exit: "clean" });
   expect(local.api).toMatchObject({ state: "stopped", exit: "unknown" });
   expect(String(local.api!.reason)).toContain(
@@ -1218,14 +1224,14 @@ test("a boot that could not be read right after a reboot detects nothing yet and
   f.restartHost({ login: "100002" });
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual([]);
+  expect(await f.running("stable")).toEqual([]);
   expect((await f.store.read()).host).toMatchObject({ boot: "BOOT-1" });
 
   f.host.session = REBOOTED;
   f.reopen();
   await f.reconcile();
-  expect(await f.running("live")).toEqual(["api", "db", "worker"]);
-  expect(await f.running("local")).toEqual([]);
+  expect(await f.running("stable")).toEqual(["api", "db", "worker"]);
+  expect(await f.running("working")).toEqual([]);
   expect(
     (await f.activitySince(before)).filter((entry) =>
       entry.startsWith("host-restart"),
@@ -1239,9 +1245,9 @@ test("a Service recorded as stopped by the restart but later seen running loses 
   f.restartHost(REBOOTED);
   f.reopen();
   await f.reconcile();
-  const api = await f.key("local", "api");
+  const api = await f.key("working", "api");
   const run = async () =>
-    (await f.store.read()).targets.find((t) => t.kind === "local")!.services!
+    (await f.store.read()).targets.find((t) => t.kind === "working")!.services!
       .api!;
   expect((await run()).outcome).toMatchObject({ hostRestart: "reboot" });
   f.processes.set(api, { state: "running", pid: 4242 });

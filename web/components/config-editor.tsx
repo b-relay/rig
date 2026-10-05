@@ -33,8 +33,12 @@ import {
   parseList,
   parsePort,
   removeAt,
+  removeRoleSetting,
+  roleOn,
   setAt,
   showLines,
+  switchRole,
+  type TargetRole,
   type Tree,
 } from "@/lib/config-form";
 import {
@@ -77,6 +81,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
 interface Draft {
@@ -84,6 +90,8 @@ interface Draft {
   fields: readonly ConfigField[];
   set(path: string[], value: unknown): void;
   remove(path: string[]): void;
+  /** Replaces the draft with what `change` makes of it. */
+  update(change: (tree: Tree) => Tree): void;
 }
 const DraftContext = createContext<Draft | undefined>(undefined);
 function useDraft(): Draft {
@@ -156,6 +164,7 @@ export function ConfigEditor({
       fields: source.fields,
       set: (path, value) => setTree((current) => setAt(current, path, value)),
       remove: (path) => setTree((current) => removeAt(current, path)),
+      update: (change) => setTree(change),
     }),
     [tree, source.fields],
   );
@@ -903,48 +912,85 @@ function ProxySection({ path }: { path: string[] }) {
     </div>
   );
 }
-const ROLES = [
-  ["working", "Working copy", "local"],
-  ["stable", "Stable", "live"],
-  ["preview", "Previews", undefined],
-] as const;
+const ROLES: readonly TargetRole[] = ["working", "stable", "preview"];
 function TargetsSection() {
   const draft = useDraft();
-  const [role, setRole] = useState<(typeof ROLES)[number][0]>("working");
+  const [role, setRole] = useState<TargetRole>("working");
   const path = ["targets", role];
   const services = Object.keys(getAt(draft.tree, ["services"]) ?? {});
   const tools = Object.keys(getAt(draft.tree, ["tools"]) ?? {});
-  const defaultName = ROLES.find(([r]) => r === role)?.[2];
+  const on = roleOn(draft.tree, role);
+  // Clearing a role's last setting keeps the role on rather than removing its key, which would turn it off.
+  const scoped = useMemo<Draft>(
+    () => ({
+      ...draft,
+      remove: (removed) =>
+        draft.update((tree) => removeRoleSetting(tree, role, removed)),
+    }),
+    [draft, role],
+  );
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
-        Each role patches the Project settings for its Targets: maps merge per
-        key, lists and scalars replace.
+        A Target runs only when it is on. Without a targets key only working is
+        on. Each role patches the Project settings for its Targets: maps merge
+        per key, lists and scalars replace.
       </p>
-      <Tabs value={role} onValueChange={(next) => setRole(next as typeof role)}>
+      <Tabs value={role} onValueChange={(next) => setRole(next as TargetRole)}>
         <TabsList>
-          {ROLES.map(([value, label]) => (
+          {ROLES.map((value) => (
             <TabsTrigger key={value} value={value}>
-              {label}
+              {value}
             </TabsTrigger>
           ))}
         </TabsList>
       </Tabs>
-      <div key={role} className="grid max-w-xl gap-4">
-        {defaultName ? (
-          <Text
-            path={[...path, "name"]}
-            label="Target name"
-            placeholder={defaultName}
-            mono
+      <Label className="gap-2 font-normal">
+        <Switch
+          checked={on}
+          onCheckedChange={(next) =>
+            draft.update((tree) => switchRole(tree, role, next))
+          }
+        />
+        {role === "preview" ? "Previews are on" : `${role} is on`}
+      </Label>
+      {on ? (
+        <DraftContext.Provider value={scoped}>
+          <TargetSettings
+            key={role}
+            path={path}
+            services={services}
+            tools={tools}
+            preview={role === "preview"}
           />
-        ) : null}
+        </DraftContext.Provider>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Turning it on lets rig up, deploy and the dashboard run it. Turning a
+          role off drops its settings from rig.yaml.
+        </p>
+      )}
+    </div>
+  );
+}
+function TargetSettings({
+  path,
+  services,
+  tools,
+  preview,
+}: {
+  path: string[];
+  services: readonly string[];
+  tools: readonly string[];
+  preview: boolean;
+}) {
+  return (
+    <>
+      <div className="grid max-w-xl gap-4">
         <Text
           path={[...path, "domain"]}
           label="Domain"
-          placeholder={
-            role === "preview" ? "${rig.target}.preview.app.test" : undefined
-          }
+          placeholder={preview ? "${rig.target}.preview.app.test" : undefined}
         />
         <div className="grid gap-4 sm:grid-cols-2">
           <Text path={[...path, "build"]} label="Build command" mono />
@@ -971,7 +1017,7 @@ function TargetsSection() {
           </Override>
         ))}
       </div>
-    </div>
+    </>
   );
 }
 function Override({ title, children }: { title: string; children: ReactNode }) {

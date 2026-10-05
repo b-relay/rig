@@ -6,6 +6,7 @@ import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { ServiceStopView } from "../domain/operation-progress";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import { asRigError } from "../domain/errors";
+import { targetSelector } from "../domain/target-selector";
 import type { RuntimeDependencies } from "./contracts";
 import {
   observeTargets,
@@ -17,26 +18,25 @@ import {
   PREVIEW_SELECTOR,
   patchedSettings,
   proxyUpstream,
-  targetNames,
+  rolePatch,
+  targetOn,
 } from "../config/schema";
 import {
   identityDriftHint,
   movedProject,
   registeredDirectoryMissing,
 } from "./projects";
-/** Which Targets a status selector means: every Target without one, one Preview by name, or the Working copy or Stable
- * Target by the same naming rule every other command uses, so an unknown name rejects TARGET_UNKNOWN instead of reporting nothing. */
+/** Which Targets a status selector means: every Target without one, one Preview by name, or the working or stable Target by
+ * the same rule every other command uses, so an unknown name rejects TARGET_UNKNOWN instead of reporting nothing. */
 function targetSelection(
   command: StatusSelection,
-  configured: Parameters<typeof selectTarget>[1],
-  recorded: readonly Pick<TargetRecord, "kind" | "name">[],
 ): (target: Pick<TargetRecord, "kind" | "name">) => boolean {
   if (command.target === PREVIEW_SELECTOR || command.deployment) {
     const name = previewName(command);
     return (target) => target.kind === "preview" && target.name === name;
   }
   if (!command.target) return () => true;
-  const { kind } = selectTarget(command, configured, recorded);
+  const { kind } = selectTarget(command);
   return (target) => target.kind === kind;
 }
 /** Adds configured-only capabilities without interpreting configuration as runtime evidence. */
@@ -74,11 +74,7 @@ export async function projectStatus(
       : asRigError(error);
     configWarning = `${failure.message} ${failure.hint}`;
   }
-  const selects = targetSelection(
-    command,
-    document && targetNames(document.config),
-    targets,
-  );
+  const selects = targetSelection(command);
   const selected = targets.filter(selects);
   const warnings: string[] = [];
   const reports: TargetReport[] = await observeTargets(
@@ -89,26 +85,27 @@ export async function projectStatus(
   );
   if (configWarning) warnings.push(configWarning);
   if (document) {
-    const names = targetNames(document.config);
-    for (const [role, kind] of [
-      ["working", "local"],
-      ["stable", "live"],
-    ] as const) {
+    for (const role of ["working", "stable"] as const) {
       const definitions = configuredComponents(document.config, role);
-      // A recorded Target keeps reporting under its recorded name until it is planned from the renamed config.
-      const report = reports.find((t) => t.kind === kind);
+      const report = reports.find((t) => t.kind === role);
       if (report) {
+        // An off Target shows what it recorded, not what the config would add to it.
+        if (!targetOn(document.config, role)) continue;
         const known = new Set(report.components.map((c) => c.name));
         report.components.push(
           ...definitions.filter((c) => !known.has(c.name)),
         );
-      } else if (
-        !targets.some((t) => t.kind === kind) &&
-        selects({ kind, name: names[role] })
+      }
+      // A Target nothing has recorded is listed only while rig.yaml turns it on. A recorded one is listed either way, so a
+      // Target the config turned off while it ran can still be seen, stopped and destroyed.
+      else if (
+        targetOn(document.config, role) &&
+        !targets.some((t) => t.kind === role) &&
+        selects({ kind: role, name: role })
       )
         reports.push({
-          name: names[role],
-          kind,
+          name: role,
+          kind: role,
           state: "configured",
           components: definitions,
         });
@@ -146,18 +143,18 @@ export async function projectStatus(
         reason: "Deployment recovery is unresolved.",
       }));
       warnings.push(
-        `${target.name} has an unresolved deployment transition; run down to stop both recorded plans.`,
+        `${target.name} has an unresolved deployment transition; run rig down ${targetSelector(target)} to stop both recorded plans.`,
       );
     }
   for (const target of selected)
     if (target.deploymentIncomplete && !target.recovery)
       warnings.push(
-        `${target.name}: the last deploy did not complete; run up to finish it or redeploy.`,
+        `${target.name}: the last deploy did not complete; run rig up ${targetSelector(target)} to finish it, or redeploy.`,
       );
   for (const target of selected)
     if (target.destructionPending)
       warnings.push(
-        `${target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run down preview ${target.branch ?? target.name} --destroy to finish cleanup.`,
+        `${target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run rig down ${targetSelector(target)} --destroy to finish cleanup.`,
       );
   warnings.push(...(await markUnpublishedRoutes(reports, deps.inspectProxy)));
   return { project: project.name, targets: reports, warnings };
@@ -194,8 +191,8 @@ function configuredComponents(
 ): ComponentReport[] {
   const settings = patchedSettings(config, role);
   const routed =
-    role === "stable" || config.targets?.[role]?.domain
-      ? settings.domain
+    role === "stable" || rolePatch(config, role).domain !== undefined
+      ? settings.domain?.replaceAll("${rig.target}", role)
       : undefined;
   const upstream = settings.proxy?.["/"]
     ? proxyUpstream(settings.proxy["/"])?.service

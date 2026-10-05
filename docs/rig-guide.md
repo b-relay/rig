@@ -296,24 +296,25 @@ different names. `--run`, `--port`, or `--ready` without `--service`, and
 `--bin` or `--tool-build` without `--tool`, are usage errors. With neither a
 Service nor a Tool and no existing `rig.yaml`, init fails as `empty_project`:
 pass the flags, or write `rig.yaml` by hand and run `rig init` again to
-register it. The scaffold also writes `production_branch` and the default
-Target names (`targets.working.name: local`, `targets.stable.name: live`),
-under a first-line comment that points editors at the config schema (see
-"Config").
+register it. The scaffold also writes `production_branch` and every Target
+switch (`targets: { working: true, stable: false, preview: false }`), so
+turning the stable Target or Previews on is one word, under a first-line
+comment that points editors at the config schema (see "Config").
 
 Config is always `rig.yaml`. Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
 identity comes from existing config when present, not a conflicting folder name.
 `--domain app.test` with `--service web` scaffolds `domain: app.test` and a
-`proxy` that sends `/` to the Service's `http` port. The Stable Target serves
-`app.test`, each Preview serves `<preview name>.app.test`, and the Working
-copy has no route unless `targets.working.domain` is set, so two Targets never
-contend for one route. A `domain` value must be a hostname such as `app.test`;
-`${rig.target}` is the only reference it may contain (for example
-`${rig.target}.preview.app.test` under `targets.preview.domain`). A scheme,
-port, path, wildcard, or comma-separated list is rejected when the config is
-parsed, and a Preview whose resolved hostname is still invalid is rejected
-when the Target is planned, before anything reaches Caddy.
+`proxy` that sends `/` to the Service's `http` port. The stable Target serves
+`app.test`, each Preview serves `app-<preview name>.test` (see "Domain and
+proxy"), and the working Target has no route unless `targets.working.domain`
+is set, so two Targets never contend for one route. A `domain` value must be a
+hostname such as `app.test`; `${rig.target}` is the only reference it may
+contain (for example `${rig.target}.preview.app.test` under
+`targets.preview.domain`). A scheme, port, path, wildcard, or comma-separated
+list is rejected when the config is parsed, and a Preview whose resolved
+hostname is still invalid, or has a label longer than 63 characters, is
+rejected when the Target is planned, before anything reaches Caddy.
 
 ## Project And Host Scope
 
@@ -321,18 +322,18 @@ Project-scoped commands require a Project context:
 
 ```bash
 rig status
-rig up local
-rig down live
+rig up
+rig down stable
 rig restart preview feature/login
-rig logs live
-rig deploy live
+rig logs stable
+rig deploy
 ```
 
 They infer the Project from the current workspace or use:
 
 ```bash
 rig status --project pantry
-rig deploy live --project pantry
+rig deploy stable --project pantry
 ```
 
 `--project` selects the configured Project identity known to `rigd`, not the
@@ -353,72 +354,86 @@ repoint or rig forget <name>)`.
 
 Rig commands act on Targets:
 
-| Target form        | Meaning                                                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `local`            | Working copy Target backed by the current checkout. `local` is its default name; `targets.working.name` renames it. |
-| `live`             | Stable Target, deployed from the Production branch. `live` is its default name; `targets.stable.name` renames it.   |
-| `preview <branch>` | Preview Target for a Branch. Branch names may include slashes.                                                      |
+| Target             | Meaning                                                                        |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `working`          | The working Target: this checkout as it is on disk, without a deploy.          |
+| `stable`           | The stable Target, deployed from the Production branch.                        |
+| `preview <branch>` | A Preview of another Branch, named after it. Branch names may include slashes. |
 
-A Project has one Working copy Target, one Stable Target, and any number of
-generated Previews. The examples in this guide use the default names `local`
-and `live`; a Project that sets `targets.working.name: dev` and
-`targets.stable.name: production` runs `rig up dev` and `rig deploy
-production` instead. The two names must differ, and neither may be `preview`,
-`help`, or end like a generated Preview name (a dash and eight hex digits). Renaming a
-Target keeps its identity and stored data.
+A Project has at most one working Target, one stable Target, and any number of
+generated Previews. Their names are fixed: `working` and `stable` are the names
+in `rig.yaml`, on the command line, in status, in the dashboard and in logs, and
+a Preview is named after its Branch (`<branch slug>-<8 hex digits>`) unless
+`--deployment <name>` names it. Any other selector fails as `TARGET_UNKNOWN`.
+A new Preview cannot be named `working` or `stable`, nor `dev`, the suffix of
+the working Target's Tools (`PREVIEW_NAME`).
 
-A bare name selects the Working copy Target or the Stable Target by its
-configured name. A name a Target is still recorded under also keeps selecting
-it until that Target is next planned from the renamed config, so a renamed
-Target stays reachable. Any other name fails as `TARGET_UNKNOWN`, and the hint
-lists the names that exist. Previews must use the `preview` selector, which is
-reserved: `--deployment <name>` cannot give a new Preview the name of the
-Working copy or Stable Target (`PREVIEW_NAME`), and a Working copy or Stable
-Target cannot be renamed to a name another Target of the Project is still
-recorded under (`TARGET_NAME`). While a name is configured for one Target and
-still recorded for the other, selecting it fails as `TARGET_AMBIGUOUS`; the
-hint gives the name that is safe to use first.
+### Which Targets are on
 
-Target-aware commands with no selected Target show an interactive picker in a
-TTY and fail as `TARGET_REQUIRED` in non-interactive use:
+A Target runs only when `rig.yaml` turns it on. Its key under `targets` is
+`true`, or a map of settings that patches the Project for it (see
+"Config"), to turn it on; `false`, or leaving the key out, keeps it off. A
+`rig.yaml` with no `targets` key at all has only the working Target on, so a
+new Project runs its checkout and deploys nothing until you say so:
 
-```bash
-rig up
-rig down
-rig restart
-rig logs
+```yaml
+targets:
+  working: true
+  stable: true # rig deploy now deploys the Production branch
+  preview: true # rig deploy preview <branch> now makes Previews
 ```
 
-`rig status` is different: it takes no Target and always shows every Target of
-the selected Project. `rig deploy` with no Target prints its help.
+Once `targets` is there, it lists every Target that is on: `targets: { stable:
+true }` alone turns the working Target off. `rig up`, `rig restart`, `rig
+deploy`, and `rig logs` of a Target that has never run all refuse an off
+Target with `TARGET_OFF`, and the hint names the line to add (for example
+"Add `stable: true` under targets in rig.yaml."). Nothing is planned,
+published or started. `rig status` and the dashboard list the Targets that
+are on, and also any Target that is off but still recorded, running or
+stopped, because its config changed: such a Target can always be seen, read,
+stopped with `rig down`, and, for a Preview, destroyed. Turning a Target off
+never stops it by itself: a recorded Target meant to run is still restarted
+under its restart policy and, for the stable Target, after a Host restart,
+until `rig down` stops it. Whether a Target is on is read from the checkout's
+`rig.yaml`, also for a deploy, which then plans from the committed config of
+the revision it deploys.
+
+### Default Targets
+
+In a checkout, `rig up`, `rig down`, `rig restart` and `rig logs` without a
+Target mean `working`, and `rig deploy` without one means `stable`. A Preview
+is never a default: name it with `preview <branch>` or `preview --deployment
+<name>`. `rig status` takes no Target and always shows every listed Target of
+the Project.
 
 ## Deploy
 
 Stable deploy:
 
 ```bash
-rig deploy live
-rig deploy live main
+rig deploy
+rig deploy stable main
 ```
 
-Deploy is one command, `rig deploy <target> [branch]`, where `<target>` is the
-Stable Target's configured name (`live` unless `rig.yaml` renames it) or
-`preview`. Naming the Working copy Target fails as `DEPLOY_TARGET`; use `rig
-up` for it. `rig deploy live` deploys the configured Production branch:
+Deploy is one command, `rig deploy [target] [branch]`, where `[target]` is
+`stable` (the default) or `preview`; the stable Target or Previews must be on
+in `rig.yaml` (see "Which Targets are on"). Naming the working Target fails as
+`DEPLOY_TARGET`; use `rig up` for it. `rig deploy` deploys the configured
+Production branch:
 `production_branch` in the Project config, else the Host config's
 `deploy.production_branch`, else `main`. It can run from
 detached HEAD because it does not deploy the current checkout; it then prints
 which Production branch it deploys. If the current checkout is on another
 Branch, a terminal asks for confirmation and a non-interactive run is refused
-as `PRODUCTION_CONFIRMATION`, with `rig deploy live <production>` as the way to
-say it explicitly. The Stable Target only takes the Production branch: any
+as `PRODUCTION_CONFIRMATION`, with `rig deploy stable <production>` as the way to
+say it explicitly. The stable Target only takes the Production branch: any
 other Branch is refused as `BRANCH_POLICY`.
 
 A deployed Target is planned from the `rig.yaml` committed on the deployed
 revision, so its Services, Tools, ports, and Target name match the code it
-serves. The working copy's config only identifies the Project (its name, its
-Target names for selection, and the Production branch policy); uncommitted
-edits to it never reach a Stable or Preview plan. A revision whose committed
+serves. The working copy's config only identifies the Project (its name, which
+Targets are on, and the Production branch policy); uncommitted edits to it
+never reach a stable or Preview plan. A revision whose committed
 config names a different Project is refused as `PROJECT_IDENTITY`, and an
 invalid committed config fails the deploy with the revision's path in the
 message: fix the config on that Branch and deploy the new Commit.
@@ -435,10 +450,10 @@ Preview also drops its worktree registration from the mirror.
 
 Every deploy resolves its Project from `--project` or the working directory
 and, before anything changes, prints a line such as
-`Deploying share (/Users/me/share) to live from main.` on stderr. A deploy run
+`Deploying share (/Users/me/share) to stable from main.` on stderr. A deploy run
 from the wrong checkout is therefore visible in the first line of output, and
 the final line names the deployed revision, for example
-`share live deployed main@470a510 (was 83496f8)`.
+`share stable deployed main@470a510 (was 83496f8)`.
 
 Preview deploy:
 
@@ -458,7 +473,7 @@ name from the Branch; only `preview` takes it.
 Deploy options:
 
 ```bash
-rig deploy live --no-up
+rig deploy --no-up
 rig deploy preview feature/login --no-up
 rig deploy preview feature/login --force
 ```
@@ -510,19 +525,19 @@ is ahead or behind its configured upstream. It should not fetch implicitly.
 ## Lifecycle And Logs
 
 Lifecycle commands act only on existing Targets. They do not create missing
-Preview Deployments. `rig up local` may create the Working copy Target directly
-from the registered repository.
+Preview Deployments. `rig up` may create the working Target directly from the
+registered repository.
 
-The Working copy Target follows the repository's current `rig.yaml`: `rig up
-local` on a stopped Target and `rig restart local` re-plan it from the config
-on disk before starting, keeping its Target id, data root, and recorded ports
-where the config still allows them. `rig up local` on a Target that is already
-running keeps the plan its processes were started from; `rig doctor` reports
-`config-drift` for it and names `rig restart local` as the fix. A valid config
+The working Target follows the repository's current `rig.yaml`: `rig up` on a
+stopped Target and `rig restart` re-plan it from the config on disk before
+starting, keeping its Target id, data root, and recorded ports where the config
+still allows them. `rig up` on a Target that is already running keeps the plan
+its processes were started from; `rig doctor` reports `config-drift` for it and
+names `rig restart working` as the fix. A valid config
 that adds a Service the recorded plan has no port for is also reported as
 `config-drift`, naming the added Services; `config-invalid` is reserved for
 a config that does not parse or resolve, and carries the parser's message.
-Deployed Targets (the Stable Target and Previews) keep their recorded plan
+Deployed Targets (the stable Target and Previews) keep their recorded plan
 until the next deploy. They are planned from the committed config in their
 checkout, so `rig doctor` compares a deployed Target with that revision's
 config, not with the working copy; uncommitted edits are not drift for it.
@@ -532,8 +547,8 @@ deploy <target> --force` as the fix, because a same-Commit deploy without
 `--force` is `unchanged`.
 
 ```bash
-rig up local
-rig down live
+rig up
+rig down stable
 rig restart preview feature/login
 ```
 
@@ -635,12 +650,12 @@ separate failures.
 Logs:
 
 ```bash
-rig logs live
+rig logs stable
 rig logs preview feature/login
 rig logs preview feature/login --follow
-rig logs local --service scheduler --since 1h
-rig logs live --stream stderr --follow
-rig logs live --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
+rig logs --service scheduler --since 1h
+rig logs stable --stream stderr --follow
+rig logs stable --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
 ```
 
 `rig logs` prints recent stdout and stderr together by default and exits.
@@ -682,7 +697,7 @@ cancellation.
 `--lines` sizes the first page only; a follow then fetches up to 1000 new
 entries per poll so a busy Target is not throttled to the page size. A follow
 ends on Ctrl-C, SIGTERM, or when whatever reads its output goes away (for
-example `rig logs live --follow | head`): the write that fails is dropped, the
+example `rig logs stable --follow | head`): the write that fails is dropped, the
 command exits 0, and rigd sees no further polls. A quiet follow notices the
 missing reader at its next line, not before.
 
@@ -787,11 +802,11 @@ when rigd is unreachable, it still runs the Host checks and ends with a note
 that says Project checks were skipped and why ("Project checks were skipped:
 Project 'app' is not registered. Run rig init in this Project directory."), so
 a clean Host report is never mistaken for a clean Project. For the Stable
-Target, a `live/branch` check compares the Branch it was deployed from with the
+Target, a `stable/branch` check compares the Branch it was deployed from with the
 current Production Branch (`production_branch`, else the Host default); a
 Production Branch changed since the deploy is `production-branch-drift` with a
 hint to redeploy. `doctor` is read-only by default. One report reads the repository config once, so the
-identity check and every Working copy comparison see the same revision even
+identity check and every working Target comparison see the same revision even
 while the file is being edited. A config the parser rejects is
 `config-invalid` and carries the parser's message; a config that could not be
 read at all (permissions, I/O) is `config-unreadable`; a config that names
@@ -851,7 +866,7 @@ into the offline host report. Reads are answered without queueing, so run
 `rigd` runs one mutation at a time per Target, and Projects are independent:
 a slow build, readiness wait or stop in one Project never delays `rig up`,
 `rig deploy` or an automatic restart in another, and the Targets of one Project
-(its Working copy, Stable Target and each Preview) run their operations side by
+(its working Target, stable Target and each Preview) run their operations side by
 side. Only two operations on the same Target wait for each other, in the order
 they arrived. Operations on the whole Project (`rename`, `repoint` and
 `forget`) wait for every operation of that Project;
@@ -874,7 +889,7 @@ Behind a stop it names the Service and when it is killed, as time left and local
 time:
 
 ```text
-Waiting: fletcher local is stopping (google-scheduler, killing in 18m at 04:31)
+Waiting: fletcher working is stopping (google-scheduler, killing in 18m at 04:31)
 ```
 
 Behind anything else it names the operation and the local time it started. When
@@ -887,7 +902,7 @@ as time left, so a log read later still makes sense.
 - On a terminal the lines update in place:
 
   ```text
-  Stopping fletcher local
+  Stopping fletcher working
     web                 stopped
     google-scheduler    stopping · killing in 18m 42s (04:31:07)
     (Ctrl-C to leave it stopping in the background)
@@ -908,7 +923,7 @@ The command then keeps waiting for its own result.
 
 While `rig` shows a Service stopping, Ctrl-C detaches at once: the stop carries
 on in `rigd`, and `rig` exits 130 with
-`Left google-scheduler stopping in the background (killing at 04:31). Run rig down local --kill to stop it now.`
+`Left google-scheduler stopping in the background (killing at 04:31). Run rig down working --kill to stop it now.`
 `rig down --kill` and `rig restart --kill` skip each Service's `stop_timeout`:
 SIGTERM, then SIGKILL after the 1.5 s kill wait. A `--kill` also cuts short a
 stop already running on that Target, whichever command started it (including
@@ -927,7 +942,7 @@ that then completes renders its result as usual. A second Ctrl-C detaches:
 `rig activity <id>` for the outcome (`--json` prints an `error` object with
 code `DETACHED` and the `operationId`). A third Ctrl-C ends the process with
 status 130 without waiting for anything. Ctrl-C or EOF at an interactive
-prompt (a Target picker, an `init` question, a Production confirmation) is
+prompt (an `init` question, a Production confirmation) is
 the same cancellation: exit 0, no message, no diagnostic record. Answering no
 to a confirmation is an explicit decision and is reported as `The operation
 was cancelled.` with exit 1.
@@ -957,8 +972,8 @@ reads `stopped` with `Stopped after timeout (SIGKILL): it did not exit within it
 stop_timeout.` (or `Killed by --kill (SIGKILL)`) until it starts again, and the
 operation's Activity record says the same, so you can tell the grace was too
 short. A deployed Target's line shows the
-Branch and the short Commit it serves (`live  healthy  main@abc1234`); the
-Working copy shows `working copy` there instead. Recorded routes stay
+Branch and the short Commit it serves (`stable  healthy  main@abc1234`); the
+working Target shows `working copy` there instead. Recorded routes stay
 visible when stopped, and show `unpublished` when no Host Caddyfile loads Rig's
 route file (see Setup). Doctor owns current-config drift and failed checks; it
 does not repair or deploy configuration implicitly.
@@ -971,7 +986,7 @@ activity journal before warning that its record was lost. rigd keeps the
 most recent 1000 Operations in its state, and `rig activity` lists the latest
 100 of them; older ones remain in the diagnostic log until its retention
 expires. A request rigd refuses before an Operation
-begins (an unregistered Project, a missing Target, a deploy aimed at local, an
+begins (an unregistered Project, a missing Target, a deploy aimed at working, an
 init without a directory) is a usage mistake and is not listed; a refusal after
 the attempt began (a failed preflight, an unresolved transition) is listed as
 failed. Each line ends with the record's Operation id and is followed by its
@@ -1099,10 +1114,8 @@ proxy:
 
 targets:
   working:
-    name: local
     env: { LOG_FORMAT: pretty }
-  stable:
-    name: live
+  stable: true
   preview:
     domain: ${rig.target}.preview.pantry.test
 ```
@@ -1117,7 +1130,9 @@ refused with what to do instead: a top-level `format` line (`Fix format: was
 removed because Rig reads one rig.yaml format; delete this line.`), a
 Service's `health` block, whose `check` is now `ready` and whose
 `start_timeout` is now `ready_timeout` (ongoing health checks were removed),
-and `supervisor`.
+and `supervisor`; so is a Target's `name` under `targets` (`Fix
+targets.working.name: Target names are fixed (working, stable, preview); delete
+this line.`).
 
 A Service is a long-running process Rig starts and supervises. Its fields:
 
@@ -1125,7 +1140,7 @@ A Service is a long-running process Rig starts and supervises. Its fields:
   the Target workspace.
 - `ports`: named local TCP ports. `auto` lets Rig choose a free port and keep
   it for the Target; a number from 1 to 65535 pins it. Previews always use
-  chosen ports, so a pin applies to the Working copy and Stable Target only.
+  chosen ports, so a pin applies to the working and stable Targets only.
 - `ready`: a localhost HTTP URL or a shell command that must pass before the
   Service counts as started and before a Service that depends on it starts. An
   HTTP URL passes on any answer below 400; a command passes when it exits 0.
@@ -1195,7 +1210,7 @@ such a Tool without a recorded bun, or with a recorded one that is gone, fails
 as `BUN_NOT_FOUND` and publishes nothing; an earlier shim stays as it was. With
 no recorded bun, every `rig up`, `rig restart`, or deploy of a Target with a
 source-file Tool fails this way when it reaches that Tool, even while its
-earlier shim still runs. A Stable Target or Preview whose Project installs its
+earlier shim still runs. A stable Target or Preview whose Project installs its
 dependencies with bun fails before that, as `DEPENDENCIES_FAILED`, when bun is
 not on the `PATH` that `rigd install` recorded. A shim
 already published with a bun that has since been removed is not republished,
@@ -1212,7 +1227,7 @@ the daemon with the current bun.
 Durations are a positive whole number with a unit of `s`, `m`, or `h`, such as
 `30s`, `10m`, or `1h`, up to one day.
 
-`domain` is the hostname the Stable Target serves, and `proxy` maps a path
+`domain` is the hostname the stable Target serves, and `proxy` maps a path
 prefix to a declared port reference; `/` is required when `proxy` is present.
 A prefix matches at a slash boundary (`/api` serves `/api` and `/api/users`,
 not `/apix`), the longest matching prefix wins, and the upstream receives the
@@ -1226,24 +1241,31 @@ at `503`, also while other Services of the Target start or recover: a path is
 released only when its own Service is next verified, by an automatic retry or
 by `rig up` or `rig restart`. If the route cannot be withdrawn, the start is
 not attempted.
-A Preview serves `<preview name>.<domain>`, or `targets.preview.domain` with
-`${rig.target}` replaced by the Preview's name. The Working copy has no route
+A Preview serves the domain with a dash and its name after the first label:
+`pantry2.dev.b-relay.com` gives `pantry2-feat-x-1a2b3c4d.dev.b-relay.com` for
+the Preview `feat-x-1a2b3c4d`, a sibling of the domain rather than a subdomain
+of it. `targets.preview.domain` replaces that default, with `${rig.target}`
+replaced by the Preview's name. DNS allows at most 63 characters in one label;
+a Preview whose hostname would have a longer label is refused when it is planned
+(`hostname_label_too_long`), and nothing is cut short: deploy from a shorter
+Branch name, give the Preview a shorter `--deployment` name, or set
+`targets.preview.domain` to a pattern such as
+`${rig.target}.preview.example.com`. The working Target has no route
 unless `targets.working.domain` is set. A Target with no resolved hostname or
 no `proxy` gets no route. A Tool-only Project needs neither.
 
 The Production branch is `production_branch`, else the Host config's
 `deploy.production_branch`, else `main`.
 
-### Target names and settings patches
+### Target switches and settings patches
 
-`targets` has three fixed keys, one per Target role: `working`, `stable`, and
-`preview`. `targets.working.name` and `targets.stable.name` set the names that
-select and display those Targets (defaults `local` and `live`; see Targets).
-`targets.preview` takes no `name`, because Preview names come from their
-Branch.
+`targets` has three fixed keys, one per Target: `working`, `stable`, and
+`preview`. Each is `true` or a settings map to turn that Target on, and `false`
+or absent to keep it off; without a `targets` key only `working` is on (see
+"Which Targets are on"). The names are fixed, so a role takes no `name`.
 
-Everything else under a role is a settings patch applied over the top-level
-settings for Targets of that role. A patch may set `domain`,
+A map under a role is a settings patch applied over the top-level settings for
+Targets of that role; `true` patches nothing. A patch may set `domain`,
 `build`, `build_timeout`, `env`, `env_file`, `proxy`, and fields of existing
 entries under `services.<name>` and `tools.<name>`. Maps merge per key: a
 patch that sets `env.LOG_FORMAT` keeps every other shared `env` key, and a
@@ -1274,7 +1296,7 @@ launchd with the old Rig (`rig down <target>`) before you upgrade. After the
 upgrade, delete the `supervisor` line and start the Target again with
 `rig up <target>`. Its recorded plan is read as `rigd`'s, so `rig up`,
 `rig restart` and `rig down` work and the plan is not config drift. For a
-Stable Target or Preview, commit the edited `rig.yaml` and deploy it too:
+stable Target or Preview, commit the edited `rig.yaml` and deploy it too:
 `rig doctor` checks the deployed revision's file.
 
 ### Automatic restart
@@ -1349,16 +1371,16 @@ of the old login session. Nothing brings a Service back by itself, but
 audit session of launchd's `gui/<uid>` domain, new at every login) with the
 ones it recorded last time:
 
-- **Stable Targets meant to run** are started again the way `rig up` starts
+- **stable Targets meant to run** are started again the way `rig up` starts
   them: every Service in dependency order, whatever its `restart` policy, with
   fresh automatic-restart budgets. Activity records one `host-restart` entry
   ("The Mac restarted …" or "You logged out and in again …") and one `up` entry
-  per Stable Target. `rig status` says each Service was started again by
-  `rigd` ("restarted after reboot" or "restarted after login"). A Stable Target
+  per stable Target. `rig status` says each Service was started again by
+  `rigd` ("restarted after reboot" or "restarted after login"). A stable Target
   that fails to start is reported `failed` (every Service the start left stopped
   is, and none is retried automatically), stays meant to run, and waits for
   `rig up`.
-- **The Working copy and Previews** stay stopped, even under
+- **The working Target and Previews** stay stopped, even under
   `restart: always`. `rig status` reports their Services `stopped`, with
   `exit: unknown` and a reason that says they stopped when the Mac restarted
   (or when you logged out). Run `rig up` to start them. Until that start, no
@@ -1380,14 +1402,14 @@ every login session, so no login is kept across one. `rigd` records the session 
 once it has acted on the restart for every Target, so a daemon that stops or
 is asked to stop halfway keeps it pending: the next start finishes it (even if
 it can read nothing of the session) without recording it in Activity a second
-time and without starting (or retrying) a Stable Target it already started, or
+time and without starting (or retrying) a stable Target it already started, or
 failed to start, for that restart. A restart whose Activity entry could not be
 written yet is recorded by the start that finishes it. Only a session that changed since the
 pending restart was found, such as a logout and login after it, is a new
 restart; a pending restart whose entry was never written still gets its entry,
 ahead of the new one's, marked as recorded late.
 
-When a Stable Target's start fails and its failure cannot be recorded (a full
+When a stable Target's start fails and its failure cannot be recorded (a full
 disk, say), each later pass of the same `rigd` records it again, and does not
 supervise that Target meanwhile. A command you run on the Target records the
 failure first, and is refused with `STATE_WRITE` while it cannot be. If `rigd`
@@ -1450,7 +1472,7 @@ operator files under `<RIG_ROOT>/env/` are optional and are the usual home for
 secrets, since they sit outside every checkout and so work for the Stable
 Target and Previews too. A listed path may be absolute, start with `~/` (the
 operator's home; `~user` is rejected as `invalid_path`), or be relative to the
-Target workspace. On the Stable Target and Previews a relative path must stay
+Target workspace. On the stable Target and Previews a relative path must stay
 inside that workspace (`path_outside_target` otherwise) and is read from the
 checked-out revision. An env file inside a Git repository must be ignored by
 Git, otherwise the command fails as `ENV_FILE_TRACKED`: never commit a file
@@ -1481,7 +1503,7 @@ unit, and every Service and Tool `build` is its own. Units run one at a time,
 the shared unit first, then Service units in dependency order, then Tool units
 by name. Two units with the same command text are still two units. A unit runs
 within `build_timeout` (its Service's or Tool's own, else the top-level one,
-else ten minutes), and dependency installation on the Stable Target and
+else ten minutes), and dependency installation on the stable Target and
 Previews within a fixed ten minutes. A command past its budget is killed
 together with anything it started, what it printed until then is kept in the
 Target logs, and the command fails as `BUILD_TIMEOUT` or
@@ -1489,7 +1511,7 @@ Target logs, and the command fails as `BUILD_TIMEOUT` or
 or timed-out build starts nothing and leaves the previous installed executable
 in place.
 
-On the Stable Target and Previews, builds belong to the Deployment. Every
+On the stable Target and Previews, builds belong to the Deployment. Every
 deploy, including `--no-up`, builds all units of the new Commit's checkout
 before the previous Deployment is stopped, and records each unit as started,
 then succeeded or failed. `rig up` and `rig restart` start that prepared
@@ -1506,11 +1528,11 @@ Deployment with a failed or missing unit is refused as
 run, but a changed value never reruns a completed build; it reaches the next
 process start.
 
-On the Working copy, Rig cannot see which files a build reads, so explicit
+On the working Target, Rig cannot see which files a build reads, so explicit
 commands build current source: `rig up` runs the unit of every Service that is
 not running and of every Tool, with the shared unit first when any of them
 runs; with every Service running and no Tool it builds nothing. `rig restart`
-runs every unit. A Working copy that is already planned keeps its plan across
+runs every unit. A working Target that is already planned keeps its plan across
 `rig up`; when `rig.yaml` changed since, the result carries a warning that
 running Services still use the earlier plan, and `rig restart` applies the
 current file.
@@ -1525,9 +1547,9 @@ current file.
    republishes each source-file Tool's shim). `deploy --no-up` publishes no Tool; the later `rig up`
    does, under its own checkpoint. Installed executables share one `bin/`
    directory across every Project and Target on the Host: `<tool>` for the
-   Stable Target, and `<tool>-<target name>` for the Working copy (by default
-   `<tool>-local`) and for a Preview. Two Projects that both install `cli` on
-   their Stable Target therefore collide, and the second is refused with
+   stable Target, `<tool>-dev` for the working Target, and `<tool>-<preview
+name>` for a Preview. Two Projects that both install `cli` on
+   their stable Target therefore collide, and the second is refused with
    `ARTIFACT_CONFLICT`, which names the owning Project, Target, and Tool;
    rename one of the Tools.
    An executable Rig did not install is never overwritten
@@ -1589,10 +1611,10 @@ applied), or one of the `rig.*` values Rig generates:
   `${services.api.ready_timeout}`.
 - `${services.<service>.ports.<port>}`: the concrete number of a declared
   port in this Target. `proxy` values must be exactly one such reference.
-- `${rig.target}`: the Target's actual name, configured or generated. It is
-  the only reference a `domain` may contain.
+- `${rig.target}`: the Target's name: `working`, `stable`, or the Preview's
+  name. It is the only reference a `domain` may contain.
 - `${rig.workspace}`: the Target's checkout, which is the repository for the
-  Working copy.
+  working Target.
 - `${rig.data}`: this Service's persistent directory in this Target. It is
   only available inside a Service.
 - `${rig.host}`: the Target's hostname when it has both a hostname and a
@@ -1673,7 +1695,7 @@ running, meant to run, or mid-recovery) and validate registered identity/path
 conflicts. They do not delete Project data. `rig rename <current name>` is
 "unchanged" and leaves the config file alone. `repoint` requires the new
 directory to be a Git working repository (`GIT_REQUIRED` otherwise, since
-deploys would fail there) and re-plans the Working copy Target from
+deploys would fail there) and re-plans the working Target from
 its config with the same port reservation as `rig up`: a port that another
 Target records is refused with `PORT_RESERVED` and the registration is left
 unchanged.
@@ -1682,7 +1704,7 @@ unchanged.
 requirement. The repository and its `rig.yaml` are not touched, and the Project's activity history is kept. A Preview must be
 destroyed first (`rig down preview <branch> --destroy`), because forgetting
 would orphan its data; `forget` refuses with `PROJECT_TARGETS` naming the
-Previews. Stopped `local` and `live` records go with the registration, and a
+Previews. Stopped working and stable records go with the registration, and a
 warning names the live workspace and data root that remain on disk for the
 operator to delete.
 

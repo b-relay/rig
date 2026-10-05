@@ -8,9 +8,11 @@ export {
   projectConfigSchema,
   hostConfigSchema,
   patchedSettings,
-  targetNames,
-  DEFAULT_TARGET_NAMES,
+  targetOn,
+  rolePatch,
   PREVIEW_SELECTOR,
+  TARGET_ROLES,
+  WORKING_TOOL_SUFFIX,
   type TargetRole,
   type ProjectSettings,
 } from "./schema";

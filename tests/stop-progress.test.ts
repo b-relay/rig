@@ -6,8 +6,8 @@ import {
   type StopTracking,
 } from "../src/runtime/stop-progress";
 
-const live = { id: "t1", name: "live" } as TargetRecord;
-const candidate = { id: "t2", name: "live" } as TargetRecord;
+const live = { id: "t1", name: "stable" } as TargetRecord;
+const candidate = { id: "t2", name: "stable" } as TargetRecord;
 
 test("a SIGKILL an Operation's earlier stop needed stays in its Activity line when a later stop of the same Service finds nothing running", () => {
   const entry: StopTracking = {

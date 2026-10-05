@@ -28,7 +28,7 @@ const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
 function fixture() {
   const deadline = controlledDeadline();
   const state: RuntimeState = {
-    version: 4,
+    version: 5,
     projects: [],
     targets: [],
     activity: [],
@@ -39,6 +39,7 @@ function fixture() {
     services: {
       web: { run: "serve --host 127.0.0.1", ports: { http: 4567 } },
     },
+    targets: { working: true, stable: true, preview: true },
   });
   const plans: any[] = [];
   const deps: RuntimeDependencies = {
@@ -190,7 +191,7 @@ test("init config name is authoritative; local up uses the actual repo and appli
   expect(plans[0].plan.workspacePath).toBe("/tmp/developer");
   const id = state.targets[0]!.id;
   config.services!.web = { run: "changed", ports: { http: 9999 } };
-  // A running Working copy Target keeps the plan its processes were started from.
+  // A running working Target keeps the plan its processes were started from.
   await runtime.command({ action: "up", project: "demo" });
   expect(plans[1].plan.components[0].command).toBe("serve --host 127.0.0.1");
   await runtime.command({ action: "down", project: "demo" });
@@ -222,17 +223,17 @@ test("deployed source policy survives down/up and same commit is no-op", async (
   await runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   });
-  await runtime.command({ action: "down", project: "demo", target: "live" });
-  await runtime.command({ action: "up", project: "demo", target: "live" });
+  await runtime.command({ action: "down", project: "demo", target: "stable" });
+  await runtime.command({ action: "up", project: "demo", target: "stable" });
   expect(plans.at(-1)).toMatchObject({ branch: "main", commit: "abc" });
   expect(
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     }),
   ).toMatchObject({
@@ -254,7 +255,11 @@ test("deployed source policy survives down/up and same commit is no-op", async (
 test("a plain deploy of the same Commit is refused while a build's outcome is unknown, and force deploys a fresh scope", async () => {
   const { runtime, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  const deploy = { action: "deploy", project: "demo", target: "live" } as const;
+  const deploy = {
+    action: "deploy",
+    project: "demo",
+    target: "stable",
+  } as const;
   await runtime.command({ ...deploy, branch: "main" });
   // What an interrupted first deployment leaves once down has recovered it: incomplete, with one unit never finished.
   const recorded = state.targets[0]!;
@@ -270,7 +275,7 @@ test("a plain deploy of the same Commit is refused while a build's outcome is un
   ).rejects.toMatchObject({
     code: "BUILD_UNKNOWN",
     details: { unit: "shared" },
-    hint: expect.stringContaining("rig deploy live --force"),
+    hint: expect.stringContaining("rig deploy stable --force"),
   });
   expect(state.targets[0]!.plan.workspacePath).toBe(workspace);
   expect(
@@ -353,7 +358,7 @@ test("a Working copy restart retires superseded executables and publishes the ne
     runtime.command({ action: "restart", project: "demo" }),
   ).rejects.toMatchObject({
     code: "REPLAN_COMMIT_PENDING",
-    hint: expect.stringContaining("rig down local"),
+    hint: expect.stringContaining("rig down working"),
   });
   expect(state.targets[0]!.recovery).toMatchObject({ stage: "committing" });
   await expect(
@@ -551,7 +556,7 @@ test("a deploy that names a Commit prepares that resolved Commit, not the Branch
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
       commit: "c1",
     }),
@@ -578,7 +583,7 @@ test("unsafe candidate rollback never restores an old plan over surviving candid
   await runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   });
   const previousWorkspace = state.targets[0]!.plan.workspacePath;
@@ -599,7 +604,7 @@ test("unsafe candidate rollback never restores an old plan over surviving candid
     runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     }),
   ).rejects.toThrow("process cleanup could not be verified");
@@ -610,7 +615,7 @@ test("unsafe candidate rollback never restores an old plan over surviving candid
     commit: "abc",
   });
   await expect(
-    runtime.command({ action: "up", project: "demo", target: "live" }),
+    runtime.command({ action: "up", project: "demo", target: "stable" }),
   ).rejects.toThrow("unresolved deployment");
 });
 
@@ -663,6 +668,43 @@ test("rename and repoint reply and record activity from the updated registration
   });
 });
 
+test("repoint keeps a Tool's name from before Target names were fixed, so the next plan of the working Target retires it", async () => {
+  const { runtime, state, deps, config } = fixture();
+  config.tools = { cli: { bin: "cli.ts" } };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({ action: "down", project: "demo" });
+  // As state version 4 is read for a working Target that was named local.
+  const tool = state.targets[0]!.plan.components.find(
+    (component) => component.kind === "installed",
+  )!;
+  Object.assign(tool, { publishedAs: "cli-local" });
+  await runtime.command({
+    action: "repoint",
+    project: "demo",
+    newPath: "/tmp/moved",
+  });
+  expect(state.targets[0]!.plan.components).toContainEqual(
+    expect.objectContaining({
+      name: "cli",
+      entrypoint: "/tmp/moved/cli.ts",
+      publishedAs: "cli-local",
+    }),
+  );
+  const retired: string[] = [];
+  deps.lifecycle.retireSuperseded = async (previous, candidate) => {
+    for (const plan of [previous.plan, candidate.plan])
+      for (const component of plan.components)
+        if (component.kind === "installed")
+          retired.push(component.publishedAs ?? "planned name");
+  };
+  await runtime.command({ action: "up", project: "demo" });
+  expect(retired).toEqual(["cli-local", "planned name"]);
+  expect(state.targets[0]!.plan.components).not.toContainEqual(
+    expect.objectContaining({ publishedAs: expect.anything() }),
+  );
+});
+
 test("repoint uses the new config path and retains assigned ports", async () => {
   const { runtime, state, deps, config } = fixture();
   config.services!.api = { run: "api", ports: { http: "auto" } };
@@ -699,7 +741,7 @@ test("repoint uses the new config path and retains assigned ports", async () => 
     await runtime.command({ action: "doctor", project: "demo" }),
   ).toMatchObject({
     checks: expect.arrayContaining([
-      expect.objectContaining({ name: "local/config", ok: true }),
+      expect.objectContaining({ name: "working/config", ok: true }),
     ]),
   });
 });
@@ -850,8 +892,8 @@ test("repoint refuses a config whose port another Target records and leaves the 
   Object.assign(foreign, {
     id: "foreign",
     projectId: "other",
-    name: "live",
-    kind: "live",
+    name: "stable",
+    kind: "stable",
   });
   Object.assign(foreign.plan.components[0]!, {
     port: 4600,
@@ -871,7 +913,7 @@ test("repoint refuses a config whose port another Target records and leaves the 
   ).rejects.toMatchObject({
     code: "PORT_RESERVED",
     // The selection capability is told which Target owns each occupied port.
-    message: 'Port 4600 belongs to {"target":"live","project":"demo"}.',
+    message: 'Port 4600 belongs to {"target":"stable","project":"demo"}.',
   });
   expect(state.projects[0]).toMatchObject({ repoPath: "/tmp/developer" });
   expect(state.targets[0]!.plan).toMatchObject({
@@ -908,7 +950,7 @@ test("ports owned by a Target's unresolved recovery plan stay reserved while oth
   await runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   });
   const live = state.targets[0]!;
@@ -954,13 +996,13 @@ test("doctor reports drift, not an invalid config, when a valid config adds a Se
       hint?: string;
     }[];
   };
-  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
-    name: "local/config",
+  expect(report.checks.find((c) => c.name === "working/config")).toEqual({
+    name: "working/config",
     ok: false,
     message:
       "Current configuration adds Services the recorded Target policy does not have (worker).",
     reason: "config-drift",
-    hint: "Run rig restart local (or rig down local, then rig up) to apply the current configuration.",
+    hint: "Run rig restart working (or rig down working, then rig up working) to apply the current configuration.",
   });
 });
 
@@ -970,7 +1012,7 @@ test("doctor checks a deployed Target against its deployed revision's config, no
   await runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   });
   const committed = structuredClone(config);
@@ -990,28 +1032,28 @@ test("doctor checks a deployed Target against its deployed revision's config, no
           reason?: string;
         }[];
       }
-    ).checks.find((c) => c.name === "live/config");
+    ).checks.find((c) => c.name === "stable/config");
   config.services!.web = { run: "edited", ports: { http: 4567 } };
   expect(await check()).toEqual({
-    name: "live/config",
+    name: "stable/config",
     ok: true,
     message:
       "Recorded Target policy matches the deployed revision's configuration.",
   });
   committed.services!.web = { run: "changed", ports: { http: 4567 } };
   expect(await check()).toEqual({
-    name: "live/config",
+    name: "stable/config",
     ok: false,
     message:
       "The deployed revision's configuration differs from the recorded Target policy.",
     reason: "config-drift",
-    hint: "Run rig deploy live --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
+    hint: "Run rig deploy stable --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
   });
   expect(
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     }),
   ).toMatchObject({ outcome: "unchanged" });
@@ -1020,7 +1062,7 @@ test("doctor checks a deployed Target against its deployed revision's config, no
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
       force: true,
     }),
@@ -1044,7 +1086,7 @@ test("doctor acquires the Project config once per report, so identity and every 
   await runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   });
   const original = structuredClone(config);
@@ -1070,8 +1112,8 @@ test("doctor acquires the Project config once per report, so identity and every 
   expect(report.checks).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ name: "project-config", ok: true }),
-      expect.objectContaining({ name: "local/config", ok: true }),
-      expect.objectContaining({ name: "live/config", ok: true }),
+      expect.objectContaining({ name: "working/config", ok: true }),
+      expect.objectContaining({ name: "stable/config", ok: true }),
     ]),
   );
 });
@@ -1082,7 +1124,7 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
   await runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   });
   const committed = structuredClone(config);
@@ -1104,9 +1146,9 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     expect(report.checks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "rigd", ok: true }),
-        expect.objectContaining({ name: "live/config", ok: true }),
-        expect.objectContaining({ name: "local/web" }),
-        expect.objectContaining({ name: "live/web" }),
+        expect.objectContaining({ name: "stable/config", ok: true }),
+        expect.objectContaining({ name: "working/web" }),
+        expect.objectContaining({ name: "stable/web" }),
       ]),
     );
   repoFailure = new Error(
@@ -1121,8 +1163,8 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     reason: "config-unreadable",
     hint: "Inspect the Project directory and file permissions, then run doctor again.",
   });
-  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
-    name: "local/config",
+  expect(report.checks.find((c) => c.name === "working/config")).toEqual({
+    name: "working/config",
     ok: false,
     message:
       "Current configuration could not be read. EACCES: permission denied, open '/tmp/developer/rig.yaml'",
@@ -1144,8 +1186,8 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     reason: "config-invalid",
     hint: "Fix the YAML and retry.",
   });
-  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
-    name: "local/config",
+  expect(report.checks.find((c) => c.name === "working/config")).toEqual({
+    name: "working/config",
     ok: false,
     message:
       "Current Target policy could not be resolved. rig.yaml line 3: bad indentation",
@@ -1160,8 +1202,8 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     ok: false,
     reason: "identity-drift",
   });
-  expect(report.checks.find((c) => c.name === "local/config")).toEqual({
-    name: "local/config",
+  expect(report.checks.find((c) => c.name === "working/config")).toEqual({
+    name: "working/config",
     ok: false,
     message:
       "Current configuration names Project 'other', not 'demo'; its policy was not compared.",
@@ -1247,7 +1289,7 @@ test("doctor on a Project without Targets reports the config and Host checks onl
   );
   expect(report.checks.some((c) => c.name.includes("/"))).toBe(false);
 });
-test("doctor reports drift on a running Working copy Target and names restart as the fix", async () => {
+test("doctor reports drift on a running working Target and names restart as the fix", async () => {
   const { runtime, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
@@ -1257,10 +1299,10 @@ test("doctor reports drift on a running Working copy Target and names restart as
   ).toMatchObject({
     checks: expect.arrayContaining([
       expect.objectContaining({
-        name: "local/config",
+        name: "working/config",
         ok: false,
         reason: "config-drift",
-        hint: expect.stringContaining("rig restart local"),
+        hint: expect.stringContaining("rig restart working"),
       }),
     ]),
   });
@@ -1269,7 +1311,7 @@ test("doctor reports drift on a running Working copy Target and names restart as
     await runtime.command({ action: "doctor", project: "demo" }),
   ).toMatchObject({
     checks: expect.arrayContaining([
-      expect.objectContaining({ name: "local/config", ok: true }),
+      expect.objectContaining({ name: "working/config", ok: true }),
     ]),
   });
 });
@@ -1300,7 +1342,7 @@ test("status and doctor expire a slow observation on the injected deadline and r
   expect(deadline.pending).toBe(true);
   deadline.expire();
   expect(
-    (await doctor).checks.find((c) => c.name === "local/web"),
+    (await doctor).checks.find((c) => c.name === "working/web"),
   ).toMatchObject({
     message:
       "Component is unknown. Observation did not complete before the status deadline.",
@@ -1323,8 +1365,8 @@ test("doctor carries each failing component's observation reason and exit code a
           hint?: string;
         }[];
       }
-    ).checks.find((c) => c.name === "local/web");
-  const local = state.targets.find((t) => t.name === "local")!;
+    ).checks.find((c) => c.name === "working/web");
+  const local = state.targets.find((t) => t.name === "working")!;
   local.services = {
     web: {
       deployment: local.plan.workspacePath,
@@ -1340,12 +1382,12 @@ test("doctor carries each failing component's observation reason and exit code a
     exitCode: 137,
   });
   expect(await check()).toEqual({
-    name: "local/web",
+    name: "working/web",
     ok: false,
     message:
-      "Component is failed. The process exited with code 137 after 5 automatic restarts within 60 s, so it stays stopped. Run rig up to start it again.",
+      "Component is failed. The process exited with code 137 after 5 automatic restarts within 60 s, so it stays stopped. Run rig up working to start it again.",
     reason: "failed",
-    hint: "Inspect the Target logs (rig logs local) for why it exited.",
+    hint: "Inspect the Target logs (rig logs working) for why it exited.",
   });
   deps.observations.process = async () => ({
     state: "unknown",
@@ -1368,7 +1410,7 @@ test("doctor carries each failing component's observation reason and exit code a
   });
 });
 
-test("a stopped Working copy Target frees its old port for a live deploy once rig config moves local to another port", async () => {
+test("a stopped working Target frees its old port for a stable deploy once rig config moves working to another port", async () => {
   const { runtime, state, config, deps } = fixture();
   deps.files.selectPorts = async ({ requests, occupied }) => {
     for (const request of requests)
@@ -1376,7 +1418,7 @@ test("a stopped Working copy Target frees its old port for a live deploy once ri
         throw new RigError(
           "PORT_RESERVED",
           `Port ${request.preferred} is reserved by another Target.`,
-          "Configure a distinct local/live port.",
+          "Configure a distinct working/stable port.",
         );
     return Object.fromEntries(
       requests.map((request) => [request.name, request.preferred ?? 5000]),
@@ -1388,7 +1430,7 @@ test("a stopped Working copy Target frees its old port for a live deploy once ri
   const live = {
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   } as const;
   await expect(runtime.command(live)).rejects.toMatchObject({
@@ -1396,6 +1438,7 @@ test("a stopped Working copy Target frees its old port for a live deploy once ri
   });
   config.targets = {
     working: { services: { web: { ports: { http: 4570 } } } },
+    stable: true,
   };
   await runtime.command({ action: "up", project: "demo" });
   await runtime.command({ action: "down", project: "demo" });
@@ -1409,8 +1452,8 @@ test("a stopped Working copy Target frees its old port for a live deploy once ri
       (t.plan.components[0] as { port?: number }).port,
     ]),
   ).toEqual([
-    ["local", 4570],
-    ["live", 4567],
+    ["working", 4570],
+    ["stable", 4567],
   ]);
 });
 
@@ -1437,10 +1480,10 @@ test("deploy plans a Target from the rig config committed on the deployed revisi
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
     }),
   ).toMatchObject({ outcome: "deployed", commit: "abc" });
-  const live = state.targets.find((target) => target.kind === "live")!;
+  const live = state.targets.find((target) => target.kind === "stable")!;
   expect(live.plan.workspacePath).toContain("/revisions/");
   expect(live.plan.components.map((component) => component.name)).toEqual([
     "web",
@@ -1470,9 +1513,9 @@ test("deploy refuses a revision whose committed rig config names another Project
           config: renamed,
         };
   await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "live" }),
+    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({ code: "PROJECT_IDENTITY" });
-  expect(state.targets.some((target) => target.kind === "live")).toBe(false);
+  expect(state.targets.some((target) => target.kind === "stable")).toBe(false);
 });
 
 test("deploy refuses a Commit whose config cannot be read instead of falling back to the checkout's rig.yaml", async () => {
@@ -1486,12 +1529,12 @@ test("deploy refuses a Commit whose config cannot be read instead of falling bac
     });
   };
   await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "live" }),
+    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({
     _tag: "ConfigError",
     code: "missing_config",
   });
-  expect(state.targets.some((target) => target.kind === "live")).toBe(false);
+  expect(state.targets.some((target) => target.kind === "stable")).toBe(false);
 });
 
 test("authenticated callers cannot destroy the local or live Target", async () => {
@@ -1499,7 +1542,7 @@ test("authenticated callers cannot destroy the local or live Target", async () =
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   await expect(
-    runtime.command({ action: "destroy", project: "demo", target: "local" }),
+    runtime.command({ action: "destroy", project: "demo", target: "working" }),
   ).rejects.toThrow("Only Previews");
 });
 
@@ -1511,11 +1554,11 @@ test("status includes configured-only components and reports bad current config 
   ).toMatchObject({
     targets: [
       {
-        name: "local",
+        name: "working",
         state: "configured",
         components: [{ name: "web", state: "configured", port: 4567 }],
       },
-      { name: "live", state: "configured" },
+      { name: "stable", state: "configured" },
     ],
   });
   await runtime.command({ action: "up", project: "demo" });
@@ -1530,24 +1573,34 @@ test("status includes configured-only components and reports bad current config 
   expect(report.warnings.length).toBe(1);
 });
 
-test("Preview names cannot overwrite or destroy the live and local Target identities", async () => {
+test("Preview names cannot overwrite or destroy the working and stable Target identities, nor take the working Tools' dev suffix", async () => {
   const { runtime, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   for (const action of ["deploy", "destroy"] as const)
-    await expect(
-      runtime.command({
-        action,
-        project: "demo",
-        target: "preview",
-        branch: "feature",
-        deployment: "local",
-      }),
-    ).rejects.toMatchObject({
-      code: "PREVIEW_NAME",
-      message: "'local' names this Project's Working copy or Stable Target.",
-    });
-  expect(state.targets[0]?.kind).toBe("local");
+    for (const [deployment, message] of [
+      [
+        "working",
+        "'working' is reserved: it names this Project's working or stable Target.",
+      ],
+      [
+        "stable",
+        "'stable' is reserved: it names this Project's working or stable Target.",
+      ],
+      [
+        "dev",
+        "'dev' is reserved: the working Target's Tools are published as <tool>-dev.",
+      ],
+    ])
+      await expect(
+        runtime.command({
+          action,
+          project: "demo",
+          target: "preview",
+          deployment,
+        }),
+      ).rejects.toMatchObject({ code: "PREVIEW_NAME", message });
+  expect(state.targets[0]?.kind).toBe("working");
 });
 test("a stop failure preserves stopped intent so daemon reconciliation never resurrects the Target", async () => {
   const { runtime, deps, state, plans } = fixture();
@@ -1748,7 +1801,7 @@ test.each(["pending", "blocked", "committing"] as const)(
     const deploy = {
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     } as const;
     await runtime.command(deploy);
@@ -1786,7 +1839,7 @@ test.each(["running", "deliberately stopped", "prepared no-up"] as const)(
     const deploy = {
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     } as const;
     await runtime.command({ ...deploy, noUp: mode === "prepared no-up" });
@@ -1794,7 +1847,7 @@ test.each(["running", "deliberately stopped", "prepared no-up"] as const)(
       await runtime.command({
         action: "down",
         project: "demo",
-        target: "live",
+        target: "stable",
       });
     const before = structuredClone(state.targets);
     const effects = plans.length;
@@ -1835,7 +1888,7 @@ test("failed first activation can deploy the same Commit after reopening without
     const deploy = {
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     } as const;
     await expect(runtime.command(deploy)).rejects.toThrow("readiness failed");
@@ -1889,7 +1942,7 @@ test.each(["incomplete", "completed"] as const)(
       const deploy = {
         action: "deploy",
         project: "demo",
-        target: "live",
+        target: "stable",
         branch: "main",
       } as const;
       let failActivation = prior === "incomplete";
@@ -1922,7 +1975,7 @@ test.each(["incomplete", "completed"] as const)(
       await reopened.command({
         action: "down",
         project: "demo",
-        target: "live",
+        target: "stable",
       });
       failActivation = false;
       const before = activations;
@@ -1944,7 +1997,7 @@ test("legacy completion metadata is neither inferred nor rewritten on reopen", a
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       noUp: true,
     });
     const content = JSON.stringify(state);
@@ -1959,7 +2012,7 @@ test("legacy completion metadata is neither inferred nor rewritten on reopen", a
       await createRuntime(deps).command({
         action: "deploy",
         project: "demo",
-        target: "live",
+        target: "stable",
       }),
     ).toMatchObject({ outcome: "unchanged" });
   } finally {
@@ -1999,14 +2052,13 @@ test("repeated down and daemon reconciliation keep stopped intent while stopping
   expect(diagnostics).toEqual([]);
 });
 
-test("one runtime Status report reaches localhost human output and the Target picker", async () => {
+test("one runtime Status report reaches localhost human output", async () => {
   const { runtime, deps, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/repo" });
-  await runtime.command({ action: "up", project: "demo", target: "local" });
+  await runtime.command({ action: "up", project: "demo", target: "working" });
   const { startControlPlane } = await import("../src/daemon/server");
   const { DaemonClient } = await import("../src/daemon/client");
   const { renderStatus } = await import("../src/cli/output");
-  const { prepareInteractiveRequest } = await import("../src/cli/interaction");
   const server = startControlPlane({
     port: 0,
     token: "test",
@@ -2022,39 +2074,12 @@ test("one runtime Status report reaches localhost human output and the Target pi
       });
       const report = await client.status({ project: "demo" });
       expect(report).toEqual(await runtime.status({ project: "demo" }));
-      expect(report.targets.find((t) => t.name === "live")?.state).toBe(
+      expect(report.targets.find((t) => t.name === "stable")?.state).toBe(
         "configured",
       );
       const text = renderStatus(report, new Date());
-      const prepared = await prepareInteractiveRequest(
-        { action: "down", project: "demo" },
-        {
-          client,
-          output: { write() {}, error() {} },
-          interaction: {
-            async select(_message, choices) {
-              expect(choices.map((choice) => choice.value)).toEqual(
-                report.targets.map((t) => t.name),
-              );
-              for (const target of report.targets) {
-                expect(text).toContain(`${target.name}  ${target.state}`);
-                expect(choices).toContainEqual({
-                  value: target.name,
-                  label: `${target.name} (${target.state})`,
-                });
-              }
-              return "local";
-            },
-            async text(_message, value) {
-              return value;
-            },
-            async confirm() {
-              return true;
-            },
-          },
-        },
-      );
-      expect(prepared.target).toBe("local");
+      for (const target of report.targets)
+        expect(text).toContain(`${target.name}  ${target.state}`);
     }
     state.targets[0]!.recovery = {
       stage: "pending",
@@ -2087,7 +2112,7 @@ test("a successful up completes an incomplete first deployment, which status and
     runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     }),
   ).rejects.toMatchObject({ code: "HEALTH_FAILED" });
@@ -2103,9 +2128,9 @@ test("a successful up completes an incomplete first deployment, which status and
     targets: { name: string; deploymentIncomplete?: boolean }[];
   };
   expect(status.warnings?.join(" ")).toContain(
-    "live: the last deploy did not complete",
+    "stable: the last deploy did not complete",
   );
-  expect(status.targets.find((t) => t.name === "live")).toMatchObject({
+  expect(status.targets.find((t) => t.name === "stable")).toMatchObject({
     deploymentIncomplete: true,
   });
   const { checks } = (await runtime.command({
@@ -2122,14 +2147,14 @@ test("a successful up completes an incomplete first deployment, which status and
   });
   deps.lifecycle.up = up;
   expect(
-    await runtime.command({ action: "up", project: "demo", target: "live" }),
+    await runtime.command({ action: "up", project: "demo", target: "stable" }),
   ).toMatchObject({ outcome: "started" });
   expect(state.targets[0]!.deploymentIncomplete).toBeUndefined();
   expect(
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     }),
   ).toMatchObject({ outcome: "unchanged" });
@@ -2159,7 +2184,7 @@ test("status and doctor report a live deploy as in progress instead of unresolve
   const deploy = runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
     operationId: "op-deploy",
   });
@@ -2235,7 +2260,7 @@ test("failed deploy records separate safe initiating and rollback categories", a
     runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
       operationId: "cause-operation",
     }),
@@ -2262,7 +2287,7 @@ test.each(["commit", "restore", "rename", "activation", "pending"] as const)(
       await runtime.command({
         action: "deploy",
         project: "demo",
-        target: "live",
+        target: "stable",
         branch: "main",
       });
     const events: string[] = [],
@@ -2325,7 +2350,7 @@ test.each(["commit", "restore", "rename", "activation", "pending"] as const)(
         : {
             action: "deploy" as const,
             project: "demo",
-            target: "live" as const,
+            target: "stable" as const,
             branch: "main",
             force: true,
           };
@@ -2437,7 +2462,7 @@ test("wrapped failure writes a correlated private diagnostic and safe public res
       body: JSON.stringify({
         action: "deploy",
         project: "demo",
-        target: "live",
+        target: "stable",
         branch: "main",
         operationId: "correlated-cause",
       }),
@@ -2523,7 +2548,7 @@ test("non-Error secondary failure retains both categories without inspecting cyc
     runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "main",
     }),
   ).rejects.toMatchObject({
@@ -2597,7 +2622,7 @@ test.each([
       await runtime.command({
         action: "deploy",
         project: "demo",
-        target: "live",
+        target: "stable",
         operationId: "malformed-runtime",
       });
     } catch (error) {
@@ -2690,7 +2715,7 @@ test.each([
       runtime.command({
         action: "deploy",
         project: "demo",
-        target: "live",
+        target: "stable",
         operationId: "malformed-recovery",
       }),
     ).rejects.toMatchObject({
@@ -2728,7 +2753,7 @@ test("local and Preview planning use real selection with inventory exclusion and
   };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
-  const local = state.targets.find((record) => record.kind === "local")!;
+  const local = state.targets.find((record) => record.kind === "working")!;
   const localWeb = local.plan.components[0]!;
   if (localWeb.kind !== "managed") throw new Error("Expected managed web");
   config.services!.web!.ports = { http: localWeb.port! };
@@ -2745,7 +2770,8 @@ test("local and Preview planning use real selection with inventory exclusion and
   await runtime.command({ action: "down", project: "demo" });
   await runtime.command({ action: "up", project: "demo" });
   expect(
-    state.targets.find((record) => record.kind === "local")!.plan.components[0],
+    state.targets.find((record) => record.kind === "working")!.plan
+      .components[0],
   ).toMatchObject({ port: localWeb.port });
 });
 
@@ -3032,7 +3058,7 @@ test("status and doctor name a Preview whose destruction is pending instead of c
       state: "stopped",
     });
     expect(status.warnings).toEqual([
-      `${f.target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run down preview review --destroy to finish cleanup.`,
+      `${f.target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run rig down preview --deployment review --destroy to finish cleanup.`,
     ]);
     const report = (await f.runtime.command({
       action: "doctor",
@@ -3265,21 +3291,23 @@ test("deploy --no-up says the Target is stopped and names the rig up command", a
   const deploy = {
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   } as const;
   expect(await runtime.command({ ...deploy, noUp: true })).toMatchObject({
     outcome: "deployed",
-    warnings: ["live is deployed but stopped. Run rig up live to start it."],
+    warnings: [
+      "stable is deployed but stopped. Run rig up stable to start it.",
+    ],
   });
-  await runtime.command({ action: "up", project: "demo", target: "live" });
+  await runtime.command({ action: "up", project: "demo", target: "stable" });
   expect(state.targets[0]?.desired).toBe("running");
   expect(
     await runtime.command({ ...deploy, noUp: true, force: true }),
   ).toMatchObject({
     outcome: "deployed",
     warnings: [
-      "live was running and is now stopped on the new deployment. Run rig up live to start it.",
+      "stable was running and is now stopped on the new deployment. Run rig up stable to start it.",
     ],
   });
   expect(state.targets[0]?.desired).toBe("stopped");
@@ -3299,14 +3327,14 @@ test("a deploy releases the revision it supersedes or the candidate it rejects, 
       commit: value,
     });
   };
-  const deploy = (target: "live" | "preview", branch: string) =>
+  const deploy = (target: "stable" | "preview", branch: string) =>
     runtime.command({ action: "deploy", project: "demo", target, branch });
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await deploy("live", "main");
+  await deploy("stable", "main");
   const first = state.targets[0]!.plan.workspacePath;
   expect(released).toEqual([]);
   commit("def");
-  expect(await deploy("live", "main")).toMatchObject({
+  expect(await deploy("stable", "main")).toMatchObject({
     outcome: "deployed",
     warnings: [],
   });
@@ -3318,7 +3346,7 @@ test("a deploy releases the revision it supersedes or the candidate it rejects, 
     if (record.commit === "ghi") throw new Error("candidate failed");
     return up(record);
   };
-  await expect(deploy("live", "main")).rejects.toThrow("candidate failed");
+  await expect(deploy("stable", "main")).rejects.toThrow("candidate failed");
   expect(state.targets[0]!.plan.workspacePath).toBe(second);
   expect(released).toHaveLength(2);
   expect(released[1]).not.toBe(released[0]);
@@ -3339,13 +3367,13 @@ test("a deploy releases the revision it supersedes or the candidate it rejects, 
   deps.sources.release = async () => {
     throw new Error("worktree is locked");
   };
-  expect(await deploy("live", "main")).toMatchObject({
+  expect(await deploy("stable", "main")).toMatchObject({
     outcome: "deployed",
     warnings: [
       `Revision ${second} was not removed: worktree is locked. Delete it by hand to reclaim disk.`,
     ],
   });
-  expect(state.targets.find((t) => t.kind === "live")!.commit).toBe("jkl");
+  expect(state.targets.find((t) => t.kind === "stable")!.commit).toBe("jkl");
 });
 
 test("unreadable runtime state leaves the daemon serving: reconcile records the failure, commands report it, and doctor outside a Project flags runtime-state", async () => {
@@ -3456,7 +3484,7 @@ test("the queue read names the mutation rigd is running and how many wait behind
     operationId: "slow-up",
     action: "up",
     project: "demo",
-    target: "local",
+    target: "working",
     phase: "starting",
     startedAt: expect.any(String),
   };
@@ -3496,7 +3524,7 @@ test("usage mistakes that never reached an Operation leave activity untouched; a
   ).rejects.toMatchObject({ code: "PROJECT_MISSING" });
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await expect(
-    runtime.command({ action: "down", project: "demo", target: "live" }),
+    runtime.command({ action: "down", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({ code: "TARGET_MISSING" });
   await expect(
     runtime.command({
@@ -3521,17 +3549,25 @@ test("usage mistakes that never reached an Operation leave activity untouched; a
     message: "Preview 'nope-1234' has no recorded deployment.",
   });
   await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "local" }),
+    runtime.command({ action: "deploy", project: "demo", target: "working" }),
+  ).rejects.toMatchObject({ code: "DEPLOY_TARGET" });
+  // The deploy context refuses it too, before anything is announced.
+  await expect(
+    runtime.command({
+      action: "deployment-context",
+      project: "demo",
+      target: "working",
+    }),
   ).rejects.toMatchObject({ code: "DEPLOY_TARGET" });
   await expect(
-    runtime.command({ action: "destroy", project: "demo", target: "live" }),
+    runtime.command({ action: "destroy", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({ code: "DESTROY_TARGET" });
   expect(state.activity.map((entry) => entry.outcome)).toEqual(["registered"]);
   deps.sources.preflight = async () => {
     throw new RigError("DIRTY", "Uncommitted changes.", "Commit first.");
   };
   await expect(
-    runtime.command({ action: "deploy", project: "demo", target: "live" }),
+    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({ code: "DIRTY" });
   expect(state.activity.map((entry) => entry.outcome)).toEqual([
     "registered",
@@ -3581,32 +3617,36 @@ test("a logs filter reaches the reader and marks the reply filtered; an unknown 
     await runtime.command({
       action: "logs",
       project: "demo",
-      target: "local",
+      target: "working",
       lines: 20,
       logFilter,
     }),
   ).toEqual({
     project: "demo",
-    target: "local",
+    target: "working",
     entries: [],
     cursor: "0",
     filtered: true,
   });
   expect(reads[0]!.slice(1)).toEqual([undefined, 20, logFilter]);
   expect(
-    await runtime.command({ action: "logs", project: "demo", target: "local" }),
-  ).toEqual({ project: "demo", target: "local", entries: [], cursor: "0" });
+    await runtime.command({
+      action: "logs",
+      project: "demo",
+      target: "working",
+    }),
+  ).toEqual({ project: "demo", target: "working", entries: [], cursor: "0" });
   expect(reads[1]!.slice(1)).toEqual([undefined, 100, undefined]);
   await expect(
     runtime.command({
       action: "logs",
       project: "demo",
-      target: "local",
+      target: "working",
       logFilter: { services: ["web", "scheduler"] },
     }),
   ).rejects.toMatchObject({
     code: "USAGE",
-    message: "Target 'local' has no Service or Tool named 'scheduler'.",
+    message: "Target 'working' has no Service or Tool named 'scheduler'.",
     hint: "Pass --service with one of: web, setup.",
   });
   expect(reads).toHaveLength(2);
@@ -3614,7 +3654,7 @@ test("a logs filter reaches the reader and marks the reply filtered; an unknown 
   await runtime.command({
     action: "logs",
     project: "demo",
-    target: "local",
+    target: "working",
     after: "cursor",
     logFilter: { services: ["scheduler"] },
   });
@@ -3647,9 +3687,9 @@ test("runtime list, logs and activity replies satisfy the client contract end to
       await client.command({
         action: "logs",
         project: "demo",
-        target: "local",
+        target: "working",
       }),
-    ).toEqual({ project: "demo", target: "local", entries: [], cursor: "0" });
+    ).toEqual({ project: "demo", target: "working", entries: [], cursor: "0" });
     const activity = (await client.command({ action: "activity" })) as {
       operations: { id: string; action: string; outcome: string }[];
     };
@@ -3708,7 +3748,7 @@ test("doctor reports a Stable Target deployed from a Branch that is no longer Pr
   await runtime.command({
     action: "deploy",
     project: "demo",
-    target: "live",
+    target: "stable",
     branch: "main",
   });
   const branchCheck = async () =>
@@ -3722,19 +3762,20 @@ test("doctor reports a Stable Target deployed from a Branch that is no longer Pr
           hint?: string;
         }[];
       }
-    ).checks.find((check) => check.name === "live/branch");
+    ).checks.find((check) => check.name === "stable/branch");
   expect(await branchCheck()).toEqual({
-    name: "live/branch",
+    name: "stable/branch",
     ok: true,
-    message: "live was deployed from Production 'main'.",
+    message: "stable was deployed from Production 'main'.",
   });
   config.production_branch = "release";
   expect(await branchCheck()).toEqual({
-    name: "live/branch",
+    name: "stable/branch",
     ok: false,
-    message: "live was deployed from 'main', but Production is now 'release'.",
+    message:
+      "stable was deployed from 'main', but Production is now 'release'.",
     reason: "production-branch-drift",
-    hint: "Run rig deploy live to deploy 'release', or set production_branch back to 'main'.",
+    hint: "Run rig deploy stable to deploy 'release', or set production_branch back to 'main'.",
   });
 });
 
@@ -3871,8 +3912,12 @@ test("forget refuses running Targets and retained Previews, list marks a missing
     target: "preview",
     branch: "feature",
   });
-  await runtime.command({ action: "deploy", project: "demo", target: "live" });
-  await runtime.command({ action: "down", project: "demo", target: "live" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "stable",
+  });
+  await runtime.command({ action: "down", project: "demo", target: "stable" });
   await expect(
     runtime.command({ action: "forget", project: "demo" }),
   ).rejects.toMatchObject({
@@ -3901,14 +3946,14 @@ test("forget refuses running Targets and retained Previews, list marks a missing
       },
     ],
   });
-  const live = state.targets.find((t) => t.kind === "live")!;
+  const live = state.targets.find((t) => t.kind === "stable")!;
   expect(
     await runtime.command({ action: "forget", project: "demo" }),
   ).toMatchObject({
     outcome: "forgotten",
     project: "demo",
     warnings: [
-      `Target live was forgotten, but its workspace at ${live.plan.workspacePath} and data under ${live.plan.dataRoot} were not deleted.`,
+      `Target stable was forgotten, but its workspace at ${live.plan.workspacePath} and data under ${live.plan.dataRoot} were not deleted.`,
     ],
   });
   expect(state.projects).toEqual([]);
@@ -3950,211 +3995,168 @@ test("forget against the file store removes the Project and records the forget i
   }
 });
 
-test("configured Target names select the Working copy and Stable Target", async () => {
-  const { runtime, state, deps, config } = fixture();
-  config.targets = { working: { name: "dev" }, stable: { name: "production" } };
+test("the working and stable Targets are selected by their fixed names, and any other name is unknown", async () => {
+  const { runtime, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   expect(
     await runtime.command({ action: "up", project: "demo" }),
-  ).toMatchObject({ outcome: "started", target: "dev" });
+  ).toMatchObject({ outcome: "started", target: "working" });
   expect(
-    await runtime.command({ action: "up", project: "demo", target: "dev" }),
-  ).toMatchObject({ outcome: "started", target: "dev" });
-  expect(state.targets).toMatchObject([
-    { kind: "local", name: "dev", plan: { deploymentName: "dev" } },
-  ]);
-  await expect(
-    runtime.command({ action: "up", project: "demo", target: "local" }),
-  ).rejects.toMatchObject({
-    code: "TARGET_UNKNOWN",
-    message: "This Project has no Target named 'local'.",
-    hint: "Select dev, production or preview.",
-  });
+    await runtime.command({ action: "up", project: "demo", target: "working" }),
+  ).toMatchObject({ outcome: "started", target: "working" });
   expect(
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "production",
+      target: "stable",
     }),
-  ).toMatchObject({ outcome: "deployed", target: "production" });
-  const stable = state.targets.find((t) => t.kind === "live")!;
-  expect(stable).toMatchObject({
-    name: "production",
-    branch: "main",
-    plan: { target: "live", deploymentName: "production" },
-  });
+  ).toMatchObject({ outcome: "deployed", target: "stable" });
+  expect(state.targets).toMatchObject([
+    { kind: "working", name: "working", plan: { deploymentName: "working" } },
+    {
+      kind: "stable",
+      name: "stable",
+      branch: "main",
+      plan: { target: "stable", deploymentName: "stable" },
+    },
+  ]);
   expect(
-    await runtime.command({ action: "deployment-context", project: "demo" }),
+    await runtime.command({
+      action: "deployment-context",
+      project: "demo",
+      target: "stable",
+    }),
   ).toMatchObject({
     productionBranch: "main",
-    targets: { working: "dev", stable: "production" },
+    selected: "stable",
+    on: { working: true, stable: true, preview: true },
   });
-  deps.sources.preflight = async () => ({ commit: "def", warnings: [] });
-  deps.sources.prepare = async (request) => ({
-    workspacePath: request.destination,
-    commit: "def",
-  });
-  expect(
-    await runtime.command({
-      action: "deploy",
-      project: "demo",
-      target: "production",
-    }),
-  ).toMatchObject({
-    outcome: "deployed",
-    target: "production",
-    commit: "def",
-    previousCommit: "abc",
-  });
-  expect(state.targets.filter((t) => t.kind === "live")).toMatchObject([
-    { id: stable.id, name: "production", commit: "def" },
-  ]);
-  expect(
-    await runtime.command({
-      action: "deploy",
-      project: "demo",
-      target: "preview",
-      branch: "feature/x",
-    }),
-  ).toMatchObject({ outcome: "deployed" });
-  expect(state.targets.map((t) => t.kind)).toEqual([
-    "local",
-    "live",
-    "preview",
-  ]);
+  for (const target of ["local", "live", "dev"])
+    await expect(
+      runtime.command({ action: "down", project: "demo", target }),
+    ).rejects.toMatchObject({
+      code: "TARGET_UNKNOWN",
+      message: `This Project has no Target named '${target}'.`,
+      hint: "Target names are fixed: select working, stable, or preview with a Branch.",
+    });
 });
 
-test("renaming the Working copy keeps its identity, data and ports; the recorded name selects it until it is planned again", async () => {
+test("an off Target is refused by up, restart, deploy and a first logs read, each naming the line that turns it on", async () => {
   const { runtime, state, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({ action: "up", project: "demo" });
-  const recorded = structuredClone(state.targets[0]!);
-  expect(recorded.name).toBe("local");
-  config.targets = { working: { name: "dev" } };
-  expect(
-    await runtime.command({ action: "down", project: "demo", target: "local" }),
-  ).toMatchObject({ outcome: "stopped", target: "local" });
-  expect(state.targets[0]!.name).toBe("local");
-  expect(
-    await runtime.command({ action: "up", project: "demo" }),
-  ).toMatchObject({ outcome: "started", target: "dev" });
-  expect(state.targets).toHaveLength(1);
-  expect(state.targets[0]).toMatchObject({
-    id: recorded.id,
-    name: "dev",
-    kind: "local",
-    createdAt: recorded.createdAt,
-    logRoot: recorded.logRoot,
-    plan: { dataRoot: recorded.plan.dataRoot, deploymentName: "dev" },
-  });
-  expect(state.targets[0]!.plan.components[0]).toMatchObject({ port: 4567 });
-  await expect(
-    runtime.command({ action: "down", project: "demo", target: "local" }),
-  ).rejects.toMatchObject({
-    code: "TARGET_UNKNOWN",
-    hint: "Select dev, live or preview.",
-  });
-  expect(
-    await runtime.command({ action: "down", project: "demo", target: "dev" }),
-  ).toMatchObject({ outcome: "stopped", target: "dev" });
-});
-
-test("a Working copy rename onto an existing Preview's name is refused, and a Preview cannot take a configured Target name", async () => {
-  const { runtime, state, config } = fixture();
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({ action: "up", project: "demo" });
-  await runtime.command({ action: "down", project: "demo" });
-  await runtime.command({
-    action: "deploy",
-    project: "demo",
-    target: "preview",
-    branch: "feature",
-    deployment: "dev",
-  });
-  const before = structuredClone(state.targets);
-  config.targets = { working: { name: "dev" }, stable: { name: "production" } };
-  await expect(
-    runtime.command({ action: "up", project: "demo" }),
-  ).rejects.toMatchObject({
-    code: "TARGET_NAME",
-    message: "Target name 'dev' already belongs to a Preview of this Project.",
-    hint: "Choose another targets.working.name, or destroy that Preview first.",
-  });
-  expect(state.targets).toEqual(before);
+  const refusal = (role: "working" | "stable" | "preview", hint: string) =>
+    expect.objectContaining({
+      code: "TARGET_OFF",
+      message:
+        role === "preview"
+          ? "Previews are off in rig.yaml."
+          : `The ${role} Target is off in rig.yaml.`,
+      hint,
+    });
+  config.targets = { working: true };
+  const addStable = "Add `stable: true` under targets in rig.yaml.";
+  for (const command of [
+    { action: "deploy", target: "stable" },
+    { action: "up", target: "stable" },
+    { action: "restart", target: "stable" },
+    { action: "logs", target: "stable" },
+    { action: "deployment-context", target: "stable" },
+  ] as const)
+    await expect(
+      runtime.command({ ...command, project: "demo" }),
+    ).rejects.toEqual(refusal("stable", addStable));
   await expect(
     runtime.command({
       action: "deploy",
       project: "demo",
       target: "preview",
       branch: "feature",
-      deployment: "production",
     }),
-  ).rejects.toMatchObject({
-    code: "PREVIEW_NAME",
-    message: "'production' names this Project's Working copy or Stable Target.",
-  });
-  expect(state.targets).toEqual(before);
-  // The Preview that holds the name stays reachable, so the hint's way through works.
-  expect(
-    await runtime.command({
-      action: "destroy",
-      project: "demo",
-      target: "preview",
-      deployment: "dev",
-    }),
-  ).toMatchObject({ action: "destroy", target: "dev" });
-  expect(state.targets.map((t) => t.kind)).toEqual(["local"]);
-  expect(
-    await runtime.command({ action: "up", project: "demo" }),
-  ).toMatchObject({ outcome: "started", target: "dev" });
+  ).rejects.toEqual(
+    refusal("preview", "Add `preview: true` under targets in rig.yaml."),
+  );
+  config.targets = { working: true, stable: false };
+  await expect(
+    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
+  ).rejects.toEqual(
+    refusal(
+      "stable",
+      "Change `stable: false` to `stable: true` under targets in rig.yaml.",
+    ),
+  );
+  // Without a targets key only working is on, so turning stable on means listing working too.
+  delete config.targets;
+  await expect(
+    runtime.command({ action: "deploy", project: "demo", target: "stable" }),
+  ).rejects.toEqual(
+    refusal(
+      "stable",
+      "Add a targets key to rig.yaml with `stable: true` under it, and `working: true` beside it to keep the working Target on.",
+    ),
+  );
+  config.targets = { stable: true };
+  await expect(
+    runtime.command({ action: "up", project: "demo" }),
+  ).rejects.toEqual(
+    refusal("working", "Add `working: true` under targets in rig.yaml."),
+  );
+  expect(state.targets).toEqual([]);
 });
 
-test("a name configured for one Target while the other is still recorded under it is refused, never guessed", async () => {
+test("a Target turned off while it runs stays listed, readable and stoppable, and is not started again", async () => {
   const { runtime, state, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({ action: "up", project: "demo" });
-  await runtime.command({ action: "deploy", project: "demo", target: "live" });
-  config.targets = { working: { name: "dev" }, stable: { name: "local" } };
-  const before = structuredClone(state.targets);
-  await expect(
-    runtime.command({ action: "down", project: "demo", target: "local" }),
-  ).rejects.toMatchObject({
-    code: "TARGET_AMBIGUOUS",
-    hint: expect.stringContaining("(dev)"),
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "stable",
   });
-  // Planning the Stable Target as 'local' would record two Targets under one name.
-  await expect(
-    runtime.command({
-      action: "deploy",
-      project: "demo",
-      target: "live",
-      force: true,
-    }),
-  ).rejects.toMatchObject({
-    code: "TARGET_NAME",
-    message:
-      "Target name 'local' is still recorded for this Project's other Target.",
-  });
-  expect(state.targets).toEqual(before);
+  config.targets = { working: true };
+  const status = (await runtime.command({
+    action: "status",
+    project: "demo",
+  })) as { targets: { name: string; state: string }[] };
+  // The working Target is on and listed before it runs; the recorded stable Target is listed although it is off.
+  expect(status.targets.map((t) => t.name).sort()).toEqual([
+    "stable",
+    "working",
+  ]);
+  for (const action of ["up", "restart"] as const)
+    await expect(
+      runtime.command({ action, project: "demo", target: "stable" }),
+    ).rejects.toMatchObject({ code: "TARGET_OFF" });
   expect(
     await runtime.command({
-      action: "deployment-context",
+      action: "logs",
       project: "demo",
-      target: "live",
+      target: "stable",
     }),
-  ).toMatchObject({ selected: "stable", targets: { stable: "local" } });
-  // The Working copy takes its new name first; then 'local' means only the Stable Target.
-  await runtime.command({ action: "down", project: "demo", target: "dev" });
-  await runtime.command({ action: "up", project: "demo", target: "dev" });
+  ).toMatchObject({ target: "stable" });
   expect(
-    await runtime.command({ action: "down", project: "demo", target: "local" }),
-  ).toMatchObject({ target: "live" });
+    await runtime.command({
+      action: "down",
+      project: "demo",
+      target: "stable",
+    }),
+  ).toMatchObject({ outcome: "stopped", target: "stable" });
+  expect(state.targets[0]).toMatchObject({
+    kind: "stable",
+    desired: "stopped",
+  });
+  // Once nothing is recorded for it, an off Target is not listed at all.
+  config.targets = { working: true };
+  state.targets = [];
+  const empty = (await runtime.command({
+    action: "status",
+    project: "demo",
+  })) as { targets: { name: string }[] };
+  expect(empty.targets.map((t) => t.name)).toEqual(["working"]);
 });
 
-test("an action selects and plans the Working copy from one read of the checkout config", async () => {
+test("an action checks and plans the working Target from one read of the checkout config", async () => {
   const { runtime, state, deps, config } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  config.targets = { working: { name: "dev" } };
+  config.targets = { working: { env: { FROM: "first" } } };
   const read = deps.documents.read.bind(deps.documents);
   let reads = 0;
   deps.documents.read = async (path) => {
@@ -4165,40 +4167,40 @@ test("an action selects and plans the Working copy from one read of the checkout
       ? document
       : {
           ...document,
-          config: {
-            ...document.config,
-            targets: { working: { name: "other" } },
-          },
+          config: { ...document.config, targets: { working: false } },
         };
   };
   expect(
-    await runtime.command({ action: "up", project: "demo", target: "dev" }),
-  ).toMatchObject({ outcome: "started", target: "dev" });
-  expect(state.targets[0]).toMatchObject({ name: "dev" });
+    await runtime.command({ action: "up", project: "demo", target: "working" }),
+  ).toMatchObject({ outcome: "started", target: "working" });
+  expect(state.targets[0]!.plan.components[0]).toMatchObject({
+    env: { FROM: "first" },
+  });
 });
 
 test("status selects by the same names as every other command and rejects an unknown one", async () => {
-  const { runtime, config } = fixture();
+  const { runtime } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
-  config.targets = { working: { name: "dev" } };
-  const renamed = (await runtime.command({
+  const working = (await runtime.command({
     action: "status",
     project: "demo",
-    target: "dev",
+    target: "working",
   })) as { targets: { name: string; kind: string }[] };
-  expect(renamed.targets).toMatchObject([{ name: "local", kind: "local" }]);
+  expect(working.targets).toMatchObject([{ name: "working", kind: "working" }]);
   const stable = (await runtime.command({
     action: "status",
     project: "demo",
-    target: "live",
+    target: "stable",
   })) as { targets: { name: string; state: string }[] };
-  expect(stable.targets).toMatchObject([{ name: "live", state: "configured" }]);
+  expect(stable.targets).toMatchObject([
+    { name: "stable", state: "configured" },
+  ]);
   await expect(
     runtime.command({ action: "status", project: "demo", target: "bogus" }),
   ).rejects.toMatchObject({
     code: "TARGET_UNKNOWN",
-    hint: "Select dev, local, live or preview.",
+    hint: "Target names are fixed: select working, stable, or preview with a Branch.",
   });
 });
 
@@ -4219,16 +4221,16 @@ test("the Host Production Branch applies when the Project sets none, and the Pro
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
     }),
-  ).toMatchObject({ outcome: "deployed", target: "live", branch: "trunk" });
+  ).toMatchObject({ outcome: "deployed", target: "stable", branch: "trunk" });
   config.production_branch = "release";
   expect(await context()).toBe("release");
   await expect(
     runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
       branch: "trunk",
       force: true,
     }),
@@ -4237,9 +4239,9 @@ test("the Host Production Branch applies when the Project sets none, and the Pro
     await runtime.command({
       action: "deploy",
       project: "demo",
-      target: "live",
+      target: "stable",
     }),
-  ).toMatchObject({ outcome: "deployed", target: "live", branch: "release" });
+  ).toMatchObject({ outcome: "deployed", target: "stable", branch: "release" });
   expect(
     await runtime.command({
       action: "deploy",
@@ -4249,14 +4251,13 @@ test("the Host Production Branch applies when the Project sets none, and the Pro
     }),
   ).toMatchObject({ outcome: "deployed" });
   expect(state.targets.map((t) => [t.kind, t.branch])).toEqual([
-    ["live", "release"],
+    ["stable", "release"],
     ["preview", "trunk"],
   ]);
 });
 
-test("while the checkout config is unreadable a recorded name still stops its Target, and an unknown selector reports the config failure", async () => {
-  const { runtime, state, deps, config } = fixture();
-  config.targets = { working: { name: "dev" } };
+test("while the checkout config is unreadable a recorded Target can still be stopped", async () => {
+  const { runtime, state, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
   deps.documents.read = async (path) => {
@@ -4266,14 +4267,18 @@ test("while the checkout config is unreadable a recorded name still stops its Ta
   };
   await expect(
     runtime.command({ action: "down", project: "demo", target: "renamed" }),
-  ).rejects.toMatchObject({ code: "invalid_yaml" });
+  ).rejects.toMatchObject({ code: "TARGET_UNKNOWN" });
   expect(state.targets[0]!.desired).toBe("running");
   expect(
-    await runtime.command({ action: "down", project: "demo", target: "dev" }),
-  ).toMatchObject({ outcome: "stopped", target: "dev" });
+    await runtime.command({
+      action: "down",
+      project: "demo",
+      target: "working",
+    }),
+  ).toMatchObject({ outcome: "stopped", target: "working" });
   expect(
     await runtime.command({ action: "down", project: "demo" }),
-  ).toMatchObject({ outcome: "stopped", target: "dev" });
+  ).toMatchObject({ outcome: "stopped", target: "working" });
   expect(state.targets[0]!.desired).toBe("stopped");
 });
 
@@ -4319,7 +4324,7 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
         warnings: string[];
       }
     ).warnings,
-  ).toEqual([expect.stringContaining("Run rig restart local")]);
+  ).toEqual([expect.stringContaining("Run rig restart working")]);
   // The order of Services is what the file says too: it decides the order they start in.
   const both = (first: string, second: string) =>
     parseProjectConfig({
@@ -4344,5 +4349,5 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
         warnings?: string[];
       }
     ).warnings,
-  ).toEqual([expect.stringContaining("Run rig restart local")]);
+  ).toEqual([expect.stringContaining("Run rig restart working")]);
 });

@@ -12,7 +12,7 @@ test("compiled follow uses production scheduling and terminates on SIGTERM witho
   const binary = join(directory, "rig");
   const target = {
     id: "stopped-fixture",
-    name: "live",
+    name: "stable",
     desired: "stopped",
     logRoot: join(root, "logs"),
   } as TargetRecord;
@@ -33,7 +33,7 @@ test("compiled follow uses production scheduling and terminates on SIGTERM witho
         throw new Error("Unexpected lifecycle request");
       return {
         project: "fixture",
-        target: "live",
+        target: "stable",
         ...(await files.logs(target, request.after, 100)),
       };
     },
@@ -89,7 +89,7 @@ test("compiled follow uses production scheduling and terminates on SIGTERM witho
       error: "",
     });
     const running = Bun.spawn(
-      [binary, "logs", "live", "--project", "fixture", "--follow"],
+      [binary, "logs", "stable", "--project", "fixture", "--follow"],
       {
         cwd: directory,
         env: { ...process.env, RIG_ROOT: root },
@@ -150,7 +150,7 @@ test("follow exits 0 and stops polling once its stdout reader has gone away", as
   const root = join(directory, ".rig");
   const target = {
     id: "closed-fixture",
-    name: "live",
+    name: "stable",
     desired: "stopped",
     logRoot: join(root, "logs"),
   } as TargetRecord;
@@ -177,7 +177,7 @@ test("follow exits 0 and stops polling once its stdout reader has gone away", as
       );
       return {
         project: "fixture",
-        target: "live",
+        target: "stable",
         ...(await files.logs(target, request.after, 100)),
       };
     },
@@ -202,7 +202,7 @@ test("follow exits 0 and stops polling once its stdout reader has gone away", as
     );
     const entry = join(import.meta.dir, "../src/index.ts");
     // head closes the pipe after one line; the follow must notice at its next write and stop on its own.
-    const script = `"${process.execPath}" run "${entry}" logs live --project fixture --follow | head -n 1; echo "rig=\${PIPESTATUS[0]}"`;
+    const script = `"${process.execPath}" run "${entry}" logs stable --project fixture --follow | head -n 1; echo "rig=\${PIPESTATUS[0]}"`;
     const running = Bun.spawn(["bash", "-c", script], {
       cwd: directory,
       env: { ...process.env, RIG_ROOT: root },
@@ -225,7 +225,7 @@ test("follow exits 0 and stops polling once its stdout reader has gone away", as
     ]);
     clearTimeout(watchdog);
     expect(exit).toBe(0);
-    expect(await output).toBe("fixture live\nrig=0\n");
+    expect(await output).toBe("fixture stable\nrig=0\n");
     expect(await error).toBe("");
     const count = requests.length;
     await Bun.sleep(400);

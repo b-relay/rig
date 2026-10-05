@@ -4,6 +4,7 @@ import type {
   ManagedComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
+import { deploySelector, targetSelector } from "../domain/target-selector";
 import type {
   HealthCheck,
   ProcessObservation,
@@ -412,7 +413,7 @@ export function createTargetLifecycle(
           throw new RigError(
             "START_ROLLBACK_FAILED",
             "Startup failed and process or executable rollback could not be verified.",
-            "Run rig doctor and rig down before retrying.",
+            `Run rig doctor and rig down ${targetSelector(target)} before retrying.`,
             { cause: error, rollbackErrors },
           );
         throw error;
@@ -446,7 +447,7 @@ export function createTargetLifecycle(
         throw new RigError(
           "SERVICE_DEPENDENCY",
           `${service} depends on ${missing}, which is not running.`,
-          `Run rig up ${target.name} to start both.`,
+          `Run rig up ${targetSelector(target)} to start both.`,
           { service, dependency: missing },
         );
       const process = (name: string) => ({
@@ -504,7 +505,7 @@ export function createTargetLifecycle(
           throw new RigError(
             "START_ROLLBACK_FAILED",
             "The Service could not be started again and its new process could not be verified stopped.",
-            "Run rig doctor and rig down before retrying.",
+            `Run rig doctor and rig down ${targetSelector(target)} before retrying.`,
             {},
             failureCauses(error, failure),
           );
@@ -514,7 +515,7 @@ export function createTargetLifecycle(
           throw new RigError(
             "START_UNVERIFIED",
             `${service} was asked to start, but how that start ended could not be established.`,
-            `Inspect Target logs, then run rig up ${target.name} to start it again.`,
+            `Inspect Target logs, then run rig up ${targetSelector(target)} to start it again.`,
             { service },
             failureCauses(error),
           );
@@ -663,14 +664,12 @@ function unitLabel(unit: Pick<BuildUnit, "component">): string {
     : `${unit.component} build`;
 }
 /** Only a forced deployment gives an incomplete or uncertain preparation a fresh scope. */
-function forceHint(target: Pick<TargetRecord, "kind" | "name">): string {
-  if (target.kind === "local")
-    return "Run rig restart for the Working copy to build it again.";
-  const selector =
-    target.kind === "preview"
-      ? `preview --deployment ${target.name}`
-      : target.name;
-  return `Run rig deploy ${selector} --force to build a fresh Deployment; rig never reruns a build whose outcome it does not know.`;
+function forceHint(
+  target: Pick<TargetRecord, "kind" | "name" | "branch">,
+): string {
+  if (target.kind === "working")
+    return "Run rig restart working to build it again.";
+  return `Run rig deploy ${deploySelector(target)} --force to build a fresh Deployment; rig never reruns a build whose outcome it does not know.`;
 }
 /** The outcomes recorded for the Target's current workspace; another workspace's outcomes prove nothing here. */
 function recordedUnits(
@@ -733,7 +732,7 @@ export function uncertainAttempt(
 }
 /** A deployed Target starts only from a preparation whose every unit is recorded as succeeded for this workspace. */
 function assertPrepared(target: TargetRecord): void {
-  if (target.kind === "local") return;
+  if (target.kind === "working") return;
   assertBuildsKnown(target);
   const recorded = recordedUnits(target);
   for (const unit of target.plan.builds ?? []) {

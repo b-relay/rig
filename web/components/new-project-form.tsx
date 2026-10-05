@@ -147,7 +147,7 @@ export function NewProjectForm() {
                 <Field
                   label="Domain"
                   htmlFor="domain"
-                  help="Optional. The Stable Target serves it; Previews get subdomains."
+                  help="Optional. The stable Target serves it; a Preview gets the first label, a dash and its name, as in app-feature-1a2b3c4d.example.com."
                 >
                   <Input
                     id="domain"

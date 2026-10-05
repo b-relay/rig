@@ -12,7 +12,7 @@ function planned(services: Record<string, Record<string, unknown>>) {
         services,
         tools: { cli: { bin: "bin/cli" } },
       }),
-      target: "local",
+      target: "working",
       workspacePath: "/work/demo",
       dataRoot: "/rig/data",
       assignedPorts: { "web.http": 4567 },

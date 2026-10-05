@@ -7,7 +7,7 @@ import {
   parseProjectConfig,
   patchedSettings,
   proxyUpstream,
-  targetNames,
+  rolePatch,
   localhostCommand,
   localhostHealth,
   isHealthUrl,
@@ -43,11 +43,6 @@ function dependencyOrder(components: PlanComponent[]): PlanComponent[] {
   for (const component of components) visit(component);
   return result;
 }
-const ROLE_OF = {
-  local: "working",
-  live: "stable",
-  preview: "preview",
-} as const;
 /** Resolves portable Project policy into a materialized Target plan without reading files, the environment or ports.
  * The caller owns assigned port numbers (not live socket reservations), workspace/data roots, the actual Target name, and Branch/Commit identity;
  * `host` carries the operator home and convention-file root that env-file references are built from.
@@ -73,20 +68,35 @@ export function resolveTargetPlan(
         "Supply absolute workspace, Persistent storage, operator home and env roots from discovery or runtime composition.",
       );
   const config = parseProjectConfig(input.config),
-    role = ROLE_OF[input.target],
+    role = input.target,
     settings = patchedSettings(config, role);
   const deploymentName =
     input.deploymentName ??
-    (role === "preview"
-      ? slug(input.branch ?? "preview")
-      : targetNames(config)[role]);
+    (role === "preview" ? slug(input.branch ?? "preview") : role);
+  const patched = rolePatch(config, role).domain !== undefined;
   const domain =
-    role === "stable" || config.targets?.[role]?.domain
+    role === "stable" || patched
       ? settings.domain
       : role === "preview" && config.domain
-        ? `\${rig.target}.${config.domain}`
+        ? previewDomain(config.domain)
         : undefined;
   const resolvedDomain = domain?.replaceAll("${rig.target}", deploymentName);
+  const longLabel = resolvedDomain
+    ?.split(".")
+    .find((label) => label.length > MAX_LABEL_LENGTH);
+  if (longLabel !== undefined)
+    throw new ConfigError(
+      `Hostname '${resolvedDomain}' has a ${longLabel.length}-character label, '${longLabel}'; DNS allows ${MAX_LABEL_LENGTH}.`,
+      "hostname_label_too_long",
+      {
+        domain: resolvedDomain,
+        label: longLabel,
+        path: patched ? `targets.${role}.domain` : "domain",
+      },
+      role === "preview" && !patched
+        ? "A Preview's default hostname puts its name inside the first label of domain. Deploy from a shorter Branch name, give the Preview a shorter --deployment name, or set targets.preview.domain to a pattern such as ${rig.target}.preview.example.com."
+        : `Shorten that label in ${patched ? `targets.${role}.domain` : "domain"}, or deploy from a shorter Branch name when the label holds \${rig.target}.`,
+    );
   if (resolvedDomain !== undefined && !validHostname(resolvedDomain))
     throw new ConfigError(
       `Domain '${resolvedDomain}' is not a hostname.`,
@@ -314,6 +324,16 @@ function declaredPorts(
   return first === undefined ? {} : { port: first, ports: named };
 }
 
+/** The longest DNS label: a hostname part between two dots. */
+const MAX_LABEL_LENGTH = 63;
+/** A Preview's default hostname: the Project domain with a dash and the Preview name after its first label, so
+ * pantry.dev.example.com gives pantry-<preview>.dev.example.com: a sibling of the domain, not a subdomain of it. */
+export function previewDomain(domain: string): string {
+  const dot = domain.indexOf(".");
+  return dot === -1
+    ? `${domain}-\${rig.target}`
+    : `${domain.slice(0, dot)}-\${rig.target}${domain.slice(dot)}`;
+}
 /** A Branch as a hostname label, for a Preview the caller did not name. */
 function slug(branch: string): string {
   return (
@@ -352,7 +372,7 @@ function envFilePath(
     path = resolve(root, value),
     inside = relative(root, path);
   if (
-    input.target !== "local" &&
+    input.target !== "working" &&
     (inside === "" || inside.startsWith("..") || isAbsolute(inside))
   )
     throw new ConfigError(

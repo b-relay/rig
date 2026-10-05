@@ -2,11 +2,7 @@ import { z } from "zod";
 import { ConfigError } from "./errors";
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import { DEFAULT_RESTART_POLICY } from "./plan-defaults";
-import {
-  DEFAULT_TARGET_NAMES,
-  hostConfigSchema,
-  projectConfigSchema,
-} from "./schema";
+import { hostConfigSchema, projectConfigSchema } from "./schema";
 
 /** Where the committed schema files are served from; an editor fetches them by this address. */
 const SCHEMA_BASE =
@@ -32,8 +28,6 @@ const PLANNING_DEFAULTS: readonly (readonly [string[], string])[] = [
   [["services", "*", "ready_timeout"], "30s"],
   [["services", "*", "stop_timeout"], `${DEFAULT_STOP_TIMEOUT_SECONDS}s`],
   [["services", "*", "restart"], DEFAULT_RESTART_POLICY],
-  [["targets", "working", "name"], DEFAULT_TARGET_NAMES.working],
-  [["targets", "stable", "name"], DEFAULT_TARGET_NAMES.stable],
 ];
 
 /** The schema of the setting at a config path, where '*' stands for any key of a map. */

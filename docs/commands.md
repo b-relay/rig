@@ -15,7 +15,7 @@ rig
 │    --path <path>                  repository to initialize (default ".")
 │    --production-branch <branch>
 │    --create-git                   run git init when the directory is not a repository
-│    --domain <domain>              Stable Target domain; Previews get subdomains
+│    --domain <domain>              stable Target domain; Previews get <first label>-<name>
 │    --service <name>  --run <command>  --port <port>  --ready <check>
 │    --tool <name>     --bin <path>     --tool-build <command>
 │
@@ -28,14 +28,14 @@ rig
 │    --project <name>
 ├─ activity [operation]             the latest 100 actions, or one Operation by id
 │
-├─ deploy [target] [branch]         target: the Stable Target's name, or "preview"
+├─ deploy [target] [branch]         target: "stable" (default) or "preview"
 │    --project <name>
 │    --force                        redeploy the same Commit
 │    --no-up                        deploy without starting
 │    --deployment <name>            explicit Preview name
 │    --json
 │
-├─ up      [target] [branch]        target: a Target name, or "preview"
+├─ up      [target] [branch]        target: "working" (default), "stable" or "preview"
 ├─ restart [target] [branch]
 ├─ down    [target] [branch]
 │    --project <name>   --deployment <name>   --json
@@ -81,13 +81,17 @@ environment, and log directory.
 
 ## Behavior The Tree Does Not Show
 
-- Target names are `local` (Working copy) and `live` (Stable) unless `rig.yaml`
-  renames them. A Preview is always selected as `preview <branch>`.
-- `up`, `down`, `restart`, and `logs` without a Target show a picker in a
-  terminal and fail as `TARGET_REQUIRED` otherwise. `rig deploy` without a
-  Target prints help. `rig status` takes no Target.
-- `deploy` defaults `[branch]` to the Production branch for the Stable Target
-  and to the current Branch for `preview`. The Stable Target accepts only the
+- Target names are fixed: `working`, `stable`, and `preview <branch>` (or
+  `preview --deployment <name>`) for a Preview.
+- `up`, `down`, `restart`, and `logs` without a Target act on `working`;
+  `deploy` without one deploys `stable`. A Preview is never a default. `rig
+status` takes no Target.
+- A Target must be on in `rig.yaml` (`targets.<name>: true` or a settings map;
+  without a `targets` key only `working` is on). `up`, `restart`, `deploy`, and
+  `logs` of a never-run Target refuse an off one with `TARGET_OFF`; `down`,
+  `logs` and `status` still reach one that is off but recorded.
+- `deploy` defaults `[branch]` to the Production branch for the stable Target
+  and to the current Branch for `preview`. The stable Target accepts only the
   Production branch; `preview` refuses it.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
@@ -103,8 +107,9 @@ environment, and log directory.
   the Host `logs` settings (see the guide's Logs section).
 - `init` writes one Service (`--service` with `--run`) or one Tool (`--tool`
   with `--bin`). A Tool's `bin` is the executable's path inside the
-  repository; Rig copies it into `<RIG_ROOT>/bin` as `<tool>` for the Stable
-  Target and `<tool>-<target name>` for the others, so it must be
+  repository; Rig copies it into `<RIG_ROOT>/bin` as `<tool>` for the stable
+  Target, `<tool>-dev` for the working Target and `<tool>-<preview name>` for a
+  Preview, so it must be
   self-contained or name its checkout itself (`dirname "$0"` is
   `<RIG_ROOT>/bin`). A source file (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
   `.cjs`) is published instead as a shim that runs it in place with the bun

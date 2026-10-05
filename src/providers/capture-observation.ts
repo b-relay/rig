@@ -112,7 +112,7 @@ export async function survivingApplication(request: {
     if (running)
       return {
         state: "unknown",
-        reason: `The application (pid ${pid}, or its process group) is still running without its capture wrapper, so Rig neither stops it nor starts another. End that process group, then run rig up.`,
+        reason: `The application (pid ${pid}, or its process group) is still running without its capture wrapper, so Rig neither stops it nor starts another. End that process group, then run up for this Target.`,
       };
   }
   return undefined;

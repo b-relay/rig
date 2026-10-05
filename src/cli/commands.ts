@@ -220,11 +220,11 @@ function addLifecycleCommands(
     const child = command
       .command(action)
       .description(
-        `${action === "up" ? "Start" : action === "down" ? "Stop" : "Restart"} a recorded Target.`,
+        `${action === "up" ? "Start" : action === "down" ? "Stop" : "Restart"} a Target: working unless you name stable or a preview.`,
       )
       .argument(
         "[target]",
-        "Target name (local and live unless rig.yaml renames them) or preview",
+        "working (the default), stable, or preview with a Branch",
       )
       .argument("[branch]", "Preview Branch or name", nonEmpty)
       .option("--project <name>", "Registered Project identity")
@@ -272,14 +272,13 @@ function addDeployCommands(
 ): void {
   const deploy = command
     .command("deploy")
-    .description("Deploy a Branch to the Stable Target or a Preview.")
-    .argument(
-      "[target]",
-      "The Stable Target's name (live unless rig.yaml renames it) or preview",
+    .description(
+      "Deploy a Branch to the stable Target (the default) or a Preview.",
     )
+    .argument("[target]", "stable (the default), or preview")
     .argument(
       "[branch]",
-      "Source Branch (defaults to Production for the Stable Target, current Branch for preview)",
+      "Source Branch (defaults to Production for stable, the current Branch for preview)",
       nonEmpty,
     )
     .option("--project <name>", "Registered Project identity")
@@ -296,7 +295,7 @@ function addDeployCommands(
       branch: string | undefined,
       options: ScopeOptions & { force?: boolean; up?: boolean },
     ) => {
-      if (target === undefined || target === "help") deploy.help();
+      if (target === "help") deploy.help();
       if (options.deployment && target !== PREVIEW_SELECTOR)
         throw new RigError(
           "USAGE",
@@ -307,7 +306,8 @@ function addDeployCommands(
         {
           action: "deploy",
           repoPath: cwd,
-          target,
+          // In a checkout a deploy means the stable Target unless it names a Preview.
+          target: target ?? "stable",
           ...projectScope(options),
           ...(branch ? { branch } : {}),
           ...(options.force ? { force: true } : {}),
@@ -347,7 +347,7 @@ function addInitCommand(
     .option("--path <path>", "Repository to initialize", nonEmpty, ".")
     .option(
       "--production-branch <branch>",
-      "Production Branch for the Stable Target",
+      "Production Branch for the stable Target",
       nonEmpty,
     )
     .option(
@@ -356,7 +356,7 @@ function addInitCommand(
     )
     .option(
       "--domain <domain>",
-      "Domain the Stable Target serves; Previews get subdomains under it",
+      "Domain the stable Target serves; a Preview gets <first label>-<preview name> in place of its first label",
       nonEmpty,
     )
     .option("--service <name>", "Service name", nonEmpty)
@@ -442,10 +442,16 @@ function targetRequest(
     if (branch || options.deployment)
       throw new RigError(
         "USAGE",
-        "A Target is required.",
-        "Pass a Target name or preview.",
+        "A Preview is selected with preview.",
+        `Use rig ${action} preview <branch> or rig ${action} preview --deployment <name>.`,
       );
-    return { action, repoPath: cwd, ...projectScope(options) };
+    // In a checkout the working Target is the one these commands mean unless another is named.
+    return {
+      action,
+      repoPath: cwd,
+      target: "working",
+      ...projectScope(options),
+    };
   }
   if (
     (target === PREVIEW_SELECTOR && !branch && !options.deployment) ||
@@ -453,7 +459,7 @@ function targetRequest(
   )
     throw new RigError(
       "USAGE",
-      "Choose a Target name or preview <branch>.",
+      "Choose working, stable, or preview <branch>.",
       `Run rig ${action} --help.`,
     );
   // A Branch and --deployment can name different Previews; acting on one while the user typed the other is never safe.

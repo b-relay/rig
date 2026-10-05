@@ -5,8 +5,8 @@ import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import type { TargetRecord } from "../src/domain/runtime";
 const target = {
   id: "t",
-  name: "live",
-  kind: "live",
+  name: "stable",
+  kind: "stable",
   branch: "main",
   commit: "abc",
   plan: {
@@ -46,7 +46,7 @@ test("fresh status distinguishes failed health from running without health and r
     timerObservationDeadline,
   );
   expect(result[0]).toMatchObject({
-    name: "live",
+    name: "stable",
     state: "unhealthy",
     branch: "main",
     commit: "abc",

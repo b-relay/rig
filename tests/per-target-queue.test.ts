@@ -89,7 +89,11 @@ async function fixture(host: Record<string, unknown> = {}) {
         },
       },
       proxy: { "/": "${services.web.ports.http}" },
-      targets: { working: { domain: `${name}.test` } },
+      targets: {
+        working: { domain: `${name}.test` },
+        stable: true,
+        preview: true,
+      },
     });
   // A Project's repository is <root>/<name>; a deployed revision lives below it.
   const projectAt = (path: string) =>
@@ -317,7 +321,9 @@ async function fixture(host: Record<string, unknown> = {}) {
   async function working(project: string): Promise<TargetRecord> {
     const state = await store.read();
     const id = state.projects.find((p) => p.name === project)!.id;
-    return state.targets.find((t) => t.projectId === id && t.kind === "local")!;
+    return state.targets.find(
+      (t) => t.projectId === id && t.kind === "working",
+    )!;
   }
 }
 
@@ -332,7 +338,7 @@ test("while one Project's down waits for its Service to exit, other Projects sta
     project: "alpha",
     operationId: "alpha-down",
   });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
 
   // Another Project's explicit lifecycle does not queue behind the stop.
   expect(
@@ -355,7 +361,10 @@ test("while one Project's down waits for its Service to exit, other Projects sta
 
   // The stopping Target says so, and the stop is still in progress.
   const status = await f.runtime.status({ project: "alpha" });
-  expect(status.targets[0]).toMatchObject({ name: "local", state: "stopping" });
+  expect(status.targets[0]).toMatchObject({
+    name: "working",
+    state: "stopping",
+  });
   expect(
     await f.runtime.command({ action: "queue", operation: "alpha-down" }),
   ).toMatchObject({ operation: { state: "running", phase: "stopping" } });
@@ -378,7 +387,7 @@ test("a second operation on a stopping Target waits for it, says what it waits f
     project: "alpha",
     operationId: "alpha-down",
   });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
   const up = f.runtime.command({
     action: "up",
     project: "alpha",
@@ -398,7 +407,7 @@ test("a second operation on a stopping Target waits for it, says what it waits f
           operationId: "alpha-down",
           action: "down",
           project: "alpha",
-          target: "local",
+          target: "working",
           phase: "stopping",
         },
       ],
@@ -407,15 +416,15 @@ test("a second operation on a stopping Target waits for it, says what it waits f
   });
   // What rig prints for it.
   expect(waitNotice(queue, new Date())).toStartWith(
-    "Waiting: alpha local is stopping (operation alpha-down, started ",
+    "Waiting: alpha working is stopping (operation alpha-down, started ",
   );
   release();
   await down;
   expect(await up).toMatchObject({ outcome: "started" });
   expect(f.events.slice(-3)).toEqual([
-    "stop alpha local",
-    "stopped alpha local",
-    "up alpha local",
+    "stop alpha working",
+    "stopped alpha working",
+    "up alpha working",
   ]);
 });
 
@@ -425,7 +434,7 @@ test("Previews of one Project deploy side by side, and a Target of it that is st
   await f.runtime.command({ action: "up", project: "alpha" });
   const release = f.holdStop("alpha");
   const down = f.runtime.command({ action: "down", project: "alpha" });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
   const releaseCheckout = f.holdCheckout("feature-a");
   const first = f.runtime.command({
     action: "deploy",
@@ -604,7 +613,7 @@ test("a slow automatic restart hands its Target over to its lease; the pass retu
         {
           action: "supervise",
           project: "alpha",
-          target: "local",
+          target: "working",
           phase: "starting",
         },
       ],
@@ -636,7 +645,7 @@ test("reconcile at daemon start stops Targets side by side, ahead of commands fo
     project: "alpha",
     operationId: "alpha-up",
   });
-  await until(() => f.events.includes("stopped beta local"));
+  await until(() => f.events.includes("stopped beta working"));
   await waiting(restarted, "alpha-up");
   // beta's reconcile is done, so beta is free while alpha is still stopping.
   expect(
@@ -649,7 +658,9 @@ test("reconcile at daemon start stops Targets side by side, ahead of commands fo
   ).toMatchObject({
     operation: {
       state: "waiting",
-      waitingOn: [{ action: "reconcile", target: "local", phase: "stopping" }],
+      waitingOn: [
+        { action: "reconcile", target: "working", phase: "stopping" },
+      ],
     },
   });
   release();
@@ -662,7 +673,7 @@ test("a drain waits for the running stop and refuses the command queued behind i
   await f.runtime.command({ action: "up", project: "alpha" });
   const release = f.holdStop("alpha");
   const down = f.runtime.command({ action: "down", project: "alpha" });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
   const up = f.runtime.command({ action: "up", project: "alpha" });
   const drained = f.runtime.drain();
   expect(await settled(drained)).toBe(false);
@@ -678,7 +689,7 @@ test("a config edit never waits for a Target's stop, only for another edit of th
   await f.runtime.command({ action: "up", project: "alpha" });
   const release = f.holdStop("alpha");
   const down = f.runtime.command({ action: "down", project: "alpha" });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
   expect(await f.runtime.exclusive("alpha", async () => "edited")).toBe(
     "edited",
   );
@@ -705,7 +716,7 @@ test("init of a registered Project never waits for a Target's stop, nor holds th
   await f.runtime.command({ action: "up", project: "alpha" });
   const release = f.holdStop("alpha");
   const down = f.runtime.command({ action: "down", project: "alpha" });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
   const init = f.runtime.command({
     action: "init",
     repoPath: join(f.root, "alpha"),
@@ -729,7 +740,7 @@ test("an up that waited behind a stop plans from rig.yaml as it is once admitted
   await f.runtime.command({ action: "up", project: "alpha" });
   const release = f.holdStop("alpha");
   const down = f.runtime.command({ action: "down", project: "alpha" });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
   const up = f.runtime.command({
     action: "up",
     project: "alpha",
@@ -776,7 +787,7 @@ test("a registration change or uninstall refuses at once while a plain down is w
   const release = f.holdStop("alpha");
   // down records the Target stopped before it waits, so only the running operation shows it is busy.
   const down = f.runtime.command({ action: "down", project: "alpha" });
-  await until(() => f.events.includes("stop alpha local"));
+  await until(() => f.events.includes("stop alpha working"));
   for (const command of [
     { action: "forget", project: "alpha" },
     { action: "repoint", project: "alpha", newPath: join(f.root, "alpha") },

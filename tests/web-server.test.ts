@@ -10,7 +10,14 @@ import {
   trustedClient,
 } from "../web/server/guard";
 import { sandboxDaemon } from "../web/server/sandbox";
-import { downCommands, seedSandbox, seedSteps } from "../web/server/seed";
+import { join } from "node:path";
+import {
+  DEMO_PROJECTS,
+  downCommands,
+  seedSandbox,
+  seedSteps,
+} from "../web/server/seed";
+import { readProjectConfig, targetOn } from "../src/config";
 
 const policy = accessPolicy({
   publicHost: "rig.b-relay.com",
@@ -234,7 +241,7 @@ test("a demo Project is committed, registered, then deployed", () => {
   });
   expect(steps.filter((step) => step.kind === "rig")).toEqual([
     { kind: "rig", args: ["init", "--path", "/data/pantry"] },
-    { kind: "rig", args: ["deploy", "live", "--project", "pantry"] },
+    { kind: "rig", args: ["deploy", "stable", "--project", "pantry"] },
     {
       kind: "rig",
       args: ["deploy", "preview", "feat/x", "--project", "pantry"],
@@ -249,6 +256,19 @@ test("a demo Project is committed, registered, then deployed", () => {
     kind: "rig",
     args: ["init", "--path", "/data/quill"],
   });
+});
+
+test("every demo Project's rig.yaml turns on each Target its seed deploys", async () => {
+  for (const project of DEMO_PROJECTS) {
+    const { config } = await readProjectConfig(
+      join(import.meta.dir, "..", "web", "demo", project.name),
+    );
+    expect(targetOn(config, "stable")).toBe(project.deployStable);
+    expect(targetOn(config, "preview")).toBe(
+      project.previewBranch !== undefined,
+    );
+    expect(targetOn(config, "working")).toBe(true);
+  }
 });
 
 test("seeding skips Projects already present and reports a failure without stopping the rest", async () => {
@@ -274,16 +294,17 @@ test("seeding skips Projects already present and reports a failure without stopp
   expect(ran).toEqual(["init --path /data/fine"]);
 });
 
-test("shutdown stops every started Target, naming a Preview by its deployment", () => {
+test("shutdown stops every started Target, naming a Preview by its deployment and the others by their role", () => {
   expect(
     downCommands("pantry", [
-      { name: "live", kind: "live", state: "healthy" },
+      // Selected by its role, whatever name the report carries.
+      { name: "live", kind: "stable", state: "healthy" },
       { name: "feat-x-0a1b2c3d", kind: "preview", state: "degraded" },
-      { name: "local", kind: "local", state: "configured" },
+      { name: "working", kind: "working", state: "configured" },
       { name: "old", kind: "preview", state: "stopped" },
     ]),
   ).toEqual([
-    { action: "down", project: "pantry", target: "live" },
+    { action: "down", project: "pantry", target: "stable" },
     {
       action: "down",
       project: "pantry",

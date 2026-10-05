@@ -75,7 +75,7 @@ test("every default the schema shows is the value planning applies when the sett
         services: { web: { run: "serve", build: "make web" } },
         tools: { report: { bin: "bin/report", build: "make report" } },
       },
-      target: "live",
+      target: "stable",
       workspacePath: "/work",
       dataRoot: "/data",
     },
@@ -98,14 +98,16 @@ test("every default the schema shows is the value planning applies when the sett
     readyTimeout: seconds(service.properties.ready_timeout.default),
     restart: service.properties.restart.default,
   });
-  const names = project.properties.targets.properties;
-  expect(names.stable.properties.name.default).toBe(plan.deploymentName);
-  expect(names.working.properties.name.default).toBe("local");
+  // A Target switch is true, false or a settings map; the map is the second shape.
+  const patch = (role: "working" | "stable" | "preview") =>
+    project.properties.targets.properties[role].anyOf[1];
+  // The stable Target is named by its role, never by a setting.
+  expect(plan.deploymentName).toBe("stable");
   // Settings that inherit from another setting have no fixed default to show.
   expect(service.properties.build_timeout.default).toBeUndefined();
   expect(tool.properties.build_timeout.default).toBeUndefined();
   expect(
-    names.working.properties.services.additionalProperties.properties.restart
+    patch("working").properties.services.additionalProperties.properties.restart
       .default,
   ).toBeUndefined();
 });
@@ -133,7 +135,7 @@ test("each field that takes references lists the references valid there", () => 
     project.properties.env_file,
     tool.properties.build,
     tool.properties.bin,
-    project.properties.targets.properties.preview.properties.build,
+    project.properties.targets.properties.preview.anyOf[1].properties.build,
   ];
   for (const field of [...inService, ...inProject])
     for (const reference of shared)
@@ -145,7 +147,7 @@ test("each field that takes references lists the references valid there", () => 
     expect(field.description).not.toMatch(/, \$\{rig\.data\}/);
   for (const domain of [
     project.properties.domain,
-    project.properties.targets.properties.preview.properties.domain,
+    project.properties.targets.properties.preview.anyOf[1].properties.domain,
   ]) {
     expect(domain.description).toContain("${rig.target} is the only reference");
     expect(domain.description).not.toContain("${rig.url}");

@@ -42,7 +42,7 @@ async function fixture() {
   roots.push(logRoot);
   return {
     id: "target-1",
-    name: "live",
+    name: "stable",
     logRoot,
     plan: { project: "app", components: [] },
   } as unknown as TargetRecord;
@@ -250,7 +250,7 @@ test("public follow reports reader truncation failure and preserves retained byt
   let errors = "",
     polls = 0;
   expect(
-    await runRigCli(["logs", "live", "--follow"], {
+    await runRigCli(["logs", "stable", "--follow"], {
       root: target.logRoot,
       cwd: target.logRoot,
       wait: async () => {
@@ -744,7 +744,7 @@ async function rigLogs(
   });
   return { code, out, err, requests };
 }
-test("rig logs local --service scheduler --since 1h prints only that Service's last hour, reaching into the rotated generation", async () => {
+test("rig logs working --service scheduler --since 1h prints only that Service's last hour, reaching into the rotated generation", async () => {
   const target = await fixture(),
     path = join(target.logRoot, "target.jsonl");
   await writeFile(
@@ -761,13 +761,13 @@ test("rig logs local --service scheduler --since 1h prints only that Service's l
   );
   const result = await rigLogs(
     target,
-    ["local", "--service", "scheduler", "--since", "1h"],
+    ["working", "--service", "scheduler", "--since", "1h"],
     { now: new Date("2026-09-28T12:00:00Z") },
   );
   expect(result.err).toBe("");
   expect(result.code).toBe(0);
   expect(result.out).toBe(
-    "app local\n\n" +
+    "app working\n\n" +
       "11:05:00Z  scheduler  > rotated tick\n" +
       "11:45:00Z  scheduler  ! current tick\n",
   );
@@ -782,7 +782,7 @@ test("rig logs --follow keeps to --service and --stream", async () => {
   );
   const result = await rigLogs(
     target,
-    ["local", "--follow", "--service", "scheduler", "--stream", "stdout"],
+    ["working", "--follow", "--service", "scheduler", "--stream", "stdout"],
     {
       wait: async (poll) => {
         if (poll === 1)
@@ -803,7 +803,7 @@ test("rig logs --follow keeps to --service and --stream", async () => {
   expect(result.err).toBe("");
   expect(result.code).toBe(0);
   expect(result.out).toBe(
-    "app local\n\n" +
+    "app working\n\n" +
       "11:00:00Z  scheduler  > history\n" +
       "11:01:01Z  scheduler  > scheduler new\n",
   );

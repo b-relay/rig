@@ -10,7 +10,5 @@ tools:
     bin: .rig-build/report
 
 targets:
-  working:
-    name: local
-  stable:
-    name: live
+  working: true
+  stable: true

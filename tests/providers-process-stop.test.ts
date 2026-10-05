@@ -284,7 +284,7 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
   });
   try {
     const started = await supervisor.ensureRunning({
-      key: "live",
+      key: "stable",
       componentName: "web",
       command: [process.execPath, "-e", "setTimeout(()=>process.exit(9), 150)"],
       cwd: root,
@@ -294,17 +294,17 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
     });
     probes.length = 0;
     commands.length = 0;
-    expect(await supervisor.observe("live")).toEqual({
+    expect(await supervisor.observe("stable")).toEqual({
       state: "running",
       pid: started.pid!,
       incarnation: "start-1",
     });
     expect(probes).toEqual([]);
     expect(commands).toEqual([]);
-    let observation = await supervisor.observe("live");
+    let observation = await supervisor.observe("stable");
     for (let i = 0; observation.state === "running" && i < 500; i++) {
       await Bun.sleep(1);
-      observation = await supervisor.observe("live");
+      observation = await supervisor.observe("stable");
     }
     expect(observation).toEqual({
       state: "stopped",
@@ -312,7 +312,7 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
       incarnation: "start-1",
     });
   } finally {
-    await supervisor.stop("live", { graceMs: 0 });
+    await supervisor.stop("stable", { graceMs: 0 });
     await supervisor.shutdown();
   }
 });

@@ -39,7 +39,7 @@ export const commandSchema = z
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
     repoPath: absolutePath.optional(),
-    /** `preview`, or the name the Project gives its Working copy or Stable Target. */
+    /** `working`, `stable` or `preview`; the daemon reads none as `working`. */
     target: z.string().min(1).max(63).optional(),
     branch: z.string().optional(),
     commit: z.string().optional(),

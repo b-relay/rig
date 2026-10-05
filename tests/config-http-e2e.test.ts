@@ -181,7 +181,7 @@ test("real config HTTP rejects unauthorized, cross-origin, identity and unknown-
   }
 }, 20000);
 
-test("the single-Service example initializes with working/stable role keys, and a Target name and a Target's Service setting are edited through them", async () => {
+test("the single-Service example initializes with its Target switches, and a Target is switched off and a Target's Service setting edited through them", async () => {
   const f = await rigFixture(),
     path = join(f.repo, "rig.yaml"),
     http = configHttp(f.root);
@@ -196,13 +196,17 @@ test("the single-Service example initializes with working/stable role keys, and 
     expect(source.raw).toBe(original);
     expect(source.config).toMatchObject({
       name: "notes",
-      targets: { working: { name: "local" }, stable: { name: "live" } },
+      targets: {
+        working: { services: { api: { env: { LOG_LEVEL: "debug" } } } },
+        stable: true,
+        preview: true,
+      },
     });
     const request = {
       project: "notes",
       expectedRevision: source.revision,
       patch: [
-        { op: "set", path: ["targets", "working", "name"], value: "dev" },
+        { op: "set", path: ["targets", "stable"], value: false },
         {
           op: "set",
           path: ["targets", "working", "services", "api", "env", "LOG_LEVEL"],
@@ -216,7 +220,7 @@ test("the single-Service example initializes with working/stable role keys, and 
     // The YAML editor keeps comments, order and scalars; it pads the braces of inline maps it re-emits.
     expect(preview.raw).toBe(
       original
-        .replace("name: local", "name: dev")
+        .replace("stable: true", "stable: false")
         .replace("LOG_LEVEL: debug", "LOG_LEVEL: trace")
         .replace(/(?<!\$)\{(\w[^{}]*)\}/g, "{ $1 }"),
     );

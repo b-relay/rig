@@ -24,13 +24,13 @@ test("a deploy outcome names the Branch and Commits so a wrong Project is visibl
   expect(
     renderResult("deploy", {
       project: "share",
-      target: "live",
+      target: "stable",
       outcome: "deployed",
       branch: "main",
       commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
       previousCommit: "83496f8dafde3909a7a7121ef496aeae4dacd2ef",
     }),
-  ).toBe("share live deployed main@470a510 (was 83496f8)\n");
+  ).toBe("share stable deployed main@470a510 (was 83496f8)\n");
   expect(
     renderResult("deploy", {
       project: "share",
@@ -43,10 +43,10 @@ test("a deploy outcome names the Branch and Commits so a wrong Project is visibl
   expect(
     renderResult("up", {
       project: "share",
-      target: "live",
+      target: "stable",
       outcome: "started",
       branch: "main",
       commit: "1234567890",
     }),
-  ).toBe("share live started\n");
+  ).toBe("share stable started\n");
 });

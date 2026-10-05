@@ -607,7 +607,7 @@ test("a deleted log directory is recreated on the next line; output that cannot 
   roots.push(root);
   const supervisor = createChildSupervisor({ ...platform(), stateRoot: root });
   supervisors.push(supervisor);
-  const logRoot = join(root, "logs", "live");
+  const logRoot = join(root, "logs", "stable");
   await mkdir(logRoot, { recursive: true });
   const request = {
     key: "target/web",

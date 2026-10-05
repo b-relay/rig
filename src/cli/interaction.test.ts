@@ -3,7 +3,6 @@ import { prepareInteractiveRequest } from "./interaction";
 import type { CliDependencies } from "./types";
 function fixture() {
   const requests: unknown[] = [];
-  const choices: unknown[] = [];
   const prompts: string[] = [];
   const deps: CliDependencies = {
     root: "/isolated",
@@ -15,12 +14,17 @@ function fixture() {
           project: "demo",
           targets: [
             {
-              name: "local",
-              kind: "local",
+              name: "working",
+              kind: "working",
               state: "configured",
               components: [],
             },
-            { name: "live", kind: "live", state: "stopped", components: [] },
+            {
+              name: "stable",
+              kind: "stable",
+              state: "stopped",
+              components: [],
+            },
             {
               name: "old-preview",
               kind: "preview",
@@ -45,14 +49,13 @@ function fixture() {
             project: "demo",
             repoPath: "/repo",
             productionBranch: "main",
-            targets: { working: "local", stable: "live" },
-            selected: request.target === "live" ? "stable" : "preview",
+            selected: request.target === "stable" ? "stable" : "preview",
             currentBranch: "feature",
           };
         return {
           targets: [
-            { name: "local", kind: "local", state: "configured" },
-            { name: "live", kind: "live", state: "stopped" },
+            { name: "working", kind: "working", state: "configured" },
+            { name: "stable", kind: "stable", state: "stopped" },
             { name: "old-preview", kind: "preview", state: "stopped" },
           ],
         };
@@ -67,10 +70,6 @@ function fixture() {
     wait: async () => {},
     newOperationId: () => "op",
     interaction: {
-      async select(_message, options) {
-        choices.push(options);
-        return "old-preview";
-      },
       async text(message, defaultValue) {
         prompts.push(message);
         return defaultValue;
@@ -80,21 +79,14 @@ function fixture() {
       },
     },
   };
-  return { deps, requests, choices, prompts };
+  return { deps, requests, prompts };
 }
-test("missing Target prompts among observed configured and stopped Targets, never creates a Preview", async () => {
-  const { deps, choices } = fixture();
-  expect(
-    await prepareInteractiveRequest({ action: "up", repoPath: "/repo" }, deps),
-  ).toMatchObject({ target: "preview", deployment: "old-preview" });
-  expect(choices[0]).toHaveLength(3);
-});
-test("noninteractive lifecycle requires an explicit Target without reading state", async () => {
+test("a lifecycle request is never given a Target here: the grammar defaults it, and nothing is read", async () => {
   const { deps, requests } = fixture();
-  delete deps.interaction;
-  await expect(
-    prepareInteractiveRequest({ action: "down" }, deps),
-  ).rejects.toMatchObject({ code: "TARGET_REQUIRED" });
+  for (const action of ["up", "down", "restart", "logs"] as const)
+    expect(
+      await prepareInteractiveRequest({ action, target: "working" }, deps),
+    ).toEqual({ action, target: "working" });
   expect(requests).toHaveLength(0);
 });
 test("init presents identity and the default Production branch, naming a differing checkout, and Git creation requires affirmative choice", async () => {
@@ -121,49 +113,45 @@ test("init presents identity and the default Production branch, naming a differi
 test("implicit Production deployment requires explicit branch noninteractively on mismatch and confirmation in TTY", async () => {
   const { deps } = fixture();
   expect(
-    await prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+    await prepareInteractiveRequest(
+      { action: "deploy", target: "stable" },
+      deps,
+    ),
   ).toMatchObject({ branch: "main" });
   delete deps.interaction;
   await expect(
-    prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+    prepareInteractiveRequest({ action: "deploy", target: "stable" }, deps),
   ).rejects.toMatchObject({ code: "PRODUCTION_CONFIRMATION" });
   expect(
     await prepareInteractiveRequest(
-      { action: "deploy", target: "live", branch: "main" },
+      { action: "deploy", target: "stable", branch: "main" },
       deps,
     ),
   ).toMatchObject({ branch: "main" });
 });
 
-test("Production confirmation follows the role rigd says the selector means, whatever the Stable Target is named", async () => {
+test("Production confirmation follows the role rigd says the selector means", async () => {
   const { deps } = fixture();
   const asked: unknown[] = [];
-  // rigd resolves both the configured name and a name the Stable Target is still recorded under.
   deps.client.command = async (command) => {
     asked.push(command);
     return {
       project: "demo",
       repoPath: "/repo",
       productionBranch: "main",
-      targets: { working: "dev", stable: "production" },
       selected: "stable",
       currentBranch: "feature",
     };
   };
   delete deps.interaction;
-  for (const target of ["production", "live"])
-    await expect(
-      prepareInteractiveRequest({ action: "deploy", target }, deps),
-    ).rejects.toMatchObject({
-      code: "PRODUCTION_CONFIRMATION",
-      hint: "Pass the Production Branch explicitly: rig deploy production main.",
-    });
+  await expect(
+    prepareInteractiveRequest({ action: "deploy", target: "stable" }, deps),
+  ).rejects.toMatchObject({
+    code: "PRODUCTION_CONFIRMATION",
+    hint: "Pass the Production Branch explicitly: rig deploy stable main.",
+  });
   expect(asked).toEqual([
-    expect.objectContaining({
-      action: "deployment-context",
-      target: "production",
-    }),
-    expect.objectContaining({ action: "deployment-context", target: "live" }),
+    expect.objectContaining({ action: "deployment-context", target: "stable" }),
   ]);
 });
 
@@ -173,11 +161,11 @@ test("a deployment context that does not say which Target was selected is a prot
     project: "demo",
     repoPath: "/repo",
     productionBranch: "main",
-    targets: { working: "local", stable: "live" },
+    targets: { working: "working", stable: "stable" },
     currentBranch: "feature",
   });
   await expect(
-    prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+    prepareInteractiveRequest({ action: "deploy", target: "stable" }, deps),
   ).rejects.toMatchObject({ code: "DAEMON_PROTOCOL" });
 });
 
@@ -185,7 +173,7 @@ test("interactive read protocol errors are safe structured daemon failures", asy
   const { deps } = fixture();
   deps.client.command = async () => ({ unexpected: "secret-value" });
   await expect(
-    prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+    prepareInteractiveRequest({ action: "deploy", target: "stable" }, deps),
   ).rejects.toMatchObject({ code: "DAEMON_PROTOCOL" });
 });
 
@@ -199,13 +187,12 @@ test("cancellation while a context query is pending prevents a deploy request fr
       project: "demo",
       repoPath: "/repo",
       productionBranch: "main",
-      targets: { working: "local", stable: "live" },
       selected: "stable",
       currentBranch: "main",
     };
   };
   await expect(
-    prepareInteractiveRequest({ action: "deploy", target: "live" }, deps),
+    prepareInteractiveRequest({ action: "deploy", target: "stable" }, deps),
   ).rejects.toMatchObject({ code: "CANCELLED" });
 });
 test("every deploy names the resolved Project, directory, Target, and Branch before the daemon acts", async () => {
@@ -215,7 +202,7 @@ test("every deploy names the resolved Project, directory, Target, and Branch bef
   await prepareInteractiveRequest(
     {
       action: "deploy",
-      target: "live",
+      target: "stable",
       branch: "main",
       repoPath: "/elsewhere",
     },
@@ -225,7 +212,7 @@ test("every deploy names the resolved Project, directory, Target, and Branch bef
     action: "deployment-context",
     repoPath: "/elsewhere",
   });
-  expect(lines).toEqual(["Deploying demo (/repo) to live from main.\n"]);
+  expect(lines).toEqual(["Deploying demo (/repo) to stable from main.\n"]);
   lines.length = 0;
   await prepareInteractiveRequest(
     { action: "deploy", target: "preview", repoPath: "/repo" },

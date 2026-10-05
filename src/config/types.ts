@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { hostConfigSchema, ProjectConfig } from "./schema";
+import type { hostConfigSchema, ProjectConfig, TargetRole } from "./schema";
 import type { PublicInput } from "./references";
 
 export type { ProjectConfig } from "./schema";
@@ -53,6 +53,9 @@ export interface InstalledComponent extends ComponentContext {
   kind: "installed";
   entrypoint: string;
   installName?: string;
+  /** The file name under <RIG_ROOT>/bin a working Target recorded before Target names were fixed published this Tool as,
+   * such as pantry-local; absent when the name follows the Target. Planning the Target again retires that file. */
+  publishedAs?: string;
 }
 export interface PersistentComponent extends ComponentContext {
   kind: "persistent";
@@ -79,7 +82,7 @@ export type PreparedComponent =
   | { name: string; uses: "postgres"; dataDir: string };
 export interface TargetPlan {
   project: string;
-  target: "local" | "live" | "preview";
+  target: TargetRole;
   workspacePath: string;
   dataRoot: string;
   deploymentName: string;
@@ -112,7 +115,7 @@ export interface ResolveHost {
 /** Roots are caller-acquired strings; resolveTargetPlan validates absolute identity before calculation. */
 export interface ResolveTargetPlanInput {
   config: ProjectConfig;
-  target: "local" | "live" | "preview";
+  target: TargetRole;
   workspacePath: string;
   dataRoot: string;
   branch?: string;

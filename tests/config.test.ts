@@ -15,7 +15,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 import {
-  DEFAULT_TARGET_NAMES,
   discoverProject,
   editProjectConfig,
   initializeProjectConfig,
@@ -27,7 +26,8 @@ import {
   readProjectConfigSource,
   resolveTargetPlan as resolvePlanWithHost,
   scaffoldProjectConfig,
-  targetNames,
+  targetOn,
+  TARGET_ROLES,
 } from "../src/config/index.js";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 /** The operator's optional convention files for one scope, in precedence order. */
@@ -193,10 +193,7 @@ test("Host config reads config.yaml and defaults when absent", async () => {
 test("scaffold writes a Service, a Tool, or both, and refuses a Project with neither", () => {
   const service = { name: "web", run: "serve --host localhost", port: 3210 };
   const tool = { name: "ctl", bin: "bin/ctl", build: "make ctl" };
-  const names = {
-    working: { name: "local" },
-    stable: { name: "live" },
-  };
+  const names = { working: true, stable: false, preview: false };
   expect(
     scaffoldProjectConfig({
       name: "app",
@@ -284,14 +281,14 @@ test("Project init writes the scaffold as YAML once and leaves an existing docum
   expect(await readFile(document.path, "utf8")).toBe(raw);
 });
 
-test("a scaffolded domain gives the Stable Target the hostname, every Preview its own, and the Working copy none", () => {
+test("a scaffolded domain gives the stable Target the hostname, every Preview a flat one beside it, and the working Target none", () => {
   const config = scaffoldProjectConfig({
     name: "app",
     domain: "app.test",
     service: { name: "web", run: "serve", port: 3000 },
   });
   const plan = (
-    target: "local" | "live" | "preview",
+    target: "working" | "stable" | "preview",
     deploymentName?: string,
   ) =>
     resolveTargetPlan({
@@ -301,14 +298,14 @@ test("a scaffolded domain gives the Stable Target the hostname, every Preview it
       assignedPorts: { web: 4100 },
       ...(deploymentName ? { deploymentName } : {}),
     });
-  expect(plan("local").domain).toBeUndefined();
-  expect(plan("local").proxy).toBeUndefined();
-  expect(plan("live")).toMatchObject({
+  expect(plan("working").domain).toBeUndefined();
+  expect(plan("working").proxy).toBeUndefined();
+  expect(plan("stable")).toMatchObject({
     domain: "app.test",
     proxy: { upstream: "web" },
   });
   expect(plan("preview", "feature-x-0a1b2c3d").domain).toBe(
-    "feature-x-0a1b2c3d.app.test",
+    "app-feature-x-0a1b2c3d.test",
   );
 });
 
@@ -336,7 +333,7 @@ test("a rig-recipe comment left by an older Rig is only a comment: the config re
   expect(Object.keys(before.config.services ?? {})).toEqual(["db", "web"]);
   const plan = resolveTargetPlan({
     config: before.config,
-    target: "local",
+    target: "working",
     ...roots_,
     assignedPorts: { db: 5544 },
   });
@@ -562,7 +559,7 @@ test("a Project needs a Service or a Tool; a Tool-only Project needs no Service,
     name: "report",
     tools: { report: { bin: ".rig-build/report", build: "make" } },
   });
-  const plan = resolveTargetPlan({ config, target: "live", ...roots_ });
+  const plan = resolveTargetPlan({ config, target: "stable", ...roots_ });
   expect(plan.domain).toBeUndefined();
   expect(plan.proxy).toBeUndefined();
   expect(plan.components).toEqual([
@@ -591,89 +588,83 @@ test("a Tool may not share a Service's name", () => {
   });
 });
 
-test("Target names default to local and live, and a renamed pair selects the same roles", () => {
-  expect(DEFAULT_TARGET_NAMES).toEqual({ working: "local", stable: "live" });
-  const plain = parseProjectConfig({ name: "app", services: web() });
-  expect(targetNames(plain)).toEqual({ working: "local", stable: "live" });
-  const renamed = parseProjectConfig({
+test("Target names are fixed: the working and stable Targets plan under their role, and ${rig.target} names it", () => {
+  const config = parseProjectConfig({
     name: "app",
     services: web({ env: { TARGET: "${rig.target}" } }),
-    targets: { working: { name: "dev" }, stable: { name: "production" } },
+    targets: { working: true, stable: true },
   });
-  expect(targetNames(renamed)).toEqual({
-    working: "dev",
-    stable: "production",
-  });
-  // Renaming one side keeps the other's default.
-  expect(
-    targetNames(
-      parseProjectConfig({
-        name: "app",
-        services: web(),
-        targets: { stable: { name: "prod" } },
-      }),
-    ),
-  ).toEqual({ working: "local", stable: "prod" });
-  for (const [target, name] of [
-    ["local", "dev"],
-    ["live", "production"],
-  ] as const) {
-    const plan = resolveTargetPlan({ config: renamed, target, ...roots_ });
-    // The internal kind is the role; the name is what the operator sees and references.
-    expect(plan).toMatchObject({ target, deploymentName: name });
-    expect(plan.components[0]!.env).toEqual({ TARGET: name });
+  for (const target of ["working", "stable"] as const) {
+    const plan = resolveTargetPlan({ config, target, ...roots_ });
+    expect(plan).toMatchObject({ target, deploymentName: target });
+    expect(plan.components[0]!.env).toEqual({ TARGET: target });
   }
 });
 
-test.each([
-  [
-    "working equal to stable",
-    { working: { name: "same" }, stable: { name: "same" } },
-    "targets.stable.name: The Working copy and Stable Target cannot both be named 'same'.",
-  ],
-  [
-    "working equal to the default stable name",
-    { working: { name: "live" } },
-    "targets.working.name: The Working copy and Stable Target cannot both be named 'live'.",
-  ],
-  [
-    "stable equal to the default working name",
-    { stable: { name: "local" } },
-    "targets.stable.name: The Working copy and Stable Target cannot both be named 'local'.",
-  ],
-  [
-    "the reserved Preview selector",
-    { stable: { name: "preview" } },
-    "targets.stable.name: cannot be 'preview'",
-  ],
-  [
-    "a name shaped like a generated Preview name",
-    { working: { name: "feature-x-0a1b2c3d" } },
-    "targets.working.name: cannot end like a generated Preview name",
-  ],
-  [
-    "a name that is not one hostname label",
-    { stable: { name: "my.prod" } },
-    "targets.stable.name: must start with a letter or digit",
-  ],
-])("Target names refuse %s", (_label, targets, expected) => {
-  expect(hintOf({ name: "app", services: web(), targets })).toContain(expected);
-});
-
-test("a Target name that merely resembles a Preview name is accepted", () => {
-  for (const name of ["feature-0a1b2c3", "deadbeef", "prod-0A1B2C3D-eu"])
+test.each(["working", "stable", "preview"])(
+  "targets.%s.name is refused: Target names are fixed",
+  (role) => {
     expect(
-      targetNames(
-        parseProjectConfig({
-          name: "app",
-          services: web(),
-          targets: { stable: { name } },
-        }),
-      ).stable,
-    ).toBe(name);
+      failureOf({
+        name: "app",
+        services: web(),
+        targets: { [role]: { name: "dev", env: { A: "1" } } },
+      }),
+    ).toMatchObject({
+      code: "invalid_config",
+      hint: `Fix targets.${role}.name: Target names are fixed (working, stable, preview); delete this line.`,
+    });
+  },
+);
+
+test("the targets rig init used to write, names alone, are refused with how to keep each Target on", () => {
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { working: { name: "local" }, stable: { name: "live" } },
+    }),
+  ).toBe(
+    "Fix targets.working.name: Target names are fixed (working, stable, preview); delete this line, and write `working: true` to keep it on; targets.stable.name: Target names are fixed (working, stable, preview); delete this line, and write `stable: true` to keep it on.",
+  );
 });
 
-test("settings patches merge maps and replace lists and scalars, without leaking the Target name or changing the base", () => {
+test("a Target is on when its key is true or a settings map; false or a missing key is off, and without targets only working is on", () => {
+  const on = (targets: unknown) => {
+    const config = parseProjectConfig({
+      name: "app",
+      services: web(),
+      ...(targets === undefined ? {} : { targets }),
+    });
+    return TARGET_ROLES.filter((role) => targetOn(config, role));
+  };
+  expect(on(undefined)).toEqual(["working"]);
+  expect(on({})).toEqual([]);
+  expect(on({ stable: true })).toEqual(["stable"]);
+  expect(on({ working: true, stable: false, preview: {} })).toEqual([
+    "working",
+    "preview",
+  ]);
+  expect(
+    on({ working: { env: { A: "1" } }, stable: true, preview: true }),
+  ).toEqual(["working", "stable", "preview"]);
+});
+
+test("a Target switch is true, false or a settings map, and a switch alone patches nothing", () => {
+  expect(
+    hintOf({ name: "app", services: web(), targets: { stable: "yes" } }),
+  ).toBe("Fix targets.stable: must be true, false or a map of settings.");
+  const config = parseProjectConfig({
+    name: "app",
+    services: web(),
+    env: { A: "base" },
+    targets: { working: true, stable: { env: { A: "stable" } } },
+  });
+  expect(patchedSettings(config, "working").env).toEqual({ A: "base" });
+  expect(patchedSettings(config, "stable").env).toEqual({ A: "stable" });
+});
+
+test("settings patches merge maps and replace lists and scalars, without leaking the Target switches or changing the base", () => {
   const config = parseProjectConfig({
     name: "app",
     env: { A: "base", B: "base" },
@@ -691,7 +682,6 @@ test("settings patches merge maps and replace lists and scalars, without leaking
     tools: { ctl: { bin: "bin/ctl", build: "make" } },
     targets: {
       working: {
-        name: "dev",
         env: { B: "patched", C: "patched" },
         env_file: ["dev.env"],
         services: {
@@ -725,13 +715,13 @@ test("settings patches merge maps and replace lists and scalars, without leaking
     tools: { ctl: { bin: "bin/ctl", build: "make dev" } },
   });
   expect(config).toEqual(base);
-  // A role without a patch is the base settings, still without Target metadata.
+  // A role without a patch is the base settings, still without the Target switches.
   const { targets: _targets, ...settings } = base;
   expect(patchedSettings(config, "stable")).toEqual(settings);
   expect(patchedSettings(config, "preview")).toEqual(settings);
 });
 
-test("a Target patch cannot change identity, nest targets, name a Preview, add or remove entries, or pin Preview ports", () => {
+test("a Target patch cannot change identity, nest targets, name a Target, add or remove entries, or pin Preview ports", () => {
   const base = { name: "app", services: web(), tools: { ctl: { bin: "c" } } };
   expect(
     issuePaths({
@@ -756,12 +746,6 @@ test("a Target patch cannot change identity, nest targets, name a Preview, add o
   ).toBe(
     "Fix targets.stable.production_branch: The Production branch is Project-wide; set production_branch at the top level.",
   );
-  // The Project name is identity: `name` under working/stable is the Target's name and never renames the Project.
-  const renamed = parseProjectConfig({
-    ...base,
-    targets: { stable: { name: "prod" } },
-  });
-  expect(patchedSettings(renamed, "stable").name).toBe("app");
   expect(
     issuePaths({
       ...base,
@@ -779,7 +763,7 @@ test("a Target patch cannot change identity, nest targets, name a Preview, add o
   ).toContain(
     "targets.preview.services.web.ports.http: Previews always use chosen ports",
   );
-  // The Working copy and Stable Target may pin, and a Preview may say auto.
+  // The working and stable Targets may pin, and a Preview may say auto.
   expect(
     failureOf({
       ...base,
@@ -964,7 +948,7 @@ test("dependency, patch and reference lookup never treats inherited object names
       },
     },
   });
-  const plan = resolveTargetPlan({ config, target: "local", ...roots_ });
+  const plan = resolveTargetPlan({ config, target: "working", ...roots_ });
   expect(plan.components.map((component) => component.name)).toEqual([
     "constructor",
     "web",
@@ -1081,10 +1065,10 @@ test("the removed supervisor setting is refused with guidance to delete it, at e
       },
     );
   const config = parseProjectConfig({ name: "app", services: web() });
-  const supervisorOf = (target: "local" | "live") =>
+  const supervisorOf = (target: "working" | "stable") =>
     resolveTargetPlan({ config, target, ...roots_ }).providers
       .processSupervisor;
-  expect([supervisorOf("local"), supervisorOf("live")]).toEqual([
+  expect([supervisorOf("working"), supervisorOf("stable")]).toEqual([
     "rigd",
     "rigd",
   ]);
@@ -1125,7 +1109,7 @@ test("a health block is refused wherever a Service is spelled, naming ready and 
     services: web({ ready: "true", ready_timeout: "1m" }),
   });
   expect(
-    resolveTargetPlan({ config, target: "local", ...roots_ }).components,
+    resolveTargetPlan({ config, target: "working", ...roots_ }).components,
   ).toMatchObject([{ name: "web", health: "true", readyTimeout: 60 }]);
   // A reference to ready_timeout reads the selected Target's value, its role's patch included.
   const referenced = parseProjectConfig({
@@ -1136,11 +1120,11 @@ test("a health block is refused wherever a Service is spelled, naming ready and 
     }),
     targets: { stable: { services: { web: { ready_timeout: "5m" } } } },
   });
-  const readyEnv = (target: "local" | "live") =>
+  const readyEnv = (target: "working" | "stable") =>
     resolveTargetPlan({ config: referenced, target, ...roots_ }).components[0]!
       .env;
-  expect(readyEnv("local")).toMatchObject({ READY_TIMEOUT: "1m" });
-  expect(readyEnv("live")).toMatchObject({ READY_TIMEOUT: "5m" });
+  expect(readyEnv("working")).toMatchObject({ READY_TIMEOUT: "1m" });
+  expect(readyEnv("stable")).toMatchObject({ READY_TIMEOUT: "5m" });
 });
 
 test("durations are written like 30s, 10m or 1h, bounded to one day, and reach the plan in seconds", () => {
@@ -1186,7 +1170,7 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
     },
     targets: { stable: { tools: { ctl: { build_timeout: "30m" } } } },
   });
-  const budgets = (target: "local" | "live") => {
+  const budgets = (target: "working" | "stable") => {
     const plan = resolveTargetPlan({ config, target, ...roots_ });
     return Object.fromEntries(
       plan.components.map((component) => [
@@ -1199,13 +1183,13 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
     );
   };
   // A Service defaults to 30s; a Tool falls back to the Project build budget; a patch overrides both.
-  expect(budgets("local")).toEqual({
+  expect(budgets("working")).toEqual({
     web: 86400,
     api: 30,
     ctl: 1200,
     other: 86400,
   });
-  expect(budgets("live")).toMatchObject({ ctl: 1800 });
+  expect(budgets("stable")).toMatchObject({ ctl: 1800 });
 });
 
 test("stop_timeout is a duration from 1s to 1h, defaults to 10s, is patchable per role and reaches the plan in seconds", () => {
@@ -1229,7 +1213,7 @@ test("stop_timeout is a duration from 1s to 1h, defaults to 10s, is patchable pe
     },
     targets: { stable: { services: { web: { stop_timeout: "25m" } } } },
   });
-  const graces = (target: "local" | "live") =>
+  const graces = (target: "working" | "stable") =>
     Object.fromEntries(
       resolveTargetPlan({ config, target, ...roots_ }).components.map(
         (component) => [
@@ -1238,8 +1222,8 @@ test("stop_timeout is a duration from 1s to 1h, defaults to 10s, is patchable pe
         ],
       ),
     );
-  expect(graces("local")).toEqual({ web: 120, api: 10, worker: 3600 });
-  expect(graces("live")).toEqual({ web: 1500, api: 10, worker: 3600 });
+  expect(graces("working")).toEqual({ web: 120, api: 10, worker: 3600 });
+  expect(graces("stable")).toEqual({ web: 1500, api: 10, worker: 3600 });
 });
 
 test("validation hints describe the rule in plain words, never Zod's pattern or key text", () => {
@@ -1348,12 +1332,12 @@ test("a domain must be a hostname: schemes, ports, paths, wildcards, lists and o
     domain: "app.test",
     proxy: { "/": "${services.web.ports.http}" },
     targets: {
-      working: { name: "dev", domain: "${rig.target}.app.test" },
+      working: { domain: "${rig.target}.app.test" },
       preview: { domain: "${rig.target}.preview.app.test" },
     },
   });
   const plan = (
-    target: "local" | "live" | "preview",
+    target: "working" | "stable" | "preview",
     deploymentName?: string,
   ) =>
     resolveTargetPlan({
@@ -1363,8 +1347,8 @@ test("a domain must be a hostname: schemes, ports, paths, wildcards, lists and o
       assignedPorts: { web: 4100 },
       ...(deploymentName ? { deploymentName } : {}),
     });
-  expect(plan("local").domain).toBe("dev.app.test");
-  expect(plan("live").domain).toBe("app.test");
+  expect(plan("working").domain).toBe("working.app.test");
+  expect(plan("stable").domain).toBe("app.test");
   expect(plan("preview", "feature-0a1b2c3d").domain).toBe(
     "feature-0a1b2c3d.preview.app.test",
   );
@@ -1419,15 +1403,15 @@ test("Target resolution provides forward port references, environment inheritanc
   });
   const plan = resolveTargetPlan({
     config,
-    target: "local",
+    target: "working",
     workspacePath: "/repo",
     dataRoot: "/state/data",
     assignedPorts: { db: 5433, web: 1, api: 2 },
   });
   expect(plan).toMatchObject({
     project: "pantry",
-    target: "local",
-    deploymentName: "local",
+    target: "working",
+    deploymentName: "working",
     workspacePath: "/repo",
     dataRoot: "/state/data",
     providers: { processSupervisor: "rigd" },
@@ -1492,7 +1476,7 @@ test("rig.host and rig.url name the routed hostname, and are empty without a pro
   const envOf = (config: unknown) =>
     resolveTargetPlan({
       config: parseProjectConfig(config),
-      target: "live",
+      target: "stable",
       ...roots_,
     }).components[0]!.env;
   expect(
@@ -1543,7 +1527,7 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
   expect(plan).toMatchObject({
     target: "preview",
     deploymentName: "feature-test-0a1b2c3d",
-    domain: "feature-test-0a1b2c3d.example.com",
+    domain: "example-feature-test-0a1b2c3d.com",
     branch: "feature/test",
     commit: "abc",
     providers: { processSupervisor: "rigd" },
@@ -1572,7 +1556,7 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
   expect(
     resolveTargetPlan({
       config,
-      target: "live",
+      target: "stable",
       ...roots_,
       assignedPorts: { web: 4000, db: 5433 },
     }).components.map((component) =>
@@ -1612,7 +1596,7 @@ test("an auto port colliding with another Service's pin is refused for the Worki
   expect(() =>
     resolveTargetPlan({
       config,
-      target: "local",
+      target: "working",
       ...roots_,
       assignedPorts: { api: 3000 },
     }),
@@ -1645,11 +1629,11 @@ test("a reference is an exact path to one public value: shell expansion, collect
   );
   expect(
     refusal({
-      env: { NAME: "${targets.stable.name}" },
-      targets: { stable: { name: "production" } },
+      env: { NAME: "${targets.stable.domain}" },
+      targets: { stable: { domain: "prod.test" } },
     }),
   ).toBe(
-    "Fix env.NAME: Reference '${targets.stable.name}' in env.NAME reaches into targets; a reference reads the selected Target's own settings.",
+    "Fix env.NAME: Reference '${targets.stable.domain}' in env.NAME reaches into targets; a reference reads the selected Target's own settings.",
   );
   expect(refusal({ env: { A: "${env.B}", B: "x${env.A}" } })).toBe(
     "Fix env.A: References form a cycle: env.A -> env.B -> env.A; env.B: References form a cycle: env.B -> env.A -> env.B.",
@@ -1704,7 +1688,7 @@ test("references resolve through other public values, a Service's rig.data stays
         },
       },
     }),
-    target: "local",
+    target: "working",
     ...roots_,
   });
   const web_ = plan.components.find((c) => c.name === "web")!;
@@ -1755,9 +1739,9 @@ test("builds resolve to units: shared first, Services in dependency order, Tools
     },
     targets: { stable: { tools: { ctl: { build_timeout: "30m" } } } },
   });
-  const units = (target: "local" | "live") =>
+  const units = (target: "working" | "stable") =>
     resolveTargetPlan({ config, target, ...roots_ }).builds;
-  expect(units("live")).toEqual([
+  expect(units("stable")).toEqual([
     {
       id: "shared",
       command: "make fast",
@@ -1769,7 +1753,7 @@ test("builds resolve to units: shared first, Services in dependency order, Tools
     { id: "tool:ctl", component: "ctl", command: "make", timeout: 1800 },
     { id: "tool:zed", component: "zed", command: "make", timeout: 1200 },
   ]);
-  expect(units("local")!.map((unit) => unit.timeout)).toEqual([
+  expect(units("working")!.map((unit) => unit.timeout)).toEqual([
     1200, 90, 1200, 1200, 1200,
   ]);
   // Without build_timeout the budget is ten minutes; a plan without builds records none.
@@ -1779,7 +1763,7 @@ test("builds resolve to units: shared first, Services in dependency order, Tools
         name: "app",
         tools: { ctl: { bin: "c", build: "make" } },
       }),
-      target: "live",
+      target: "stable",
       ...roots_,
     }).builds,
   ).toEqual([
@@ -1788,7 +1772,7 @@ test("builds resolve to units: shared first, Services in dependency order, Tools
   expect(
     resolveTargetPlan({
       config: parseProjectConfig({ name: "app", tools: { ctl: { bin: "c" } } }),
-      target: "live",
+      target: "stable",
       ...roots_,
     }).builds,
   ).toBeUndefined();
@@ -1803,7 +1787,7 @@ test.each([
   (service, restart) => {
     const plan = resolveTargetPlan({
       config: parseProjectConfig({ name: "app", services: web(service) }),
-      target: "live",
+      target: "stable",
       ...roots_,
       assignedPorts: { web: 4100 },
     });
@@ -1830,7 +1814,7 @@ test("every declared port is assigned and referable, a Service may declare none,
         "/api/admin/": "${services.web.ports.admin}",
       },
     }),
-    target: "live",
+    target: "stable",
     ...roots_,
     // A plan saved before ports had names assigned the first port under the Service's own name.
     assignedPorts: { web: 4100, "api.http": 4300 },
@@ -1872,20 +1856,57 @@ test("a Preview resolved without a deployment name takes a hostname-safe name fr
   });
   expect(plan).toMatchObject({
     deploymentName: "feature-x",
-    domain: "feature-x.app.test",
+    domain: "app-feature-x.test",
   });
 });
 
-test("a Target cannot be named help, which every command reads as a request for help", () => {
-  expect(
-    hintOf({
-      name: "app",
-      services: web(),
-      targets: { stable: { name: "help" } },
-    }),
-  ).toBe(
-    "Fix targets.stable.name: cannot be 'help', which every command reads as a request for help.",
+test("a Preview's default hostname is the domain's first label, a dash and the Preview name, then the rest; a label over 63 characters is refused", () => {
+  const plan = (domain: string, deploymentName: string, preview?: object) =>
+    resolveTargetPlan({
+      config: parseProjectConfig({
+        name: "app",
+        domain,
+        services: web(),
+        proxy: { "/": "${services.web.ports.http}" },
+        ...(preview ? { targets: { preview } } : {}),
+      }),
+      target: "preview",
+      deploymentName,
+      ...roots_,
+      assignedPorts: { web: 4100 },
+    });
+  expect(plan("pantry2.dev.b-relay.com", "feat-x-1a2b3c4d").domain).toBe(
+    "pantry2-feat-x-1a2b3c4d.dev.b-relay.com",
   );
+  expect(plan("localhost", "feat-x-1a2b3c4d").domain).toBe(
+    "localhost-feat-x-1a2b3c4d",
+  );
+  // An explicit pattern overrides the default.
+  expect(
+    plan("app.test", "feat-x-1a2b3c4d", {
+      domain: "${rig.target}.preview.app.test",
+    }).domain,
+  ).toBe("feat-x-1a2b3c4d.preview.app.test");
+  const long = `${"b".repeat(40)}-1a2b3c4d`;
+  expect(() => plan("pantry-recipes.app.test", long)).toThrow(
+    expect.objectContaining({
+      _tag: "ConfigError",
+      code: "hostname_label_too_long",
+      message: `Hostname 'pantry-recipes-${long}.app.test' has a 64-character label, 'pantry-recipes-${long}'; DNS allows 63.`,
+      context: {
+        domain: `pantry-recipes-${long}.app.test`,
+        label: `pantry-recipes-${long}`,
+        path: "domain",
+      },
+      hint: expect.stringContaining("set targets.preview.domain"),
+    }),
+  );
+  // The same name fits under a pattern that keeps it in a label of its own.
+  expect(
+    plan("pantry-recipes.app.test", long, {
+      domain: "${rig.target}.preview.app.test",
+    }).domain,
+  ).toBe(`${long}.preview.app.test`);
 });
 
 test("an env key the parser would drop silently is refused by name", () => {
@@ -1915,7 +1936,7 @@ test.each([
       services: web(),
     });
     expect(() =>
-      resolveTargetPlan({ config, target: "local", workspacePath, dataRoot }),
+      resolveTargetPlan({ config, target: "working", workspacePath, dataRoot }),
     ).toThrow(
       expect.objectContaining({
         _tag: "ConfigError",
@@ -2033,7 +2054,7 @@ test.each([
   });
   const plan = resolveTargetPlan({
     config,
-    target: "local",
+    target: "working",
     workspacePath: "/repo",
     dataRoot: "/state/data",
   });
@@ -2047,7 +2068,7 @@ test("Target resolution validates the actual substituted bind values of run and 
         name: "share",
         services: { server: { run: "serve", ports: { http: 3210 }, ...extra } },
       }),
-      target: "local",
+      target: "working",
       workspacePath: "/repo",
       dataRoot: "/state/data",
     });
@@ -2095,7 +2116,7 @@ test("paths substituted into run, ready and build commands are shell-quoted unle
   });
   const plan = resolveTargetPlan({
     config,
-    target: "local",
+    target: "working",
     workspacePath: "/repos/my app",
     dataRoot: "/state/it's data",
   });
@@ -2136,14 +2157,14 @@ test.each([
     "services.web.env_file",
     "/shared/.env",
   ],
-  ["live", { env_file: "../shared/.env" }, "env_file", "/shared/.env"],
+  ["stable", { env_file: "../shared/.env" }, "env_file", "/shared/.env"],
   [
     "preview",
     { env_file: "env/../../${rig.target}.env" },
     "env_file",
     "/pr-0a1b2c3d.env",
   ],
-  ["live", { env_file: "." }, "env_file", "/work"],
+  ["stable", { env_file: "." }, "env_file", "/work"],
 ])(
   "%s Targets reject a relative env file that leaves the Target's workspace, naming the field",
   (target, extra, field, path) => {
@@ -2155,11 +2176,11 @@ test.each([
     expect(() =>
       resolveTargetPlan({
         config,
-        target: target as "live" | "preview",
+        target: target as "stable" | "preview",
         ...roots_,
         branch: "main",
         commit: "abc",
-        deploymentName: target === "preview" ? "pr-0a1b2c3d" : "live",
+        deploymentName: target === "preview" ? "pr-0a1b2c3d" : "stable",
         assignedPorts: { web: 4100 },
       }),
     ).toThrow(
@@ -2188,7 +2209,7 @@ test("the Working copy keeps the developer's env file wherever it is; a deployed
       },
     },
   });
-  const envFiles = (target: "local" | "live") =>
+  const envFiles = (target: "working" | "stable") =>
     Object.fromEntries(
       resolveTargetPlan({ config, target, ...roots_ }).components.map(
         (component) => [
@@ -2200,11 +2221,11 @@ test("the Working copy keeps the developer's env file wherever it is; a deployed
       ),
     );
   // Project files come first and a Service's own files layer over them.
-  expect(envFiles("local")).toEqual({
+  expect(envFiles("working")).toEqual({
     web: ["/shared/.env", "/etc/app.env"],
     api: ["/shared/.env"],
   });
-  expect(envFiles("live")).toEqual({
+  expect(envFiles("stable")).toEqual({
     web: ["/work/env/live.env", "/work/env/web.env"],
     api: ["/work/env/live.env"],
   });
@@ -2214,7 +2235,7 @@ test("env_file paths resolve against the operator home or the workspace, and the
   const config = (file: string) =>
     parseProjectConfig({ name: "app", env_file: file, services: web() });
   const input = {
-    target: "local" as const,
+    target: "working" as const,
     workspacePath: "/work",
     dataRoot: "/data",
   };
@@ -2287,7 +2308,7 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
   expect(() =>
     resolveTargetPlan({
       config,
-      target: "local",
+      target: "working",
       workspacePath: "/work",
       dataRoot: "/data",
       assignedPorts: { web: 3000 },

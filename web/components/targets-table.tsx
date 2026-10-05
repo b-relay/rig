@@ -29,7 +29,6 @@ import { shortCommit, toneOf } from "@/lib/present";
 import { routeUrl, targetKey } from "@/lib/target";
 import type { ComponentReport } from "@/lib/types";
 import { Mono, State } from "./bits";
-import { StartWorkingCopy } from "./start-working-copy";
 import { TargetActions } from "./target-actions";
 import { Button } from "@/components/ui/button";
 import {
@@ -167,17 +166,12 @@ const columns = helper.columns([
     id: "actions",
     header: () => <span className="sr-only">Actions</span>,
     enableHiding: false,
-    cell: ({ row }) =>
-      row.original.target ? (
-        <TargetActions
-          project={row.original.project}
-          target={row.original.target}
-        />
-      ) : (
-        <span className="flex justify-end">
-          <StartWorkingCopy project={row.original.project} compact />
-        </span>
-      ),
+    cell: ({ row }) => (
+      <TargetActions
+        project={row.original.project}
+        target={row.original.target}
+      />
+    ),
   }),
 ]);
 
@@ -403,15 +397,6 @@ function useVisibility(): [
   return [visibility, setVisibility];
 }
 function TargetName({ row }: { row: TargetRow }) {
-  if (!row.target)
-    return (
-      <span
-        className="text-muted-foreground italic"
-        title="The Working copy runs the files on disk, without a deploy. Start it from this row."
-      >
-        {row.name}
-      </span>
-    );
   return (
     <Link
       href={`${row.projectHref}/logs?target=${encodeURIComponent(targetKey(row.target))}`}

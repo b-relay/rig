@@ -5,6 +5,7 @@ import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError, failureCauses } from "../domain/errors";
 import { ConfigError } from "../config/errors";
 import type { RuntimeDependencies } from "./contracts";
+import { shellWord } from "../domain/target-selector";
 /** A current registration is authoritative; history is never a candidate path list. */
 export async function selectProject(
   command: RuntimeCommand,
@@ -184,7 +185,7 @@ function assertRegistrationAvailable(
       "PROJECT_CONFLICT",
       `Project '${existing.name}' is already registered at ${existing.repoPath}.`,
       existing.name === identity.name
-        ? `Run rig repoint ${identity.repoPath} --project ${existing.name} to move it here, or ${anotherName(identity)}.`
+        ? `Run rig repoint ${shellWord(identity.repoPath)} --project ${existing.name} to move it here, or ${anotherName(identity)}.`
         : `Run rig rename ${identity.name} --project ${existing.name} to rename the registered Project, or restore its config name.`,
       { registeredName: existing.name, registeredPath: existing.repoPath },
     );

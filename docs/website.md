@@ -19,8 +19,8 @@ same Zod schema `rigd` uses and answer an `Outcome`, a value or a failure with
 ## How it reaches rigd
 
 The site is a Rig Service (`services.web` in this repository's `rig.yaml`). It
-listens on `127.0.0.1` only; Caddy publishes the Stable Target at
-`rig.b-relay.com` and each Preview at `<preview>.rig.b-relay.com`.
+listens on `127.0.0.1` only; Caddy publishes the stable Target at
+`rig.b-relay.com` and each Preview at `rig-<preview>.b-relay.com`.
 
 It authenticates to `rigd` the way `rig` does. `rigd install` writes a random
 token to `<RIG_ROOT>/auth/control-plane.token` (mode 600) and `rigd` records its
@@ -55,8 +55,10 @@ screen.
 
 `web/components/board.tsx` gathers every Project's status, and
 `web/lib/board-rows.ts` flattens the reports into one row per Target, in
-Working copy, Stable, Preview order, with a placeholder row for a Working copy
-not started yet and Project-level notices lifted above the table.
+working, stable, Preview order, with Project-level notices lifted above the
+table. A Target `rig.yaml` turns on is listed (as configured) before it first
+runs, so the working Target is started from its own row; an off Target is
+listed only while it is still recorded.
 `web/components/targets-table.tsx` renders them as a TanStack data table:
 sortable columns, a filter box, a column chooser remembered in the browser, and
 the Target and actions columns pinned to either edge while the rest scroll.
@@ -124,7 +126,7 @@ client.
 This matters even on the Mac itself when `rig.b-relay.com` resolves to a
 Tailscale or LAN address: Caddy then sees the browser arrive from that address,
 not from loopback. Read the key with `cat` on the path the log names
-(`rig logs live --project rig`).
+(`rig logs stable --project rig`).
 
 Anyone holding the key has full control of every Project on the Host. Without
 `RIG_WEB_KEY_FILE`, clients beyond the trusted addresses are refused outright.
@@ -197,5 +199,5 @@ bun run web:build && PORT=4173 bun run web:start -- -p 4173  # the production bu
 ```
 
 Then open `http://127.0.0.1:4173/`. To publish it, run `rig init` in this
-repository once and `rig deploy live`; DNS for
-`rig.b-relay.com` must resolve to this Mac.
+repository once and `rig deploy`; DNS for `rig.b-relay.com`, and for
+`rig-<preview>.b-relay.com` to reach Previews, must resolve to this Mac.

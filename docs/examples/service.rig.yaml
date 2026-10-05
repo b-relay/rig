@@ -24,11 +24,9 @@ proxy:
 
 targets:
   working:
-    name: local
     services:
       api:
         env: { LOG_LEVEL: debug }
-  stable:
-    name: live
-  preview:
-    domain: ${rig.target}.preview.notes.example.com
+  stable: true
+  # Each Preview is served at notes-<preview name>.example.com.
+  preview: true

@@ -15,8 +15,7 @@ export function projectScope(projectId: string): LockScope {
   return ["project", projectId];
 }
 
-/** One Target. The Working copy and Stable Target are keyed by role, so a rename keeps the key;
- * a Preview by its generated name. */
+/** One Target. The working and stable Targets are keyed by role, which is also their name; a Preview by its name. */
 export function targetScope(
   projectId: string,
   target: Pick<TargetRecord, "kind" | "name">,

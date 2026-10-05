@@ -13,7 +13,7 @@ export interface ProjectEntry {
   project: ListResult["projects"][number];
   status?: Outcome<ProjectStatusReport>;
 }
-/** One line of the board: a Target, or the Working copy a Project has not started yet. */
+/** One line of the board: one Target as rigd reported it. */
 export interface TargetRow {
   /** Unique across the board: the Project name and the Target key. */
   id: string;
@@ -22,8 +22,7 @@ export interface TargetRow {
   kind: TargetReport["kind"];
   kindLabel: string;
   name: string;
-  /** The Target as rigd reported it; absent on the placeholder for a Working copy not started yet. */
-  target?: TargetReport;
+  target: TargetReport;
   state: string;
   branch?: string;
   commit?: string;
@@ -40,19 +39,18 @@ export interface ProjectNotice {
   tone: "warn" | "bad";
   text: string;
 }
-/** The order Targets take within a Project when nothing is sorted: the Working copy, then Stable, then Previews. */
+/** The order Targets take within a Project when nothing is sorted: working, then stable, then Previews. */
 export const KIND_RANK: Record<TargetReport["kind"], number> = {
-  local: 0,
-  live: 1,
+  working: 0,
+  stable: 1,
   preview: 2,
 };
-export const NOT_STARTED = "not started";
 const projectHref = (name: string) => `/projects/${encodeURIComponent(name)}`;
 const byKindThenName = (a: TargetReport, b: TargetReport) =>
   KIND_RANK[a.kind] - KIND_RANK[b.kind] || a.name.localeCompare(b.name);
 /** Pure: the board's rows and notices from every Project's status, in board order. A Project
- * whose status failed or whose directory is gone contributes a notice and no rows; one whose
- * report lists no Working copy gets a placeholder row so it can be started from the table. */
+ * whose status failed or whose directory is gone contributes a notice and no rows. A Target rig.yaml turns on is listed
+ * as configured before it has run, so it is started from its own row; an off one is not listed unless it is recorded. */
 export function boardRows(entries: readonly ProjectEntry[]): {
   rows: TargetRow[];
   notices: ProjectNotice[];
@@ -88,8 +86,6 @@ export function boardRows(entries: readonly ProjectEntry[]): {
         tone: "warn",
         text: warning,
       });
-    if (!report.targets.some((target) => target.kind === "local"))
-      rows.push(placeholderRow(project.name, href));
     for (const target of [...report.targets].sort(byKindThenName))
       rows.push(targetRow(project.name, href, target));
   }
@@ -117,19 +113,5 @@ function targetRow(
       .map((each) => (each.port ? `${each.name}:${each.port}` : each.name))
       .join(" "),
     warnings: targetWarnings(target),
-  };
-}
-function placeholderRow(project: string, href: string): TargetRow {
-  return {
-    id: `${project}/local:`,
-    project,
-    projectHref: href,
-    kind: "local",
-    kindLabel: KIND_LABEL.local,
-    name: NOT_STARTED,
-    state: NOT_STARTED,
-    components: [],
-    componentsText: "",
-    warnings: [],
   };
 }

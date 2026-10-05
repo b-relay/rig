@@ -15,6 +15,7 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { ComponentReport } from "../domain/project-status";
+import { targetSelector } from "../domain/target-selector";
 import type { ProcessObservation } from "../providers/contracts";
 import { boundedObservations } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
@@ -556,7 +557,7 @@ async function superviseService(
       await saveRun(target, service, { ...run, exhausted: true }, deps, {
         action: "restart",
         outcome: "failed",
-        message: `${service} ${exhaustedText(budget)} and stays stopped. Run rig restart ${target.name} once the cause is fixed.`,
+        message: `${service} ${exhaustedText(budget)} and stays stopped. Run rig restart ${targetSelector(target)} once the cause is fixed.`,
       });
       return undefined;
     }
@@ -711,7 +712,10 @@ function failedAttemptOutcome(error: unknown, at: string): ServiceOutcome {
 /** What status says about a Service whose process is stopped, from the record and the observation alone; it writes nothing,
  * so an exit no pass has recorded yet reads the same as it will once one has. */
 export function stoppedStanding(
-  target: Pick<TargetRecord, "services" | "plan" | "desired">,
+  target: Pick<
+    TargetRecord,
+    "services" | "plan" | "desired" | "kind" | "name" | "branch"
+  >,
   component: ManagedComponent,
   observation: ProcessObservation,
   scope: SupervisionScope = DEFAULT_SUPERVISION_SCOPE,
@@ -733,12 +737,13 @@ export function stoppedStanding(
         : {}),
     };
   const outcome = run?.outcome ?? observedOutcome(run, observation, "");
-  const again = "Run rig up to start it again.";
+  const selector = targetSelector(target);
+  const again = `Run rig up ${selector} to start it again.`;
   if (outcome.kind === "unknown" && outcome.hostRestart)
     return {
       state: "stopped",
       exit: "unknown",
-      reason: `It stopped when ${hostRestartText(outcome.hostRestart)}. Only Stable Targets are started again after that; the Working copy and Previews stay stopped. ${again}`,
+      reason: `It stopped when ${hostRestartText(outcome.hostRestart)}. Only stable Targets are started again after that; the working Target and Previews stay stopped. ${again}`,
     };
   const policy = component.restart ?? DEFAULT_RESTART_POLICY;
   const budget = restartBudget(policy, outcome, scope);
@@ -777,7 +782,7 @@ export function stoppedStanding(
       : run?.exhausted
         ? `${ended} after ${RESTART_LIMIT} automatic restarts within ${BUDGETS["known-exit"].window}, so it stays stopped. ${again}`
         : outcome.kind === "start-failed"
-          ? `${ended}. ${recoveredByDownFirst(outcome.errorCode) ? "Run rig down, then rig up to start it again." : again}`
+          ? `${ended}. ${recoveredByDownFirst(outcome.errorCode) ? `Run rig down ${selector}, then rig up ${selector} to start it again.` : again}`
           : `${ended} and its restart policy is ${policy}, so it stays stopped. ${again}`,
   };
 }

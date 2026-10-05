@@ -1,4 +1,5 @@
 import type { TargetPlan } from "../config/types";
+import type { TargetRole } from "../config/schema";
 import type { HostRestart, HostSession } from "./host-session";
 import type { OperationOutcome } from "./activity";
 
@@ -85,7 +86,7 @@ export interface TargetRecord {
   id: string;
   projectId: string;
   name: string;
-  kind: "local" | "live" | "preview";
+  kind: TargetRole;
   branch?: string;
   commit?: string;
   plan: TargetPlan;
@@ -135,7 +136,7 @@ export interface OperationRecord {
 }
 
 export interface RuntimeState {
-  version: 4;
+  version: 5;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];

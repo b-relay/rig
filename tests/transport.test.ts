@@ -94,7 +94,7 @@ test("reads wait 5 s for rigd unless the client is told otherwise; mutations car
     await client.command({ action: "doctor" });
     expect(deadlines.mock.calls).toEqual([[DEFAULT_READ_DEADLINE_MS]]);
     expect(DEFAULT_READ_DEADLINE_MS).toBe(5000);
-    await client.command({ action: "up", project: "demo", target: "local" });
+    await client.command({ action: "up", project: "demo", target: "working" });
     expect(deadlines).toHaveBeenCalledTimes(1);
   } finally {
     deadlines.mockRestore();
@@ -146,8 +146,8 @@ test("status validates nested evidence and Project identity while preserving opt
   });
   const empty = { project: "demo", targets: [] };
   const target = {
-    name: "local",
-    kind: "local",
+    name: "working",
+    kind: "working",
     state: "configured",
     components: [],
   };
@@ -219,9 +219,8 @@ test("status validates nested evidence and Project identity while preserving opt
   }
 });
 
-test("human Status and picker sanitize labels while JSON preserves evidence and valid empty remains empty", async () => {
+test("human Status sanitizes labels while JSON preserves evidence and valid empty remains empty", async () => {
   const { runRigCli } = await import("../src/cli/rig");
-  const { prepareInteractiveRequest } = await import("../src/cli/interaction");
   let result: unknown = {
     project: "demo",
     targets: [
@@ -276,28 +275,6 @@ test("human Status and picker sanitize labels while JSON preserves evidence and 
     expect(output).toContain("unknown reason");
     expect(output).toContain("Warning: warning line");
     expect(output).not.toContain("\u001b");
-    const prepared = await prepareInteractiveRequest(
-      { action: "down", project: "demo" },
-      {
-        ...deps,
-        interaction: {
-          async select(
-            _message: string,
-            choices: readonly { value: string; label: string }[],
-          ) {
-            expect(choices[0]?.label).toBe("branch name (unknown)");
-            return choices[0]!.value;
-          },
-          async text(_message: string, value: string) {
-            return value;
-          },
-          async confirm() {
-            return true;
-          },
-        },
-      },
-    );
-    expect(prepared.deployment).toBe("branch\u001b[31m\nname");
     output = "";
     expect(
       await runRigCli(["status", "--project", "demo", "--json"], deps),
@@ -307,25 +284,6 @@ test("human Status and picker sanitize labels while JSON preserves evidence and 
     output = "";
     expect(await runRigCli(["status", "--project", "demo"], deps)).toBe(0);
     expect(output).toBe("demo\n\nNo Targets configured.\n\nNo failures\n");
-    await expect(
-      prepareInteractiveRequest(
-        { action: "down", project: "demo" },
-        {
-          ...deps,
-          interaction: {
-            async select() {
-              throw new Error("Empty picker must not open");
-            },
-            async text(_message, value) {
-              return value;
-            },
-            async confirm() {
-              return true;
-            },
-          },
-        },
-      ),
-    ).rejects.toMatchObject({ code: "TARGET_REQUIRED" });
     result = { project: "demo", targets: [{}] };
     output = "";
     expect(
@@ -366,8 +324,8 @@ test("status retains each observed state, source identity, and exit evidence acr
         warnings: ["configuration unavailable"],
         targets: [
           {
-            name: "live",
-            kind: "live",
+            name: "stable",
+            kind: "stable",
             state,
             branch: "main",
             commit: "abc",
@@ -463,7 +421,7 @@ test("malformed list, logs and activity replies fail as protocol errors through 
         newOperationId: () => "read-op",
       });
     };
-    const logs = ["logs", "local", "--project", "demo"];
+    const logs = ["logs", "working", "--project", "demo"];
     const malformed: [string[], unknown, string][] = [
       [["list"], {}, "No Projects registered."],
       [["list"], { projects: null }, "No Projects registered."],
@@ -471,20 +429,24 @@ test("malformed list, logs and activity replies fail as protocol errors through 
       [logs, {}, "No logs yet."],
       [
         logs,
-        { project: "demo", target: "local", entries: "none", cursor: "c" },
+        { project: "demo", target: "working", entries: "none", cursor: "c" },
         "No logs yet.",
       ],
       [
         logs,
         {
           project: "demo",
-          target: "local",
+          target: "working",
           entries: [{ line: 1 }],
           cursor: "c",
         },
         "No logs yet.",
       ],
-      [logs, { project: "demo", target: "local", entries: [] }, "No logs yet."],
+      [
+        logs,
+        { project: "demo", target: "working", entries: [] },
+        "No logs yet.",
+      ],
       [["activity"], {}, "No activity yet."],
       [["activity"], { operations: null }, "No activity yet."],
       [["activity"], { operations: [{}] }, "No activity yet."],
@@ -503,12 +465,12 @@ test("malformed list, logs and activity replies fail as protocol errors through 
     expect(
       await run(logs, {
         project: "demo",
-        target: "local",
+        target: "working",
         entries: [],
         cursor: "c1",
       }),
     ).toBe(0);
-    expect(output).toBe("demo local\n\nNo logs yet.\n");
+    expect(output).toBe("demo working\n\nNo logs yet.\n");
     expect(await run(["activity"], { operations: [] })).toBe(0);
     expect(output).toBe("No activity yet.\n");
     const entry = {
@@ -520,14 +482,14 @@ test("malformed list, logs and activity replies fail as protocol errors through 
     expect(
       await run(
         [...logs, "--follow"],
-        { project: "demo", target: "local", entries: [entry], cursor: "c1" },
+        { project: "demo", target: "working", entries: [entry], cursor: "c1" },
         {
           project: "demo",
-          target: "local",
+          target: "working",
           entries: [{ line: 2 }],
           cursor: "c2",
         },
-        { project: "demo", target: "local", entries: [entry], cursor: "c3" },
+        { project: "demo", target: "working", entries: [entry], cursor: "c3" },
       ),
     ).toBe(1);
     expect(output).toContain("10:00:00Z  web  > first page");

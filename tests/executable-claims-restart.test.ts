@@ -48,18 +48,18 @@ async function stableTarget(
   return {
     id: `target-${project}`,
     projectId: project,
-    name: "live",
-    kind: "live",
+    name: "stable",
+    kind: "stable",
     desired: "running",
     createdAt: "now",
     updatedAt: "now",
     logRoot: join(root, "logs", project),
     plan: {
       project,
-      target: "live",
+      target: "stable",
       workspacePath: workspace,
       dataRoot: join(root, "data", project),
-      deploymentName: "live",
+      deploymentName: "stable",
       branchSlug: "main",
       subdomain: project,
       providers: { processSupervisor: "child" },
@@ -197,10 +197,10 @@ test("after rigd restarts, another Target cannot install where a crashed Target'
   const restarted = daemon(f.root);
   await expect(restarted.up(f.b)).rejects.toMatchObject({
     code: "ARTIFACT_CONFLICT",
-    message: `The executable ${f.executable} belongs to an unfinished change of Project 'a' Target 'live'.`,
+    message: `The executable ${f.executable} belongs to an unfinished change of Project 'a' Target 'stable'.`,
     details: {
       destination: f.executable,
-      owner: { targetId: f.a.id, project: "a", target: "live" },
+      owner: { targetId: f.a.id, project: "a", target: "stable" },
     },
   });
   expect(await Bun.file(f.executable).exists()).toBe(false);
@@ -231,7 +231,7 @@ test("a crashed Target's recovery refuses to remove an executable another Target
     code: "EFFECTS_CHANGED",
     details: {
       path: f.executable,
-      owner: { targetId: f.b.id, project: "b", target: "live" },
+      owner: { targetId: f.b.id, project: "b", target: "stable" },
     },
   });
   expect((error as { hint: string }).hint).toContain("Nothing was removed");

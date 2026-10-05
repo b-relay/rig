@@ -17,7 +17,7 @@ interface AppReport {
   setting: string;
 }
 
-test("a complete Project runs a web Service with SQLite under ${rig.data} and an installed Tool across local, live and Preview, then survives rename and repoint", async () => {
+test("a complete Project runs a web Service with SQLite under ${rig.data} and an installed Tool across the working, stable and Preview Targets, then survives rename and repoint", async () => {
   const f = await rigFixture();
   let project = "demo";
   const success = (result: {
@@ -108,6 +108,8 @@ process.stderr.write('bundle diagnostic fixture\\n');
 targets:
   working:
     env_file: .env
+  stable: true
+  preview: true
 services:
   web:
     run: "'${process.execPath}' server.ts"
@@ -126,25 +128,27 @@ tools:
     success(await f.rigd(["install"]));
     success(await f.rig(["init"]));
     expect(
-      JSON.parse(success(await f.rig(["up", "local", "--json"]))),
+      JSON.parse(success(await f.rig(["up", "working", "--json"]))),
     ).toMatchObject({ outcome: "started" });
-    const local = await app("local", "local-preserved");
+    const local = await app("working", "local-preserved");
     expect(local).toMatchObject({
       directory: f.canonicalRepo,
       value: "local-preserved",
       setting: "fixture-literal",
     });
-    await invoke("bundle-tool-local");
+    await invoke("bundle-tool-dev");
 
     expect(
-      JSON.parse(success(await f.rig(["deploy", "live", "--no-up", "--json"]))),
+      JSON.parse(
+        success(await f.rig(["deploy", "stable", "--no-up", "--json"])),
+      ),
     ).toMatchObject({ outcome: "deployed", commit, branch: "main" });
-    expect(await target("live")).toMatchObject({
+    expect(await target("stable")).toMatchObject({
       state: "stopped",
       commit,
       branch: "main",
     });
-    const dormantPort = (await target("live")).components.find(
+    const dormantPort = (await target("stable")).components.find(
       (component) => component.name === "web",
     )!.port;
     await expect(
@@ -152,12 +156,12 @@ tools:
         signal: AbortSignal.timeout(1000),
       }),
     ).rejects.toThrow();
-    success(await f.rig(["up", "live"]));
-    const live = await app("live", "live-preserved");
+    success(await f.rig(["up", "stable"]));
+    const live = await app("stable", "live-preserved");
     expect(live.directory).not.toBe(f.canonicalRepo);
     await invoke("bundle-tool");
     expect(
-      JSON.parse(success(await f.rig(["deploy", "live", "--json"]))),
+      JSON.parse(success(await f.rig(["deploy", "stable", "--json"]))),
     ).toMatchObject({ outcome: "unchanged", commit });
 
     expect(
@@ -219,8 +223,8 @@ tools:
       ),
     ).toMatchObject({ outcome: "unchanged" });
     for (const args of [
-      ["local"],
-      ["live"],
+      ["working"],
+      ["stable"],
       ["preview", "--deployment", "battle"],
     ]) {
       success(await f.rig(["down", ...args]));
@@ -238,17 +242,17 @@ tools:
     await rename(f.repo, moved);
     success(await f.rig(["repoint", moved, ...scope()], f.base));
     for (const args of [
-      ["local"],
-      ["live"],
+      ["working"],
+      ["stable"],
       ["preview", "--deployment", "battle"],
     ])
       success(await f.rig(["up", ...args, ...scope()], f.base));
-    expect(await app("local")).toMatchObject({
+    expect(await app("working")).toMatchObject({
       database: local.database,
       directory: await realpath(moved),
       value: "local-preserved",
     });
-    expect(await app("live")).toMatchObject({
+    expect(await app("stable")).toMatchObject({
       database: live.database,
       directory: live.directory,
       value: "live-preserved",
@@ -258,7 +262,7 @@ tools:
       directory: preview.directory,
       value: "preview-preserved",
     });
-    await invoke("bundle-tool-local");
+    await invoke("bundle-tool-dev");
     await invoke("bundle-tool");
     await invoke("bundle-tool-battle");
   } finally {

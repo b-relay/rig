@@ -86,8 +86,8 @@ async function fixture() {
   const previous: TargetRecord = {
     id: "target",
     projectId: "project",
-    name: "live",
-    kind: "live",
+    name: "stable",
+    kind: "stable",
     branch: "main",
     commit: "old",
     desired: "stopped",
@@ -96,12 +96,12 @@ async function fixture() {
     logRoot: join(root, "logs"),
     plan: {
       project: "demo",
-      target: "live",
+      target: "stable",
       workspacePath: join(root, "old"),
       dataRoot: join(root, "data"),
-      deploymentName: "live",
-      branchSlug: "live",
-      subdomain: "live",
+      deploymentName: "stable",
+      branchSlug: "stable",
+      subdomain: "stable",
       providers: { processSupervisor: "child" },
       components: [
         { ...common, name: "tool", kind: "installed", entrypoint: "tool" },
@@ -124,7 +124,7 @@ async function fixture() {
   candidate.plan.workspacePath = join(root, "new");
   candidate.plan.domain = "new.test";
   const state: RuntimeState = {
-    version: 4,
+    version: 5,
     projects: [],
     targets: [previous],
     activity: [],
@@ -689,6 +689,56 @@ test("changing installName retires the old destination and preserves receipt rol
   });
   expect(await readFile(join(f.root, "bin", "next-tool"), "utf8")).toBe(
     "#!/bin/sh\necho new\n",
+  );
+});
+
+test("a working Target's Tool published under its name from before names were fixed is retired, and published as <tool>-dev, when the Target is planned again", async () => {
+  const f = await fixture();
+  /** The fixture's Tool on a working Target, as state version 4 is read (published as tool-local) or as planned now. */
+  const working = (publishedAs?: string): TargetRecord => {
+    const target = structuredClone(f.previous);
+    target.kind = target.plan.target = "working";
+    target.name = target.plan.deploymentName = "working";
+    target.plan.branchSlug = target.plan.subdomain = "working";
+    delete target.branch;
+    delete target.commit;
+    delete target.plan.domain;
+    delete target.plan.proxy;
+    target.plan.components = target.plan.components
+      .filter((component) => component.kind === "installed")
+      .map((component) => ({
+        ...component,
+        ...(publishedAs ? { publishedAs } : {}),
+      }));
+    return target;
+  };
+  const migrated = working("tool-local");
+  f.state.targets = [migrated];
+  await f.lifecycle.up(migrated);
+  expect(await readFile(join(f.root, "bin", "tool-local"), "utf8")).toBe(
+    "#!/bin/sh\necho old\n",
+  );
+  // Until it is planned again, the Tool is observed where it was published.
+  const tool = migrated.plan.components[0] as InstalledComponent;
+  expect(
+    await f.effects.observations.artifact(
+      migrated,
+      tool,
+      new AbortController().signal,
+    ),
+  ).toBe("installed");
+  // What rig up does for a stopped working Target: retire what only the old plan names, publish the new one.
+  await f.lifecycle.down(migrated);
+  const replanned = working();
+  const checkpoint = await f.lifecycle.checkpoint(replanned, migrated);
+  await f.lifecycle.retireSuperseded(migrated, replanned);
+  await checkpoint.commit();
+  await f.lifecycle.up(replanned);
+  await expect(
+    readFile(join(f.root, "bin", "tool-local")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(join(f.root, "bin", "tool-dev"), "utf8")).toBe(
+    "#!/bin/sh\necho old\n",
   );
 });
 

@@ -28,20 +28,20 @@ function target(root: string): TargetRecord {
   return {
     id: "t",
     projectId: "p",
-    name: "local",
-    kind: "local",
+    name: "working",
+    kind: "working",
     desired: "running",
     createdAt: "now",
     updatedAt: "now",
     logRoot: join(root, "logs"),
     plan: {
       project: "demo",
-      target: "local",
+      target: "working",
       workspacePath: root,
       dataRoot: root,
-      deploymentName: "local",
-      branchSlug: "local",
-      subdomain: "local",
+      deploymentName: "working",
+      branchSlug: "working",
+      subdomain: "working",
       providers: { processSupervisor: "child" },
       components: [],
       preparedComponents: [],
@@ -191,7 +191,7 @@ test("a build unit runs its command once, install only publishes, and a failed r
     }),
   );
   expect(
-    (await runCommand({ command: [join(root, "bin", "tool-local")] })).stdout,
+    (await runCommand({ command: [join(root, "bin", "tool-dev")] })).stdout,
   ).toBe("ready\n");
 });
 test("cancelling a command health check terminates its probe process group", async () => {
@@ -257,7 +257,7 @@ test("editing a local source tool keeps its shim usable without reinstalling it"
     outcome: "unchanged",
   });
   expect(
-    (await runCommand({ command: [join(root, "bin", "tool-local")] })).stdout,
+    (await runCommand({ command: [join(root, "bin", "tool-dev")] })).stdout,
   ).toBe("after");
   await rm(join(root, "tool.ts"));
   expect(
@@ -273,7 +273,7 @@ test("a source tool's shim is republished when the recorded bun changes, and one
   roots.push(root);
   const record = target(root),
     signal = new AbortController().signal,
-    shim = join(root, "bin", "tool-local"),
+    shim = join(root, "bin", "tool-dev"),
     component = {
       name: "tool",
       kind: "installed" as const,
@@ -331,7 +331,7 @@ test("installed names reject another Target owner and unmanaged executables with
     };
   await writeFile(join(root, "tool.ts"), "process.stdout.write('first')");
   await adapter.install(component, record);
-  const before = await readFile(join(root, "bin", "tool-local"), "utf8");
+  const before = await readFile(join(root, "bin", "tool-dev"), "utf8");
   await expect(
     adapter.install(component, {
       ...record,
@@ -339,19 +339,19 @@ test("installed names reject another Target owner and unmanaged executables with
       projectId: "other-project",
     }),
   ).rejects.toMatchObject({ code: "ARTIFACT_CONFLICT" });
-  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toBe(before);
+  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toBe(before);
   await writeFile(
-    join(root, "bin", "unmanaged-local"),
+    join(root, "bin", "unmanaged-dev"),
     "precious unmanaged executable",
     { mode: 0o755 },
   );
   await expect(
     adapter.install({ ...component, name: "unmanaged" }, record),
   ).rejects.toMatchObject({ code: "ARTIFACT_UNOWNED" });
-  expect(await readFile(join(root, "bin", "unmanaged-local"), "utf8")).toBe(
+  expect(await readFile(join(root, "bin", "unmanaged-dev"), "utf8")).toBe(
     "precious unmanaged executable",
   );
-  await writeFile(join(root, "bin", "tool-local"), "outside modification");
+  await writeFile(join(root, "bin", "tool-dev"), "outside modification");
   expect(
     await adapter.observations.artifact(
       record,
@@ -417,7 +417,7 @@ test("setup recording acquires time for each retained line and reads unchanged s
   const cursors: (string | undefined)[] = [];
   const files = createRuntimeFiles();
   expect(
-    await runRigCli(["logs", "local", "--follow"], {
+    await runRigCli(["logs", "working", "--follow"], {
       root,
       cwd: root,
       signal: controller.signal,
@@ -434,7 +434,7 @@ test("setup recording acquires time for each retained line and reads unchanged s
           cursors.push(request.after);
           return {
             project: "demo",
-            target: "local",
+            target: "working",
             ...(await files.logs(record, request.after, 100)),
           };
         },
@@ -508,10 +508,10 @@ test("an installation receipt survives a change in the daemon's inherited enviro
   await writeFile(secrets, "TOKEN=first\n", { mode: 0o600 });
   const record = {
     ...target(root),
-    id: "live",
-    kind: "live" as const,
-    name: "live",
-    plan: { ...target(root).plan, target: "live" as const },
+    id: "stable",
+    kind: "stable" as const,
+    name: "stable",
+    plan: { ...target(root).plan, target: "stable" as const },
   };
   const component = {
     name: "tool",
@@ -576,15 +576,15 @@ test("install republishes exactly when the built executable changed, on any Targ
   expect(await adapter.install(component, local.record)).toEqual({
     outcome: "installed",
   });
-  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toContain(
+  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toContain(
     "echo v2",
   );
   const live = {
     ...target(root),
-    id: "live",
-    kind: "live" as const,
-    name: "live",
-    plan: { ...target(root).plan, target: "live" as const },
+    id: "stable",
+    kind: "stable" as const,
+    name: "stable",
+    plan: { ...target(root).plan, target: "stable" as const },
   };
   expect(await adapter.install(component, live)).toEqual({
     outcome: "installed",
@@ -631,19 +631,19 @@ test("a renamed Component takes over its own Target's installed executable, whil
   };
   await expect(adapter.install(cli, other)).rejects.toMatchObject({
     code: "ARTIFACT_CONFLICT",
-    message: `Project 'demo' Target 'local' Component 'launcher' owns the installed executable ${join(root, "bin", "tool-local")}.`,
+    message: `Project 'demo' Target 'working' Component 'launcher' owns the installed executable ${join(root, "bin", "tool-dev")}.`,
     hint: "Give this Component a different installName; installed executables share one bin directory across Projects and Targets.",
     details: {
-      destination: join(root, "bin", "tool-local"),
+      destination: join(root, "bin", "tool-dev"),
       owner: {
         targetId: "t",
         componentName: "launcher",
         project: "demo",
-        target: "local",
+        target: "working",
       },
     },
   });
-  await writeFile(join(root, "bin", "tool-local"), "hand edit", {
+  await writeFile(join(root, "bin", "tool-dev"), "hand edit", {
     mode: 0o755,
   });
   const installed = {
@@ -652,15 +652,15 @@ test("a renamed Component takes over its own Target's installed executable, whil
   };
   await expect(adapter.retireArtifacts(installed)).rejects.toMatchObject({
     code: "ARTIFACT_CHANGED",
-    message: `The installed executable ${join(root, "bin", "tool-local")} changed outside its owning Component launcher.`,
-    hint: `Move or delete ${join(root, "bin", "tool-local")} to keep or discard that change, then retry.`,
+    message: `The installed executable ${join(root, "bin", "tool-dev")} changed outside its owning Component launcher.`,
+    hint: `Move or delete ${join(root, "bin", "tool-dev")} to keep or discard that change, then retry.`,
   });
-  expect(await readFile(join(root, "bin", "tool-local"), "utf8")).toBe(
+  expect(await readFile(join(root, "bin", "tool-dev"), "utf8")).toBe(
     "hand edit",
   );
-  await rm(join(root, "bin", "tool-local"));
+  await rm(join(root, "bin", "tool-dev"));
   await adapter.retireArtifacts(installed);
-  expect(await Bun.file(join(root, "bin", "tool-local")).exists()).toBe(false);
+  expect(await Bun.file(join(root, "bin", "tool-dev")).exists()).toBe(false);
   expect(
     await adapter.observations.artifact(
       installed,
@@ -752,10 +752,10 @@ test("dependency installation runs once per deployed revision and its marker lea
   });
   const record: TargetRecord = {
     ...target(root),
-    kind: "live",
-    name: "live",
+    kind: "stable",
+    name: "stable",
     sourceRoot: join(root, "targets", "p", "t", "revisions"),
-    plan: { ...target(root).plan, target: "live", workspacePath: workspace },
+    plan: { ...target(root).plan, target: "stable", workspacePath: workspace },
   };
   await adapter.prepare(record);
   await adapter.prepare(record);
@@ -817,12 +817,12 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
   });
   const live: TargetRecord = {
     ...target(root),
-    kind: "live",
-    name: "live",
+    kind: "stable",
+    name: "stable",
     sourceRoot: join(root, "targets", "p", "t", "revisions"),
     plan: {
       ...target(root).plan,
-      target: "live",
+      target: "stable",
       workspacePath: workspace,
       installTimeout: 7,
     },

@@ -13,7 +13,7 @@ type Fixture = Awaited<ReturnType<typeof rigFixture>>;
 const example = (name: string) =>
   join(import.meta.dir, "..", "docs", "examples", `${name}.rig.yaml`);
 const toolOnly = (name: string, extra = "") =>
-  `name: ${name}\n${extra}tools:\n  cli:\n    bin: cli.sh\n`;
+  `name: ${name}\n${extra}tools:\n  cli:\n    bin: cli.sh\ntargets: { working: true, stable: true }\n`;
 
 /** A second Project directory served by the fixture's one isolated daemon. */
 async function directory(f: Fixture, name: string): Promise<string> {
@@ -39,7 +39,7 @@ async function targets(f: Fixture, cwd: string) {
   }[];
 }
 
-test("the Tool-only and multi-Service examples initialize and are inspected under their own Target names", async () => {
+test("the Tool-only and multi-Service examples initialize and are inspected under the fixed Target names", async () => {
   const f = await rigFixture();
   try {
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
@@ -52,8 +52,8 @@ test("the Tool-only and multi-Service examples initialize and are inspected unde
     expect(await readFile(join(tool, "rig.yaml"), "utf8")).toBe(original);
     const reported = await targets(f, tool);
     expect(reported.map((target) => target.name).sort()).toEqual([
-      "live",
-      "local",
+      "stable",
+      "working",
     ]);
     // A Tool-only Project is exactly its Tool: no Service, port, hostname or route is invented for it.
     for (const target of reported) {
@@ -73,27 +73,29 @@ test("the Tool-only and multi-Service examples initialize and are inspected unde
     expect(await f.rig(["init", "--create-git"], multi)).toMatchObject({
       code: 0,
     });
-    const renamed = await targets(f, multi);
-    expect(renamed.map((target) => target.name).sort()).toEqual([
-      "dev",
-      "production",
+    const listed = await targets(f, multi);
+    expect(listed.map((target) => target.name).sort()).toEqual([
+      "stable",
+      "working",
     ]);
-    for (const target of renamed)
+    for (const target of listed)
       expect(
         target.components.map((component) => component.name).sort(),
       ).toEqual(["acmectl", "api", "db", "web"]);
     const text = (await f.rig(["status"], multi)).stdout;
-    expect(text).toMatch(/^dev\b/m);
-    expect(text).toMatch(/^production\b/m);
-    expect(text).not.toMatch(/^(local|live)\b/m);
-    // The default names select nothing once the pair is renamed; the configured names do.
-    const unknown = await f.rig(["down", "live"], multi);
+    expect(text).toMatch(/^working\b/m);
+    expect(text).toMatch(/^stable\b/m);
+    expect(text).not.toMatch(/^(local|live|dev|production)\b/m);
+    // Target names are fixed: an old or made-up name selects nothing.
+    const unknown = await f.rig(["down", "production"], multi);
     expect(unknown.code).toBe(1);
-    expect(unknown.stderr).toContain("no Target named 'live'");
-    expect(unknown.stderr).toContain("Select dev, production or preview.");
-    const selected = await f.rig(["down", "production"], multi);
+    expect(unknown.stderr).toContain("no Target named 'production'");
+    expect(unknown.stderr).toContain(
+      "Target names are fixed: select working, stable, or preview with a Branch.",
+    );
+    const selected = await f.rig(["down", "stable"], multi);
     expect(selected.stderr).toContain(
-      "Target 'production' has no recorded deployment.",
+      "Target 'stable' has no recorded deployment.",
     );
   } finally {
     await f.cleanup();
@@ -161,12 +163,12 @@ test("the Host productionBranch is a Project's Production Branch until the Proje
       });
       await f.run(["git", "checkout", "-q", "-b", "work"], path);
       // Without a terminal, a Stable deploy from another Branch is refused by naming the Production Branch; nothing is deployed.
-      const refused = await f.rig(["deploy", "live"], path);
+      const refused = await f.rig(["deploy", "stable"], path);
       expect(refused.code).toBe(1);
       expect(refused.stderr).toContain(`Production '${production}'`);
-      expect(refused.stderr).toContain(`rig deploy live ${production}`);
+      expect(refused.stderr).toContain(`rig deploy stable ${production}`);
       expect(await targets(f, path)).not.toContainEqual(
-        expect.objectContaining({ name: "live", state: "stopped" }),
+        expect.objectContaining({ name: "stable", state: "stopped" }),
       );
     }
   } finally {
@@ -191,7 +193,7 @@ test("a deployed Commit whose rig.yaml is invalid is refused even though the che
     const branch = await f.git(["branch", "--show-current"]);
     const refused = await f.rig([
       "deploy",
-      "live",
+      "stable",
       branch,
       "--no-up",
       "--json",
@@ -201,13 +203,13 @@ test("a deployed Commit whose rig.yaml is invalid is refused even though the che
       error: { code: "INVALID_CONFIG" },
     });
     expect(await targets(f, f.repo)).toEqual([
-      expect.objectContaining({ name: "local", state: "configured" }),
-      expect.objectContaining({ name: "live", state: "configured" }),
+      expect.objectContaining({ name: "working", state: "configured" }),
+      expect.objectContaining({ name: "stable", state: "configured" }),
     ]);
     const recorded = JSON.parse(
       await readFile(join(f.root, "runtime", "state.json"), "utf8"),
     ).targets as { kind: string; commit?: string }[];
-    expect(recorded.filter((target) => target.kind === "live")).toEqual([]);
+    expect(recorded.filter((target) => target.kind === "stable")).toEqual([]);
     expect(JSON.stringify(recorded)).not.toContain(commit);
   } finally {
     await f.cleanup();

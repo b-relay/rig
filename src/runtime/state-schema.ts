@@ -43,6 +43,11 @@ const component = z.discriminatedUnion("kind", [
     kind: z.literal("installed"),
     entrypoint: text,
     installName: text.optional(),
+    publishedAs: text
+      .optional()
+      .describe(
+        "The file name under <RIG_ROOT>/bin the Tool was published as when it does not follow the Target's name: a working Target recorded under another name before Target names were fixed. Planning the Target again retires it.",
+      ),
   }),
   z.object({
     ...common,
@@ -53,7 +58,7 @@ const component = z.discriminatedUnion("kind", [
 ]);
 export const targetPlanSchema = z.object({
   project: text,
-  target: z.enum(["local", "live", "preview"]),
+  target: z.enum(["working", "stable", "preview"]),
   workspacePath: text,
   dataRoot: text,
   deploymentName: text,
@@ -181,7 +186,7 @@ const services = z
             hostRestart: hostRestart
               .optional()
               .describe(
-                "The process is gone because of this Host restart; a Working copy or Preview Service is not started again before rig up.",
+                "The process is gone because of this Host restart; a working or Preview Service is not started again before rig up.",
               ),
             at,
           }),
@@ -258,7 +263,7 @@ const target = z.object({
   id: text,
   projectId: text,
   name: text,
-  kind: z.enum(["local", "live", "preview"]),
+  kind: z.enum(["working", "stable", "preview"]),
   branch: text.optional(),
   commit: text.optional(),
   plan: targetPlanSchema,
@@ -292,7 +297,7 @@ const target = z.object({
   configRevision: text
     .optional()
     .describe(
-      "Revision of the rig.yaml a Working copy plan was made from, for reporting drift.",
+      "Revision of the rig.yaml a working Target's plan was made from, for reporting drift.",
     ),
   configDigest: text
     .optional()
@@ -333,7 +338,10 @@ const operation = z.object({
  * A new optional top-level key needs no bump: an older rigd validates without it and writes it back unchanged.
  * A new value of an existing enum, such as an Activity outcome, needs none either: the file stays readable by an older
  * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it. */
-export const STATE_VERSION = 4;
+export const STATE_VERSION = 5;
+/** The older state version this rigd still reads: version 4 named the working and stable Targets local and live, or what
+ * rig.yaml renamed them to, and is normalized as it is read (see state-store). The next write saves version 5. */
+export const MIGRATED_STATE_VERSION = 4;
 export const runtimeStateSchema = z
   .object({
     version: z.literal(STATE_VERSION),
@@ -375,7 +383,7 @@ export const runtimeStateSchema = z
               .array(text)
               .optional()
               .describe(
-                "The Targets (by id) already settled for this restart: Stable Targets started again, or whose start failed, and Working copies and Previews whose stopped Services were recorded as stopped by it. A daemon that finds the restart again does not act on them a second time.",
+                "The Targets (by id) already settled for this restart: stable Targets started again, or whose start failed, and working Targets and Previews whose stopped Services were recorded as stopped by it. A daemon that finds the restart again does not act on them a second time.",
               ),
             unannounced: z
               .literal(true)

@@ -10,10 +10,17 @@ import type {
   PersistentComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import { runningNote, stoppedStanding, supervisionScope } from "./supervision";
+import {
+  currentRun,
+  runningNote,
+  stoppedStanding,
+  supervisionScope,
+} from "./supervision";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
 import type { ServiceHealth } from "../domain/project-status";
-import type { HealthResults } from "./health-monitor";
+import { healthStartPending, type HealthResults } from "./health-monitor";
+import { healthRestartDueAt } from "../domain/health-policy";
+import { targetSelector } from "../domain/target-selector";
 export interface ObservationEffects {
   process(
     target: TargetRecord,
@@ -86,6 +93,16 @@ export async function observeTargets(
             };
           const observed = await effects.process(target, component, signal);
           if (observed.state === "stopped") {
+            const waiting = healthRestartWaiting(target, component);
+            if (waiting)
+              return {
+                ...base,
+                port: component.port,
+                ...waiting,
+                ...(observed.reason
+                  ? { reason: `${observed.reason} ${waiting.reason}` }
+                  : {}),
+              };
             const standing = stoppedStanding(
               target,
               component,
@@ -167,6 +184,35 @@ export async function observeTargets(
       state: aggregate(components),
     };
   });
+}
+/** A Service its health restart stopped and could not start again: unhealthy, and waiting for the next health restart on
+ * the back-off. Undefined for any other stopped Service. */
+function healthRestartWaiting(
+  target: TargetRecord,
+  component: ManagedComponent,
+):
+  | (Pick<ComponentReport, "state" | "reason"> & { health: ServiceHealth })
+  | undefined {
+  const run = currentRun(target, component.name);
+  if (
+    target.desired !== "running" ||
+    component.healthcheck?.onFailure !== "restart" ||
+    !healthStartPending(run)
+  )
+    return undefined;
+  const stretch = run.healthStretch;
+  return {
+    state: "unhealthy",
+    health: {
+      status: "unhealthy",
+      failures: 0,
+      retries: component.healthcheck.retries,
+      restarts: stretch.restarts.length,
+      restartFailed: true,
+      nextRestartAt: new Date(healthRestartDueAt(stretch)).toISOString(),
+    },
+    reason: `Its health restart ${stretch.restarts.length} stopped it and its start failed the start check, so it is stopped. Rig starts it again at its next health restart (${new Date(healthRestartDueAt(stretch)).toISOString()}), whatever its restart policy; run rig restart ${targetSelector(target)} to start it now, or rig down ${targetSelector(target)} to stop trying.`,
+  };
 }
 /** How a running Service with a healthcheck stands by its cached checks: running until one answered, then healthy or
  * unhealthy, with why and what Rig does about it. */

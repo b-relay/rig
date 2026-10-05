@@ -19,6 +19,7 @@ import { timerObservationDeadline } from "../../src/runtime/bounded-observations
 import type { RuntimeDependencies } from "../../src/runtime/contracts";
 import {
   createTargetLifecycle,
+  type LifecycleObserver,
   type ReadinessTiming,
 } from "../../src/runtime/lifecycle";
 import { FileStateStore } from "../../src/runtime/state-store";
@@ -54,6 +55,8 @@ export interface RuntimeWorldOptions {
   readonly activation?: Pick<TargetAdapterOptions, "connect" | "listeners">;
   /** Publishes routes; `unreloadedCaddy` when absent. */
   readonly router?: Router;
+  /** Told about each start and stop as it begins, and each passed start check, as rigd tells its health monitor. */
+  readonly lifecycleObserver?: LifecycleObserver;
   /** Rewrites the config each Target plan is resolved from. */
   readonly planConfig?: (config: ProjectConfig) => ProjectConfig;
   /** Dependencies that replace or add to the world's own, given its root and state file. */
@@ -137,7 +140,11 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
         return parseHostConfig({});
       },
     },
-    lifecycle: createTargetLifecycle(effects, timing),
+    lifecycle: createTargetLifecycle(
+      effects,
+      timing,
+      options.lifecycleObserver,
+    ),
     observations: effects.observations,
     observationBudgetMs: 2000,
     observationDeadline: timerObservationDeadline,

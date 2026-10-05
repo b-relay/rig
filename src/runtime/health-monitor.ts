@@ -4,6 +4,7 @@ import { diagnosticErrorCode, failureReason } from "../domain/errors";
 import {
   NEW_HEALTH,
   healthAction,
+  healthRestartDueAt,
   isUnhealthy,
   nextCheckAt,
   recordCheck,
@@ -15,6 +16,7 @@ import {
 import type { ServiceHealth } from "../domain/project-status";
 import type {
   OperationRecord,
+  ServiceRun,
   StateStore,
   TargetRecord,
 } from "../domain/runtime";
@@ -40,6 +42,8 @@ import { currentRun } from "./supervision";
  *   only while that Service's epoch is still at most `since`. The comparison is synchronous and comes right before the
  *   write, with no await between; a state write is compared again inside the store's update, as it is applied.
  * - Activity about a change of health is written only after the cache write that made the change was applied.
+ * - A Service's own transition drops what was cached about the process it replaced; `started` or the next pass caches
+ *   anew.
  * - `stop` makes every comparison fail.
  *
  * A Service or Target nothing is known about any more is forgotten, its marks included. That is safe because only a pass
@@ -71,6 +75,9 @@ export interface HealthRestartRequest {
   incarnation?: string;
   /** The check that judged it (`checkIdentity`); a Service whose recorded plan checks it another way by now is left alone. */
   check: string;
+  /** The process is stopped because the last health restart's start failed its start check: start it, there is nothing to
+   * stop. The record must still say so (`healthStretch.failedStart`) and name `incarnation`. */
+  start?: true;
   /** The restart's number in this unhealthy stretch, from 1. */
   attempt: number;
   failures: number;
@@ -134,6 +141,20 @@ export function healthPolicy(
   };
 }
 
+/** Whether the Service's record says its last health restart's start failed, so the health monitor starts it again on the
+ * back-off. Not once a Host restart stopped it: that keeps a working Target or Preview stopped until rig up, and a stable
+ * Target is started by rigd's own start after the restart. */
+export function healthStartPending(
+  run: ServiceRun | undefined,
+): run is ServiceRun & {
+  healthStretch: NonNullable<ServiceRun["healthStretch"]>;
+} {
+  return (
+    run?.healthStretch?.failedStart !== undefined &&
+    run.intent === "running" &&
+    !(run.outcome?.kind === "unknown" && run.outcome.hostRestart)
+  );
+}
 /** Which check a plan entry runs: its test, its policy, and what a test runs in or connects to. Results, and a restart, are
  * about one such check of one process; a deploy or edit that changes it starts afresh. */
 export function checkIdentity(component: ManagedComponent): string {
@@ -153,6 +174,8 @@ interface Verdict {
   since: number;
   check: string | undefined;
   incarnation: string | undefined;
+  /** The process is stopped because the last health restart's start failed: start it again. */
+  start?: true;
 }
 /** What the policy calls for, except that a process nothing identifies (adopted from a rigd older than incarnations) is
  * never restarted for its checks, since a restart could stop another process started meanwhile: it is checked and
@@ -219,11 +242,18 @@ export function createHealthMonitor(
       serviceMarks.get(keyOf(targetId, service)) ?? 0,
       targetMarks.get(targetId) ?? 0,
     ) <= since;
-  /** A transition: the Service's, or with no Service the whole Target's, epoch moves past every unit of work begun so far. */
+  /** A transition: the Service's, or with no Service the whole Target's, epoch moves past every unit of work begun so far.
+   * A Service's own transition (a start or stop begins, another process is recorded) also drops what was cached about it,
+   * which was about what ran before; `started` or the next pass caches anew. A Target's keeps its Services' cache: a write
+   * after a start (its plan or desired state recorded) must not undo what `started` cached, and a Target no longer
+   * meant to run is forgotten by the next pass. */
   const invalidate = (targetId: string, service?: string) => {
     clock++;
     if (service === undefined) targetMarks.set(targetId, clock);
-    else serviceMarks.set(keyOf(targetId, service), clock);
+    else {
+      serviceMarks.set(keyOf(targetId, service), clock);
+      states.delete(keyOf(targetId, service));
+    }
   };
   /** Caches `state` for the Service when the epoch rule allows it; says whether it did. */
   const write = (
@@ -326,6 +356,45 @@ export function createHealthMonitor(
           policies.set(key, policy);
           if (inFlight.has(key)) continue;
           const state = judged(target, component, states.get(key));
+          // The last health restart's start failed: the Service is stopped and unhealthy, and is started again at the next
+          // step of the back-off, whatever its restart policy (automatic restart leaves it alone). Never given up on; an
+          // explicit start clears the stretch, and a down leaves the Target meant to stop.
+          const run = currentRun(target, component.name);
+          if (healthStartPending(run) && policy.onFailure === "restart") {
+            write(target.id, component.name, since, state);
+            if (
+              deps.busy(target) ||
+              deps.now() < healthRestartDueAt(run.healthStretch)
+            )
+              continue;
+            inFlight.add(key);
+            const verdict: Verdict = {
+              action: {
+                kind: "restart",
+                attempt: run.healthStretch.restarts.length + 1,
+              },
+              since,
+              check: checkIdentity(component),
+              incarnation: run.incarnation,
+              start: true,
+            };
+            const job = act(target.id, component.name, verdict)
+              .catch(async (error: unknown) => {
+                await deps
+                  .diagnostic({
+                    operationId: deps.id(),
+                    action: "health",
+                    outcome: "failed",
+                    target: target.name,
+                    errorCode: diagnosticErrorCode(error),
+                  })
+                  .catch(() => {});
+              })
+              .finally(() => inFlight.delete(key));
+            work.add(job);
+            void job.finally(() => work.delete(job));
+            continue;
+          }
           // Starting or stopping: no check, and the process is first seen afresh once the Target is free.
           if (deps.busy(target)) {
             const { eligibleSince: _paused, ...rest } = state;
@@ -432,9 +501,7 @@ export function createHealthMonitor(
         run.incarnation !== known.incarnation) ||
       (known.check !== undefined && known.check !== checkIdentity(component))
     )
-      return known === undefined
-        ? seeded(target, component.name)
-        : fresh(target, component.name, known);
+      return seeded(target, component.name);
     const record = run?.healthStretch;
     return known.stretch &&
       record &&
@@ -494,19 +561,8 @@ export function createHealthMonitor(
     }
     return true;
   }
-  /** The state of a new process of the Service: no result of its own, and the unhealthy stretch only when its record
-   * carries one on (a health or automatic restart did); the last output stays with a stretch that goes on. */
-  function fresh(
-    target: TargetRecord,
-    service: string,
-    before: HealthState,
-  ): HealthState {
-    const base = seeded(target, service);
-    return base.stretch && before.output !== undefined
-      ? { ...base, output: before.output }
-      : base;
-  }
-  /** The state a Service starts from: nothing known, with the unhealthy stretch its record says a health restart continued. */
+  /** The state a process of the Service starts from: nothing known of it, with the unhealthy stretch its record says a
+   * health or automatic restart continued. The last output was about another process, and is not kept. */
   function seeded(target: TargetRecord, service: string): HealthState {
     const record = currentRun(target, service)?.healthStretch;
     return record
@@ -598,7 +654,7 @@ export function createHealthMonitor(
         (t) => t.id === target.id,
       );
       state = {
-        ...fresh(saved ?? target, service, states.get(key) ?? state),
+        ...seeded(saved ?? target, service),
         ...(identity !== undefined ? { incarnation: identity } : {}),
         check,
         eligibleSince: deps.now(),
@@ -697,6 +753,38 @@ export function createHealthMonitor(
     const now = await checked(targetId, service);
     // Decision point, with no await until the request is built.
     const state = states.get(key);
+    if (verdict.start) {
+      // A start the back-off calls for: the record must still name the process whose health start failed, and the plan
+      // still make the check, under a policy that restarts.
+      const run = now && currentRun(now.target, service);
+      const stretch = run?.healthStretch;
+      if (
+        !now ||
+        !current(targetId, service, verdict.since) ||
+        now.policy.onFailure !== "restart" ||
+        checkIdentity(now.component) !== verdict.check ||
+        run?.incarnation !== verdict.incarnation ||
+        !healthStartPending(run) ||
+        stretch === undefined ||
+        deps.now() < healthRestartDueAt(stretch)
+      )
+        return;
+      // Await: the start, an Operation that waits for the Target. Its start is a transition; what it means reaches the
+      // cache through `started` or, when it fails again, through the record it writes.
+      await deps.restart({
+        targetId,
+        service,
+        check: verdict.check!,
+        incarnation: verdict.incarnation!,
+        start: true,
+        attempt: stretch.restarts.length + 1,
+        failures: 0,
+        ...(state?.output !== undefined ? { output: state.output } : {}),
+        since: stretch.since,
+        restarts: stretch.restarts,
+      });
+      return;
+    }
     if (
       !now ||
       !state ||

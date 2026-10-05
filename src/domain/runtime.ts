@@ -82,8 +82,9 @@ export interface ServiceRun {
   stopKilled?: "timeout" | "request";
   /** The unhealthy stretch a health restart started this process in: when the Service became unhealthy and each health
    * restart since (Unix milliseconds), so a new rigd continues the back-off. Automatic starts carry it on; an explicit start
-   * clears it. */
-  healthStretch?: { since: number; restarts: number[] };
+   * clears it. `failedStart` is when the latest health restart's start failed: the Service is stopped, and the health
+   * monitor starts it again at the next step of the back-off, not automatic restart. */
+  healthStretch?: { since: number; restarts: number[]; failedStart?: number };
 }
 
 export interface TargetRecord {

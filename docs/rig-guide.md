@@ -1584,8 +1584,14 @@ the Service stays unhealthy; a new process must fail `retries` checks again
 before it counts. Each health restart is in Activity with the last output.
 Health restarts spend none of the automatic-restart budget, and the unhealthy
 stretch is recorded on the Service, so a `rigd` that restarts continues the
-back-off; an explicit `rig up`, `rig restart` or deploy ends it. A start that
-fails is left to automatic restart, like any failed start.
+back-off; an explicit `rig up`, `rig restart` or deploy ends it. When a
+health restart's start fails its start check, the Service stays stopped and
+unhealthy, and Rig starts it again at the next step of the same back-off,
+whatever its `restart` policy and without spending the automatic-restart
+budget, until a start passes; it never gives up. `rig status` shows
+`unhealthy · restart failed its start check · next attempt in 5m`, Activity
+records each attempt, and `rig doctor` reports it. `rig restart` starts it at
+once, and `rig down` stops the attempts.
 
 **Moving from `ready`.** Earlier Rig spelled the start check `ready` and its
 budget `ready_timeout`; both are refused now with where they moved. Write

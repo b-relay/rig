@@ -30,6 +30,18 @@ export const serviceHealthSchema = z
       .describe(
         "Health restarts made since the Service became unhealthy this time (on_failure: restart).",
       ),
+    restartFailed: z
+      .literal(true)
+      .optional()
+      .describe(
+        "The last health restart stopped the Service and its start failed the start check: it is stopped until the next health restart.",
+      ),
+    nextRestartAt: z
+      .string()
+      .optional()
+      .describe(
+        "When that next health restart is due (ISO 8601): 1 min, 5 min, 15 min and then every hour after the last.",
+      ),
   })
   .passthrough();
 export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
@@ -197,6 +209,18 @@ export function healthSummary(
   const health = component.health;
   if (!health || !["healthy", "unhealthy"].includes(component.state))
     return undefined;
+  if (health.restartFailed)
+    return [
+      "unhealthy",
+      "restart failed its start check",
+      health.nextRestartAt
+        ? Date.parse(health.nextRestartAt) <= now.getTime()
+          ? "next attempt now"
+          : `next attempt in ${until(health.nextRestartAt, now)}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
   if (component.state === "healthy")
     return [
       "healthy",
@@ -216,6 +240,16 @@ export function healthSummary(
   ]
     .filter(Boolean)
     .join(" · ");
+}
+/** "45s", "5m", "1h": how long until `at`. */
+function until(at: string, now: Date): string {
+  const seconds = Math.max(
+    0,
+    Math.round((Date.parse(at) - now.getTime()) / 1000),
+  );
+  if (seconds < 120) return `${seconds}s`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
 }
 /** "12s ago", "3m ago", "2h ago". */
 function ago(at: string, now: Date): string {

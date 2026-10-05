@@ -114,20 +114,23 @@ export function healthAction(
   if (policy.onFailure !== "restart" || !stretch) return { kind: "none" };
   if (state.passed !== false || state.failures < policy.retries)
     return { kind: "none" };
+  const due = healthRestartDueAt(stretch);
+  return now >= due
+    ? { kind: "restart", attempt: stretch.restarts.length + 1 }
+    : { kind: "wait", until: due };
+}
+/** When the next health restart of an unhealthy stretch is due: at once for the first, then the back-off after the last. */
+export function healthRestartDueAt(stretch: HealthStretch): number {
   const last = stretch.restarts.at(-1);
-  const due =
-    last === undefined
-      ? stretch.since
-      : last +
+  return last === undefined
+    ? stretch.since
+    : last +
         HEALTH_RESTART_BACKOFF_MS[
           Math.min(
             stretch.restarts.length - 1,
             HEALTH_RESTART_BACKOFF_MS.length - 1,
           )
         ]!;
-  return now >= due
-    ? { kind: "restart", attempt: stretch.restarts.length + 1 }
-    : { kind: "wait", until: due };
 }
 /** The state after a health restart was attempted at `at`: the stretch goes on and counts the attempt, and the count starts
  * again. It still names the process that was judged, so a new one is recognized when it is seen, and one whose stop failed

@@ -300,6 +300,13 @@ const services = z
             .describe(
               "Unix milliseconds of each health restart in this stretch.",
             ),
+          failedStart: z
+            .number()
+            .finite()
+            .optional()
+            .describe(
+              "Unix milliseconds when the latest health restart's start failed its start check: the Service is stopped, and the health monitor starts it again at the next step of the back-off, whatever its restart policy.",
+            ),
         })
         .optional()
         .describe(

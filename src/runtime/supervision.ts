@@ -550,6 +550,14 @@ async function superviseService(
   const observation = observed.value;
   let run = currentRun(target, service);
   if (run?.intent === "stopped" || run?.exhausted) return undefined;
+  // A health restart whose start failed is the health monitor's to try again, on its back-off: neither restart: nor the
+  // automatic-restart budget decides it. Without a healthcheck that restarts any more, restart policy takes it back.
+  if (
+    run?.healthStretch?.failedStart !== undefined &&
+    !(run.outcome?.kind === "unknown" && run.outcome.hostRestart) &&
+    component.healthcheck?.onFailure === "restart"
+  )
+    return undefined;
   const policy = component.restart ?? DEFAULT_RESTART_POLICY;
   if (!run?.outcome) {
     const outcome = observedOutcome(run, observation, deps.now());
@@ -727,12 +735,14 @@ export async function recordHealthStretch(
       deps,
     );
 }
-/** Records how a start that was not explicit (a health restart's) failed, as a failed automatic attempt is recorded, so
- * automatic restart judges the Service by its policy from here; no scheduled retry is kept. */
-export async function recordFailedAttempt(
+/** Records how a health restart's start failed: the outcome, as a failed automatic attempt's is recorded, and the unhealthy
+ * stretch with `failedStart`, so the health monitor, not automatic restart, starts it again at the next step of its
+ * back-off. No scheduled retry is kept. */
+export async function recordFailedHealthStart(
   target: TargetRecord,
   service: string,
   error: unknown,
+  stretch: NonNullable<ServiceRun["healthStretch"]>,
   deps: Pick<Deps, "store" | "now" | "id">,
 ): Promise<void> {
   const current = currentRun(target, service);
@@ -741,7 +751,11 @@ export async function recordFailedAttempt(
   await saveRun(
     target,
     service,
-    { ...rest, outcome: failedAttemptOutcome(error, deps.now()) },
+    {
+      ...rest,
+      outcome: failedAttemptOutcome(error, deps.now()),
+      healthStretch: { ...stretch, failedStart: Date.parse(deps.now()) },
+    },
     deps,
   );
 }

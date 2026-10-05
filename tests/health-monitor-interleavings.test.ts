@@ -49,7 +49,10 @@ const SECOND = 1000;
 const LEGACY = "http://127.0.0.1:4000/legacy";
 const NEW = "http://127.0.0.1:4000/new";
 
-function world(scenario: Scenario, answer: Answer) {
+/** What a health restart does: `deferred` asks again without acting; `start fails` stops the process and its start fails
+ * the start check, as when readiness is gone, so the Service waits, stopped, for the next health restart. */
+type Restarts = "deferred" | "start fails";
+function world(scenario: Scenario, answer: Answer, restartsDo: Restarts) {
   let now = 0;
   const timers: { at: number; fire: () => void }[] = [];
   const component: ManagedComponent = {
@@ -128,6 +131,8 @@ function world(scenario: Scenario, answer: Answer) {
       : undefined;
   };
   let processRunning = true;
+  /** Health restarts whose start failed so far. */
+  let failedStarts = 0;
   /** Every probe answer that is about one process and test throughout: the process recorded when it began is still
    * recorded, and the plan's test is still the probed one, when it answers. `after` counts transitions before it. */
   const probes: {
@@ -176,6 +181,7 @@ function world(scenario: Scenario, answer: Answer) {
         attempts: [],
         ...(stretch ? { healthStretch: stretch } : {}),
       };
+      processRunning = true;
       monitor.invalidate("t1", "web"); // the store: another process recorded
       transitions++;
       monitor.started(structuredClone(t), "web", "web-2");
@@ -292,23 +298,52 @@ function world(scenario: Scenario, answer: Answer) {
       // Judged as it is asked; a transition from here on is the runtime's to refuse under the Target's lock.
       restarts.push(request);
       const current = pair();
+      const run = target()?.services?.web;
+      // A start is asked for the process whose health start failed, while it is still the one recorded; a restart for the
+      // process and check a failed probe judged since the last transition.
       const justified =
         current !== undefined &&
         request.check === current.check &&
         request.incarnation === current.incarnation &&
-        probes.some(
-          (p) =>
-            p.check === request.check &&
-            p.incarnation === request.incarnation &&
-            !p.passed &&
-            p.after === transitions,
-        );
+        (request.start
+          ? run?.healthStretch?.failedStart !== undefined && !processRunning
+          : probes.some(
+              (p) =>
+                p.check === request.check &&
+                p.incarnation === request.incarnation &&
+                !p.passed &&
+                p.after === transitions,
+            ));
       if (!justified)
         violations.push(
           `stale restart at point ${points} of ${request.incarnation}`,
         );
       point();
-      return { outcome: "deferred" };
+      if (restartsDo === "deferred" || !justified)
+        return { outcome: "deferred" };
+      // As the runtime runs it under the Target's lock: the stop and start begin (each a transition), the start is
+      // journalled, and its start check fails, so the record says the next health restart is the monitor's.
+      const t = target()!;
+      if (!request.start) monitor.invalidate("t1", "web");
+      monitor.invalidate("t1", "web");
+      failedStarts++;
+      t.services!.web = {
+        deployment: "/work",
+        intent: "running",
+        incarnation: `web-f${failedStarts}`,
+        attempts: [],
+        outcome: { kind: "start-failed", errorCode: "HEALTH_FAILED", at: "" },
+        healthStretch: {
+          since: request.since,
+          restarts: [...request.restarts, now],
+          failedStart: now,
+        },
+      };
+      monitor.invalidate("t1", "web"); // the store: another process recorded
+      processRunning = false;
+      transitions++;
+      expected = "unhealthy";
+      return { outcome: "failed", at: now };
     },
     schedule(delayMs, fire) {
       const timer = { at: now + delayMs, fire };
@@ -393,34 +428,53 @@ test("the interleaving harness: at every yield point of a pass, a check and a re
   const failures: string[] = [];
   for (const scenario of ["warm", "cold"] as const)
     for (const answer of ANSWERS)
-      for (const event of EVENTS)
-        for (let at = 1; at <= POINTS; at++) {
-          const w = world(scenario, answer);
-          // warm: rigd has seen web pass at 1 s; the next check is due at 6 s. cold: the first pass, at 1 s, is the one.
-          if (scenario === "warm") await w.runUntil(1 * SECOND);
-          w.arm(at, event);
-          await w.runUntil((scenario === "warm" ? 6 : 1) * SECOND);
-          w.checkCache();
-          // The passes the event lands in, if it lands after the first, then two more, which forget what is no longer
-          // monitored; the cache is judged after each.
-          for (let pass = 0; pass < 12 && !w.fired(); pass++) {
-            await w.more(1);
+      for (const restartsDo of ["deferred", "start fails"] as const)
+        for (const event of EVENTS)
+          for (let at = 1; at <= POINTS; at++) {
+            const w = world(scenario, answer, restartsDo);
+            // warm: rigd has seen web pass at 1 s; the next check is due at 6 s. cold: the first pass, at 1 s, is the one.
+            if (scenario === "warm") await w.runUntil(1 * SECOND);
+            w.arm(at, event);
+            await w.runUntil((scenario === "warm" ? 6 : 1) * SECOND);
             w.checkCache();
+            // The passes the event lands in, if it lands after the first, then two more, which forget what is no longer
+            // monitored; the cache is judged after each.
+            for (let pass = 0; pass < 12 && !w.fired(); pass++) {
+              await w.more(1);
+              w.checkCache();
+            }
+            await w.more(2);
+            w.checkCache();
+            if (w.expectsNothingLeft() && w.monitor.retained() !== 0)
+              w.violations.push(
+                `${w.monitor.retained()} entries kept for a Target that stopped or is gone`,
+              );
+            if (!w.fired()) continue;
+            schedules++;
+            for (const violation of w.violations)
+              failures.push(
+                `${scenario}, ${answer}, restarts ${restartsDo}, ${event} at point ${at}: ${violation}`,
+              );
           }
-          await w.more(2);
-          w.checkCache();
-          if (w.expectsNothingLeft() && w.monitor.retained() !== 0)
-            w.violations.push(
-              `${w.monitor.retained()} entries kept for a Target that stopped or is gone`,
-            );
-          if (!w.fired()) continue;
-          schedules++;
-          for (const violation of w.violations)
-            failures.push(
-              `${scenario}, ${answer}, ${event} at point ${at}: ${violation}`,
-            );
-        }
   expect(failures).toEqual([]);
-  // The whole cross product ran: 2 scenarios x 4 ways of answering x 6 events x 24 yield points, each event injected.
-  expect(schedules).toBe(2 * ANSWERS.length * EVENTS.length * POINTS);
+  // The whole cross product ran: 2 scenarios x 4 ways of answering x 2 kinds of restart x 6 events x 24 yield points,
+  // each event injected.
+  expect(schedules).toBe(2 * ANSWERS.length * 2 * EVENTS.length * POINTS);
+});
+
+test("a health restart whose start failed is started again by the monitor on the back-off, never given up", async () => {
+  for (const scenario of ["warm", "cold"] as const)
+    for (const answer of ANSWERS.filter((a) => a.startsWith("old fails"))) {
+      const w = world(scenario, answer, "start fails");
+      w.arm(1, "turn the Target off");
+      // cold: the recorded stretch puts the first restart at 60 s, and its failed start the next one 5 minutes later.
+      await w.runUntil(400 * SECOND);
+      const failed = w.restarts.findIndex((request) => !request.start);
+      // Unhealthy, restarted, and the start failed; at the next step of the back-off the monitor starts it again.
+      expect(failed).toBeGreaterThanOrEqual(0);
+      expect(
+        w.restarts.slice(failed + 1).some((request) => request.start),
+      ).toBe(true);
+      expect(w.violations).toEqual([]);
+    }
 });

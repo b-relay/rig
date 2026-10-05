@@ -272,7 +272,11 @@ restart**: it is stopped within its `stop_timeout` under its Target's lock and
 started again, at once and then after 1 min, 5 min, 15 min and every hour while
 it stays unhealthy. Health restarts spend none of the crash-restart budget; the
 **unhealthy stretch** is recorded on the Service's run so a new `rigd`
-continues the back-off, and an explicit start ends it. Rig sends no alerts.
+continues the back-off, and an explicit start ends it. A health restart whose
+start fails its start check leaves the Service stopped and unhealthy; the
+health monitor, not restart policy, starts it again at the next step of the
+back-off, and never gives up until an explicit start or `rig down`. Rig sends
+no alerts.
 
 _Relationship_: A Target may be running while its components have different
 states. `rig status` should show the Target state first and component states

@@ -24,7 +24,9 @@ export function DeployForm({
   const modes = (["stable", "preview"] as const).filter(
     (each) => context.on[each],
   );
-  const [mode, setMode] = useState<Mode>(modes[0] ?? "stable");
+  const [chosen, setMode] = useState<Mode>(modes[0] ?? "stable");
+  // A mode whose Target was turned off since the form opened falls back to one that is on.
+  const mode = modes.includes(chosen) ? chosen : (modes[0] ?? chosen);
   const [branch, setBranch] = useState("");
   const [commit, setCommit] = useState("");
   const [deployment, setDeployment] = useState("");

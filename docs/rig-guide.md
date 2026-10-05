@@ -392,7 +392,11 @@ published or started. `rig status` and the dashboard list the Targets that
 are on, and also any Target that is off but still recorded, running or
 stopped, because its config changed: such a Target can always be seen, read,
 stopped with `rig down`, and, for a Preview, destroyed. Turning a Target off
-never stops it by itself.
+never stops it by itself: a recorded Target meant to run is still restarted
+under its restart policy and, for the stable Target, after a Host restart,
+until `rig down` stops it. Whether a Target is on is read from the checkout's
+`rig.yaml`, also for a deploy, which then plans from the committed config of
+the revision it deploys.
 
 ### Default Targets
 
@@ -938,7 +942,7 @@ that then completes renders its result as usual. A second Ctrl-C detaches:
 `rig activity <id>` for the outcome (`--json` prints an `error` object with
 code `DETACHED` and the `operationId`). A third Ctrl-C ends the process with
 status 130 without waiting for anything. Ctrl-C or EOF at an interactive
-prompt (a Target picker, an `init` question, a Production confirmation) is
+prompt (an `init` question, a Production confirmation) is
 the same cancellation: exit 0, no message, no diagnostic record. Answering no
 to a confirmation is an explicit decision and is reported as `The operation
 was cancelled.` with exit 1.

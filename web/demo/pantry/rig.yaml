@@ -17,3 +17,9 @@ services:
 
 proxy:
   /: ${services.web.ports.http}
+
+# The seed deploys the stable Target and a Preview, so both are on.
+targets:
+  working: true
+  stable: true
+  preview: true

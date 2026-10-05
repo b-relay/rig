@@ -113,6 +113,6 @@ export function downCommands(
             target: "preview",
             deployment: target.name,
           }
-        : { action: "down", project, target: target.name },
+        : { action: "down", project, target: target.kind },
     );
 }

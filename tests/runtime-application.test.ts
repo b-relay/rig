@@ -668,6 +668,43 @@ test("rename and repoint reply and record activity from the updated registration
   });
 });
 
+test("repoint keeps a Tool's name from before Target names were fixed, so the next plan of the working Target retires it", async () => {
+  const { runtime, state, deps, config } = fixture();
+  config.tools = { cli: { bin: "cli.ts" } };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({ action: "down", project: "demo" });
+  // As state version 4 is read for a working Target that was named local.
+  const tool = state.targets[0]!.plan.components.find(
+    (component) => component.kind === "installed",
+  )!;
+  Object.assign(tool, { publishedAs: "cli-local" });
+  await runtime.command({
+    action: "repoint",
+    project: "demo",
+    newPath: "/tmp/moved",
+  });
+  expect(state.targets[0]!.plan.components).toContainEqual(
+    expect.objectContaining({
+      name: "cli",
+      entrypoint: "/tmp/moved/cli.ts",
+      publishedAs: "cli-local",
+    }),
+  );
+  const retired: string[] = [];
+  deps.lifecycle.retireSuperseded = async (previous, candidate) => {
+    for (const plan of [previous.plan, candidate.plan])
+      for (const component of plan.components)
+        if (component.kind === "installed")
+          retired.push(component.publishedAs ?? "planned name");
+  };
+  await runtime.command({ action: "up", project: "demo" });
+  expect(retired).toEqual(["cli-local", "planned name"]);
+  expect(state.targets[0]!.plan.components).not.toContainEqual(
+    expect.objectContaining({ publishedAs: expect.anything() }),
+  );
+});
+
 test("repoint uses the new config path and retains assigned ports", async () => {
   const { runtime, state, deps, config } = fixture();
   config.services!.api = { run: "api", ports: { http: "auto" } };
@@ -3514,6 +3551,14 @@ test("usage mistakes that never reached an Operation leave activity untouched; a
   await expect(
     runtime.command({ action: "deploy", project: "demo", target: "working" }),
   ).rejects.toMatchObject({ code: "DEPLOY_TARGET" });
+  // The deploy context refuses it too, before anything is announced.
+  await expect(
+    runtime.command({
+      action: "deployment-context",
+      project: "demo",
+      target: "working",
+    }),
+  ).rejects.toMatchObject({ code: "DEPLOY_TARGET" });
   await expect(
     runtime.command({ action: "destroy", project: "demo", target: "stable" }),
   ).rejects.toMatchObject({ code: "DESTROY_TARGET" });
@@ -4145,6 +4190,31 @@ test("a Preview recorded under a role's name before names were fixed blocks plan
       target: "stable",
     }),
   ).toMatchObject({ outcome: "deployed", target: "stable" });
+});
+
+test("a Preview named dev from before the name was reserved blocks planning a working Target with Tools, whose <tool>-dev it holds", async () => {
+  const { runtime, state, config } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature",
+  });
+  const preview = state.targets[0]!;
+  preview.name = preview.plan.deploymentName = "dev";
+  // Without Tools nothing collides.
+  expect(
+    await runtime.command({ action: "up", project: "demo" }),
+  ).toMatchObject({ outcome: "started", target: "working" });
+  await runtime.command({ action: "down", project: "demo" });
+  config.tools = { cli: { bin: "cli.ts" } };
+  await expect(
+    runtime.command({ action: "up", project: "demo" }),
+  ).rejects.toMatchObject({
+    code: "TARGET_NAME",
+    hint: "Destroy that Preview first: rig down preview --deployment dev --destroy.",
+  });
 });
 
 test("an action checks and plans the working Target from one read of the checkout config", async () => {

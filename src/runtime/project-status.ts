@@ -89,6 +89,8 @@ export async function projectStatus(
       const definitions = configuredComponents(document.config, role);
       const report = reports.find((t) => t.kind === role);
       if (report) {
+        // An off Target shows what it recorded, not what the config would add to it.
+        if (!targetOn(document.config, role)) continue;
         const known = new Set(report.components.map((c) => c.name));
         report.components.push(
           ...definitions.filter((c) => !known.has(c.name)),

@@ -619,6 +619,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             : command.target === PREVIEW_SELECTOR
               ? "preview"
               : selectTarget(command, targets).kind;
+        // Refused here as the deploy itself refuses it, so nothing announces a deploy that cannot happen.
+        if (selected === "working") throw deployTargetError();
         if (selected) assertTargetOn(selection.document!.config, selected);
         return {
           project: project.name,
@@ -784,12 +786,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         } satisfies LogsResult;
       }
       if (command.action === "deploy") {
-        if (kind === "working")
-          throw new RigError(
-            "DEPLOY_TARGET",
-            "Deploy needs the stable Target or a Preview.",
-            "Use rig up for the working Target.",
-          );
+        if (kind === "working") throw deployTargetError();
         const document = selection.document!;
         const branch =
           command.branch ??
@@ -1586,6 +1583,14 @@ async function checkoutConfig(
   } catch (failure) {
     return { failure };
   }
+}
+/** A deploy names the stable Target or a Preview; the working Target runs the checkout and is never deployed. */
+function deployTargetError(): RigError {
+  return new RigError(
+    "DEPLOY_TARGET",
+    "Deploy needs the stable Target or a Preview.",
+    "Use rig up for the working Target.",
+  );
 }
 /** Names the Preview by the Branch or deployment the user typed; the hashed slug stays internal. */
 function missingTarget(

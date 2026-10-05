@@ -3,7 +3,7 @@ import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import { RigError, failureCauses } from "../domain/errors";
 import { observeTargets } from "./status";
-import { planTarget } from "./targets";
+import { keepPublishedNames, planTarget } from "./targets";
 /** A registration changes only while nothing of the Project runs, is meant to run, or is mid-recovery. */
 async function assertTargetsStopped(
   targets: TargetRecord[],
@@ -172,15 +172,18 @@ export async function updateRegistration(
     for (const target of targets.filter((t) => t.kind === "working"))
       replanned.set(
         target.id,
-        await planTarget(
-          {
-            command,
-            kind: "working",
-            project: { ...project, repoPath },
-            document,
-            existing: target,
-          },
-          deps,
+        keepPublishedNames(
+          target,
+          await planTarget(
+            {
+              command,
+              kind: "working",
+              project: { ...project, repoPath },
+              document,
+              existing: target,
+            },
+            deps,
+          ),
         ),
       );
     await deps.store.update((state) => {

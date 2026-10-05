@@ -608,7 +608,7 @@ test.each(["working", "stable", "preview"])(
       failureOf({
         name: "app",
         services: web(),
-        targets: { [role]: { name: "dev" } },
+        targets: { [role]: { name: "dev", env: { A: "1" } } },
       }),
     ).toMatchObject({
       code: "invalid_config",
@@ -616,6 +616,18 @@ test.each(["working", "stable", "preview"])(
     });
   },
 );
+
+test("the targets rig init used to write, names alone, are refused with how to keep each Target on", () => {
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { working: { name: "local" }, stable: { name: "live" } },
+    }),
+  ).toBe(
+    "Fix targets.working.name: Target names are fixed (working, stable, preview); delete this line, and write `working: true` to keep it on; targets.stable.name: Target names are fixed (working, stable, preview); delete this line, and write `stable: true` to keep it on.",
+  );
+});
 
 test("a Target is on when its key is true or a settings map; false or a missing key is off, and without targets only working is on", () => {
   const on = (targets: unknown) => {

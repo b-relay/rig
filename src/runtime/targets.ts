@@ -170,6 +170,22 @@ export async function planTarget(
       `Target name '${name}' already belongs to a Preview of this Project.`,
       `Destroy that Preview first: rig down preview --deployment ${name} --destroy.`,
     );
+  // The working Target publishes its Tools as <tool>-dev, which a Preview named dev from before that name was reserved owns.
+  if (
+    kind === "working" &&
+    Object.keys(patchedSettings(config, kind).tools ?? {}).length &&
+    targets.some(
+      (t) =>
+        t.projectId === project.id &&
+        t.kind === "preview" &&
+        t.name === WORKING_TOOL_SUFFIX,
+    )
+  )
+    throw new RigError(
+      "TARGET_NAME",
+      `A Preview of this Project is named '${WORKING_TOOL_SUFFIX}', and its Tools hold the <tool>-${WORKING_TOOL_SUFFIX} names the working Target publishes its Tools under.`,
+      `Destroy that Preview first: rig down preview --deployment ${WORKING_TOOL_SUFFIX} --destroy.`,
+    );
   const planInput = {
     config,
     target: kind,
@@ -239,6 +255,33 @@ export async function planTarget(
           configRevision: document.revision,
           configDigest: configDigest(document.config),
         }),
+  };
+}
+/** `replanned` with each Tool still published under a name from before Target names were fixed (`publishedAs`) keeping that
+ * name, for a plan that replaces `previous` without retiring its executables (a repoint). The file stays where it is and
+ * known, so the next plan that does retire them (rig up of a stopped working Target, or rig restart) removes it. */
+export function keepPublishedNames(
+  previous: Pick<TargetRecord, "plan">,
+  replanned: TargetRecord,
+): TargetRecord {
+  const published = new Map(
+    previous.plan.components.flatMap((component) =>
+      component.kind === "installed" && component.publishedAs
+        ? [[component.name, component.publishedAs] as const]
+        : [],
+    ),
+  );
+  if (!published.size) return replanned;
+  return {
+    ...replanned,
+    plan: {
+      ...replanned.plan,
+      components: replanned.plan.components.map((component) =>
+        component.kind === "installed" && published.has(component.name)
+          ? { ...component, publishedAs: published.get(component.name)! }
+          : component,
+      ),
+    },
   };
 }
 export async function persistTarget(

@@ -611,8 +611,8 @@ they remain in inventory until they are destroyed.
 _Relationship_: `rig status` without arguments is Project-scoped. Host-level
 project listing is `rig list`.
 
-_Relationship_: `rig status` shows all Targets for the selected Project
-rather than requiring a Target picker.
+_Relationship_: `rig status` shows every listed Target of the selected
+Project: those `rig.yaml` turns on, and any still recorded.
 
 _Relationship_: `rig status` is Project-wide only; it takes no Target.
 

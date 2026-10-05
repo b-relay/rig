@@ -231,7 +231,7 @@ const toolFields = {
   build: build.optional(),
   build_timeout: buildTimeout.optional(),
   bin: text.describe(
-    `Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target and <tool>-<target> elsewhere. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname "$0" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. ${referencesIn("project")}`,
+    `Executable path relative to the workspace; published in <RIG_ROOT>/bin under the Tool name for the stable Target, as <tool>-dev for the working Target and as <tool>-<preview name> for a Preview. An executable is copied there and runs from there, so it must be self-contained, like a compiled binary, or name the checkout it needs itself: dirname "$0" is <RIG_ROOT>/bin. A source file (.ts, .tsx, .js, .jsx, .mjs, .cjs) is not copied; it is published as a shim that runs it in place with the bun rigd install recorded, so its relative imports resolve. ${referencesIn("project")}`,
   ),
 };
 const tool = z.strictObject(toolFields);
@@ -656,7 +656,14 @@ function refuseUnsupportedShapes(value: unknown): void {
       });
     for (const [key, message] of Object.entries(PATCH_IDENTITY_KEYS))
       if (Object.hasOwn(patch, key))
-        issues.push({ path: ["targets", role, key], message });
+        issues.push({
+          path: ["targets", role, key],
+          // A role that held only its name, as rig init used to write it, would be left empty and so off.
+          message:
+            key === "name" && Object.keys(patch).length === 1
+              ? `${message.replace(/\.$/, "")}, and write \`${role}: true\` to keep it on.`
+              : message,
+        });
     for (const kind of ["services", "tools"])
       if (isRecord(patch[kind]))
         for (const [key, entry] of Object.entries(patch[kind]))

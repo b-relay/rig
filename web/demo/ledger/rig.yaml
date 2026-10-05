@@ -18,3 +18,8 @@ services:
 
 proxy:
   /: ${services.api.ports.http}
+
+# The seed deploys the stable Target, so it is on.
+targets:
+  working: true
+  stable: true

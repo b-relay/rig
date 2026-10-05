@@ -123,7 +123,10 @@ metadata such as Target count.
 Project context is available. It is read-only by default.
 
 Observed status has one two-second total deadline. Configured checks distinguish
-healthy from merely running; timeouts remain unknown. Up/down/restart on the
+healthy from merely running; timeouts remain unknown. A Service with a
+`healthcheck` is judged by the result `rigd`'s ongoing checks cached, which
+status reads without running a check
+([ADR 0012](docs/adr/0012-compose-healthcheck.md)). Up/down/restart on the
 stable Target and Previews use the recorded plan. The working Target is
 re-planned from the current `rig.yaml` on `up` (when stopped) and on `restart`.
 Doctor compares the working Target with the current `rig.yaml`, and each deployed
@@ -137,7 +140,7 @@ Project config owns:
 - Project identity
 - Production branch
 - Target names
-- Services and Tools: commands, working directories, ports, readiness checks,
+- Services and Tools: commands, working directories, ports, healthchecks,
   builds, environment
 - the hostname and the `proxy` routes, or the default route to the one Service
   with one port
@@ -145,7 +148,9 @@ Project config owns:
 A Project's keys use Docker Compose's names where the meaning matches
 (`command`, `environment`, `env_file`, `working_dir`, `depends_on`, `ports`,
 `restart`, `build`), so a `rig.yaml` reads like a Compose file and moves to one
-easily ([ADR 0011](docs/adr/0011-compose-key-names.md)). Short references such
+easily ([ADR 0011](docs/adr/0011-compose-key-names.md)); a Service's
+`healthcheck` is Compose's too, with Rig's `on_failure` added
+([ADR 0012](docs/adr/0012-compose-healthcheck.md)). Short references such
 as `${port}` are still explicit mappings to the application's own inputs
 ([ADR 0005](docs/adr/0005-services-use-platform-independent-inputs.md)).
 

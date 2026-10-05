@@ -28,7 +28,7 @@ const component = z.discriminatedUnion("kind", [
     workingDir: text
       .optional()
       .describe(
-        "Directory the Service's command, build and shell readiness check run in, relative to the plan's workspace; absent means the workspace root.",
+        "Directory the Service's command, build and healthcheck command run in, relative to the plan's workspace; absent means the workspace root.",
       ),
     port: z.number().int().min(1).max(65535).optional(),
     ports: z.record(text, z.number().int().min(1).max(65535)).optional(),

@@ -243,6 +243,37 @@ _Relationship_: `healthy` means a configured health check passed. A managed
 component without a configured health check may be `running`, but should not be
 reported as `healthy` without evidence.
 
+### Healthcheck
+
+A Service's health check, written as Docker Compose's `healthcheck` (`test`,
+`interval`, `timeout`, `retries`, `start_period`, `disable`) plus Rig's one
+extension, `on_failure` ([ADR 0012](docs/adr/0012-compose-healthcheck.md)). A
+`test` is a shell command, a local `http(s)` URL that must answer below 400
+without following a redirect, or Compose's `CMD`, `CMD-SHELL` or `NONE` list;
+without one, a check passes when every declared port accepts a connection.
+_Avoid_: ready, readiness check, health block
+
+_Relationship_: The first passing check is the **start gate**: a start waits up
+to `start_period` (default 30 s, not Compose's 0 s) for it, checking every
+100 ms, and a Service that `depends_on` this one starts only after it. Without a
+healthcheck the start gate is every declared port accepting a connection, and
+nothing is checked afterwards.
+
+_Relationship_: While the Service runs, `rigd` repeats the check every
+`interval`. It is **unhealthy** after `retries` failed checks in a row and
+healthy again after one pass; Activity records both, with the check's last
+output cut to 200 characters. Checks pause while an Operation holds or waits
+for the Target, never overlap for one Service, and run at most four at a time
+on the Host. Status, the dashboard and doctor read the cached result and run
+nothing.
+
+_Relationship_: With `on_failure: restart`, an unhealthy Service gets a **health
+restart**: it is stopped within its `stop_timeout` under its Target's lock and
+started again, at once and then after 1 min, 5 min, 15 min and every hour while
+it stays unhealthy. Health restarts spend none of the crash-restart budget; the
+**unhealthy stretch** is recorded on the Service's run so a new `rigd`
+continues the back-off, and an explicit start ends it. Rig sends no alerts.
+
 _Relationship_: A Target may be running while its components have different
 states. `rig status` should show the Target state first and component states
 underneath it.
@@ -276,8 +307,10 @@ _Avoid_: Tool, Deployment
 _Relationship_: A Service's settings use Docker Compose's names where the
 meaning matches: `command`, `environment`, `env_file`, `working_dir`,
 `depends_on`, `ports`, `restart`, `build`
-([ADR 0011](docs/adr/0011-compose-key-names.md)). Its `command`, `build` and a
-shell `ready` check run in its `working_dir`, a directory inside the workspace
+([ADR 0011](docs/adr/0011-compose-key-names.md)), and its `healthcheck` is
+Compose's too ([ADR 0012](docs/adr/0012-compose-healthcheck.md)). Its
+`command`, `build` and a healthcheck command run in its `working_dir`, a
+directory inside the workspace
 (default: the workspace root). In its own settings `${port}` is its only port
 and `${ports.<name>}` a named one; elsewhere `${services.<name>.port}` and
 `${services.<name>.ports.<port>}` name them. These are still explicit mappings
@@ -836,7 +869,8 @@ journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
 
 Port selection probes localhost and releases every probe before returning. Recorded
 port numbers exclude conflicting Rig inventory; they do not retain OS socket
-ownership. Process startup and configured readiness checks still determine whether
+ownership. Process startup and the start gate (a healthcheck, or connections to
+the declared ports) still determine whether
 a Target can run. Another process may acquire a selected port before startup.
 
 ### Preflight
@@ -852,7 +886,10 @@ the Project, the Target role and name, the workspace path, the Persistent
 storage root, Branch and Commit, the process supervisor, environment and env
 files, builds, the hostname with its proxy routes, and the components. Each
 component carries its command, working directory when it is not the workspace
-root, ports, health check, ready timeout, restart policy, and dependencies. The
+root, ports, health check (`health`), start budget (`readyTimeout`, the
+healthcheck's `start_period`), ongoing checks (`healthcheck`, absent in plans
+recorded before ADR 0012, which therefore only gate start), restart policy, and
+dependencies. The
 process supervisor is always `rigd`. A plan's field names are Rig's own, not
 `rig.yaml` keys: a Service's `environment` is the plan's `env`.
 
@@ -874,7 +911,7 @@ directly.
 
 _Relationship_: Project config and Host config never own the same
 field. Project config owns Project intent that should travel with the repo:
-commands, ports, readiness checks, builds, environment, routes, Production
+commands, ports, healthchecks, builds, environment, routes, Production
 branch, and which Targets are on. Host config owns machine capability: the default
 Production branch, the Preview limit, the Caddy provider settings, and
 diagnostics. `rigd` combines both into the runtime plan before calling

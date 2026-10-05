@@ -30,7 +30,8 @@ without a Target `up`, `down` and `logs` mean `working` and `deploy` means
 Configuration is YAML: `rig.yaml` for a Project and `<RIG_ROOT>/config.yaml`
 for the Host. A Project's keys use Docker Compose's names where the meaning
 matches (`command`, `environment`, `env_file`, `working_dir`, `depends_on`,
-`ports`, `restart`, `build`), and the defaults keep a small file small:
+`ports`, `restart`, `build`, and a Compose `healthcheck`), and the defaults keep
+a small file small:
 
 ```yaml
 name: notes
@@ -39,12 +40,14 @@ services:
   api:
     command: ./notes --port ${port}
     ports: { http: auto }
-    ready: http://127.0.0.1:${port}/health
+    healthcheck:
+      test: http://127.0.0.1:${port}/health
 targets: { working: true, stable: true }
 ```
 
 `${port}` is the Service's one port, and with one Service that has one port the
-domain routes to it without a `proxy`. See the [guide](docs/rig-guide.md) for
+domain routes to it without a `proxy`. The healthcheck gates start and keeps
+checking the Service while it runs; `rig status` shows its last result. See the [guide](docs/rig-guide.md) for
 setup, deploys, configuration, diagnostics, and command behavior, and
 [docs/examples](docs/examples) for complete configs.
 

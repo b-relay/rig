@@ -194,16 +194,35 @@ _Relationship_: Normal commands discover Project config from the workspace or
 
 ### Deploy classification
 
-The Production branch maps to the Stable Target, and any other Branch maps to a
+The Production branch maps to the stable Target, and any other Branch maps to a
 Preview; a mismatch is refused as `BRANCH_POLICY`. Classification does not
 materialize Deployments, enforce the Preview limit, write inventory, select
 ports, or start processes.
 
 ### Target
 
-The user-facing runtime object a Rig command acts on, such as the Working copy
-Target, the Stable Target, or a Preview.
+The user-facing runtime object a Rig command acts on: the working Target, the
+stable Target, or a Preview.
 _Avoid_: lane when speaking about the user-facing CLI
+
+_Relationship_: Target names are fixed: `working`, `stable`, and a Preview's
+generated or explicit name. They are the names in `rig.yaml`, on the command
+line, in status, in the dashboard and in logs. See
+[ADR 0010](docs/adr/0010-fixed-opt-in-targets.md).
+
+### Target switch
+
+A Target role's key under `targets` in `rig.yaml`. `true`, or a map of settings
+that patches the Project for that role, turns the Target on; `false`, or no
+key, leaves it off. A `rig.yaml` without a `targets` key has only the working
+Target on.
+_Avoid_: enabled flag, Target name
+
+_Relationship_: An off Target is refused (`TARGET_OFF`, with a hint naming the
+line to add) by every command that would select, start, deploy or publish it:
+`up`, `restart`, `deploy`, and `logs` of a Target that never ran. A Target
+that is off but still recorded stays listed by status and the dashboard and can
+always be stopped and destroyed; turning a Target off never stops it.
 
 ### Component
 
@@ -261,21 +280,19 @@ _Avoid_: Service, background process
 
 ### Target role
 
-The role of a Target: Working copy, Stable, or Preview. Project config keys
-Targets by role (`working`, `stable`, `preview`). A Target's role is distinct
-from its configured or generated name.
-_Avoid_: Target name, Target class
+The role of a Target: working, stable, or preview. Project config keys Targets
+by role (`working`, `stable`, `preview`). The working and stable Targets are
+named by their role; a Preview's name comes from its Branch.
+_Avoid_: Target class
 
-### Working copy Target
+### Working Target
 
-The Target backed by the current Working copy, with a configurable alias that
-defaults to `local`.
+The Target backed by the current Working copy, named `working`. Its Tools are
+published as `<tool>-dev`.
+_Avoid_: local, Working copy Target
 
-_Relationship_: The Working copy Target name and the Stable Target name must
-differ.
-
-_Relationship_: The Working copy Target name belongs in committed Project
-config as the default Project policy.
+_Relationship_: In a checkout, `rig up`, `rig down`, `rig restart` and `rig
+logs` without a Target mean the working Target.
 
 ### Project
 
@@ -355,7 +372,7 @@ preferred user-facing shape, but its exact automation and confirmation behavior
 must be decided as part of the future repair design.
 
 _Relationship_: `rig doctor` runs no Git fetch and inspects no refs. It only
-compares the recorded Stable Branch with the Production branch.
+compares the recorded stable Branch with the Production branch.
 
 _Relationship_: A healthy `rig doctor` response summarizes Host health and,
 when present, Project health, followed by a quiet confirmation that no
@@ -456,13 +473,15 @@ _Relationship_: Revision metadata and structured config editing belong to the
 
 ### Stable Target
 
-The named non-local Target intended for durable shared use. A Project has one
-Stable Target; its name defaults to `live`.
+The deployed Target intended for durable shared use, named `stable`. A Project
+has at most one, and it is on only when `rig.yaml` turns it on. Its Tools are
+published under their plain names.
+_Avoid_: live, production Target
 
-The Stable Target has a configurable name and coexists with generated Previews.
-The Stable Target is not inherently a promotion stage.
+The stable Target coexists with generated Previews. It is not inherently a
+promotion stage.
 
-_Relationship_: The Stable Target serves exactly `domain`. With no `domain`, or
+_Relationship_: The stable Target serves exactly `domain`. With no `domain`, or
 no `proxy` with a `/` entry, a Target has no route. Project identity is never
 inserted into a hostname. Route collisions between Projects are refused at
 publish time as `ROUTE_CONFLICT`.
@@ -472,28 +491,25 @@ publish time as `ROUTE_CONFLICT`.
 A generated Target created from a Preview branch.
 
 _Relationship_: A Preview's name is generated from its Branch (a slug plus 8 hex
-digits) or given with `--deployment`. Project config controls only its
-hostname: `<preview name>.<domain>` by default, or `targets.preview.domain`
-with `${rig.target}` replaced by the Preview name.
+digits) or given with `--deployment`; `working`, `stable` and `dev` are
+reserved. Project config controls only its hostname. By default it is the
+domain with a dash and the Preview name after the first label, a sibling of
+the domain (`pantry2.dev.b-relay.com` gives
+`pantry2-feat-x-1a2b3c4d.dev.b-relay.com`); `targets.preview.domain` replaces
+it, with `${rig.target}` replaced by the Preview name. A label longer than 63
+characters is refused, never cut short.
 
-_Relationship_: Preview is selected separately from local and Stable Targets,
-using the `preview` selector plus a Branch.
-
-_Relationship_: `preview` is a reserved selector and cannot be used as a
-Stable Target name.
-
-_Relationship_: `preview` cannot be used as the Working copy Target name.
-
-_Relationship_: In CLI target selection, bare target names such as `local` or
-`live` resolve to the Working copy Target or the Stable Target. Previews must be
-selected with the `preview` selector, such as `rig up preview <Branch>`.
+_Relationship_: A Preview is selected separately from the working and stable
+Targets, with the `preview` selector plus a Branch or `--deployment`, such as
+`rig up preview <Branch>`. A Preview is never a command's default Target.
 
 ### Deploy selector
 
 The first argument to `rig deploy` that chooses whether the deploy updates the
-Stable Target or a Preview.
+stable Target or a Preview.
 
-_Relationship_: `rig deploy` without a Deploy selector prints the deploy help.
+_Relationship_: `rig deploy` without a Deploy selector deploys the stable
+Target.
 
 ### Working copy
 
@@ -501,7 +517,7 @@ The files currently checked out on disk for a project workspace.
 
 ### Branch
 
-A named Git branch that Rig deploys to the Stable Target or a Preview.
+A named Git branch that Rig deploys to the stable Target or a Preview.
 _Avoid_: ref in normal user-facing CLI
 
 _Relationship_: Preview commands must allow Branch names containing slashes,
@@ -515,10 +531,10 @@ _Relationship_: Normal `rig` Branch arguments are local Branch names,
 not remote-tracking names such as `origin/main`.
 
 _Relationship_: CLI deploy requires any named Branch, including an
-explicit Production branch for a Stable Target deploy, to exist locally so Rig
+explicit Production branch for a stable Target deploy, to exist locally so Rig
 can resolve it to a Commit.
 
-_Relationship_: CLI Stable Target deploys without an explicit Branch still
+_Relationship_: CLI stable Target deploys without an explicit Branch still
 require the configured Production branch to exist locally because Rig must
 resolve that Branch to a Commit.
 
@@ -527,7 +543,7 @@ is behind or ahead of its configured upstream, regardless of the upstream
 remote name, and when the cached upstream ref is unavailable. These warnings
 never block a deploy.
 
-_Relationship_: CLI Stable Target deploy preflight warns when the Production
+_Relationship_: CLI stable Target deploy preflight warns when the Production
 branch has no configured upstream. A Preview deploy does not warn merely
 because the Preview branch has no upstream.
 
@@ -544,7 +560,7 @@ _Avoid_: hash in product language unless showing the SHA value
 
 ### Production branch
 
-The branch allowed to update the Stable Target. `rig init` defaults it to the
+The branch allowed to update the stable Target. `rig init` defaults it to the
 branch `origin/HEAD` names when Rig can discover it.
 _Avoid_: deployBranch
 
@@ -563,10 +579,10 @@ branch, but it must have its own Branch identity, such as `preview/main`.
 
 ### Deployment
 
-A materialized branch commit in a non-local target.
-_Avoid_: using Deployment for the local Working copy lifecycle
+A materialized branch commit in the stable Target or a Preview.
+_Avoid_: using Deployment for the working Target lifecycle
 
-_Relationship_: The Working copy Target uses the Working copy, while the Stable
+_Relationship_: The working Target uses the Working copy, while the stable
 Target and Previews use Deployments.
 
 _Relationship_: `up` and `down` are lifecycle actions for existing Targets;
@@ -585,12 +601,9 @@ history. Rig does not remove stopped Previews on its own, apart from the Host
 Replacement policy at the Preview limit.
 
 _Relationship_: Target-aware commands such as `rig up`, `rig down`, `rig
-restart`, and `rig logs` show an interactive Target picker when running
-in a TTY without a selected Target, and fail with `TARGET_REQUIRED` in
-non-interactive use.
-
-_Relationship_: The picker lists every Target `rig status` reports, including
-ones that are only `configured`. It never creates missing Preview Deployments.
+restart`, and `rig logs` act on the working Target when no Target is named,
+and `rig deploy` on the stable Target. There is no Target picker. A default
+never creates a missing Preview Deployment.
 
 _Relationship_: `rig status` shows stopped Previews because
 they remain in inventory until they are destroyed.
@@ -622,7 +635,7 @@ configuration. Runtime records and Diagnostic logs are machine-owned state and
 may remain JSON or JSONL.
 
 _Relationship_: A deploy records the policy of the `rig.yaml` committed on the
-deployed Commit; uncommitted edits never reach a Stable or Preview plan. The
+deployed Commit; uncommitted edits never reach a stable or Preview plan. The
 working-copy config only identifies the Project, names its Targets, and
 supplies the Production branch.
 
@@ -631,10 +644,10 @@ supplies the Production branch.
 The runtime state recorded by `rigd` for a materialized Target.
 _Avoid_: Project config
 
-_Relationship_: Lifecycle commands for the Stable Target and Previews use the
+_Relationship_: Lifecycle commands for the stable Target and Previews use the
 Deployment record, so they stop, start, or restart the same materialized Target
 with the supervisor, ports, commands, source Branch, Commit, and resolved
-component plan that Rig actually deployed. The Working copy is re-planned from
+component plan that Rig actually deployed. The working Target is re-planned from
 the current `rig.yaml` on `up` (when stopped) and on `restart`.
 
 _Relationship_: `rig status` shows recorded runtime state and configured
@@ -642,9 +655,9 @@ Targets. It does not diagnose config drift.
 
 _Relationship_: A Target or component that exists in current Project config
 but has no recorded runtime state appears in status as `configured`, not
-as running or stopped.
+as running or stopped. A Target is listed so only while its Target switch is on.
 
-_Relationship_: `rig doctor` diagnoses drift: it compares the Working copy with
+_Relationship_: `rig doctor` diagnoses drift: it compares the working Target with
 the current `rig.yaml`, and each deployed Target with the config committed in
 its checkout.
 
@@ -671,8 +684,8 @@ login session), which ends every process Rig ran (a logout, those of the old
 login session). `rigd` detects one at its
 start by comparing the boot and login session with the ones it last recorded.
 
-_Relationship_: after a Host restart, `rigd` starts each Stable Target meant to
-run as `rig up` would; the Working copy and Previews stay stopped until
+_Relationship_: after a Host restart, `rigd` starts each stable Target meant to
+run as `rig up` would; the working Target and Previews stay stopped until
 `rig up`, whatever their Automatic restart policy.
 _Avoid_: reboot policy, restart_after_reboot
 
@@ -714,36 +727,36 @@ its Branch and Commit may activate again while retaining Target identity and
 Persistent storage. This distinction is recorded separately from stopped intent.
 
 _Relationship_: Deploy `--no-up` materializes the Deployment without starting
-the Target and is a normal user-facing option for Stable Targets and Previews.
+the Target and is a normal user-facing option for stable Targets and Previews.
 
 _Relationship_: If deploy changes a Target to a new Commit, the Target moves
 to that new materialized Deployment immediately. With `--no-up`, any old
 running process for that Target is stopped rather than left running on
 the previous Commit.
 
-_Relationship_: When a deploy explicitly targets a Stable Target and the
+_Relationship_: When a deploy explicitly targets a stable Target and the
 Production branch resolves to a new Commit, Rig replaces the existing
 Deployment without an additional confirmation prompt. Branch policy is the
 safety boundary.
 
-_Relationship_: `rig deploy <Stable Target>` deploys the Production branch to
-that Stable Target; `rig deploy <Stable Target> <Branch>` deploys an explicit
-Branch to that Stable Target subject to production safety policy.
+_Relationship_: `rig deploy stable` deploys the Production branch to
+that stable Target; `rig deploy stable <Branch>` deploys an explicit
+Branch to that stable Target subject to production safety policy.
 
-_Relationship_: Normal `rig` rejects Stable Target deploys from any Branch
+_Relationship_: Normal `rig` rejects stable Target deploys from any Branch
 other than the configured Production branch.
 
-_Relationship_: `rig deploy <Stable Target>` uses the configured Production
+_Relationship_: `rig deploy stable` uses the configured Production
 branch even when the current Branch differs; interactive commands confirm
 this mismatch, and non-interactive commands fail with
 `PRODUCTION_CONFIRMATION` unless the Production branch is passed explicitly.
 
-_Relationship_: `rig deploy <Stable Target>` can run from detached HEAD
+_Relationship_: `rig deploy stable` can run from detached HEAD
 because it deploys the configured Production branch, not the current checkout.
 If Rig detects detached HEAD, output makes clear which Production branch
 is being deployed.
 
-_Relationship_: `rig deploy <Stable Target> <Branch>` still verifies the
+_Relationship_: `rig deploy stable <Branch>` still verifies the
 Branch is the configured Production branch.
 
 _Relationship_: `rig deploy preview` deploys the current Branch as a Preview;
@@ -760,7 +773,7 @@ branch itself and suggests creating a Preview branch such as
 _Relationship_: CLI Preview deploy classification uses the explicit Branch
 argument, or the current Branch when omitted.
 
-_Relationship_: Deploy never deploys the Working copy.
+_Relationship_: Deploy never deploys the working Target.
 
 _Relationship_: Successful deploy output is one line,
 `<project> <target> deployed <branch>@<sha> (was <sha>)`, plus any warnings and

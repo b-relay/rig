@@ -9,22 +9,23 @@ TypeScript, Bun, and Zod.
 
 ```sh
 rig init
-rig up local
+rig up
 rig status
-rig logs local
-rig down local
+rig logs
+rig down
 
-rig deploy live
+rig deploy
 rig deploy preview feature/login
 rig doctor
 ```
 
 Commands discover the Project from the current workspace. Use `--project <name>`
 to select a registered Project elsewhere, and `--help` on any command for options.
-`local` runs the working copy; `live` runs the configured Production branch;
-Previews run other Branches. `local` and `live` are the default Target names; a
-Project may rename them under `targets` in `rig.yaml`. Lifecycle commands reuse
-recorded deployment policy.
+The `working` Target runs the working copy; `stable` runs the configured
+Production branch; Previews run other Branches. Those names are fixed. Only
+`working` is on until `targets` in `rig.yaml` turns `stable` or `preview` on, and
+without a Target `up`, `down` and `logs` mean `working` and `deploy` means
+`stable`. Lifecycle commands reuse recorded deployment policy.
 
 Configuration is YAML: `rig.yaml` for a Project and `<RIG_ROOT>/config.yaml`
 for the Host. See the [guide](docs/rig-guide.md) for setup,

@@ -69,18 +69,20 @@ missing/unreachable daemon state and point to `rigd status` or `rigd install`.
 
 Rig acts on Targets:
 
-- Working copy Target, named `local` by default.
-- Stable Target, named `live` by default.
-- Preview Target, selected as `preview <branch>`.
+- `working`, the working copy as it is on disk.
+- `stable`, deployed from the Production branch.
+- Previews of other Branches, selected as `preview <branch>`.
 
-`rig.yaml` keys Targets by role (`working`, `stable`, `preview`) and may rename
-the Working copy and Stable Targets. A Project has one Stable Target.
+The names are fixed. `rig.yaml` turns each on under `targets` (`true` or a
+settings patch); without a `targets` key only `working` is on, so nothing
+deploys by surprise. A Project has at most one stable Target. See
+[ADR 0010](docs/adr/0010-fixed-opt-in-targets.md).
 
 ## Deploy
 
 `deploy` materializes Branches as Deployments:
 
-- Stable Target deploy uses the configured Production branch.
+- A stable deploy uses the configured Production branch.
 - Preview deploy uses the current Branch or an explicit local Branch.
 - CLI deploy does not accept arbitrary refs, tags, remote-tracking names, or
   detached HEAD as Branch identity.
@@ -122,9 +124,9 @@ Project context is available. It is read-only by default.
 
 Observed status has one two-second total deadline. Configured checks distinguish
 healthy from merely running; timeouts remain unknown. Up/down/restart on the
-Stable Target and Previews use the recorded plan. The Working copy is
+stable Target and Previews use the recorded plan. The working Target is
 re-planned from the current `rig.yaml` on `up` (when stopped) and on `restart`.
-Doctor compares the Working copy with the current `rig.yaml`, and each deployed
+Doctor compares the working Target with the current `rig.yaml`, and each deployed
 Target with the config committed in its checkout.
 Final Operation activity is distinct from safe diagnostic JSONL and Target logs.
 

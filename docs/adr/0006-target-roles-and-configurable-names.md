@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by [0010](0010-fixed-opt-in-targets.md)
 ---
 
 # Separate Target roles from their configurable names

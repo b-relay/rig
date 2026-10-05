@@ -156,6 +156,8 @@ export async function composeDaemon(
   let health: HealthMonitor | undefined;
   const runtime = createRuntime({
     root,
+    // Nothing starts until the first pass has read the state, however early a command arrives.
+    reconcileGate: "closed",
     healthResults: (target, service) => health?.results(target, service),
     notices: notices.list,
     readAdminActivity: adminActivity.read,

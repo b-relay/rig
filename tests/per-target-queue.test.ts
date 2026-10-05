@@ -114,6 +114,8 @@ async function fixture(host: Record<string, unknown> = {}) {
       }
   };
   const deps: RuntimeDependencies = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     root,
     async readAdminActivity() {
       return [];

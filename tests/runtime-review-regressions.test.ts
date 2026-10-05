@@ -40,6 +40,8 @@ function fixture() {
     targets: { working: true, stable: true, preview: true },
   });
   const deps = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     async inspectHost() {
       return [{ name: "host-check", ok: true, message: "Host inspected." }];
     },

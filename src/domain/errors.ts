@@ -21,6 +21,8 @@ export class RigError extends Error {
  * Operation id and diagnostic path are part of the report. */
 const userCorrectableCodes: ReadonlySet<string> = new Set([
   "USAGE",
+  // rigd is still starting: transient, and the hint says to retry.
+  "HOST_STATE_PENDING",
   "CANCELLED",
   "PRODUCTION_CONFIRMATION",
   "TARGET_OFF",

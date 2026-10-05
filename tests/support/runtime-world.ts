@@ -93,6 +93,8 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
   const planConfig = options.planConfig ?? ((config) => config);
   let id = 0;
   const deps = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     root,
     async readAdminActivity() {
       return [];

@@ -1485,10 +1485,11 @@ Likewise, if none of the writes that record the restart succeeded before
 nothing records that restart: after a second reboot the Host shows only the new
 boot, so the next start sees one restart and writes one entry.
 
-Nothing starts until `rigd` has reconciled the Host session: while its first
-pass cannot read the state, each later pass is a first pass, health restarts
-wait, and `rig up`, `rig restart` and a deploy are refused with
-`HOST_STATE_PENDING` (retry; `rig down` still works).
+Nothing starts until `rigd` has reconciled the Host session: until its first
+pass has read the state (while it is still starting, or while the state cannot
+be read, when each later pass is a first pass), health restarts wait, and
+`rig up`, `rig restart` and a deploy are refused with `HOST_STATE_PENDING`
+(retry; `rig down` still works).
 When the working Target's or a Preview's stop by the restart cannot be
 recorded (a read or a write fails), each later pass tries again, a command you run on the Target records
 it first, and health restarts wait for it. While it cannot be recorded,

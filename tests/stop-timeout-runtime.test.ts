@@ -174,6 +174,8 @@ function world(
   };
   let id = 0;
   const deps: RuntimeDependencies = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     root: "/tmp/isolated-rig-278",
     async readAdminActivity() {
       return [];

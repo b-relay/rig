@@ -228,20 +228,21 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   const reservations = createHostReservations();
   let draining = false;
   let passes = 0;
-  /** The daemon-wide gate: nothing starts until rigd has reconciled the Host session. It closes when the daemon's first
-   * pass could not read the state, so it could not tell whether the Host restarted, and opens once a first pass has read
-   * it (and so recorded the restart or held its pending stops). While it is closed every later pass is a first pass, and
-   * nothing starts a Service: no supervision start, no health restart or start, and up, restart and deploy are refused;
-   * down, stops and destroy still run. So no run is ever journalled before a Host restart's record, whose `seq` therefore
-   * comes before every start made after the restart. */
-  let reconcilePending = false;
+  /** The daemon-wide gate: nothing starts until rigd has reconciled the Host session. It starts closed (unless the
+   * dependencies say `reconcileGate: "open"`, as a test that never reconciles does), opens once a first pass has read the
+   * state (and so recorded any Host restart or held its pending stops), and closes again when a first pass cannot read it.
+   * While it is closed every pass is a first pass, and nothing starts a Service: no supervision start, no health restart
+   * or start, and up, restart and deploy are refused; down, stops and destroy still run. So no run is ever journalled
+   * before a Host restart's record, whose `seq` therefore comes before every start made after the restart, however early a
+   * command reaches rigd. */
+  let reconcilePending = input.reconcileGate !== "open";
   /** Refuses a command that would start a Service while the gate above is closed. */
   const assertReconciled = (action: string) => {
     if (reconcilePending && ["up", "restart", "deploy"].includes(action))
       throw new RigError(
         "HOST_STATE_PENDING",
-        "rigd has not read its state since it started, so it cannot tell whether the Mac restarted, and nothing was started.",
-        `rigd is still reading its state after it started (the Mac may have restarted); retry rig ${action} in a moment. If it keeps failing, the state directory under RIG_ROOT/runtime cannot be read: rig doctor and the rigd diagnostic log show why.`,
+        "rigd is still starting and has not read its state yet, so it cannot tell whether the Mac restarted, and nothing was started.",
+        `Retry rig ${action} in a moment. If this keeps happening, rigd cannot read its state under RIG_ROOT/runtime: rig doctor and the rigd diagnostic log show why.`,
       );
   };
   /** Every Operation this daemon is running or holding, its own supervision work included. */

@@ -142,6 +142,8 @@ async function world(
         monitor?.started(target, service, incarnation),
     },
     dependencies: () => ({
+      // As rigd runs: nothing starts until a first pass has read the state.
+      reconcileGate: "closed" as const,
       healthTransitions: {
         invalidate: (targetId: string, service?: string) =>
           monitor?.invalidate(targetId, service),
@@ -255,6 +257,20 @@ async function world(
     /** rigd restarts in the same Host session: the processes survive, and a new rigd reconciles what it finds. */
     async reopen() {
       open();
+      await runtime.reconcile();
+    },
+    /** The Host restarts and a new rigd comes up, which takes requests before its first pass runs (see `firstPass`). */
+    async rebootBeforeFirstPass() {
+      processes.clear();
+      host.session = {
+        boot: "BOOT-2",
+        bootedAt: new Date(clock.ms).toISOString(),
+        login: "100002",
+      };
+      open();
+    },
+    /** The daemon's first pass, as rigd runs it once it is listening. */
+    async firstPass() {
       await runtime.reconcile();
     },
     /** The Host restarts: nothing survives, the boot changes, and a new rigd reconciles what it finds. */
@@ -808,7 +824,8 @@ for (const checked of [true, false])
       w.runtime.command({ action: "up", project: "demo", target: "working" }),
     ).rejects.toMatchObject({
       code: "HOST_STATE_PENDING",
-      hint: expect.stringContaining("rigd is still reading its state"),
+      message: expect.stringContaining("rigd is still starting"),
+      hint: "Retry rig up in a moment. If this keeps happening, rigd cannot read its state under RIG_ROOT/runtime: rig doctor and the rigd diagnostic log show why.",
     });
     // A stop still runs.
     await w.runtime.command({
@@ -818,6 +835,37 @@ for (const checked of [true, false])
     });
     failing.on = false;
     await w.advance(1);
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    expect(await w.running()).toBe(true);
+    await crashIsRestarted(w);
+  }, 30_000);
+
+for (const checked of [true, false])
+  test(`${checked ? "with" : "without"} a healthcheck, a command that reaches a new rigd before its first pass is refused, and after it rig up works and a crash is restarted`, async () => {
+    const w = await world("always", { working: true }, checked);
+    await w.runtime.command({
+      action: "up",
+      project: "demo",
+      target: "working",
+    });
+    // rigd is listening but has not run its first pass: it cannot tell the Mac restarted yet.
+    await w.rebootBeforeFirstPass();
+    await expect(
+      w.runtime.command({ action: "up", project: "demo", target: "working" }),
+    ).rejects.toMatchObject({
+      code: "HOST_STATE_PENDING",
+      message:
+        "rigd is still starting and has not read its state yet, so it cannot tell whether the Mac restarted, and nothing was started.",
+    });
+    expect(await w.running()).toBe(false);
+    await w.firstPass();
+    expect(await w.run()).toMatchObject({
+      outcome: { kind: "unknown", hostRestart: "reboot" },
+    });
     await w.runtime.command({
       action: "up",
       project: "demo",

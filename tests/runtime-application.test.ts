@@ -44,6 +44,8 @@ function fixture() {
   });
   const plans: any[] = [];
   const deps: RuntimeDependencies = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     root: "/tmp/isolated-rig",
     async readAdminActivity() {
       return [];

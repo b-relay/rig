@@ -182,6 +182,9 @@ export interface RuntimeDependencies {
    * removed Target, a Service's new process) is reported to the health monitor, as it is applied; absent where no monitor
    * runs. */
   healthTransitions?: HealthTransitions;
+  /** Whether the runtime may start Services before its first pass has read the state: `closed` (the default, and what rigd
+   * uses) until one has; `open` only for a runtime that is never reconciled, as in tests. */
+  reconcileGate?: "closed" | "open";
 }
 
 /** Borrowed inventory snapshot under the runtime mutation queue. */

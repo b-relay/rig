@@ -59,6 +59,8 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "HOSTNAME_LABEL_TOO_LONG",
   "MISSING_CONFIG",
   "MISSING_DIRECTORY",
+  "WORKING_DIR_MISSING",
+  "WORKING_DIR_OUTSIDE",
   "ENV_FILE",
   "ENV_FILE_MISSING",
   "PORT_RESERVED",

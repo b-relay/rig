@@ -18,7 +18,7 @@ import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { InstalledComponent } from "../src/config/types";
-import { RigError } from "../src/domain/errors";
+import { RigError, userCorrectable } from "../src/domain/errors";
 import { noRoutes } from "./support/router-doubles";
 const roots: string[] = [];
 afterEach(async () => {
@@ -306,6 +306,9 @@ test("a working_dir that is a symlink out of the workspace, or not there, fails 
     code: "WORKING_DIR_MISSING",
     hint: expect.stringContaining("services.web.working_dir"),
   });
+  // Both name a setting to fix, so they are reported as the user's to correct, without diagnostic pointers.
+  expect(userCorrectable("WORKING_DIR_OUTSIDE")).toBe(true);
+  expect(userCorrectable("WORKING_DIR_MISSING")).toBe(true);
 });
 test("cancelling a command health check terminates its probe process group", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-cancel-"));

@@ -80,7 +80,7 @@ They need permission to bind localhost and a local Caddy executable.
 | `src/daemon`                       | Authenticated localhost transport, administration, and adapter composition.   |
 | `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects.          |
 | `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.            |
-| `src/git`                          | Branch preflight, repository registration, and Git remote protocol.           |
+| `src/git`                          | Branch preflight and repository registration.                                 |
 | `src/recipes`                      | Bundled recipes and their files, rendering, and comparison with a Project.    |
 | `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.   |
 

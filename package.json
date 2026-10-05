@@ -19,8 +19,7 @@
   },
   "bin": {
     "rig": "./rig",
-    "rigd": "./rigd",
-    "git-remote-rig": "./git-remote-rig"
+    "rigd": "./rigd"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",

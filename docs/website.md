@@ -197,5 +197,5 @@ bun run web:build && PORT=4173 bun run web:start -- -p 4173  # the production bu
 ```
 
 Then open `http://127.0.0.1:4173/`. To publish it, run `rig init` in this
-repository once and `rig deploy live` (or `git push rig main`); DNS for
+repository once and `rig deploy live`; DNS for
 `rig.b-relay.com` must resolve to this Mac.

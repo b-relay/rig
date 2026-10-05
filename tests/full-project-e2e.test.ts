@@ -233,7 +233,7 @@ tools:
     );
     success(await f.rig(["rename", "renamed"]));
     project = "renamed";
-    expect(await f.git(["remote"])).not.toContain("rig");
+    expect((await f.git(["remote"])).split("\n")).not.toContain("rig");
     const moved = join(f.base, "moved-project");
     await rename(f.repo, moved);
     success(await f.rig(["repoint", moved, ...scope()], f.base));

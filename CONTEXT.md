@@ -426,11 +426,7 @@ _Relationship_: Copying a Project repository to a second folder may become a
 new Rig Project on the same Host if the user chooses a new Project identity and
 the resulting routes do not collide.
 
-_Relationship_: `rig init` must not overwrite an existing Git remote named
-`rig` that points somewhere else. It stops with guidance instead.
-
-_Relationship_: If a Git remote named `rig` already points to the expected Rig
-remote URL, `rig init` treats it as already configured and continues.
+_Relationship_: `rig init` never adds, changes, or reads Git remotes.
 
 _Relationship_: `rig init` may run from any subdirectory inside a Git
 repository, but it writes Project config at the repository root and tells
@@ -897,7 +893,7 @@ a Target can run. Another process may acquire a selected port before startup.
 ### Preflight
 
 Before a CLI deploy, `rigd` checks that the Branch exists locally and resolves
-to a Commit, and collects upstream warnings. Push deploys skip it. Config is
+to a Commit, and collects upstream warnings. Config is
 validated when a Target is planned, not in preflight.
 
 ### Runtime plan

@@ -545,6 +545,42 @@ test("Preview replacement evicts incomplete and stopped Previews before the olde
   expect(previews()).toEqual(["feature/d", "feature/e", "feature/f"]);
 });
 
+test("a deploy that names a Commit prepares that resolved Commit, not the Branch head, for the Stable Target and a Preview", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  // The Branch head is "head"; the named Commit resolves to a full id of its own.
+  deps.sources.preflight = async () => ({ commit: "head", warnings: [] });
+  deps.sources.resolve = async (_repository, ref) => `resolved-${ref}`;
+  const prepared: string[] = [];
+  deps.sources.prepare = async (request) => {
+    prepared.push(request.ref);
+    return { workspacePath: request.destination, commit: request.ref };
+  };
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+      commit: "c1",
+    }),
+  ).toMatchObject({ outcome: "deployed", commit: "resolved-c1" });
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature/x",
+      commit: "c2",
+    }),
+  ).toMatchObject({ outcome: "deployed", commit: "resolved-c2" });
+  expect(prepared).toEqual(["resolved-c1", "resolved-c2"]);
+  expect(state.targets.map((target) => target.commit)).toEqual([
+    "resolved-c1",
+    "resolved-c2",
+  ]);
+});
+
 test("unsafe candidate rollback never restores an old plan over surviving candidate processes", async () => {
   const { runtime, state, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

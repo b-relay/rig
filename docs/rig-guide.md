@@ -254,8 +254,11 @@ rig init
   checkout so a deliberate answer can override it
 - write committed Project config, `rig.yaml`, at the repo root (see below for
   what a new config needs)
-- configure the `rig` Git remote when possible
 - register the Project with `rigd`
+
+`rig init` does not add a Git remote. Rig deploys through `rig deploy` and the
+dashboard only; a `rig` remote left from an older Rig is never read and can be
+removed with `git remote remove rig`.
 
 If run outside Git in an interactive terminal, `rig init` may ask before running
 `git init`. It should not create commits.

@@ -641,7 +641,8 @@ test("a deleted log directory is recreated on the next line; output that cannot 
   // The component writes every 10 ms and the supervisor recreates the directory on each line, as asserted above, so it can
   // win the race between removing the directory and writing the file there; the swap is retried until the file holds.
   for (let swapped = false, i = 0; !swapped; i++) {
-    await rm(logRoot, { recursive: true, force: true });
+    // The writer can add a line mid-delete too; rm retries that (ENOTEMPTY) itself.
+    await rm(logRoot, { recursive: true, force: true, maxRetries: 10 });
     swapped = await writeFile(logRoot, "not a directory", { flag: "wx" }).then(
       () => true,
       (error: NodeJS.ErrnoException) => {

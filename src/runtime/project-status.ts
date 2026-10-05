@@ -18,6 +18,7 @@ import {
   PREVIEW_SELECTOR,
   patchedSettings,
   proxyUpstream,
+  defaultProxy,
   rolePatch,
   targetOn,
 } from "../config/schema";
@@ -194,9 +195,13 @@ function configuredComponents(
     role === "stable" || rolePatch(config, role).domain !== undefined
       ? settings.domain?.replaceAll("${rig.target}", role)
       : undefined;
-  const upstream = settings.proxy?.["/"]
-    ? proxyUpstream(settings.proxy["/"])?.service
+  const proxy =
+    settings.proxy ??
+    (routed !== undefined ? defaultProxy(settings.services) : undefined);
+  const root = proxy?.["/"]
+    ? proxyUpstream(proxy["/"], settings.services ?? {})
     : undefined;
+  const upstream = root && "service" in root ? root.service : undefined;
   return [
     ...Object.entries(settings.services ?? {}).map(
       ([name, service]): ComponentReport => {

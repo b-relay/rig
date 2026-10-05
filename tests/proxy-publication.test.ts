@@ -151,7 +151,7 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
   const config = parseProjectConfig({
     name: "app",
     domain: "app.example.test",
-    services: { web: { run: "serve", ports: { http: 4000 } } },
+    services: { web: { command: "serve", ports: { http: 4000 } } },
     proxy: { "/": "${services.web.ports.http}" },
   });
   const plan = resolveTargetPlan({

@@ -68,7 +68,7 @@ function configHttp(root: string) {
 const example = (name: string) =>
   join(import.meta.dir, "..", "docs", "examples", `${name}.rig.yaml`);
 const original =
-  "# Project commentary\nname: demo\ndescription: original\nservices:\n  web:\n    run: serve # preserve command note\n    ports: { http: auto }\n";
+  "# Project commentary\nname: demo\ndescription: original\nservices:\n  web:\n    command: serve # preserve command note\n    ports: { http: auto }\n";
 
 test("real authenticated config HTTP preview/apply preserves comments, exact backup, revision and restart persistence", async () => {
   const f = await rigFixture(),
@@ -82,16 +82,16 @@ test("real authenticated config HTTP preview/apply preserves comments, exact bac
     expect(read.status).toBe(200);
     const source = sourceSchema.parse(read.body).result;
     expect(source.raw).toBe(original);
-    expect(source.fields.some((field) => field.path === "services.*.run")).toBe(
-      true,
-    );
+    expect(
+      source.fields.some((field) => field.path === "services.*.command"),
+    ).toBe(true);
     const request = {
       project: "demo",
       expectedRevision: source.revision,
       patch: [
         {
           op: "set",
-          path: ["services", "web", "run"],
+          path: ["services", "web", "command"],
           value: "serve --port 3000",
         },
       ],
@@ -197,7 +197,7 @@ test("the single-Service example initializes with its Target switches, and a Tar
     expect(source.config).toMatchObject({
       name: "notes",
       targets: {
-        working: { services: { api: { env: { LOG_LEVEL: "debug" } } } },
+        working: { services: { api: { environment: { LOG_LEVEL: "debug" } } } },
         stable: true,
         preview: true,
       },
@@ -209,7 +209,14 @@ test("the single-Service example initializes with its Target switches, and a Tar
         { op: "set", path: ["targets", "stable"], value: false },
         {
           op: "set",
-          path: ["targets", "working", "services", "api", "env", "LOG_LEVEL"],
+          path: [
+            "targets",
+            "working",
+            "services",
+            "api",
+            "environment",
+            "LOG_LEVEL",
+          ],
           value: "trace",
         },
       ],

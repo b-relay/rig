@@ -38,8 +38,8 @@ const managed = (plan: TargetPlan, name: string) =>
 
 test("a plan recorded before stop_timeout and restart existed reads as the plan the planner makes when config sets neither", () => {
   const current = planned({
-    web: { run: "serve", ports: { http: "auto" } },
-    worker: { run: "work" },
+    web: { command: "serve", ports: { http: "auto" } },
+    worker: { command: "work" },
   });
   const old = recordedBefore(current);
   const before = structuredClone(old);
@@ -55,7 +55,7 @@ test("a plan recorded before stop_timeout and restart existed reads as the plan 
 test("values a plan recorded are kept, so a non-default stop_timeout or restart still differs from the default", () => {
   const current = planned({
     web: {
-      run: "serve",
+      command: "serve",
       ports: { http: "auto" },
       stop_timeout: "30s",
       restart: "no",

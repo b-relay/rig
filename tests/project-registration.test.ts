@@ -294,7 +294,7 @@ test("init records the host's Production branch default, never the checked-out b
       action: "init",
       repoPath: other,
       project: "other",
-      service: { name: "web", run: "serve", port: 4567 },
+      service: { name: "web", command: "serve", port: 4567 },
       productionBranch: "release",
     },
     f.deps,

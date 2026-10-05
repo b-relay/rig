@@ -1,6 +1,5 @@
 name: quill
 description: Demo Project. A command-line Tool with no Services.
-production_branch: main
 
 tools:
   quill:

@@ -48,7 +48,7 @@ export const commandSchema = z
     service: z
       .object({
         name: z.string(),
-        run: z.string(),
+        command: z.string(),
         port: z.number().int().optional(),
         ready: z.string().optional(),
       })

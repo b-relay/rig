@@ -282,17 +282,17 @@ A Project needs at least one Service or Tool, so a new config is scaffolded
 from flags:
 
 ```bash
-rig init --service web --run "bun run start" --port 3000 \
+rig init --service web --command "bun run start" --port 3000 \
   --ready http://127.0.0.1:3000/health --domain app.test
 rig init --tool report --bin .rig-build/report \
   --tool-build "go build -o .rig-build/report ./cmd/report"
 ```
 
-`--service <name> --run <command>` declares one Service; `--port <n>` pins its
+`--service <name> --command <command>` declares one Service; `--port <n>` pins its
 `http` port (otherwise the port is `auto`) and `--ready <check>` sets its
 readiness check. `--tool <name> --bin <path>` declares one Tool, with
 `--tool-build <command>` as its build. Both may be given together, under
-different names. `--run`, `--port`, or `--ready` without `--service`, and
+different names. `--command`, `--port`, or `--ready` without `--service`, and
 `--bin` or `--tool-build` without `--tool`, are usage errors. With neither a
 Service nor a Tool and no existing `rig.yaml`, init fails as `empty_project`:
 pass the flags, or write `rig.yaml` by hand and run `rig init` again to
@@ -304,8 +304,9 @@ comment that points editors at the config schema (see "Config").
 Config is always `rig.yaml`. Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
 identity comes from existing config when present, not a conflicting folder name.
-`--domain app.test` with `--service web` scaffolds `domain: app.test` and a
-`proxy` that sends `/` to the Service's `http` port. The stable Target serves
+`--domain app.test` with `--service web` scaffolds `domain: app.test` and no
+`proxy`: `web` is the one Service with a port, so the hostname routes `/` to
+it by default. The stable Target serves
 `app.test`, each Preview serves `app-<preview name>.test` (see "Domain and
 proxy"), and the working Target has no route unless `targets.working.domain`
 is set, so two Targets never contend for one route. A `domain` value must be a
@@ -541,6 +542,13 @@ Deployed Targets (the stable Target and Previews) keep their recorded plan
 until the next deploy. They are planned from the committed config in their
 checkout, so `rig doctor` compares a deployed Target with that revision's
 config, not with the working copy; uncommitted edits are not drift for it.
+A deployed revision whose `rig.yaml` still uses the names from before
+[ADR 0011](adr/0011-compose-key-names.md) (`run`, `env`) cannot be fixed in
+place: `rig doctor` reports it as `config-predates-rename`, says the Target
+still runs its recorded plan, and names the deploy (`rig deploy stable`, or the
+Preview's Branch) of a Commit that uses the new names, which clears it.
+Deploying or rolling back to a Commit whose `rig.yaml` uses the old names is
+refused until that file is updated.
 When the checkout's
 config resolves to a different plan than the recorded one, doctor names `rig
 deploy <target> --force` as the fix, because a same-Commit deploy without
@@ -1070,36 +1078,40 @@ documentation on hover, including its default and, for a field that takes
 `${...}` references, the references valid there. An editor cannot complete
 inside a string, so the reference list is hover text. The schema covers field
 shapes only; rules that span fields (a declared port behind each `proxy`
-value, dependency cycles, reference resolution) are still reported by
+value, dependency cycles, reference resolution, a Service with exactly one
+port behind `${port}`) are still reported by
 `rig config` and `rig doctor`. Contributors regenerate the files with
 `bun run schema` after changing `src/config/schema.ts`; a test fails until
 they match.
 
-A small `rig.yaml` with two Services, a Tool, and a route:
+A small `rig.yaml` with two Services, a Tool, and a route. Its keys use Docker
+Compose's names where the meaning matches (`command`, `environment`,
+`env_file`, `working_dir`, `depends_on`, `ports`, `restart`, `build`), so it
+reads like a Compose file and moves to one easily:
 
 ```yaml
 name: pantry
-production_branch: main
 domain: pantry.test
 
-env:
+environment:
   LOG_FORMAT: json
 
 services:
   api:
-    run: bun run src/api.ts
+    command: bun run src/api.ts
     ports: { http: auto }
-    env:
+    environment:
       HOST: 127.0.0.1
-      PORT: ${services.api.ports.http}
+      PORT: ${port}
       DATA_DIR: ${rig.data}
-    ready: http://127.0.0.1:${services.api.ports.http}/health
+    ready: http://127.0.0.1:${port}/health
   web:
-    run: bun run src/web.ts --port ${services.web.ports.http}
+    working_dir: web
+    command: bun run server.ts --port ${port}
     ports: { http: 3000 }
-    env:
-      API_URL: http://127.0.0.1:${services.api.ports.http}
-    ready: http://127.0.0.1:${services.web.ports.http}/
+    environment:
+      API_URL: http://127.0.0.1:${services.api.port}
+    ready: http://127.0.0.1:${port}/
     ready_timeout: 1m
     depends_on: [api]
 
@@ -1109,19 +1121,20 @@ tools:
     build_timeout: 5m
     bin: .rig-build/pantryctl
 
+# Two Services declare ports, so proxy names the one that serves the hostname.
 proxy:
-  /: ${services.web.ports.http}
+  /: web
 
 targets:
   working:
-    env: { LOG_FORMAT: pretty }
+    environment: { LOG_FORMAT: pretty }
   stable: true
   preview:
     domain: ${rig.target}.preview.pantry.test
 ```
 
 Top-level fields: `name` (required Project identity), `description`,
-`production_branch`, `domain`, `build`, `build_timeout`, `env`,
+`production_branch`, `domain`, `build`, `build_timeout`, `environment`,
 `env_file`, `services`, `tools`, `proxy`, and `targets`. A Project needs at
 least one Service or Tool, and a Tool cannot share a Service's name. Service
 and Tool names use lowercase letters, digits, and `-`. Unknown keys are
@@ -1132,15 +1145,32 @@ Service's `health` block, whose `check` is now `ready` and whose
 `start_timeout` is now `ready_timeout` (ongoing health checks were removed),
 and `supervisor`; so is a Target's `name` under `targets` (`Fix
 targets.working.name: Target names are fixed (working, stable, preview); delete
-this line.`).
+this line.`). Rig's own names for two Compose settings were renamed
+([ADR 0011](adr/0011-compose-key-names.md)), and the old keys are refused with
+the new name wherever they appear, Target patches included: a Service's `run`
+is `command` (``Fix services.web.run: `run` is now `command`; rename this
+key.``), and `env` is `environment` at the top level, in a Service and in a
+patch. A reference through the old name, such as `${env.NAME}` or
+`${services.db.env.PGHOST}`, is refused with its new path
+(`${environment.NAME}`, `${services.db.environment.PGHOST}`).
 
 A Service is a long-running process Rig starts and supervises. Its fields:
 
-- `run` (required): the foreground shell command, run under `/bin/sh -c` in
-  the Target workspace.
+- `command` (required): the foreground shell command, run under `/bin/sh -c`
+  in the Service's `working_dir`.
+- `working_dir`: the directory the Service's `command`, its `build` and a
+  shell `ready` check run in, relative to the workspace, such as `apps/web`
+  (default: the workspace root). It cannot leave the workspace: an absolute
+  path, `~`, a `..` segment or a reference is refused when the config is
+  parsed. A role patch may change it. Relative `env_file` paths and
+  `${rig.workspace}` still mean the workspace root, not `working_dir`. A
+  Service whose `working_dir` does not exist fails to start as
+  `PROCESS_START`, naming the directory.
 - `ports`: named local TCP ports. `auto` lets Rig choose a free port and keep
   it for the Target; a number from 1 to 65535 pins it. Previews always use
-  chosen ports, so a pin applies to the working and stable Targets only.
+  chosen ports, so a pin applies to the working and stable Targets only. In
+  the Service's own settings `${port}` is its port when it declares exactly
+  one, and `${ports.<name>}` any of them (see "References").
 - `ready`: a localhost HTTP URL or a shell command that must pass before the
   Service counts as started and before a Service that depends on it starts. An
   HTTP URL passes on any answer below 400; a command passes when it exits 0.
@@ -1174,7 +1204,7 @@ down`, `rig restart`, a deploy that replaces or rolls back the Target, a
 
 - `depends_on`: Services that must be running and ready before this one
   starts. Unknown names and cycles are rejected when the config is parsed.
-- `env` and `env_file`: see below.
+- `environment` and `env_file`: see below.
 - `restart`: `always` (default), `on-failure`, or `no`; see "Automatic
   restart".
 - `build` and `build_timeout`: the Service's own build unit; see
@@ -1228,7 +1258,14 @@ Durations are a positive whole number with a unit of `s`, `m`, or `h`, such as
 `30s`, `10m`, or `1h`, up to one day.
 
 `domain` is the hostname the stable Target serves, and `proxy` maps a path
-prefix to a declared port reference; `/` is required when `proxy` is present.
+prefix to the Service that serves it: a Service name, such as `/api: api`,
+means that Service's only port, and `${services.api.ports.admin}` (or
+`${services.api.port}`) names a port explicitly. `/` is required when `proxy`
+is present. Without `proxy`, a Target with a hostname routes `/` to the one
+Service that declares ports, when that Service declares exactly one, so a
+single-Service Project needs no `proxy` line. A Target that is on and has a
+hostname, but neither a `proxy` nor that one Service, is refused when the
+config is parsed with what to add, such as `add proxy: { /: web }`.
 A prefix matches at a slash boundary (`/api` serves `/api` and `/api/users`,
 not `/apix`), the longest matching prefix wins, and the upstream receives the
 path unchanged. Wildcards are not prefixes, and two prefixes that differ only
@@ -1251,8 +1288,8 @@ a Preview whose hostname would have a longer label is refused when it is planned
 Branch name, give the Preview a shorter `--deployment` name, or set
 `targets.preview.domain` to a pattern such as
 `${rig.target}.preview.example.com`. The working Target has no route
-unless `targets.working.domain` is set. A Target with no resolved hostname or
-no `proxy` gets no route. A Tool-only Project needs neither.
+unless `targets.working.domain` is set. A Target with no resolved hostname
+gets no route. A Tool-only Project needs neither a hostname nor a `proxy`.
 
 The Production branch is `production_branch`, else the Host config's
 `deploy.production_branch`, else `main`.
@@ -1266,12 +1303,26 @@ or absent to keep it off; without a `targets` key only `working` is on (see
 
 A map under a role is a settings patch applied over the top-level settings for
 Targets of that role; `true` patches nothing. A patch may set `domain`,
-`build`, `build_timeout`, `env`, `env_file`, `proxy`, and fields of existing
-entries under `services.<name>` and `tools.<name>`. Maps merge per key: a
-patch that sets `env.LOG_FORMAT` keeps every other shared `env` key, and a
-patch under `services.api` leaves the Service's other fields alone. Lists
-(such as `depends_on`) and scalars (such as `run` or a port) replace the
-shared value. A patch cannot add a Service or Tool that the top level does not
+`build`, `build_timeout`, `environment`, `env_file`, `proxy`, and fields of
+existing entries under `services.<name>` and `tools.<name>`. Maps merge per
+key: a patch that sets `environment.LOG_FORMAT` keeps every other shared
+`environment` key, and a patch under `services.api` leaves the Service's other
+fields alone. Lists (such as `depends_on`) and scalars (such as `command` or a
+port) replace the shared value. `build: false`, in a patch's top level or
+under one of its Services, turns that inherited build off for the role, for
+example to run a dev server in the working Target with no build:
+
+```yaml
+targets:
+  working:
+    services:
+      web:
+        build: false
+        command: bun run dev --port ${port}
+```
+
+At the top level, where leaving `build` out already means no build,
+`build: false` is refused. A patch cannot add a Service or Tool that the top level does not
 declare, remove or null one out, set `production_branch`, `description` or
 `role`, contain `targets`, or pin a port under `targets.preview`. The patched result
 for each role is validated when the config is parsed, so a broken dependency
@@ -1423,14 +1474,16 @@ boot, so the next start sees one restart and writes one entry.
 
 ### Databases and other local dependencies
 
-A database is an ordinary Service: a `run` command, a port, and its data under
+A database is an ordinary Service: a `command`, a port, and its data under
 `${rig.data}` so each Target gets its own. `docs/examples/multi.rig.yaml` has a
 PostgreSQL Service (`db`) that initializes its cluster on first start and
 listens on loopback, and an API that reads its port through a reference.
 
 ### Environment, builds, and startup
 
-Every build and process runs under `/bin/sh -c` in the Target workspace. Rig
+Every build and process runs under `/bin/sh -c` in the Target workspace, or
+for a Service's `command`, `build` and shell `ready` check in its
+`working_dir` inside it. Rig
 composes its environment fresh for each invocation, each layer replacing names
 of the one before:
 
@@ -1440,8 +1493,8 @@ of the one before:
    `USER` and `LOGNAME` name the operator's account as that shell had it, so
    tools that find the operator's login by account name (the macOS Keychain,
    for example) work as they do in a terminal
-2. the top-level `env`
-3. the Service's own `env`
+2. the top-level `environment`
+3. the Service's own `environment`
 4. the top-level `env_file` entries, in the order listed
 5. the operator's Project files `<RIG_ROOT>/env/<project>/all.env`, then
    `<role>.env` (`working.env`, `stable.env`, or `preview.env`)
@@ -1449,17 +1502,17 @@ of the one before:
 7. the operator's Service files `<RIG_ROOT>/env/<project>/<service>/all.env`,
    then `<role>.env`
 
-A Service never reads another Service's `env` or files. A Tool build and
+A Service never reads another Service's `environment` or files. A Tool build and
 dependency installation get the Project layers only (1, 2, 4, 5). Nothing else
 of the daemon's or the installing shell's environment reaches a Project's
 processes: no `SHELL`, tokens, or Rig's own variables. Declare what a
-process needs in `env` or an env file. Git discovery (`rig init`) is Rig's
+process needs in `environment` or an env file. Git discovery (`rig init`) is Rig's
 own tooling; it runs with the login basics of
 that shell and ignores `GIT_DIR` and `GIT_WORK_TREE`, so it always describes
 the directory it was asked about. A build writes its output to the Target's
 logs under the Tool name, and dependency installation under `setup`.
 
-`env` is public configuration and is recorded in the Target plan. Secrets
+`environment` is public configuration and is recorded in the Target plan. Secrets
 belong in env files: their values are read when an invocation starts and go
 only into that process's environment, never into references, plans, build
 receipts, errors, or logs. Because files are read again on every start,
@@ -1472,7 +1525,7 @@ operator files under `<RIG_ROOT>/env/` are optional and are the usual home for
 secrets, since they sit outside every checkout and so work for the Stable
 Target and Previews too. A listed path may be absolute, start with `~/` (the
 operator's home; `~user` is rejected as `invalid_path`), or be relative to the
-Target workspace. On the stable Target and Previews a relative path must stay
+Target workspace (never to a Service's `working_dir`). On the stable Target and Previews a relative path must stay
 inside that workspace (`path_outside_target` otherwise) and is read from the
 checked-out revision. An env file inside a Git repository must be ignored by
 Git, otherwise the command fails as `ENV_FILE_TRACKED`: never commit a file
@@ -1480,11 +1533,11 @@ that holds secrets. When Git is present but cannot answer, the command fails
 as `ENV_FILE_UNVERIFIED` rather than loading an unchecked file. A file other users can read still loads, with a warning in
 the Target log asking for `chmod 600`.
 
-When a file supplies a name that `env` or a lower file also supplies, the
-Target log notes the name and the sources, never the values. One case is
-refused rather than noted. If a `run`, `build`, or shell `ready` command
-reaches a public env value through a reference, directly or through another
-`env` value, that value is already part of the command text. A file that gives
+When a file supplies a name that `environment` or a lower file also supplies,
+the Target log notes the name and the sources, never the values. One case is
+refused rather than noted. If a `command`, `build`, or shell `ready` reaches a
+public `environment` value through a reference, directly or through another
+`environment` value, that value is already part of the command text. A file that gives
 the same name a different final value would make the command text and the
 process environment disagree, so the invocation fails as `ENV_CONFLICT`,
 naming the name, the Component, and the two sources. An equal value is no
@@ -1572,24 +1625,24 @@ name>` for a Preview. Two Projects that both install `cli` on
 `stop_timeout`. A start that fails rolls back the processes that command
 started, within the same grace.
 
-Rig has no hooks and no plugins. Run a database as an ordinary Service whose `run` command
-starts it, and put preparation steps in a `build` or in the script `run`
-invokes. A `run` command whose executable the shell cannot find fails as
+Rig has no hooks and no plugins. Run a database as an ordinary Service whose `command`
+starts it, and put preparation steps in a `build` or in the script `command`
+invokes. A `command` whose executable the shell cannot find fails as
 `PROCESS_EXITED` with exit code 127 and a hint that names the missing tool
 problem instead of waiting out `ready_timeout`.
 
 ### Localhost binding
 
-Every process Rig starts must listen on localhost only. `run`, `ready`, and
-`build` commands are checked when the config is parsed, and `run` and `ready`
+Every process Rig starts must listen on localhost only. `command`, `ready`, and
+`build` are checked when the config is parsed, and `command` and `ready`
 again after references are resolved: an explicit bind flag such as `--host`,
 `--bind`, `--listen`, or `--addr` must name a literal `127.0.0.1` or
 `localhost` (not a reference), and a wildcard
 address (`0.0.0.0`, `::`, `[::]`) is rejected anywhere in the command,
-including inside a quoted wrapper like `sh -c "..."`. In `env`, bind-style
+including inside a quoted wrapper like `sh -c "..."`. In `environment`, bind-style
 keys (`HOST`, `HOSTNAME`, `BIND`, `BIND_ADDR`, `BIND_ADDRESS`, `BIND_HOST`,
 `LISTEN`, `LISTEN_ADDR`, `LISTEN_ADDRESS`, `LISTEN_HOST`, `ADDR`, `ADDRESS`)
-may not hold a wildcard address; other env values are not inspected, because
+may not hold a wildcard address; other values are not inspected, because
 `HOST` often names a public hostname rather than a bind address. A process
 that reads its bind address from somewhere Rig cannot see is your
 responsibility. A `ready` value that starts with `http://` or `https://` in
@@ -1600,41 +1653,66 @@ and follows the command rule.
 
 ### References
 
-`run`, `ready`, `build`, `bin`, `env` values, and `env_file` paths
-may use `${...}` references. A reference is the exact path of one value in the
-selected Target's own settings (the base config with that role's patch
-applied), or one of the `rig.*` values Rig generates:
+`command`, `ready`, `build`, `bin`, `environment` values, and `env_file`
+paths may use `${...}` references. A reference is the exact path of one value
+in the selected Target's own settings (the base config with that role's patch
+applied), a port, or one of the `rig.*` values Rig generates:
 
-- `${env.<NAME>}` and `${services.<service>.env.<NAME>}`: a public `env`
-  value. Values may reference each other; Rig resolves them recursively.
+- `${environment.<NAME>}` and `${services.<service>.environment.<NAME>}`: a
+  public `environment` value. Values may reference each other; Rig resolves
+  them recursively.
 - any other scalar setting by its path, such as
   `${services.api.ready_timeout}`.
-- `${services.<service>.ports.<port>}`: the concrete number of a declared
-  port in this Target. `proxy` values must be exactly one such reference.
+- `${port}`: in a Service's own settings (`command`, `build`, `ready`,
+  `environment` values, `env_file` paths), the concrete number of that
+  Service's port when it declares exactly one. With no port or several it is
+  refused (`no_port`, `ambiguous_port`) with what to write instead.
+- `${ports.<port>}`: in a Service's own settings, one of its declared ports by
+  name.
+- `${services.<service>.port}`: anywhere, that Service's only port, under the
+  same rule as `${port}`.
+- `${services.<service>.ports.<port>}`: anywhere, the concrete number of a
+  declared port in this Target.
+
+  `${port}` and `${ports.<port>}` belong to the Service whose setting holds
+  them; a value read through a reference keeps its own Service, so
+  `${services.web.environment.URL}` holding `${port}` is always web's port. A
+  top-level value, the shared `build` and a Tool `build` have no Service, so
+  they are refused there (`invalid_context`); use the long forms. Each is
+  still an explicit mapping you write, such as `PORT: ${port}`: Rig sets no
+  variable the configuration does not name
+  ([ADR 0005](adr/0005-services-use-platform-independent-inputs.md)).
+
 - `${rig.target}`: the Target's name: `working`, `stable`, or the Preview's
   name. It is the only reference a `domain` may contain.
 - `${rig.workspace}`: the Target's checkout, which is the repository for the
   working Target.
 - `${rig.data}`: this Service's persistent directory in this Target. It is
   only available inside a Service.
-- `${rig.host}`: the Target's hostname when it has both a hostname and a
-  `proxy`, otherwise empty.
+- `${rig.host}`: the Target's hostname when it has a route (a hostname with a
+  `proxy`, or with the default route to its one Service with one port),
+  otherwise empty.
 - `${rig.url}`: `https://<hostname>` when the Target has a route;
-  `http://127.0.0.1:<port>` of the `/` upstream when it has a `proxy` but no
-  hostname; empty without a `proxy`.
+  `http://127.0.0.1:<port>` of the `/` upstream when it has no hostname, the
+  upstream being the `proxy` entry for `/` or, without `proxy`, the one Service
+  that declares ports when it declares exactly one; otherwise empty.
 
 References are checked when the config is parsed, for the base config and for
 each role's patched settings, so a typo never reaches a shell. Each rejection
-names the field that holds the reference, such as `services.web.run`:
+names the field that holds the reference, such as `services.web.command`:
 
 - `unknown_reference`: no such path.
 - `reference_not_scalar`: the path names a map or list, not one value.
 - `reference_into_targets`: the path reaches into `targets`. A reference reads
   the selected Target's settings, not another role's patch.
 - `reference_cycle`: values reference each other in a loop.
-- `invalid_context`: `${rig.data}` outside a Service, or a shared or Tool
-  `build` that reaches a Service's `env` or data, directly or through another
-  value. Those builds run with Project inputs only. A reference inside a
+- `renamed_reference`: the path goes through `env`, which is `environment`
+  now; the message names the new path.
+- `no_port` and `ambiguous_port`: `${port}` or `${services.<service>.port}`
+  for a Service that declares no port, or several.
+- `invalid_context`: `${rig.data}`, `${port}` or `${ports.<port>}` outside a
+  Service, or a shared or Tool `build` that reaches a Service's `environment`
+  or data, directly or through another value. Those builds run with Project inputs only. A reference inside a
   backquoted command is refused the same way; write `$(...)` instead.
 
 Because the base config is checked by itself, a value that only a role patch
@@ -1643,7 +1721,7 @@ patch replace it. Env file contents are never referenceable. Write `$${VAR}`
 for a literal `${VAR}` the shell should expand; `$VAR` is always left to the
 shell.
 
-Because `run`, a shell `ready`, and `build` run under `/bin/sh -c`, Rig
+Because `command`, a shell `ready`, and `build` run under `/bin/sh -c`, Rig
 substitutes every value as literal data, never as shell code. A bare
 reference is single-quoted when its value is empty or contains a space or
 other shell-special character, so a repository or `RIG_ROOT` under a path
@@ -1652,8 +1730,8 @@ own double or single quotes the value is escaped for that quote (a `$(...)`
 inside them starts a command of its own and is quoted as such), so a `$`, a
 backquote, or a quote character in the value stays part of the argument. A
 `ready` value that resolves to an HTTP URL is handed to the HTTP probe
-unquoted. Values substituted into `env`, `domain`, `env_file`, and `bin` are
-never quoted.
+unquoted. Values substituted into `environment`, `domain`, `env_file`, and
+`bin` are never quoted.
 
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while

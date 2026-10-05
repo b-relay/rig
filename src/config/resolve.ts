@@ -7,6 +7,7 @@ import {
   parseProjectConfig,
   patchedSettings,
   proxyUpstream,
+  defaultProxy,
   rolePatch,
   localhostCommand,
   localhostHealth,
@@ -14,6 +15,7 @@ import {
   validHostname,
 } from "./schema";
 import { referenceResolver, type PublicInput } from "./references";
+import { planWorkingDir } from "./working-dir";
 import type {
   BuildUnit,
   EnvFileRef,
@@ -106,7 +108,12 @@ export function resolveTargetPlan(
     );
   const services = Object.entries(settings.services ?? {});
   const ports = resolvePorts(services, input);
-  const routes = settings.proxy ? planRoutes(settings.proxy, ports) : undefined;
+  // Without a proxy, '/' is the one Service with one port: a hostname routes to it (validation refused a hostname with no
+  // such Service), and without a hostname ${rig.url} still names it, as an explicit proxy would.
+  const proxy = settings.proxy ?? defaultProxy(settings.services);
+  const routes = proxy
+    ? planRoutes(proxy, settings.services ?? {}, ports)
+    : undefined;
   const root = routes?.find((route) => route.prefix === "/");
   const proxied = root?.service;
   const rootPort = root?.port;
@@ -144,7 +151,7 @@ export function resolveTargetPlan(
         references.text(value, `${at}.${key}`).value,
       ]),
     );
-  const projectEnv = publicEnv(settings.env ?? {}, "env");
+  const projectEnv = publicEnv(settings.environment ?? {}, "environment");
   const projectFiles = envFiles(settings.env_file, "env_file", []);
   const buildTimeout = (override: string | undefined) =>
     durationSeconds(override ?? settings.build_timeout ?? "10m");
@@ -152,10 +159,11 @@ export function resolveTargetPlan(
   const components: PlanComponent[] = [
     ...services.map(([name, service]): PlanComponent => {
       const at = `services.${name}`;
-      const run = references.shell(service.run, `${at}.run`);
+      const workingDir = planWorkingDir(service.working_dir);
+      const run = references.shell(service.command, `${at}.command`);
       if (!localhostCommand(run.value))
         throw new ConfigError(
-          "Resolved run command binds outside localhost.",
+          "Resolved command binds outside localhost.",
           "invalid_binding",
           { service: name },
         );
@@ -193,7 +201,10 @@ export function resolveTargetPlan(
       return {
         name,
         kind: "managed",
-        env: { ...projectEnv, ...publicEnv(service.env ?? {}, `${at}.env`) },
+        env: {
+          ...projectEnv,
+          ...publicEnv(service.environment ?? {}, `${at}.environment`),
+        },
         dependsOn: service.depends_on ?? [],
         envFiles: [
           ...projectFiles,
@@ -201,6 +212,7 @@ export function resolveTargetPlan(
         ],
         ...(inputs.length ? { commandInputs: inputs } : {}),
         command: run.value,
+        ...(workingDir !== undefined ? { workingDir } : {}),
         ...declaredPorts(name, service, ports),
         readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
         stopTimeout: durationSeconds(
@@ -291,11 +303,20 @@ export function resolveTargetPlan(
 /** The route map with concrete ports, longest prefix first so the first match is the most specific one. */
 function planRoutes(
   proxy: Readonly<Record<string, string>>,
+  services: NonNullable<ProjectConfig["services"]>,
   ports: Readonly<Record<string, number>>,
 ): PlanRoute[] {
   return Object.entries(proxy)
     .map(([prefix, reference]) => {
-      const upstream = proxyUpstream(reference)!;
+      const upstream = proxyUpstream(reference, services);
+      // Project validation refuses an upstream that names no declared port.
+      if ("problem" in upstream)
+        throw new ConfigError(
+          `Proxy '${prefix}': ${upstream.problem}.`,
+          "invalid_proxy",
+          { prefix },
+          "Name a Service with one port, or one of its ports, such as ${services.web.ports.http}.",
+        );
       return {
         // '/api/' and '/api' are one prefix: both match '/api' and everything below it.
         prefix: prefix === "/" ? prefix : prefix.replace(/\/+$/, ""),

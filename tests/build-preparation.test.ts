@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -412,6 +413,40 @@ test("a Working copy up builds the units of stopped Services and every Tool, not
   expect(await prepareTarget(local, "all", f.deps)).toEqual({
     built: ["shared", "service:api", "service:web"],
   });
+});
+
+test("a Service build's recorded policy follows its working_dir, and a unit without one keeps the policy recorded before working_dir existed", async () => {
+  const f = await fixture();
+  const plan = structuredClone(f.candidate.plan);
+  const api = plan.builds!.find((unit) => unit.component === "api")!;
+  const scope = plan.components.find((c) => c.name === "api")!;
+  // The digest as unitPolicy took it before working_dir: the same fields, in the same order, and nothing more.
+  const recordedBefore = createHash("sha256")
+    .update(
+      JSON.stringify({
+        id: api.id,
+        command: api.command,
+        timeout: api.timeout,
+        workspace: plan.workspacePath,
+        env: scope.env ?? {},
+        envFiles: (scope.envFiles ?? []).map((file) => file.path),
+      }),
+    )
+    .digest("hex");
+  expect(unitPolicy(api, plan)).toBe(recordedBefore);
+  const moved = (workingDir: string) => ({
+    ...plan,
+    components: plan.components.map((c) =>
+      c.name === "api" ? { ...c, workingDir } : c,
+    ),
+  });
+  const inApps = unitPolicy(api, moved("apps/api"));
+  expect(inApps).not.toBe(recordedBefore);
+  expect(unitPolicy(api, moved("services/api"))).not.toBe(inApps);
+  expect(unitPolicy(api, moved("apps/api"))).toBe(inApps);
+  // Another Service's working_dir is not this unit's.
+  const shared = plan.builds!.find((unit) => unit.id === "shared")!;
+  expect(unitPolicy(shared, moved("apps/api"))).toBe(unitPolicy(shared, plan));
 });
 
 test("an env-file value never reaches a unit's recorded policy, while its declared command, budget, env and workspace do", async () => {

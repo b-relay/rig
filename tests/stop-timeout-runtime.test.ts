@@ -39,8 +39,8 @@ function world(
   config: ProjectConfig = parseProjectConfig({
     name: "fletcher",
     services: {
-      web: { run: "serve", ports: { http: 4567 }, stop_timeout: "2m" },
-      worker: { run: "work", depends_on: ["web"], stop_timeout: "25m" },
+      web: { command: "serve", ports: { http: 4567 }, stop_timeout: "2m" },
+      worker: { command: "work", depends_on: ["web"], stop_timeout: "25m" },
     },
     targets: { working: true, stable: true, preview: true },
   }),
@@ -816,9 +816,9 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
     production_branch: "main",
     services: {
       convex: {
-        run: "exec bun scripts/convex-backend.ts",
+        command: "exec bun scripts/convex-backend.ts",
         ports: { cloud: "auto", site: "auto" },
-        env: {
+        environment: {
           CONVEX_CLOUD_PORT: "${services.convex.ports.cloud}",
           CONVEX_SITE_PORT: "${services.convex.ports.site}",
         },
@@ -828,9 +828,10 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
       web: {
         build:
           "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell",
-        run: "exec bunx next dev --hostname 127.0.0.1 --port ${services.web.ports.http}",
+        command:
+          "exec bunx next dev --hostname 127.0.0.1 --port ${services.web.ports.http}",
         ports: { http: "auto" },
-        env: {
+        environment: {
           CONVEX_URL: "http://127.0.0.1:${services.convex.ports.cloud}",
           APP_ORIGIN: "http://127.0.0.1:${services.web.ports.http}",
           NEXT_TELEMETRY_DISABLED: "1",
@@ -845,29 +846,31 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
     targets: {
       working: {
         domain: "dev.design.example.test",
-        services: { web: { env: { STUDIO_ENV: "development" } } },
+        services: { web: { environment: { STUDIO_ENV: "development" } } },
       },
       stable: {
         domain: "design.example.test",
         services: {
-          convex: { env: { CONVEX_STATE_DIR: "${rig.data}" } },
+          convex: { environment: { CONVEX_STATE_DIR: "${rig.data}" } },
           web: {
             build:
               "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell && bunx next build",
-            run: "exec bunx next start --hostname 127.0.0.1 --port ${services.web.ports.http}",
-            env: { COMPONENT_STUDIO_DIR: "${rig.data}" },
+            command:
+              "exec bunx next start --hostname 127.0.0.1 --port ${services.web.ports.http}",
+            environment: { COMPONENT_STUDIO_DIR: "${rig.data}" },
           },
         },
       },
       preview: {
         domain: "${rig.target}.design.example.test",
         services: {
-          convex: { env: { CONVEX_STATE_DIR: "${rig.data}" } },
+          convex: { environment: { CONVEX_STATE_DIR: "${rig.data}" } },
           web: {
             build:
               "bun scripts/setup-docs.ts && bunx playwright-core install chromium-headless-shell && bunx next build",
-            run: "exec bunx next start --hostname 127.0.0.1 --port ${services.web.ports.http}",
-            env: { COMPONENT_STUDIO_DIR: "${rig.data}" },
+            command:
+              "exec bunx next start --hostname 127.0.0.1 --port ${services.web.ports.http}",
+            environment: { COMPONENT_STUDIO_DIR: "${rig.data}" },
           },
         },
       },

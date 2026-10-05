@@ -29,6 +29,7 @@ import {
   targetOn,
   TARGET_ROLES,
 } from "../src/config/index.js";
+import { referenceResolver } from "../src/config/references";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 /** The operator's optional convention files for one scope, in precedence order. */
 const conventionFiles = (role: string, ...scope: string[]) =>
@@ -50,9 +51,9 @@ async function fixture() {
   return root;
 }
 /** The smallest valid Project document: one Service with one pinned port. */
-const MINIMAL = "name: pantry\nservices:\n  web:\n    run: serve\n";
+const MINIMAL = "name: pantry\nservices:\n  web:\n    command: serve\n";
 const web = (extra: Record<string, unknown> = {}) => ({
-  web: { run: "serve", ports: { http: 3000 }, ...extra },
+  web: { command: "serve", ports: { http: 3000 }, ...extra },
 });
 /** The ConfigError a parse raised, or undefined when the input was accepted. */
 function failureOf(input: unknown):
@@ -146,7 +147,7 @@ test.each([
   ["several documents", `${MINIMAL}---\nname: b\n`, "invalid_yaml"],
   [
     "merge keys",
-    "name: a\nservices:\n  web: {<<: {}, run: serve}\n",
+    "name: a\nservices:\n  web: {<<: {}, command: serve}\n",
     "invalid_yaml",
   ],
   ["aliases", MINIMAL.replace("pantry", "*n"), "invalid_yaml"],
@@ -191,7 +192,11 @@ test("Host config reads config.yaml and defaults when absent", async () => {
 // ---------------------------------------------------------------------------
 
 test("scaffold writes a Service, a Tool, or both, and refuses a Project with neither", () => {
-  const service = { name: "web", run: "serve --host localhost", port: 3210 };
+  const service = {
+    name: "web",
+    command: "serve --host localhost",
+    port: 3210,
+  };
   const tool = { name: "ctl", bin: "bin/ctl", build: "make ctl" };
   const names = { working: true, stable: false, preview: false };
   expect(
@@ -208,25 +213,25 @@ test("scaffold writes a Service, a Tool, or both, and refuses a Project with nei
     domain: "app.example.com",
     services: {
       web: {
-        run: "serve --host localhost",
+        command: "serve --host localhost",
         ports: { http: 3210 },
         ready: "http://127.0.0.1:3210/health",
       },
     },
     tools: { ctl: { build: "make ctl", bin: "bin/ctl" } },
-    proxy: { "/": "${services.web.ports.http}" },
+    // The one Service with one port serves the domain without a proxy.
     targets: names,
   });
   // Without a domain there is nothing to route; without a port Rig chooses one.
   expect(
     scaffoldProjectConfig({
       name: "app",
-      service: { name: "web", run: "serve" },
+      service: { name: "web", command: "serve" },
     }),
   ).toEqual({
     name: "app",
     production_branch: "main",
-    services: { web: { run: "serve", ports: { http: "auto" } } },
+    services: { web: { command: "serve", ports: { http: "auto" } } },
     targets: names,
   });
   // A Tool-only Project never gets a proxy, even when a domain is given.
@@ -257,7 +262,7 @@ test("Project init writes the scaffold as YAML once and leaves an existing docum
   const config = scaffoldProjectConfig({
     name: "app",
     domain: "app.example.com",
-    service: { name: "web", run: "serve", port: 3210 },
+    service: { name: "web", command: "serve", port: 3210 },
   });
   const document = await initializeProjectConfig(root, config);
   expect(document.path).toBe(join(root, "rig.yaml"));
@@ -285,7 +290,7 @@ test("a scaffolded domain gives the stable Target the hostname, every Preview a 
   const config = scaffoldProjectConfig({
     name: "app",
     domain: "app.test",
-    service: { name: "web", run: "serve", port: 3000 },
+    service: { name: "web", command: "serve", port: 3000 },
   });
   const plan = (
     target: "working" | "stable" | "preview",
@@ -321,11 +326,11 @@ test("a rig-recipe comment left by an older Rig is only a comment: the config re
       "services:",
       "  # rig-recipe: postgres@1 name=db",
       "  db:",
-      "    run: postgres",
+      "    command: postgres",
       "    ports: { pg: auto }",
       "  # rig-recipe: not a form any Rig wrote",
       "  web:",
-      "    run: serve",
+      "    command: serve",
       "",
     ].join("\n");
   await writeFile(path, original);
@@ -341,10 +346,10 @@ test("a rig-recipe comment left by an older Rig is only a comment: the config re
   await editProjectConfig({
     repoPath: root,
     expectedRevision: before.revision,
-    edits: [{ path: ["services", "web", "run"], value: "serve --port 1" }],
+    edits: [{ path: ["services", "web", "command"], value: "serve --port 1" }],
   });
   expect(await readFile(path, "utf8")).toBe(
-    original.replace("run: serve\n", "run: serve --port 1\n"),
+    original.replace("command: serve\n", "command: serve --port 1\n"),
   );
 });
 
@@ -352,7 +357,7 @@ test("structured YAML edits retain comments/order and backups and reject stale o
   const root = await fixture(),
     path = join(root, "rig.yaml"),
     original =
-      "# Project\nname: pantry # identity\nservices:\n  # processes\n  web:\n    run: serve # command\n";
+      "# Project\nname: pantry # identity\nservices:\n  # processes\n  web:\n    command: serve # command\n";
   await writeFile(path, original);
   const before = await readProjectConfig(root);
   const preview = await previewProjectConfig({
@@ -369,14 +374,14 @@ test("structured YAML edits retain comments/order and backups and reject stale o
     expectedRevision: before.revision,
     edits: [
       { path: ["name"], value: "food" },
-      { path: ["services", "web", "run"], value: "serve --port 1" },
+      { path: ["services", "web", "command"], value: "serve --port 1" },
     ],
   });
   const raw = await readFile(path, "utf8");
   expect(raw).toBe(
     original
       .replace("pantry", "food")
-      .replace("run: serve #", "run: serve --port 1 #"),
+      .replace("command: serve #", "command: serve --port 1 #"),
   );
   expect(after).toMatchObject({
     raw,
@@ -402,7 +407,7 @@ test("structured YAML edits retain comments/order and backups and reject stale o
     editProjectConfig({
       repoPath: root,
       expectedRevision: after.revision,
-      edits: [{ path: ["services", "__proto__", "run"], value: "x" }],
+      edits: [{ path: ["services", "__proto__", "command"], value: "x" }],
     }),
   ).rejects.toMatchObject({ code: "invalid_edit" });
   expect(await readFile(path, "utf8")).toBe(raw);
@@ -411,7 +416,7 @@ test("structured YAML edits retain comments/order and backups and reject stale o
 test("YAML editing refuses edits that would lose comments: replacing a mapping or removing a commented field", async () => {
   const root = await fixture(),
     raw =
-      "name: app\nservices:\n  # retain me\n  web:\n    run: serve\n    ready: curl localhost # why\n";
+      "name: app\nservices:\n  # retain me\n  web:\n    command: serve\n    ready: curl localhost # why\n";
   await writeFile(join(root, "rig.yaml"), raw);
   const document = await readProjectConfig(root);
   for (const edit of [
@@ -544,6 +549,49 @@ test.each(["service", "tool", "multi"])(
   },
 );
 
+test("the multi example plans its short references, working_dir, named proxy and the working Target's build: false", async () => {
+  const raw = await readFile(
+    join(import.meta.dir, "../docs/examples/multi.rig.yaml"),
+    "utf8",
+  );
+  const config = parseProjectConfig(parse(raw));
+  const plan = (target: "working" | "stable") =>
+    resolveTargetPlan({
+      config,
+      target,
+      ...roots_,
+      assignedPorts: { "web.http": 4100, "api.http": 4200, "db.pg": 5432 },
+    });
+  const stable = plan("stable");
+  const web = stable.components.find((c) => c.name === "web")!;
+  expect(web).toMatchObject({
+    command: "bun dist/server.js",
+    workingDir: "apps/web",
+    health: "http://127.0.0.1:4100/health",
+    env: { PORT: "4100" },
+  });
+  expect(stable.components.find((c) => c.name === "api")).toMatchObject({
+    env: {
+      PORT: "4200",
+      DATABASE_URL: "postgres://postgres@127.0.0.1:5432/postgres",
+    },
+  });
+  expect(stable.proxy).toEqual({
+    upstream: "web",
+    routes: [
+      { prefix: "/api", service: "api", port: 4200 },
+      { prefix: "/", service: "web", port: 4100 },
+    ],
+  });
+  expect(stable.builds!.map((unit) => unit.id)).toContain("service:web");
+  const working = plan("working");
+  expect(working.builds!.map((unit) => unit.id)).not.toContain("service:web");
+  expect(working.components.find((c) => c.name === "web")).toMatchObject({
+    command: "bun run dev --port 4100",
+    workingDir: "apps/web",
+  });
+});
+
 test("a Project needs a Service or a Tool; a Tool-only Project needs no Service, domain or proxy", () => {
   for (const empty of [
     { name: "app" },
@@ -591,7 +639,7 @@ test("a Tool may not share a Service's name", () => {
 test("Target names are fixed: the working and stable Targets plan under their role, and ${rig.target} names it", () => {
   const config = parseProjectConfig({
     name: "app",
-    services: web({ env: { TARGET: "${rig.target}" } }),
+    services: web({ environment: { TARGET: "${rig.target}" } }),
     targets: { working: true, stable: true },
   });
   for (const target of ["working", "stable"] as const) {
@@ -608,7 +656,7 @@ test.each(["working", "stable", "preview"])(
       failureOf({
         name: "app",
         services: web(),
-        targets: { [role]: { name: "dev", env: { A: "1" } } },
+        targets: { [role]: { name: "dev", environment: { A: "1" } } },
       }),
     ).toMatchObject({
       code: "invalid_config",
@@ -646,7 +694,7 @@ test("a Target is on when its key is true or a settings map; false or a missing 
     "preview",
   ]);
   expect(
-    on({ working: { env: { A: "1" } }, stable: true, preview: true }),
+    on({ working: { environment: { A: "1" } }, stable: true, preview: true }),
   ).toEqual(["working", "stable", "preview"]);
 });
 
@@ -657,38 +705,40 @@ test("a Target switch is true, false or a settings map, and a switch alone patch
   const config = parseProjectConfig({
     name: "app",
     services: web(),
-    env: { A: "base" },
-    targets: { working: true, stable: { env: { A: "stable" } } },
+    environment: { A: "base" },
+    targets: { working: true, stable: { environment: { A: "stable" } } },
   });
-  expect(patchedSettings(config, "working").env).toEqual({ A: "base" });
-  expect(patchedSettings(config, "stable").env).toEqual({ A: "stable" });
+  expect(patchedSettings(config, "working").environment).toEqual({ A: "base" });
+  expect(patchedSettings(config, "stable").environment).toEqual({
+    A: "stable",
+  });
 });
 
 test("settings patches merge maps and replace lists and scalars, without leaking the Target switches or changing the base", () => {
   const config = parseProjectConfig({
     name: "app",
-    env: { A: "base", B: "base" },
+    environment: { A: "base", B: "base" },
     env_file: ["one.env", "two.env"],
     services: {
       web: {
-        run: "serve",
+        command: "serve",
         ports: { http: "auto", admin: "auto" },
-        env: { X: "base", Y: "base" },
+        environment: { X: "base", Y: "base" },
         depends_on: ["db", "cache"],
       },
-      db: { run: "db", ports: { pg: "auto" } },
-      cache: { run: "cache" },
+      db: { command: "db", ports: { pg: "auto" } },
+      cache: { command: "cache" },
     },
     tools: { ctl: { bin: "bin/ctl", build: "make" } },
     targets: {
       working: {
-        env: { B: "patched", C: "patched" },
+        environment: { B: "patched", C: "patched" },
         env_file: ["dev.env"],
         services: {
           web: {
-            run: "serve --watch",
+            command: "serve --watch",
             ports: { http: 8787 },
-            env: { Y: "patched" },
+            environment: { Y: "patched" },
             depends_on: ["db"],
           },
         },
@@ -700,17 +750,17 @@ test("settings patches merge maps and replace lists and scalars, without leaking
   const working = patchedSettings(config, "working");
   expect(working).toEqual({
     name: "app",
-    env: { A: "base", B: "patched", C: "patched" },
+    environment: { A: "base", B: "patched", C: "patched" },
     env_file: ["dev.env"],
     services: {
       web: {
-        run: "serve --watch",
+        command: "serve --watch",
         ports: { http: 8787, admin: "auto" },
-        env: { X: "base", Y: "patched" },
+        environment: { X: "base", Y: "patched" },
         depends_on: ["db"],
       },
-      db: { run: "db", ports: { pg: "auto" } },
-      cache: { run: "cache" },
+      db: { command: "db", ports: { pg: "auto" } },
+      cache: { command: "cache" },
     },
     tools: { ctl: { bin: "bin/ctl", build: "make dev" } },
   });
@@ -750,7 +800,7 @@ test("a Target patch cannot change identity, nest targets, name a Target, add or
     issuePaths({
       ...base,
       targets: {
-        working: { services: { api: { run: "api" } } },
+        working: { services: { api: { command: "api" } } },
         stable: { tools: { other: { bin: "o" } } },
       },
     }),
@@ -774,15 +824,15 @@ test("a Target patch cannot change identity, nest targets, name a Target, add or
       },
     }),
   ).toBeUndefined();
-  expect(hintOf({ ...base, targets: { staging: { env: { A: "b" } } } })).toBe(
-    'Fix targets: has no field named "staging".',
-  );
+  expect(
+    hintOf({ ...base, targets: { staging: { environment: { A: "b" } } } }),
+  ).toBe('Fix targets: has no field named "staging".');
 });
 
 test("the patched model is validated, so a patch that breaks the graph is reported at the patch", () => {
   const services = {
-    a: { run: "a", ports: { http: 3000 }, depends_on: ["b"] },
-    b: { run: "b", ports: { http: "auto" } },
+    a: { command: "a", ports: { http: 3000 }, depends_on: ["b"] },
+    b: { command: "b", ports: { http: "auto" } },
   };
   expect(
     hintOf({
@@ -809,13 +859,15 @@ test("the patched model is validated, so a patch that breaks the graph is report
         preview: { proxy: { "/": "${services.b.ports.grpc}" } },
       },
     }),
-  ).toContain("targets.preview.proxy./: Proxy '/' references 'b.grpc'");
+  ).toContain(
+    "targets.preview.proxy./: Proxy '/': 'b.grpc' is not a declared Service port",
+  );
 });
 
 test("a proxy must include '/' and reference declared Service ports", () => {
   const services = {
     ...web(),
-    api: { run: "api", ports: { http: "auto" } },
+    api: { command: "api", ports: { http: "auto" } },
   };
   expect(
     parseProjectConfig({
@@ -836,16 +888,33 @@ test("a proxy must include '/' and reference declared Service ports", () => {
     "Fix proxy: A proxy needs a '/' entry.",
   );
   expect(hint({ "/": "${services.web.ports.grpc}" })).toContain(
-    "proxy./: Proxy '/' references 'web.grpc', which is not a declared Service port.",
+    "proxy./: Proxy '/': 'web.grpc' is not a declared Service port.",
   );
   expect(hint({ "/": "${services.missing.ports.http}" })).toContain(
-    "proxy./: Proxy '/' references 'missing.http'",
+    "proxy./: Proxy '/': 'missing' is not a declared Service",
   );
   expect(hint({ "/": "${services.constructor.ports.http}" })).toContain(
-    "'constructor.http', which is not a declared Service port",
+    "proxy./: Proxy '/': 'constructor' is not a declared Service",
   );
   expect(hint({ "/": "http://127.0.0.1:3000" })).toContain(
-    "proxy./: must be one declared port reference",
+    "proxy./: must name a Service, such as web, or one of its ports, such as ${services.web.ports.http}",
+  );
+  // A Service name, or ${services.<name>.port}, means that Service's only port.
+  expect(hint({ "/": "missing" })).toBe(
+    "Fix proxy./: Proxy '/': 'missing' is not a declared Service.",
+  );
+  expect(
+    hintOf({
+      name: "app",
+      services: {
+        ...services,
+        multi: { command: "m", ports: { http: "auto", admin: "auto" } },
+        worker: { command: "w" },
+      },
+      proxy: { "/": "multi", "/w": "worker", "/m": "${services.multi.port}" },
+    }),
+  ).toBe(
+    "Fix proxy./: Proxy '/': 'multi' has 2 ports (http, admin); name one, such as ${services.multi.ports.http}; proxy./w: Proxy '/w': 'worker' declares no port to route to; proxy./m: Proxy '/m': 'multi' has 2 ports (http, admin); name one, such as ${services.multi.ports.http}.",
   );
   expect(
     hint({
@@ -877,8 +946,8 @@ test("validation rejects missing dependencies, cycles and duplicate pinned ports
     hintOf({
       name: "app",
       services: {
-        a: { run: "run", depends_on: ["b"] },
-        b: { run: "run", depends_on: ["a"] },
+        a: { command: "run", depends_on: ["b"] },
+        b: { command: "run", depends_on: ["a"] },
       },
     }),
   ).toBe(
@@ -887,7 +956,7 @@ test("validation rejects missing dependencies, cycles and duplicate pinned ports
   expect(
     hintOf({
       name: "app",
-      services: { a: { run: "run", depends_on: ["missing"] } },
+      services: { a: { command: "run", depends_on: ["missing"] } },
     }),
   ).toBe(
     "Fix services.a.depends_on: Dependency 'missing' of Service 'a' is not a declared Service.",
@@ -896,7 +965,7 @@ test("validation rejects missing dependencies, cycles and duplicate pinned ports
   expect(
     hintOf({
       name: "app",
-      services: { a: { run: "run", depends_on: ["ctl"] } },
+      services: { a: { command: "run", depends_on: ["ctl"] } },
       tools: { ctl: { bin: "bin/ctl" } },
     }),
   ).toContain("Dependency 'ctl' of Service 'a' is not a declared Service.");
@@ -904,8 +973,8 @@ test("validation rejects missing dependencies, cycles and duplicate pinned ports
     hintOf({
       name: "app",
       services: {
-        a: { run: "run", ports: { http: 3000 } },
-        b: { run: "run", ports: { grpc: 3000 } },
+        a: { command: "run", ports: { http: 3000 } },
+        b: { command: "run", ports: { grpc: 3000 } },
       },
     }),
   ).toBe(
@@ -917,14 +986,14 @@ test("dependency, patch and reference lookup never treats inherited object names
   expect(
     hintOf({
       name: "app",
-      services: { web: { run: "run", depends_on: ["constructor"] } },
+      services: { web: { command: "run", depends_on: ["constructor"] } },
     }),
   ).toContain("Dependency 'constructor' of Service 'web' is not a declared");
   expect(
     hintOf({
       name: "app",
       services: web(),
-      targets: { working: { services: { constructor: { run: "x" } } } },
+      targets: { working: { services: { constructor: { command: "x" } } } },
     }),
   ).toContain(
     "targets.working.services.constructor: A Target patch cannot add",
@@ -933,16 +1002,16 @@ test("dependency, patch and reference lookup never treats inherited object names
     expect(
       failureOf({
         name: "app",
-        services: JSON.parse(`{"${name}":{"run":"serve"}}`),
+        services: JSON.parse(`{"${name}":{"command":"serve"}}`),
       }),
     ).toMatchObject({ code: "invalid_config" });
   // `constructor` is a legal entry name and behaves like any other Service.
   const config = parseProjectConfig({
     name: "app",
     services: {
-      constructor: { run: "serve", ports: { http: 3000 } },
+      constructor: { command: "serve", ports: { http: 3000 } },
       web: {
-        run: "web --upstream ${services.constructor.ports.http}",
+        command: "web --upstream ${services.constructor.ports.http}",
         ports: { http: 3001 },
         depends_on: ["constructor"],
       },
@@ -973,10 +1042,10 @@ test.each([
   expect(
     hintOf({
       name: "share",
-      services: { server: { run, ports: { http: 3210 } } },
+      services: { server: { command: run, ports: { http: 3210 } } },
     }),
   ).toBe(
-    "Fix services.server.run: Explicit network bindings must use 127.0.0.1 or localhost.",
+    "Fix services.server.command: Explicit network bindings must use 127.0.0.1 or localhost.",
   );
 });
 
@@ -988,15 +1057,22 @@ test.each([
   ],
   ["tools.ctl.build", { tools: { ctl: { bin: "c", build: "x --bind ::" } } }],
   ["services.web.ready", { services: web({ ready: "probe --host 0.0.0.0" }) }],
-  ["services.web.env.HOST", { services: web({ env: { HOST: "0.0.0.0" } }) }],
-  ["env.LISTEN_ADDR", { env: { LISTEN_ADDR: "::" } }],
   [
-    "targets.preview.env.BIND_ADDR",
-    { targets: { preview: { env: { BIND_ADDR: "[::]:3000" } } } },
+    "services.web.environment.HOST",
+    { services: web({ environment: { HOST: "0.0.0.0" } }) },
+  ],
+  ["environment.LISTEN_ADDR", { environment: { LISTEN_ADDR: "::" } }],
+  [
+    "targets.preview.environment.BIND_ADDR",
+    { targets: { preview: { environment: { BIND_ADDR: "[::]:3000" } } } },
   ],
   [
-    "targets.stable.services.web.run",
-    { targets: { stable: { services: { web: { run: "s --host 0.0.0.0" } } } } },
+    "targets.stable.services.web.command",
+    {
+      targets: {
+        stable: { services: { web: { command: "s --host 0.0.0.0" } } },
+      },
+    },
   ],
 ])(
   "builds, readiness commands, bind-style env values and patches are held to the localhost rule at %s",
@@ -1011,9 +1087,10 @@ test("env values that are not wildcard bindings are accepted, and a wrapped loca
   const config = parseProjectConfig({
     name: "app",
     services: web({
-      run: 'sh -c "node s.js --host 127.0.0.1 --port ${services.web.ports.http}"',
+      command:
+        'sh -c "node s.js --host 127.0.0.1 --port ${services.web.ports.http}"',
       ready: "curl -s http://localhost:${services.web.ports.http}/warm",
-      env: {
+      environment: {
         HOST: "app.example.com",
         HOSTNAME: "mac.local",
         PUBLIC_URL: "http://0.0.0.0.nip.io",
@@ -1021,7 +1098,10 @@ test("env values that are not wildcard bindings are accepted, and a wrapped loca
     }),
   });
   expect(config.services!.web).toMatchObject({
-    env: { HOST: "app.example.com", PUBLIC_URL: "http://0.0.0.0.nip.io" },
+    environment: {
+      HOST: "app.example.com",
+      PUBLIC_URL: "http://0.0.0.0.nip.io",
+    },
   });
 });
 
@@ -1082,6 +1162,344 @@ test("a format line is refused with guidance to delete it, whatever format it na
     });
 });
 
+test("run and env are refused wherever they are spelled, each naming its Compose name", () => {
+  const { command, ...noCommand } = web().web;
+  for (const [path, input] of [
+    ["services.web.run", { services: { web: { ...noCommand, run: command } } }],
+    ["services.web.env", { services: web({ env: { A: "1" } }) }],
+    ["env", { env: { A: "1" }, services: web() }],
+    [
+      "targets.working.env",
+      { services: web(), targets: { working: { env: { A: "1" } } } },
+    ],
+    [
+      "targets.preview.services.web.run",
+      {
+        services: web(),
+        targets: { preview: { services: { web: { run: "serve" } } } },
+      },
+    ],
+    [
+      "targets.stable.services.web.env",
+      {
+        services: web(),
+        targets: { stable: { services: { web: { env: { A: "1" } } } } },
+      },
+    ],
+  ] as const) {
+    const [from, to] = path.endsWith("run")
+      ? ["run", "command"]
+      : ["env", "environment"];
+    const message = `\`${from}\` is now \`${to}\`; rename this key`;
+    expect(failureOf({ name: "app", ...input })).toMatchObject({
+      code: "invalid_config",
+      hint: `Fix ${path}: ${message}.`,
+      context: { issues: [{ path: path.split("."), message }] },
+    });
+  }
+});
+
+test("working_dir is a directory inside the workspace, recorded normalized and patchable per Target; env_file paths stay workspace-relative", () => {
+  const message =
+    "must be a directory inside the workspace, relative to it, such as apps/web: no absolute path, ~, '..' or reference";
+  for (const value of [
+    "/srv/app",
+    "~/app",
+    "..",
+    "../sibling",
+    "apps/../../x",
+    "${rig.workspace}/apps",
+    "",
+  ])
+    expect(
+      failureOf({ name: "app", services: web({ working_dir: value }) })?.context
+        .issues,
+    ).toEqual([
+      {
+        path: ["services", "web", "working_dir"],
+        message: value === "" ? "must not be empty" : message,
+      },
+    ]);
+  expect(
+    issuePaths({
+      name: "app",
+      services: web(),
+      targets: { stable: { services: { web: { working_dir: "../x" } } } },
+    }),
+  ).toEqual(["targets.stable.services.web.working_dir"]);
+  const config = parseProjectConfig({
+    name: "app",
+    services: web({ working_dir: "./apps/web/", env_file: "apps/web/.env" }),
+    targets: {
+      working: true,
+      stable: { services: { web: { working_dir: "dist/web" } } },
+      preview: { services: { web: { working_dir: "." } } },
+    },
+  });
+  const planned = (target: "working" | "stable" | "preview") =>
+    resolveTargetPlan({ config, target, ...roots_, assignedPorts: { web: 1 } })
+      .components[0]!;
+  expect(planned("working")).toMatchObject({ workingDir: "apps/web" });
+  expect(planned("stable")).toMatchObject({ workingDir: "dist/web" });
+  // The workspace root is the default, so a plan that runs there records nothing, as before working_dir existed.
+  expect(planned("preview")).not.toHaveProperty("workingDir");
+  expect(planned("working").envFiles!.find((file) => file.required)).toEqual({
+    path: "/work/apps/web/.env",
+    required: true,
+  });
+});
+
+test("${port} and ${ports.<port>} name the ports of the Service whose setting holds them, and ${services.<service>.port} a Service's only port anywhere", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    build: "make PORT=${services.web.port}",
+    environment: { WEB: "http://127.0.0.1:${services.web.port}" },
+    services: {
+      web: {
+        command: "serve --port ${port}",
+        build: "make web-${port}",
+        ports: { http: "auto" },
+        ready: "http://127.0.0.1:${port}/health",
+        environment: {
+          PORT: "${port}",
+          SELF: "http://127.0.0.1:${port}",
+          API: "http://127.0.0.1:${services.api.ports.http}",
+        },
+        env_file: "env/${port}.env",
+      },
+      api: {
+        command: "api --http ${ports.http} --admin ${ports.admin}",
+        ports: { http: "auto", admin: "auto" },
+        // A value read through another Service's setting keeps that setting's own Service.
+        environment: { WEB: "${services.web.environment.SELF}" },
+      },
+    },
+    tools: { ctl: { bin: "ctl", build: "make ctl-${services.web.port}" } },
+  });
+  const plan = resolveTargetPlan({
+    config,
+    target: "working",
+    ...roots_,
+    assignedPorts: { "web.http": 4100, "api.http": 4200, "api.admin": 4201 },
+  });
+  const component = (name: string) =>
+    plan.components.find((entry) => entry.name === name)!;
+  expect(component("web")).toMatchObject({
+    command: "serve --port 4100",
+    health: "http://127.0.0.1:4100/health",
+    env: {
+      WEB: "http://127.0.0.1:4100",
+      PORT: "4100",
+      API: "http://127.0.0.1:4200",
+    },
+  });
+  expect(component("web").envFiles!.find((file) => file.required)!.path).toBe(
+    "/work/env/4100.env",
+  );
+  expect(component("api")).toMatchObject({
+    command: "api --http 4200 --admin 4201",
+    env: { WEB: "http://127.0.0.1:4100" },
+  });
+  expect(plan.builds!.map((unit) => unit.command)).toEqual([
+    "make PORT=4100",
+    "make web-4100",
+    "make ctl-4100",
+  ]);
+  // The long form still works beside them.
+  expect(
+    failureOf({
+      name: "app",
+      services: web({ command: "serve --port ${services.web.ports.http}" }),
+    }),
+  ).toBeUndefined();
+});
+
+test("a short port reference that has no Service, or no single port, is refused with what to write instead", () => {
+  const two = { http: "auto", admin: "auto" };
+  for (const [input, path, message] of [
+    [
+      { build: "make ${port}", services: web() },
+      "build",
+      "${port} in build has no Service; write ${services.<service>.port} or ${services.<service>.ports.<port>}.",
+    ],
+    [
+      { environment: { P: "${ports.http}" }, services: web() },
+      "environment.P",
+      "${ports.http} in environment.P has no Service; write ${services.<service>.port} or ${services.<service>.ports.<port>}.",
+    ],
+    [
+      {
+        services: web(),
+        tools: { ctl: { bin: "ctl", build: "make ${port}" } },
+      },
+      "tools.ctl.build",
+      "${port} in tools.ctl.build has no Service; write ${services.<service>.port} or ${services.<service>.ports.<port>}.",
+    ],
+    [
+      { services: { web: { command: "serve ${port}" } } },
+      "services.web.command",
+      "${port} in services.web.command needs one port, but 'web' has none; declare one, such as ports: { http: auto }.",
+    ],
+    [
+      { services: web({ command: "serve ${port}", ports: two }) },
+      "services.web.command",
+      "${port} in services.web.command needs one port, but 'web' has 2 (http, admin); name one, such as ${ports.http}.",
+    ],
+    [
+      {
+        environment: { URL: "${services.web.port}" },
+        services: web({ ports: two }),
+      },
+      "environment.URL",
+      "${services.web.port} in environment.URL needs one port, but 'web' has 2 (http, admin); name one, such as ${services.web.ports.http}.",
+    ],
+    [
+      { services: web({ command: "serve ${ports.grpc}" }) },
+      "services.web.command",
+      "Unknown reference '${ports.grpc}' in services.web.command: Service 'web' declares the ports http.",
+    ],
+    [
+      { environment: { URL: "${services.api.port}" }, services: web() },
+      "environment.URL",
+      "Unknown reference '${services.api.port}' in environment.URL: 'api' is not a declared Service.",
+    ],
+  ] as const)
+    expect(failureOf({ name: "app", ...input })?.context.issues).toEqual([
+      { path: path.split("."), message },
+    ]);
+  // At plan time the reference carries a hint naming the fix.
+  expect(() =>
+    referenceResolver(
+      { services: { web: { ports: two } } },
+      {
+        target: "t",
+        workspace: "/w",
+        host: "",
+        url: "",
+        data: () => "/d",
+        port: () => 1,
+      },
+    ).text("${port}", "services.web.command"),
+  ).toThrow(
+    expect.objectContaining({
+      code: "ambiguous_port",
+      hint: "Write ${ports.<port>} with one of http, admin.",
+    }),
+  );
+});
+
+test("build: false in a Target patch turns an inherited Project or Service build off for that role only; at the top level it is refused", () => {
+  const config = parseProjectConfig({
+    name: "app",
+    build: "make all",
+    services: web({ build: "make web" }),
+    tools: { ctl: { bin: "ctl", build: "make ctl" } },
+    targets: {
+      working: { build: false, services: { web: { build: false } } },
+      stable: true,
+      preview: { services: { web: { build: false } } },
+    },
+  });
+  const builds = (target: "working" | "stable" | "preview") =>
+    resolveTargetPlan({
+      config,
+      target,
+      ...roots_,
+      assignedPorts: { web: 1 },
+    }).builds?.map((unit) => unit.id);
+  expect(builds("working")).toEqual(["tool:ctl"]);
+  expect(builds("stable")).toEqual(["shared", "service:web", "tool:ctl"]);
+  expect(builds("preview")).toEqual(["shared", "tool:ctl"]);
+  expect(patchedSettings(config, "working")).not.toHaveProperty("build");
+  expect(patchedSettings(config, "working").services!.web).not.toHaveProperty(
+    "build",
+  );
+  // The patch keeps what the author wrote; only the role's settings lose the build.
+  expect(config.targets!.working).toMatchObject({ build: false });
+  const message =
+    "build: false only turns an inherited build off in a Target patch; delete this line for no build";
+  for (const [path, input] of [
+    ["build", { build: false, services: web() }],
+    ["services.web.build", { services: web({ build: false }) }],
+  ] as const)
+    expect(failureOf({ name: "app", ...input })?.context.issues).toEqual([
+      { path: path.split("."), message },
+    ]);
+  // true is not a build command.
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { stable: { build: true } },
+    }),
+  ).toBe(
+    "Fix targets.stable.build: must be a command, or false to turn the inherited build off.",
+  );
+  expect(
+    hintOf({
+      name: "app",
+      services: web(),
+      targets: { stable: { services: { web: { build: 7 } } } },
+    }),
+  ).toBe(
+    "Fix targets.stable.services.web.build: must be a command, or false to turn the inherited build off.",
+  );
+  // A Tool's bin comes from its build, so no role may turn it off, and neither may its own declaration.
+  const toolOff =
+    "build: false is not allowed for a Tool, whose build makes its bin; give another command or leave the key out";
+  for (const [path, input] of [
+    [
+      "targets.stable.tools.ctl.build",
+      {
+        tools: { ctl: { bin: "ctl", build: "make" } },
+        targets: { stable: { tools: { ctl: { build: false } } } },
+      },
+    ],
+    ["tools.ctl.build", { tools: { ctl: { bin: "ctl", build: false } } }],
+  ] as const)
+    expect(failureOf({ name: "app", ...input })?.context.issues).toEqual([
+      { path: path.split("."), message: toolOff },
+    ]);
+});
+
+test("a reference through env names the environment path that replaced it", () => {
+  for (const [reference, replacement] of [
+    ["${env.MODE}", "${environment.MODE}"],
+    ["${services.web.env.LABEL}", "${services.web.environment.LABEL}"],
+  ])
+    expect(
+      failureOf({
+        name: "app",
+        environment: { MODE: "dev" },
+        services: web({
+          environment: { LABEL: "x", COPY: reference },
+        }),
+      }),
+    ).toMatchObject({
+      code: "invalid_config",
+      hint: `Fix services.web.environment.COPY: Reference '${reference}' in services.web.environment.COPY names \`env\`, which is now \`environment\`: write ${replacement}.`,
+    });
+  // At plan time the same reference carries its own hint, naming the new path.
+  expect(() =>
+    referenceResolver(
+      { environment: { MODE: "dev" } },
+      {
+        target: "t",
+        workspace: "/w",
+        host: "",
+        url: "",
+        data: () => "/d",
+        port: () => 1,
+      },
+    ).text("${env.MODE}", "build"),
+  ).toThrow(
+    expect.objectContaining({
+      code: "renamed_reference",
+      hint: "Write ${environment.MODE} instead.",
+    }),
+  );
+});
+
 test("a health block is refused wherever a Service is spelled, naming ready and ready_timeout as its replacement", () => {
   const removed =
     "was removed with ongoing health checks; write its check as ready and its start_timeout as ready_timeout";
@@ -1116,7 +1534,7 @@ test("a health block is refused wherever a Service is spelled, naming ready and 
     name: "app",
     services: web({
       ready_timeout: "1m",
-      env: { READY_TIMEOUT: "${services.web.ready_timeout}" },
+      environment: { READY_TIMEOUT: "${services.web.ready_timeout}" },
     }),
     targets: { stable: { services: { web: { ready_timeout: "5m" } } } },
   });
@@ -1162,7 +1580,7 @@ test("durations are written like 30s, 10m or 1h, bounded to one day, and reach t
     build_timeout: "24h",
     services: {
       ...web({ ready_timeout: "86400s" }),
-      api: { run: "api", ports: { http: 3001 } },
+      api: { command: "api", ports: { http: 3001 } },
     },
     tools: {
       ctl: { bin: "c", build: "make", build_timeout: "20m" },
@@ -1208,8 +1626,8 @@ test("stop_timeout is a duration from 1s to 1h, defaults to 10s, is patchable pe
     name: "app",
     services: {
       ...web({ stop_timeout: "2m" }),
-      api: { run: "api", ports: { http: 3001 } },
-      worker: { run: "work", stop_timeout: "1h" },
+      api: { command: "api", ports: { http: 3001 } },
+      worker: { command: "work", stop_timeout: "1h" },
     },
     targets: { stable: { services: { web: { stop_timeout: "25m" } } } },
   });
@@ -1237,7 +1655,7 @@ test("validation hints describe the rule in plain words, never Zod's pattern or 
     'Fix services.web: has no field named "port".',
   );
   expect(hintOf({ name: "app", services: { web: { ports: {} } } })).toBe(
-    "Fix services.web.run: must be a string.",
+    "Fix services.web.command: must be a string.",
   );
   expect(
     hintOf({ name: "app", services: web({ ports: { http: "4000" } }) }),
@@ -1248,11 +1666,13 @@ test("validation hints describe the rule in plain words, never Zod's pattern or 
   expect(
     hintOf({ name: "app", services: web({ ports: { http: 65536 } }) }),
   ).toBe("Fix services.web.ports.http: must be at most 65535.");
-  expect(hintOf({ name: "app", services: web({ env: { PORT: 3000 } }) })).toBe(
-    "Fix services.web.env.PORT: must be a string.",
-  );
-  expect(hintOf({ name: "app", services: web({ env: { "1BAD": "x" } }) })).toBe(
-    "Fix services.web.env.1BAD: must be an environment variable name: letters, digits and '_', not starting with a digit.",
+  expect(
+    hintOf({ name: "app", services: web({ environment: { PORT: 3000 } }) }),
+  ).toBe("Fix services.web.environment.PORT: must be a string.");
+  expect(
+    hintOf({ name: "app", services: web({ environment: { "1BAD": "x" } }) }),
+  ).toBe(
+    "Fix services.web.environment.1BAD: must be an environment variable name: letters, digits and '_', not starting with a digit.",
   );
   expect(hintOf({ name: "app", services: web({ restart: "never" }) })).toBe(
     'Fix services.web.restart: must be one of "always", "on-failure", "no".',
@@ -1261,12 +1681,12 @@ test("validation hints describe the rule in plain words, never Zod's pattern or 
     "Fix services.web.env_file: must list at least 1 entries.",
   );
   expect(
-    hintOf({ name: "app", services: { "Bad Name": { run: "serve" } } }),
+    hintOf({ name: "app", services: { "Bad Name": { command: "serve" } } }),
   ).toBe(
     "Fix services.Bad Name: must start with a lowercase letter or digit and contain only lowercase letters, digits or '-'.",
   );
   for (const hint of [
-    hintOf({ name: "-bad", services: { "Bad Name": { run: "" } } }),
+    hintOf({ name: "-bad", services: { "Bad Name": { command: "" } } }),
     hintOf({ name: "app", services: web({ ports: { Http: 1 } }) }),
   ]) {
     expect(hint).not.toBe("");
@@ -1283,9 +1703,9 @@ test("invalid config errors carry bounded safe field guidance and the source pat
       "name: app",
       "services:",
       "  web:",
-      "    run: serve --token do-not-expose-this-value --host 0.0.0.0",
+      "    command: serve --token do-not-expose-this-value --host 0.0.0.0",
       "    ports: {http: 0}",
-      "    env: {SECRET: do-not-expose-this-value, HOST: 0.0.0.0}",
+      "    environment: {SECRET: do-not-expose-this-value, HOST: 0.0.0.0}",
       ...Array.from({ length: 40 }, (_, index) => `unknown_field_${index}: 1`),
     ].join("\n"),
   );
@@ -1369,13 +1789,14 @@ test("a domain must be a hostname: schemes, ports, paths, wildcards, lists and o
 test("Target resolution provides forward port references, environment inheritance, per-Service data and dependency order", () => {
   const config = parseProjectConfig({
     name: "pantry",
-    env: { MODE: "base", LOG: "json" },
+    environment: { MODE: "base", LOG: "json" },
     services: {
       web: {
-        run: "serve --host 127.0.0.1 --port ${services.web.ports.http} --data ${rig.data}",
+        command:
+          "serve --host 127.0.0.1 --port ${services.web.ports.http} --data ${rig.data}",
         ports: { http: "auto" },
         depends_on: ["db", "api"],
-        env: {
+        environment: {
           API: "http://127.0.0.1:${services.api.ports.http}",
           LOG: "service",
           SELF: "${rig.url}",
@@ -1383,19 +1804,19 @@ test("Target resolution provides forward port references, environment inheritanc
         },
       },
       api: {
-        run: "api --port ${services.api.ports.http}",
+        command: "api --port ${services.api.ports.http}",
         ports: { http: "auto" },
-        env: { DATA_DIR: "${rig.data}", ROOT: "${rig.workspace}" },
+        environment: { DATA_DIR: "${rig.data}", ROOT: "${rig.workspace}" },
       },
-      db: { run: "db", ports: { pg: "auto" } },
+      db: { command: "db", ports: { pg: "auto" } },
     },
     tools: { ctl: { bin: "bin/ctl" } },
     proxy: { "/": "${services.web.ports.http}" },
     targets: {
       working: {
-        env: { MODE: "dev" },
+        environment: { MODE: "dev" },
         services: {
-          web: { ports: { http: 5173 }, env: { LOG: "patched" } },
+          web: { ports: { http: 5173 }, environment: { LOG: "patched" } },
           api: { ports: { http: 8081 } },
         },
       },
@@ -1469,9 +1890,171 @@ test("Target resolution provides forward port references, environment inheritanc
   });
 });
 
-test("rig.host and rig.url name the routed hostname, and are empty without a proxy", () => {
+test("proxy may name a Service for its only port, and a Target with a hostname and no proxy routes '/' to the one Service with one port", () => {
+  const services = {
+    web: { command: "web", ports: { http: "auto" } },
+    api: { command: "api", ports: { http: "auto", admin: "auto" } },
+    worker: { command: "worker" },
+  };
+  const routesOf = (config: Record<string, unknown>, target = "stable") =>
+    resolveTargetPlan({
+      config: parseProjectConfig({ name: "app", ...config }),
+      target: target as "working" | "stable" | "preview",
+      ...roots_,
+      assignedPorts: { "web.http": 4100, "api.http": 4200, "api.admin": 4201 },
+    }).proxy;
+  const long = routesOf({
+    domain: "app.test",
+    services,
+    proxy: {
+      "/": "${services.web.ports.http}",
+      "/api": "${services.api.ports.admin}",
+    },
+    targets: { stable: true },
+  });
+  expect(long).toEqual({
+    upstream: "web",
+    routes: [
+      { prefix: "/api", service: "api", port: 4201 },
+      { prefix: "/", service: "web", port: 4100 },
+    ],
+  });
+  expect(
+    routesOf({
+      domain: "app.test",
+      services,
+      proxy: { "/": "web", "/api": "${services.api.ports.admin}" },
+      targets: { stable: true },
+    }),
+  ).toEqual(long);
+  expect(
+    routesOf({
+      domain: "app.test",
+      services,
+      proxy: {
+        "/": "${services.web.port}",
+        "/api": "${services.api.ports.admin}",
+      },
+      targets: { stable: true },
+    }),
+  ).toEqual(long);
+  // The default: the one Service that declares ports, when it declares one.
+  const single = { web: services.web, worker: services.worker };
+  expect(
+    routesOf({
+      domain: "app.test",
+      services: single,
+      targets: { stable: true },
+    }),
+  ).toEqual({
+    upstream: "web",
+    routes: [{ prefix: "/", service: "web", port: 4100 }],
+  });
+  // A Target with no hostname gets no default route.
+  expect(
+    routesOf({ domain: "app.test", services: single }, "working"),
+  ).toBeUndefined();
+  // A patch may name the Service too.
+  expect(
+    routesOf(
+      {
+        services: single,
+        targets: { working: { domain: "dev.test", proxy: { "/": "web" } } },
+      },
+      "working",
+    ),
+  ).toEqual({
+    upstream: "web",
+    routes: [{ prefix: "/", service: "web", port: 4100 }],
+  });
+});
+
+test("a Target that is on and has a hostname but no usable proxy is refused with what to add", () => {
+  const issues = (config: Record<string, unknown>) =>
+    failureOf({ name: "app", ...config })?.context.issues;
+  const two = {
+    web: { command: "web", ports: { http: "auto" } },
+    api: { command: "api", ports: { http: "auto" } },
+  };
+  expect(
+    issues({ domain: "app.test", services: two, targets: { stable: true } }),
+  ).toEqual([
+    {
+      path: ["domain"],
+      message:
+        "The stable Target serves domain but several Services have ports; add proxy: { /: web } at the top level or under targets.stable.",
+    },
+  ]);
+  expect(
+    issues({
+      domain: "app.test",
+      services: {
+        web: { command: "web", ports: { http: "auto", admin: 3000 } },
+      },
+      targets: { preview: true },
+    }),
+  ).toEqual([
+    {
+      path: ["domain"],
+      message:
+        "Previews get a hostname from domain but 'web' has several ports; add proxy: { /: ${services.web.ports.http} } at the top level or under targets.preview.",
+    },
+  ]);
+  expect(
+    issues({
+      services: { worker: { command: "worker" } },
+      targets: { working: { domain: "dev.test" } },
+    }),
+  ).toEqual([
+    {
+      path: ["targets", "working", "domain"],
+      message:
+        "The working Target has a hostname but no Service has a port; declare one, such as ports: { http: auto }, or remove the domain.",
+    },
+  ]);
+  // A Target that is off, or has no hostname, needs no proxy: without targets only working is on, and it has no hostname.
+  expect(issues({ domain: "app.test", services: two })).toBeUndefined();
+  expect(
+    issues({ domain: "app.test", services: two, targets: { working: true } }),
+  ).toBeUndefined();
+  // A proxy in the role's patch is enough for that role, and the refusal names the role that still has none.
+  expect(
+    issues({
+      domain: "app.test",
+      services: two,
+      targets: { stable: { proxy: { "/": "api" } } },
+    }),
+  ).toBeUndefined();
+  expect(
+    issues({
+      domain: "app.test",
+      services: two,
+      targets: { stable: { proxy: { "/": "web" } }, preview: true },
+    }),
+  ).toEqual([
+    {
+      path: ["domain"],
+      message:
+        "Previews get a hostname from domain but several Services have ports; add proxy: { /: web } at the top level or under targets.preview.",
+    },
+  ]);
+  expect(
+    issues({
+      services: two,
+      targets: { preview: { domain: "${rig.target}.app.test" } },
+    }),
+  ).toEqual([
+    {
+      path: ["targets", "preview", "domain"],
+      message:
+        "Previews have a hostname but several Services have ports; add proxy: { /: web } at the top level or under targets.preview.",
+    },
+  ]);
+});
+
+test("rig.host names the routed hostname, and rig.url the route or the local address of the Service behind '/'", () => {
   const services = web({
-    env: { HOSTED: "${rig.host}", URL: "${rig.url}" },
+    environment: { HOSTED: "${rig.host}", URL: "${rig.url}" },
   });
   const envOf = (config: unknown) =>
     resolveTargetPlan({
@@ -1487,10 +2070,43 @@ test("rig.host and rig.url name the routed hostname, and are empty without a pro
       proxy: { "/": "${services.web.ports.http}" },
     }),
   ).toEqual({ HOSTED: "app.test", URL: "https://app.test" });
+  // Without a proxy, '/' is the one Service with one port: the hostname routes to it, and without a hostname rig.url is
+  // its local address, as with an explicit proxy.
   expect(envOf({ name: "app", domain: "app.test", services })).toEqual({
+    HOSTED: "app.test",
+    URL: "https://app.test",
+  });
+  expect(
+    envOf({
+      name: "app",
+      services,
+      proxy: { "/": "${services.web.ports.http}" },
+    }),
+  ).toEqual({ HOSTED: "", URL: "http://127.0.0.1:3000" });
+  expect(envOf({ name: "app", services })).toEqual({
+    HOSTED: "",
+    URL: "http://127.0.0.1:3000",
+  });
+  // With no single Service to default to, a Target with neither proxy nor hostname has no URL.
+  const two = {
+    ...services,
+    api: {
+      command: "api",
+      ports: { http: 3001 },
+      environment: { URL: "${rig.url}" },
+    },
+  };
+  expect(envOf({ name: "app", services: two })).toEqual({
     HOSTED: "",
     URL: "",
   });
+  expect(
+    resolveTargetPlan({
+      config: parseProjectConfig({ name: "app", services }),
+      target: "stable",
+      ...roots_,
+    }).proxy,
+  ).toBeUndefined();
 });
 
 test("Preview plans use assigned ports and ignore pins, keep Branch identity, and refuse missing or colliding ports", () => {
@@ -1499,13 +2115,13 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
     domain: "example.com",
     services: {
       web: {
-        run: "serve --port ${services.web.ports.http}",
+        command: "serve --port ${services.web.ports.http}",
         ports: { http: 3000 },
         ready: "http://127.0.0.1:${services.web.ports.http}/health",
         depends_on: ["db"],
       },
       db: {
-        run: "db -p ${services.db.ports.pg}",
+        command: "db -p ${services.db.ports.pg}",
         ports: { pg: 5432 },
         ready: "pg_isready -h 127.0.0.1 -p ${services.db.ports.pg}",
       },
@@ -1590,7 +2206,7 @@ test("an auto port colliding with another Service's pin is refused for the Worki
     name: "app",
     services: {
       ...web(),
-      api: { run: "api", ports: { http: "auto" } },
+      api: { command: "api", ports: { http: "auto" } },
     },
   });
   expect(() =>
@@ -1607,11 +2223,11 @@ test.each(["constructor", "__proto__", "toString", "rig.nope", "web.port"])(
   "reference ${%s} is unknown when the document is read, never an inherited object property",
   (key) => {
     expect(
-      hintOf({ name: "app", services: web({ run: "run ${" + key + "}" }) }),
+      hintOf({ name: "app", services: web({ command: "run ${" + key + "}" }) }),
     ).toBe(
-      "Fix services.web.run: Unknown reference '${" +
+      "Fix services.web.command: Unknown reference '${" +
         key +
-        "}' in services.web.run.",
+        "}' in services.web.command.",
     );
   },
 );
@@ -1620,27 +2236,29 @@ test("a reference is an exact path to one public value: shell expansion, collect
   const refusal = (extra: Record<string, unknown>) =>
     hintOf({ name: "app", services: web(), ...extra });
   expect(
-    refusal({ services: web({ run: "serve --port ${PORT:-3000}" }) }),
+    refusal({ services: web({ command: "serve --port ${PORT:-3000}" }) }),
   ).toBe(
-    "Fix services.web.run: Unknown reference '${PORT:-3000}' in services.web.run.",
+    "Fix services.web.command: Unknown reference '${PORT:-3000}' in services.web.command.",
   );
-  expect(refusal({ env: { ALL: "${services.web.ports}" } })).toBe(
-    "Fix env.ALL: Reference '${services.web.ports}' in env.ALL names a collection, not one value.",
+  expect(refusal({ environment: { ALL: "${services.web.ports}" } })).toBe(
+    "Fix environment.ALL: Reference '${services.web.ports}' in environment.ALL names a collection, not one value.",
   );
   expect(
     refusal({
-      env: { NAME: "${targets.stable.domain}" },
+      environment: { NAME: "${targets.stable.domain}" },
       targets: { stable: { domain: "prod.test" } },
     }),
   ).toBe(
-    "Fix env.NAME: Reference '${targets.stable.domain}' in env.NAME reaches into targets; a reference reads the selected Target's own settings.",
+    "Fix environment.NAME: Reference '${targets.stable.domain}' in environment.NAME reaches into targets; a reference reads the selected Target's own settings.",
   );
-  expect(refusal({ env: { A: "${env.B}", B: "x${env.A}" } })).toBe(
-    "Fix env.A: References form a cycle: env.A -> env.B -> env.A; env.B: References form a cycle: env.B -> env.A -> env.B.",
+  expect(
+    refusal({ environment: { A: "${environment.B}", B: "x${environment.A}" } }),
+  ).toBe(
+    "Fix environment.A: References form a cycle: environment.A -> environment.B -> environment.A; environment.B: References form a cycle: environment.B -> environment.A -> environment.B.",
   );
   // rig.data belongs to one Service, so a Tool or Project-level value cannot name it.
-  expect(refusal({ env: { DATA: "${rig.data}" } })).toBe(
-    "Fix env.DATA: ${rig.data} in env.DATA has no Service: persistent data belongs to one Service.",
+  expect(refusal({ environment: { DATA: "${rig.data}" } })).toBe(
+    "Fix environment.DATA: ${rig.data} in environment.DATA has no Service: persistent data belongs to one Service.",
   );
   expect(
     hintOf({
@@ -1655,35 +2273,42 @@ test("a reference is an exact path to one public value: shell expansion, collect
     issuePaths({
       name: "app",
       services: web(),
-      targets: { preview: { env: { API: "${services.api.ports.http}" } } },
+      targets: {
+        preview: { environment: { API: "${services.api.ports.http}" } },
+      },
     }),
-  ).toEqual(["targets.preview.env.API"]);
+  ).toEqual(["targets.preview.environment.API"]);
 });
 
 test("references resolve through other public values, a Service's rig.data stays that Service's, and $${VAR} passes a braced shell reference through", () => {
   const plan = resolveTargetPlan({
     config: parseProjectConfig({
       name: "app",
-      env: { REGION: "eu", LITERAL: "$${HOME}/x" },
+      environment: { REGION: "eu", LITERAL: "$${HOME}/x" },
       services: {
         db: {
-          run: "db --dir ${rig.data}",
+          command: "db --dir ${rig.data}",
           ports: { pg: 5432 },
-          env: { PGDATA: "${rig.data}/pg", URL: "pg://base" },
+          environment: { PGDATA: "${rig.data}/pg", URL: "pg://base" },
         },
         web: {
-          run: 'serve --db ${services.db.env.URL} --home "$${HOME}" --user $USER',
+          command:
+            'serve --db ${services.db.environment.URL} --home "$${HOME}" --user $USER',
           ports: { http: 3000 },
-          env: {
-            DB: "${services.db.env.PGDATA}",
-            WHERE: "${env.REGION}-${services.db.ports.pg}",
+          environment: {
+            DB: "${services.db.environment.PGDATA}",
+            WHERE: "${environment.REGION}-${services.db.ports.pg}",
           },
         },
       },
       targets: {
         working: {
           services: {
-            db: { env: { URL: "pg://127.0.0.1:${services.db.ports.pg}/a b" } },
+            db: {
+              environment: {
+                URL: "pg://127.0.0.1:${services.db.ports.pg}/a b",
+              },
+            },
           },
         },
       },
@@ -1705,7 +2330,7 @@ test("references resolve through other public values, a Service's rig.data stays
     commandInputs: [
       {
         name: "URL",
-        source: "services.db.env.URL",
+        source: "services.db.environment.URL",
         value: "pg://127.0.0.1:5432/a b",
       },
     ],
@@ -1715,23 +2340,23 @@ test("references resolve through other public values, a Service's rig.data stays
 test("builds resolve to units: shared first, Services in dependency order, Tools by name, never merged by shell text", () => {
   const config = parseProjectConfig({
     name: "app",
-    build: "make ${env.MODE}",
+    build: "make ${environment.MODE}",
     build_timeout: "20m",
-    env: { MODE: "fast" },
+    environment: { MODE: "fast" },
     services: {
       web: {
-        run: "serve",
+        command: "serve",
         build: "make",
         ports: { http: 4100 },
         depends_on: ["api"],
       },
       api: {
-        run: "api",
+        command: "api",
         build: "make",
         build_timeout: "90s",
         ports: { http: 4101 },
       },
-      plain: { run: "plain", ports: { http: 4102 } },
+      plain: { command: "plain", ports: { http: 4102 } },
     },
     tools: {
       zed: { bin: "z", build: "make" },
@@ -1746,7 +2371,9 @@ test("builds resolve to units: shared first, Services in dependency order, Tools
       id: "shared",
       command: "make fast",
       timeout: 1200,
-      commandInputs: [{ name: "MODE", source: "env.MODE", value: "fast" }],
+      commandInputs: [
+        { name: "MODE", source: "environment.MODE", value: "fast" },
+      ],
     },
     { id: "service:api", component: "api", command: "make", timeout: 90 },
     { id: "service:web", component: "web", command: "make", timeout: 1200 },
@@ -1802,11 +2429,12 @@ test("every declared port is assigned and referable, a Service may declare none,
       domain: "app.test",
       services: {
         web: {
-          run: "serve ${services.web.ports.http} ${services.web.ports.admin}",
+          command:
+            "serve ${services.web.ports.http} ${services.web.ports.admin}",
           ports: { http: "auto", admin: 4200 },
         },
-        api: { run: "api", ports: { http: "auto" } },
-        worker: { run: "work ${services.api.ports.http}" },
+        api: { command: "api", ports: { http: "auto" } },
+        worker: { command: "work ${services.api.ports.http}" },
       },
       proxy: {
         "/": "${services.web.ports.http}",
@@ -1913,11 +2541,11 @@ test("an env key the parser would drop silently is refused by name", () => {
   expect(
     hintOf(
       JSON.parse(
-        '{"name":"app","services":{"web":{"run":"x","env":{"__proto__":"v"}}}}',
+        '{"name":"app","services":{"web":{"command":"x","environment":{"__proto__":"v"}}}}',
       ),
     ),
   ).toBe(
-    "Fix services.web.env: __proto__ is not an environment variable name.",
+    "Fix services.web.environment: __proto__ is not an environment variable name.",
   );
 });
 
@@ -1956,17 +2584,18 @@ test("complete accepted plans are independent of process cwd with portable paths
   const input = {
     config: parseProjectConfig({
       name: "app",
-      env: { ROOT: "${rig.workspace}" },
+      environment: { ROOT: "${rig.workspace}" },
       env_file: "env/${rig.target}.env",
       services: {
         web: {
-          run: "serve --port ${services.web.ports.http} --db ${rig.data}/数据库.sqlite",
+          command:
+            "serve --port ${services.web.ports.http} --db ${rig.data}/数据库.sqlite",
           ports: { http: "auto" },
           depends_on: ["db"],
-          env: { DATA: "${rig.data}", URL: "${rig.url}" },
+          environment: { DATA: "${rig.data}", URL: "${rig.url}" },
         },
         db: {
-          run: "db",
+          command: "db",
           ports: { pg: "auto" },
           env_file: "env/db.env",
         },
@@ -2050,7 +2679,7 @@ test.each([
 ])("Target resolution accepts localhost port binding %s", (run, expected) => {
   const config = parseProjectConfig({
     name: "share",
-    services: { server: { run, ports: { http: 3210 } } },
+    services: { server: { command: run, ports: { http: 3210 } } },
   });
   const plan = resolveTargetPlan({
     config,
@@ -2066,17 +2695,21 @@ test("Target resolution validates the actual substituted bind values of run and 
     resolveTargetPlan({
       config: parseProjectConfig({
         name: "share",
-        services: { server: { run: "serve", ports: { http: 3210 }, ...extra } },
+        services: {
+          server: { command: "serve", ports: { http: 3210 }, ...extra },
+        },
       }),
       target: "working",
       workspacePath: "/repo",
       dataRoot: "/state/data",
     });
-  expect(() => resolve({ run: "serve --addr 127.0.0.1:${rig.data}" })).toThrow(
+  expect(() =>
+    resolve({ command: "serve --addr 127.0.0.1:${rig.data}" }),
+  ).toThrow(
     expect.objectContaining({
       _tag: "ConfigError",
       code: "invalid_binding",
-      message: "Resolved run command binds outside localhost.",
+      message: "Resolved command binds outside localhost.",
       context: { service: "server" },
     }),
   );
@@ -2096,13 +2729,15 @@ test("paths substituted into run, ready and build commands are shell-quoted unle
     name: "spaced",
     services: {
       web: {
-        run: "node ${rig.workspace}/server.js --db ${rig.data}/db.sqlite --port ${services.web.ports.http}",
+        command:
+          "node ${rig.workspace}/server.js --db ${rig.data}/db.sqlite --port ${services.web.ports.http}",
         ready: "test -f ${rig.workspace}/ready",
         ports: { http: 4000 },
-        env: { DB: "${rig.data}/db.sqlite" },
+        environment: { DB: "${rig.data}/db.sqlite" },
       },
       api: {
-        run: "node '${rig.workspace}/api.js' --log \"${rig.data}/log\" --port ${services.api.ports.http}",
+        command:
+          "node '${rig.workspace}/api.js' --log \"${rig.data}/log\" --port ${services.api.ports.http}",
         ready: "http://127.0.0.1:${services.api.ports.http}/",
         ports: { http: 4001 },
       },
@@ -2200,7 +2835,7 @@ test("the Working copy keeps the developer's env file wherever it is; a deployed
     env_file: "../shared/.env",
     services: {
       ...web({ env_file: "/etc/app.env" }),
-      api: { run: "api", ports: { http: 3001 } },
+      api: { command: "api", ports: { http: 3001 } },
     },
     targets: {
       stable: {
@@ -2267,7 +2902,10 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
       parseProjectConfig({
         name: "app",
         services: {
-          db: { ...web().web, env: { DATA: "${rig.data}", NAME: "db" } },
+          db: {
+            ...web().web,
+            environment: { DATA: "${rig.data}", NAME: "db" },
+          },
         },
         ...extra,
       });
@@ -2278,32 +2916,34 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
   };
   expect(
     issues({
-      tools: { ctl: { bin: "ctl", build: "make ${services.db.env.NAME}" } },
+      tools: {
+        ctl: { bin: "ctl", build: "make ${services.db.environment.NAME}" },
+      },
     }),
   ).toContain(
-    "Fix tools.ctl.build: tools.ctl.build reaches '${services.db.env.NAME}'",
+    "Fix tools.ctl.build: tools.ctl.build reaches '${services.db.environment.NAME}'",
   );
   expect(
     issues({
-      env: { VIA: "${services.db.env.DATA}" },
-      tools: { ctl: { bin: "ctl", build: "make ${env.VIA}" } },
+      environment: { VIA: "${services.db.environment.DATA}" },
+      tools: { ctl: { bin: "ctl", build: "make ${environment.VIA}" } },
     }),
   ).toContain(
-    "tools.ctl.build reaches '${services.db.env.DATA}' through env.VIA",
+    "tools.ctl.build reaches '${services.db.environment.DATA}' through environment.VIA",
   );
-  expect(issues({ build: "make ${services.db.env.NAME}" })).toContain(
+  expect(issues({ build: "make ${services.db.environment.NAME}" })).toContain(
     "Fix build: build reaches",
   );
   // A Service may name another Service's public value.
   expect(
     issues({
       tools: { ctl: { bin: "ctl" } },
-      env: { OK: "${services.db.env.NAME}" },
+      environment: { OK: "${services.db.environment.NAME}" },
     }),
   ).toBe("accepted");
   const config = parseProjectConfig({
     name: "app",
-    services: { web: { ...web().web, run: "echo `echo ${rig.target}`" } },
+    services: { web: { ...web().web, command: "echo `echo ${rig.target}`" } },
   });
   expect(() =>
     resolveTargetPlan({
@@ -2319,7 +2959,7 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
 test("YAML editing replaces or removes an uncommented mapping or sequence in place", async () => {
   const root = await fixture(),
     raw =
-      "name: app # keep\nservices:\n  web:\n    run: serve\n    depends_on: [db, cache]\n  db:\n    run: postgres\n  cache:\n    run: redis\n  old:\n    run: legacy\n";
+      "name: app # keep\nservices:\n  web:\n    command: serve\n    depends_on: [db, cache]\n  db:\n    command: postgres\n  cache:\n    command: redis\n  old:\n    command: legacy\n";
   await writeFile(join(root, "rig.yaml"), raw);
   const document = await readProjectConfig(root);
   await editProjectConfig({

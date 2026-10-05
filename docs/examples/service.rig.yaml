@@ -2,31 +2,27 @@
 # tests/config-http-e2e.test.ts validates this file.
 # The example notes application reads HOST, PORT and DATA_DIR itself.
 name: notes
-production_branch: main
 domain: notes.example.com
 
 services:
   api:
     build: go build -o .rig-build/notes ./cmd/notes
-    run: ./.rig-build/notes
+    command: ./.rig-build/notes
     ports: { http: auto }
-    env:
+    environment:
       HOST: 127.0.0.1
-      PORT: ${services.api.ports.http}
+      PORT: ${port}
       DATA_DIR: ${rig.data}
       LOG_LEVEL: info
-    ready: http://127.0.0.1:${services.api.ports.http}/health
+    ready: http://127.0.0.1:${port}/health
 
-# Requests for the domain go to the api Service's http port. Each key is a
-# URL path prefix; the longest match wins and "/" is required.
-proxy:
-  /: ${services.api.ports.http}
+# No proxy: api is the one Service with a port, so the domain routes "/" to it.
 
 targets:
   working:
     services:
       api:
-        env: { LOG_LEVEL: debug }
+        environment: { LOG_LEVEL: debug }
   stable: true
   # Each Preview is served at notes-<preview name>.example.com.
   preview: true

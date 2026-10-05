@@ -5,7 +5,7 @@ import type { RuntimeDependencies } from "./contracts";
 import type { BuildJournal, PreparationRequest } from "./lifecycle";
 import { persistTarget } from "./targets";
 
-/** Digest of what a unit's build was declared to be: its command, budget, public env, env-file paths and workspace.
+/** Digest of what a unit's build was declared to be: its command, budget, public env, env-file paths, workspace and working_dir.
  * Env-file values never enter it, so an operator's secret reaches no record and a changed value reruns nothing. */
 export function unitPolicy(unit: BuildUnit, plan: TargetPlan): string {
   const scope =
@@ -18,6 +18,10 @@ export function unitPolicy(unit: BuildUnit, plan: TargetPlan): string {
         command: unit.command,
         timeout: unit.timeout,
         workspace: plan.workspacePath,
+        // Only a Service that sets working_dir records one, so a unit planned before it existed keeps its policy.
+        ...("workingDir" in scope && scope.workingDir !== undefined
+          ? { workingDir: scope.workingDir }
+          : {}),
         env: scope.env ?? {},
         envFiles: (scope.envFiles ?? []).map((file) => file.path),
       }),

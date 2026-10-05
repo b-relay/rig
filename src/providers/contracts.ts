@@ -4,6 +4,8 @@ export interface ManagedProcess {
   readonly componentName: string;
   readonly command: readonly string[];
   readonly cwd: string;
+  /** When set, `cwd` must resolve inside this directory, symlinks followed: the start fails WORKING_DIR_OUTSIDE otherwise. */
+  readonly cwdWithin?: string;
   /** Used to spawn the process and never written to disk: a later start is given a freshly composed environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly logRoot: string;

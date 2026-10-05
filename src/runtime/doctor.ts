@@ -8,6 +8,7 @@ import { observeTargets, OBSERVATION_EXPIRED } from "./status";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
+import { usesRenamedKeys } from "../config/schema";
 import { withPlanDefaults } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
 import { transitionInProgress } from "./project-status";
@@ -327,7 +328,15 @@ async function configCheck(
           : `Inspect the Target's checkout at ${target.plan.workspacePath}, or run rig deploy ${deploySelector(target)} --force to prepare it again.`,
       );
     case "invalid":
-      return invalid(source.failure);
+      // A deployed revision is never edited in place: one committed before the Compose names stays as it was, and only
+      // a deploy of a Commit that uses them replaces it. Its recorded plan still runs.
+      return target.kind !== "working" && usesRenamedKeys(source.failure)
+        ? failing(
+            `${label} predates the Compose key names of ADR 0011 (run is now command, env is now environment), so its policy was not compared. The Target still runs its recorded plan.`,
+            "config-predates-rename",
+            `Commit rig.yaml with the new names, then run rig deploy ${deploySelector(target)}; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.`,
+          )
+        : invalid(source.failure);
     case "foreign":
       return failing(
         `${label} names Project '${source.document.config.name}', not '${project.name}'; its policy was not compared.`,

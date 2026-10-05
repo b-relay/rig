@@ -339,10 +339,11 @@ export interface InitializeProjectInput {
   name: string;
   productionBranch?: string;
   domain?: string;
-  service?: { name: string; run: string; port?: number; ready?: string };
+  service?: { name: string; command: string; port?: number; ready?: string };
   tool?: { name: string; bin: string; build?: string };
 }
-/** Pure initial Project policy: one optional Service, routed at '/' when a domain is given, and one optional Tool. */
+/** Pure initial Project policy: one optional Service with one port, which a domain routes at '/' without a proxy, and one
+ * optional Tool. */
 export function scaffoldProjectConfig(
   input: InitializeProjectInput,
 ): ProjectConfig {
@@ -352,7 +353,7 @@ export function scaffoldProjectConfig(
       "A new Project needs a Service or a Tool.",
       "empty_project",
       {},
-      "Pass --service <name> --run <command>, or --tool <name> --bin <path>; or write rig.yaml first and run rig init again.",
+      "Pass --service <name> --command <command>, or --tool <name> --bin <path>; or write rig.yaml first and run rig init again.",
     );
   return parseProjectConfig({
     name: input.name,
@@ -362,7 +363,7 @@ export function scaffoldProjectConfig(
       ? {
           services: {
             [service.name]: {
-              run: service.run,
+              command: service.command,
               ports: { http: service.port ?? "auto" },
               ...(service.ready ? { ready: service.ready } : {}),
             },
@@ -378,9 +379,6 @@ export function scaffoldProjectConfig(
             },
           },
         }
-      : {}),
-    ...(service && input.domain
-      ? { proxy: { "/": `\${services.${service.name}.ports.http}` } }
       : {}),
     // Every switch is written out, so turning the stable Target or Previews on is one word in the file.
     targets: { working: true, stable: false, preview: false },

@@ -23,9 +23,9 @@ afterEach(async () => {
 
 /** api depends on db and is listed first, so a start in dependency order is visible; the three policies all appear. */
 const SERVICES = {
-  api: { run: "api", depends_on: ["db"] },
-  db: { run: "db", restart: "no" },
-  worker: { run: "worker", restart: "on-failure" },
+  api: { command: "api", depends_on: ["db"] },
+  db: { command: "db", restart: "no" },
+  worker: { command: "worker", restart: "on-failure" },
 };
 
 async function fixture() {

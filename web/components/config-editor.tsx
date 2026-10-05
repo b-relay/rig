@@ -380,7 +380,7 @@ const SECTION_ROOTS: Record<Section, readonly string[]> = {
     "build",
     "build_timeout",
   ],
-  environment: ["env", "env_file"],
+  environment: ["environment", "env_file"],
   services: ["services"],
   tools: ["tools"],
   proxy: ["proxy"],
@@ -711,7 +711,7 @@ function EnvironmentSection({ path }: { path: string[] }) {
   return (
     <div className="grid max-w-xl gap-6">
       <Records
-        path={[...path, "env"]}
+        path={[...path, "environment"]}
         label="Environment variables"
         keyLabel="variable"
         keyPattern={ENV_NAME}
@@ -733,13 +733,18 @@ function ServiceFields({
   return (
     <div className="grid gap-4">
       <Text
-        path={[...path, "run"]}
-        label="Run command"
+        path={[...path, "command"]}
+        label="Command"
         required={required}
         mono
       />
       <div className="grid gap-4 sm:grid-cols-2">
-        <Text path={[...path, "build"]} label="Build command" mono />
+        {required ? (
+          <Text path={[...path, "build"]} label="Build command" mono />
+        ) : (
+          <PatchBuild path={[...path, "build"]} />
+        )}
+        <Text path={[...path, "working_dir"]} label="Working directory" mono />
         <Text
           path={[...path, "build_timeout"]}
           label="Build timeout"
@@ -800,7 +805,7 @@ const ENTRY = {
   service: {
     root: "services",
     title: "Service",
-    initial: { run: "" },
+    initial: { command: "" },
     Fields: ServiceFields,
   },
   tool: {
@@ -894,9 +899,20 @@ function EntryCard({
 function ProxySection({ path }: { path: string[] }) {
   const draft = useDraft();
   const services = getAt(draft.tree, ["services"]);
-  const first = isTree(services) ? Object.keys(services)[0] : undefined;
+  // A Service name means its only port; a Service with several ports needs one named.
+  const first = isTree(services)
+    ? Object.keys(services).find((name) => {
+        const ports = getAt(services, [name, "ports"]);
+        return isTree(ports) && Object.keys(ports).length > 0;
+      })
+    : undefined;
   const ports = first ? getAt(services, [first, "ports"]) : undefined;
-  const port = isTree(ports) ? Object.keys(ports)[0] : undefined;
+  const names = isTree(ports) ? Object.keys(ports) : [];
+  const upstream = !first
+    ? ""
+    : names.length === 1
+      ? first
+      : `\${services.${first}.ports.${names[0]}}`;
   return (
     <div className="max-w-xl">
       <Records
@@ -906,8 +922,8 @@ function ProxySection({ path }: { path: string[] }) {
         keyPattern={PROXY_PREFIX}
         keyPlaceholder="/api"
         valueKind="text"
-        valuePlaceholder="${services.web.ports.http}"
-        initial={first && port ? `\${services.${first}.ports.${port}}` : ""}
+        valuePlaceholder="web"
+        initial={upstream}
       />
     </div>
   );
@@ -993,7 +1009,7 @@ function TargetSettings({
           placeholder={preview ? "${rig.target}.preview.app.test" : undefined}
         />
         <div className="grid gap-4 sm:grid-cols-2">
-          <Text path={[...path, "build"]} label="Build command" mono />
+          <PatchBuild path={[...path, "build"]} />
           <Text
             path={[...path, "build_timeout"]}
             label="Build timeout"
@@ -1018,6 +1034,25 @@ function TargetSettings({
         ))}
       </div>
     </>
+  );
+}
+/** A build in a Target patch: a command that replaces the inherited one, or `false`, which turns it off for the role. */
+function PatchBuild({ path }: { path: string[] }) {
+  const draft = useDraft();
+  const off = getAt(draft.tree, path) === false;
+  return (
+    <div className="grid gap-2">
+      <Text path={path} label="Build command" mono disabled={off} />
+      <Label className="gap-2 font-normal">
+        <Switch
+          checked={off}
+          onCheckedChange={(next) =>
+            next ? draft.set(path, false) : draft.remove(path)
+          }
+        />
+        No build for this role
+      </Label>
+    </div>
   );
 }
 function Override({ title, children }: { title: string; children: ReactNode }) {

@@ -32,12 +32,12 @@ async function selected(
   operatorFile: string,
   config: Record<string, unknown> = {
     name: "app",
-    env: { DB_NAME: "app" },
+    environment: { DB_NAME: "app" },
     services: {
       api: {
-        run: "./serve.sh --db ${services.api.env.DATABASE_URL}",
+        command: "./serve.sh --db ${services.api.environment.DATABASE_URL}",
         ports: { http: "auto" },
-        env: { DATABASE_URL: "db://${env.DB_NAME}/main" },
+        environment: { DATABASE_URL: "db://${environment.DB_NAME}/main" },
       },
     },
   },
@@ -146,7 +146,7 @@ test("an env file that changes a public value the run command reaches indirectly
     key: "DB_NAME",
     component: "api",
     sources: [
-      "env.DB_NAME",
+      "environment.DB_NAME",
       join(record.plan.dataRoot, "..", "env", "app", "working.env"),
     ],
   });
@@ -187,7 +187,7 @@ test("an equal file value is no conflict, and the resolved invocation runs an or
 
 const LAYERS = {
   name: "app",
-  env: {
+  environment: {
     A: "project",
     B: "project",
     C: "project",
@@ -199,9 +199,9 @@ const LAYERS = {
   env_file: ["env/project-1.env", "~/project-2.env"],
   services: {
     api: {
-      run: "api",
+      command: "api",
       ports: { http: "auto" },
-      env: {
+      environment: {
         B: "service",
         C: "service",
         D: "service",
@@ -212,7 +212,7 @@ const LAYERS = {
       env_file: "env/api.env",
     },
     worker: {
-      run: "worker",
+      command: "worker",
       ports: { http: "auto" },
       env_file: "env/worker.env",
     },
@@ -315,7 +315,7 @@ test("a listed file that is missing fails safely, an absent operator convention 
   const { adapter, record, api, workspace } = await selected("", {
     name: "app",
     services: {
-      api: { run: "api", ports: { http: "auto" }, env_file: "secrets.env" },
+      api: { command: "api", ports: { http: "auto" }, env_file: "secrets.env" },
     },
   });
   const failure = (await adapter
@@ -334,7 +334,7 @@ test("an env file inside the repository must be ignored by Git, and one other us
     name: "app",
     services: {
       api: {
-        run: "api",
+        command: "api",
         ports: { http: "auto" },
         ready: "true",
         env_file: ".env",
@@ -378,10 +378,10 @@ test("a substituted value reaches the child as one literal argument whether the 
   };
   const { api, workspace } = await selected("", {
     name: "app",
-    env: values,
+    environment: values,
     services: {
       api: {
-        run: `printf '<%s>\\n' "\${env.CODE}" '\${env.APOSTROPHE}' \${env.EMPTY} \${env.SPACED} \${env.APOSTROPHE} "\${env.APOSTROPHE}" $\${HOME} "$(printf '%s|' \${env.SPACED} \${env.CODE})" "$( (printf '%s' "\${env.CODE}") )"`,
+        command: `printf '<%s>\\n' "\${environment.CODE}" '\${environment.APOSTROPHE}' \${environment.EMPTY} \${environment.SPACED} \${environment.APOSTROPHE} "\${environment.APOSTROPHE}" $\${HOME} "$(printf '%s|' \${environment.SPACED} \${environment.CODE})" "$( (printf '%s' "\${environment.CODE}") )"`,
         ports: { http: "auto" },
       },
     },
@@ -394,10 +394,11 @@ test("a substituted value reaches the child as one literal argument whether the 
   });
   const commented = await selected("", {
     name: "app",
-    env: values,
+    environment: values,
     services: {
       api: {
-        run: "# Print the worker's value\nprintf '<%s>' ${env.CODE} # it's done\nprintf '<%s>' a#${env.SPACED}",
+        command:
+          "# Print the worker's value\nprintf '<%s>' ${environment.CODE} # it's done\nprintf '<%s>' a#${environment.SPACED}",
         ports: { http: "auto" },
       },
     },
@@ -425,9 +426,13 @@ test("a substituted value reaches the child as one literal argument whether the 
 test("a readiness URL built from a reference stays an HTTP probe, and only a shell check guards its inputs", async () => {
   const { api } = await selected("", {
     name: "app",
-    env: { HEALTH: "http://127.0.0.1:4100/health?check=1&mode=2" },
+    environment: { HEALTH: "http://127.0.0.1:4100/health?check=1&mode=2" },
     services: {
-      api: { run: "api", ports: { http: "auto" }, ready: "${env.HEALTH}" },
+      api: {
+        command: "api",
+        ports: { http: "auto" },
+        ready: "${environment.HEALTH}",
+      },
     },
   });
   expect(api.health).toBe("http://127.0.0.1:4100/health?check=1&mode=2");
@@ -438,7 +443,7 @@ test("an env file in a repository Git cannot inspect is refused rather than load
   const { adapter, record, api, workspace } = await selected("", {
     name: "app",
     services: {
-      api: { run: "api", ports: { http: "auto" }, env_file: ".env" },
+      api: { command: "api", ports: { http: "auto" }, env_file: ".env" },
     },
   });
   await writeFile(join(workspace, ".env"), `TOKEN=${SECRET}\n`, {

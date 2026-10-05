@@ -34,9 +34,9 @@ afterEach(async () => {
 });
 
 const SERVICES = {
-  api: { run: "api", ports: { http: 46011 } },
-  worker: { run: "worker", restart: "on-failure", ports: { http: 46012 } },
-  job: { run: "job", restart: "no", ports: { http: 46013 } },
+  api: { command: "api", ports: { http: 46011 } },
+  worker: { command: "worker", restart: "on-failure", ports: { http: 46012 } },
+  job: { command: "job", restart: "no", ports: { http: 46013 } },
 };
 
 /** The real lifecycle, effects and file state store over a scripted supervisor and clock.
@@ -45,7 +45,7 @@ async function fixture(
   services: Record<
     string,
     {
-      run: string;
+      command: string;
       restart?: string;
       ready?: string;
       depends_on?: string[];
@@ -490,8 +490,8 @@ test("a Target with a pending deployment transition is left alone, and its trans
 
 test("a Service is not started again while a Service it depends on is down: it waits, visibly and without spending budget, however many passes run", async () => {
   const f = await fixture({
-    db: { run: "db", restart: "no", ports: { http: 46021 } },
-    api: { run: "api", depends_on: ["db"], ports: { http: 46022 } },
+    db: { command: "db", restart: "no", ports: { http: 46021 } },
+    api: { command: "api", depends_on: ["db"], ports: { http: 46022 } },
   });
   await f.command("up");
   expect(f.starts).toEqual(["db", "api"]);
@@ -528,8 +528,8 @@ test("a Service is not started again while a Service it depends on is down: it w
 
 test("a dependent Service killed together with its dependency waits for it instead of exhausting its budget, and starts in the pass that brings the dependency back", async () => {
   const f = await fixture({
-    convex: { run: "convex", ports: { http: 46071 } },
-    web: { run: "web", depends_on: ["convex"], ports: { http: 46072 } },
+    convex: { command: "convex", ports: { http: 46071 } },
+    web: { command: "web", depends_on: ["convex"], ports: { http: 46072 } },
   });
   await f.command("up");
   // The incident: one SIGTERM ends both. The dependency's end went unrecorded; the dependent's was recorded.
@@ -573,7 +573,7 @@ test("smoke: a real process that fails under the rigd supervisor is recorded and
   const f = await fixture(
     {
       api: {
-        run: "sleep 0.2; exit 3",
+        command: "sleep 0.2; exit 3",
         restart: "on-failure",
         ports: { http: 46031 },
       },
@@ -614,8 +614,8 @@ test("smoke: a real process that fails under the rigd supervisor is recorded and
 
 test("a Service whose sibling cannot be observed is still started again, and the sibling costs it no budget", async () => {
   const f = await fixture({
-    api: { run: "api", ports: { http: 46031 } },
-    other: { run: "other", ports: { http: 46032 } },
+    api: { command: "api", ports: { http: 46031 } },
+    other: { command: "other", ports: { http: 46032 } },
   });
   await f.command("up");
   await f.exit("api", { exitCode: 1 });
@@ -630,7 +630,7 @@ test("a Service whose sibling cannot be observed is still started again, and the
 
 test("an automatic start whose rollback cannot be verified leaves an unknown outcome: under on-failure nothing starts it again", async () => {
   const f = await fixture({
-    api: { run: "api", restart: "on-failure", ports: { http: 46041 } },
+    api: { command: "api", restart: "on-failure", ports: { http: 46041 } },
   });
   await f.command("up");
   await f.exit("api", { exitCode: 1 });
@@ -657,7 +657,7 @@ test("an automatic start whose rollback cannot be verified leaves an unknown out
 
 test("an automatic start that ends on its own before it is ready is judged by its evidence: under on-failure a recorded failure is tried again, an unrecorded end never is", async () => {
   const f = await fixture({
-    api: { run: "api", restart: "on-failure", ports: { http: 46061 } },
+    api: { command: "api", restart: "on-failure", ports: { http: 46061 } },
   });
   await f.command("up");
   f.timing.startGraceMs = 1;
@@ -688,7 +688,7 @@ test("an automatic start that ends on its own before it is ready is judged by it
 });
 
 test("a Service a failed down left running keeps its record through the next up, so its later failure is still started again", async () => {
-  const f = await fixture({ api: { run: "api", ports: { http: 46051 } } });
+  const f = await fixture({ api: { command: "api", ports: { http: 46051 } } });
   await f.command("up");
   f.refusal.stop = () => true;
   await expect(f.command("down")).rejects.toBeDefined();

@@ -84,7 +84,7 @@ async function fixture(host: Record<string, unknown> = {}) {
       name,
       services: {
         web: {
-          run: `serve r${revisions.get(name) ?? 1}`,
+          command: `serve r${revisions.get(name) ?? 1}`,
           ports: { http: "auto" },
         },
       },

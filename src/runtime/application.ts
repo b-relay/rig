@@ -70,7 +70,7 @@ import {
   planTarget,
   selectTarget,
 } from "./targets";
-import { configDigest } from "../config/config-digest";
+import { sameConfigDigest } from "../config/config-digest";
 import { assertLogServices } from "./log-services";
 import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
 import {
@@ -972,7 +972,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             deps,
           );
         // The same text is no drift, whichever rigd parsed it. A changed text is drift only when what it says changed, so
-        // a comment or layout edit is none; a Target planned by a rigd that recorded no digest is compared by text alone.
+        // a comment or layout edit is none, nor is renaming keys to their ADR 0011 names; a Target planned by a rigd that
+        // recorded no digest is compared by text alone.
         const current = configured.document;
         const drift =
           target.kind === "working" &&
@@ -980,7 +981,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           current !== undefined &&
           current.revision !== target.configRevision &&
           (target.configDigest === undefined ||
-            configDigest(current.config) !== target.configDigest);
+            !sameConfigDigest(current.config, target.configDigest));
         if (drift)
           warnings.push(
             `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${targetSelector(target)} to apply the current rig.yaml.`,

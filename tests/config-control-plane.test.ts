@@ -15,7 +15,7 @@ afterEach(async () => {
   );
 });
 async function fixture(
-  raw = "# Project\nname: pantry\nservices:\n  web:\n    run: serve # keep this\n",
+  raw = "# Project\nname: pantry\nservices:\n  web:\n    command: serve # keep this\n",
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-editor-"));
   roots.push(root);
@@ -41,16 +41,16 @@ test("registered config preview is pure and apply matches preview with comments,
   const f = await fixture();
   const read = await f.editor({ action: "read", project: "pantry" });
   expect(read).toMatchObject({ project: "pantry", raw: f.raw });
-  expect(read.fields?.some((field) => field.path === "services.*.run")).toBe(
-    true,
-  );
+  expect(
+    read.fields?.some((field) => field.path === "services.*.command"),
+  ).toBe(true);
   const request = {
     project: "pantry",
     expectedRevision: read.revision,
     patch: [
       {
         op: "set",
-        path: ["services", "web", "run"],
+        path: ["services", "web", "command"],
         value: "serve --port 3000",
       },
     ],
@@ -94,7 +94,7 @@ test("editor rejects unregistered identities, arbitrary paths, identity edits an
     ["name"],
     ["constructor", "prototype"],
     ["services", "web", "unknown"],
-    ["services", "BAD_NAME", "run"],
+    ["services", "BAD_NAME", "command"],
     ["components", "web", "command"],
     ["missing"],
     ["toString"],
@@ -118,7 +118,7 @@ test("editor rejects unregistered identities, arbitrary paths, identity edits an
 
 test("YAML scalar removal preserves unrelated comments and refuses attached comments or collection replacement", async () => {
   const f = await fixture(
-    "# Project\nname: pantry\ndescription: optional\nservices:\n  web:\n    run: serve\n    ready: curl localhost # keep explanation\n",
+    "# Project\nname: pantry\ndescription: optional\nservices:\n  web:\n    command: serve\n    ready: curl localhost # keep explanation\n",
   );
   const read = await f.editor({ action: "read", project: "pantry" });
   const request = { project: "pantry", expectedRevision: read.revision };
@@ -135,7 +135,7 @@ test("YAML scalar removal preserves unrelated comments and refuses attached comm
     ...request,
     patch: [
       { op: "remove", path: ["description"] },
-      { op: "remove", path: ["targets", "working", "env", "UNSET"] },
+      { op: "remove", path: ["targets", "working", "environment", "UNSET"] },
     ],
   });
   expect(result.raw).not.toContain("description:");

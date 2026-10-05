@@ -409,7 +409,7 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
         "production",
         "--service",
         "web",
-        "--run",
+        "--command",
         "bun web.ts",
         "--port",
         "3010",
@@ -426,7 +426,7 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     repoPath: "/other",
     project: "app",
     productionBranch: "production",
-    service: { name: "web", run: "bun web.ts", port: 3010 },
+    service: { name: "web", command: "bun web.ts", port: 3010 },
     tool: { name: "app", bin: "app.ts" },
   });
   expect(

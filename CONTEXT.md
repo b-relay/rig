@@ -215,7 +215,8 @@ line, in status, in the dashboard and in logs. See
 A Target role's key under `targets` in `rig.yaml`. `true`, or a map of settings
 that patches the Project for that role, turns the Target on; `false`, or no
 key, leaves it off. A `rig.yaml` without a `targets` key has only the working
-Target on.
+Target on. In a settings patch, `build: false` turns an inherited Project or
+Service build off for that role.
 _Avoid_: enabled flag, Target name
 
 _Relationship_: An off Target is refused (`TARGET_OFF`, with a hint naming the
@@ -271,6 +272,17 @@ A named Project process managed within a Target, such as an API, worker, or
 database server. Its application accepts ordinary inputs and can run independently
 of Rig.
 _Avoid_: Tool, Deployment
+
+_Relationship_: A Service's settings use Docker Compose's names where the
+meaning matches: `command`, `environment`, `env_file`, `working_dir`,
+`depends_on`, `ports`, `restart`, `build`
+([ADR 0011](docs/adr/0011-compose-key-names.md)). Its `command`, `build` and a
+shell `ready` check run in its `working_dir`, a directory inside the workspace
+(default: the workspace root). In its own settings `${port}` is its only port
+and `${ports.<name>}` a named one; elsewhere `${services.<name>.port}` and
+`${services.<name>.ports.<port>}` name them. These are still explicit mappings
+from Rig values to the application's own inputs
+([ADR 0005](docs/adr/0005-services-use-platform-independent-inputs.md)).
 
 ### Tool
 
@@ -481,9 +493,12 @@ _Avoid_: live, production Target
 The stable Target coexists with generated Previews. It is not inherently a
 promotion stage.
 
-_Relationship_: The stable Target serves exactly `domain`. With no `domain`, or
-no `proxy` with a `/` entry, a Target has no route. Project identity is never
-inserted into a hostname. Route collisions between Projects are refused at
+_Relationship_: The stable Target serves exactly `domain`. A Target with a
+hostname routes the paths `proxy` names, each to a Service (its only port) or
+one of its ports; without `proxy`, `/` goes to the one Service that declares
+ports when it declares exactly one, and otherwise a Target that is on is
+refused with what to add. With no hostname a Target has no route. Project
+identity is never inserted into a hostname. Route collisions between Projects are refused at
 publish time as `ROUTE_CONFLICT`.
 
 ### Preview
@@ -834,10 +849,12 @@ validated when a Target is planned, not in preflight.
 
 The resolved Rig shape that runtime execution and provider adapters consume:
 the Project, the Target role and name, the workspace path, the Persistent
-storage root, Branch and Commit, the process supervisor, env and env files,
-builds, the hostname with its proxy routes, and the components. Each component
-carries its command, ports, health check, ready timeout, restart policy, and
-dependencies. The process supervisor is always `rigd`.
+storage root, Branch and Commit, the process supervisor, environment and env
+files, builds, the hostname with its proxy routes, and the components. Each
+component carries its command, working directory when it is not the workspace
+root, ports, health check, ready timeout, restart policy, and dependencies. The
+process supervisor is always `rigd`. A plan's field names are Rig's own, not
+`rig.yaml` keys: a Service's `environment` is the plan's `env`.
 
 _Relationship_: Runtime plans are resolved by `rigd`, not by provider
 adapters. Providers receive resolved context and capabilities rather than

@@ -46,7 +46,7 @@ type ReferenceScope = "project" | "service";
 /** The one owner of the reference list an editor shows on hover; the long form is "References" in docs/rig-guide.md.
  * ${rig.data} is one Service's directory, so only a Service's own fields offer it. */
 const referencesIn = (scope: ReferenceScope) =>
-  `References: \${env.NAME}, \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
+  `References: ${scope === "service" ? "${port} (this Service's only port), ${ports.<port>} (one of its named ports), " : ""}\${environment.NAME}, \${services.<service>.port} (a Service's only port), \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -130,7 +130,7 @@ const envName = z
     "must be an environment variable name: letters, digits and '_', not starting with a digit",
   );
 /** Public inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
-const environment = (scope: ReferenceScope) =>
+const environmentMap = (scope: ReferenceScope) =>
   z
     .unknown()
     // The record parser drops a __proto__ key without a word, so it is refused before it gets there.
@@ -157,21 +157,21 @@ const environment = (scope: ReferenceScope) =>
           });
     });
 const env = (scope: ReferenceScope) =>
-  environment(scope).describe(
+  environmentMap(scope).describe(
     "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
   );
 const envFile = (scope: ReferenceScope) =>
   z
     .union([text, z.array(text).min(1)])
     .describe(
-      `Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in \${...} references. Relative paths resolve against the workspace; ~ is the operator home. The path itself may use references. ${referencesIn(scope)}`,
+      `Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in \${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. ${referencesIn(scope)}`,
     );
-const BUILD_RULE =
-  "run with /bin/sh -c in the workspace during preparation, never as a start hook; explicit bindings must be localhost only.";
+const buildRule = (where: string) =>
+  `run with /bin/sh -c ${where} during preparation, never as a start hook; explicit bindings must be localhost only.`;
 /** A shared or Tool build runs with Project inputs only. */
-const PROJECT_BUILD_REFERENCES = `${referencesIn("project")} A Service's env is not available here.`;
+const PROJECT_BUILD_REFERENCES = `${referencesIn("project")} A Service's environment is not available here.`;
 const build = command.describe(
-  `Shell build command ${BUILD_RULE} ${PROJECT_BUILD_REFERENCES}`,
+  `Shell build command ${buildRule("in the workspace")} ${PROJECT_BUILD_REFERENCES}`,
 );
 const buildTimeout = duration.describe(
   "Build duration budget such as 10m; a build past it is terminated and recorded as failed, never as completed.",
@@ -181,7 +181,9 @@ const portName = text
     /^[a-z0-9][a-z0-9-]*$/,
     "must start with a lowercase letter or digit and contain only lowercase letters, digits or '-'",
   )
-  .describe("Port name used in ${services.<service>.ports.<port>} references.");
+  .describe(
+    "Port name used in ${ports.<port>} and ${services.<service>.ports.<port>} references. A Service with exactly one port can also be referenced as ${port} in its own settings and as ${services.<service>.port} anywhere.",
+  );
 const ports = z
   .record(
     portName,
@@ -195,20 +197,39 @@ const restart = z
   .describe(
     "Automatic restart after a known exit: always (default), on-failure, or no. An explicit up or restart starts the Service under every policy.",
   );
+/** A directory inside the workspace, written relative to it: no absolute path, no ~, no '..' segment and no reference, so
+ * it can never name a directory outside the checkout a Target runs from. */
+function insideWorkspace(value: string): boolean {
+  return (
+    !value.startsWith("/") &&
+    !value.startsWith("~") &&
+    !value.includes("${") &&
+    !value.split("/").includes("..")
+  );
+}
+const workingDir = text
+  .refine(
+    insideWorkspace,
+    "must be a directory inside the workspace, relative to it, such as apps/web: no absolute path, ~, '..' or reference",
+  )
+  .describe(
+    "Directory the Service's command, its build and a shell ready check run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root.",
+  );
 const serviceFields = {
-  run: command.describe(
-    `Foreground shell command run with /bin/sh -c; explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
+  command: command.describe(
+    `Foreground shell command run with /bin/sh -c in working_dir (default: the workspace root); explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("service")}`,
   ),
   build: command
     .describe(
-      `Shell build command of this Service, ${BUILD_RULE} ${referencesIn("service")}`,
+      `Shell build command of this Service, ${buildRule("in its working_dir (default: the workspace root)")} ${referencesIn("service")}`,
     )
     .optional(),
   build_timeout: buildTimeout.optional(),
+  working_dir: workingDir.optional(),
   ports: ports.optional(),
   ready: health
     .describe(
-      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in run. ${referencesIn("service")}`,
+      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0 and runs in working_dir. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. ${referencesIn("service")}`,
     )
     .optional(),
   ready_timeout: duration
@@ -224,7 +245,7 @@ const serviceFields = {
       "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
     ),
   restart: restart.optional(),
-  env: env("service").optional(),
+  environment: env("service").optional(),
   env_file: envFile("service").optional(),
 };
 const toolFields = {
@@ -235,6 +256,9 @@ const toolFields = {
   ),
 };
 const tool = z.strictObject(toolFields);
+/** A proxy upstream: a Service name, `${services.<name>.port}`, or `${services.<name>.ports.<port>}`. */
+const PROXY_UPSTREAM =
+  /^(?:([a-z0-9][a-z0-9-]*)|\$\{services\.([a-z0-9][a-z0-9-]*)\.(?:port|ports\.([a-z0-9][a-z0-9-]*))\})$/;
 const proxy = z
   .record(
     z
@@ -246,16 +270,27 @@ const proxy = z
     z
       .string()
       .regex(
-        /^\$\{services\.[a-z0-9][a-z0-9-]*\.ports\.[a-z0-9][a-z0-9-]*\}$/,
-        "must be one declared port reference such as ${services.web.ports.http}",
+        PROXY_UPSTREAM,
+        "must name a Service, such as web, or one of its ports, such as ${services.web.ports.http}",
       )
       .describe(
-        "Upstream of this prefix: exactly one ${services.<service>.ports.<port>} reference to a declared port, such as ${services.web.ports.http}. No other reference or text is allowed.",
+        "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed.",
       ),
   )
   .describe(
-    "Path prefix to declared port reference. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required.",
+    "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
   );
+/** A build in a Target patch: a command, or false to turn the inherited build off for that role. */
+const BUILD_OFF =
+  "false turns the inherited build off for this role's Targets; leaving the key out keeps it.";
+/** What a patch build may be, for the value that is neither. */
+const PATCH_BUILD_SHAPES =
+  "must be a command, or false to turn the inherited build off";
+const patchBuild = <T extends z.ZodType>(command: T) =>
+  z
+    .union([command, z.literal(false)], { error: PATCH_BUILD_SHAPES })
+    .optional()
+    .describe(`${command.description ?? ""} In a Target patch, ${BUILD_OFF}`);
 /** Settings every role may patch. Maps merge per key; lists and scalars replace. */
 const patchFields = {
   domain: domain
@@ -263,13 +298,19 @@ const patchFields = {
     .describe(
       `Hostname for this role's Targets, such as \${rig.target}.preview.app.test. ${DOMAIN_REFERENCE}`,
     ),
-  build: build.optional(),
+  build: patchBuild(build),
   build_timeout: buildTimeout.optional(),
-  env: env("project").optional(),
+  environment: env("project").optional(),
   env_file: envFile("project").optional(),
   proxy: proxy.optional(),
   services: z
-    .record(entryName, z.strictObject(serviceFields).partial())
+    .record(
+      entryName,
+      z
+        .strictObject(serviceFields)
+        .partial()
+        .extend({ build: patchBuild(serviceFields.build.unwrap()) }),
+    )
     .optional()
     .describe(
       "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -318,6 +359,11 @@ export function targetOn(
   return value === true || isRecord(value);
 }
 type Fields = Readonly<Record<string, unknown>>;
+type Report = (
+  path: PropertyKey[],
+  message: string,
+  rule?: typeof RENAMED_RULE,
+) => void;
 const isRecord = (value: unknown): value is Fields =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 /** Settings patch rule: maps merge per key, lists and scalars replace. */
@@ -332,18 +378,19 @@ function mergeSettings(base: Fields, patch: Fields): Record<string, unknown> {
 }
 /** One Service as the cross-field rules read it. */
 type GraphService = Fields & {
-  run?: string;
+  command?: string;
   build?: string;
   ready?: string;
   depends_on?: readonly string[];
   ports?: Readonly<Record<string, number | "auto">>;
-  env?: Readonly<Record<string, string>>;
+  environment?: Readonly<Record<string, string>>;
   env_file?: string | readonly string[];
 };
 /** One settings graph as the cross-field rules read it: the base settings, or the base with one role's patch applied. */
 type GraphSettings = {
+  domain?: string;
   build?: string;
-  env?: Readonly<Record<string, string>>;
+  environment?: Readonly<Record<string, string>>;
   env_file?: string | readonly string[];
   services?: Readonly<Record<string, GraphService>>;
   tools?: Readonly<Record<string, { bin?: string; build?: string }>>;
@@ -376,7 +423,7 @@ export const projectConfigSchema = z
       .describe(
         "Duration budget for the shared build and the default for Service and Tool builds (default 10m).",
       ),
-    env: env("project").optional(),
+    environment: env("project").optional(),
     env_file: envFile("project").optional(),
     services: z
       .record(entryName, z.strictObject(serviceFields))
@@ -411,10 +458,15 @@ export const projectConfigSchema = z
           message: "A Tool cannot share its name with a Service.",
         });
     const reported = new Set<string>();
-    const report = (path: PropertyKey[], message: string) => {
+    const report: Report = (path, message, rule) => {
       if (reported.has(message)) return;
       reported.add(message);
-      ctx.addIssue({ code: "custom", path, message });
+      ctx.addIssue({
+        code: "custom",
+        path,
+        message,
+        ...(rule ? { params: { rule } } : {}),
+      });
     };
     // The unpatched graph is checked first so a base mistake is reported at its own path, once.
     validateGraph(config, [], report);
@@ -439,6 +491,24 @@ export const projectConfigSchema = z
                 "Previews always use chosen ports; only the working and stable Targets can pin one.",
               );
       validateGraph(patchSettings(config, role) as GraphSettings, at, report);
+    }
+    // A Target with a hostname needs to know which Service serves it: a proxy, or the one Service that has one port.
+    for (const role of TARGET_ROLES) {
+      if (!targetOn(config, role)) continue;
+      const patch = config.targets?.[role];
+      const patched = isRecord(patch) && patch.domain !== undefined;
+      // The working Target has a hostname only when its own patch sets one.
+      if (
+        role === "working" ? !patched : config.domain === undefined && !patched
+      )
+        continue;
+      const problem = missingProxy(
+        patchSettings(config, role) as GraphSettings,
+        role,
+        patched,
+      );
+      if (problem)
+        report(patched ? ["targets", role, "domain"] : ["domain"], problem);
     }
   });
 type ParsedProject = z.infer<typeof projectConfigSchema>;
@@ -474,21 +544,92 @@ function patchSettings(config: Fields, role: TargetRole): Fields {
           Object.hasOwn(isRecord(base[kind]) ? base[kind] : {}, key),
         ),
       );
-  return mergeSettings(base, patch);
+  const merged = mergeSettings(base, patch);
+  // `build: false` in a patch turns the inherited build off: the role's settings have none.
+  const unbuilt = (settings: Record<string, unknown>) => {
+    if (settings.build === false) delete settings.build;
+  };
+  unbuilt(merged);
+  if (isRecord(merged.services))
+    for (const service of Object.values(merged.services))
+      if (isRecord(service)) unbuilt(service as Record<string, unknown>);
+  return merged;
 }
-const PORT_REFERENCE = /^\$\{services\.([^.}]+)\.ports\.([^.}]+)\}$/;
-/** The Service and port a proxy value names. */
+/** The Service and port a proxy value names in one settings graph: a Service name or `${services.<name>.port}` means that
+ * Service's only port. A value that names no declared port says why, in words that name the fix. */
 export function proxyUpstream(
-  reference: string,
-): { service: string; port: string } | undefined {
-  const match = PORT_REFERENCE.exec(reference);
-  return match ? { service: match[1]!, port: match[2]! } : undefined;
+  value: string,
+  services: Readonly<
+    Record<string, { ports?: Readonly<Record<string, unknown>> }>
+  >,
+): { service: string; port: string } | { problem: string } {
+  const match = PROXY_UPSTREAM.exec(value);
+  if (!match) return { problem: `'${value}' names no Service or port` };
+  const service = match[1] ?? match[2]!,
+    named = match[3];
+  if (!Object.hasOwn(services, service))
+    return { problem: `'${service}' is not a declared Service` };
+  const ports = Object.keys(services[service]!.ports ?? {});
+  if (named !== undefined)
+    return ports.includes(named)
+      ? { service, port: named }
+      : {
+          problem: `'${service}.${named}' is not a declared Service port`,
+        };
+  if (ports.length === 1) return { service, port: ports[0]! };
+  return {
+    problem: ports.length
+      ? `'${service}' has ${ports.length} ports (${ports.join(", ")}); name one, such as \${services.${service}.ports.${ports[0]}}`
+      : `'${service}' declares no port to route to`,
+  };
+}
+/** The proxy a Target with a hostname but no proxy gets: '/' to the one Service that declares ports, when it declares
+ * exactly one. Undefined when no Service or several declare ports, or that Service declares several. */
+export function defaultProxy(
+  services: Readonly<
+    Record<string, { ports?: Readonly<Record<string, unknown>> }>
+  > = {},
+): Record<string, string> | undefined {
+  const serving = Object.entries(services).filter(
+    ([, service]) => Object.keys(service.ports ?? {}).length > 0,
+  );
+  return serving.length === 1 &&
+    Object.keys(serving[0]![1].ports ?? {}).length === 1
+    ? { "/": serving[0]![0] }
+    : undefined;
+}
+/** Why a Target of `role` that has a hostname has no route, naming the role and where to add the proxy; undefined when a
+ * proxy, given or default, routes it. `patched` says the hostname comes from the role's own patch. */
+function missingProxy(
+  settings: GraphSettings,
+  role: TargetRole,
+  patched: boolean,
+): string | undefined {
+  if (settings.proxy || defaultProxy(settings.services)) return undefined;
+  const hostname =
+    role === "preview"
+      ? patched
+        ? "Previews have a hostname"
+        : "Previews get a hostname from domain"
+      : patched
+        ? `The ${role} Target has a hostname`
+        : "The stable Target serves domain";
+  const serving = Object.entries(settings.services ?? {}).filter(
+    ([, service]) => Object.keys(service.ports ?? {}).length > 0,
+  );
+  if (!serving.length)
+    return `${hostname} but no Service has a port; declare one, such as ports: { http: auto }, or remove the domain.`;
+  const [name, service] = serving[0]!;
+  const where = `at the top level or under targets.${role}`;
+  return serving.length > 1
+    ? `${hostname} but several Services have ports; add proxy: { /: ${name} } ${where}.`
+    : `${hostname} but '${name}' has several ports; add proxy: { /: \${services.${name}.ports.${Object.keys(service.ports!)[0]}} } ${where}.`;
 }
 /** Structural rules of one settings graph: dependency references and cycles, pinned ports, and proxy references. */
 function validateGraph(
   settings: GraphSettings,
   at: readonly PropertyKey[],
-  report: (path: PropertyKey[], message: string) => void,
+  report: Report,
 ): void {
   const services = settings.services ?? {};
   const visiting = new Set<string>(),
@@ -541,14 +682,11 @@ function validateGraph(
         `Proxy '${prefix}' and '${twin}' are the same path.`,
       );
     else paths.set(path, prefix);
-    const upstream = proxyUpstream(reference);
-    if (
-      upstream &&
-      !Object.hasOwn(services[upstream.service]?.ports ?? {}, upstream.port)
-    )
+    const upstream = proxyUpstream(reference, services);
+    if ("problem" in upstream)
       report(
         [...at, "proxy", prefix],
-        `Proxy '${prefix}' references '${upstream.service}.${upstream.port}', which is not a declared Service port.`,
+        `Proxy '${prefix}': ${upstream.problem}.`,
       );
   }
 }
@@ -557,7 +695,7 @@ function validateGraph(
 function validateReferences(
   settings: GraphSettings,
   at: readonly PropertyKey[],
-  report: (path: PropertyKey[], message: string) => void,
+  report: Report,
 ): void {
   const references = referenceResolver(settings, {
     target: "target",
@@ -569,8 +707,8 @@ function validateReferences(
   });
   const fields: [string[], string | undefined][] = [
     [["build"], settings.build],
-    ...Object.entries(settings.env ?? {}).map(
-      ([key, value]): [string[], string] => [["env", key], value],
+    ...Object.entries(settings.environment ?? {}).map(
+      ([key, value]): [string[], string] => [["environment", key], value],
     ),
     ...[settings.env_file ?? []]
       .flat()
@@ -578,10 +716,10 @@ function validateReferences(
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];
-    for (const field of ["run", "build", "ready"] as const)
+    for (const field of ["command", "build", "ready"] as const)
       fields.push([[...own, field], service[field]]);
-    for (const [key, value] of Object.entries(service.env ?? {}))
-      fields.push([[...own, "env", key], value]);
+    for (const [key, value] of Object.entries(service.environment ?? {}))
+      fields.push([[...own, "environment", key], value]);
     for (const value of [service.env_file ?? []].flat())
       fields.push([[...own, "env_file"], value]);
   }
@@ -594,7 +732,11 @@ function validateReferences(
       references.text(value, path.join("."));
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
-      report([...at, ...path], error.message);
+      report(
+        [...at, ...path],
+        error.message,
+        error.code === "renamed_reference" ? RENAMED_RULE : undefined,
+      );
     }
   }
 }
@@ -619,6 +761,24 @@ const REMOVED_FORMAT =
  * `ready` and `ready_timeout`, so a file that still has the block is told where its settings go. */
 const REMOVED_HEALTH =
   "was removed with ongoing health checks; write its check as ready and its start_timeout as ready_timeout";
+/** Keys renamed to their Docker Compose names (ADR 0011). A file that still uses the old name is told the new one rather than
+ * that the key is unknown. Project settings and a Target patch had `env`; a Service had `run` and `env`. */
+const SETTINGS_RENAMES: Readonly<Record<string, string>> = {
+  env: "environment",
+};
+const SERVICE_RENAMES: Readonly<Record<string, string>> = {
+  run: "command",
+  ...SETTINGS_RENAMES,
+};
+const renamedKey = (from: string, to: string) =>
+  `\`${from}\` is now \`${to}\`; rename this key`;
+/** `build: false` only means something against a build a Target patch inherits; at the top level leaving the key out
+ * already means no build. */
+const BASE_BUILD_OFF =
+  "build: false only turns an inherited build off in a Target patch; delete this line for no build";
+/** A Tool's build makes its bin, so it cannot be turned off; only the Project build and a Service build can. */
+const TOOL_BUILD_OFF =
+  "build: false is not allowed for a Tool, whose build makes its bin; give another command or leave the key out";
 /** Every Service mapping of a raw config value with its path: `services.<name>` and `targets.<role>.services.<name>`. */
 function serviceBlockPaths(value: Fields): [string[], Fields][] {
   const blocks: [string[], Fields][] = [];
@@ -637,18 +797,56 @@ function serviceBlockPaths(value: Fields): [string[], Fields][] {
 /** Refusals that need their own guidance, checked before the schema so they are not reported as generic unknown keys. */
 function refuseUnsupportedShapes(value: unknown): void {
   if (!isRecord(value)) return;
-  const issues: { path: string[]; message: string }[] = [];
+  const issues: Issue[] = [];
   if (Object.hasOwn(value, "format"))
     issues.push({ path: ["format"], message: REMOVED_FORMAT });
   if (Object.hasOwn(value, "supervisor"))
     issues.push({ path: ["supervisor"], message: REMOVED_SUPERVISOR });
-  for (const [path, service] of serviceBlockPaths(value))
+  const renames = (
+    block: Fields,
+    at: string[],
+    names: Readonly<Record<string, string>>,
+  ) => {
+    for (const [from, to] of Object.entries(names))
+      if (Object.hasOwn(block, from))
+        issues.push({
+          path: [...at, from],
+          message: renamedKey(from, to),
+          rule: RENAMED_RULE,
+        });
+  };
+  renames(value, [], SETTINGS_RENAMES);
+  const builds: [string[], unknown][] = [[["build"], value.build]];
+  if (isRecord(value.services))
+    for (const [name, service] of Object.entries(value.services))
+      if (isRecord(service))
+        builds.push([["services", name, "build"], service.build]);
+  for (const [path, build] of builds)
+    if (build === false) issues.push({ path, message: BASE_BUILD_OFF });
+  // A Tool's bin comes from its build, so no role may turn a Tool build off.
+  const toolBlocks: [string[], unknown][] = [[["tools"], value.tools]];
+  if (isRecord(value.targets))
+    for (const [role, patch] of Object.entries(value.targets))
+      if (isRecord(patch))
+        toolBlocks.push([["targets", role, "tools"], patch.tools]);
+  for (const [at, tools] of toolBlocks)
+    if (isRecord(tools))
+      for (const [name, tool] of Object.entries(tools))
+        if (isRecord(tool) && tool.build === false)
+          issues.push({
+            path: [...at, name, "build"],
+            message: TOOL_BUILD_OFF,
+          });
+  for (const [path, service] of serviceBlockPaths(value)) {
     if (Object.hasOwn(service, "health"))
       issues.push({ path: [...path, "health"], message: REMOVED_HEALTH });
+    renames(service, path, SERVICE_RENAMES);
+  }
   for (const [role, patch] of Object.entries(
     isRecord(value.targets) ? value.targets : {},
   )) {
     if (!isRecord(patch)) continue;
+    renames(patch, ["targets", role], SETTINGS_RENAMES);
     if (Object.hasOwn(patch, "supervisor"))
       issues.push({
         path: ["targets", role, "supervisor"],
@@ -825,16 +1023,41 @@ function validationError(
     value.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 160);
   return issuesError(
     scope,
-    issues.map(explainIssue).map((issue) => ({
-      path: issue.path.map((part) => safe(String(part))),
-      message: safe(issue.message),
-    })),
+    issues.map((issue) => {
+      const explained = explainIssue(issue);
+      const rule =
+        issue.code === "custom" && issue.params?.rule === RENAMED_RULE
+          ? RENAMED_RULE
+          : undefined;
+      return {
+        path: explained.path.map((part) => safe(String(part))),
+        message: safe(explained.message),
+        ...(rule ? { rule } : {}),
+      };
+    }),
   );
 }
-function issuesError(
-  scope: string,
-  details: readonly { path: string[]; message: string }[],
-): ConfigError {
+/** One reported problem of a config document. `rule` marks a kind of problem a caller treats on its own. */
+interface Issue {
+  path: string[];
+  message: string;
+  rule?: typeof RENAMED_RULE;
+}
+/** A key or reference path written under a name ADR 0011 replaced with its Compose name, such as `run` or `${env.X}`. */
+const RENAMED_RULE = "renamed";
+/** Whether a refused config was refused, at least in part, because it uses names from before ADR 0011: a rig.yaml committed
+ * before the rename, which a deployed revision may still hold. */
+export function usesRenamedKeys(error: ConfigError): boolean {
+  const issues = error.context.issues;
+  return (
+    Array.isArray(issues) &&
+    issues.some(
+      (issue: unknown) =>
+        isRecord(issue) && (issue as Partial<Issue>).rule === RENAMED_RULE,
+    )
+  );
+}
+function issuesError(scope: string, details: readonly Issue[]): ConfigError {
   const hint =
     "Fix " +
     details
@@ -860,14 +1083,17 @@ function explainIssue(issue: z.core.$ZodIssue): {
 } {
   if (issue.code === "invalid_union" && issue.errors.length) {
     const branches = issue.errors.filter((branch) => branch.length);
-    // A Target switch that is neither a boolean nor a map is explained by its own message, which names both shapes.
+    // A Target switch that is neither a boolean nor a map, or a patch build that is neither a command nor false, is
+    // explained by its own message, which names both shapes.
     if (
-      issue.message === ROLE_SWITCH_SHAPES &&
+      (issue.message === ROLE_SWITCH_SHAPES ||
+        issue.message === PATCH_BUILD_SHAPES) &&
       branches.length &&
       branches.every(
         (branch) =>
           branch.length === 1 &&
-          branch[0]!.code === "invalid_type" &&
+          (branch[0]!.code === "invalid_type" ||
+            branch[0]!.code === "invalid_value") &&
           branch[0]!.path.length === 0,
       )
     )
@@ -893,10 +1119,14 @@ function explainIssue(issue: z.core.$ZodIssue): {
           .join(" or ")}`,
       };
     }
+    // On a tie, the branch whose problem lies deeper is the one the input's own shape chose: a settings map with one bad
+    // field is explained by that field, not by the boolean it is not.
     const nearest = [...branches].sort(
       (a, b) =>
         Number(a[0]!.code === "invalid_value") -
-          Number(b[0]!.code === "invalid_value") || a.length - b.length,
+          Number(b[0]!.code === "invalid_value") ||
+        a.length - b.length ||
+        b[0]!.path.length - a[0]!.path.length,
     )[0];
     if (nearest) {
       const inner = explainIssue(nearest[0]!);

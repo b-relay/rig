@@ -34,16 +34,16 @@ const config = parseProjectConfig({
   name: "demo",
   services: {
     api: {
-      run: "serve --db ${rig.data}/app.db",
+      command: "serve --db ${rig.data}/app.db",
       ports: { http: "auto" },
-      env: { DATA_DIR: "${rig.data}" },
+      environment: { DATA_DIR: "${rig.data}" },
     },
   },
   targets: {
     working: true,
     stable: true,
     preview: {
-      services: { api: { env: { DATA_DIR: "${rig.data}/preview" } } },
+      services: { api: { environment: { DATA_DIR: "${rig.data}/preview" } } },
     },
   },
 });

@@ -22,7 +22,11 @@ const pantry = {
   name: "pantry",
   production_branch: "main",
   services: {
-    web: { run: "bun server.ts", ports: { http: 4310 }, env: { PORT: "1" } },
+    web: {
+      command: "bun server.ts",
+      ports: { http: 4310 },
+      environment: { PORT: "1" },
+    },
   },
   targets: { working: { domain: "pantry.test" } },
 };
@@ -34,12 +38,12 @@ test("an unchanged draft yields no edits", () => {
 test("changed scalars become leaf sets and absent ones are removed", () => {
   const draft = setAt(
     removeAt(pantry, ["production_branch"]),
-    ["services", "web", "run"],
+    ["services", "web", "command"],
     "bun start",
   );
   expect(configPatch(pantry, draft)).toEqual([
     { op: "remove", path: ["production_branch"] },
-    { op: "set", path: ["services", "web", "run"], value: "bun start" },
+    { op: "set", path: ["services", "web", "command"], value: "bun start" },
   ]);
 });
 
@@ -52,12 +56,12 @@ test("a subtree new on one side is one edit at its root", () => {
   expect(configPatch(added, second)).toEqual([
     { op: "set", path: ["tools", "fmt"], value: { bin: "dist/fmt" } },
   ]);
-  const cleared = removeAt(pantry, ["services", "web", "env", "PORT"]);
+  const cleared = removeAt(pantry, ["services", "web", "environment", "PORT"]);
   expect(cleared.services).toEqual({
-    web: { run: "bun server.ts", ports: { http: 4310 } },
+    web: { command: "bun server.ts", ports: { http: 4310 } },
   });
   expect(configPatch(pantry, cleared)).toEqual([
-    { op: "remove", path: ["services", "web", "env"] },
+    { op: "remove", path: ["services", "web", "environment"] },
   ]);
 });
 
@@ -74,8 +78,8 @@ test("arrays are leaves and a scalar replaced by an object is one set", () => {
 });
 
 test("removing the last key of a nested record prunes the emptied parents but never the root", () => {
-  const tree = { name: "x", targets: { working: { env: { A: "1" } } } };
-  expect(removeAt(tree, ["targets", "working", "env", "A"])).toEqual({
+  const tree = { name: "x", targets: { working: { environment: { A: "1" } } } };
+  expect(removeAt(tree, ["targets", "working", "environment", "A"])).toEqual({
     name: "x",
   });
   expect(removeAt({ name: "x" }, ["name"])).toEqual({});
@@ -106,23 +110,34 @@ test("the editor reads and switches Targets as rigd does: without a targets key 
   ).toEqual({ name: "x", targets: { stable: true } });
   expect(
     removeRoleSetting(
-      { name: "x", targets: { stable: { domain: "a", env: { A: "1" } } } },
+      {
+        name: "x",
+        targets: { stable: { domain: "a", environment: { A: "1" } } },
+      },
       "stable",
       ["targets", "stable", "domain"],
     ),
-  ).toEqual({ name: "x", targets: { stable: { env: { A: "1" } } } });
+  ).toEqual({ name: "x", targets: { stable: { environment: { A: "1" } } } });
 });
 
 test("field help matches record keys against wildcards, preferring the exact path", () => {
   const fields = [
-    { path: "services.*.env.*", description: "Service env", valueShape: "s" },
-    { path: "env.*", description: "Project env", valueShape: "s" },
+    {
+      path: "services.*.environment.*",
+      description: "Service environment",
+      valueShape: "s",
+    },
+    {
+      path: "environment.*",
+      description: "Project environment",
+      valueShape: "s",
+    },
     { path: "targets.working.domain", description: "Working", valueShape: "s" },
     { path: "targets.*.domain", description: "Any", valueShape: "s" },
   ];
   expect(
-    fieldFor(fields, ["services", "web", "env", "PORT"])?.description,
-  ).toBe("Service env");
+    fieldFor(fields, ["services", "web", "environment", "PORT"])?.description,
+  ).toBe("Service environment");
   expect(fieldFor(fields, ["targets", "working", "domain"])?.description).toBe(
     "Working",
   );
@@ -144,15 +159,16 @@ test("form text parses into the config's value shapes", () => {
 
 test("every edit the editor generates is one rigd applies to the written rig.yaml", () => {
   const raw =
-    "# schema\nname: pantry\nservices:\n  web:\n    run: bun server.ts\n    ports:\n      http: 4310\n    env:\n      PORT: '1'\n    depends_on: [db]\n  db:\n    run: postgres\ntools:\n  cli:\n    bin: dist/cli\n";
+    "# schema\nname: pantry\nservices:\n  web:\n    command: bun server.ts\n    ports:\n      http: 4310\n    environment:\n      PORT: '1'\n    depends_on: [db]\n  db:\n    command: postgres\ntools:\n  cli:\n    bin: dist/cli\n";
   const drafts: Record<string, (tree: Tree) => Tree> = {
     "clear the last env var": (tree) =>
-      removeAt(tree, ["services", "web", "env", "PORT"]),
+      removeAt(tree, ["services", "web", "environment", "PORT"]),
     "remove a Service": (tree) => removeAt(tree, ["services", "db"]),
     "remove every Tool": (tree) => removeAt(tree, ["tools", "cli"]),
     "edit a list": (tree) =>
       setAt(tree, ["services", "web", "depends_on"], ["db", "cache"]),
-    "add a Service": (tree) => setAt(tree, ["services", "api"], { run: "x" }),
+    "add a Service": (tree) =>
+      setAt(tree, ["services", "api"], { command: "x" }),
   };
   for (const [name, change] of Object.entries(drafts)) {
     const document = parseDocument(raw);

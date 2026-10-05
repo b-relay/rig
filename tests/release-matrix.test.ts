@@ -30,10 +30,10 @@ process.stdout.write('app ready\\n');
 const TOOL = "process.stdout.write(`hello ${process.argv[2] ?? ''}\\n`);\n";
 const SERVICE = `services:
   web:
-    run: "'${process.execPath}' app.ts \${services.web.ports.http} '\${rig.data}/web'"
+    command: "'${process.execPath}' app.ts \${services.web.ports.http} '\${rig.data}/web'"
     ports: { http: auto }
     ready: http://127.0.0.1:\${services.web.ports.http}
-    env: { GREETING: from-config }
+    environment: { GREETING: from-config }
 `;
 const TOOLS = `tools:
   hello:
@@ -101,7 +101,7 @@ test("one Service with every Target on: config, Doctor, no-up deploy, up, restar
   const f = await rigFixture();
   try {
     const commit = await project(f, ON + SERVICE);
-    expect(await text(f, ["config"])).toContain('"run":');
+    expect(await text(f, ["config"])).toContain('"command":');
     expect(await text(f, ["doctor", "--project", "demo"])).toContain(
       "No problems found.",
     );

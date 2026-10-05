@@ -208,12 +208,14 @@ test("a start whose clean-up rigd's shutdown detached is left as a crash leaves 
   expect(stops).toEqual([]);
 });
 
-test("up preserves running components and rollback stops only newly started components", async () => {
+test("up preserves running components and rollback stops only newly started components; a Service starts in its working_dir", async () => {
   const stopped: string[] = [];
   const started: string[] = [];
+  const directories: string[] = [];
   const supervisor: Supervisor = {
     async ensureRunning(request) {
       started.push(request.key);
+      directories.push(`${request.cwd} within ${request.cwdWithin}`);
       if (request.key.endsWith(":web")) throw new Error("start failed");
       return { outcome: "unchanged" };
     },
@@ -256,8 +258,13 @@ test("up preserves running components and rollback stops only newly started comp
     async removeRoute() {},
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
-  await expect(lifecycle.up(target)).rejects.toThrow("start failed");
+  const record = structuredClone(target);
+  Object.assign(record.plan.components[1]!, { workingDir: "apps/web" });
+  await expect(lifecycle.up(record)).rejects.toThrow("start failed");
   expect(started).toEqual(["t1:web"]);
+  expect(directories).toEqual([
+    "/tmp/developer/apps/web within /tmp/developer",
+  ]);
   expect(stopped).toEqual([]);
 });
 test("down uses recorded plan and reports no-op only when every process was stopped", async () => {

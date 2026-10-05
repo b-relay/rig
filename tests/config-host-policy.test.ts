@@ -106,14 +106,14 @@ test("a Project cannot select a provider profile, a Service workdir or a Service
   expect(() =>
     parseProjectConfig({
       name: "app",
-      services: { web: { run: "./web", workdir: "apps/web" } },
+      services: { web: { command: "./web", workdir: "apps/web" } },
     }),
   ).toThrow("Invalid Project configuration");
   // rigd supervises every Service; no Service chooses its own supervisor.
   expect(() =>
     parseProjectConfig({
       name: "app",
-      services: { web: { run: "./web", supervisor: "rigd" } },
+      services: { web: { command: "./web", supervisor: "rigd" } },
     }),
   ).toThrow("Invalid Project configuration");
 });

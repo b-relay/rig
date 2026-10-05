@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
   stat,
@@ -17,7 +18,7 @@ import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { InstalledComponent } from "../src/config/types";
-import { RigError } from "../src/domain/errors";
+import { RigError, userCorrectable } from "../src/domain/errors";
 import { noRoutes } from "./support/router-doubles";
 const roots: string[] = [];
 afterEach(async () => {
@@ -193,6 +194,121 @@ test("a build unit runs its command once, install only publishes, and a failed r
   expect(
     (await runCommand({ command: [join(root, "bin", "tool-dev")] })).stdout,
   ).toBe("ready\n");
+});
+test("a Service's build and shell ready check run in its working_dir; a Tool build and a plan without one run at the workspace root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-working-dir-"));
+  roots.push(root);
+  await mkdir(join(root, "apps", "web"), { recursive: true });
+  const web = {
+    name: "web",
+    kind: "managed" as const,
+    command: "serve",
+    workingDir: "apps/web",
+    readyTimeout: 1,
+    env: {},
+    dependsOn: [],
+    health: "test -f built",
+  };
+  const tool = {
+    name: "ctl",
+    kind: "installed" as const,
+    entrypoint: "ctl",
+    env: {},
+    dependsOn: [],
+  };
+  const record = {
+    ...target(root),
+    plan: { ...target(root).plan, components: [web, tool] },
+  };
+  const adapter = effects(root);
+  const signal = new AbortController().signal;
+  expect(await adapter.observations.health(record, web, signal)).toMatchObject({
+    ready: false,
+  });
+  await adapter.build(
+    {
+      id: "service:web",
+      component: "web",
+      command: "pwd > built",
+      timeout: 10,
+    },
+    record,
+  );
+  await adapter.build(
+    {
+      id: "tool:ctl",
+      component: "ctl",
+      command: "pwd > tool-built",
+      timeout: 10,
+    },
+    record,
+  );
+  const real = await realpath(root);
+  expect(await readFile(join(root, "apps", "web", "built"), "utf8")).toBe(
+    `${join(real, "apps", "web")}\n`,
+  );
+  expect(await readFile(join(root, "tool-built"), "utf8")).toBe(`${real}\n`);
+  expect(await adapter.observations.health(record, web, signal)).toEqual({
+    ready: true,
+  });
+  // The same check without working_dir looks for the file at the root, where there is none.
+  const { workingDir: _root, ...atRoot } = web;
+  expect(
+    await adapter.observations.health(record, atRoot, signal),
+  ).toMatchObject({ ready: false });
+});
+test("a working_dir that is a symlink out of the workspace, or not there, fails before its build or check runs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-working-dir-"));
+  const outside = await mkdtemp(join(tmpdir(), "rig-outside-"));
+  roots.push(root, outside);
+  await symlink(outside, join(root, "escape"));
+  const web = {
+    name: "web",
+    kind: "managed" as const,
+    command: "serve",
+    workingDir: "escape",
+    readyTimeout: 1,
+    env: {},
+    dependsOn: [],
+    health: "pwd > checked",
+  };
+  const record = {
+    ...target(root),
+    plan: { ...target(root).plan, components: [web] },
+  };
+  const adapter = effects(root);
+  const unit = {
+    id: "service:web",
+    component: "web",
+    command: "pwd > built",
+    timeout: 10,
+  };
+  await expect(adapter.build(unit, record)).rejects.toMatchObject({
+    code: "WORKING_DIR_OUTSIDE",
+  });
+  // A check reports why it is not ready rather than failing; either way it never runs outside.
+  expect(
+    await adapter.observations.health(
+      record,
+      web,
+      new AbortController().signal,
+    ),
+  ).toMatchObject({ ready: false, reason: "WORKING_DIR_OUTSIDE" });
+  expect(await readdir(outside)).toEqual([]);
+  // A directory that is not there is named with its setting, not reported as a shell that could not start.
+  const missing = { ...web, workingDir: "apps/missing" };
+  await expect(
+    adapter.build(unit, {
+      ...record,
+      plan: { ...record.plan, components: [missing] },
+    }),
+  ).rejects.toMatchObject({
+    code: "WORKING_DIR_MISSING",
+    hint: expect.stringContaining("services.web.working_dir"),
+  });
+  // Both name a setting to fix, so they are reported as the user's to correct, without diagnostic pointers.
+  expect(userCorrectable("WORKING_DIR_OUTSIDE")).toBe(true);
+  expect(userCorrectable("WORKING_DIR_MISSING")).toBe(true);
 });
 test("cancelling a command health check terminates its probe process group", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-cancel-"));

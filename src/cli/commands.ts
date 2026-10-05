@@ -324,7 +324,7 @@ interface InitOptions extends ScopeOptions {
   productionBranch?: string;
   domain?: string;
   service?: string;
-  run?: string;
+  command?: string;
   port?: number;
   ready?: string;
   tool?: string;
@@ -360,7 +360,7 @@ function addInitCommand(
       nonEmpty,
     )
     .option("--service <name>", "Service name", nonEmpty)
-    .option("--run <command>", "Command that runs the Service", nonEmpty)
+    .option("--command <command>", "Command that runs the Service", nonEmpty)
     .option(
       "--port <port>",
       "Service localhost port (assigned automatically when omitted)",
@@ -374,12 +374,12 @@ function addInitCommand(
 }
 function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
   const serviceRequested =
-    options.service || options.run || options.port || options.ready;
+    options.service || options.command || options.port || options.ready;
   const toolRequested = options.tool || options.bin || options.toolBuild;
-  if (serviceRequested && (!options.service || !options.run))
+  if (serviceRequested && (!options.service || !options.command))
     throw new RigError(
       "USAGE",
-      "A Service requires --service and --run.",
+      "A Service requires --service and --command.",
       "Run rig init --help.",
     );
   if (toolRequested && (!options.tool || !options.bin))
@@ -409,11 +409,11 @@ function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
       : {}),
     ...(options.createGit ? { createGit: true } : {}),
     ...(options.domain ? { domain: options.domain } : {}),
-    ...(options.service && options.run
+    ...(options.service && options.command
       ? {
           service: {
             name: options.service,
-            run: options.run,
+            command: options.command,
             ...(options.port ? { port: options.port } : {}),
             ...(options.ready ? { ready: options.ready } : {}),
           },

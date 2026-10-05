@@ -44,10 +44,10 @@ build: echo shared >> '${counts}/order'
 services:
   web:
     build: echo service:web >> '${counts}/order' && echo built > web.built
-    run: "'${process.execPath}' server.ts"
+    command: "'${process.execPath}' server.ts"
     ports: { http: auto }
     ready: http://127.0.0.1:\${services.web.ports.http}
-    env: { PORT: "\${services.web.ports.http}" }
+    environment: { PORT: "\${services.web.ports.http}" }
 tools:
   counted:
     build: echo tool:counted >> '${counts}/order'
@@ -119,10 +119,10 @@ targets:
 services:
   web:
     build: echo service:web >> '${counts}/order'
-    run: "${run}"
+    command: "${run}"
     ports: { http: auto }
     ready: http://127.0.0.1:\${services.web.ports.http}
-    env: { PORT: "\${services.web.ports.http}" }
+    environment: { PORT: "\${services.web.ports.http}" }
 tools:
   counted:
     build: echo tool:counted >> '${counts}/order'

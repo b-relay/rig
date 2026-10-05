@@ -4,7 +4,7 @@ import { ConfigError } from "./errors";
 export interface PublicInput {
   /** The environment name, such as DATABASE_URL. */
   name: string;
-  /** The config path that declares it, such as services.api.env.DATABASE_URL. */
+  /** The config path that declares it, such as services.api.environment.DATABASE_URL. */
   source: string;
   value: string;
 }
@@ -33,9 +33,13 @@ export interface ReferenceResolver {
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
 const HINT =
-  "A reference names an exact config path such as ${services.web.ports.http} or ${env.NAME}, or a Rig value such as ${rig.target}. Write $${VAR} for a literal shell ${VAR}; $VAR is left to the shell.";
+  "A reference names an exact config path such as ${services.web.ports.http} or ${environment.NAME}, a port such as ${port}, ${ports.http} or ${services.web.port}, or a Rig value such as ${rig.target}. Write $${VAR} for a literal shell ${VAR}; $VAR is left to the shell.";
+/** A path through a Project's or Service's `env`, which is `environment` now (ADR 0011). */
+const RENAMED_ENV = /^((?:services\.[^.]+\.)?)env\.(.+)$/;
 const PROJECT_BUILD = /^(?:build|tools\.[^.]+\.build)$/;
 const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]+$/;
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 /** A value as literal shell data at a position that is bare, inside double quotes, or inside single quotes. */
 function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
   if (quote === '"') return value.replace(/[\\"$`]/g, "\\$&");
@@ -45,29 +49,98 @@ function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
 }
 
 /** Pure recursive resolution over one patched settings graph. A reference is an exact path to a scalar in that graph or a rig.* value;
- * `$${` escapes to a literal `${`. Throws ConfigError `unknown_reference`, `reference_not_scalar`, `reference_into_targets`,
- * `invalid_context` (rig.data outside a Service) or `reference_cycle`, each naming the config path that holds the reference. */
+ * `$${` escapes to a literal `${`. Inside a Service's own settings `${port}` is its only port and `${ports.<port>}` a named one;
+ * `${services.<name>.port}` is that Service's only port anywhere. Throws ConfigError `renamed_reference` (a path through the old
+ * `env`), `no_port` or `ambiguous_port` (a reference to a Service's only port when it has none or several), `unknown_reference`, `reference_not_scalar`, `reference_into_targets`,
+ * `invalid_context` (rig.data, ${port} or ${ports.<port>} outside a Service) or `reference_cycle`, each naming the config path that holds the reference. */
 export function referenceResolver(
   settings: Readonly<Record<string, unknown>>,
   generated: GeneratedValues,
 ): ReferenceResolver {
   const fail = (code: string, message: string, key: string, at: string) =>
     new ConfigError(message, code, { key, path: at }, HINT);
+  /** The names of the ports Service `name` declares, or undefined when there is no such Service. */
+  const declared = (name: string): string[] | undefined => {
+    const services = settings.services;
+    if (!isRecord(services) || !Object.hasOwn(services, name)) return undefined;
+    const service = services[name];
+    const ports = isRecord(service) ? service.ports : undefined;
+    return isRecord(ports) ? Object.keys(ports) : [];
+  };
+  /** `${port}` and `${ports.<port>}` name the ports of the Service whose field holds the text; `${services.<name>.port}`
+   * names that Service's only port. Undefined for any other reference. */
+  const shortPort = (
+    segments: readonly string[],
+    at: string,
+  ): number | undefined => {
+    const key = segments.join(".");
+    const short = key === "port" || segments[0] === "ports";
+    const named =
+      segments.length === 3 &&
+      segments[0] === "services" &&
+      segments[2] === "port";
+    if (!short && !named) return undefined;
+    const owner = named ? segments[1]! : /^services\.([^.]+)\./.exec(at)?.[1];
+    if (owner === undefined)
+      throw fail(
+        "invalid_context",
+        `\${${key}} in ${at} has no Service; write \${services.<service>.port} or \${services.<service>.ports.<port>}.`,
+        key,
+        at,
+      );
+    const ports = declared(owner);
+    if (ports === undefined)
+      throw fail(
+        "unknown_reference",
+        `Unknown reference '\${${key}}' in ${at}: '${owner}' is not a declared Service.`,
+        key,
+        at,
+      );
+    if (segments[0] === "ports") {
+      if (segments.length !== 2 || !ports.includes(segments[1]!))
+        throw fail(
+          "unknown_reference",
+          `Unknown reference '\${${key}}' in ${at}: Service '${owner}' declares ${ports.length ? `the ports ${ports.join(", ")}` : "no ports"}.`,
+          key,
+          at,
+        );
+      return generated.port(owner, segments[1]!);
+    }
+    const longForm = named ? `services.${owner}.ports` : "ports";
+    if (ports.length !== 1)
+      throw new ConfigError(
+        `\${${key}} in ${at} needs one port, but '${owner}' has ${ports.length ? `${ports.length} (${ports.join(", ")}); name one, such as \${${longForm}.${ports[0]}}` : "none; declare one, such as ports: { http: auto }"}.`,
+        ports.length ? "ambiguous_port" : "no_port",
+        { key, path: at, service: owner, ports },
+        ports.length
+          ? `Write \${${longForm}.<port>} with one of ${ports.join(", ")}.`
+          : `Declare a port on Service '${owner}', such as ports: { http: auto }.`,
+      );
+    return generated.port(owner, ports[0]!);
+  };
   const lookup = (
     key: string,
     at: string,
     stack: readonly string[],
   ): ResolvedText => {
+    const renamed = RENAMED_ENV.exec(key);
+    if (renamed)
+      throw new ConfigError(
+        `Reference '\${${key}}' in ${at} names \`env\`, which is now \`environment\`: write \${${renamed[1]}environment.${renamed[2]}}.`,
+        "renamed_reference",
+        { key, path: at },
+        `Write \${${renamed[1]}environment.${renamed[2]}} instead.`,
+      );
     // stack[0] is the field being resolved for an invocation; a Project or Tool build has no Service scope, however the value is reached.
     const consumer = stack[0]!;
     if (
       PROJECT_BUILD.test(consumer) &&
       ((key === "rig.data" && at !== consumer) ||
-        /^services\.[^.]+\.env\./.test(key))
+        /^services\.[^.]+\.environment\./.test(key))
     )
       throw fail(
         "invalid_context",
-        `${consumer} reaches '\${${key}}'${at === consumer ? "" : ` through ${at}`}: a Project or Tool build runs with Project inputs and cannot use a Service's env or data.`,
+        `${consumer} reaches '\${${key}}'${at === consumer ? "" : ` through ${at}`}: a Project or Tool build runs with Project inputs and cannot use a Service's environment or data.`,
         key,
         at,
       );
@@ -104,6 +177,8 @@ export function referenceResolver(
         at,
       );
     }
+    const port = shortPort(segments, at);
+    if (port !== undefined) return plain(port);
     if (segments[0] === "targets")
       throw fail(
         "reference_into_targets",
@@ -151,7 +226,8 @@ export function referenceResolver(
       );
     const resolved = substitute(node, key, [...stack, key], (value) => value);
     const name =
-      /^(?:services\.[^.]+\.)?env\.([^.]+)$/.exec(key)?.[1] ?? undefined;
+      /^(?:services\.[^.]+\.)?environment\.([^.]+)$/.exec(key)?.[1] ??
+      undefined;
     return name === undefined
       ? resolved
       : {

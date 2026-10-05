@@ -79,6 +79,7 @@ export class FileStateStore implements StateStore {
     readRetiredSupervisorAsRigd(state);
     forgetOngoingHealthChecks(state);
     forgetOperatorAlerts(state);
+    readEnvironmentSources(state);
     return { ...state, version: STATE_VERSION };
   }
   /** A file from a different rigd is refused by version before its shape is judged. */
@@ -237,6 +238,19 @@ function forgetOngoingHealthChecks(state: RuntimeState): void {
  * key would be. The next write saves it so. */
 function forgetOperatorAlerts(state: RuntimeState): void {
   delete (state as { alerts?: unknown }).alerts;
+}
+/** A plan names each public value a command was built from by its config path. Before ADR 0011 renamed `env` to
+ * `environment`, those paths read `env.NAME` and `services.<name>.env.NAME`; they are read under the new name, so such a
+ * plan equals the plan its config makes today and is not config drift. The next write saves it so. */
+function readEnvironmentSources(state: RuntimeState): void {
+  for (const target of state.targets)
+    for (const plan of [target.plan, target.recovery?.plan])
+      for (const unit of [...(plan?.components ?? []), ...(plan?.builds ?? [])])
+        for (const input of unit.commandInputs ?? [])
+          input.source = input.source.replace(
+            /^((?:services\.[^.]+\.)?)env\./,
+            "$1environment.",
+          );
 }
 async function writeDurably(path: string, content: string): Promise<void> {
   const file = await open(path, "w", 0o600);

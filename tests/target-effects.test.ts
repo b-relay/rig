@@ -257,6 +257,56 @@ test("a Service's build and shell ready check run in its working_dir; a Tool bui
     await adapter.observations.health(record, atRoot, signal),
   ).toMatchObject({ ready: false });
 });
+test("a working_dir that is a symlink out of the workspace, or not there, fails before its build or check runs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-working-dir-"));
+  const outside = await mkdtemp(join(tmpdir(), "rig-outside-"));
+  roots.push(root, outside);
+  await symlink(outside, join(root, "escape"));
+  const web = {
+    name: "web",
+    kind: "managed" as const,
+    command: "serve",
+    workingDir: "escape",
+    readyTimeout: 1,
+    env: {},
+    dependsOn: [],
+    health: "pwd > checked",
+  };
+  const record = {
+    ...target(root),
+    plan: { ...target(root).plan, components: [web] },
+  };
+  const adapter = effects(root);
+  const unit = {
+    id: "service:web",
+    component: "web",
+    command: "pwd > built",
+    timeout: 10,
+  };
+  await expect(adapter.build(unit, record)).rejects.toMatchObject({
+    code: "WORKING_DIR_OUTSIDE",
+  });
+  // A check reports why it is not ready rather than failing; either way it never runs outside.
+  expect(
+    await adapter.observations.health(
+      record,
+      web,
+      new AbortController().signal,
+    ),
+  ).toMatchObject({ ready: false, reason: "WORKING_DIR_OUTSIDE" });
+  expect(await readdir(outside)).toEqual([]);
+  // A directory that is not there is named with its setting, not reported as a shell that could not start.
+  const missing = { ...web, workingDir: "apps/missing" };
+  await expect(
+    adapter.build(unit, {
+      ...record,
+      plan: { ...record.plan, components: [missing] },
+    }),
+  ).rejects.toMatchObject({
+    code: "WORKING_DIR_MISSING",
+    hint: expect.stringContaining("services.web.working_dir"),
+  });
+});
 test("cancelling a command health check terminates its probe process group", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-cancel-"));
   roots.push(root);

@@ -28,10 +28,12 @@ const isTree = (value: unknown): value is Tree =>
 /** `config` as a rigd before ADR 0011 parsed the same file: each key keeps its place under its old name, and every
  * reference through `environment` is written through `env`. */
 function preComposeSpelling(config: ProjectConfig): unknown {
+  // `$${` is an escaped literal, never a reference, so it is matched first and kept as written.
   const text = (value: string) =>
     value.replace(
-      /\$\{(\s*)((?:services\.[^.}]+\.)?)environment\./g,
-      (_match, space: string, owner: string) => `\${${space}${owner}env.`,
+      /\$\$\{|\$\{(\s*)((?:services\.[^.}]+\.)?)environment\./g,
+      (match, space: string | undefined, owner: string | undefined) =>
+        space === undefined ? match : `\${${space}${owner}env.`,
     );
   const walk = (value: unknown, path: readonly string[]): unknown => {
     if (typeof value === "string") return text(value);

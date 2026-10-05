@@ -60,6 +60,7 @@ import { appendTargetLog } from "./target-log";
 import type { LogRetention } from "../domain/log-retention";
 import { findsExecutable, gatedCommand, releaseGate } from "./start-gate";
 import { failStart, ownStopsDetach } from "./start-cleanup";
+import { assertContainedDirectory } from "./contained-directory";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
@@ -444,6 +445,8 @@ export function createChildSupervisor(
     const command = options.captureCommand
       ? [...options.captureCommand, capturePath(request.key)]
       : request.command;
+    if (request.cwdWithin !== undefined)
+      await assertContainedDirectory(request.cwd, request.cwdWithin);
     // A working directory that is not there fails the spawn; saying which directory is the actionable part.
     if (
       !(await stat(request.cwd).then(

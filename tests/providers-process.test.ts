@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
@@ -778,6 +778,30 @@ test("a start whose working directory is missing fails naming the directory, and
     hint: "Create the directory, or correct the Service's working_dir in rig.yaml.",
     details: { cause: `Its working directory ${cwd} is not a directory.` },
   });
+  expect(await supervisor.observe("target/web")).toMatchObject({
+    state: "stopped",
+  });
+});
+
+test("a start whose working directory resolves outside the directory it must stay within fails, and nothing is spawned", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-process-cwd-"));
+  const outside = await mkdtemp(join(tmpdir(), "rig-process-outside-"));
+  roots.push(root, outside);
+  await symlink(outside, join(root, "escape"));
+  const supervisor = createChildSupervisor({ ...platform(), stateRoot: root });
+  supervisors.push(supervisor);
+  await expect(
+    supervisor.ensureRunning({
+      key: "target/web",
+      componentName: "web",
+      command: ["/bin/sh", "-c", "sleep 30"],
+      cwd: join(root, "escape"),
+      cwdWithin: root,
+      env: { PATH: process.env.PATH! },
+      logRoot: root,
+      incarnation: "start-1",
+    }),
+  ).rejects.toMatchObject({ code: "WORKING_DIR_OUTSIDE" });
   expect(await supervisor.observe("target/web")).toMatchObject({
     state: "stopped",
   });

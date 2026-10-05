@@ -215,7 +215,7 @@ test("up preserves running components and rollback stops only newly started comp
   const supervisor: Supervisor = {
     async ensureRunning(request) {
       started.push(request.key);
-      directories.push(request.cwd);
+      directories.push(`${request.cwd} within ${request.cwdWithin}`);
       if (request.key.endsWith(":web")) throw new Error("start failed");
       return { outcome: "unchanged" };
     },
@@ -262,7 +262,9 @@ test("up preserves running components and rollback stops only newly started comp
   Object.assign(record.plan.components[1]!, { workingDir: "apps/web" });
   await expect(lifecycle.up(record)).rejects.toThrow("start failed");
   expect(started).toEqual(["t1:web"]);
-  expect(directories).toEqual(["/tmp/developer/apps/web"]);
+  expect(directories).toEqual([
+    "/tmp/developer/apps/web within /tmp/developer",
+  ]);
   expect(stopped).toEqual([]);
 });
 test("down uses recorded plan and reports no-op only when every process was stopped", async () => {

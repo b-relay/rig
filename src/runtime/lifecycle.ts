@@ -609,6 +609,9 @@ export function createTargetLifecycle(
         componentName: component.name,
         command: ["/bin/sh", "-c", component.command],
         cwd: componentDirectory(target.plan, component),
+        ...(component.workingDir !== undefined
+          ? { cwdWithin: target.plan.workspacePath }
+          : {}),
         env,
         logRoot: target.logRoot,
         incarnation,

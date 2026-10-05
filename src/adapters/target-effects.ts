@@ -16,6 +16,7 @@ import type {
   BuildUnit,
   InstalledComponent,
   ManagedComponent,
+  PlanComponent,
 } from "../config/types";
 import { WORKING_TOOL_SUFFIX, isHealthUrl } from "../config/schema";
 import { componentDirectory } from "../config/working-dir";
@@ -30,6 +31,7 @@ import type {
   TargetLogEntry,
 } from "../providers/contracts";
 import { isSourceEntrypoint } from "../providers/artifact-installer";
+import { assertContainedDirectory } from "../providers/contained-directory";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
 import type { ListenerInspection } from "../providers/listener-inspection";
@@ -165,6 +167,30 @@ export function createTargetEffects(
   };
   /** Runs a shell command in the Target workspace, or in `cwd` inside it, within a budget in seconds and records its output,
    * including what a killed command printed before its budget ran out, under the Component name. */
+  /** The directory a Component's build or shell check runs in. A working_dir must be a directory inside the workspace,
+   * symlinks followed; anything else fails before a command runs, naming the setting, rather than as a spawn failure. */
+  const runDirectory = async (
+    target: TargetRecord,
+    component: PlanComponent | undefined,
+  ): Promise<string> => {
+    const directory = componentDirectory(target.plan, component);
+    if (component?.kind !== "managed" || component.workingDir === undefined)
+      return directory;
+    await assertContainedDirectory(directory, target.plan.workspacePath);
+    if (
+      !(await stat(directory).then(
+        (info) => info.isDirectory(),
+        () => false,
+      ))
+    )
+      throw new RigError(
+        "WORKING_DIR_MISSING",
+        `The working directory ${directory} of ${component.name} is not a directory.`,
+        `Create ${component.workingDir} in the repository, or correct services.${component.name}.working_dir in rig.yaml; it must exist before its build runs.`,
+        { directory, service: component.name },
+      );
+    return directory;
+  };
   const runTarget = async (
     command: string,
     target: TargetRecord,
@@ -303,7 +329,7 @@ export function createTargetEffects(
       }
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],
-        cwd: componentDirectory(target.plan, component),
+        cwd: await runDirectory(target, component),
         env: await environment(target, component),
         signal,
         timeoutMs: 2000,
@@ -519,7 +545,7 @@ export function createTargetEffects(
         ),
         unit.timeout,
         name,
-        componentDirectory(target.plan, component),
+        await runDirectory(target, component),
       );
       const label =
         unit.component === undefined ? "shared" : `${unit.component}`;

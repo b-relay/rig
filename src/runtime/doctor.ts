@@ -175,6 +175,7 @@ export async function doctor(
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
+    deps.healthResults,
   );
   for (const report of reports)
     for (const component of report.components)
@@ -409,7 +410,7 @@ function componentHint(selector: string, component: ComponentReport): string {
   if (component.state === "failed" || component.exitCode !== undefined)
     return `Inspect the Target logs (rig logs ${selector}) for why it exited.`;
   if (component.state === "unhealthy")
-    return `The health check failed; inspect the Target logs (rig logs ${selector}) and the health URL.`;
+    return `Its health check failed; inspect the Target logs (rig logs ${selector}) and the Service's healthcheck in rig.yaml.`;
   if (component.state === "missing")
     return `The installed artifact or storage is absent; run rig up ${selector} or redeploy this Target.`;
   return "Inspect Target logs and provider configuration.";

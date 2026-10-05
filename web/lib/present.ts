@@ -1,4 +1,6 @@
 import type { TargetReport } from "./types";
+/** A Service's cached health check result on one line, as `rig status` prints it. */
+export { healthSummary } from "../../src/domain/project-status";
 
 /** Pure: the colour a lifecycle or outcome word carries; words rigd has not taught the page read as idle. */
 export type Tone = "good" | "warn" | "bad" | "busy" | "idle";

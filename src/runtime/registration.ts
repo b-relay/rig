@@ -15,6 +15,7 @@ async function assertTargetsStopped(
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
+    deps.healthResults,
   );
   if (
     reports.some((t) =>

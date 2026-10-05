@@ -25,7 +25,7 @@ import {
 } from "@tanstack/react-table";
 import { z } from "zod";
 import { KIND_RANK, type TargetRow } from "@/lib/board-rows";
-import { shortCommit, toneOf } from "@/lib/present";
+import { healthSummary, shortCommit, toneOf } from "@/lib/present";
 import { routeUrl, targetKey } from "@/lib/target";
 import type { ComponentReport } from "@/lib/types";
 import { Mono, State } from "./bits";
@@ -407,40 +407,53 @@ function TargetName({ row }: { row: TargetRow }) {
     </Link>
   );
 }
-/** Each component on the one line: a state dot, its name and its port, the way `rig status` prints them. */
+/** Each component on the one line: a state dot, its name and its port, the way `rig status` prints them, and for a Service
+ * with a healthcheck its cached result (`healthy · checked 12s ago`, `unhealthy 3/3 · HTTP 503`). */
 function Components({
   components,
 }: {
   components: readonly ComponentReport[];
 }) {
   if (components.length === 0) return DASH;
+  const now = new Date();
   return (
-    <span className="inline-flex items-center gap-3">
-      {components.map((component) => (
-        <span
-          key={component.name}
-          className="inline-flex items-center gap-1.5"
-          title={[
-            component.state,
-            component.pid ? `pid ${component.pid}` : undefined,
-            component.reason,
-          ]
-            .filter(Boolean)
-            .join(", ")}
-        >
+    <span className="inline-flex flex-wrap items-center gap-3">
+      {components.map((component) => {
+        const health = healthSummary(component, now);
+        return (
           <span
-            aria-hidden
-            className={cn("size-2 rounded-full", DOT[toneOf(component.state)])}
-          />
-          <span className="sr-only">{component.state}</span>
-          {component.name}
-          {component.port ? (
-            <Mono className="break-normal text-muted-foreground">
-              :{component.port}
-            </Mono>
-          ) : null}
-        </span>
-      ))}
+            key={component.name}
+            className="inline-flex items-center gap-1.5"
+            title={[
+              health ?? component.state,
+              component.pid ? `pid ${component.pid}` : undefined,
+              component.reason,
+            ]
+              .filter(Boolean)
+              .join(", ")}
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "size-2 rounded-full",
+                DOT[toneOf(component.state)],
+              )}
+            />
+            <span className="sr-only">{component.state}</span>
+            {component.name}
+            {component.port ? (
+              <Mono className="break-normal text-muted-foreground">
+                :{component.port}
+              </Mono>
+            ) : null}
+            {health ? (
+              <span className="max-w-xs truncate text-xs text-muted-foreground">
+                {health}
+              </span>
+            ) : null}
+          </span>
+        );
+      })}
     </span>
   );
 }

@@ -484,6 +484,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           deps.observations,
           deps.observationBudgetMs,
           deps.observationDeadline,
+          deps.healthResults,
         );
         if (
           state.targets.some((t) => t.desired === "running") ||

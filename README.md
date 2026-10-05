@@ -46,7 +46,10 @@ targets: { working: true, stable: true }
 ```
 
 `${port}` is the Service's one port, and with one Service that has one port the
-domain routes to it without a `proxy`. The healthcheck gates start and keeps
+domain routes to it without a `proxy`. A Target is off unless `targets` turns
+it on, so this file runs its checkout and deploys the stable Target but makes
+no Previews; `rig init` writes `working` and `preview` on and `stable` off. The
+healthcheck gates start and keeps
 checking the Service while it runs; `rig status` shows its last result. See the [guide](docs/rig-guide.md) for
 setup, deploys, configuration, diagnostics, and command behavior, and
 [docs/examples](docs/examples) for complete configs.

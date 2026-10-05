@@ -298,9 +298,10 @@ build. Both may be given together, under different names. `--command`,
 Service nor a Tool and no existing `rig.yaml`, init fails as `empty_project`:
 pass the flags, or write `rig.yaml` by hand and run `rig init` again to
 register it. The scaffold also writes `production_branch` and every Target
-switch (`targets: { working: true, stable: false, preview: false }`), so
-turning the stable Target or Previews on is one word, under a first-line
-comment that points editors at the config schema (see "Config").
+switch (`targets: { working: true, stable: false, preview: true }`): the new
+Project runs its checkout and can preview a Branch, and turning the stable
+Target on is one word. A first-line comment points editors at the config
+schema (see "Config").
 
 Config is always `rig.yaml`. Explicit
 `--production-branch` and `--create-git` support noninteractive setup. Project
@@ -310,7 +311,10 @@ identity comes from existing config when present, not a conflicting folder name.
 it by default. The stable Target serves
 `app.test`, each Preview serves `app-<preview name>.test` (see "Domain and
 proxy"), and the working Target has no route unless `targets.working.domain`
-is set, so two Targets never contend for one route. A `domain` value must be a
+is set, so two Targets never contend for one route. `--domain` needs a
+Service: Previews are on and take their hostnames from it, and a Tool-only
+Project has nothing to serve them, so init refuses it as
+`domain_without_service`. A `domain` value must be a
 hostname such as `app.test`; `${rig.target}` is the only reference it may
 contain (for example `${rig.target}.preview.app.test` under
 `targets.preview.domain`). A scheme, port, path, wildcard, or comma-separated
@@ -374,9 +378,11 @@ the working Target's Tools (`PREVIEW_NAME`).
 
 A Target runs only when `rig.yaml` turns it on. Its key under `targets` is
 `true`, or a map of settings that patches the Project for it (see
-"Config"), to turn it on; `false`, or leaving the key out, keeps it off. A
-`rig.yaml` with no `targets` key at all has only the working Target on, so a
-new Project runs its checkout and deploys nothing until you say so:
+"Config"), to turn it on; `false`, or leaving the key out, keeps it off. There
+is no special case: a `rig.yaml` with no `targets` key at all has every Target
+off, the working Target too. `rig init` writes the working Target and Previews
+on and the stable Target off; a Project that serves its Production branch says
+so:
 
 ```yaml
 targets:
@@ -385,8 +391,8 @@ targets:
   preview: true # rig deploy preview <branch> now makes Previews
 ```
 
-Once `targets` is there, it lists every Target that is on: `targets: { stable:
-true }` alone turns the working Target off. `rig up`, `rig restart`, `rig
+`targets` lists every Target that is on: `targets: { stable: true }` alone
+leaves the working Target off. `rig up`, `rig restart`, `rig
 deploy`, and `rig logs` of a Target that has never run all refuse an off
 Target with `TARGET_OFF`, and the hint names the line to add (for example
 "Add `stable: true` under targets in rig.yaml."). Nothing is planned,
@@ -396,7 +402,12 @@ stopped, because its config changed: such a Target can always be seen, read,
 stopped with `rig down`, and, for a Preview, destroyed. Turning a Target off
 never stops it by itself: a recorded Target meant to run is still restarted
 under its restart policy and, for the stable Target, after a Host restart,
-until `rig down` stops it. Whether a Target is on is read from the checkout's
+until `rig down` stops it. `rig doctor` reports a Target that is off but
+recorded running, with the line that turns it on and the `rig down` that stops
+it. That is also how a Project whose `rig.yaml` has no `targets` key, from
+before such a file had every Target off, finds its working Target: it keeps
+running, and `rig up` and `rig restart` refuse it until `working: true` is
+under `targets`. Whether a Target is on is read from the checkout's
 `rig.yaml`, also for a deploy, which then plans from the committed config of
 the revision it deploys.
 
@@ -817,7 +828,11 @@ a clean Host report is never mistaken for a clean Project. For the Stable
 Target, a `stable/branch` check compares the Branch it was deployed from with the
 current Production Branch (`production_branch`, else the Host default); a
 Production Branch changed since the deploy is `production-branch-drift` with a
-hint to redeploy. `doctor` is read-only by default. One report reads the repository config once, so the
+hint to redeploy. A recorded Target whose role `rig.yaml` leaves off has a
+`<target>/switch` check: while it is meant to run it fails as `target-off`,
+with a hint naming the line that turns it on (such as "Add `working: true`
+under targets in rig.yaml") and the `rig down` that stops it; once it is
+stopped the check passes. `doctor` is read-only by default. One report reads the repository config once, so the
 identity check and every working Target comparison see the same revision even
 while the file is being edited. A config the parser rejects is
 `config-invalid` and carries the parser's message; a config that could not be
@@ -1309,7 +1324,7 @@ The Production branch is `production_branch`, else the Host config's
 
 `targets` has three fixed keys, one per Target: `working`, `stable`, and
 `preview`. Each is `true` or a settings map to turn that Target on, and `false`
-or absent to keep it off; without a `targets` key only `working` is on (see
+or absent to keep it off; without a `targets` key every Target is off (see
 "Which Targets are on"). The names are fixed, so a role takes no `name`.
 
 A map under a role is a settings patch applied over the top-level settings for

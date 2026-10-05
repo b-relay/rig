@@ -19,6 +19,7 @@ import { runCommand } from "../src/providers/command-runner";
 import type { CommandRunner } from "../src/providers/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
 import { RigError } from "../src/domain/errors";
+import { noRoutes } from "./support/router-doubles";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -103,17 +104,7 @@ async function selected(
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: {
-      async apply() {},
-      async remove() {},
-      async withheld() {
-        return [];
-      },
-      async checkpoint(key) {
-        return { key, value: null };
-      },
-      async restore() {},
-    },
+    router: noRoutes(),
     environment: { PATH: process.env.PATH!, HOME: home },
   });
   const api = plan.components.find(

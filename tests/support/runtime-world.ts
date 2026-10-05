@@ -11,10 +11,7 @@ import {
   type ProjectConfig,
 } from "../../src/config";
 import { createArtifactInstaller } from "../../src/providers/artifact-installer";
-import {
-  createCaddyRouter,
-  type Router,
-} from "../../src/providers/caddy-router";
+import type { Router } from "../../src/providers/caddy-router";
 import { runCommand } from "../../src/providers/command-runner";
 import type { Supervisor } from "../../src/providers/contracts";
 import { createRuntime } from "../../src/runtime/application";
@@ -26,6 +23,7 @@ import {
 } from "../../src/runtime/lifecycle";
 import { FileStateStore } from "../../src/runtime/state-store";
 import { localActivation } from "./activation-doubles";
+import { unreloadedCaddy } from "./router-doubles";
 
 /** Readiness polls fire at once; a readiness deadline ends after `deadlineMs` of real time, long enough for a test to act
  * while a check is pending. A process counts as started as soon as it is spawned, until a test sets `startGraceMs`. */
@@ -39,14 +37,6 @@ export function promptReadiness(
     },
     startGraceMs: 0,
   };
-}
-
-/** Caddy under `root` whose every reload succeeds without running Caddy. */
-export function unreloadedCaddy(root: string): Router {
-  return createCaddyRouter({
-    caddyfile: join(root, "Caddyfile"),
-    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-  });
 }
 
 export interface RuntimeWorldOptions {

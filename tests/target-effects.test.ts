@@ -18,6 +18,7 @@ import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { InstalledComponent } from "../src/config/types";
 import { RigError } from "../src/domain/errors";
+import { noRoutes } from "./support/router-doubles";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -86,17 +87,7 @@ function effects(
       run: runCommand,
       bunExecutable: tools.bun,
     }),
-    router: {
-      async apply() {},
-      async remove() {},
-      async withheld() {
-        return [];
-      },
-      async checkpoint(key) {
-        return { key, value: null };
-      },
-      async restore() {},
-    },
+    router: noRoutes(),
     environment,
   });
 }
@@ -701,17 +692,7 @@ test("a missing initdb names the tool instead of a generic start failure, and an
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: {
-      async apply() {},
-      async remove() {},
-      async withheld() {
-        return [];
-      },
-      async checkpoint(key) {
-        return { key, value: null };
-      },
-      async restore() {},
-    },
+    router: noRoutes(),
     environment: { PATH: "/nonexistent" },
   });
   const record: TargetRecord = {
@@ -766,17 +747,7 @@ test("dependency installation runs once per deployed revision and its marker lea
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: {
-      async apply() {},
-      async remove() {},
-      async withheld() {
-        return [];
-      },
-      async checkpoint(key) {
-        return { key, value: null };
-      },
-      async restore() {},
-    },
+    router: noRoutes(),
     environment: { PATH: process.env.PATH! },
   });
   const record: TargetRecord = {
@@ -841,17 +812,7 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: {
-      async apply() {},
-      async remove() {},
-      async withheld() {
-        return [];
-      },
-      async checkpoint(key) {
-        return { key, value: null };
-      },
-      async restore() {},
-    },
+    router: noRoutes(),
     environment: { PATH: process.env.PATH! },
   });
   const live: TargetRecord = {
@@ -993,17 +954,7 @@ test("build output is recorded line by line as it arrives, with the time each li
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: {
-      async apply() {},
-      async remove() {},
-      async withheld() {
-        return [];
-      },
-      async checkpoint(key) {
-        return { key, value: null };
-      },
-      async restore() {},
-    },
+    router: noRoutes(),
     environment: {},
   });
   const record = target(root);

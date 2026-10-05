@@ -14,9 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEffectTransactions } from "../src/adapters/effect-transactions";
 import { createArtifactOwnership } from "../src/adapters/artifact-ownership";
-import { createCaddyRouter } from "../src/providers/caddy-router";
 import type { RouteCheckpoint } from "../src/providers/caddy-router";
 import type { PrunedCheckpoint } from "../src/runtime/lifecycle";
+import { unreloadedCaddy } from "./support/router-doubles";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -32,10 +32,7 @@ async function fixture() {
     "effect-checkpoints",
     createHash("sha256").update("target").digest("hex"),
   );
-  const router = createCaddyRouter({
-    caddyfile: join(root, "Caddyfile"),
-    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
-  });
+  const router = unreloadedCaddy(root);
   const transactions = () =>
     createEffectTransactions({
       root,

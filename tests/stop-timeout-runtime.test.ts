@@ -16,6 +16,8 @@ import type {
 import { stopDetached } from "../src/domain/stop-budget";
 import { runtimeStateSchema } from "../src/runtime/state-schema";
 import { readFixedTargetNames } from "../src/runtime/state-store";
+import { checkIdentity } from "../src/runtime/health-monitor";
+import type { ManagedComponent } from "../src/config/types";
 import {
   parseHostConfig,
   parseProjectConfig,
@@ -1036,10 +1038,35 @@ test("a health restart stops the Service within its stop_timeout under its Targe
   await w.command({ action: "deploy", target: "stable", branch: "main" });
   const working = () => w.state.targets.find((t) => t.kind === "working")!;
   const before = working().services!.web!;
+  const webCheck = checkIdentity(
+    working().plan.components.find(
+      (c): c is ManagedComponent => c.kind === "managed" && c.name === "web",
+    )!,
+  );
+  // A request from a check the recorded plan no longer makes (a deploy replaced its test) is refused under the lock.
+  expect(
+    await w.runtime.restartUnhealthy({
+      targetId: working().id,
+      service: "web",
+      check: checkIdentity({
+        ...(working().plan.components.find(
+          (c) => c.name === "web",
+        ) as ManagedComponent),
+        health: "http://127.0.0.1:4567/legacy",
+      }),
+      incarnation: before.incarnation!,
+      attempt: 1,
+      failures: 3,
+      since: 0,
+      restarts: [],
+    }),
+  ).toEqual({ outcome: "skipped" });
+  expect(w.stops.filter((stop) => stop.key.endsWith(":web"))).toEqual([]);
   w.hold();
   const restart = w.runtime.restartUnhealthy({
     targetId: working().id,
     service: "web",
+    check: webCheck,
     incarnation: before.incarnation!,
     attempt: 2,
     failures: 3,
@@ -1095,6 +1122,7 @@ test("a health restart stops the Service within its stop_timeout under its Targe
       await w.runtime.restartUnhealthy({
         targetId: working().id,
         service: "web",
+        check: webCheck,
         ...(incarnation ? { incarnation } : {}),
         attempt: 3,
         failures: 3,
@@ -1107,6 +1135,7 @@ test("a health restart stops the Service within its stop_timeout under its Targe
     await w.runtime.restartUnhealthy({
       targetId: working().id,
       service: "worker",
+      check: webCheck,
       incarnation: working().services!.worker!.incarnation!,
       attempt: 1,
       failures: 3,

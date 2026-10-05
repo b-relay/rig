@@ -5,9 +5,10 @@ import { boundedOutput } from "../domain/health-policy";
 import type { OperationPhase } from "../domain/operation-progress";
 import type { TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
-import type {
-  HealthRestartRequest,
-  HealthRestartResult,
+import {
+  checkIdentity,
+  type HealthRestartRequest,
+  type HealthRestartResult,
 } from "./health-monitor";
 import {
   activationJournal,
@@ -46,7 +47,11 @@ export async function restartForHealth(
   );
   // Judged again under the Target's lock: a deploy or edit since the check may have removed the healthcheck or set it to
   // report, and then nothing is restarted for it.
-  if (component?.healthcheck?.onFailure !== "restart")
+  // Only the check that judged it, too: one the recorded plan now makes another way says nothing about this process.
+  if (
+    component?.healthcheck?.onFailure !== "restart" ||
+    checkIdentity(component) !== request.check
+  )
     return { outcome: "skipped" };
   // Bounded like every observation made under a Target's lock: one that never answers decides nothing and holds nothing.
   const [seen] = await boundedObservations(

@@ -47,6 +47,8 @@ export interface HealthRestartRequest {
   service: string;
   /** The process the checks judged; a Service running another one by now is left alone. */
   incarnation?: string;
+  /** The check that judged it (`checkIdentity`); a Service whose recorded plan checks it another way by now is left alone. */
+  check: string;
   /** The restart's number in this unhealthy stretch, from 1. */
   attempt: number;
   failures: number;
@@ -100,6 +102,17 @@ export function healthPolicy(
     retries: check.retries,
     onFailure: check.onFailure,
   };
+}
+
+/** Which check a plan entry runs: its test, its policy, and what a test runs in or connects to. Results, and a restart, are
+ * about one such check of one process; a deploy or edit that changes it starts afresh. */
+export function checkIdentity(component: ManagedComponent): string {
+  return JSON.stringify([
+    component.health ?? null,
+    component.healthcheck ?? null,
+    component.workingDir ?? null,
+    component.ports ?? component.port ?? null,
+  ]);
 }
 
 type Due = Extract<HealthAction, { kind: "restart" }>;
@@ -204,6 +217,7 @@ export function createHealthMonitor(
       states.set(key, {
         ...NEW_HEALTH,
         incarnation,
+        check: checkIdentity(component),
         checkedAt: deps.now(),
         passed: true,
       });
@@ -235,12 +249,15 @@ export function createHealthMonitor(
           )?.incarnation;
           // Every start is recorded before it spawns: a process other than the one judged is a new one, whose checks start
           // afresh even before it is observed, so the old one's result never speaks for it.
+          // So is a check the plan now makes another way: the old test's result never speaks for the new one.
           const state =
             known === undefined
               ? seeded(target, component.name)
-              : known.incarnation !== undefined &&
-                  recordedIncarnation !== undefined &&
-                  recordedIncarnation !== known.incarnation
+              : (known.incarnation !== undefined &&
+                    recordedIncarnation !== undefined &&
+                    recordedIncarnation !== known.incarnation) ||
+                  (known.check !== undefined &&
+                    known.check !== checkIdentity(component))
                 ? fresh(target, component.name, known)
                 : known;
           // Starting or stopping: no check, and the process is first seen afresh once the Target is free.
@@ -377,13 +394,24 @@ export function createHealthMonitor(
     component: ManagedComponent,
     timeoutMs: number,
   ): Promise<{ identity: string | undefined } | "stopped" | undefined> {
+    // The process and the check are read from one snapshot of state, so a check never adopts a process its plan entry
+    // does not belong to: a deploy that lands between two reads is seen as a change, and nothing is judged.
     const recordedNow = async () => {
       const saved = (await deps.store.read()).targets.find(
         (t) => t.id === target.id,
       );
-      return saved && currentRun(saved, component.name)?.incarnation;
+      const entry = saved?.plan.components.find(
+        (candidate): candidate is ManagedComponent =>
+          candidate.kind === "managed" && candidate.name === component.name,
+      );
+      return {
+        check: entry && checkIdentity(entry),
+        incarnation: saved && currentRun(saved, component.name)?.incarnation,
+      };
     };
-    const recorded = await recordedNow();
+    const snapshot = await recordedNow();
+    if (snapshot.check !== checkIdentity(component)) return undefined;
+    const recorded = snapshot.incarnation;
     const observed = await withinTimeout(
       (signal) => deps.observations.process(target, component, signal),
       timeoutMs,
@@ -393,8 +421,10 @@ export function createHealthMonitor(
     if (observed.state === "stopped") return "stopped";
     if (observed.state !== "running") return undefined;
     // The record must name the same process on both sides of the observation, which may be an old snapshot.
+    const again = await recordedNow();
     if (
-      (await recordedNow()) !== recorded ||
+      again.check !== snapshot.check ||
+      again.incarnation !== recorded ||
       (recorded !== undefined &&
         observed.incarnation !== undefined &&
         observed.incarnation !== recorded)
@@ -437,6 +467,7 @@ export function createHealthMonitor(
       states.set(key, {
         ...base,
         ...(identity !== undefined ? { incarnation: identity } : {}),
+        check: checkIdentity(component),
         eligibleSince: deps.now(),
       });
     }
@@ -514,14 +545,17 @@ export function createHealthMonitor(
     const stretch = state.stretch;
     if (!now || !stretch || stopped) return;
     const action = actionFor(state, now.policy, deps.now());
+    const check = checkIdentity(now.component);
     if (
       !isDue(action) ||
+      state.check !== check ||
       currentRun(now.target, service)?.incarnation !== state.incarnation
     )
       return;
     const result = await deps.restart({
       targetId,
       service,
+      check,
       ...(state.incarnation !== undefined
         ? { incarnation: state.incarnation }
         : {}),

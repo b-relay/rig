@@ -21,6 +21,8 @@ export interface HealthStretch {
 export interface HealthState {
   /** The process the checks are about; another one starts the count again. */
   readonly incarnation?: string;
+  /** Which check the results are about (the plan's test and policy, as the monitor names them); another starts afresh. */
+  readonly check?: string;
   /** Since when this process may be checked: its start check passed and nothing is starting or stopping its Target. */
   readonly eligibleSince?: number;
   readonly checkedAt?: number;

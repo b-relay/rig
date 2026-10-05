@@ -3,6 +3,7 @@ import type { HealthcheckPlan, ManagedComponent } from "../src/config/types";
 import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import {
+  checkIdentity,
   createHealthMonitor,
   type HealthMonitorDependencies,
   type HealthRestartRequest,
@@ -111,10 +112,18 @@ function fixture(
   let processState: "running" | "stopped" | "unknown" = "running";
   /** Runs while an observation is out, before it answers. */
   let duringObservation: (() => void) | undefined;
+  /** Runs once, just after the `left`-th read of state from when it was armed has taken its snapshot. */
+  let afterRead: { left: number; run: () => void } | undefined;
   const dependencies: HealthMonitorDependencies = {
     store: {
       async read() {
-        return structuredClone(state);
+        const snapshot = structuredClone(state);
+        if (afterRead && --afterRead.left === 0) {
+          const { run } = afterRead;
+          afterRead = undefined;
+          run();
+        }
+        return snapshot;
       },
       async update(change) {
         writes.push(now);
@@ -201,6 +210,10 @@ function fixture(
     },
     writes,
     signals,
+    /** Changes state right after the `count`-th read from now, as an Operation finishing between two reads would. */
+    afterReads(count: number, run: () => void) {
+      afterRead = { left: count, run };
+    },
     /** Moves the fake clock without a pass, firing the timers that come due. */
     tick(ms: number) {
       now += ms;
@@ -839,4 +852,62 @@ test("stop does not wait past its bound for a restart that never ends, and asks 
   f.restartHangs = false;
   await f.runUntil(120 * SECOND);
   expect(f.restarts).toHaveLength(asked);
+});
+
+test("a deploy that lands between reading the plan and reading the process is not judged by the old test: nothing is probed or restarted", async () => {
+  const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+  const web = () =>
+    f.state.targets[0]!.plan.components[0]! as { health?: string };
+  web().health = "http://127.0.0.1:4000/legacy";
+  // /legacy passes until the deploy, then fails; /new passes.
+  let deployed = false;
+  f.answer = () =>
+    !(deployed && f.checks.at(-1)!.test === "http://127.0.0.1:4000/legacy");
+  await f.runUntil(5 * SECOND);
+  expect(f.checks.map((check) => check.at / SECOND)).toEqual([1]);
+  // The pass at 6 s reads state, then the due check reads the plan (still /legacy); the deploy lands right after that
+  // read, before the check reads which process runs: web-2, whose test is /new.
+  f.afterReads(2, () => {
+    deployed = true;
+    web().health = "http://127.0.0.1:4000/new";
+    f.replace("web");
+  });
+  await f.runUntil(6 * SECOND);
+  expect(deployed).toBe(true);
+  // The old test never ran against the new process, and nothing was restarted.
+  expect(
+    f.checks.filter((check) => check.test === "http://127.0.0.1:4000/legacy"),
+  ).toHaveLength(1);
+  expect(f.restarts).toEqual([]);
+  // The next pass checks web-2 with its own test.
+  await f.runUntil(7 * SECOND);
+  expect(f.checks.at(-1)).toEqual({
+    service: "web",
+    at: 7 * SECOND,
+    test: "http://127.0.0.1:4000/new",
+  });
+  expect(f.restarts).toEqual([]);
+  expect(f.result()).toMatchObject({ status: "healthy" });
+});
+
+test("a restart request names the check that judged the process, and a check the plan makes another way starts afresh", async () => {
+  const f = fixture({ interval: 5, retries: 2, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartOutcome = "failed";
+  await f.runUntil(6 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  const component = () =>
+    f.state.targets[0]!.plan.components[0]! as ManagedComponent;
+  expect(f.restarts[0]!.check).toBe(checkIdentity(component()));
+  // An edit gives the same process another test: its result starts from a fresh count, so one failure of the new test
+  // is not yet unhealthy and asks for nothing, although the old test's stretch was due for its next restart.
+  (component() as { health?: string }).health = "http://127.0.0.1:4000/other";
+  await f.runUntil(70 * SECOND);
+  // The new test fails at 7 s and 12 s; only at retries is a restart asked, naming the new check, as the first of a new
+  // stretch.
+  expect(f.restarts[1]).toMatchObject({
+    at: 12 * SECOND,
+    attempt: 1,
+    check: checkIdentity(component()),
+  });
 });

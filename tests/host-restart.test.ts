@@ -883,6 +883,8 @@ test("a health restart on a Stable Target whose failed start after a restart is 
   const request = {
     targetId: await f.targetId("stable"),
     service: "api",
+    // Never compared: the unrecorded failure defers the restart before anything is judged.
+    check: "",
     attempt: 1,
     failures: 3,
     since: f.clock.ms,

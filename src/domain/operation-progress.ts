@@ -72,7 +72,6 @@ const ACTION_PHASE: Record<string, OperationPhase> = {
   down: "stopping",
   restart: "restarting",
   deploy: "deploying",
-  "git-push": "deploying",
   destroy: "destroying",
   init: "registering",
   rename: "renaming",

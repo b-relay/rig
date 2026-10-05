@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beyondDeprecation, rigFixture } from "./support/rig-fixture";
 
@@ -100,10 +100,9 @@ tools:
   }
 }, 60000);
 
-test("a pushed Production Branch deploys the renamed Stable Target with the plain Tool command; the deployment keeps its committed policy, reads env files fresh without rebuilding, and a changed Working copy config is reported as drift", async () => {
+test("a deployed Production Branch reaches the renamed Stable Target with the plain Tool command; the deployment keeps its committed policy, reads env files fresh without rebuilding, and a changed Working copy config is reported as drift", async () => {
   const f = await rigFixture();
   const counts = join(f.base, "counts"),
-    bin = join(f.base, "helper-bin"),
     secrets = join(f.base, "secrets.env");
   const ok = async (args: string[]) => {
     const result = await f.rig([...args, "--json"]);
@@ -139,12 +138,6 @@ tools:
   };
   try {
     await mkdir(counts);
-    await mkdir(bin);
-    await writeFile(
-      join(bin, "git-remote-rig"),
-      `#!/bin/sh\nexec '${process.execPath}' '${join(import.meta.dir, "../src/git/remote-helper.ts")}' "$@"\n`,
-    );
-    await chmod(join(bin, "git-remote-rig"), 0o755);
     await writeFile(secrets, "GREETING=first\n", { mode: 0o600 });
     await f.git(["init", "-b", "main"]);
     await writeFile(
@@ -163,16 +156,7 @@ tools:
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["init"])).toMatchObject({ code: 0 });
 
-    const pushed = await f.run([
-      "env",
-      `PATH=${bin}:${process.env.PATH}`,
-      "git",
-      "push",
-      "rig",
-      "main",
-    ]);
-    expect(pushed.stderr).toContain("demo main deployed to prod");
-    expect(pushed.code).toBe(0);
+    expect(await f.rig(["deploy", "prod"])).toMatchObject({ code: 0 });
     expect(await runs(counts)).toEqual(["service:web", "tool:counted"]);
     expect(await served("prod")).toBe("first");
     expect(await f.run([join(f.root, "bin", "counted")], f.base)).toMatchObject(

@@ -188,7 +188,7 @@ export function createConfigEditor(dependencies: ConfigEditorDependencies) {
             "Project identity changes require rename.",
             "identity_change",
             {},
-            "Use rig rename to keep registration, routes, and the Git remote coherent.",
+            "Use rig rename to keep registration and routes coherent.",
           );
         // A path no format has is refused before anything is read or locked; the file's own format is checked once read.
         if (

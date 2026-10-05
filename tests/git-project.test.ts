@@ -29,7 +29,7 @@ const run: CommandRunner = (input) =>
     },
   });
 
-test("explicit Git creation and nested discovery use one repository root and an idempotent Rig remote", async () => {
+test("explicit Git creation and nested discovery use one repository root", async () => {
   const directory = await realpath(
     await mkdtemp(join(tmpdir(), "rig-git-project-")),
   );
@@ -40,11 +40,10 @@ test("explicit Git creation and nested discovery use one repository root and an 
       code: "GIT_REQUIRED",
     });
     const first = await ensureProjectGit(
-      { path: directory, project: "example", createGit: true },
+      { path: directory, createGit: true },
       createProjectDiscovery(run, env),
     );
     expect(first.repoPath).toBe(directory);
-    expect(first.remoteUrl).toBe("rig://localhost/example");
     expect(first.createdGit).toBe(true);
     const nested = join(directory, "nested");
     await mkdir(nested);
@@ -55,146 +54,11 @@ test("explicit Git creation and nested discovery use one repository root and an 
         .repoPath,
     ).toBe(directory);
     const second = await ensureProjectGit(
-      { path: nested, project: "example" },
+      { path: nested },
       createProjectDiscovery(run, env),
     );
     expect(second.repoPath).toBe(directory);
-    expect(second.remoteConfigured).toBe(false);
-    expect(
-      (
-        await run({
-          command: ["git", "remote", "get-url", "rig"],
-          cwd: directory,
-        })
-      ).stdout.trim(),
-    ).toBe("rig://localhost/example");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("conflicting fetch or push destinations are preserved and reported explicitly", async () => {
-  const directory = await realpath(
-    await mkdtemp(join(tmpdir(), "rig-git-project-")),
-  );
-  try {
-    await ensureProjectGit(
-      { path: directory, project: "original", createGit: true },
-      createProjectDiscovery(run, env),
-    );
-    await expect(
-      ensureProjectGit(
-        { path: directory, project: "renamed" },
-        createProjectDiscovery(run, env),
-      ),
-    ).rejects.toMatchObject({ code: "GIT_REMOTE_CONFLICT" });
-    expect(
-      (
-        await run({
-          command: ["git", "remote", "get-url", "rig"],
-          cwd: directory,
-        })
-      ).stdout.trim(),
-    ).toBe("rig://localhost/original");
-    await run({
-      command: [
-        "git",
-        "remote",
-        "set-url",
-        "--push",
-        "rig",
-        "https://example.com/unrelated",
-      ],
-      cwd: directory,
-    });
-    await expect(
-      ensureProjectGit(
-        { path: directory, project: "original" },
-        createProjectDiscovery(run, env),
-      ),
-    ).rejects.toMatchObject({ code: "GIT_REMOTE_CONFLICT" });
-    expect(
-      (
-        await run({
-          command: ["git", "remote", "get-url", "--push", "rig"],
-          cwd: directory,
-        })
-      ).stdout.trim(),
-    ).toBe("https://example.com/unrelated");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("Project rename updates fetch and explicit push URLs and can compensate without touching another edit", async () => {
-  const { renameRigRemote } = await import("../src/git/remotes");
-  const directory = await realpath(
-    await mkdtemp(join(tmpdir(), "rig-git-project-")),
-  );
-  try {
-    await ensureProjectGit(
-      { path: directory, project: "old", createGit: true },
-      createProjectDiscovery(run, env),
-    );
-    await run({
-      command: [
-        "git",
-        "remote",
-        "set-url",
-        "--push",
-        "rig",
-        "rig://localhost/old",
-      ],
-      cwd: directory,
-    });
-    const change = await renameRigRemote(
-      { repoPath: directory, oldName: "old", newName: "new" },
-      run,
-    );
-    expect(
-      (
-        await run({
-          command: ["git", "remote", "get-url", "rig"],
-          cwd: directory,
-        })
-      ).stdout.trim(),
-    ).toBe("rig://localhost/new");
-    expect(
-      (
-        await run({
-          command: ["git", "remote", "get-url", "--push", "rig"],
-          cwd: directory,
-        })
-      ).stdout.trim(),
-    ).toBe("rig://localhost/new");
-    await change.restore();
-    expect(
-      (
-        await run({
-          command: ["git", "remote", "get-url", "rig"],
-          cwd: directory,
-        })
-      ).stdout.trim(),
-    ).toBe("rig://localhost/old");
-    const changed = await renameRigRemote(
-      { repoPath: directory, oldName: "old", newName: "new" },
-      run,
-    );
-    await run({
-      command: ["git", "remote", "set-url", "rig", "rig://localhost/third"],
-      cwd: directory,
-    });
-    await expect(changed.restore()).rejects.toMatchObject({
-      code: "GIT_REMOTE_CONFLICT",
-    });
-    expect(
-      (
-        await run({
-          command: ["git", "remote", "get-url", "rig"],
-          cwd: directory,
-        })
-      ).stdout.trim(),
-    ).toBe("rig://localhost/third");
+    expect(second.createdGit).toBe(false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -328,7 +192,7 @@ test("real unborn, origin default, detached and bare repositories preserve disco
   }
 });
 
-test("explicit setup executes exactly init and missing remote add mutations", async () => {
+test("explicit setup executes exactly the init mutation, and no remote add", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "rig-setup-")));
   const mutations: (readonly string[])[] = [];
   const discovery = createProjectDiscovery(async (input) => {
@@ -340,18 +204,10 @@ test("explicit setup executes exactly init and missing remote add mutations", as
     return await run(input);
   }, env);
   try {
-    await ensureProjectGit(
-      { path: directory, project: "example", createGit: true },
-      discovery,
-    );
-    await ensureProjectGit(
-      { path: directory, project: "example", createGit: true },
-      discovery,
-    );
-    expect(mutations).toEqual([
-      ["git", "init"],
-      ["git", "remote", "add", "rig", "rig://localhost/example"],
-    ]);
+    await ensureProjectGit({ path: directory, createGit: true }, discovery);
+    await ensureProjectGit({ path: directory, createGit: true }, discovery);
+    // Only the authorized initialization; Rig adds no Git remote.
+    expect(mutations).toEqual([["git", "init"]]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

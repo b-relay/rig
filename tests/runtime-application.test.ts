@@ -545,6 +545,42 @@ test("Preview replacement evicts incomplete and stopped Previews before the olde
   expect(previews()).toEqual(["feature/d", "feature/e", "feature/f"]);
 });
 
+test("a deploy that names a Commit prepares that resolved Commit, not the Branch head, for the Stable Target and a Preview", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  // The Branch head is "head"; the named Commit resolves to a full id of its own.
+  deps.sources.preflight = async () => ({ commit: "head", warnings: [] });
+  deps.sources.resolve = async (_repository, ref) => `resolved-${ref}`;
+  const prepared: string[] = [];
+  deps.sources.prepare = async (request) => {
+    prepared.push(request.ref);
+    return { workspacePath: request.destination, commit: request.ref };
+  };
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+      branch: "main",
+      commit: "c1",
+    }),
+  ).toMatchObject({ outcome: "deployed", commit: "resolved-c1" });
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature/x",
+      commit: "c2",
+    }),
+  ).toMatchObject({ outcome: "deployed", commit: "resolved-c2" });
+  expect(prepared).toEqual(["resolved-c1", "resolved-c2"]);
+  expect(state.targets.map((target) => target.commit)).toEqual([
+    "resolved-c1",
+    "resolved-c2",
+  ]);
+});
+
 test("unsafe candidate rollback never restores an old plan over surviving candidate processes", async () => {
   const { runtime, state, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
@@ -2454,7 +2490,7 @@ test("registration persistence preserves files guidance and initiating category 
     }),
   ).rejects.toMatchObject({
     code: "REGISTRATION_INCOMPLETE",
-    hint: expect.stringContaining("were preserved"),
+    hint: expect.stringContaining("was preserved"),
   });
   expect(state.projects).toEqual([]);
   expect(entries).toEqual([
@@ -3735,133 +3771,6 @@ test("list reads the inventory without observing any Target", async () => {
   });
 });
 
-test("a push whose committed config is invalid is recorded under the Preview it aimed at with the config code, not as an unexpected failure of no Target", async () => {
-  const { runtime, deps } = fixture();
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  const read = deps.documents.read.bind(deps.documents);
-  deps.documents.read = async (path) => {
-    if (path !== "/tmp/developer")
-      throw new ConfigError("rig.yaml is not valid YAML.", "invalid_yaml", {
-        path,
-      });
-    return await read(path);
-  };
-  await expect(
-    runtime.command({
-      action: "git-push",
-      project: "demo",
-      repoPath: "/tmp/developer",
-      branch: "feature",
-      commit: "abc",
-      operationId: "push-1",
-    }),
-  ).rejects.toMatchObject({ code: "invalid_yaml" });
-  const activity = (await runtime.command({
-    action: "activity",
-    project: "demo",
-  })) as {
-    operations: {
-      id: string;
-      action: string;
-      target?: string;
-      outcome: string;
-      message?: string;
-    }[];
-  };
-  const { previewName } = await import("../src/runtime/targets");
-  expect(
-    activity.operations.find((entry) => entry.id === "push-1"),
-  ).toMatchObject({
-    action: "git-push",
-    target: previewName({ branch: "feature" }),
-    outcome: "failed",
-    message: "INVALID_YAML",
-  });
-});
-
-test("a push shows the operator alert monitor the Target its Branch selects: a Preview for a feature Branch, the Stable Target for the Production Branch", async () => {
-  const { runtime, deps } = fixture();
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  const resolve = deps.sources.resolve.bind(deps.sources);
-  for (const [branch, target] of [
-    ["feature", "preview"],
-    ["main", "live"],
-  ] as const) {
-    let release!: () => void;
-    const blocked = new Promise<void>((resolve) => (release = resolve));
-    let resolving = false;
-    deps.sources.resolve = async (...args) => {
-      resolving = true;
-      await blocked;
-      return await resolve(...args);
-    };
-    const push = runtime
-      .command({
-        action: "git-push",
-        project: "demo",
-        repoPath: "/tmp/developer",
-        branch,
-        commit: "abc",
-        operationId: `push-${branch}`,
-      })
-      .catch(() => {});
-    while (!resolving) await new Promise((resolve) => setTimeout(resolve, 1));
-    expect(runtime.mutations()).toMatchObject([
-      {
-        operationId: `push-${branch}`,
-        action: "git-push",
-        target,
-        kind: target,
-      },
-    ]);
-    release();
-    await push;
-  }
-});
-
-test("a push from a directory registered as another Project names both Projects and says which remote to use, never suggesting repoint", async () => {
-  const { runtime, deps, config } = fixture();
-  const read = deps.documents.read.bind(deps.documents);
-  deps.documents.read = async (path) => ({
-    ...(await read(path)),
-    config: path === "/tmp/other" ? { ...config, name: "other" } : config,
-  });
-  deps.documents.identifyInitialization = async (path) => ({
-    repoPath: path,
-    name: path === "/tmp/other" ? "other" : config.name,
-  });
-  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
-  await runtime.command({ action: "init", repoPath: "/tmp/other" });
-  await expect(
-    runtime.command({
-      action: "git-push",
-      project: "other",
-      repoPath: "/tmp/developer",
-      branch: "main",
-      commit: "abc",
-    }),
-  ).rejects.toMatchObject({
-    code: "PROJECT_PATH_CONFLICT",
-    message:
-      "The pushed repository /tmp/developer is registered as Project 'demo', but the remote names Project 'other' (registered at /tmp/other).",
-    hint: "Push to rig://localhost/demo from /tmp/developer (git remote set-url rig rig://localhost/demo), or push from /tmp/other.",
-  });
-  await expect(
-    runtime.command({
-      action: "git-push",
-      project: "other",
-      repoPath: "/tmp/elsewhere",
-      branch: "main",
-      commit: "abc",
-    }),
-  ).rejects.toMatchObject({
-    code: "PROJECT_PATH_CONFLICT",
-    message:
-      "The pushed repository /tmp/elsewhere is not the registered directory of Project 'other' (/tmp/other).",
-    hint: "Push from /tmp/other or one of its linked worktrees, or run rig repoint . in /tmp/elsewhere if the Project moved there.",
-  });
-});
-
 test("init on a second repository with the same name says how to give it another name, with or without a config", async () => {
   const { runtime, deps } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
@@ -4062,7 +3971,7 @@ test("forget against the file store removes the Project and records the forget i
   }
 });
 
-test("configured Target names select the Working copy and Stable Target, and a push selects the Stable Target by role", async () => {
+test("configured Target names select the Working copy and Stable Target", async () => {
   const { runtime, state, deps, config } = fixture();
   config.targets = { working: { name: "dev" }, stable: { name: "production" } };
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
@@ -4101,20 +4010,18 @@ test("configured Target names select the Working copy and Stable Target, and a p
     productionBranch: "main",
     targets: { working: "dev", stable: "production" },
   });
-  deps.sources.resolve = async () => "def";
+  deps.sources.preflight = async () => ({ commit: "def", warnings: [] });
   deps.sources.prepare = async (request) => ({
     workspacePath: request.destination,
     commit: "def",
   });
-  const push = (branch: string) =>
-    runtime.command({
-      action: "git-push",
+  expect(
+    await runtime.command({
+      action: "deploy",
       project: "demo",
-      repoPath: "/tmp/developer",
-      branch,
-      commit: "def",
-    });
-  expect(await push("main")).toMatchObject({
+      target: "production",
+    }),
+  ).toMatchObject({
     outcome: "deployed",
     target: "production",
     commit: "def",
@@ -4123,7 +4030,14 @@ test("configured Target names select the Working copy and Stable Target, and a p
   expect(state.targets.filter((t) => t.kind === "live")).toMatchObject([
     { id: stable.id, name: "production", commit: "def" },
   ]);
-  expect(await push("feature/x")).toMatchObject({ outcome: "deployed" });
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature/x",
+    }),
+  ).toMatchObject({ outcome: "deployed" });
   expect(state.targets.map((t) => t.kind)).toEqual([
     "local",
     "live",
@@ -4321,14 +4235,6 @@ test("the Host Production Branch applies when the Project sets none, and the Pro
         project: "demo",
       })) as { productionBranch: string }
     ).productionBranch;
-  const push = (branch: string) =>
-    runtime.command({
-      action: "git-push",
-      project: "demo",
-      repoPath: "/tmp/developer",
-      branch,
-      commit: "abc",
-    });
   expect(await context()).toBe("trunk");
   expect(
     await runtime.command({
@@ -4337,10 +4243,6 @@ test("the Host Production Branch applies when the Project sets none, and the Pro
       target: "live",
     }),
   ).toMatchObject({ outcome: "deployed", target: "live", branch: "trunk" });
-  expect(await push("trunk")).toMatchObject({
-    outcome: "unchanged",
-    target: "live",
-  });
   config.production_branch = "release";
   expect(await context()).toBe("release");
   await expect(
@@ -4352,12 +4254,21 @@ test("the Host Production Branch applies when the Project sets none, and the Pro
       force: true,
     }),
   ).rejects.toMatchObject({ code: "BRANCH_POLICY" });
-  expect(await push("release")).toMatchObject({
-    outcome: "deployed",
-    target: "live",
-    branch: "release",
-  });
-  expect(await push("trunk")).toMatchObject({ outcome: "deployed" });
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "live",
+    }),
+  ).toMatchObject({ outcome: "deployed", target: "live", branch: "release" });
+  expect(
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "trunk",
+    }),
+  ).toMatchObject({ outcome: "deployed" });
   expect(state.targets.map((t) => [t.kind, t.branch])).toEqual([
     ["live", "release"],
     ["preview", "trunk"],

@@ -21,7 +21,6 @@ import type { CommandRunner } from "../providers/contracts";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
 import { readProjectFile } from "./project-files";
-import { renameRigRemote } from "../git/remotes";
 import {
   createProjectDiscovery,
   inspectProjectLocation,
@@ -106,27 +105,18 @@ export function createProjectDocuments(
         ? undefined
         : scaffoldProjectConfig({ ...command, name, productionBranch });
       await ensureProjectGit(
-        { path: repoPath, project: name, createGit: command.createGit },
+        { path: repoPath, createGit: command.createGit },
         discovery,
       );
       return existing ?? (await initializeProjectConfig(repoPath, scaffold!));
     },
     async rename(project, name) {
       const document = await readProjectConfig(project.repoPath);
-      const remote = await renameRigRemote(
-        { repoPath: project.repoPath, oldName: project.name, newName: name },
-        run,
-      );
-      try {
-        return await editProjectConfig({
-          repoPath: project.repoPath,
-          expectedRevision: document.revision,
-          edits: [{ path: ["name"], value: name }],
-        });
-      } catch (error) {
-        await remote.restore();
-        throw error;
-      }
+      return await editProjectConfig({
+        repoPath: project.repoPath,
+        expectedRevision: document.revision,
+        edits: [{ path: ["name"], value: name }],
+      });
     },
   };
 }

@@ -1,8 +1,8 @@
 # Rig
 
-Rig runs, inspects, and deploys local Mac projects. The `rig` CLI and
-`git-remote-rig` helper talk to `rigd`, which owns runtime state and coordinates
-process, Git, artifact, and routing providers. The implementation uses strict
+Rig runs, inspects, and deploys local Mac projects. The `rig` CLI talks to
+`rigd`, which owns runtime state and coordinates process, Git, artifact, and
+routing providers. The implementation uses strict
 TypeScript, Bun, and Zod.
 
 ## Usage
@@ -29,7 +29,7 @@ recorded deployment policy.
 Configuration is YAML: `rig.yaml` for a Project and `<RIG_ROOT>/config.yaml`
 for the Host. `rig recipe` generates ready-made Service blocks (Postgres,
 Convex) to paste into `rig.yaml`. See the [guide](docs/rig-guide.md) for setup,
-Git push deploys, configuration, diagnostics, and command behavior, and
+deploys, configuration, diagnostics, and command behavior, and
 [docs/examples](docs/examples) for complete configs.
 
 ## Development
@@ -59,7 +59,7 @@ first on the script `PATH`. After adding or reshaping slow files, refresh the
 timings with
 `bun test --parallel=4 --timings=tests/timings.json --update-timings`.
 
-The build produces `rig`, `rigd`, and `git-remote-rig`. Keep tests and development
+The build produces `rig` and `rigd`. Keep tests and development
 isolated from the installed Host with `RIG_ROOT`:
 
 ```sh
@@ -80,7 +80,7 @@ They need permission to bind localhost and a local Caddy executable.
 | `src/daemon`                       | Authenticated localhost transport, administration, and adapter composition.   |
 | `src/providers` and `src/adapters` | Process ownership, Git sources, artifacts, routes, and Host effects.          |
 | `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.            |
-| `src/git`                          | Branch preflight, repository registration, and Git remote protocol.           |
+| `src/git`                          | Branch preflight and repository registration.                                 |
 | `src/recipes`                      | Bundled recipes and their files, rendering, and comparison with a Project.    |
 | `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.   |
 

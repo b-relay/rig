@@ -159,25 +159,19 @@ test("read-only discovery reports origin/HEAD as Production and the checkout sep
   ).rejects.toMatchObject({ code: "GIT_REQUIRED" });
 });
 
-test("create Git authorization does not initialize after uncertain discovery or invalid identity", async () => {
-  for (const project of ["example", "invalid name"]) {
-    const calls: (readonly string[])[] = [];
-    await expect(
-      ensureProjectGit(
-        { path: "/virtual", project, createGit: true },
-        {
-          canonicalize: async (path) => path,
-          run: async (input) => {
-            calls.push(input.command);
-            return { exitCode: 128, stdout: "", stderr: "permission denied" };
-          },
+test("create Git authorization does not initialize after uncertain discovery", async () => {
+  const calls: (readonly string[])[] = [];
+  await expect(
+    ensureProjectGit(
+      { path: "/virtual", createGit: true },
+      {
+        canonicalize: async (path) => path,
+        run: async (input) => {
+          calls.push(input.command);
+          return { exitCode: 128, stdout: "", stderr: "permission denied" };
         },
-      ),
-    ).rejects.toBeInstanceOf(Error);
-    expect(
-      calls.some(
-        (command) => command.includes("init") || command.includes("remote"),
-      ),
-    ).toBe(false);
-  }
+      },
+    ),
+  ).rejects.toBeInstanceOf(Error);
+  expect(calls.some((command) => command.includes("init"))).toBe(false);
 });

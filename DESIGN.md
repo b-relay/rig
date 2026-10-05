@@ -84,7 +84,7 @@ the Working copy and Stable Targets. A Project has one Stable Target.
 - Preview deploy uses the current Branch or an explicit local Branch.
 - CLI deploy does not accept arbitrary refs, tags, remote-tracking names, or
   detached HEAD as Branch identity.
-- Rig remote deploy uses the pushed destination Branch name.
+- The dashboard may name a Commit of the Branch; that exact Commit is deployed.
 
 Deploying a new Commit brings the Target up by default. Deploying the same
 Commit is a no-op unless `--force` is used. `--no-up` materializes without

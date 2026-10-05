@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { beyondDeprecation, rigFixture } from "./support/rig-fixture";
@@ -231,27 +231,13 @@ test("a Tool-only Project under renamed Targets: the Stable Target publishes the
   }
 }, 120000);
 
-test("Services and Tools under renamed Targets: a pushed Production Branch reaches the renamed Stable Target, and fixture cleanup stops a renamed Target and a generated Preview it was never told about", async () => {
+test("Services and Tools under renamed Targets: a deployed Production Branch reaches the renamed Stable Target, and fixture cleanup stops a renamed Target and a generated Preview it was never told about", async () => {
   const f = await rigFixture();
-  const bin = join(f.base, "helper-bin");
   try {
-    await mkdir(bin);
-    await writeFile(
-      join(bin, "git-remote-rig"),
-      `#!/bin/sh\nexec '${process.execPath}' '${join(import.meta.dir, "../src/git/remote-helper.ts")}' "$@"\n`,
-    );
-    await chmod(join(bin, "git-remote-rig"), 0o755);
     await project(f, RENAMED + SERVICE + TOOLS);
-    const pushed = await f.run([
-      "env",
-      `PATH=${bin}:${process.env.PATH}`,
-      "git",
-      "push",
-      "rig",
-      "main",
-    ]);
-    expect(pushed.stderr).toContain("demo main deployed to prod");
-    expect(pushed.code).toBe(0);
+    expect(await ok(f, ["deploy", "prod"])).toMatchObject({
+      outcome: "deployed",
+    });
     expect((await app(await port(f, "prod"))).greeting).toBe("from-config");
     expect(await tool(f, "hello")).toMatchObject({ code: 0 });
     expect(await text(f, ["logs", "prod"])).toContain("app ready");

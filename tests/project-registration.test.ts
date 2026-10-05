@@ -94,7 +94,7 @@ async function fixture() {
     },
   };
 }
-test("duplicate name preflight rejects before creating Git, remote, or config in a second directory", async () => {
+test("duplicate name preflight rejects before creating Git or config in a second directory", async () => {
   const f = await fixture();
   f.state.projects.push({
     id: "existing",
@@ -132,11 +132,10 @@ test("nested init uses the Git root and existing config identity, and rerunning 
     configPath: join(f.repo, "rig.yaml"),
   });
   const gitConfig = await readFile(join(f.repo, ".git", "config"), "utf8");
-  expect(
-    (
-      await run({ command: ["git", "remote", "get-url", "rig"], cwd: f.repo })
-    ).stdout.trim(),
-  ).toBe("rig://localhost/canonical");
+  // Registration adds no Git remote.
+  const remotes = await run({ command: ["git", "remote"], cwd: f.repo });
+  expect(remotes.exitCode).toBe(0);
+  expect(remotes.stdout.split("\n").filter(Boolean)).not.toContain("rig");
   expect(
     await registerProject({ action: "init", repoPath: nested }, f.deps),
   ).toEqual(first);
@@ -171,18 +170,17 @@ test("init --path registers the nearest Project config inside the repository, th
   });
   expect(await readdir(f.repo)).not.toContain("rig.yaml");
   expect(await readFile(join(web, "rig.yaml"), "utf8")).toBe(config);
-  expect(
-    (
-      await run({ command: ["git", "remote", "get-url", "rig"], cwd: web })
-    ).stdout.trim(),
-  ).toBe("rig://localhost/web");
+  // Registration adds no Git remote.
+  const remotes = await run({ command: ["git", "remote"], cwd: web });
+  expect(remotes.exitCode).toBe(0);
+  expect(remotes.stdout.split("\n").filter(Boolean)).not.toContain("rig");
   expect((await f.deps.documents.discover(web)).repoPath).toBe(web);
   expect(
     await registerProject({ action: "init", repoPath: web }, f.deps),
   ).toEqual(registered);
 });
 
-test("a registered path conflict preserves its existing config and leaves its remote unconfigured", async () => {
+test("a registered path conflict preserves its existing config and adds no remote", async () => {
   const f = await fixture();
   expect((await run({ command: ["git", "init"], cwd: f.repo })).exitCode).toBe(
     0,
@@ -200,12 +198,12 @@ test("a registered path conflict preserves its existing config and leaves its re
     registerProject({ action: "init", repoPath: f.repo }, f.deps),
   ).rejects.toMatchObject({ code: "PROJECT_CONFLICT" });
   expect(await readFile(join(f.repo, "rig.yaml"), "utf8")).toBe(config);
-  expect((await run({ command: ["git", "remote"], cwd: f.repo })).stdout).toBe(
-    "",
-  );
+  const remotes = await run({ command: ["git", "remote"], cwd: f.repo });
+  expect(remotes.exitCode).toBe(0);
+  expect(remotes.stdout).toBe("");
   expect(f.writes()).toBe(0);
 });
-test("config identity mismatch is rejected before creating Git or a Rig remote", async () => {
+test("config identity mismatch is rejected before creating Git", async () => {
   const f = await fixture();
   const config = "name: canonical\ntools:\n  cli:\n    bin: cli\n";
   await writeFile(join(f.repo, "rig.yaml"), config);
@@ -235,11 +233,10 @@ test("store failure reports preserved initialization and rerunning completes the
   });
   expect(f.state.projects).toEqual([]);
   const config = await readFile(join(f.repo, "rig.yaml"), "utf8");
-  expect(
-    (
-      await run({ command: ["git", "remote", "get-url", "rig"], cwd: f.repo })
-    ).stdout.trim(),
-  ).toBe("rig://localhost/demo");
+  // Registration adds no Git remote.
+  const remotes = await run({ command: ["git", "remote"], cwd: f.repo });
+  expect(remotes.exitCode).toBe(0);
+  expect(remotes.stdout.split("\n").filter(Boolean)).not.toContain("rig");
   f.fail(false);
   const project = await registerProject(command, f.deps);
   expect(f.state.projects).toEqual([project]);

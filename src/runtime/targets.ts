@@ -100,6 +100,8 @@ export async function planTarget(
     project: ProjectRecord;
     document: ConfigDocument<ProjectConfig>;
     existing?: TargetRecord;
+    /** The Commit a deploy resolved; its revision is prepared from exactly this, not from the Branch again. */
+    commit?: string;
   },
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
@@ -142,7 +144,7 @@ export async function planTarget(
     const prepared = await deps.sources.prepare({
       project: project.id,
       repository: project.repoPath,
-      ref: command.commit ?? branch,
+      ref: input.commit ?? branch,
       destination: join(base, "revisions", deps.id()),
     });
     workspacePath = prepared.workspacePath;

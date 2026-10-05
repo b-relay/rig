@@ -11,14 +11,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-type Mode = "stable" | "preview" | "push";
+type Mode = "stable" | "preview";
 export function DeployForm({
   project,
-  repoPath,
   context,
 }: {
   project: string;
-  repoPath: string;
   context: DeploymentContext;
 }) {
   const act = useRun();
@@ -35,18 +33,14 @@ export function DeployForm({
       ...(commit ? { commit } : {}),
     };
     const options = { ...(force ? { force } : {}), ...(noUp ? { noUp } : {}) };
-    void act.run(
-      mode === "push"
-        ? { action: "git-push", project, repoPath, ...source }
-        : {
-            action: "deploy",
-            project,
-            target: mode === "stable" ? stable : "preview",
-            ...(mode === "preview" && deployment ? { deployment } : {}),
-            ...source,
-            ...options,
-          },
-    );
+    void act.run({
+      action: "deploy",
+      project,
+      target: mode === "stable" ? stable : "preview",
+      ...(mode === "preview" && deployment ? { deployment } : {}),
+      ...source,
+      ...options,
+    });
   };
   return (
     <div className="flex flex-col gap-5">
@@ -67,7 +61,6 @@ export function DeployForm({
           <TabsList className="w-max">
             <TabsTrigger value="stable">Stable ({stable})</TabsTrigger>
             <TabsTrigger value="preview">Preview</TabsTrigger>
-            <TabsTrigger value="push">By Branch role</TabsTrigger>
           </TabsList>
         </div>
       </Tabs>
@@ -84,15 +77,12 @@ export function DeployForm({
           help={
             mode === "stable"
               ? "Defaults to the Production Branch."
-              : mode === "preview"
-                ? "Defaults to the checked-out Branch."
-                : "The Production Branch deploys the Stable Target; any other Branch deploys a Preview, as git push rig does."
+              : "Defaults to the checked-out Branch."
           }
         >
           <Input
             id="deploy-branch"
             value={branch}
-            required={mode === "push"}
             onChange={(event) => setBranch(event.target.value)}
             placeholder={
               mode === "stable"
@@ -104,16 +94,11 @@ export function DeployForm({
         <Field
           label="Commit"
           htmlFor="deploy-commit"
-          help={
-            mode === "push"
-              ? "Required: the Commit the Branch points at."
-              : "Optional: defaults to the Branch head."
-          }
+          help="Optional: defaults to the Branch head."
         >
           <Input
             id="deploy-commit"
             value={commit}
-            required={mode === "push"}
             className="font-mono text-xs"
             onChange={(event) => setCommit(event.target.value)}
           />
@@ -132,24 +117,22 @@ export function DeployForm({
             />
           </Field>
         ) : null}
-        {mode === "push" ? null : (
-          <div className="flex flex-col gap-2">
-            <Label className="gap-2 font-normal">
-              <Checkbox
-                checked={force}
-                onCheckedChange={(next) => setForce(next === true)}
-              />
-              Redeploy even when the Commit is unchanged
-            </Label>
-            <Label className="gap-2 font-normal">
-              <Checkbox
-                checked={noUp}
-                onCheckedChange={(next) => setNoUp(next === true)}
-              />
-              Prepare only; do not start the Target
-            </Label>
-          </div>
-        )}
+        <div className="flex flex-col gap-2">
+          <Label className="gap-2 font-normal">
+            <Checkbox
+              checked={force}
+              onCheckedChange={(next) => setForce(next === true)}
+            />
+            Redeploy even when the Commit is unchanged
+          </Label>
+          <Label className="gap-2 font-normal">
+            <Checkbox
+              checked={noUp}
+              onCheckedChange={(next) => setNoUp(next === true)}
+            />
+            Prepare only; do not start the Target
+          </Label>
+        </div>
         <div>
           <Button type="submit" disabled={act.busy}>
             <Rocket />

@@ -687,7 +687,7 @@ function ProjectSection() {
         label="Name"
         required
         disabled
-        help="Renaming happens under Settings so registration, routes and the Git remote stay coherent."
+        help="Renaming happens under Settings so registration and routes stay coherent."
       />
       <Text path={["description"]} label="Description" />
       <Text

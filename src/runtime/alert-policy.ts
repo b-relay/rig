@@ -61,8 +61,7 @@ export interface MutationInFlight {
   targetId?: string;
 }
 
-/** Actions that work on one Target, which is the Working copy when the command names none. A `git-push` is not one: it
- * names no Target and selects the Stable Target or a Preview by its Branch once rigd reads the Project's config. */
+/** Actions that work on one Target, which is the Working copy when the command names none. */
 const TARGET_ACTIONS: ReadonlySet<string> = new Set([
   "up",
   "down",

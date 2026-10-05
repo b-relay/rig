@@ -469,7 +469,7 @@ function projectSchemaFor<
       production_branch: text
         .optional()
         .describe(
-          "Branch whose pushes deploy the Stable Target; defaults to the Host deploy.production_branch, then main.",
+          "Branch the Stable Target deploys; defaults to the Host deploy.production_branch, then main.",
         ),
       domain: domain
         .optional()

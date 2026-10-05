@@ -1144,29 +1144,6 @@ test("a Target command that names no Target works on the Working copy and does n
     [{ operationId: "up-2", action: "up", repoPath: "/repos/pantry" }, true],
     [{ operationId: "restart-3", action: "restart", project: "pantry" }, true],
     [{ operationId: "forget-4", action: "forget", project: "pantry" }, false],
-    // A push names no Target: it selects the Stable Target by its Branch later, so it may be working on it.
-    [{ operationId: "push-6", action: "git-push", project: "pantry" }, false],
-    // Once rigd has selected the kind, it decides, whatever name the command used (a configured name mid-rename).
-    [
-      {
-        operationId: "push-7",
-        action: "git-push",
-        project: "pantry",
-        target: "production",
-        kind: "live",
-      },
-      false,
-    ],
-    [
-      {
-        operationId: "push-8",
-        action: "git-push",
-        project: "pantry",
-        target: "preview",
-        kind: "preview",
-      },
-      true,
-    ],
     [
       {
         operationId: "up-9",

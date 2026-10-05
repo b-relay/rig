@@ -33,7 +33,6 @@ export const commandSchema = z
       "rename",
       "repoint",
       "forget",
-      "git-push",
       "destroy",
       "prepare-uninstall",
       "cancel-uninstall",
